@@ -85,13 +85,14 @@ export default async function PortalMessagesPage({ params }: PageProps) {
   }
 
   // Get agent's full name from users table
+  const agentRecord = Array.isArray(contact.agent) ? contact.agent[0] : contact.agent
   let agentName = "Your Agent"
   let agentEmail: string | null = null
-  if (contact.agent?.user_id) {
+  if (agentRecord?.user_id) {
     const { data: agentUser } = await supabase
       .from("users")
       .select("first_name, last_name, email")
-      .eq("id", contact.agent.user_id)
+      .eq("id", agentRecord.user_id)
       .single()
 
     if (agentUser) {
@@ -133,8 +134,8 @@ export default async function PortalMessagesPage({ params }: PageProps) {
   const agentCard = {
     name: agentName,
     email: agentEmail,
-    phone: contact.agent?.phone_mobile || contact.agent?.phone_office || null,
-    imageUrl: contact.agent?.profile_image_url || null,
+    phone: agentRecord?.phone_mobile || agentRecord?.phone_office || null,
+    imageUrl: agentRecord?.profile_image_url || null,
     initials: getInitials(agentName),
   }
 

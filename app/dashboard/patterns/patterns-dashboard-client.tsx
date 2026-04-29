@@ -231,7 +231,7 @@ export function PatternsDashboardClient({
   const handleAiInsight = async () => {
     setAiInsightLoading(true)
     const topPatterns = patterns.slice(0, 5).map((p) => `${p.pattern_name} (confidence: ${Math.round((p.confidence ?? 0) * 100)}%)`).join(", ")
-    const context = `Active pipeline patterns: ${topPatterns || "none"}. Total active: ${patterns.length}. Accuracy rate: ${accuracyStats?.overall_accuracy ? Math.round(accuracyStats.overall_accuracy * 100) : 0}%.`
+    const context = `Active pipeline patterns: ${topPatterns || "none"}. Total active: ${patterns.length}. Accuracy rate: ${accuracyStats?.accuracy_rate ? Math.round(accuracyStats.accuracy_rate * 100) : 0}%.`
     const result = await generatePageInsight({
       context,
       question: "Which pattern should I act on first this week to protect my pipeline?",
@@ -345,7 +345,7 @@ export function PatternsDashboardClient({
             <div className="h-4 w-px bg-border" />
             <div className="flex items-center gap-1.5">
               <span className="text-2xl font-bold text-emerald-600">
-                {accuracyStats?.overall_accuracy ? `${Math.round(accuracyStats.overall_accuracy * 100)}%` : "—"}
+                {accuracyStats?.accuracy_rate ? `${Math.round(accuracyStats.accuracy_rate * 100)}%` : "—"}
               </span>
               <span className="text-sm text-muted-foreground">pattern accuracy</span>
             </div>

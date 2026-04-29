@@ -91,7 +91,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, results }, { status: 200 })
   } catch (err) {
     console.error('[cron/ghost-detection] Fatal error:', err)
-    await recordCronFailureAction({ context_id: contextId, error: err, stage: 'main-processing' })
+    await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: 'main-processing' })
     return NextResponse.json(
       { success: false, error: err instanceof Error ? err.message : String(err), context_id: contextId },
       { status: 500 },

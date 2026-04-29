@@ -234,7 +234,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         const calEventType: UnifiedCalendarEvent["eventType"] =
           milestoneType === "inspection" ? "inspection" :
           milestoneType === "appraisal" ? "appraisal" :
-          milestoneType === "closing" || milestoneType === "close" ? "closing" :
+          milestoneType === "closing" || (milestoneType as string) === "close" ? "closing" :
           "appointment"
 
         unified.push({

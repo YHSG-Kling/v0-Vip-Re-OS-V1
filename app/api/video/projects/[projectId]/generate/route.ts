@@ -13,6 +13,7 @@ export async function POST(
     scriptText: body.scriptText,
     voiceProfileId: body.voiceProfileId,
     avatarStyle: body.avatarStyle,
+    avatarId: body.avatarId,
     estimatedDurationSeconds: body.estimatedDurationSeconds,
   }
 

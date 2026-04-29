@@ -258,7 +258,7 @@ export function BrandComplianceClient({
       const reqResult = await getBrandRequirementsAction({
         content_type: template.template_type as any,
         channel_intent: "email",
-        audience_scope: "lead",
+        audience_scope: "public",
       })
       if (!reqResult.success || !reqResult.data) throw new Error(reqResult.error ?? "Requirements fetch failed")
 
@@ -298,8 +298,8 @@ export function BrandComplianceClient({
       const classResult = await classifyTemplateAction({
         content_type: template.template_type as any,
         channel_intent: "email",
-        is_brokerage_template: true,
-        has_required_disclaimers: true,
+        is_from_template: true,
+        template_source: "brokerage" as const,
       })
       if (!classResult.success || !classResult.data) throw new Error(classResult.error ?? "Classification failed")
 

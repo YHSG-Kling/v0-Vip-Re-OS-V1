@@ -109,8 +109,8 @@ export {
   deleteListing,
   getListingTimeline,
   getSellerReports,
-  updateListingStatus,
 } from "./listings"
+export { updateListingStatus } from "./listings-kernel"
 
 // ============================================
 // TRANSACTIONS (Primary: transactions.ts)

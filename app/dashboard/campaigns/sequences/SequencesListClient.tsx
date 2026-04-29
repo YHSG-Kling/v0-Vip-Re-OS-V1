@@ -52,6 +52,7 @@ interface Props {
   brokerageId: string
   userId: string
   openCreate?: boolean
+  pageType?: "marketing" | "nurture"
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ const CHANNEL_ICONS: Record<string, React.ElementType> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function SequencesListClient({ sequences: initial, brokerageId, userId, openCreate = false }: Props) {
+export default function SequencesListClient({ sequences: initial, brokerageId, userId, openCreate = false, pageType = "marketing" }: Props) {
   const router = useRouter()
   const [sequences, setSequences]   = useState<CampaignSequence[]>(initial)
   const [showCreate, setShowCreate] = useState(openCreate)
@@ -196,9 +197,13 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
       {/* Header */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground text-balance">Campaign Sequences</h1>
+          <h1 className="text-2xl font-bold text-foreground text-balance">
+            {pageType === "marketing" ? "Campaign Sequences" : "Nurture Sequences"}
+          </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Multi-step outreach sequences across email, SMS, voice, and direct mail.
+            {pageType === "marketing"
+              ? "Event-triggered automations for your listings and marketing campaigns."
+              : "Multi-touch nurture sequences for buyers, sellers, and leads (email + SMS + voice drop + AI call)."}
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)} className="gap-1.5">
@@ -257,8 +262,17 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
 
       {/* Sequence cards */}
       {sequences.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border py-20 text-center text-sm text-muted-foreground">
-          No sequences yet. Click &quot;New Sequence&quot; to create your first one.
+        <div className="rounded-lg border border-dashed border-border py-20 text-center space-y-2">
+          <p className="text-sm font-medium text-foreground">No sequences yet</p>
+          <p className="text-sm text-muted-foreground max-w-md mx-auto">
+            {pageType === "marketing"
+              ? "Create event-triggered automations that fire when listings go live, prices drop, or deals close."
+              : "Build multi-touch nurture sequences for buyers, sellers, and leads — email, SMS, voice drop, and AI calls."}
+          </p>
+          <Button size="sm" className="gap-1.5 mt-2" onClick={() => setShowCreate(true)}>
+            <Plus className="h-4 w-4" />
+            New Sequence
+          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

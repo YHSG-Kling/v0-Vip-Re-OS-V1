@@ -38,6 +38,8 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
   const handleLogFollowup = (contactId: string, contactName: string) => {
     startTransition(async () => {
       const result = await logActivity({
+        brokerageId: "",
+        agentId,
         contactId,
         activityType: "follow_up",
         title: `Follow-up with ${contactName}`,
@@ -63,6 +65,8 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
 
     startTransition(async () => {
       const result = await logActivity({
+        brokerageId: "",
+        agentId,
         contactId: selectedContact || undefined,
         activityType: "note",
         title: "Quick Field Note",

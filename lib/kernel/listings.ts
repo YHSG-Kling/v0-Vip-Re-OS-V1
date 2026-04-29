@@ -17,6 +17,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "./events"
+import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
 // ─── Shared result type ───────────────────────────────────────────────────────
 
@@ -26,16 +27,7 @@ export type KernelResult<T> =
 
 // ─── Listing types ────────────────────────────────────────────────────────────
 
-export type ListingStage =
-  | "LEAD"
-  | "APPOINTMENT_SET"
-  | "SIGNED"
-  | "PRE_LAUNCH"
-  | "ACTIVE"
-  | "UNDER_CONTRACT"
-  | "CLOSED"
-  | "WITHDRAWN"
-  | "EXPIRED"
+export type ListingStage = LifecycleListingStage
 
 export interface CreateListingInput {
   agentId: string
@@ -587,7 +579,7 @@ export async function generateListingDescription(input: {
 
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, showing_instructions")
+      .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, showing_instructions, brokerage_id")
       .eq("id", input.listingId)
       .maybeSingle()
 
@@ -621,7 +613,27 @@ Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead wit
       prompt,
     })
 
-    return { success: true, description: text.trim() }
+    const rawDescription = text.trim()
+
+    // Apply brand voice + compliance check (non-blocking)
+    let finalDescription = rawDescription
+    try {
+      const { guardContent } = await import("@/lib/content-guardian")
+      const brokerageId = (listing as any).brokerage_id as string | undefined
+      if (brokerageId) {
+        const guarded = await guardContent({
+          content: rawDescription,
+          agentId: input.agentId,
+          brokerageId,
+          contentType: "listing_description",
+        })
+        finalDescription = guarded.content
+      }
+    } catch {
+      // Non-fatal — return raw description if guardian fails
+    }
+
+    return { success: true, description: finalDescription }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "generateListingDescription failed" }
   }

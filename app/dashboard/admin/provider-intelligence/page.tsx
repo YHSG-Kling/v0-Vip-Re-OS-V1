@@ -53,14 +53,14 @@ export default function ProviderIntelligencePage() {
   // ── Resolve brokerageId ──────────────────────────────────────────────────────
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(({ data: { user } }: { data: { user: any } }) => {
       if (!user) return
       supabase
-        .from('user_profiles')
+        .from('users')
         .select('brokerage_id')
         .eq('id', user.id)
         .single()
-        .then(({ data }) => {
+        .then(({ data }: { data: any }) => {
           if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
         })
     })
@@ -221,7 +221,7 @@ export default function ProviderIntelligencePage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                     <YAxis tickFormatter={v => `$${v}`} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v: number) => fmt$(v)} />
+                    <Tooltip formatter={(v: any) => fmt$(v as number)} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey="Cost / Lead" fill="#2563eb" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="Cost / Qualified Lead" fill="#16a34a" radius={[4, 4, 0, 0]} />

@@ -21,7 +21,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { createReferral } from "@/app/actions/referral-management"
+import { createReferral, createPartner, deletePartner } from "@/app/actions/referrals/referral-actions"
 import { format } from "date-fns"
 
 interface Referral {
@@ -84,19 +84,40 @@ export function ReferralPipelinePanel({
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    startTransition(async () => {
+    // createReferral requires a partnerId — create a partner record from the
+    // referred person's name first, then attach the contact details.
+    // If createReferral fails after createPartner succeeds, delete the orphan
+    // partner as a compensating transaction to maintain atomicity.
+    let partnerId: string | null = null
+    try {
+      const partner = await createPartner({
+        partnerName: formData.referred_name,
+        partnerType: "individual",
+        agreementType: "referral",
+      })
+      partnerId = partner.id
+
       await createReferral({
-        agentId,
-        brokerageId,
-        referredName: formData.referred_name,
-        referredEmail: formData.referred_email || undefined,
-        referredPhone: formData.referred_phone || undefined,
-        notes: formData.notes || undefined,
-        potentialValue: formData.potential_value ? Number(formData.potential_value) : undefined,
+        partnerId: partner.id,
+        referredPerson: {
+          email: formData.referred_email || undefined,
+          phone: formData.referred_phone || undefined,
+        },
+        referralSource: formData.notes || undefined,
+        commissionAmount: formData.potential_value ? Number(formData.potential_value) : undefined,
       })
       setCreateOpen(false)
       setFormData({ referred_name: "", referred_email: "", referred_phone: "", notes: "", potential_value: "" })
-    })
+    } catch {
+      // If partner was created but referral failed, delete the orphan partner
+      if (partnerId) {
+        try {
+          await deletePartner(partnerId)
+        } catch {
+          console.error("Failed to clean up orphan partner after referral creation error", partnerId)
+        }
+      }
+    }
   }
 
   return (

@@ -116,7 +116,7 @@ export default async function TitlePortalDashboard() {
       </div>
 
       {/* Transaction List */}
-      <TitleTransactionList transactions={transactions} />
+      <TitleTransactionList transactions={transactions as any} />
     </div>
   )
 }

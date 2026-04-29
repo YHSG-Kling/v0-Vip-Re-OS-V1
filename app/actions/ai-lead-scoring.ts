@@ -16,20 +16,15 @@ export async function scoreLeadWithAI(params: {
   try {
     const supabase = await createClient()
 
-    // Get contact data with behavioral signals
+    // Get contact data (simple select — embedded relation tables may not exist)
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        behavioral_signals(*),
-        site_activity(*),
-        property_views(*),
-        lead_engagement_scores(*)
-      `)
+      .select("*")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError) throw contactError
+    if (!contact) throw new Error("Contact not found")
 
     // Get interaction history
     const { data: interactions } = await supabase
@@ -55,9 +50,6 @@ Contact Details:
 - Timeline: ${contact.buying_timeline || "Unknown"}
 
 Behavioral Data:
-- Total Sessions: ${contact.behavioral_signals?.[0]?.total_sessions || 0}
-- Pages Viewed: ${contact.site_activity?.length || 0}
-- Properties Viewed: ${contact.property_views?.length || 0}
 - Recent Interactions: ${interactions?.length || 0}
 - Last Contact: ${contact.last_contact_date || "Never"}
 
@@ -75,7 +67,10 @@ Provide a JSON response with:
 }`,
     })
 
-    const scores = JSON.parse(analysis)
+    // Extract JSON robustly — the AI may wrap output in markdown code blocks
+    const jsonMatch = analysis.match(/```(?:json)?\s*([\s\S]*?)```/) ?? analysis.match(/(\{[\s\S]*\})/)
+    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : analysis
+    const scores = JSON.parse(jsonText.trim())
 
     // Update contact with scores
     await supabase
@@ -119,7 +114,7 @@ export async function getLeadInsights(contactId: string) {
   try {
     const supabase = await createClient()
 
-    const { data: contact, error: contactError } = await supabase
+    const { data: rawContact, error: contactError } = await supabase
       .from("contacts")
       .select(`
         *,
@@ -127,20 +122,21 @@ export async function getLeadInsights(contactId: string) {
       `)
       .eq("id", contactId)
       .single()
+    const contact = rawContact as any
 
     if (contactError) throw contactError
 
     return {
       success: true,
       currentScore: {
-        overall: contact.lead_score || 0,
-        engagement: contact.engagement_score || 0,
-        intent: contact.intent_score || 0,
-        qualification: contact.qualification_score || 0,
-        motivation: contact.motivation_score || 0,
-        readiness: contact.readiness_level || "cold",
+        overall: contact?.lead_score || 0,
+        engagement: contact?.engagement_score || 0,
+        intent: contact?.intent_score || 0,
+        qualification: contact?.qualification_score || 0,
+        motivation: contact?.motivation_score || 0,
+        readiness: contact?.readiness_level || "cold",
       },
-      history: contact.lead_score_history || [],
+      history: contact?.lead_score_history || [],
       contact,
     }
   } catch (error) {

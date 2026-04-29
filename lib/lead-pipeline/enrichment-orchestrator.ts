@@ -166,13 +166,11 @@ export async function processEnrichmentQueue(
 
         // Step 6c: Track vendor usage
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost },
         })
 
         // Step 6d: Lead-specific post-enrichment
@@ -256,13 +254,11 @@ export async function processEnrichmentQueue(
           .eq('id', entry.id)
 
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id, result: 'no_match' },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match' },
         })
 
         result.failed++

@@ -170,7 +170,7 @@ export async function handleFinancingFailure(params: {
   return await emitRollbackEvent({
     contactId,
     fromStage: 'BUYER_UNDER_CONTRACT',
-    toStage: 'BUYER_FINANCIAL_VERIFICATION_REQUIRED',
+    toStage: 'BUYER_CONTACT_CREATED',
     reason: 'financing_failed',
     actorId,
     actorRole: 'system',
@@ -197,7 +197,7 @@ export async function handleVerificationExpiration(params: {
   return await emitRollbackEvent({
     contactId,
     fromStage: currentStage,
-    toStage: 'BUYER_FINANCIAL_VERIFICATION_REQUIRED',
+    toStage: 'BUYER_CONTACT_CREATED',
     reason: 'verification_expired',
     actorRole: 'system',
     relockedEducation: ['financial_verification', 'search_setup'],

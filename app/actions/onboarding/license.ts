@@ -364,7 +364,7 @@ export async function submitEOInsurance(
     const { data: licenseRecord } = await supabase
       .from("agent_licenses")
       .select("id, notes")
-      .eq("agent_id", agentId)
+      .eq("agent_id", user.id)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -400,7 +400,7 @@ export async function submitEOInsurance(
 
     if (stepRecord) {
       await supabase.from("agent_step_completions").upsert({
-        agent_id: agentId,
+        agent_id: user.id,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
@@ -604,8 +604,8 @@ export async function markContractSignedManually(
 
     if (stepRecord) {
       await supabase.from("agent_step_completions").upsert({
-        agent_id: agentId,
-        brokerage_id: agent.brokerage_id,
+        agent_id: contract.agent_id,
+        brokerage_id: contract.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
         completed_at: new Date().toISOString(),

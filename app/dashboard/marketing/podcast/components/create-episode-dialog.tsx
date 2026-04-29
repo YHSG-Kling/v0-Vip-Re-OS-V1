@@ -34,9 +34,11 @@ import {
 } from "lucide-react"
 import {
   createPodcastEpisode,
+  generatePodcastEpisodeDescription,
   getVideoScriptsLibrary,
   getVideoProjects,
 } from "@/app/actions/podcast-generation"
+import { listHeygenVoices, type HeyGenVoice } from "@/app/actions/heygen-avatars"
 
 interface Template {
   id: string
@@ -110,6 +112,7 @@ export function CreateEpisodeDialog({
   // Source data
   const [videoScripts, setVideoScripts] = useState<VideoScript[]>([])
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([])
+  const [heygenVoices, setHeygenVoices] = useState<HeyGenVoice[]>([])
 
   // Form state
   const [sourceType, setSourceType] = useState<SourceType>("keywords")
@@ -117,6 +120,7 @@ export function CreateEpisodeDialog({
   const [selectedProjectId, setSelectedProjectId] = useState<string>("")
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
+  const [generatingDesc, setGeneratingDesc] = useState(false)
   const [script, setScript] = useState("")
   const [keywords, setKeywords] = useState<string[]>([])
   const [keywordInput, setKeywordInput] = useState("")
@@ -124,6 +128,22 @@ export function CreateEpisodeDialog({
   const [templateId, setTemplateId] = useState<string>("")
   const [category, setCategory] = useState("general")
   const [selectedChannels, setSelectedChannels] = useState<string[]>([])
+
+  const handleGenerateDescription = async () => {
+    if (!title.trim()) return
+    setGeneratingDesc(true)
+    try {
+      const result = await generatePodcastEpisodeDescription({
+        title: title.trim(),
+        keywords,
+      })
+      if (result.success && result.description) {
+        setDescription(result.description)
+      }
+    } finally {
+      setGeneratingDesc(false)
+    }
+  }
 
   // Load content when dialog opens
   useEffect(() => {
@@ -137,9 +157,10 @@ export function CreateEpisodeDialog({
   async function loadSourceContent() {
     setLoadingContent(true)
     try {
-      const [scriptsResult, projectsResult] = await Promise.all([
+      const [scriptsResult, projectsResult, voicesResult] = await Promise.all([
         getVideoScriptsLibrary(),
         getVideoProjects(),
+        listHeygenVoices(),
       ])
 
       if (scriptsResult.success) {
@@ -147,6 +168,9 @@ export function CreateEpisodeDialog({
       }
       if (projectsResult.success) {
         setVideoProjects(projectsResult.projects || [])
+      }
+      if (voicesResult.success && voicesResult.voices.length > 0) {
+        setHeygenVoices(voicesResult.voices)
       }
     } catch (error) {
       console.error("Failed to load source content:", error)
@@ -467,7 +491,24 @@ export function CreateEpisodeDialog({
               </div>
 
               <div className="flex flex-col gap-2">
-                <Label htmlFor="description">Description</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="description">Description</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleGenerateDescription}
+                    disabled={generatingDesc || !title.trim()}
+                    className="h-7 text-xs gap-1"
+                  >
+                    {generatingDesc ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3 w-3" />
+                    )}
+                    AI Generate
+                  </Button>
+                </div>
                 <Textarea
                   id="description"
                   value={description}
@@ -539,9 +580,11 @@ export function CreateEpisodeDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="default">Default Voice</SelectItem>
-                    <SelectItem value="professional">Professional</SelectItem>
-                    <SelectItem value="friendly">Friendly</SelectItem>
-                    <SelectItem value="authoritative">Authoritative</SelectItem>
+                    {heygenVoices.map((v) => (
+                      <SelectItem key={v.voice_id} value={v.voice_id}>
+                        {v.name}{v.language && v.language !== "en" ? ` (${v.language})` : ""}{v.gender ? ` · ${v.gender}` : ""}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-gray-500">

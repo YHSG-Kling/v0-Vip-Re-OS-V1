@@ -1,1 +1,1 @@
-export { default as TransparencyFeed } from './TransparencyFeed.tsx'
+export { TransparencyFeed } from './TransparencyFeed.tsx'

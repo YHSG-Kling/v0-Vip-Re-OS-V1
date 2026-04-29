@@ -390,26 +390,26 @@ export async function sendNewsletterNow(params: {
   if (!campaign.content) return { success: false, error: "No content to send. Save your draft first." }
   if (campaign.status === "sent") return { success: false, error: "Campaign has already been sent." }
 
-  const compliance = await evaluateOutbound({
-  actorContext: {
-    userId: params.userId,
-    brokerageId: params.brokerageId,
-    role: "agent",
-  },
-  journeyType: "seller",
-  persona: "other",
-  messageType: "email",
-  content: [campaign.subject_line, campaign.content].filter(Boolean).join("\n\n"),
-  contact: {
-    id: "",
-    first_name: "",
-    last_name: "",
-    contact_type: "seller",
-    tcpa_consent: true,
-    isa_reengage_allowed: false,
-    dnc_status: false,
-  },
-})
+  const compliance = await evaluateKernelOutbound({
+    actorContext: {
+      userId: params.userId,
+      brokerageId: params.brokerageId,
+      role: "agent",
+    },
+    journeyType: "seller",
+    persona: "other",
+    messageType: "email",
+    content: [campaign.subject_line, campaign.content].filter(Boolean).join("\n\n"),
+    contact: {
+      id: "",
+      first_name: "",
+      last_name: "",
+      contact_type: "seller",
+      tcpa_consent: true,
+      isa_reengage_allowed: false,
+      dnc_status: false,
+    },
+  })
 
 if (!compliance.allowed) {
   return {
@@ -418,8 +418,8 @@ if (!compliance.allowed) {
     error: "Compliance check failed.",
   }
 }
-  if (!compliance.passed) {
-    return { success: false, blockedReason: compliance.reason, error: "Compliance check failed." }
+  if (!compliance.allowed) {
+    return { success: false, blockedReason: compliance.blockedReason ?? compliance.violations[0], error: "Compliance check failed." }
   }
 
   const { error } = await supabase
@@ -670,12 +670,14 @@ ${input.title ? `Title: ${input.title}` : "Create an engaging title."}
 Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
 
     try {
-      const raw = await generateTextRouted(systemPrompt, userPrompt, {
+      const rawResult = await generateTextRouted({
+        system:      systemPrompt,
+        prompt:      userPrompt,
         brokerageId: ctx.brokerageId,
         feature:     "seo_blog_engine",
         userId:      ctx.userId,
       })
-      const parsed = JSON.parse(raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim())
+      const parsed = JSON.parse(rawResult.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim())
       generatedTitle = parsed.title ?? input.title ?? "Untitled"
       content        = parsed.content ?? ""
       excerpt        = parsed.excerpt ?? ""

@@ -197,7 +197,7 @@ export async function validateAndPersist(
     entityId:    commission.id,
     fromState:   "pending",
     toState:     "calculated",
-    actorUserId: triggeredBy ?? undefined,
+    actorUserId: triggeredBy ?? '',
     actorRole:   "agent",
     eventType:   "commission.calculated",
     metadata:    {
@@ -220,16 +220,16 @@ export async function validateAndPersist(
     cap_status: context.capStatus,
     total_fees: centsToDollars(context.totalFeesCents),
       distributions: distributionRows.map(d => ({
-      distribution_type: d.distribution_type as any,
-      agent_id: d.agent_id,
-      team_id: d.team_id,
-      calculation_type: d.calculation_type,
-      calculation_value: d.calculation_value,
-      calculated_amount: d.calculated_amount,
-      source_of_funds: d.source_of_funds as any,
-      cap_applied: d.cap_applied,
-      cap_status: d.cap_status,
-      rule_id: d.rule_id
-    }))
+      distribution_type: (d as any).distribution_type as any,
+      agent_id: (d as any).agent_id,
+      team_id: (d as any).team_id,
+      calculation_type: (d as any).calculation_type,
+      calculation_value: (d as any).calculation_value,
+      calculated_amount: (d as any).calculated_amount,
+      source_of_funds: (d as any).source_of_funds as any,
+      cap_applied: (d as any).cap_applied,
+      cap_status: (d as any).cap_status,
+      rule_id: (d as any).rule_id,
+    })) as import('../types').DistributionRecord[]
   }
 }

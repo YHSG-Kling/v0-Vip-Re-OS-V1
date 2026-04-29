@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { Upload, Users, Trash2, Plus, FileSpreadsheet } from "lucide-react"
 import type { Campaign, Recipient } from "../mail-dashboard"
 import { addRecipients, removeRecipient } from "@/app/actions/direct-mail"
@@ -352,10 +353,18 @@ export function RecipientsTab({
             </div>
             <div className="grid gap-2">
               <Label htmlFor="address1">Address Line 1</Label>
-              <Input
+              <AddressAutocomplete
                 id="address1"
                 value={newRecipient.addressLine1}
-                onChange={(e) => setNewRecipient({ ...newRecipient, addressLine1: e.target.value })}
+                onChange={v => setNewRecipient({ ...newRecipient, addressLine1: v })}
+                onSelect={a => setNewRecipient(r => ({
+                  ...r,
+                  addressLine1: a.street || r.addressLine1,
+                  city: a.city || r.city,
+                  state: a.state || r.state,
+                  zip: a.zip || r.zip,
+                }))}
+                placeholder="123 Main St"
               />
             </div>
             <div className="grid gap-2">

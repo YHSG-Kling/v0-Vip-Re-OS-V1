@@ -2,68 +2,93 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================================================
 // SERVICE REGISTRY
 // ============================================================================
 
+const SERVICE_DEFAULTS = [
+  {
+    id: "gohighlevel",
+    name: "GoHighLevel",
+    type: "CRM & Communication",
+    description: "SMS, calling, contact sync",
+    config_keys: ["api_key", "location_id"],
+    env_key: "GHL_API_KEY",
+  },
+  {
+    id: "heygen",
+    name: "HeyGen",
+    type: "AI Video Generation",
+    description: "Generate personalized videos with agent avatar",
+    config_keys: ["api_key", "avatar_id"],
+    env_key: "HEYGEN_API_KEY",
+  },
+  {
+    id: "idx_broker",
+    name: "IDX Broker",
+    type: "Property Search",
+    description: "MLS property listings and search",
+    config_keys: ["api_key", "partner_key"],
+    env_key: "IDXBROKER_API_KEY",
+  },
+  {
+    id: "dotloop",
+    name: "Dotloop",
+    type: "Transaction Management",
+    description: "Document storage and e-signatures",
+    config_keys: ["api_key"],
+    env_key: "DOTLOOP_API_KEY",
+  },
+  {
+    id: "peopledatalabs",
+    name: "PeopleDataLabs",
+    type: "Contact Enrichment",
+    description: "Person data enrichment",
+    config_keys: ["api_key"],
+    env_key: "PDL_API_KEY",
+  },
+  {
+    id: "batchdata",
+    name: "BatchData",
+    type: "Property Data",
+    description: "Property records and valuations",
+    config_keys: ["api_key"],
+    env_key: "BATCHDATA_API_KEY",
+  },
+]
+
 export async function getServicesRegistry() {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
 
-  // Return hardcoded service configurations
-  // In production, these could be stored in a services table
-  return {
-    services: [
-      {
-        id: "gohighlevel",
-        name: "GoHighLevel",
-        type: "CRM & Communication",
-        status: process.env.GHL_API_KEY ? "connected" : "not_configured",
-        description: "SMS, calling, contact sync",
-        config_keys: ["api_key", "location_id"],
-      },
-      {
-        id: "heygen",
-        name: "HeyGen",
-        type: "AI Video Generation",
-        status: process.env.HEYGEN_API_KEY ? "connected" : "not_configured",
-        description: "Generate personalized videos with agent avatar",
-        config_keys: ["api_key", "avatar_id"],
-      },
-      {
-        id: "idx_broker",
-        name: "IDX Broker",
-        type: "Property Search",
-        status: process.env.IDXBROKER_API_KEY ? "connected" : "not_configured",
-        description: "MLS property listings and search",
-        config_keys: ["api_key", "partner_key"],
-      },
-      {
-        id: "dotloop",
-        name: "Dotloop",
-        type: "Transaction Management",
-        status: process.env.DOTLOOP_API_KEY ? "connected" : "not_configured",
-        description: "Document storage and e-signatures",
-        config_keys: ["api_key"],
-      },
-      {
-        id: "peopledatalabs",
-        name: "PeopleDataLabs",
-        type: "Contact Enrichment",
-        status: process.env.PDL_API_KEY ? "connected" : "not_configured",
-        description: "Person data enrichment",
-        config_keys: ["api_key"],
-      },
-      {
-        id: "batchdata",
-        name: "BatchData",
-        type: "Property Data",
-        status: process.env.BATCHDATA_API_KEY ? "connected" : "not_configured",
-        description: "Property records and valuations",
-        config_keys: ["api_key"],
-      },
-    ],
-  }
+  // Query brokerage_integrations for any registered integrations
+  const { data: dbIntegrations } = brokerageId
+    ? await supabase
+        .from("brokerage_integrations")
+        .select("provider_name, provider_type, status, last_health_check_at, last_error, metadata")
+        .eq("brokerage_id", brokerageId)
+    : { data: [] }
+
+  // Merge DB status with hardcoded defaults
+  const services = SERVICE_DEFAULTS.map((svc) => {
+    const dbRecord = (dbIntegrations ?? []).find(
+      (r: any) => r.provider_name?.toLowerCase() === svc.name.toLowerCase()
+    )
+    return {
+      id: svc.id,
+      name: svc.name,
+      type: svc.type,
+      description: svc.description,
+      config_keys: svc.config_keys,
+      status: dbRecord?.status ?? (process.env[svc.env_key] ? "connected" : "not_configured"),
+      last_checked_at: dbRecord?.last_health_check_at ?? null,
+      last_error: dbRecord?.last_error ?? null,
+    }
+  })
+
+  return { services }
 }
 
 // ============================================================================

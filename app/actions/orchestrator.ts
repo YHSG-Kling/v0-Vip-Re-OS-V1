@@ -1,11 +1,12 @@
 
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
+import type { Event, EventInput } from "@/lib/orchestrator"
+import { EVENT_TYPES } from "@/lib/orchestrator"
 
 import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
 import { sendNotificationToAgent } from "./communications"
 import { supabaseService } from "@/services/supabaseService"
-import { registerEventDispatcher } from "@/lib/events"
 
 // =====================================================
 // EVENT TYPES - Standardized event type constants
@@ -68,11 +69,16 @@ const EVENT_HANDLERS = {
 // =====================================================
 
 export async function orchestrateEventById(eventId: string) {
+  const supabase = await createServerClient()
   try {
-    const events = await supabaseService.getRecordsByField("events", "id", eventId)
-    const event = events?.[0]
+    // Query lifecycle_events — the actual table in the DB
+    const { data: event, error: fetchError } = await supabase
+      .from("lifecycle_events")
+      .select("id, brokerage_id, actor_user_id, event_type, metadata, processed")
+      .eq("id", eventId)
+      .maybeSingle()
 
-    if (!event) {
+    if (fetchError || !event) {
       return { success: false, error: "Event not found" }
     }
 
@@ -82,31 +88,46 @@ export async function orchestrateEventById(eventId: string) {
 
     const handlerLoader = EVENT_HANDLERS[event.event_type as keyof typeof EVENT_HANDLERS]
     if (!handlerLoader) {
-      await supabaseService.updateRecord("events", eventId, {
-        processed: true,
-        processed_at: new Date().toISOString(),
-        error: "No handler registered",
-      })
+      await supabase
+        .from("lifecycle_events")
+        .update({ processed: true, processed_at: new Date().toISOString(), error: "No handler registered" })
+        .eq("id", eventId)
       return { success: false, error: "No handler registered" }
     }
 
-    const handler = await handlerLoader()
-    const result = await handler(event.payload)
+    // Reconstruct the Event shape that handlers expect, mapping schema columns back
+    const eventAsEvent: Event = {
+      id:           event.id,
+      brokerage_id: event.brokerage_id,
+      user_id:      event.actor_user_id ?? undefined,
+      event_type:   event.event_type,
+      payload:      (event.metadata as Record<string, any>) ?? {},
+      source:       "system",
+      created_at:   new Date().toISOString(),
+    }
 
-    await supabaseService.updateRecord("events", eventId, {
-      processed: true,
-      processed_at: new Date().toISOString(),
-      error: result.success ? null : result.error || null,
-    })
+    const handler = await handlerLoader()
+    const result = await (handler as (agentId: string, payload: Record<string, any>) => Promise<any>)(
+      event.actor_user_id ?? event.brokerage_id,
+      eventAsEvent.payload,
+    )
+
+    await supabase
+      .from("lifecycle_events")
+      .update({
+        processed:    true,
+        processed_at: new Date().toISOString(),
+        error:        result?.success ? null : result?.error || null,
+      })
+      .eq("id", eventId)
 
     return result
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
-    await supabaseService.updateRecord("events", eventId, {
-      processed: true,
-      processed_at: new Date().toISOString(),
-      error: errorMessage,
-    })
+    await supabase
+      .from("lifecycle_events")
+      .update({ processed: true, processed_at: new Date().toISOString(), error: errorMessage })
+      .eq("id", eventId)
     return { success: false, error: errorMessage }
   }
 }
@@ -119,30 +140,45 @@ export async function emitEvent(input: EventInput, processImmediately = false): 
   try {
     const supabase = await createServerClient()
     
-    // Check for duplicate events using dedupe_key
-    if (input.dedupe_key) {
+    // Check for duplicate events using dedupe_key (scoped to brokerage)
+    if (input.dedupe_key && input.brokerage_id) {
       const { data: existing } = await supabase
         .from("lifecycle_events")
         .select("id")
         .eq("dedupe_key", input.dedupe_key)
-        .single()
+        .eq("brokerage_id", input.brokerage_id)
+        .maybeSingle()
       
       if (existing) {
         return { success: true, eventId: existing.id } // Already exists, skip
       }
     }
     
-    // Insert the event
+    // Guard: brokerage_id is always required (kernel RLS invariant)
+    if (!input.brokerage_id) {
+      console.error("[v0] emitEvent: brokerage_id missing for event", input.event_type)
+      return { success: false, error: "brokerage_id is required" }
+    }
+
+    // Insert the event — map to actual lifecycle_events schema
     const { data: event, error } = await supabase
       .from("lifecycle_events")
       .insert({
-        brokerage_id: input.brokerage_id,
-        user_id: input.user_id,
-        event_type: input.event_type,
-        payload: input.payload,
-        source: input.source,
-        dedupe_key: input.dedupe_key,
-        processed: false,
+        brokerage_id:  input.brokerage_id,
+        actor_user_id: input.user_id ?? null,   // lifecycle_events uses actor_user_id
+        event_type:    input.event_type,
+        metadata:      input.payload,            // lifecycle_events uses metadata not payload
+        source:        input.source,
+        dedupe_key:    input.dedupe_key ?? null,
+        processed:     false,
+        entity_id:   (input.payload as any)?.contact_id
+                      ?? (input.payload as any)?.listing_id
+                      ?? (input.payload as any)?.video_id
+                      ?? null,
+        entity_type: (input.payload as any)?.contact_id  ? "contact"
+                    : (input.payload as any)?.listing_id ? "listing"
+                    : (input.payload as any)?.video_id   ? "video"
+                    : "system",
       })
       .select()
       .single()
@@ -551,17 +587,32 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
 async function markEventProcessed(eventId: string): Promise<void> {
   const supabase = await createServerClient()
 
-  await supabase.from("lifecycle_events").update({ processed_at: new Date().toISOString() }).eq("id", eventId)
+  // Update both processed flag and processed_at timestamp on lifecycle_events
+  await supabase
+    .from("lifecycle_events")
+    .update({ processed: true, processed_at: new Date().toISOString() })
+    .eq("id", eventId)
 }
 
 async function logProcessingResults(eventId: string, results: ProcessingResult[]): Promise<void> {
   const supabase = await createServerClient()
 
+  // Fetch the event's brokerage_id so we can insert it into the processing log
+  // (kernel invariant: every row that has a brokerage_id FK must carry it)
+  const { data: ev } = await supabase
+    .from("lifecycle_events")
+    .select("brokerage_id")
+    .eq("id", eventId)
+    .maybeSingle()
+
+  const brokerageId = ev?.brokerage_id ?? null
+
   const logs = results.map((result) => ({
-    event_id: eventId,
-    handler: result.handler,
-    status: result.success ? "success" : "failure",
-    error_message: result.error || null,
+    event_id:           eventId,
+    brokerage_id:       brokerageId,
+    handler:            result.handler,
+    status:             result.success ? "success" : "failure",
+    error_message:      result.error || null,
     processing_time_ms: result.processing_time_ms,
   }))
 

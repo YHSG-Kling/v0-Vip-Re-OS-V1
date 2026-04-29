@@ -163,7 +163,7 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
   function handleRetry(err: AutomationError) {
     startTransition(async () => {
       show("Retrying...")
-      const result = await retryFailedWorkflow(err.id, err.workflow_name, err.context_json ?? "{}")
+      const result = await retryFailedWorkflow(err.id, err.workflow_name)
       if (result.success) {
         show("Retry succeeded — error resolved")
         setErrors((prev) => prev.map((e) => e.id === err.id ? { ...e, status: "resolved" } : e))

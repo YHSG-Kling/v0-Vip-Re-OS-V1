@@ -397,7 +397,7 @@ export default async function UsageMeteringDashboard() {
           <Tabs defaultValue="by-type" className="space-y-4">
             <TabsList>
               <TabsTrigger value="by-type">By Type</TabsTrigger>
-              <TabsTrigger value="agents">Agents</TabsTrigger>
+              <TabsTrigger value="by-agent">Agents</TabsTrigger>
               <TabsTrigger value="by-team">Teams</TabsTrigger>
               <TabsTrigger value="by-feature">By Feature</TabsTrigger>
               <TabsTrigger value="by-brokerage">By Brokerage</TabsTrigger>
@@ -547,37 +547,43 @@ export default async function UsageMeteringDashboard() {
                   Costs are calculated based on token usage and model pricing. Model breakdowns show which AI models are being used most frequently across your organization.
                 </p>
               </div>
-
-                {/* Feature Usage Tracking */}
-                <div>
-                  <h4 className="font-medium mb-3">Feature Usage</h4>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Feature</TableHead>
-                        <TableHead className="text-right">Usage</TableHead>
-                        <TableHead className="text-right">Status</TableHead>
+              {/* Feature Usage Tracking */}
+              <div className="mt-6">
+                <h4 className="font-medium mb-3">Feature Usage</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Feature</TableHead>
+                      <TableHead className="text-right">Usage</TableHead>
+                      <TableHead className="text-right">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {featureUsage.slice(0, 10).map((f: any) => (
+                      <TableRow key={f.feature_key}>
+                        <TableCell className="font-medium">{f.feature_key}</TableCell>
+                        <TableCell className="text-right">
+                          {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {f.exceeded ? (
+                            <Badge variant="destructive">Exceeded</Badge>
+                          ) : (
+                            <Badge variant="secondary">OK</Badge>
+                          )}
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {featureUsage.slice(0, 10).map((f: any) => (
-                        <TableRow key={f.feature_key}>
-                          <TableCell className="font-medium">{f.feature_key}</TableCell>
-                          <TableCell className="text-right">
-                            {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {f.exceeded ? (
-                              <Badge variant="destructive">Exceeded</Badge>
-                            ) : (
-                              <Badge variant="secondary">OK</Badge>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                    {featureUsage.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
+                          No feature usage data available
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </TabsContent>
 
             <TabsContent value="by-brokerage">

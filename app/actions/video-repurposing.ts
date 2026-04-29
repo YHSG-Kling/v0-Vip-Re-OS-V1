@@ -176,15 +176,30 @@ export async function createVideoSnippet(data: {
 }) {
   const supabase = await createClient()
 
+  // Normalize and validate platform_target
+  const ALLOWED_PLATFORMS = Object.keys(PLATFORM_CONFIGS) as PlatformTarget[]
+  const normalizedPlatform = (data.platformTarget as string)
+    .toLowerCase()
+    .replace(/\s+/g, "_") as PlatformTarget
+
+  if (!ALLOWED_PLATFORMS.includes(normalizedPlatform)) {
+    throw new Error(`Invalid platform "${data.platformTarget}". Must be one of: ${ALLOWED_PLATFORMS.join(", ")}`)
+  }
+
+  // Validate start/end seconds (DB enforces end_seconds > start_seconds)
+  if (data.endSeconds <= data.startSeconds) {
+    throw new Error(`End time (${data.endSeconds}s) must be greater than start time (${data.startSeconds}s).`)
+  }
+
   // Auto-determine aspect ratio if not provided
-  const aspectRatio = data.aspectRatio || PLATFORM_CONFIGS[data.platformTarget].aspectRatio
+  const aspectRatio = data.aspectRatio || PLATFORM_CONFIGS[normalizedPlatform].aspectRatio
 
   // Validate duration against platform limits
   const duration = data.endSeconds - data.startSeconds
-  const maxDuration = PLATFORM_CONFIGS[data.platformTarget].maxDuration
-  
+  const maxDuration = PLATFORM_CONFIGS[normalizedPlatform].maxDuration
+
   if (duration > maxDuration) {
-    throw new Error(`Snippet duration (${duration}s) exceeds ${data.platformTarget} limit of ${maxDuration}s`)
+    throw new Error(`Snippet duration (${duration}s) exceeds ${normalizedPlatform} limit of ${maxDuration}s`)
   }
 
   const { data: snippet, error } = await supabase
@@ -197,20 +212,23 @@ export async function createVideoSnippet(data: {
       start_seconds: data.startSeconds,
       end_seconds: data.endSeconds,
       aspect_ratio: aspectRatio,
-      platform_target: data.platformTarget,
+      platform_target: normalizedPlatform,
       caption_text: data.captionText ?? null,
       hashtags: data.hashtags ?? null,
       thumbnail_url: data.thumbnailUrl ?? null,
       approval_status: "pending",
       created_by: data.createdBy ?? null,
-      compliance_approved: false,
     })
     .select()
     .single()
 
   if (error) {
-    console.error("[video-repurposing] Error creating snippet:", error)
-    throw error
+    console.error("Snippet creation error:", error)
+    const message =
+      error.code === "23514"
+        ? `Database constraint violation: the value provided for one or more fields is not allowed. Check platform, start/end times, and aspect ratio.`
+        : error.message || "Failed to create snippet."
+    throw new Error(message)
   }
 
   // Write lifecycle event
@@ -221,7 +239,7 @@ export async function createVideoSnippet(data: {
     event_type: KernelEvent.SNIPPET_CREATED,
     actor_user_id: data.createdBy ?? null,
     metadata: {
-      platform_target: data.platformTarget,
+      platform_target: normalizedPlatform,
       duration: duration,
       source_project_id: data.videoProjectId,
     },
@@ -616,7 +634,7 @@ export async function scheduleSnippetToSocial(params: {
       social_account_id: params.socialAccountId,
       status: "scheduled",
       approval_status: snippet.approval_status === "approved" ? "approved" : "pending",
-      compliance_approved: false,
+      brand_compliance_passed: false,
     })
     .select()
     .single()

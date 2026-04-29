@@ -127,6 +127,7 @@ export function PropertyDetailsView({
       const result = await saveProperty({
         contactId,
         propertyId,
+        propertyAddress: `${property.address}, ${property.city}, ${property.state}`,
         propertyData: property,
       })
       if (result.success) {
@@ -150,14 +151,15 @@ export function PropertyDetailsView({
     }
 
     startTransition(async () => {
-      const result = await requestShowing({
+      const result = await requestShowing(
         contactId,
         propertyId,
-        propertyAddress: `${property.address}, ${property.city}, ${property.state}`,
-        preferredDates: [selectedDate.toISOString()],
-        notes: showingNotes,
-      })
-      if (result.success) {
+        `${property.address}, ${property.city}, ${property.state}`,
+        property,
+        [{ date: selectedDate.toISOString(), time: "" }],
+        showingNotes,
+      )
+      if (!result.error) {
         toast({
           title: "Showing Requested",
           description: "We'll confirm your appointment soon!",

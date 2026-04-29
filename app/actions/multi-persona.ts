@@ -513,22 +513,18 @@ export async function createWorkflowAutomation(data: {
 }) {
   const supabase = await createClient()
 
-  // workflow_automations does not exist — use workflow_executions as a log
-  // and store config in context jsonb
   const { data: workflow, error } = await supabase
-    .from("workflow_executions")
+    .from("workflow_automations")
     .insert({
       brokerage_id: data.brokerageId,
       workflow_name: data.workflowName,
-      status: "pending",
-      context: {
-        workflow_type: data.workflowType,
-        trigger_event: data.triggerEvent,
-        trigger_conditions: data.triggerConditions,
-        actions: data.actions,
-        assigned_to_role: data.assignedToRole,
-        created_by: data.createdBy,
-      },
+      workflow_type: data.workflowType,
+      trigger_event: data.triggerEvent,
+      trigger_conditions: data.triggerConditions,
+      actions: data.actions,
+      assigned_to_role: data.assignedToRole,
+      created_by: data.createdBy,
+      is_active: true,
     })
     .select()
     .single()
@@ -1132,18 +1128,35 @@ export async function getReferralPartnerStats(partnerId: string) {
 // TRANSACTION COORDINATOR ANALYTICS
 // ============================================
 
-export async function predictDeadlineRisks(coordinatorId: string) {
+export async function predictDeadlineRisks(
+  coordinatorId: string,
+  scopedTransactionIds?: string[]
+) {
   const supabase = await createClient()
 
-  const { data: transactions } = await supabase
+  // When the caller already has the canonical list of transaction IDs (e.g.
+  // fetched via transaction_assignments), restrict the query to that set so
+  // the risk results stay in sync with what the dashboard displays.
+  let query = supabase
     .from("transactions")
     .select(`
       *,
       transaction_milestones(*),
       transaction_deadlines(*)
     `)
-    .eq("coordinator_id", coordinatorId)
     .not("status", "in", "(closed,lost)")
+
+  if (scopedTransactionIds !== undefined) {
+    // Explicit scope provided — use it; empty array means no transactions in scope
+    if (scopedTransactionIds.length === 0) {
+      return { atRiskTransactions: [], atRiskCount: 0 }
+    }
+    query = query.in("id", scopedTransactionIds)
+  } else {
+    query = query.eq("coordinator_id", coordinatorId)
+  }
+
+  const { data: transactions } = await query
 
   const atRisk = transactions?.filter((t) => {
     const daysToClosing = t.close_date

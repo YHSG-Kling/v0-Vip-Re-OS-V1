@@ -601,7 +601,7 @@ export async function generateCampaignROIReport(
     if (roiErr) throw roiErr
 
     const campaigns = (roiRows ?? []).map(row => {
-      const mc = (row.marketing_campaigns as Record<string, unknown> | null) ?? {}
+      const mc = (row.marketing_campaigns as unknown as Record<string, unknown> | null) ?? {}
       const spend    = row.total_spend     ?? 0
       const leads    = row.total_leads     ?? 0
       const budSpent = (mc.budget_spent as number | null) ?? 0

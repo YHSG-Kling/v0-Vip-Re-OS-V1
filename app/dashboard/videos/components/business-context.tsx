@@ -435,10 +435,21 @@ export function VideoContextPicker({
 
 // ─── RepurposeDestinationsCard ────────────────────────────────────────────────
 
+// Maps social_accounts.platform values to RepurposeDestination IDs
+// Non-social destinations (email, portal, sms) are always available
+const ALWAYS_CONNECTED: RepurposeDestination[] = ["email", "portal", "sms"]
+const PLATFORM_TO_DESTINATION: Record<string, RepurposeDestination> = {
+  instagram: "instagram_reels",
+  tiktok: "tiktok",
+  facebook: "facebook",
+  linkedin: "linkedin",
+}
+
 interface RepurposeDestinationsCardProps {
   purpose: VideoPurpose
   selectedDestinations: RepurposeDestination[]
   onToggleDestination: (dest: RepurposeDestination) => void
+  connectedPlatforms?: string[]
   listingId?: string
   contactId?: string
 }
@@ -447,7 +458,16 @@ export function RepurposeDestinationsCard({
   purpose,
   selectedDestinations,
   onToggleDestination,
+  connectedPlatforms = [],
 }: RepurposeDestinationsCardProps) {
+  // Build a set of destinations that have an active social account
+  const connectedDestinations = new Set<RepurposeDestination>([
+    ...ALWAYS_CONNECTED,
+    ...connectedPlatforms
+      .map((p) => PLATFORM_TO_DESTINATION[p])
+      .filter((d): d is RepurposeDestination => !!d),
+  ])
+
   return (
     <div className="space-y-3">
       <div>
@@ -459,20 +479,29 @@ export function RepurposeDestinationsCard({
       <div className="flex flex-wrap gap-2">
         {REPURPOSE_DESTINATIONS.map((dest) => {
           const selected = selectedDestinations.includes(dest.id)
+          const isConnected = connectedDestinations.has(dest.id)
           return (
             <button
               key={dest.id}
               type="button"
               onClick={() => onToggleDestination(dest.id)}
+              title={!isConnected ? `Connect ${dest.label} in Profile Settings to publish here` : undefined}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-all",
+                "flex flex-col items-start px-3 py-1.5 rounded-full border text-sm transition-all",
                 selected
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border hover:border-primary/50"
+                  : isConnected
+                    ? "border-border hover:border-primary/50"
+                    : "border-dashed border-border text-muted-foreground hover:border-primary/40"
               )}
             >
-              {selected && <CheckCircle2 className="h-3 w-3" />}
-              {dest.label}
+              <span className="flex items-center gap-1.5">
+                {selected && <CheckCircle2 className="h-3 w-3" />}
+                {dest.label}
+              </span>
+              {!isConnected && (
+                <span className="text-[10px] leading-none mt-0.5 opacity-70">Not connected</span>
+              )}
             </button>
           )
         })}

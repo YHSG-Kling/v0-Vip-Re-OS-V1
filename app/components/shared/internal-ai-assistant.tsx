@@ -545,10 +545,20 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
 
   const [sessionIdForTransport, setSessionIdForTransport] = useState<string | null>(null)
+  // Stable ref so the fetch wrapper never captures a stale setSessionId
+  const setSessionIdRef = useRef(setSessionId)
+  useEffect(() => { setSessionIdRef.current = setSessionId }, [setSessionId])
+
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/internal/ai-chat",
       headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+      fetch: async (url, options) => {
+        const response = await fetch(url, options as RequestInit)
+        const newId = response.headers.get("x-session-id")
+        if (newId) setSessionIdRef.current(newId)
+        return response
+      },
     }),
   })
 
@@ -616,8 +626,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Start single-command voice capture
   const startVoiceCapture = useCallback(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) { alert("Voice recognition not supported in this browser."); return }
 
     if (recognitionRef.current) {
@@ -647,8 +657,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Background wake-word detection — runs whenever component is mounted
   useEffect(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) return
 
     let active = true
@@ -662,8 +672,13 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
       wakeRecognitionRef.current = wr
       setWakeListening(true)
 
+      // Guard: onresult and onerror each schedule a restart; onend must NOT also
+      // schedule one, or we get exponential growth of SpeechRecognition instances.
+      let restartScheduled = false
+
       wr.onresult = (e: SpeechRecognitionEvent) => {
         const heard = Array.from(e.results).map((r) => r[0].transcript).join(" ").toLowerCase()
+        restartScheduled = true
         if (heard.includes(resolvedWakeWord)) {
           // Wake word detected — start command capture immediately
           setTimeout(() => { if (active) startVoiceCapture() }, 300)
@@ -672,10 +687,16 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
           setTimeout(() => { if (active) startWakeDetection() }, 500)
         }
       }
-      wr.onerror = () => { setTimeout(() => { if (active) startWakeDetection() }, 1500) }
+      wr.onerror = () => {
+        restartScheduled = true
+        setTimeout(() => { if (active) startWakeDetection() }, 1500)
+      }
       wr.onend = () => {
         setWakeListening(false)
-        setTimeout(() => { if (active) startWakeDetection() }, 500)
+        // Only restart from onend when onresult/onerror hasn't already scheduled one
+        if (!restartScheduled) {
+          setTimeout(() => { if (active) startWakeDetection() }, 500)
+        }
       }
 
       try { wr.start() } catch { /* already running */ }
@@ -1041,9 +1062,9 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
                   const isUser = msg.role === "user"
 
                   // Tool invocation parts from this message
-                  const toolParts = (msg.parts ?? []).filter(
+                  const toolParts = ((msg.parts ?? []).filter(
                     (p: { type: string }) => p.type === "tool-invocation"
-                  ) as Array<{
+                  ) as unknown) as Array<{
                     type: "tool-invocation"
                     toolInvocation: {
                       toolCallId: string

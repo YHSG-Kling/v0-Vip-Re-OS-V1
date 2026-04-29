@@ -36,7 +36,8 @@ export async function POST(request: NextRequest) {
       case "invoice.paid": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
+        const invoiceAny = invoice as any
+        const subscriptionId = typeof invoiceAny.subscription === 'string' ? invoiceAny.subscription : invoiceAny.subscription?.id
 
         // Get brokerage_id from subscription metadata
         let brokerageId: string | null = null
@@ -75,7 +76,8 @@ export async function POST(request: NextRequest) {
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
+        const invoiceAny2 = invoice as any
+        const subscriptionId = typeof invoiceAny2.subscription === 'string' ? invoiceAny2.subscription : invoiceAny2.subscription?.id
 
         // Get brokerage_id from subscription metadata
         let brokerageId: string | null = null
@@ -131,6 +133,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Update subscription record
+        const subscriptionAny = subscription as any
         const { error } = await supabase
           .from("subscriptions")
           .upsert({
@@ -139,8 +142,8 @@ export async function POST(request: NextRequest) {
             brokerage_id: brokerageId,
             tier_id: tierId || null,
             status: subscription.status,
-            current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-            current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+            current_period_start: new Date(subscriptionAny.current_period_start * 1000).toISOString(),
+            current_period_end: new Date(subscriptionAny.current_period_end * 1000).toISOString(),
             trial_end: subscription.trial_end 
               ? new Date(subscription.trial_end * 1000).toISOString() 
               : null,

@@ -44,15 +44,15 @@ export function TitlePipelinePanel({ brokerageId }: TitlePipelinePanelProps) {
         .order("created_at", { ascending: false })
         .limit(20)
 
-      const pendingTitleOrders = titleOrders?.filter(o => 
+      const pendingTitleOrders = titleOrders?.filter((o: any) =>
         o.status === "pending" || o.status === "ordered" || o.status === "in_progress"
       ).length || 0
-      
-      const titleClears = titleOrders?.filter(o => o.status === "clear" || o.status === "completed").length || 0
-      const titleIssues = titleOrders?.filter(o => o.status === "issue" || o.status === "exception").length || 0
+
+      const titleClears = titleOrders?.filter((o: any) => o.status === "clear" || o.status === "completed").length || 0
+      const titleIssues = titleOrders?.filter((o: any) => o.status === "issue" || o.status === "exception").length || 0
 
       // Recent orders
-      const recentOrders = (titleOrders || []).slice(0, 5).map(order => ({
+      const recentOrders = (titleOrders || []).slice(0, 5).map((order: any) => ({
         id: order.id,
         propertyAddress: order.property_address || "Unknown Property",
         status: order.status,

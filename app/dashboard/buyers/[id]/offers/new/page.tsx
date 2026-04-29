@@ -1,7 +1,8 @@
-import { redirect }          from "next/navigation"
-import { createClient }       from "@/lib/supabase/server"
-import { startOfferDraft }    from "@/app/actions/buyer-offers"
-import { NewOfferPageClient } from "./new-offer-page-client"
+import { redirect }                from "next/navigation"
+import { createClient }           from "@/lib/supabase/server"
+import { startOfferDraft }        from "@/app/actions/buyer-offers"
+import { canBuyerSubmitOffers }   from "@/app/actions/buyer-lifecycle-core"
+import { NewOfferPageClient }     from "./new-offer-page-client"
 
 interface Props {
   params:      Promise<{ id: string }>
@@ -50,6 +51,12 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
     .single()
 
   if (!contact) redirect(`/dashboard/buyers`)
+
+  // Server-side gate: reject direct URL navigation for locked buyers
+  const offerGate = await canBuyerSubmitOffers(contactId)
+  if (!offerGate.allowed) {
+    redirect(`/dashboard/buyers/${contactId}/offers`)
+  }
 
   // Emit kernel event: buyer.offer.draft_started
   await startOfferDraft({

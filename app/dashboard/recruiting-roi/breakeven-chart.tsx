@@ -26,7 +26,7 @@ export function BreakEvenChart({ data }: Props) {
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="cohort" fontSize={12} />
         <YAxis label={{ value: "Months", angle: -90, position: "insideLeft" }} />
-        <Tooltip formatter={(value) => `${value.toFixed(1)} months`} />
+        <Tooltip formatter={((value: number) => `${value.toFixed(1)} months`) as any} />
         <Legend />
         <ReferenceLine 
           y={data.avg_breakeven_months} 

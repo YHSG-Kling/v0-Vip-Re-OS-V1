@@ -11,7 +11,7 @@ import {
   ReferralAiDraftingPanel,
   RepeatBusinessPanel,
 } from "@/app/dashboard/referrals/components/os"
-import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referral-management"
+import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 interface Referral {
@@ -89,7 +89,7 @@ export function ReferralsOsClient({
   }
 
   const handleUpdateStatus = async (referralId: string, status: string) => {
-    await updateReferralStatus(referralId, status)
+    await updateReferralStatus(referralId, status as any)
     router.refresh()
   }
 

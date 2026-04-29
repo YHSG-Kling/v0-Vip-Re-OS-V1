@@ -38,6 +38,7 @@ import {
   PresentationIcon,
   Sparkles,
   Filter,
+  Share2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -238,6 +239,54 @@ function VideoLibraryContent() {
       console.error("Error creating variation:", error)
     } finally {
       setCreatingVariation(false)
+    }
+  }
+
+  // ─── Distribute Script ─────────────────────────────────────────────────────
+
+  async function handleDistribute(script: VideoScript) {
+    const { toast } = await import("sonner")
+
+    // Look up the ai_video_projects record linked to this script-library entry
+    const { data: project, error: projectError } = await supabase
+      .from("ai_video_projects")
+      .select("id")
+      .eq("source_type", "script_library")
+      .eq("source_id", script.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      toast.error("No video project found for this script. Generate a video first.")
+      return
+    }
+
+    const { distributeVideoProjectAction } = await import("@/app/actions/video")
+    const result = await distributeVideoProjectAction({
+      projectId: project.id,
+      channels: ["youtube", "linkedin"],
+      title: script.title,
+      description: script.script_content.slice(0, 200),
+    })
+
+    if (!result.success) {
+      toast.error(result.error ?? "Distribution failed")
+      return
+    }
+
+    const distributions = result.data?.distributions ?? []
+    const failed = distributions.filter(d => d.status === "failed")
+    const succeeded = distributions.filter(d => d.status !== "failed")
+
+    if (failed.length === 0) {
+      toast.success("Video queued for distribution")
+    } else if (succeeded.length === 0) {
+      toast.error(`Distribution failed on all channels: ${failed.map(d => d.channel).join(", ")}`)
+    } else {
+      toast.warning(
+        `Partial distribution: ${succeeded.length} succeeded, ${failed.length} failed (${failed.map(d => `${d.channel}: ${d.error ?? "error"}`).join("; ")})`
+      )
     }
   }
 
@@ -465,6 +514,12 @@ function VideoLibraryContent() {
                             <Copy className="h-4 w-4 mr-2" />
                             Copy Script
                           </DropdownMenuItem>
+                          {script.approval_status === "approved" && (
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                              <Share2 className="h-4 w-4 mr-2" />
+                              Distribute
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-red-600"
@@ -570,6 +625,12 @@ function VideoLibraryContent() {
                           <Copy className="h-4 w-4 mr-2" />
                           Copy Script
                         </DropdownMenuItem>
+                        {script.approval_status === "approved" && (
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                            <Share2 className="h-4 w-4 mr-2" />
+                            Distribute
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-red-600"

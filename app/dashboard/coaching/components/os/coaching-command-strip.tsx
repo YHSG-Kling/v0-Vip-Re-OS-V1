@@ -16,8 +16,10 @@ interface CoachingOpportunity {
 }
 
 interface CoachingCommandStripProps {
-  opportunity: CoachingOpportunity | null
+  opportunity?: CoachingOpportunity | null
   isLoading?: boolean
+  agentId?: string
+  brokerageId?: string
 }
 
 const urgencyConfig = {
@@ -27,7 +29,7 @@ const urgencyConfig = {
   low: { bg: "bg-green-50 border-green-200", text: "text-green-700", badge: "bg-green-100 text-green-700" },
 }
 
-export function CoachingCommandStrip({ opportunity, isLoading }: CoachingCommandStripProps) {
+export function CoachingCommandStrip({ opportunity = null, isLoading }: CoachingCommandStripProps) {
   if (isLoading) {
     return (
       <Card className="border-2 border-dashed border-muted">

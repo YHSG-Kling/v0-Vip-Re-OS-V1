@@ -182,7 +182,7 @@ export async function qualifyLead(leadId: string) {
       description: `Lifecycle moved to isa_qualifying`,
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -230,7 +230,7 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       assignment_method: "manual",
       claimed: false,
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     await supabase.from("activities").insert({
       activity_type: "lead_assigned",
@@ -242,7 +242,7 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       description: `Agent ID: ${agentId}`,
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -327,7 +327,7 @@ export async function convertLeadToContact(params: { leadId: string; agentId?: s
       description: `Contact ID: ${contact.id}`,
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true, contactId: contact.id }
   } catch (err: any) {
@@ -362,7 +362,7 @@ export async function pauseAIISA(leadId: string) {
       title: "AI-ISA outreach paused",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -395,7 +395,7 @@ export async function resumeAIISA(leadId: string) {
       title: "AI-ISA outreach resumed",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -451,7 +451,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       handoff_status: "completed",
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     await supabase.from("activities").insert({
       activity_type: "ai_isa_handoff",
@@ -463,7 +463,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {

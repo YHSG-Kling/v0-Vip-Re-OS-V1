@@ -83,7 +83,7 @@ export function getAgentColor(agentType: AgentType): string {
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
-  return AGENT_REGISTRY[agentType]?.name || agentType
+  return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
 }
 
 export const VALID_AGENT_TYPES = ['isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'human'] as const

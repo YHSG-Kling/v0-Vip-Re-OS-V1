@@ -46,7 +46,7 @@ export function ProviderIntelligencePanel() {
       .select("id, provider_type, provider_name, status")
       .order("provider_type")
       .limit(12)
-      .then(({ data }) => {
+      .then(({ data }: any) => {
         if (!data) {
           setProviders([])
           setLoading(false)

@@ -36,7 +36,7 @@ import {
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { aiCounterOfferStrategy } from "@/app/actions/ai-offer-creation"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
-import { DecisionHistoryPanel } from "./components/decision-history-panel"
+import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
 
@@ -161,7 +161,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         agentUserId: currentUserId,
       })
       if (result.success && result.result) {
-        setAiResult(result.result as Record<string, unknown>)
+        setAiResult(result.result as unknown as Record<string, unknown>)
         toast({ title: "AI comparison generated" })
       } else {
         toast({ title: "AI comparison failed", description: result.error, variant: "destructive" })
@@ -340,7 +340,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     if (result.success) {
       setRepairsAdvisor(result)
     } else {
-      setRepairsAdvisorError(result.error ?? "Repairs advisor failed.")
+      setRepairsAdvisorError((result as any).error ?? "Repairs advisor failed.")
     }
     setRepairsAdvisorLoading(false)
   }
@@ -454,6 +454,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     listPrice={listing.list_price ?? 0}
                     canApprove={canApprove}
                     isPending={isPending}
+                    userId={currentUserId}
                     onAccept={() => handleAcceptGate(offer.id)}
                     onReject={() => handleReject(offer.id)}
                     onCounter={() => setCounterTarget(offer)}

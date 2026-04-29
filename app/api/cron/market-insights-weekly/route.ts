@@ -117,7 +117,7 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     console.error("[WeeklyInsights] Cron error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json({ error: "Weekly insights generation failed", context_id: contextId }, { status: 500 })
   }
 }

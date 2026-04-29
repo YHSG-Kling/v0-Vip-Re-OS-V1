@@ -722,32 +722,40 @@ export async function generateSocialPost(params: {
     
     // Apply brand voice to ensure consistency
     const brandVoiceResult = await applyBrandVoice({
-      brokerageId: agentContext.brokerageId,
-      teamId: agentContext.teamId || null,
+      brokerageId: agentContext.brokerageId ?? "",
       actorUserId: agentContext.userId,
       actorRole: agentContext.role,
       journeyType: "seller", // Default to seller for social posts
       persona: (params.targetPersona as any) || "homeowner",
-      messageType: "social_post",
+      messageType: "social",
       content: generatedContent,
     })
 
-    const finalContent = brandVoiceResult.success ? brandVoiceResult.content : generatedContent
+    const finalContent = brandVoiceResult.violations.length === 0 ? brandVoiceResult.content : generatedContent
 
     // Check compliance (fair housing, brand guidelines)
     const complianceResult = await evaluateOutbound({
-      brokerageId: agentContext.brokerageId,
-      actorUserId: agentContext.userId,
-      actorRole: agentContext.role,
+      actorContext: {
+        userId: agentContext.userId,
+        role: agentContext.role as any,
+        brokerageId: agentContext.brokerageId ?? "",
+      },
       journeyType: "seller",
-      persona: (params.targetPersona as any) || "homeowner",
-      messageType: "social_post",
+      persona: (params.targetPersona as any) || "other",
+      messageType: "social",
       content: finalContent,
-      channel: params.platform,
-      recipientContactId: null, // Social posts don't have specific recipients
+      contact: {
+        id: "",
+        first_name: "",
+        last_name: "",
+        contact_type: "buyer",
+        tcpa_consent: true,
+        isa_reengage_allowed: false,
+        dnc_status: false,
+      },
     })
 
-    if (!complianceResult.passed) {
+    if (!complianceResult.allowed) {
       console.error("[v0] Social post failed compliance:", complianceResult.violations)
       return {
         success: false,
@@ -771,8 +779,8 @@ export async function generateSocialPost(params: {
 
     // Log kernel event for content generation
     await processKernelEvent({
-      event: KernelEvent.CONTENT_AI_GENERATED,
-      brokerageId: agentContext.brokerageId,
+      event: KernelEvent.SOCIAL_POST_PUBLISHED,
+      brokerageId: agentContext.brokerageId ?? "",
       entityType: "ai_generated_content",
       entityId: result.content?.id || "",
     })
@@ -837,8 +845,7 @@ export async function generateEmail(params: {
     
     // Apply brand voice to ensure consistency
     const brandVoiceResult = await applyBrandVoice({
-      brokerageId: agentContext.brokerageId,
-      teamId: agentContext.teamId || null,
+      brokerageId: agentContext.brokerageId ?? "",
       actorUserId: agentContext.userId,
       actorRole: agentContext.role,
       journeyType: params.emailType === "welcome" || params.emailType === "follow_up" ? "buyer" : "seller",
@@ -847,23 +854,32 @@ export async function generateEmail(params: {
       content: generatedContent,
     })
 
-    const finalContent = brandVoiceResult.success ? brandVoiceResult.content : generatedContent
+    const finalContent = brandVoiceResult.violations.length === 0 ? brandVoiceResult.content : generatedContent
 
     // ── DNC & UNSUBSCRIBE CHECK ────────────────────────────────────────────────
     // Check compliance including DNC/opt-out verification for email channel
     const complianceResult = await evaluateOutbound({
-      brokerageId: agentContext.brokerageId,
-      actorUserId: agentContext.userId,
-      actorRole: agentContext.role,
+      actorContext: {
+        userId: agentContext.userId,
+        role: agentContext.role as any,
+        brokerageId: agentContext.brokerageId ?? "",
+      },
       journeyType: params.emailType === "welcome" || params.emailType === "follow_up" ? "buyer" : "seller",
-      persona: (params.targetPersona as any) || "homebuyer",
+      persona: (params.targetPersona as any) || "other",
       messageType: "email",
       content: finalContent,
-      channel: "email",
-      recipientContactId: params.contactId || null,
+      contact: {
+        id: params.contactId ?? "",
+        first_name: "",
+        last_name: "",
+        contact_type: "buyer",
+        tcpa_consent: true,
+        isa_reengage_allowed: false,
+        dnc_status: false,
+      },
     })
 
-    if (!complianceResult.passed) {
+    if (!complianceResult.allowed) {
       console.error("[v0] Email failed compliance:", complianceResult.violations)
       return {
         success: false,
@@ -887,8 +903,8 @@ export async function generateEmail(params: {
 
     // Log kernel event for content generation
     await processKernelEvent({
-      event: KernelEvent.CONTENT_AI_GENERATED,
-      brokerageId: agentContext.brokerageId,
+      event: KernelEvent.EMAIL_CAMPAIGN_SENT,
+      brokerageId: agentContext.brokerageId ?? "",
       entityType: "ai_generated_content",
       entityId: result.content?.id || "",
     })

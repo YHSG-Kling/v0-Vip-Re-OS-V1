@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
+import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -74,6 +75,7 @@ import {
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
 import { getMailCampaigns } from "@/app/actions/direct-mail"
+import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
@@ -165,19 +167,33 @@ interface MarketingStudioClientProps {
   userId?: string
   brokerageId?: string
   userRole?: string
+  initialTab?: string
 }
 
-export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
-  const [activeTab, setActiveTab] = useState("overview")
+export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
+  const { toast } = useToast()
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [isLoading, setIsLoading] = useState(true)
+  const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [assets, setAssets] = useState<Asset[]>([])
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null)
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date())
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
+  const [calendarViewDate, setCalendarViewDate] = useState(new Date())
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
+
+  const eventsByDate = useMemo(() => {
+    const map: Record<string, CalendarEvent[]> = {}
+    for (const ev of calendarEvents) {
+      const key = format(new Date(ev.scheduled_at), "yyyy-MM-dd")
+      if (!map[key]) map[key] = []
+      map[key].push(ev)
+    }
+    return map
+  }, [calendarEvents])
 
   // Dialog states
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
@@ -221,6 +237,23 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [mailCampaigns, setMailCampaigns] = useState<any[]>([])
   const [isMailLoading, setIsMailLoading] = useState(false)
 
+  // Omnichannel sequence builder state
+  type OmnichannelStepType = "email" | "sms" | "social_post" | "video" | "direct_mail" | "wait"
+  interface OmnichannelStep {
+    id: string
+    type: OmnichannelStepType
+    name: string
+    delay_days: number
+    delay_hours: number
+    subject: string
+    body: string
+  }
+  const [omnichannelName, setOmnichannelName] = useState("")
+  const [omnichannelDescription, setOmnichannelDescription] = useState("")
+  const [omnichannelSteps, setOmnichannelSteps] = useState<OmnichannelStep[]>([])
+  const [isCreatingOmnichannel, setIsCreatingOmnichannel] = useState(false)
+  const [omnichannelSuccess, setOmnichannelSuccess] = useState<string | null>(null)
+
   // Create newsletter dialog state (inline in studio)
   const [isCreateNewsletterOpen, setIsCreateNewsletterOpen] = useState(false)
   const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "" })
@@ -230,6 +263,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
   const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
+  const [qrError, setQrError] = useState<string | null>(null)
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
@@ -245,11 +279,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     scheduledEndAt: "",
     visibilityScope: "agent" as VisibilityScope,
   })
-  const [newAsset, setNewAsset] = useState({
+  const [newAsset, setNewAsset] = useState<{
+    assetName: string
+    assetType: string
+    campaignId: string
+    previewText: string
+    qrTargetUrl: string
+  }>({
     assetName: "",
-    assetType: "image" as const,
+    assetType: "graphic",
     campaignId: "",
     previewText: "",
+    qrTargetUrl: "",
   })
   const [newEvent, setNewEvent] = useState({
     title: "",
@@ -277,6 +318,10 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
 
+  useEffect(() => {
+    if (activeTab === "calendar") loadCalendarEvents()
+  }, [calendarViewDate])
+
   async function loadInitialData() {
     setIsLoading(true)
     try {
@@ -284,7 +329,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         getMarketingStudioDashboard(),
         getCampaigns({ status: statusFilter !== "all" ? (statusFilter as CampaignStatus) : undefined }),
       ])
-      if (dashboardResult.success) setDashboard(dashboardResult.dashboard)
+      if (dashboardResult.success) {
+        setDashboard((dashboardResult as any).dashboard)
+        setDashboardError(null)
+      } else {
+        setDashboardError((dashboardResult as any).error ?? "Failed to load dashboard metrics")
+      }
       if (campaignsResult.success) setCampaigns(campaignsResult.campaigns)
     } catch (error) {
       console.error("[v0] Failed to load marketing studio data:", error)
@@ -308,8 +358,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function loadCalendarEvents() {
+    const start = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1)
+    const end = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0)
     const result = await getCalendarEvents({
-      startDate: selectedDate ? format(selectedDate, "yyyy-MM-dd") : undefined,
+      startDate: format(start, "yyyy-MM-dd"),
+      endDate: format(end, "yyyy-MM-dd"),
     })
     if (result.success) setCalendarEvents(result.events)
   }
@@ -509,19 +562,25 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   // ─── HANDLERS ─────────────────────────────────────────────────────────────────
 
   async function handleCreateCampaign() {
-    const result = await createCampaign(newCampaign)
-    if (result.success) {
-      setIsCreateCampaignOpen(false)
-      setNewCampaign({
-        campaignName: "",
-        campaignType: "brand",
-        budgetTotal: 0,
-        scheduledStartAt: "",
-        scheduledEndAt: "",
-        visibilityScope: "agent",
-      })
-      loadCampaigns()
-      loadInitialData()
+    try {
+      const result = await createCampaign(newCampaign)
+      if (result.success) {
+        setIsCreateCampaignOpen(false)
+        setNewCampaign({
+          campaignName: "",
+          campaignType: "brand",
+          budgetTotal: 0,
+          scheduledStartAt: "",
+          scheduledEndAt: "",
+          visibilityScope: "agent",
+        })
+        loadCampaigns()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create campaign", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create campaign", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -534,15 +593,26 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateAsset() {
-    const result = await createAsset({
-      ...newAsset,
-      campaignId: newAsset.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateAssetOpen(false)
-      setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
-      loadAssets()
-      loadInitialData()
+    try {
+      const qrUrl = newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(newAsset.qrTargetUrl.trim())}`
+        : undefined
+      const result = await createAsset({
+        ...newAsset,
+        assetType: newAsset.assetType as any,
+        campaignId: newAsset.campaignId || undefined,
+        assetUrl: qrUrl,
+      })
+      if (result.success) {
+        setIsCreateAssetOpen(false)
+        setNewAsset({ assetName: "", assetType: "graphic", campaignId: "", previewText: "", qrTargetUrl: "" })
+        loadAssets()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create asset", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create asset", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -563,14 +633,20 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateCalendarEvent() {
-    const result = await createCalendarEvent({
-      ...newEvent,
-      campaignId: newEvent.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateEventOpen(false)
-      setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
-      loadCalendarEvents()
+    try {
+      const result = await createCalendarEvent({
+        ...newEvent,
+        campaignId: newEvent.campaignId || undefined,
+      })
+      if (result.success) {
+        setIsCreateEventOpen(false)
+        setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
+        loadCalendarEvents()
+      } else {
+        toast({ title: "Failed to create calendar event", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create calendar event", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -621,10 +697,17 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     // Map asset_type to content_type
     const contentTypeMap: Record<string, string> = {
       social_post: "social_post",
-      email: "newsletter",
-      document: "blog_post",
-      image: "ad_creative",
+      snippet: "social_post",
+      script: "social_post",
+      newsletter: "newsletter",
+      mailer: "newsletter",
+      blog: "blog_post",
       video: "ad_creative",
+      graphic: "ad_creative",
+      template: "ad_creative",
+      ad_creative: "ad_creative",
+      podcast: "ad_creative",
+      qr: "ad_creative",
     }
 
     const result = await predictPerformanceAction({
@@ -640,6 +723,93 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       setCurrentPrediction(result.prediction)
     }
     setIsPredicting(false)
+  }
+
+  // ─── OMNICHANNEL HANDLER ─────────────────────────────────────────────────────
+
+  function addOmnichannelStep() {
+    const newStep: OmnichannelStep = {
+      id: Math.random().toString(36).slice(2),
+      type: "email",
+      name: "",
+      delay_days: 0,
+      delay_hours: 0,
+      subject: "",
+      body: "",
+    }
+    setOmnichannelSteps((prev) => [...prev, newStep])
+  }
+
+  function updateOmnichannelStep(id: string, patch: Partial<OmnichannelStep>) {
+    setOmnichannelSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+  }
+
+  function removeOmnichannelStep(id: string) {
+    setOmnichannelSteps((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  async function handleCreateOmnichannelSequence() {
+    if (!omnichannelName.trim()) {
+      toast({ title: "Sequence name required", variant: "destructive" })
+      return
+    }
+    setIsCreatingOmnichannel(true)
+    setOmnichannelSuccess(null)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) {
+        toast({ title: "Brokerage context missing", variant: "destructive" })
+        return
+      }
+      const { sequence, error: seqError } = await createCampaignSequence({
+        brokerageId: resolvedBrokerageId,
+        name: omnichannelName.trim(),
+        description: omnichannelDescription.trim() || undefined,
+        sequence_type: "omnichannel",
+      })
+      if (!sequence || seqError) {
+        toast({ title: "Failed to create sequence", description: seqError, variant: "destructive" })
+        return
+      }
+      const stepErrors: string[] = []
+      for (let i = 0; i < omnichannelSteps.length; i++) {
+        const step = omnichannelSteps[i]
+        const stepResult = await createSequenceStep({
+          sequence_id: sequence.id,
+          step_number: i + 1,
+          step_name: step.name || `Step ${i + 1}`,
+          channel: step.type,
+          delay_days: step.delay_days,
+          delay_hours: step.delay_hours,
+          subject: step.type === "email" ? step.subject : undefined,
+          body: step.body || undefined,
+        })
+        if (stepResult.error || !stepResult.step) {
+          stepErrors.push(`Step ${i + 1}: ${stepResult?.error ?? "Unknown error"}`)
+        }
+      }
+      if (stepErrors.length > 0) {
+        // Roll back the partially-created sequence to avoid orphaned records
+        const rollback = await deleteCampaignSequence(sequence.id).catch((e) => ({ error: String(e) }))
+        const rollbackFailed = rollback && "error" in rollback
+        toast({
+          title: rollbackFailed
+            ? "Failed to create sequence steps — sequence may be partially saved"
+            : "Failed to create sequence steps — sequence rolled back",
+          description: stepErrors.join("; "),
+          variant: "destructive",
+        })
+        return
+      }
+      setOmnichannelName("")
+      setOmnichannelDescription("")
+      setOmnichannelSteps([])
+      setOmnichannelSuccess(`Sequence "${sequence.name}" created with ${omnichannelSteps.length} step${omnichannelSteps.length !== 1 ? "s" : ""}.`)
+    } catch (err) {
+      toast({ title: "Error creating sequence", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
+    } finally {
+      setIsCreatingOmnichannel(false)
+    }
   }
 
   // ─── STATUS HELPERS ───────────────────────────────────────────────────────────
@@ -782,66 +952,101 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Card>
 
         {/* Quick Stats */}
-        {dashboard && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Active Campaigns</p>
-                    <p className="text-2xl font-bold">{dashboard.campaignsByStatus.live ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                    <Play className="h-6 w-6 text-green-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Pending Approval</p>
-                    <p className="text-2xl font-bold">{dashboard.assetsByApproval.pending ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
-                    <Clock className="h-6 w-6 text-yellow-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Total Assets</p>
-                    <p className="text-2xl font-bold">{dashboard.totalAssets}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-                    <Image className="h-6 w-6 text-blue-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Upcoming Events</p>
-                    <p className="text-2xl font-bold">{dashboard.upcomingEvents.length}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
-                    <CalendarIcon className="h-6 w-6 text-violet-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        {dashboardError && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20 dark:border-yellow-800 px-4 py-3 flex items-center gap-3 text-sm text-yellow-800 dark:text-yellow-200">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>Dashboard metrics could not be loaded: {dashboardError}. Other Studio features are still available.</span>
           </div>
         )}
+        {dashboard && (() => {
+          const activeCampaigns = dashboard.campaignsByStatus.live ?? 0
+          const pendingApproval = dashboard.assetsByApproval.pending ?? 0
+          const totalAssets = dashboard.totalAssets
+          const upcomingEventsCount = dashboard.upcomingEvents.length
+          const isEmpty = dashboard.totalCampaigns === 0 && totalAssets === 0
+
+          return (
+            <>
+              {isEmpty && (
+                <div className="rounded-xl border-2 border-dashed border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/10 p-8 text-center space-y-3">
+                  <Rocket className="h-10 w-10 text-violet-400 mx-auto" />
+                  <h3 className="font-semibold text-lg text-foreground">Your studio is ready for launch</h3>
+                  <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+                    Create your first campaign and upload assets to start tracking performance here.
+                  </p>
+                  <Button
+                    className="bg-violet-600 hover:bg-violet-700 mt-2"
+                    onClick={() => setIsCreateCampaignOpen(true)}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create First Campaign
+                  </Button>
+                </div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Active Campaigns</p>
+                        <p className="text-2xl font-bold">{activeCampaigns}</p>
+                        {dashboard.totalCampaigns > 0 && activeCampaigns === 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5">{dashboard.totalCampaigns} total</p>
+                        )}
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                        <Play className="h-6 w-6 text-green-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Pending Approval</p>
+                        <p className="text-2xl font-bold">{pendingApproval}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+                        <Clock className="h-6 w-6 text-yellow-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Assets</p>
+                        <p className="text-2xl font-bold">{totalAssets}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                        <Image className="h-6 w-6 text-blue-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Upcoming Events</p>
+                        <p className="text-2xl font-bold">{upcomingEventsCount}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                        <CalendarIcon className="h-6 w-6 text-violet-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </>
+          )
+        })()}
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-1 h-auto bg-muted p-2 rounded-xl">
+          <TabsList className="grid w-full grid-cols-4 md:grid-cols-7 lg:grid-cols-7 gap-1 h-auto bg-muted p-2 rounded-xl">
             <TabsTrigger
               value="ad-os"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
@@ -926,6 +1131,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               <Mic className="h-4 w-4" />
               <span className="text-xs">Podcast</span>
             </TabsTrigger>
+            <TabsTrigger
+              value="omnichannel"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Sparkles className="h-4 w-4" />
+              <span className="text-xs">Omnichannel</span>
+            </TabsTrigger>
           </TabsList>
 
           {/* Ad OS Tab */}
@@ -957,7 +1169,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             </div>
 
             {/* Row 4: Seller-Safe Marketing Summary (full width) */}
-            <SellerSafeMarketingSummary listings={listings} />
+            <SellerSafeMarketingSummary campaigns={campaigns} />
           </TabsContent>
 
           {/* Overview Tab */}
@@ -1244,12 +1456,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="image">Image</SelectItem>
+                          <SelectItem value="graphic">Graphic</SelectItem>
                           <SelectItem value="video">Video</SelectItem>
-                          <SelectItem value="document">Document</SelectItem>
+                          <SelectItem value="snippet">Snippet</SelectItem>
+                          <SelectItem value="script">Script</SelectItem>
+                          <SelectItem value="template">Template</SelectItem>
                           <SelectItem value="social_post">Social Post</SelectItem>
-                          <SelectItem value="email">Email</SelectItem>
-                          <SelectItem value="direct_mail">Direct Mail</SelectItem>
+                          <SelectItem value="newsletter">Newsletter</SelectItem>
+                          <SelectItem value="blog">Blog</SelectItem>
+                          <SelectItem value="podcast">Podcast</SelectItem>
+                          <SelectItem value="mailer">Direct Mailer</SelectItem>
+                          <SelectItem value="ad_creative">Ad Creative</SelectItem>
+                          <SelectItem value="qr">QR Code</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1272,15 +1490,27 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="space-y-2">
-                      <Label>Preview Text</Label>
-                      <Textarea
-                        value={newAsset.previewText}
-                        onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
-                        placeholder="Brief description..."
-                        rows={3}
-                      />
-                    </div>
+                    {newAsset.assetType === "qr" ? (
+                      <div className="space-y-2">
+                        <Label>Target URL (what the QR code points to)</Label>
+                        <Input
+                          value={newAsset.qrTargetUrl}
+                          onChange={(e) => setNewAsset({ ...newAsset, qrTargetUrl: e.target.value })}
+                          placeholder="https://example.com/your-page"
+                        />
+                        <p className="text-xs text-muted-foreground">A scannable QR image will be auto-generated.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <Label>Preview Text</Label>
+                        <Textarea
+                          value={newAsset.previewText}
+                          onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
+                          placeholder="Brief description..."
+                          rows={3}
+                        />
+                      </div>
+                    )}
                     <Button onClick={handleCreateAsset} className="w-full bg-violet-600 hover:bg-violet-700">
                       Create Asset
                     </Button>
@@ -1304,10 +1534,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       ) : (
                         <div className="text-muted-foreground">
                           {asset.asset_type === "video" && <Video className="h-12 w-12" />}
-                          {asset.asset_type === "image" && <Image className="h-12 w-12" />}
-                          {asset.asset_type === "document" && <FileText className="h-12 w-12" />}
-                          {asset.asset_type === "email" && <Mail className="h-12 w-12" />}
-                          {!["video", "image", "document", "email"].includes(asset.asset_type) && (
+                          {asset.asset_type === "graphic" && <Image className="h-12 w-12" />}
+                          {["blog", "snippet", "script", "template"].includes(asset.asset_type) && <FileText className="h-12 w-12" />}
+                          {["newsletter", "mailer"].includes(asset.asset_type) && <Newspaper className="h-12 w-12" />}
+                          {asset.asset_type === "podcast" && <Mic className="h-12 w-12" />}
+                          {asset.asset_type === "qr" && <QrCode className="h-12 w-12" />}
+                          {!["video", "graphic", "blog", "snippet", "script", "template", "newsletter", "mailer", "podcast", "qr"].includes(asset.asset_type) && (
                             <Sparkles className="h-12 w-12" />
                           )}
                         </div>
@@ -1369,118 +1601,335 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
           </TabsContent>
 
           {/* Calendar Tab */}
-          <TabsContent value="calendar" className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-[280px] justify-start text-left font-normal">
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {selectedDate ? format(selectedDate, "PPP") : <span>Pick a date</span>}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar mode="single" selected={selectedDate} onSelect={setSelectedDate} initialFocus />
-                </PopoverContent>
-              </Popover>
-              <Dialog open={isCreateEventOpen} onOpenChange={setIsCreateEventOpen}>
-                <DialogTrigger asChild>
-                  <Button className="bg-violet-600 hover:bg-violet-700">
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Event
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Create Calendar Event</DialogTitle>
-                    <DialogDescription>Schedule a marketing event</DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4 py-4">
-                    <div className="space-y-2">
-                      <Label>Event Title</Label>
-                      <Input
-                        value={newEvent.title}
-                        onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
-                        placeholder="Social Post Go-Live"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Event Type</Label>
-                      <Select
-                        value={newEvent.eventType}
-                        onValueChange={(v) => setNewEvent({ ...newEvent, eventType: v as any })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="publish">Publish</SelectItem>
-                          <SelectItem value="review">Review</SelectItem>
-                          <SelectItem value="deadline">Deadline</SelectItem>
-                          <SelectItem value="meeting">Meeting</SelectItem>
-                          <SelectItem value="go_live">Go Live</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Date & Time</Label>
-                      <Input
-                        type="datetime-local"
-                        value={newEvent.scheduledAt}
-                        onChange={(e) => setNewEvent({ ...newEvent, scheduledAt: e.target.value })}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Notes</Label>
-                      <Textarea
-                        value={newEvent.notes}
-                        onChange={(e) => setNewEvent({ ...newEvent, notes: e.target.value })}
-                        placeholder="Additional details..."
-                        rows={3}
-                      />
-                    </div>
-                    <Button onClick={handleCreateCalendarEvent} className="w-full bg-violet-600 hover:bg-violet-700">
-                      Create Event
-                    </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-            </div>
+          <TabsContent value="calendar" className="space-y-6">
+            {/* ── Calendar Grid ──────────────────────────────────────────────── */}
+            {(() => {
+              // Build month grid entirely in-component — no calendar library needed.
+              const today = new Date()
+              const viewYear = calendarViewDate.getFullYear()
+              const viewMonth = calendarViewDate.getMonth()
 
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {calendarEvents.map((event) => (
-                <Card key={event.id}>
-                  <CardContent className="pt-6">
-                    <div className="flex items-start justify-between mb-2">
-                      <Badge variant="outline" className="capitalize">
-                        {event.event_type.replace("_", " ")}
-                      </Badge>
-                      <Badge className={event.status === "scheduled" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}>
-                        {event.status}
-                      </Badge>
-                    </div>
-                    <h4 className="font-semibold mb-1">{event.title}</h4>
-                    <p className="text-sm text-muted-foreground mb-2">
-                      {format(new Date(event.scheduled_at), "MMM d, yyyy 'at' h:mm a")}
-                    </p>
-                    {event.campaign && (
-                      <p className="text-sm text-muted-foreground">Campaign: {event.campaign.campaign_name}</p>
-                    )}
-                    {event.notes && <p className="text-sm text-muted-foreground mt-2">{event.notes}</p>}
-                    {event.status === "scheduled" && (
-                      <div className="flex gap-2 mt-4">
+              // First day of the month (0=Sun … 6=Sat) and total days
+              const firstOfMonth = new Date(viewYear, viewMonth, 1)
+              const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+              const startDow = firstOfMonth.getDay() // 0-6
+
+              // Build a Set of "YYYY-MM-DD" strings that have events
+              const eventDateSet = new Set<string>()
+              for (const key of Object.keys(eventsByDate)) {
+                eventDateSet.add(key)
+              }
+
+              // Also mark scheduled sends from newsletter state
+              for (const s of scheduledSends) {
+                const sentAt = s.sent_at || s.scheduled_at
+                if (sentAt) {
+                  const key = format(new Date(sentAt), "yyyy-MM-dd")
+                  eventDateSet.add(key)
+                }
+              }
+
+              const prevMonth = () => {
+                const d = new Date(viewYear, viewMonth - 1, 1)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
+              }
+              const nextMonth = () => {
+                const d = new Date(viewYear, viewMonth + 1, 1)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
+              }
+
+              const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
+              const todayKey = format(today, "yyyy-MM-dd")
+
+              // Build cell array: nulls for leading blanks, then 1..daysInMonth
+              const cells: (number | null)[] = [
+                ...Array(startDow).fill(null),
+                ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+              ]
+              // Pad to full weeks
+              while (cells.length % 7 !== 0) cells.push(null)
+
+              const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+              // Determine which events to show in the list below:
+              // If a date is selected, show only events on that date; else all.
+              const filteredEvents = selectedKey && eventsByDate[selectedKey]
+                ? eventsByDate[selectedKey]
+                : calendarEvents
+
+              return (
+                <Card className="overflow-hidden shadow-sm">
+                  <CardHeader className="pb-3 border-b">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
                         <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => updateCalendarEventStatus(event.id, "completed")}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={prevMonth}
+                          aria-label="Previous month"
                         >
-                          <CheckCircle className="h-4 w-4 mr-1" />
-                          Complete
+                          <ChevronRight className="h-4 w-4 rotate-180" />
+                        </Button>
+                        <h2 className="text-lg font-semibold min-w-[160px] text-center">
+                          {format(firstOfMonth, "MMMM yyyy")}
+                        </h2>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={nextMonth}
+                          aria-label="Next month"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-xs h-7"
+                          onClick={() => { setCalendarViewDate(new Date()); setSelectedDate(undefined) }}
+                        >
+                          Today
                         </Button>
                       </div>
-                    )}
+
+                      {/* Add Event inline button */}
+                      <Dialog open={isCreateEventOpen} onOpenChange={setIsCreateEventOpen}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700">
+                            <Plus className="mr-1.5 h-3.5 w-3.5" />
+                            Add Event
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Create Calendar Event</DialogTitle>
+                            <DialogDescription>Schedule a marketing event</DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-4 py-4">
+                            <div className="space-y-2">
+                              <Label>Event Title</Label>
+                              <Input
+                                value={newEvent.title}
+                                onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                                placeholder="Social Post Go-Live"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Event Type</Label>
+                              <Select
+                                value={newEvent.eventType}
+                                onValueChange={(v) => setNewEvent({ ...newEvent, eventType: v as any })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="publish">Publish</SelectItem>
+                                  <SelectItem value="review">Review</SelectItem>
+                                  <SelectItem value="deadline">Deadline</SelectItem>
+                                  <SelectItem value="meeting">Meeting</SelectItem>
+                                  <SelectItem value="go_live">Go Live</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Date & Time</Label>
+                              <Input
+                                type="datetime-local"
+                                value={newEvent.scheduledAt}
+                                onChange={(e) => setNewEvent({ ...newEvent, scheduledAt: e.target.value })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Notes</Label>
+                              <Textarea
+                                value={newEvent.notes}
+                                onChange={(e) => setNewEvent({ ...newEvent, notes: e.target.value })}
+                                placeholder="Additional details..."
+                                rows={3}
+                              />
+                            </div>
+                            <Button onClick={handleCreateCalendarEvent} className="w-full bg-violet-600 hover:bg-violet-700">
+                              Create Event
+                            </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="p-0">
+                    {/* Day-of-week header */}
+                    <div className="grid grid-cols-7 border-b">
+                      {DOW_LABELS.map((d) => (
+                        <div
+                          key={d}
+                          className="py-2 text-center text-xs font-semibold text-muted-foreground tracking-wide uppercase"
+                        >
+                          {d}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Date cells grid */}
+                    <div className="grid grid-cols-7">
+                      {cells.map((day, idx) => {
+                        if (day === null) {
+                          return (
+                            <div
+                              key={`blank-${idx}`}
+                              className="h-20 border-b border-r last:border-r-0 bg-muted/20"
+                            />
+                          )
+                        }
+
+                        const cellKey = format(new Date(viewYear, viewMonth, day), "yyyy-MM-dd")
+                        const isToday = cellKey === todayKey
+                        const isSelected = cellKey === selectedKey
+                        const hasEvents = eventDateSet.has(cellKey)
+                        const cellEvents = eventsByDate[cellKey] ?? []
+
+                        return (
+                          <button
+                            key={cellKey}
+                            type="button"
+                            onClick={() => {
+                              setSelectedDate(new Date(viewYear, viewMonth, day))
+                            }}
+                            className={cn(
+                              "h-20 border-b border-r last:border-r-0 p-1.5 text-left align-top transition-colors hover:bg-violet-50 dark:hover:bg-violet-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500",
+                              isSelected && "bg-violet-100 dark:bg-violet-900/30",
+                              idx % 7 === 6 && "border-r-0", // last column no right border
+                            )}
+                          >
+                            {/* Day number */}
+                            <span
+                              className={cn(
+                                "inline-flex h-6 w-6 items-center justify-center rounded-full text-sm font-medium",
+                                isToday && "bg-violet-600 text-white font-bold",
+                                isSelected && !isToday && "ring-2 ring-violet-500 text-violet-700 dark:text-violet-300",
+                                !isToday && !isSelected && "text-foreground",
+                              )}
+                            >
+                              {day}
+                            </span>
+
+                            {/* Event dots / pills */}
+                            {hasEvents && (
+                              <div className="mt-1 flex flex-wrap gap-0.5">
+                                {cellEvents.slice(0, 2).map((ev) => {
+                                  const dotColor =
+                                    ev.event_type === "deadline" ? "bg-red-500" :
+                                    ev.event_type === "go_live" ? "bg-green-500" :
+                                    ev.event_type === "meeting" ? "bg-blue-500" :
+                                    ev.event_type === "review" ? "bg-yellow-500" :
+                                    "bg-violet-500"
+                                  return (
+                                    <span
+                                      key={ev.id}
+                                      className={cn("block truncate rounded px-1 text-[10px] leading-4 font-medium text-white max-w-full", dotColor)}
+                                      title={ev.title}
+                                    >
+                                      {ev.title.length > 10 ? ev.title.slice(0, 9) + "…" : ev.title}
+                                    </span>
+                                  )
+                                })}
+                                {cellEvents.length > 2 && (
+                                  <span className="text-[10px] text-muted-foreground leading-4">
+                                    +{cellEvents.length - 2} more
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
                   </CardContent>
                 </Card>
-              ))}
+              )
+            })()}
+
+            {/* ── Event cards below the grid ────────────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-base">
+                  {selectedDate
+                    ? `Events on ${format(selectedDate, "MMMM d, yyyy")}`
+                    : "All Scheduled Events"}
+                </h3>
+                {selectedDate && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-7"
+                    onClick={() => setSelectedDate(undefined)}
+                  >
+                    Clear filter
+                  </Button>
+                )}
+              </div>
+
+              {(() => {
+                const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
+                const filtered = selectedKey
+                  ? (eventsByDate[selectedKey] ?? [])
+                  : calendarEvents
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="rounded-xl border-2 border-dashed border-muted py-12 text-center text-muted-foreground">
+                      <CalendarIcon className="h-8 w-8 mx-auto mb-3 opacity-40" />
+                      <p className="font-medium">
+                        {selectedDate ? "No events on this date" : "No scheduled events yet"}
+                      </p>
+                      <p className="text-sm mt-1">Click Add Event to schedule a marketing activity</p>
+                    </div>
+                  )
+                }
+
+                return (
+                  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filtered.map((event) => (
+                      <Card key={event.id}>
+                        <CardContent className="pt-6">
+                          <div className="flex items-start justify-between mb-2">
+                            <Badge variant="outline" className="capitalize">
+                              {event.event_type.replace(/_/g, " ")}
+                            </Badge>
+                            <Badge className={event.status === "scheduled" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}>
+                              {event.status}
+                            </Badge>
+                          </div>
+                          <h4 className="font-semibold mb-1">{event.title}</h4>
+                          <p className="text-sm text-muted-foreground mb-2">
+                            {format(new Date(event.scheduled_at), "MMM d, yyyy 'at' h:mm a")}
+                          </p>
+                          {event.campaign && (
+                            <p className="text-sm text-muted-foreground">Campaign: {event.campaign.campaign_name}</p>
+                          )}
+                          {event.notes && <p className="text-sm text-muted-foreground mt-2">{event.notes}</p>}
+                          {event.status === "scheduled" && (
+                            <div className="flex gap-2 mt-4">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => updateCalendarEventStatus(event.id, "completed")}
+                              >
+                                <CheckCircle className="h-4 w-4 mr-1" />
+                                Complete
+                              </Button>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )
+              })()}
             </div>
           </TabsContent>
 
@@ -1490,6 +1939,31 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
               </div>
+            ) : newsletterTemplates.length === 0 ? (
+              /* Prerequisite gate: no templates → empty state */
+              <Card className="border-dashed">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center gap-4">
+                  <div className="h-14 w-14 rounded-full bg-violet-100 flex items-center justify-center">
+                    <Mail className="h-7 w-7 text-violet-600" />
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold">No newsletter templates yet</p>
+                    <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                      Create at least one approved newsletter template before scheduling campaigns.
+                      Templates let you define layout, branding, and reusable sections — then the
+                      AI fills in dynamic content at send time.
+                    </p>
+                  </div>
+                  <Button asChild>
+                    <a href="/newsletters">
+                      Create Newsletter Template
+                    </a>
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Already have templates? Ask your broker to approve them so they appear here.
+                  </p>
+                </CardContent>
+              </Card>
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {/* Subscriber Count Card */}
@@ -1672,14 +2146,24 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4 mb-6">
-                  <Button onClick={loadRegistry} variant="outline">
+                  <Input
+                    placeholder="Search registry..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="max-w-xs h-9 text-sm"
+                  />
+                  <Button onClick={loadRegistry} variant="outline" size="sm">
                     <Search className="mr-2 h-4 w-4" />
-                    Search Content Registry
+                    {registryItems.length === 0 ? "Load Registry" : "Refresh"}
                   </Button>
                 </div>
                 {registryItems.length > 0 && (
                   <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {registryItems.map((item) => (
+                    {registryItems.filter((item) => {
+                      if (!searchQuery.trim()) return true
+                      const q = searchQuery.toLowerCase()
+                      return item.title?.toLowerCase().includes(q) || item.previewText?.toLowerCase().includes(q) || item.sourceTable?.toLowerCase().includes(q)
+                    }).map((item) => (
                       <Card key={`${item.sourceTable}-${item.id}`} className="bg-muted/30">
                         <CardContent className="pt-4">
                           <div className="flex items-start justify-between mb-2">
@@ -2115,6 +2599,192 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             )}
           </TabsContent>
 
+          {/* Omnichannel Tab */}
+          <TabsContent value="omnichannel" className="space-y-6">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Omnichannel Sequence Builder</h3>
+                <p className="text-sm text-muted-foreground">Create multi-step automated sequences combining email, SMS, social, video, direct mail, and wait steps.</p>
+              </div>
+              <Button variant="outline" size="sm" asChild>
+                <a href="/dashboard/campaigns/sequences">
+                  <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                  All Sequences
+                </a>
+              </Button>
+            </div>
+
+            {omnichannelSuccess && (
+              <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 px-4 py-3 flex items-center gap-3 text-sm text-green-800 dark:text-green-200">
+                <CheckCircle className="h-4 w-4 shrink-0" />
+                {omnichannelSuccess}
+              </div>
+            )}
+
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Sequence config */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Sequence Details</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Sequence Name</Label>
+                    <Input
+                      value={omnichannelName}
+                      onChange={(e) => setOmnichannelName(e.target.value)}
+                      placeholder="e.g. New Buyer 30-Day Nurture"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Description (optional)</Label>
+                    <Textarea
+                      value={omnichannelDescription}
+                      onChange={(e) => setOmnichannelDescription(e.target.value)}
+                      placeholder="What this sequence does…"
+                      rows={3}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={addOmnichannelStep}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Step
+                    </Button>
+                    <Button
+                      className="flex-1 bg-violet-600 hover:bg-violet-700"
+                      onClick={handleCreateOmnichannelSequence}
+                      disabled={isCreatingOmnichannel || !omnichannelName.trim()}
+                    >
+                      {isCreatingOmnichannel ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Send className="h-4 w-4 mr-1" />}
+                      {isCreatingOmnichannel ? "Creating…" : "Create Sequence"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Step builder */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center justify-between">
+                    Steps
+                    <Badge variant="secondary">{omnichannelSteps.length}</Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    Define the order and timing of each touchpoint.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {omnichannelSteps.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                      <p className="text-sm">No steps yet. Click "Add Step" to begin building.</p>
+                    </div>
+                  ) : (
+                    <ScrollArea className="h-[400px] pr-2">
+                      <div className="space-y-4">
+                        {omnichannelSteps.map((step, idx) => (
+                          <div key={step.id} className="border rounded-lg p-3 space-y-3 bg-muted/30">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-muted-foreground">STEP {idx + 1}</span>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                                onClick={() => removeOmnichannelStep(step.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Type</Label>
+                                <Select
+                                  value={step.type}
+                                  onValueChange={(v) => updateOmnichannelStep(step.id, { type: v as OmnichannelStep["type"] })}
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="email">Email</SelectItem>
+                                    <SelectItem value="sms">SMS</SelectItem>
+                                    <SelectItem value="social_post">Social Post</SelectItem>
+                                    <SelectItem value="video">Video</SelectItem>
+                                    <SelectItem value="direct_mail">Direct Mail</SelectItem>
+                                    <SelectItem value="wait">Wait / Delay</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Step Name</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  value={step.name}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { name: e.target.value })}
+                                  placeholder={`Step ${idx + 1}`}
+                                />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Delay (days)</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  type="number"
+                                  min={0}
+                                  value={step.delay_days}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { delay_days: Number(e.target.value) })}
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Delay (hours)</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  type="number"
+                                  min={0}
+                                  max={23}
+                                  value={step.delay_hours}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { delay_hours: Number(e.target.value) })}
+                                />
+                              </div>
+                            </div>
+                            {step.type === "email" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Subject Line</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  value={step.subject}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { subject: e.target.value })}
+                                  placeholder="Email subject…"
+                                />
+                              </div>
+                            )}
+                            {step.type !== "wait" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">{step.type === "email" ? "Body" : "Message / Content"}</Label>
+                                <Textarea
+                                  className="text-xs"
+                                  rows={2}
+                                  value={step.body}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { body: e.target.value })}
+                                  placeholder="Content for this step…"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
         </Tabs>
 
         {/* Performance Prediction Dialog */}
@@ -2214,7 +2884,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       setIsCreateNewsletterOpen(false)
                       setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
                       await loadNewsletterData()
+                    } else {
+                      toast({ title: "Failed to create newsletter", description: (result as any).error ?? "Unknown error", variant: "destructive" })
                     }
+                  } catch (err) {
+                    toast({ title: "Failed to create newsletter", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
                   } finally {
                     setIsCreatingNewsletter(false)
                   }
@@ -2228,7 +2902,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Dialog>
 
         {/* Create QR Code Dialog */}
-        <Dialog open={isCreateQrOpen} onOpenChange={setIsCreateQrOpen}>
+        <Dialog open={isCreateQrOpen} onOpenChange={(open) => { setIsCreateQrOpen(open); if (!open) setQrError(null) }}>
           <DialogContent className="sm:max-w-[440px]">
             <DialogHeader>
               <DialogTitle>New QR Code</DialogTitle>
@@ -2271,6 +2945,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   <option value="campaign">Campaign</option>
                 </select>
               </div>
+              {qrError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {qrError}
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsCreateQrOpen(false)}>
@@ -2281,10 +2961,22 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 disabled={isCreatingQr || !newQr.label.trim() || !newQr.targetUrl.trim()}
                 onClick={async () => {
                   setIsCreatingQr(true)
+                  setQrError(null)
                   try {
                     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
-                    const resolvedBrokerageId = brokerageIdProp || brokerageId
-                    const resolvedAgentId = agentId
+                    // Resolve brokerageId and agentId — fall back to user context if props not available
+                    let resolvedBrokerageId = brokerageIdProp || brokerageId
+                    let resolvedAgentId = agentId
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      const { getUserContextForPrediction } = await import("@/app/actions/content-prediction")
+                      const ctx = await getUserContextForPrediction()
+                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = resolvedBrokerageId || ctx.brokerageId
+                      if (ctx.success && ctx.userId) resolvedAgentId = resolvedAgentId || ctx.userId
+                    }
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      setQrError("Could not determine your account context. Please refresh and try again.")
+                      return
+                    }
                     const result = await createQrCodeAction({
                       brokerageId: resolvedBrokerageId,
                       agentId: resolvedAgentId,
@@ -2295,8 +2987,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     if (result.success) {
                       setIsCreateQrOpen(false)
                       setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      setQrError(null)
                       await loadQrCodes()
+                    } else {
+                      setQrError((result as any).error ?? "Failed to create QR code.")
                     }
+                  } catch (err) {
+                    setQrError(err instanceof Error ? err.message : "Failed to create QR code.")
                   } finally {
                     setIsCreatingQr(false)
                   }

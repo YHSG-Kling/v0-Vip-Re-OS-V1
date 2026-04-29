@@ -93,6 +93,9 @@ export default async function OfferDetailPage({ params }: PageProps) {
           listing={listing}
           contact={contact}
           history={history}
+          agentId={agentProfile.id}
+          brokerageId={agentProfile.brokerage_id ?? ""}
+          buyerPath={`/dashboard/buyers/${contactId}/offers`}
         />
       </div>
     </div>

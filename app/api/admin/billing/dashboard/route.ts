@@ -1,27 +1,29 @@
 // app/api/admin/billing/dashboard/route.ts
-// Billing workspace GET endpoint - Superadmin only
+// Billing workspace GET endpoint — Superadmin only.
+// Previously used x-user-type and x-user-id headers (spoofable).
+// Now uses DB-verified session via requireSuperadminAuth.
 
 import { NextRequest, NextResponse } from "next/server"
-import { loadBillingWorkspace } from "@/lib/kernel/billing"
 import { createClient } from "@/lib/supabase/server"
 import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
+import { loadBillingWorkspace } from "@/lib/kernel/billing"
 
 export async function GET(req: NextRequest) {
-  try {
-    const supabase = await createClient()
-    const auth = await requireSuperadminAuth(supabase)
-    if (!auth.ok) return auth.response
+  const supabase = await createClient()
+  const auth = await requireSuperadminAuth(supabase)
+  if (!auth.ok) return auth.response
 
-    const brokerageId = req.nextUrl.searchParams.get("brokerageId")
-    if (!brokerageId) {
-      return NextResponse.json({ error: "Missing brokerageId query param" }, { status: 400 })
-    }
+  try {
+    // brokerageId may still come from query param for superadmin dashboard navigation,
+    // but the user's identity is always session-derived.
+    const brokerageId =
+      req.nextUrl.searchParams.get("brokerageId") ?? auth.brokerageId
 
     const result = await loadBillingWorkspace({
       brokerageId,
       actorContext: {
-        userId: auth.user.id,
-        userType: "superadmin",
+        userId:   auth.userId,
+        userType: auth.userType as "superadmin" | "broker_admin" | "agent",
       },
     })
 

@@ -296,7 +296,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                         {txn?.property_address ?? "No Address"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {formatPrice(txn?.purchase_price)}
+                        {formatPrice(txn?.purchase_price ?? null)}
                       </p>
                     </div>
                   </td>
@@ -339,7 +339,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                     {agentName}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatDate(txn?.close_date)}
+                    {formatDate(txn?.close_date ?? null)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link

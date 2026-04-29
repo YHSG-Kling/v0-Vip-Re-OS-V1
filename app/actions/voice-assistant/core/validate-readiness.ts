@@ -80,7 +80,7 @@ async function checkEventExists(
   eventType: string,
   entities: Record<string, any>,
   brokerageId: string,
-  supabase: ReturnType<typeof createClient>
+  supabase: Awaited<ReturnType<typeof createClient>>
 ): Promise<boolean> {
   let query = supabase
     .from('activities')

@@ -55,8 +55,8 @@ export default async function MarketInsightsPage() {
 
   return (
     <MarketInsightsDashboardClient
-      brokerageId={brokerageId}
-      agentId={agentId}
+      brokerageId={brokerageId ?? ""}
+      agentId={agentId ?? ""}
       sources={sources}
       initialMarketArea={initialMarketArea}
       initialInsight={initialInsight}

@@ -1,11 +1,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
-import { StagePipeline }       from "./components/stage-pipeline"
-import { TasksPanel }           from "./components/tasks-panel"
-import { StageTimeline }        from "./components/stage-timeline"
-import { SellerCoachingCard }   from "./components/seller-coaching-card"
+import { StagePipeline }       from "@/app/components/dashboard/listings/lifecycle/stage-pipeline"
+import { TasksPanel }           from "@/app/components/dashboard/listings/lifecycle/tasks-panel"
+import { StageTimeline }        from "@/app/components/dashboard/listings/lifecycle/stage-timeline"
+import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import {
@@ -18,14 +19,14 @@ import {
   NeighborhoodStoryCard,
   LaunchActionsPanel,
 } from "../components/launch"
-import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
+import { ListingAgreementStatusCard } from "@/app/components/dashboard/listings/lifecycle/listing-agreement-status-card"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
-import { VendorBookingButton } from "./components/vendor-booking-button"
-import { DecisionHistoryPanel } from "./components/decision-history-panel"
-import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
-import { ListingPacketPanel } from "./components/listing-packet-panel"
-import { ListingFormsPanel } from "./components/listing-forms-panel"
+import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
+import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
+import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
+import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
+import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -151,7 +152,12 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const mediaReady = photoCount >= 5
 
   const currentTier = tierResult.data
-  const marketingReady = !!currentTier
+  // Gate: check if this user's plan includes listing_marketing_tiers.
+  // The superadmin controls which tier plan each brokerage is on; features are
+  // determined by that plan. canAccessFeature handles trial overrides, disabled
+  // overrides, and per-tier access columns from the feature_flags table.
+  const marketingAccess = await canAccessFeature(user.id, "listing_marketing_tiers")
+  const marketingReady = marketingAccess.allowed
 
   const neighborhoodReport = neighborhoodResult.data
   const hasNeighborhoodReport = !!neighborhoodReport
@@ -182,8 +188,8 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
       attendees: allOpenHouseAttendees.filter((a: any) => a.event_id === e.id),
     }))
   const openHousePromotionStatus: "not_started" | "scheduled" | "published" =
-    openHouseData?.posts?.some((p: any) => p.status === "published") ? "published" :
-    openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
+    openHouseData?.socialPosts?.some((p: any) => p.status === "published") ? "published" :
+    openHouseData?.socialPosts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
 // Fetch vendors for the "Assign Vendor" modal
@@ -202,11 +208,15 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
+  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
+  const isSuperAdmin = userRow.role === "superadmin"
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
-  if (!marketingReady) blockers.push("No marketing tier selected")
+  // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
+  if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
   const currentStage = (listing.lifecycle_stage ?? "LEAD") as ListingStage
   const allStages = getAllStages()
@@ -224,8 +234,6 @@ const { data: listingVendorBookings } = await supabase
   const validNextStages = allStages
     .filter(s => s.allowedFrom.includes(currentStage))
     .map(s => s.stage)
-
-  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-background">
@@ -317,6 +325,7 @@ const { data: listingVendorBookings } = await supabase
             campaignReady={!!currentTier}
             assetsCreated={media.length}
             assetsRequired={10}
+            isSuperAdmin={isSuperAdmin}
           />
           <SellerUpdateReadinessCard
             listingId={listingId}
@@ -381,14 +390,14 @@ const { data: listingVendorBookings } = await supabase
             />
           </div>
           {(listingVendorBookings ?? []).length > 0 && (
-            <VendorBookingsPanel bookings={listingVendorBookings ?? []} />
+            <VendorBookingsPanel bookings={(listingVendorBookings ?? []) as any} />
           )}
         </div>
 
         {(currentStage === "COMING_SOON_PREP" ||
           currentStage === "COMING_SOON_ACTIVE" ||
           currentStage === "MEDIA_APPROVED" ||
-          currentStage === "PRE_LISTING") && (
+          (currentStage as string) === "PRE_LISTING") && (
           <div className="mb-6">
             <ComingSoonCommandCard
               listingId={listingId}
@@ -432,6 +441,7 @@ const { data: listingVendorBookings } = await supabase
           brokerageId={userRow.brokerage_id}
           canLaunch={mediaReady && publishReady && marketingReady}
           blockers={blockers}
+          isSuperAdmin={isSuperAdmin}
         />
         <StageTimeline
           listing={listing}

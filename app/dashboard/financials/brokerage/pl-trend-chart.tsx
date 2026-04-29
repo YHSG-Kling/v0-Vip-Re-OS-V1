@@ -73,10 +73,10 @@ export function PLTrendChart({ data }: PLTrendChartProps) {
             axisLine={false}
           />
           <Tooltip
-            formatter={(value: number, name: string) => [
+            formatter={((value: number, name: string) => [
               formatTooltipCurrency(value),
               name === "gci" ? "GCI" : name === "brokerageNet" ? "Brokerage Net" : "Agent Splits",
-            ]}
+            ]) as any}
             contentStyle={{
               backgroundColor: "hsl(var(--background))",
               border: "1px solid hsl(var(--border))",

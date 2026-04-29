@@ -38,11 +38,7 @@ export async function shareListingPost(params: {
   }
 
   // Feature access check
-  const canAccess = await canAccessFeature({
-    featureKey: "social_automation",
-    brokerageId: params.brokerageId,
-    userId: params.agentUserId,
-  })
+  const canAccess = await canAccessFeature(params.agentUserId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }

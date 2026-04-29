@@ -6,6 +6,8 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { createServiceClient } from "@/lib/supabase/service"
 import { z } from "zod"
 
 // ============================================================================
@@ -218,10 +220,25 @@ export async function generateSellerNetSheet(params: {
   }
 
   try {
-    // TODO: Commission Engine 8.0 — replace with getDefaultCommissionStructure()
-    // Commission math must not live in presentation layer.
-    const commission = 0
-    const commissionRate = params.commissionRate ?? 3
+    // Resolve commission rate: caller-supplied → brokerage default → 3%
+    let commissionRate = params.commissionRate
+    if (commissionRate == null) {
+      try {
+        const service = createServiceClient()
+        const { data: agentRow } = await service
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .maybeSingle()
+        if (agentRow?.brokerage_id) {
+          const structure = await getDefaultCommissionStructure(agentRow.brokerage_id, params.agentId)
+          commissionRate = structure.grossRateDecimal * 100
+        }
+      } catch {
+        // No default structure configured — fall back to industry default
+      }
+      commissionRate = commissionRate ?? 3
+    }
     
     const { object: netSheet } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -439,7 +456,7 @@ Listing:
 ${JSON.stringify(listing || {}, null, 2)}
 
 Agent:
-${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email } || {}, null, 2)}
+${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email }, null, 2)}
 
 Brochure Type: ${params.brochureType}
 

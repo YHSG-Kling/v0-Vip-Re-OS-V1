@@ -74,6 +74,8 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
       .eq('id', leadId)
 
     // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
+    let agentAssigned: string | null = null
+
     await supabase.from('activities').insert({
       activity_type: 'lead_scoring',
       title: `Lead Scored: ${scoringResult.finalScore}/100`,
@@ -97,8 +99,6 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
 
     const routingDecision = routingEligibility.eligible ? 'assign_agent' : 'continue_ai_nurturing'
     console.log(`[LeadGovernance] Routing decision: ${routingDecision}`)
-
-    let agentAssigned: string | null = null
 
     // STEP 6: ASSIGN AGENT IF ELIGIBLE
     if (routingEligibility.eligible) {

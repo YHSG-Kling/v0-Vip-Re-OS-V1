@@ -131,16 +131,12 @@ export async function linkQrToAsset(
   // Emit kernel event
   await processKernelEvent({
     event: KernelEvent.QR_ATTACHED_TO_ASSET,
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     entityType: "marketing_asset",
     entityId: params.marketingAssetId,
-    metadata: {
-      qr_code_id: params.qrCodeId,
-      placement_type: params.placementType,
-    },
   }).catch((err) => console.error("[QrAssetLinker] Kernel event failed:", err))
 
-  return { success: true, linkId: link.id }
+  return { success: true, linkId: link.id ?? "" }
 }
 
 // ─── UNLINK QR FROM ASSET ─────────────────────────────────────────────────────

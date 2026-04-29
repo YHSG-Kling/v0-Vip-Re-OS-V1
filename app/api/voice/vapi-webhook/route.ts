@@ -268,7 +268,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           voice_call_id: voiceCallRow.id,
           script_used: "inbound",
           appointment_set: false,
-        }).catch(() => {})
+        }).then(() => {}, () => {})
       }
     }
 
@@ -444,7 +444,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             ...(appointmentSet ? { appointment_datetime: new Date().toISOString() } : {}),
           })
           .eq("id", isaCall.id)
-          .catch(() => {})
+          .then(() => {}, () => {})
 
         // Notify agent when lead is highly qualified but appointment not yet set
         if (!appointmentSet && qualScore >= 60 && voiceCall.contact_id && voiceCall.agent_id) {
@@ -456,7 +456,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             body:         `Score: ${qualScore}/100. Intent: ${intentPrimary?.replace(/_/g, " ")}.`,
             entity_type:  "contact",
             entity_id:    voiceCall.contact_id,
-          }).catch(() => {})
+          }).then(() => {}, () => {})
         }
       }
 
@@ -507,7 +507,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.lead_id)
-            .catch(() => {})
+            .then(() => {}, () => {})
 
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
@@ -516,14 +516,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             title: "Lead requested no further contact via phone",
             description: callNoteSummary,
             status: "completed",
-          }).catch(() => {})
+          }).then(() => {}, () => {})
         } else {
           // Neutral: add notes, keep lead in AI queue
           await supabase
             .from("leads")
             .update({ notes: callNoteSummary, updated_at: new Date().toISOString() })
             .eq("id", voiceCall.lead_id)
-            .catch(() => {})
+            .then(() => {}, () => {})
         }
 
       } else if (voiceCall.contact_id) {
@@ -540,7 +540,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .catch(() => {})
+            .then(() => {}, () => {})
 
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
@@ -549,7 +549,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             title: "Contact requested no further phone/SMS contact",
             description: callNoteSummary,
             status: "completed",
-          }).catch(() => {})
+          }).then(() => {}, () => {})
 
         } else {
           // Positive or neutral: update contact with call notes
@@ -560,7 +560,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .catch(() => {})
+            .then(() => {}, () => {})
 
           // Notify assigned agent on strong positive signal
           if (isPositiveOutcome && voiceCall.agent_id) {
@@ -572,7 +572,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               body: callNoteSummary,
               entity_type: "contact",
               entity_id: voiceCall.contact_id,
-            }).catch(() => {})
+            }).then(() => {}, () => {})
           }
         }
       }

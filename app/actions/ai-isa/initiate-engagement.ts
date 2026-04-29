@@ -303,11 +303,15 @@ async function dispatchToChannel(
     const videoResult = await generateHeyGenVideo({
       leadId: lead.id,
       firstName: lead.first_name || 'there',
+      brokerageId: lead.brokerage_id,
+      recipientEmail: lead.email ?? '',
       motivation_type: lead.motivation_type,
       property_interest: lead.property_interest,
       timeline: lead.timeline,
     })
-    const finalEmailBody = await embedVideoInEmail(body, videoResult.videoUrl)
+    // HeyGen rendering is async — videoId is a provider message ID, not a playable URL.
+    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+    const finalEmailBody = await embedVideoInEmail(body, null)
 
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({
@@ -369,6 +373,7 @@ async function dispatchToChannel(
     if (shouldSendMail) {
       await triggerDirectMailCampaign({
         leadId: lead.id,
+        brokerageId: lead.brokerage_id,
         firstName: lead.first_name || '',
         lastName: lead.last_name || '',
         motivation_type: lead.motivation_type,
@@ -414,7 +419,7 @@ async function dispatchToChannel(
     })
 
     if (callContext.blocked) {
-      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockedReason)
+      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockReason)
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
@@ -431,7 +436,7 @@ async function dispatchToChannel(
           ...(callContext.voiceConfig?.voiceId
             ? {
                 voice: {
-                  provider:        callContext.voiceConfig.provider ?? 'elevenlabs',
+                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as any,
                   voiceId:         callContext.voiceConfig.voiceId,
                   stability:       callContext.voiceConfig.stability        ?? 0.7,
                   similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
@@ -448,7 +453,7 @@ async function dispatchToChannel(
     }
 
     // voice_calls row — initiateCall confirmed the call is live
-    const { data: voiceCallRow } = await supabase
+    const voiceCallRow = await supabase
       .from('voice_calls')
       .insert({
         contact_id:  contactRow.id,
@@ -462,8 +467,7 @@ async function dispatchToChannel(
       })
       .select('id')
       .single()
-      .then((r) => r.data)
-      .catch(() => null)
+      .then((r) => r.data, () => null)
 
     // vapi_voice_calls billing row
     await supabase.from('vapi_voice_calls').insert({
@@ -473,7 +477,7 @@ async function dispatchToChannel(
       assistant_id:  vapiAssistantId,
       agent_id:      lead.agent_id ?? null,
       contact_id:    contactRow.id,
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     // ai_isa_calls — use callPurpose as script_used (not raw systemPrompt)
     await supabase.from('ai_isa_calls').insert({
@@ -484,7 +488,7 @@ async function dispatchToChannel(
       isa_campaign_id: null,
       script_used:     'isa_qualification',
       appointment_set: false,
-    }).catch((err: any) => {
+    }).then(() => {}, (err: any) => {
       console.error('[AI-ISA] ai_isa_calls insert error (phone path):', err?.message)
     })
 
@@ -563,6 +567,7 @@ async function dispatchToChannel(
 
     await triggerDirectMailCampaign({
       leadId: lead.id,
+      brokerageId: lead.brokerage_id,
       firstName: lead.first_name || '',
       lastName: lead.last_name || '',
       motivation_type: lead.motivation_type,

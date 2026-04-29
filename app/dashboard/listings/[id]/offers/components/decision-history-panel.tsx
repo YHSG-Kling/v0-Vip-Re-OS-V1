@@ -31,7 +31,7 @@ export function DecisionHistoryPanel({ listingId }: Props) {
     startTransition(async () => {
       const result = await getSellerDecisionHistory(listingId, 20)
       if (result.success) {
-        setHistory(result.decisions ?? [])
+        setHistory((result as any).decisions ?? [])
       } else {
         setError(result.error ?? "Failed to load decision history")
       }

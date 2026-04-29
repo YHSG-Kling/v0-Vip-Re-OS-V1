@@ -17,7 +17,7 @@ export async function triggerCreditIntake(contactId: string, agentId: string) {
     await supabaseService.createRecord("credit_intakes", {
       contact_id: contactId,
       agent_id: agentId,
-      contact_name: contact.name,
+      contact_name: `${contact.first_name} ${contact.last_name}`,
       contact_email: contact.email,
       contact_phone: contact.phone,
       status: "pending",
@@ -34,7 +34,7 @@ export async function triggerCreditIntake(contactId: string, agentId: string) {
       outcome: "pending",
     })
 
-    return { success: true, message: `Credit intake started for ${contact.name}` }
+    return { success: true, message: `Credit intake started for ${contact.first_name} ${contact.last_name}` }
   } catch (error: any) {
     console.error("[Workflow] Credit intake failed:", error)
     return { success: false, error: error.message }
@@ -55,7 +55,7 @@ export async function triggerCreditReferral(contactId: string, agentId: string, 
       partner_id: partnerId,
       partner_type: "credit_repair",
       status: "sent",
-      contact_name: contact.name,
+      contact_name: `${contact.first_name} ${contact.last_name}`,
       contact_email: contact.email,
       contact_phone: contact.phone,
       notes: "Credit repair referral",
@@ -92,7 +92,7 @@ export async function triggerLenderReferral(contactId: string, agentId: string, 
       partner_id: lenderId,
       partner_type: "lender",
       status: "sent",
-      contact_name: contact.name,
+      contact_name: `${contact.first_name} ${contact.last_name}`,
       contact_email: contact.email,
       contact_phone: contact.phone,
       notes: "Lender referral for pre-approval",

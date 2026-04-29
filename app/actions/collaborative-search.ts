@@ -4,9 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { v4 as uuidv4 } from "uuid"
 
-// NOTE: collaborative_searches and related tables are not yet provisioned in the database.
-// All functions return safe no-op responses until the migration is run.
-const COLLAB_SEARCH_AVAILABLE = false
+const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'false'
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
 
@@ -176,8 +174,9 @@ export async function inviteFamilyMember(
     .eq("id", searchId)
     .single()
   
-  const inviterName = search?.contacts 
-    ? `${search.contacts.first_name} ${search.contacts.last_name}`
+  const contactObj = (search?.contacts as any)
+  const inviterName = contactObj?.first_name
+    ? `${contactObj.first_name} ${contactObj.last_name}`
     : "A colleague"
 
   await sendCollaborativeSearchInvite({

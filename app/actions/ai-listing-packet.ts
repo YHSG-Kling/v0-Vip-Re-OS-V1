@@ -1,10 +1,14 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+
+// Stage values that indicate the listing is live on MLS and eligible for packet generation
+const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale", "MLS_ACTIVE"]
 
 // =====================================================
 // AI LISTING PACKET SYSTEM
@@ -30,7 +34,7 @@ interface PacketDocument {
   type: string
   name: string
   url?: string
-  content?: string
+  content?: string | Record<string, unknown> | null
   status: "pending" | "generated" | "error"
   generatedAt?: string
 }
@@ -44,31 +48,65 @@ export async function generateListingPacket(config: ListingPacketConfig) {
     return { success: false, error: "Invalid listing or agent ID" }
   }
 
+  // Use service client for listing lookup — packet generation is an admin action
+  // that must work regardless of RLS policies on the listings table.
+  const service = createServiceClient()
   const supabase = await createClient()
 
   try {
-    // Get listing details
-    const { data: listing, error: listingError } = await supabase
+    // Get listing details (service client bypasses RLS)
+    // Split into separate queries to avoid FK join syntax that may not be
+    // registered in PostgREST's schema cache, which silently returns null.
+    const { data: listing, error: listingError } = await service
       .from("listings")
-      .select(`
-        *,
-        contacts:contact_id (first_name, last_name, email, phone),
-        agents:agent_id (first_name, last_name, email, phone, license_number)
-      `)
+      .select("*")
       .eq("id", config.listingId)
       .single()
 
     if (listingError || !listing) {
+      console.error("Listing fetch error:", listingError)
       return { success: false, error: "Listing not found" }
     }
 
-    // Verify listing is live
-    if (listing.stage !== "live") {
+    // Fetch contact separately if listing has a contact_id
+    let contactData: Record<string, unknown> | null = null
+    if (listing.contact_id) {
+      const { data: contact } = await service
+        .from("contacts")
+        .select("first_name, last_name, email, phone")
+        .eq("id", listing.contact_id)
+        .single()
+      contactData = contact
+    }
+
+    // Fetch agent separately if listing has an agent_id
+    let agentData: Record<string, unknown> | null = null
+    if (listing.agent_id) {
+      const { data: agent } = await service
+        .from("agents")
+        .select("first_name, last_name, email, phone, license_number")
+        .eq("id", listing.agent_id)
+        .single()
+      agentData = agent
+    }
+
+    // Reconstruct the data object that the rest of the function expects
+    const listingWithRelations = {
+      ...listing,
+      contacts: contactData,
+      agents: agentData,
+    }
+
+    // Verify listing is in an MLS-active state
+    const listingStage = (listing.stage ?? listing.status ?? "").toLowerCase()
+    const isLive = MLS_LIVE_STAGES.some(s => s.toLowerCase() === listingStage) ||
+      listingStage.includes("active") || listingStage.includes("live")
+    if (!isLive) {
       return { success: false, error: "Listing must be live on MLS before generating packet" }
     }
 
     // Get agent's brokerage_id for the job record
-    const { data: agent } = await supabase
+    const { data: agent } = await service
       .from("agents")
       .select("brokerage_id")
       .eq("user_id", config.agentId)
@@ -94,32 +132,32 @@ export async function generateListingPacket(config: ListingPacketConfig) {
 
     // Generate each requested document
     if (config.includeFlyer) {
-      const flyer = await generateListingFlyer(listing)
+      const flyer = await generateListingFlyer(listingWithRelations)
       documents.push(flyer)
     }
 
     if (config.includeSellerDisclosure) {
-      const disclosure = await compileSellerDisclosure(listing)
+      const disclosure = await compileSellerDisclosure(listingWithRelations)
       documents.push(disclosure)
     }
 
     if (config.includeUtilitiesForm) {
-      const utilities = await generateUtilitiesForm(listing)
+      const utilities = await generateUtilitiesForm(listingWithRelations)
       documents.push(utilities)
     }
 
     if (config.includeGISReport) {
-      const gisReport = await fetchGISPropertyReport(listing)
+      const gisReport = await fetchGISPropertyReport(listingWithRelations)
       documents.push(gisReport)
     }
 
     if (config.includeTaxRecord) {
-      const taxRecord = await fetchTaxRecordReport(listing)
+      const taxRecord = await fetchTaxRecordReport(listingWithRelations)
       documents.push(taxRecord)
     }
 
     if (config.includeAppraiserReport) {
-      const appraiserReport = await fetchAppraiserSiteReport(listing)
+      const appraiserReport = await fetchAppraiserSiteReport(listingWithRelations)
       documents.push(appraiserReport)
     }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useTransition } from "react"
+import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
@@ -14,6 +14,11 @@ import { generateCopilotPlan } from "@/app/actions/workflows"
 import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
+import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
+import { createPortalInviteForContact } from "@/app/actions/portal-invites"
+import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
+import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
+import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -57,6 +62,11 @@ import {
   UserCircle,
   LayoutDashboard,
   Network,
+  Send,
+  Star,
+  MessageCircle,
+  CalendarPlus,
+  Workflow,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -83,20 +93,28 @@ interface Contact {
   first_name: string
   last_name: string
   email: string
-  phone?: string
-  contact_type?: string
-  contact_persona?: string
-  buyer_stage?: string
-  status?: string
-  city?: string
-  state?: string
-  zip_code?: string
-  lead_source?: string
-  created_at?: string
-  engagement_score?: number
+  phone?: string | null
+  contact_type?: string | null
+  contact_persona?: string | null
+  buyer_stage?: string | null
+  status?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
+  lead_source?: string | null
+  created_at?: string | null
+  engagement_score?: number | null
   /** DB column: last_contacted_at */
   last_contacted_at?: string | null
   referral_potential?: "high" | "medium" | "low" | null
+  // Communication opt-out / DNC fields (selected by getContacts)
+  dnc_status?: boolean | null
+  email_opt_out?: boolean | null
+  sms_opt_out?: boolean | null
+  phone_opt_out?: boolean | null
+  direct_mail_opt_out?: boolean | null
+  source?: string | null
+  source_family?: string | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -222,6 +240,11 @@ export default function CRMPage() {
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor">("all")
   const [loading, setLoading] = useState(true)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchGenRef = useRef(0)
+  const searchQueryRef = useRef("")
+  const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
   // Selected contact detail state
@@ -251,8 +274,27 @@ export default function CRMPage() {
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
   const [pendingDraftText, setPendingDraftText] = useState<string | null>(null)
 
+  // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
+  const [contactActivities, setContactActivities] = useState<any[]>([])
+  const [callAnalyses, setCallAnalyses] = useState<Record<string, any>>({})
+  const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
+
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
+
+  // Communications hub dialog states
+  const [smsDialogOpen, setSmsDialogOpen] = useState(false)
+  const [smsText, setSmsText] = useState("")
+  const [smsSending, setSmsSending] = useState(false)
+  const [apptDialogOpen, setApptDialogOpen] = useState(false)
+  const [apptTitle, setApptTitle] = useState("")
+  const [apptDate, setApptDate] = useState("")
+  const [apptTime, setApptTime] = useState("")
+  const [apptSending, setApptSending] = useState(false)
+  const [autoDialogOpen, setAutoDialogOpen] = useState(false)
+  const [autoWorkflowId, setAutoWorkflowId] = useState("")
+  const [autoEventName, setAutoEventName] = useState("")
+  const [autoSending, setAutoSending] = useState(false)
 
   // Suggested follow-up actions for the selected contact
   const [suggestedActions, setSuggestedActions] = useState<any[]>([])
@@ -279,6 +321,7 @@ export default function CRMPage() {
 
   // Journey & Team tab — lazy loaded on first tab activation
   const [journeyTeamData, setJourneyTeamData] = useState<{
+    transactionId: string | null
     milestones:   any[]
     dealTeam:     any[]
     lenders:      any[]
@@ -287,6 +330,7 @@ export default function CRMPage() {
   } | null>(null)
   const [journeyTeamLoading, setJourneyTeamLoading] = useState(false)
   const [journeyTeamLoaded, setJourneyTeamLoaded] = useState(false)
+  const [journeyTeamError, setJourneyTeamError] = useState<string | null>(null)
 
   // Active CRM tab
   const [activeTab, setActiveTab] = useState("overview")
@@ -310,7 +354,7 @@ export default function CRMPage() {
       .select("id, brokerage_id")
       .eq("user_id", user.id)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: { id: string; brokerage_id: string } | null }) => {
         if (data) {
           setAgentId(data.id)
           setBrokerageId(data.brokerage_id)
@@ -321,7 +365,7 @@ export default function CRMPage() {
             .select("brokerage_id")
             .eq("id", user.id)
             .maybeSingle()
-            .then(({ data: userData }) => {
+            .then(({ data: userData }: { data: { brokerage_id: string } | null }) => {
               if (userData?.brokerage_id) setBrokerageId(userData.brokerage_id)
             })
             .catch(() => {})
@@ -337,7 +381,14 @@ export default function CRMPage() {
       const result = await getContacts({ limit: 100 })
       if (result.success) {
         setContacts(result.contacts)
-        setFiltered(result.contacts)
+        if (searchQueryRef.current) {
+          // Search is active — re-fetch with current term so filtered reflects fresh data
+          getContacts({ search: searchQueryRef.current, limit: 100 })
+            .then((r) => { if (r.success) setFiltered(r.contacts) })
+            .catch(() => {/* non-blocking */})
+        } else {
+          setFiltered(result.contacts)
+        }
         // Lead scores are loaded lazily per-contact when a contact is selected
         // to avoid firing 20 simultaneous AI/DB server actions that crash the browser.
       } else {
@@ -364,8 +415,8 @@ export default function CRMPage() {
           await Promise.all([
             getContactById(contactId),
             detectClientChurn(contactId).catch(() => null),
-            getActiveAutoPilotPlans(agentId).catch(() => []),
-            aiSuggestFollowUp({ contactId, agentId }).catch(() => ({ suggestions: [] })),
+            getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
+            aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
             getConversationIntelligence(contactId).catch(() => null),
           ])
 
@@ -396,7 +447,7 @@ export default function CRMPage() {
           .order("qualified_at", { ascending: false })
           .limit(1)
           .maybeSingle()
-          .then(({ data }) => {
+          .then(({ data }: { data: { qualification_score: any; qualification_result: any; qualification_signals: any; qualified_at: any; assigned_at: any } | null }) => {
             if (data) {
               setIsaHandoffContext({
                 qualificationScore: data.qualification_score ?? undefined,
@@ -412,7 +463,7 @@ export default function CRMPage() {
         setChurnRisk(churnResult)
         setAutopilotPlans(Array.isArray(autopilotResult) ? autopilotResult : [])
         setSuggestedActions(followUpResult?.suggestions || [])
-        setConversationIntelligence(convIntelResult && !convIntelResult.error ? convIntelResult : null)
+        setConversationIntelligence(Array.isArray(convIntelResult) && convIntelResult.length > 0 ? convIntelResult[0] : null)
       } catch (err) {
         console.error("Failed to load contact detail:", err)
       } finally {
@@ -451,6 +502,7 @@ export default function CRMPage() {
       setPortalInviteData(null)
       setJourneyTeamData(null)
       setJourneyTeamLoaded(false)
+      setJourneyTeamError(null)
       setActiveTab("overview")
       return
     }
@@ -484,9 +536,54 @@ export default function CRMPage() {
       .catch(() => {/* non-blocking */})
   }, [selectedContactId])
 
+  // Load conversations for the selected contact so RelationshipRadar and
+  // CommunicationHealthPanel both have accurate thread counts / history.
+  useEffect(() => {
+    if (!selectedContactId) {
+      setConversations([])
+      return
+    }
+    const supabase = createClient()
+    supabase
+      .from("conversations")
+      .select("*")
+      .eq("contact_id", selectedContactId)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(({ data }: { data: any[] | null }) => setConversations(data || []))
+      .catch(() => setConversations([]))
+  }, [selectedContactId])
+
+  // Load recent activities (notes, calls, etc.) for the selected contact
+  useEffect(() => {
+    if (!selectedContactId) {
+      setContactActivities([])
+      return
+    }
+    setContactActivities([])
+    activitiesGenRef.current += 1
+    const gen = activitiesGenRef.current
+    const supabase = createClient()
+    supabase
+      .from("activities")
+      .select("id, activity_type, title, description, notes, created_at, contact_id")
+      .eq("contact_id", selectedContactId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then(({ data }: { data: any[] | null }) => {
+        if (gen !== activitiesGenRef.current) return  // stale
+        setContactActivities(data || [])
+      })
+      .catch(() => {
+        if (gen !== activitiesGenRef.current) return
+        setContactActivities([])
+      })
+  }, [selectedContactId])
+
   // Lazy-load Journey & Team tab data
-  const loadJourneyTeam = useCallback(async (contactId: string) => {
-    if (journeyTeamLoaded || journeyTeamLoading) return
+  const loadJourneyTeam = useCallback(async (contactId: string, force = false) => {
+    if (!force && (journeyTeamLoaded || journeyTeamLoading)) return
+    setJourneyTeamError(null)
     setJourneyTeamLoading(true)
     const supabase = createClient()
     try {
@@ -540,14 +637,17 @@ export default function CRMPage() {
       ])
 
       setJourneyTeamData({
+        transactionId: txId,
         milestones:  milestonesRes.data ?? [],
         dealTeam:    dealTeamRes.data ?? [],
         lenders:     lendersRes.data ?? [],
         vendors:     vendorsRes.data ?? [],
         timeline:    timelineRes.data ?? [],
       })
-    } catch {/* non-blocking */}
-    finally {
+    } catch (e: any) {
+      console.error("[CRM] loadJourneyTeam error:", e)
+      setJourneyTeamError("Failed to load deal data. Please try again.")
+    } finally {
       setJourneyTeamLoading(false)
       setJourneyTeamLoaded(true)
     }
@@ -569,7 +669,7 @@ export default function CRMPage() {
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: any | null }) => {
         setCopilotPlan(data ?? null)
         setLoadingPlan(false)
       })
@@ -595,7 +695,7 @@ export default function CRMPage() {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
-        .then(({ data }) => setRelatedListing(data ?? null))
+        .then(({ data }: { data: any | null }) => setRelatedListing(data ?? null))
         .catch(() => setRelatedListing(null))
     }
 
@@ -607,34 +707,38 @@ export default function CRMPage() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => setRelatedTransaction(data ?? null))
+      .then(({ data }: { data: any | null }) => setRelatedTransaction(data ?? null))
       .catch(() => setRelatedTransaction(null))
   }, [selectedContactId, selectedContact])
 
-  useEffect(() => {
-    const q = search.toLowerCase()
-    setFiltered(
-      contacts.filter((c) => {
-        const matchesSearch =
-          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
-          (c.email ?? "").toLowerCase().includes(q) ||
-          (c.phone ?? "").includes(q) ||
-          (c.city ?? "").toLowerCase().includes(q) ||
-          (c.state ?? "").toLowerCase().includes(q) ||
-          (c.status ?? "").toLowerCase().includes(q) ||
-          (c.contact_type ?? "").toLowerCase().includes(q)
+  // Server-side search: debounce input and call getContacts with the search term.
+  // This replaces the old client-side .filter() that was capped at the 100 loaded records.
+  const handleSearchChange = useCallback((query: string) => {
+    setSearch(query)
+    searchQueryRef.current = query
 
-        const ct = (c.contact_type ?? "").toLowerCase()
-        const matchesType =
-          typeFilter === "all" ||
-          (typeFilter === "buyer" && (ct.includes("buyer") || ct === "both")) ||
-          (typeFilter === "seller" && (ct.includes("seller") || ct === "both")) ||
-          (typeFilter === "investor" && ct.includes("investor"))
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current)
+    }
 
-        return matchesSearch && matchesType
-      })
-    )
-  }, [search, contacts, typeFilter])
+    searchGenRef.current += 1
+    const gen = searchGenRef.current
+
+    searchDebounceRef.current = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const result = await getContacts({ search: query || undefined, limit: 100 })
+        if (gen !== searchGenRef.current) return  // stale — ignore
+        if (result.success) {
+          setFiltered(result.contacts)
+        }
+      } catch {
+        // non-blocking — leave current list intact on error
+      } finally {
+        if (gen === searchGenRef.current) setSearchLoading(false)
+      }
+    }, 300)
+  }, [])
 
   // ── Add Contact dialog state ────────────────────────────────────────────────
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -682,7 +786,7 @@ export default function CRMPage() {
       setAddDialogOpen(false)
       toast.success(`${addForm.first_name} ${addForm.last_name} added`)
       await loadContacts()
-      if (result.contact?.id) handleSelectContact(result.contact.id)
+      if (result.contact?.id) handleSelectContact(result.contact.id as string)
     } catch {
       setAddFormError("Unexpected error. Please try again.")
     } finally {
@@ -691,41 +795,45 @@ export default function CRMPage() {
   }
 
   // Handlers for OS components
-  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
+  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive"): Promise<void> => {
     if (!selectedContactId || !agentId) return
-    startTransition(async () => {
-      const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-      if (result?.success) {
-        toast.success(result.message ?? "AI Autopilot enabled")
-        // Re-fetch both the agent's plans list and the copilot plan for this contact
-        const [plans] = await Promise.all([
-          getActiveAutoPilotPlans(agentId).catch(() => []),
-        ])
-        setAutopilotPlans(Array.isArray(plans) ? plans : [])
-        // Re-fetch the copilot plan for this contact so the plan card appears
-        const supabase = createClient()
-        const { data: updatedPlan } = await supabase
-          .from("copilot_plans")
-          .select("id, plan_name, status, next_action, next_action_date, updated_at")
-          .eq("contact_id", selectedContactId)
-          .eq("status", "active")
-          .order("updated_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        setCopilotPlan(updatedPlan ?? null)
-      } else {
-        toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
-      }
-    })
+    const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
+    if (result?.success) {
+      toast.success(result.message ?? "AI Autopilot enabled")
+      const [plans] = await Promise.all([
+        getActiveAutoPilotPlans(agentId).catch(() => []),
+      ])
+      setAutopilotPlans(Array.isArray(plans) ? plans : [])
+      const supabase = createClient()
+      const { data: updatedPlan } = await supabase
+        .from("copilot_plans")
+        .select("id, plan_name, status, next_action, next_action_date, updated_at")
+        .eq("contact_id", selectedContactId)
+        .eq("status", "active")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      setCopilotPlan(updatedPlan ?? null)
+    } else {
+      toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
+    }
   }
 
   const handleToggleAutopilot = async (planId: string, pause: boolean) => {
     startTransition(async () => {
-      await toggleAutoPilot({ planId, pause })
+      const result = await toggleAutoPilot(planId, pause)
+      if (!(result as any).success) {
+        toast.error((result as any).error ?? "Failed to update autopilot")
+        return
+      }
+      if (pause) {
+        setAutopilotPlans(prev => prev.filter(p => p.id !== planId))
+      }
       if (agentId) {
         const plans = await getActiveAutoPilotPlans(agentId)
-        setAutopilotPlans(plans)
+        setAutopilotPlans(Array.isArray(plans) ? plans : [])
       }
+      toast.success(pause ? "AI Autopilot paused" : "AI Autopilot resumed")
     })
   }
 
@@ -777,11 +885,23 @@ export default function CRMPage() {
 
   const handleSaveNote = async (note: string) => {
     if (!selectedContactId) return
+    const noteContactId = selectedContactId
     setNoteSaving(true)
     try {
-      const result = await addContactNote(selectedContactId, note)
+      const result = await addContactNote(noteContactId, note)
       if (result.success) {
         toast.success("Note saved")
+        // Only update activity feed if the same contact is still selected
+        if (selectedContactId !== noteContactId) return
+        setContactActivities(prev => [{
+          id: Date.now().toString(),
+          activity_type: "note",
+          title: "Note",
+          description: note,
+          notes: note,
+          created_at: new Date().toISOString(),
+          contact_id: noteContactId,
+        }, ...prev])
       } else {
         toast.error(result.error ?? "Failed to save note")
       }
@@ -801,6 +921,42 @@ export default function CRMPage() {
     setSelectedContactId(null)
     setSelectedContact(null)
     router.push("/crm", { scroll: false })
+  }
+
+  const handleAnalyzeCall = async (activity: any) => {
+    if (!selectedContactId || !user) return
+    setAnalyzingCallId(activity.id)
+    try {
+      const result = await analyzeCallTranscript({
+        transcript: activity.description || activity.notes || activity.title || "Call activity",
+        contactId: selectedContactId,
+        agentId: agentId ?? user.id,
+        callType: activity.direction === "inbound" ? "inbound" : "outbound",
+      })
+      if (result.success && result.analysis) {
+        setCallAnalyses(prev => ({ ...prev, [activity.id]: result.analysis }))
+      } else {
+        toast.error("Could not analyze call")
+      }
+    } finally {
+      setAnalyzingCallId(null)
+    }
+  }
+
+  const handleCallSummaryEmail = async (activity: any) => {
+    if (!user) return
+    const analysis = callAnalyses[activity.id]
+    if (!analysis?.id) return
+    const result = await generateCallSummaryEmail({
+      analysisId: analysis.id,
+      recipientType: "client",
+      agentId: agentId ?? user.id,
+    })
+    if ((result as any).success) {
+      toast.success("Summary email drafted")
+    } else {
+      toast.error("Could not generate summary email")
+    }
   }
 
   if (authLoading) {
@@ -865,6 +1021,8 @@ export default function CRMPage() {
                 onEnableAutopilot={handleEnableAutopilot}
                 onToggleAutopilot={handleToggleAutopilot}
                 onShareSocialPost={handleShareSocialPost}
+                onChannelToggled={() => { if (selectedContactId) loadContactDetail(selectedContactId) }}
+                onAddNote={() => setActiveTab("comms")}
                 loading={isPending}
               />
             </div>
@@ -1000,7 +1158,218 @@ export default function CRMPage() {
                       Open Inbox
                     </Button>
                   </Link>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={async () => {
+                      if (!selectedContactId || !user) return
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id })
+                      if (result.success && (result as any).scores) {
+                        const overall = (result as any).scores.overallScore ?? 0
+                        setLeadScores(prev => ({
+                          ...prev,
+                          [selectedContactId]: {
+                            label: overall >= 60 ? "High" : "Medium",
+                            score: overall,
+                          },
+                        }))
+                        toast.success(`AI Score: ${overall}/100`)
+                      } else {
+                        toast.error("Scoring failed")
+                      }
+                    }}
+                  >
+                    <Star className="h-3.5 w-3.5" />
+                    Run AI Score
+                  </Button>
+                  {(!portalInviteData?.status || portalInviteData.status === "not_invited") && brokerageId && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full gap-1.5 text-xs justify-start"
+                      onClick={async () => {
+                        if (!selectedContactId || !brokerageId || !user) return
+                        // Suppression check — do not send magic link to opted-out or DNC contacts
+                        if (
+                          selectedContact?.dnc_status ||
+                          selectedContact?.email_opt_out
+                        ) {
+                          toast.error("Cannot send portal invite: contact has opted out or is on the Do Not Contact list")
+                          return
+                        }
+                        const result = await createPortalInviteForContact({
+                          contactId: selectedContactId,
+                          brokerageId,
+                          invitedByUserId: user.id,
+                          sendMagicLink: true,
+                        })
+                        if (result.success) {
+                          setPortalInviteStatus("invited")
+                          setPortalInviteData(prev => ({ ...prev, status: "invited", invited_at: new Date().toISOString() } as any))
+                          toast.success("Portal invite sent")
+                        } else {
+                          toast.error(result.error ?? "Invite failed")
+                        }
+                      }}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      Send Portal Invite
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setSmsText(""); setSmsDialogOpen(true) }}
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    Send SMS
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setApptTitle(""); setApptDate(""); setApptTime(""); setApptDialogOpen(true) }}
+                  >
+                    <CalendarPlus className="h-3.5 w-3.5" />
+                    Schedule Appointment
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setAutoWorkflowId(""); setAutoEventName(""); setAutoDialogOpen(true) }}
+                  >
+                    <Workflow className="h-3.5 w-3.5" />
+                    Trigger Automation
+                  </Button>
                 </div>
+
+                {/* SMS Dialog */}
+                <Dialog open={smsDialogOpen} onOpenChange={setSmsDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Send SMS</DialogTitle>
+                    </DialogHeader>
+                    <Textarea
+                      placeholder="Type your SMS message (160 chars)"
+                      maxLength={160}
+                      value={smsText}
+                      onChange={e => setSmsText(e.target.value)}
+                      rows={3}
+                    />
+                    <p className="text-xs text-muted-foreground text-right">{smsText.length}/160</p>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setSmsDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!smsText.trim() || smsSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setSmsSending(true)
+                          const result = await sendSMS({ contactId: selectedContactId, message: smsText })
+                          setSmsSending(false)
+                          if (result.success) { toast.success("SMS sent"); setSmsDialogOpen(false) }
+                          else toast.error((result as any).error ?? "SMS failed")
+                        }}
+                      >
+                        {smsSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Send
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Schedule Appointment Dialog */}
+                <Dialog open={apptDialogOpen} onOpenChange={setApptDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Schedule Appointment</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs">Title</Label>
+                        <Input value={apptTitle} onChange={e => setApptTitle(e.target.value)} placeholder="Listing consultation" className="mt-1" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">Date</Label>
+                          <Input type="date" value={apptDate} onChange={e => setApptDate(e.target.value)} className="mt-1" />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Time</Label>
+                          <Input type="time" value={apptTime} onChange={e => setApptTime(e.target.value)} className="mt-1" />
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setApptDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!apptTitle || !apptDate || !apptTime || apptSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setApptSending(true)
+                          const startIso = new Date(`${apptDate}T${apptTime}`).toISOString()
+                          const endIso = new Date(new Date(`${apptDate}T${apptTime}`).getTime() + 60 * 60 * 1000).toISOString()
+                          const result = await scheduleAppointment({
+                            contactId: selectedContactId,
+                            calendarId: "default",
+                            title: apptTitle,
+                            startTime: startIso,
+                            endTime: endIso,
+                            meetingType: "in_person",
+                          })
+                          setApptSending(false)
+                          if (result.success) { toast.success("Appointment scheduled"); setApptDialogOpen(false) }
+                          else toast.error((result as any).error ?? "Scheduling failed")
+                        }}
+                      >
+                        {apptSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Schedule
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Trigger Automation Dialog */}
+                <Dialog open={autoDialogOpen} onOpenChange={setAutoDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Trigger Automation</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs">GHL Workflow ID</Label>
+                        <Input value={autoWorkflowId} onChange={e => setAutoWorkflowId(e.target.value)} placeholder="workflow_abc123" className="mt-1" />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Event Name (optional)</Label>
+                        <Input value={autoEventName} onChange={e => setAutoEventName(e.target.value)} placeholder="nurture_sequence" className="mt-1" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!autoWorkflowId.trim() || autoSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setAutoSending(true)
+                          const result = await triggerAutomation({
+                            contactId: selectedContactId,
+                            workflowId: autoWorkflowId,
+                            eventName: autoEventName || undefined,
+                          })
+                          setAutoSending(false)
+                          if (result.success) { toast.success("Automation triggered"); setAutoDialogOpen(false) }
+                          else toast.error((result as any).error ?? "Failed")
+                        }}
+                      >
+                        {autoSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Trigger
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
 
                 {/* Related listing/transaction in sidebar */}
                 {(relatedListing || relatedTransaction) && (
@@ -1191,9 +1560,38 @@ export default function CRMPage() {
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                         <span className="ml-2 text-sm text-muted-foreground">Loading deal data...</span>
                       </div>
-                    ) : !journeyTeamData ? (
-                      <div className="text-sm text-muted-foreground text-center py-8">
-                        No transaction found for this contact.
+                    ) : journeyTeamError ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm text-destructive">{journeyTeamError}</p>
+                        <Button size="sm" variant="outline" onClick={() => { if (selectedContactId) loadJourneyTeam(selectedContactId, true) }}>
+                          Retry
+                        </Button>
+                      </div>
+                    ) : !journeyTeamData || journeyTeamData.transactionId === null ? (
+                      <div className="py-8 text-center space-y-3">
+                        <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto">
+                          <Users className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">No active transaction</p>
+                          <p className="text-xs text-muted-foreground max-w-xs mx-auto">
+                            Journey &amp; team details will appear here once a transaction is started for this contact — milestones, deal team, lenders, and vendors.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            if (selectedContactId) router.push(`/dashboard/transactions?contactId=${encodeURIComponent(selectedContactId)}`)
+                          }}
+                        >
+                          Start a Transaction
+                        </Button>
+                      </div>
+                    ) : journeyTeamData.milestones.length === 0 && journeyTeamData.dealTeam.length === 0 && journeyTeamData.lenders.length === 0 && journeyTeamData.vendors.length === 0 && journeyTeamData.timeline.length === 0 ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm font-medium">Transaction in progress</p>
+                        <p className="text-xs text-muted-foreground">Milestones and team details will appear here as the deal progresses.</p>
                       </div>
                     ) : (
                       <>
@@ -1563,6 +1961,83 @@ export default function CRMPage() {
                       onSaveNote={handleSaveNote}
                       saving={noteSaving}
                     />
+
+                    {/* Activity feed — updates optimistically after note save */}
+                    {contactActivities.length > 0 && (
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-gray-500" />
+                            Recent Activity
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          {contactActivities.map((item: any) => {
+                            const isCall = item.activity_type === "phone_call" || item.activity_type === "call" || item.activity_type === "outbound_call" || item.activity_type === "inbound_call"
+                            const callAnalysis = callAnalyses[item.id]
+                            return (
+                              <div key={item.id} className="flex gap-3 pb-3 border-b last:border-0">
+                                <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                                <div className="flex-1 space-y-0.5">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-medium text-xs capitalize text-foreground">
+                                      {(item.activity_type ?? "activity").replace(/_/g, " ")}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {item.created_at ? format(new Date(item.created_at), "MMM d, h:mm a") : ""}
+                                    </span>
+                                  </div>
+                                  {(item.description || item.notes || item.title) && (
+                                    <p className="text-xs text-muted-foreground line-clamp-2">
+                                      {item.description || item.notes || item.title}
+                                    </p>
+                                  )}
+                                  {isCall && !callAnalysis && (
+                                    <button
+                                      onClick={() => handleAnalyzeCall(item)}
+                                      disabled={analyzingCallId === item.id}
+                                      className="text-[10px] mt-1 flex items-center gap-1 text-primary hover:underline disabled:opacity-60"
+                                    >
+                                      {analyzingCallId === item.id ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <Sparkles className="h-3 w-3" />
+                                      )}
+                                      Analyze Call
+                                    </button>
+                                  )}
+                                  {callAnalysis && (
+                                    <div className="mt-2 rounded-md bg-blue-50 border border-blue-200 p-2 text-xs space-y-1">
+                                      <p className="font-medium text-blue-800">AI Call Summary</p>
+                                      {callAnalysis.overall_summary && (
+                                        <p className="text-blue-700">{callAnalysis.overall_summary}</p>
+                                      )}
+                                      {callAnalysis.action_items?.length > 0 && (
+                                        <div>
+                                          <p className="font-medium text-blue-800 mt-1">Action Items:</p>
+                                          <ul className="list-disc list-inside space-y-0.5">
+                                            {callAnalysis.action_items.slice(0, 3).map((a: any, i: number) => (
+                                              <li key={i} className="text-blue-700">{typeof a === "string" ? a : a.action}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      <button
+                                        onClick={() => handleCallSummaryEmail(item)}
+                                        className="mt-1 text-[10px] flex items-center gap-1 text-blue-700 hover:underline"
+                                      >
+                                        <MessageCircle className="h-3 w-3" />
+                                        Send Summary Email
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </CardContent>
+                      </Card>
+                    )}
                   </TabsContent>
 
                   {/* ── PORTAL TAB ── */}
@@ -1684,9 +2159,12 @@ export default function CRMPage() {
         <Input
           placeholder="Search by name, email, phone, or city..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-10"
+          onChange={(e) => handleSearchChange(e.target.value)}
+          className="pl-10 pr-10"
         />
+        {searchLoading && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+        )}
       </div>
 
       {/* Contact type filter tabs */}
@@ -1858,7 +2336,7 @@ export default function CRMPage() {
 
       {/* Contact list */}
       {!loading && filtered.length > 0 && (
-        <div className="grid gap-3">
+        <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
           {filtered.map((contact) => (
             <Card
               key={contact.id}
@@ -1983,6 +2461,23 @@ export default function CRMPage() {
                 value={addForm.phone}
                 onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))}
                 placeholder="(555) 000-0000"
+                disabled={addFormSubmitting}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="add-address">Address</Label>
+              <AddressAutocomplete
+                id="add-address"
+                value={(addForm as any).street_address ?? ""}
+                onChange={v => setAddForm((f) => ({ ...f, street_address: v } as any))}
+                onSelect={a => setAddForm((f) => ({
+                  ...f,
+                  street_address: a.street,
+                  city: a.city || f.city,
+                  state: a.state || f.state,
+                  zip_code: a.zip || f.zip_code,
+                } as any))}
+                placeholder="123 Main St, Miami, FL"
                 disabled={addFormSubmitting}
               />
             </div>

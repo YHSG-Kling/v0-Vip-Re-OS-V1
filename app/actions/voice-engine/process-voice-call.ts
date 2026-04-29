@@ -159,7 +159,7 @@ export async function processVoiceCall(
         // STEP 5: Emit AI ISA handoff signal
         if (conversationId) {
           const summary = `Voice call completed with ${contact.first_name || 'contact'}. Transcript available for review.`
-          await emitVoiceHandoffSignal(params.contactId, conversationId, summary)
+          await emitVoiceHandoffSignal(params.contactId, conversationId, summary, params.callMetadata.agentId ?? "", contact.brokerage_id ?? "")
         }
       } else {
         console.error('[v0] [VOICE ENGINE] Failed to ingest transcript:', transcriptResult.error)

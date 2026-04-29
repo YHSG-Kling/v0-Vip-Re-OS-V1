@@ -26,6 +26,9 @@ const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<CalendarEventType, KernelEvent> = {
   isa_followup_email:                      KernelEvent.ISA_OUTREACH_SENT,
   isa_direct_mail:                         KernelEvent.ISA_OUTREACH_SENT,
   isa_video_send:                          KernelEvent.ISA_OUTREACH_SENT,
+  [CalendarEventType.ISA_APPOINTMENT]:     KernelEvent.ISA_APPOINTMENT_SCHEDULED,
+  [CalendarEventType.LISTING_APPOINTMENT]: KernelEvent.LISTING_STAGE_CHANGED,
+  [CalendarEventType.OPEN_HOUSE]:          KernelEvent.OPEN_HOUSE_SCHEDULED,
 }
 
 // ─── SHAPE OF A CALENDAR_EVENTS ROW ──────────────────────────────────────────

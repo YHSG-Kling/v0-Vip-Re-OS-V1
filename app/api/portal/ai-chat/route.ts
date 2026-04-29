@@ -294,10 +294,10 @@ export async function POST(request: Request) {
               entity_type: 'contact',
               entity_id:   contactId,
               priority:    'high',
-            }).catch(() => {})
+            }).then(() => {}, () => {})
           }
         })
-        .catch(() => {})
+        .then(() => {}, () => {})
     }
 
     // ── Persist incoming user message ──────────────────────────────────────────
@@ -307,7 +307,7 @@ export async function POST(request: Request) {
         role:       'user',
         content:    latestText,
         metadata:   { source: 'portal', contact_id: contactId },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     // ── Stream response ────────────────────────────────────────────────────────
@@ -323,7 +323,7 @@ export async function POST(request: Request) {
             role:       'assistant',
             content:    text,
             metadata:   { source: 'portal', contact_id: contactId },
-          }).catch(() => {})
+          }).then(() => {}, () => {})
         }
       },
     })

@@ -2,8 +2,8 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { VoiceCommandCenterClient } from "./VoiceCommandCenterClient"
 import type { VoiceCommandRequest } from "@/app/actions/voice-assistant/handle-voice-command"
-import type { VoiceCommandRow } from "./components/RecentCommandsFeed"
-import type { VoiceCallRow } from "./components/VoiceCallHistoryTable"
+import type { VoiceCommandRow } from "@/app/components/dashboard/voice/RecentCommandsFeed"
+import type { VoiceCallRow } from "@/app/components/dashboard/voice/VoiceCallHistoryTable"
 
 export const metadata = {
   title: "Voice Command Center | VIP Real Estate AI OS",

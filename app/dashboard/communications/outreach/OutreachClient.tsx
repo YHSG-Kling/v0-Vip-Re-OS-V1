@@ -375,7 +375,7 @@ function QualificationsTab({ items }: { items: Qualification[] }) {
   )
 }
 
-function GhostRecoveryTab({ items }: { items: GhostContact[] }) {
+function GhostRecoveryTab({ items, brokerageId }: { items: GhostContact[]; brokerageId: string }) {
   const [localItems, setLocalItems] = useState<GhostContact[]>(items)
   const [pending, setPending]       = useState<string | null>(null)
   const [recovered, setRecovered]   = useState<Set<string>>(new Set())
@@ -383,8 +383,9 @@ function GhostRecoveryTab({ items }: { items: GhostContact[] }) {
   async function handleRecover(g: GhostContact) {
     setPending(g.id)
     const result = await triggerGhostRecovery({
-      contactId:        g.contact_id,
-      suggestedChannel: (g.suggested_channel ?? "email") as any,
+      contactId:  g.contact_id,
+      campaignId: "",
+      brokerageId,
     })
     if (result.success) {
       setRecovered(prev => new Set([...prev, g.id]))
@@ -394,7 +395,7 @@ function GhostRecoveryTab({ items }: { items: GhostContact[] }) {
 
   async function handleSkip(g: GhostContact) {
     setPending(g.id)
-    await skipGhostContact({ contactId: g.contact_id })
+    await skipGhostContact({ contactId: g.contact_id, campaignId: "", brokerageId })
     setLocalItems(prev => prev.filter(x => x.id !== g.id))
     setPending(null)
   }
@@ -523,7 +524,7 @@ export default function OutreachClient({
           <QualificationsTab items={qualifications} />
         )}
         {tab === "ghost" && (
-          <GhostRecoveryTab items={ghostQueue} />
+          <GhostRecoveryTab items={ghostQueue} brokerageId={brokerageId} />
         )}
       </div>
     </div>

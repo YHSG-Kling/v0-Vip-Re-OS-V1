@@ -1,13 +1,19 @@
--- =====================================================
--- MIGRATION 013: Fix contact self-lookup (email → contact_user_id)
--- =====================================================
--- The original auth.is_self_contact() and auth.user_contact_id()
--- matched on email, which breaks when contacts share email addresses
--- or when email changes. This migration switches to contact_user_id
--- (a FK from contacts to users) for reliable self-identification.
--- =====================================================
+-- ============================================================
+-- RLS GOVERNANCE: 013 — Fix auth.is_self_contact() and
+--                        auth.user_contact_id() to use
+--                        contact_user_id FK instead of email JOIN
+-- ============================================================
+-- IMPORTANT: This file must be applied via the Supabase Dashboard
+-- SQL editor (superuser required). The auth schema is not accessible
+-- via the connection string / project database URL.
+--
+-- Status: APPLIED — Functions already corrected in 000-helper-functions.sql
+-- and confirmed live as of migration 111. This file is kept for audit trail.
+-- ============================================================
 
--- Replace email-based self-contact lookup with contact_user_id FK
+-- FIX: Replace email JOIN (case-sensitive, breaks on email changes) with
+-- the contact_user_id FK column (added to contacts table in migration 111).
+
 CREATE OR REPLACE FUNCTION auth.is_self_contact(contact_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -25,4 +31,4 @@ RETURNS UUID AS $$
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 GRANT EXECUTE ON FUNCTION auth.is_self_contact(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION auth.user_contact_id() TO authenticated;
+GRANT EXECUTE ON FUNCTION auth.user_contact_id()     TO authenticated;

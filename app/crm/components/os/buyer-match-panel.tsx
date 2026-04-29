@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, FlaskConical, CheckCircle2, AlertCircle } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
@@ -19,6 +20,30 @@ import {
   notifyNewMatches,
 } from "@/app/actions/ai-property-matching"
 import { requestShowing } from "@/app/actions/smart-insights"
+import { updateContact } from "@/app/actions/contacts"
+import { toast } from "sonner"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { draftSmartEmail } from "@/app/actions/ai-insights"
+import { sendEmail } from "@/app/actions/communications"
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+const BUYER_STAGES = [
+  { value: "new", label: "New Lead" },
+  { value: "nurturing", label: "Nurturing" },
+  { value: "active", label: "Active Buyer" },
+  { value: "qualified", label: "Qualified" },
+  { value: "under_contract", label: "Under Contract" },
+  { value: "closed", label: "Closed" },
+  { value: "lost", label: "Lost" },
+]
 
 interface BuyerMatchPanelProps {
   contactId: string
@@ -31,10 +56,11 @@ interface BuyerMatchPanelProps {
 interface PropertyMatch {
   listing_id: string
   address?: string
-  price?: number
+  price?: number | null
   match_score?: number
-  bedrooms?: number
-  bathrooms?: number
+  bedrooms?: number | null
+  bathrooms?: number | null
+  [key: string]: any
 }
 
 export function BuyerMatchPanel({
@@ -44,7 +70,14 @@ export function BuyerMatchPanel({
   buyerStage,
   contactName,
 }: BuyerMatchPanelProps) {
+  const [stage, setStage] = useState(buyerStage ?? "")
+  // Generation counter to handle rapid stage changes — only apply result from latest request
+  const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState("")
+  const [emailLoading, setEmailLoading] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<any>(null)
   const [matches, setMatches] = useState<PropertyMatch[]>([])
   const [selectedMatch, setSelectedMatch] = useState<string | null>(null)
@@ -73,8 +106,8 @@ export function BuyerMatchPanel({
     setPreviewLoading(true)
     try {
       const result = await previewSearchIntent({ contactId, naturalLanguageQuery: query })
-      if (result.success) {
-        setPreviewIntent(result.intent)
+      if (result.success && 'preview' in result) {
+        setPreviewIntent(result.preview)
       }
     } catch (err) {
       console.error("Preview intent failed:", err)
@@ -92,8 +125,16 @@ export function BuyerMatchPanel({
         contactId,
         naturalLanguageQuery: query,
       })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'results' in result && result.results) {
+        setMatches(result.results.map((r: any) => ({
+          listing_id: r.listing_id,
+          address: [r.city, r.state].filter(Boolean).join(", ") || r.listing_id,
+          price: r.price,
+          match_score: r.internal_match_score,
+          bedrooms: r.bedrooms,
+          bathrooms: r.bathrooms,
+          ...r,
+        })))
       }
     } catch (err) {
       console.error("Search failed:", err)
@@ -107,8 +148,16 @@ export function BuyerMatchPanel({
     setMatches([])
     try {
       const result = await generatePropertyMatches({ contactId, agentId, maxResults: 10 })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'matches' in result && result.matches) {
+        setMatches((result.matches as any[]).map((m: any) => ({
+          listing_id: m.propertyId ?? m.listing_id ?? m.id ?? "",
+          address: m.address,
+          price: m.price,
+          match_score: m.matchScore ?? m.match_score,
+          bedrooms: m.bedrooms,
+          bathrooms: m.bathrooms,
+          ...m,
+        })))
       }
     } catch (err) {
       console.error("Generate matches failed:", err)
@@ -123,7 +172,14 @@ export function BuyerMatchPanel({
     try {
       const result = await explainPropertyMatchForBuyer({ contactId, listingId })
       if (result.success) {
-        setExplanation(result.explanation || "This property matches based on your criteria.")
+        const expl = (result as any).explanation
+        if (typeof expl === "string") {
+          setExplanation(expl)
+        } else if (expl && typeof expl === "object") {
+          setExplanation(expl.narrative ?? expl.headline ?? "This property matches based on your criteria.")
+        } else {
+          setExplanation("This property matches based on your criteria.")
+        }
       }
     } catch (err) {
       console.error("Explain match failed:", err)
@@ -134,7 +190,7 @@ export function BuyerMatchPanel({
 
   const handleFeedback = async (listingId: string, feedback: "liked" | "disliked") => {
     try {
-      await learnFromBuyerFeedback({ contactId, listingId, feedback })
+      await learnFromBuyerFeedback({ contactId, propertyId: listingId, feedback, agentId })
       // Update UI to show feedback was recorded
       setMatches((prev) =>
         prev.map((m) =>
@@ -155,7 +211,7 @@ export function BuyerMatchPanel({
         match.listing_id,
         match.address || "Property",
         { price: match.price, bedrooms: match.bedrooms },
-        [showingDate],
+        [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
         showingNotes
       )
       setShowingForm(null)
@@ -188,7 +244,7 @@ export function BuyerMatchPanel({
     try {
       const result = await notifyNewMatches({ contactId, agentId, threshold: 85 })
       if (result.success) {
-        setNotifyResult({ notified: result.notifiedCount ?? result.count ?? 0 })
+        setNotifyResult({ notified: (result as any).notifiedCount ?? (result as any).matchCount ?? (result as any).count ?? 0 })
       }
     } catch (err) {
       console.error("Notify matches failed:", err)
@@ -209,10 +265,37 @@ export function BuyerMatchPanel({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Home className="h-4 w-4 text-blue-600" />
-          Find Homes for {firstName}
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Home className="h-4 w-4 text-blue-600" />
+            Find Homes for {firstName}
+          </CardTitle>
+          <Select
+            value={stage}
+            onValueChange={async (val) => {
+              const prev = stage
+              setStage(val)
+              const gen = ++stageGenRef.current
+              const result = await updateContact(contactId, { buyer_stage: val })
+              if (stageGenRef.current !== gen) return // superseded by a later request
+              if (!result.success) {
+                setStage(prev)
+                toast.error("Failed to update stage")
+              } else {
+                toast.success("Buyer stage updated")
+              }
+            }}
+          >
+            <SelectTrigger className="h-7 text-xs w-36">
+              <SelectValue placeholder="Set stage" />
+            </SelectTrigger>
+            <SelectContent>
+              {BUYER_STAGES.map((s) => (
+                <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </CardHeader>
       <CardContent>
         {/* Search input */}
@@ -286,12 +369,30 @@ export function BuyerMatchPanel({
           {previewIntent && (
             <div className="p-3 bg-blue-50 rounded-lg text-sm">
               <p className="font-medium text-blue-800 mb-1">AI Understanding:</p>
-              <p className="text-blue-700">
-                Looking for: {previewIntent.bedrooms}+ bed
-                {previewIntent.price && `, max $${previewIntent.price.toLocaleString()}`}
-                {previewIntent.areas?.length > 0 && `, in ${previewIntent.areas.join(", ")}`}
-                {previewIntent.keywords?.length > 0 && `, ${previewIntent.keywords.join(", ")}`}
-              </p>
+              {previewIntent.bedrooms == null &&
+               previewIntent.bathrooms == null &&
+               previewIntent.price == null &&
+               !(previewIntent.areas?.length > 0) &&
+               !(previewIntent.keywords?.length > 0) ? (
+                <p className="text-blue-700">Type a description above to preview AI property matching</p>
+              ) : (
+                <p className="text-blue-700">
+                  Looking for:{" "}
+                  {previewIntent.bedrooms != null && (
+                    <span>{previewIntent.bedrooms}+ bed</span>
+                  )}
+                  {previewIntent.bathrooms != null && (
+                    <span>{previewIntent.bedrooms != null ? ", " : ""}{previewIntent.bathrooms}+ bath</span>
+                  )}
+                  {previewIntent.price != null && `${previewIntent.bedrooms != null || previewIntent.bathrooms != null ? ", " : ""}max $${previewIntent.price.toLocaleString()}`}
+                  {previewIntent.areas?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null ? ", " : ""}in ${previewIntent.areas.join(", ")}`
+                  )}
+                  {previewIntent.keywords?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null || (previewIntent.areas?.length > 0) ? ", " : ""}${previewIntent.keywords.join(", ")}`
+                  )}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -451,6 +552,83 @@ export function BuyerMatchPanel({
             ))}
           </div>
         )}
+
+        {/* Send match email button */}
+        {matches.length > 0 && (
+          <div className="pt-2">
+            <Button
+              size="sm"
+              variant="default"
+              className="w-full gap-1.5"
+              disabled={emailLoading}
+              onClick={async () => {
+                setEmailLoading(true)
+                try {
+                  const matchSummary = matches.slice(0, 5).map(m =>
+                    `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
+                  ).join("\n")
+                  const draft = await draftSmartEmail(
+                    contactId,
+                    `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
+                  )
+                  setEmailDraft(draft)
+                  setEmailDialogOpen(true)
+                } catch {
+                  toast.error("Could not generate email draft")
+                } finally {
+                  setEmailLoading(false)
+                }
+              }}
+            >
+              {emailLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
+              Email {firstName} about {matches.length} Match{matches.length !== 1 ? "es" : ""}
+            </Button>
+          </div>
+        )}
+
+        {/* Email draft dialog */}
+        <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>AI-Drafted Email to {firstName}</DialogTitle>
+            </DialogHeader>
+            <Textarea
+              value={emailDraft}
+              onChange={(e) => setEmailDraft(e.target.value)}
+              rows={10}
+              className="text-sm"
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEmailDialogOpen(false)}>Cancel</Button>
+              <Button
+                disabled={sendingEmail}
+                onClick={async () => {
+                  setSendingEmail(true)
+                  try {
+                    const result = await sendEmail({
+                      contactId,
+                      subject: `Properties Matched for You, ${firstName}`,
+                      html: `<pre style="font-family:sans-serif;white-space:pre-wrap">${escapeHtml(emailDraft)}</pre>`,
+                      text: emailDraft,
+                      channelPurpose: "conversation",
+                    })
+                    if (result.success) {
+                      toast.success("Email sent")
+                      setEmailDialogOpen(false)
+                    } else {
+                      toast.error((result as any).error ?? "Send failed")
+                    }
+                  } finally {
+                    setSendingEmail(false)
+                  }
+                }}
+              >
+                {sendingEmail ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+                Send Email
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Empty state */}
         {matches.length === 0 && !loading && (

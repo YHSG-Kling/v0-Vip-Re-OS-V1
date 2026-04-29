@@ -56,11 +56,11 @@ export function JobPerformancePanel({ vendorId }: JobPerformancePanelProps) {
       }
 
       const totalJobs = bookings.length
-      const completedJobs = bookings.filter(b => b.status === "completed").length
+      const completedJobs = bookings.filter((b: any) => b.status === "completed").length
       const completionRate = totalJobs > 0 ? (completedJobs / totalJobs) * 100 : 0
 
       // On-time calculation
-      const onTimeJobs = bookings.filter(b => {
+      const onTimeJobs = bookings.filter((b: any) => {
         if (b.status !== "completed" || !b.completed_at || !b.scheduled_date) return false
         return new Date(b.completed_at) <= new Date(b.scheduled_date)
       }).length
@@ -70,9 +70,9 @@ export function JobPerformancePanel({ vendorId }: JobPerformancePanelProps) {
       const now = new Date()
       const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
       const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-      
-      const thisMonth = bookings.filter(b => new Date(b.created_at) >= thisMonthStart).length
-      const lastMonth = bookings.filter(b => {
+
+      const thisMonth = bookings.filter((b: any) => new Date(b.created_at) >= thisMonthStart).length
+      const lastMonth = bookings.filter((b: any) => {
         const date = new Date(b.created_at)
         return date >= lastMonthStart && date < thisMonthStart
       }).length

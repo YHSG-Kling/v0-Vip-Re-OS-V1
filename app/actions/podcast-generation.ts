@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
@@ -41,11 +42,18 @@ export async function createPodcastEpisode(params: {
   publishChannels?: string[]
 }) {
   const supabase = await createClient()
-  
+
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }
@@ -87,7 +95,7 @@ export async function createPodcastEpisode(params: {
     // Generate script from keywords if no script provided
     let finalScript = params.script
     if (!finalScript && params.keywords && params.keywords.length > 0) {
-      finalScript = await generateScriptFromKeywords(params.keywords, params.category)
+      finalScript = await generateScriptFromKeywords(params.keywords, params.category, userId)
     }
 
     if (!finalScript) {
@@ -138,7 +146,11 @@ export async function createPodcastEpisode(params: {
       content: finalScript,
       contact: {
         id: agentId, // Use agent as the "contact" for broadcast content
+        first_name: "",
+        last_name: "",
+        contact_type: "buyer" as const,
         tcpa_consent: true, // Podcast is not direct outreach
+        isa_reengage_allowed: true,
         dnc_status: false,
         status: "active",
       },
@@ -210,7 +222,11 @@ export async function createPodcastEpisode(params: {
 }
 
 // Generate script from keywords using AI
-async function generateScriptFromKeywords(keywords: string[], category?: string): Promise<string> {
+async function generateScriptFromKeywords(keywords: string[], category?: string, userId?: string): Promise<string> {
+  if (userId) {
+    const access = await canAccessFeature(userId, "podcast_generation")
+    if (!access.allowed) throw new Error(access.reason ?? "Podcast generation not available")
+  }
   // Use Grok/OpenAI to generate podcast script
   const prompt = `Generate a 3-5 minute podcast script for a real estate agent based on these keywords: ${keywords.join(", ")}. 
   Category: ${category || "general real estate"}
@@ -247,8 +263,14 @@ async function generateScriptFromKeywords(keywords: string[], category?: string)
       }),
     })
 
+    if (!response.ok) {
+      throw new Error(`Script API request failed: ${response.status} ${response.statusText}`)
+    }
     const data = await response.json()
-    return data.choices[0]?.message?.content || ""
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error("Invalid API response: missing content")
+    }
+    return data.choices[0].message.content
   } catch (error) {
     console.error("[v0] Error generating script:", error)
     throw new Error("Failed to generate script from keywords")
@@ -260,7 +282,14 @@ export async function generatePodcastAudio(episodeId: string) {
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }
@@ -506,6 +535,9 @@ async function synthesizeVoice(
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
   const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Missing agent context", episodes: [] }
+  }
   const supabase = await createClient()
 
   try {
@@ -535,7 +567,14 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }
@@ -610,7 +649,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
       const channelConfig = distributionChannels?.find(c => c.channel_name === channel)
       
       // Insert distribution log entry
-      const { data: logEntry } = await supabase
+      const { data: logEntry, error: logError } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -620,13 +659,17 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
         })
         .select()
         .single()
+      if (logError || !logEntry) {
+        distributionResults.push({ channel, success: false, error: logError?.message ?? "Failed to create log entry" })
+        continue
+      }
 
       if (channelConfig) {
         // Attempt distribution (actual implementation would call external APIs)
         try {
           // Simulate distribution attempt
           const externalEpisodeId = `ext_${episodeId}_${channel}_${Date.now()}`
-          
+
           // Update log entry as published
           await supabase
             .from("podcast_distribution_log")
@@ -636,7 +679,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
               external_episode_id: externalEpisodeId,
               provider_response: { status: "success", timestamp: new Date().toISOString() },
             })
-            .eq("id", logEntry?.id)
+            .eq("id", logEntry.id)
 
           distributionResults.push({ channel, success: true })
 
@@ -658,7 +701,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
               distribution_status: "failed",
               error_message: distError.message,
             })
-            .eq("id", logEntry?.id)
+            .eq("id", logEntry.id)
 
           distributionResults.push({ channel, success: false, error: distError.message })
 
@@ -865,6 +908,45 @@ export async function updateDistributionChannel(
   }
 }
 
+// Create a distribution channel for the brokerage
+export async function createDistributionChannel(channelName: string) {
+  const { brokerageId } = await getAgentContext()
+  const supabase = await createClient()
+
+  try {
+    // Check if channel already exists to prevent duplicates
+    const { data: existing } = await supabase
+      .from("podcast_distribution_channels")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("channel_name", channelName)
+      .maybeSingle()
+
+    if (existing) {
+      return { success: true, channel: existing, alreadyExists: true }
+    }
+
+    const { data: channel, error } = await supabase
+      .from("podcast_distribution_channels")
+      .insert({
+        brokerage_id: brokerageId,
+        channel_name: channelName,
+        is_enabled: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return { success: true, channel }
+  } catch (error: any) {
+    console.error("[v0] Error creating distribution channel:", error)
+    return { success: false, error: error.message }
+  }
+}
+
 // Get video scripts library for episode sourcing
 export async function getVideoScriptsLibrary() {
   const { brokerageId } = await getAgentContext()
@@ -1019,6 +1101,32 @@ export async function deletePodcastEpisode(episodeId: string) {
     return { success: true }
   } catch (error: any) {
     console.error("[v0] Error deleting podcast episode:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function generatePodcastEpisodeDescription(params: {
+  title: string
+  keywords?: string[]
+  targetAudience?: string
+}): Promise<{ success: boolean; description?: string; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+
+    const { text } = await generateTextRouted({
+      feature: "podcast_description_generation",
+      maxTokens: 200,
+      temperature: 0.7,
+      prompt: `Write a compelling 2-3 sentence podcast episode description for a real estate professional.
+Title: "${params.title}"
+${params.keywords?.length ? `Keywords: ${params.keywords.join(", ")}` : ""}
+Audience: ${params.targetAudience ?? "real estate agents and clients"}
+Focus on what the listener gains — lead with the value, not the host.`,
+    })
+
+    return { success: true, description: text.trim() }
+  } catch (error: any) {
     return { success: false, error: error.message }
   }
 }

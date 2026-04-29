@@ -94,7 +94,7 @@ export default async function PortalLayout({
         .maybeSingle()
       if (
         ur?.brokerage_id === contact.brokerage_id &&
-        ["admin", "broker", "superadmin"].includes(ur.user_type ?? "")
+        ["admin", "broker", "superadmin"].includes(ur?.user_type ?? "")
       ) {
         accessGranted = true
       }
@@ -142,17 +142,16 @@ export default async function PortalLayout({
           .maybeSingle()
           .then(({ data: agent }) => {
             if (agent?.user_id) {
-              supabase.from("notifications").insert({
+              void supabase.from("notifications").insert({
                 user_id: agent.user_id,
                 brokerage_id: contact.brokerage_id,
                 type: "portal_first_login",
                 title: `${contact.first_name} just opened their portal`,
                 entity_type: "contact",
                 entity_id: contactId,
-              }).catch(() => {})
+              })
             }
-          })
-          .catch(() => {})
+          }, () => {})
       }
     }
   }
@@ -178,10 +177,8 @@ export default async function PortalLayout({
   }
 
   // Kernel-driven portal view determination — use normalized contract objects
-  const [viewOutput, modulesOutput] = await Promise.all([
-    determinePortalView(supabase, { contactId }),
-    determinePortalModules(supabase, { contactId }),
-  ])
+  const viewOutput = await determinePortalView(supabase, { contactId })
+  const modulesOutput = await determinePortalModules(supabase, { contactId, view: viewOutput.view })
 
   // Extract canonical PortalView string from contract output
   const view = viewOutput.view
@@ -218,12 +215,12 @@ export default async function PortalLayout({
               Your agent: {agentName}
             </p>
           </div>
-          <PortalUserMenu contact={contact} contactId={contactId} agentData={agentData} />
+          <PortalUserMenu contact={contact} contactId={contactId} />
         </div>
       </header>
 
       <Suspense fallback={<NavSkeleton />}>
-        <PortalNav items={navItems} />
+        <PortalNav items={navItems as any} />
       </Suspense>
 
       <main className="container mx-auto px-4 py-8">{children}</main>

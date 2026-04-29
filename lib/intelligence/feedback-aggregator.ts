@@ -81,7 +81,7 @@ export async function computeWeeklyMetrics(
             system:
               "Identify the top 3 themes in negative feedback. Return JSON: {themes: string[]}",
             prompt: feedbackTexts.join("\n---\n"),
-            maxTokens: 150,
+            maxOutputTokens: 150,
           })
           topNegativeThemes = object.themes
         } catch (error) {

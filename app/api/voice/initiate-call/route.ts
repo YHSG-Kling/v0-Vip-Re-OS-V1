@@ -12,28 +12,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Auth guard — evaluateOutbound uses createClient() internally for TCPA re-check
+  // Auth guard — agentId and brokerageId always from session, never from body
   const authSupabase = await createClient()
-  const {
-    data: { user: authUser },
-  } = await authSupabase.auth.getUser()
-
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const auth = await requireAuth(authSupabase)
+  if (!auth.ok) return auth.response
 
   let body: {
     phoneNumber: string
     contactId?: string
     leadId?: string
     scriptId?: string
-    agentId: string
-    brokerageId: string
     callPurpose?: 'isa_qualification' | 'isa_followup' | 'ghost_recovery' | 'appointment_confirm' | 'post_close'
   }
 
@@ -43,12 +37,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const { phoneNumber, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
+  // agentId and brokerageId always from session — never from body
+  const agentId = auth.agentId ?? auth.userId
+  const brokerageId = auth.brokerageId
+  const { phoneNumber, leadId, scriptId, callPurpose = 'isa_qualification' } = body
   // contactId may be provided directly OR resolved from the lead record below
   let contactId = body.contactId ?? null
 
-  if (!phoneNumber || !agentId || !brokerageId) {
-    return NextResponse.json({ error: "phoneNumber, agentId, and brokerageId are required" }, { status: 400 })
+  if (!phoneNumber) {
+    return NextResponse.json({ error: "phoneNumber is required" }, { status: 400 })
   }
 
   const supabase = createServiceClient()

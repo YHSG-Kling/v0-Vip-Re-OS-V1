@@ -9,7 +9,7 @@
  * must be normalised via toCanonicalRole() before reaching this service.
  */
 
-import type { UserRole, Permission } from './types'
+import type { UserRole } from './types'
 import { toCanonicalRole } from './types'
 
 // ─── USER ACCESS CONTEXT ──────────────────────────────────────────────────────
@@ -45,42 +45,47 @@ export interface UserAccessContext {
 
 // ─── UI PERMISSION TYPE ───────────────────────────────────────────────────────
 // Broad surface-level permissions used by Sidebar and component guards.
-// Aliased to the canonical Permission type from ./types for type compatibility.
 
-import type { Permission } from './types'
-
-export type UIPermission = Permission
-  | "view:system_health"
-  | "view:system_config"
-  | "edit:system_config"
-  | "view:ai_audit"
-  | "view:compliance"
-  | "manage:compliance"
-  | "view:marketing_studio"
-  | "view:social_scheduler"
-  | "post:social_media"
-  | "view:all_badges"
-  | "view:own_badges"
-  | "award:badges"
-  | "view:own_sphere"
-  | "view:team_sphere"
-  | "edit:sphere"
-  | "view:all_showings"
-  | "view:own_showings"
-  | "manage:showings"
-  | "view:all_open_houses"
-  | "view:own_open_houses"
-  | "manage:open_houses"
-  | "view:crm"
-  | "use:ai_tools"
-  | "view:map_intelligence"
-  | "view:knowledge_base"
-  | "view:ai_chat"
-  | "use:ai_suggestions"
-  | "view:partners"
-  | "manage:partners"
-  | "view:vendors"
-  | "manage:vendors"
+export type UIPermission =
+  // Dashboards
+  | "view:admin_dashboard" | "view:broker_dashboard" | "view:agent_dashboard"
+  | "view:tc_dashboard" | "view:contact_dashboard"
+  // Leads
+  | "view:lead_intelligence" | "view:lead_insights" | "view:lead_scraping_config" | "manage:lead_scraping"
+  // Contacts
+  | "view:all_contacts" | "edit:all_contacts" | "delete:contacts"
+  | "view:team_contacts" | "view:own_contacts" | "edit:team_contacts" | "edit:own_contacts"
+  // Transactions
+  | "view:all_transactions" | "edit:all_transactions"
+  | "view:team_transactions" | "view:own_transactions" | "edit:own_transactions"
+  // Communications
+  | "view:all_communications" | "send:communications" | "send:ai_chat_messages"
+  | "view:team_communications" | "view:own_communications"
+  // Documents
+  | "view:all_documents" | "upload:documents" | "delete:documents" | "view:own_documents"
+  // Financials
+  | "view:brokerage_financials" | "view:team_financials" | "view:own_financials"
+  // Listings
+  | "view:all_listings" | "create:listings" | "edit:all_listings" | "approve:listings" | "distribute:listings"
+  | "view:own_listings" | "edit:own_listings"
+  // Users & Roles
+  | "view:all_users" | "create:users" | "edit:users" | "delete:users" | "manage:roles"
+  // System
+  | "view:system_health" | "view:system_config" | "edit:system_config"
+  | "view:ai_audit" | "view:compliance" | "manage:compliance"
+  // Marketing
+  | "view:marketing_studio" | "view:social_scheduler" | "post:social_media"
+  // Badges & Sphere
+  | "view:all_badges" | "view:own_badges" | "award:badges"
+  | "view:own_sphere" | "view:team_sphere" | "edit:sphere"
+  // Showings & Open Houses
+  | "view:all_showings" | "view:own_showings" | "manage:showings"
+  | "view:all_open_houses" | "view:own_open_houses" | "manage:open_houses"
+  // AI & Tools
+  | "view:crm" | "use:ai_tools" | "view:map_intelligence" | "view:knowledge_base"
+  | "view:ai_chat" | "use:ai_suggestions"
+  // Partners & Vendors
+  | "view:partners" | "manage:partners" | "view:vendors" | "manage:vendors"
 
 // ─── ROLE → UI PERMISSION MAP ─────────────────────────────────────────────────
 
@@ -375,11 +380,11 @@ export const permissionsService = {
         ctx.teamIds?.includes(record.team_id || '') ||
         ctx.teamIds?.includes(record.agent_id || '') ||
         ctx.managedAgentIds?.includes(record.agent_id || '')
-      return isOwner || isAssigned || !!isTeamRecord || isSharedWith
+      return isOwner || isAssigned || !!isTeamRecord || (isSharedWith ?? false)
     }
 
     if (ctx.role === 'contact') {
-      return (
+      return !!(
         record.contact_id === ctx.contactId ||
         record.buyer_id === ctx.contactId ||
         record.seller_id === ctx.contactId ||
@@ -387,8 +392,8 @@ export const permissionsService = {
       )
     }
 
-    if (ctx.role === 'vendor') return record.vendor_id === ctx.vendorId || isAssigned || isSharedWith
-    if (ctx.role === 'lender') return isAssigned || isSharedWith
+    if (ctx.role === 'vendor') return !!(record.vendor_id === ctx.vendorId || isAssigned || isSharedWith)
+    if (ctx.role === 'lender') return !!(isAssigned || isSharedWith)
 
     return false
   },

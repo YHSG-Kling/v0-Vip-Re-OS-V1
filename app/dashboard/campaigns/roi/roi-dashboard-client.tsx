@@ -213,7 +213,7 @@ export function ROIDashboardClient({
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Avg ROI</CardTitle>
-            {summary?.avg_roi_percentage !== null && summary.avg_roi_percentage > 0 ? (
+            {(summary?.avg_roi_percentage ?? 0) > 0 ? (
               <ArrowUpRight className="h-4 w-4 text-green-500" />
             ) : (
               <ArrowDownRight className="h-4 w-4 text-red-500" />
@@ -223,16 +223,16 @@ export function ROIDashboardClient({
             <div
               className={cn(
                 "text-2xl font-bold",
-                summary?.avg_roi_percentage !== null
-                  ? summary.avg_roi_percentage > 100
+                summary?.avg_roi_percentage != null
+                  ? (summary.avg_roi_percentage) > 100
                     ? "text-green-600"
-                    : summary.avg_roi_percentage > 0
+                    : (summary.avg_roi_percentage) > 0
                     ? "text-yellow-600"
                     : "text-red-600"
                   : ""
               )}
             >
-              {summary?.avg_roi_percentage !== null
+              {summary?.avg_roi_percentage != null
                 ? `${summary.avg_roi_percentage.toFixed(1)}%`
                 : "N/A"}
             </div>
@@ -475,13 +475,13 @@ export function ROIDashboardClient({
                     <XAxis type="number" unit="%" />
                     <YAxis dataKey="name" type="category" width={100} />
                     <Tooltip
-                      formatter={(value: number, name: string) => {
+                      formatter={((value: number, name: string) => {
                         if (name === "roi") return [`${value.toFixed(1)}%`, "ROI"]
                         if (name === "spend") return [`$${value.toLocaleString()}`, "Spend"]
-                        if (name === "leads") return [value, "Leads"]
-                        if (name === "conversions") return [value, "Conversions"]
-                        return [value, name]
-                      }}
+                        if (name === "leads") return [`${value}`, "Leads"]
+                        if (name === "conversions") return [`${value}`, "Conversions"]
+                        return [`${value}`, name]
+                      }) as any}
                     />
                     <Legend />
                     <Bar dataKey="roi" name="ROI %" radius={[0, 4, 4, 0]}>

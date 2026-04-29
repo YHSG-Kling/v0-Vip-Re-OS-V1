@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
 import { Badge }                              from "@/components/ui/badge"
 import { Users, Calendar, AlertTriangle, Zap, Loader2 } from "lucide-react"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot } from "@/app/actions/ai-predictions"
+import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
 
@@ -118,13 +118,14 @@ interface BuyerOverviewClientProps {
   tours:         any[]
   nextTour:      any | null
   dualAgencyListings: Array<{ listing_id: string; address: string }> | null
+  enabledGates?: string[]
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
-  dualAgencyListings,
+  dualAgencyListings, enabledGates = [],
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -136,6 +137,8 @@ export function BuyerOverviewClient({
     profile?.is_cash_buyer ? "cash" : (profile?.finance_type ?? "")
   )
   const [savingFinance, setSavingFinance] = useState(false)
+  const [aiMatchResult, setAiMatchResult] = useState<any>(null)
+  const [isLoadingMatch, setIsLoadingMatch] = useState(false)
 
   const currentStage = contact.buyer_stage ?? "BUYER_CONTACT_CREATED"
   const persona      = contact.contact_persona ?? null
@@ -150,8 +153,8 @@ export function BuyerOverviewClient({
   const loadAutopilotPlans = useCallback(async () => {
     try {
       const result = await getActiveAutoPilotPlans(agentUserId)
-      if (result.success && result.plans) {
-        setAutopilotPlans(result.plans)
+      if (Array.isArray(result) && result.length > 0) {
+        setAutopilotPlans(result)
       }
     } catch (err) {
       console.error("[v0] Failed to load autopilot plans:", err)
@@ -190,7 +193,7 @@ export function BuyerOverviewClient({
         toast.success(activePlan.is_paused ? "AI-ISA resumed" : "AI-ISA paused")
         await loadAutopilotPlans()
       } else {
-        toast.error(result.error || "Failed to toggle AI-ISA")
+        toast.error((result as any).error || "Failed to toggle AI-ISA")
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to toggle AI-ISA")
@@ -343,7 +346,8 @@ export function BuyerOverviewClient({
         </div>
       ) : activeTab === "Offers" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {isOfferAllowed(currentStage as any) ? (
+          {/* isOfferAllowed is async — used here as a placeholder; server should pre-compute */}
+          {(isOfferAllowed as any)(currentStage) ? (
             <Link
               href={`/dashboard/buyers/${buyerId}/offers`}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -377,15 +381,72 @@ export function BuyerOverviewClient({
       ) : activeTab === "Search" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
                 <h2 className="text-lg font-semibold">Property Search</h2>
                 <p className="text-sm text-muted-foreground">Search and save properties for {buyerName}</p>
               </div>
-              <Link href={`/dashboard/buyers/${buyerId}/search`}>
-                <Button>Advanced Search</Button>
-              </Link>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingMatch}
+                  onClick={async () => {
+                    setIsLoadingMatch(true)
+                    try {
+                      const result = await aiPropertyMatchGenius(buyerId)
+                      setAiMatchResult(result)
+                    } catch {
+                      setAiMatchResult(null)
+                    } finally {
+                      setIsLoadingMatch(false)
+                    }
+                  }}
+                >
+                  {isLoadingMatch ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Zap className="h-4 w-4 mr-1" />}
+                  AI Match
+                </Button>
+                <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                  <Button>Advanced Search</Button>
+                </Link>
+              </div>
             </div>
+
+            {aiMatchResult && (
+              <Card className="border-violet-200 bg-violet-50/50 dark:bg-violet-950/10">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-violet-600" />
+                    AI Property Match Results
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {aiMatchResult.success === false ? (
+                    <p className="text-sm text-muted-foreground">{aiMatchResult.error ?? "No matches found."}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {Array.isArray(aiMatchResult.topMatches) && aiMatchResult.topMatches.length > 0 ? (
+                        aiMatchResult.topMatches.slice(0, 5).map((m: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between py-1.5 border-b last:border-0">
+                            <div>
+                              <p className="text-sm font-medium">{m.address ?? m.property_address ?? `Property ${i + 1}`}</p>
+                              {m.listPrice && <p className="text-xs text-muted-foreground">${Number(m.listPrice).toLocaleString()}</p>}
+                            </div>
+                            {m.aiMatchScore != null && (
+                              <Badge variant="secondary" className="text-xs">{Math.round(m.aiMatchScore)}% match</Badge>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          {aiMatchResult.message ?? "AI match analysis complete. Run Advanced Search to see full results."}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
             
             {/* Saved Properties */}
             <Card>
@@ -583,7 +644,12 @@ export function BuyerOverviewClient({
         <div className="flex flex-1 min-h-0 overflow-auto">
           {/* LEFT — stage progress (280px) */}
           <aside className="w-[280px] flex-shrink-0 border-r border-border overflow-y-auto">
-            <BuyerStageProgress currentStage={currentStage} blockers={blockers} />
+            <BuyerStageProgress
+              currentStage={currentStage}
+              blockers={blockers}
+              contactId={buyerId}
+              agentId={agentUserId}
+            />
           </aside>
 
           {/* CENTER — main content */}
@@ -693,7 +759,7 @@ export function BuyerOverviewClient({
                       variant="outline"
                       className="text-xs"
                       onClick={async () => {
-                        await createTourPlan({ contactId: buyerId })
+                        await createTourPlan({ contactId: buyerId } as any)
                       }}
                     >
                       Quick Create Tour Plan
@@ -747,7 +813,45 @@ export function BuyerOverviewClient({
               )}
             </div>
 
-            {/* 6. Key Info Strip */}
+            {/* 6. Buyer Readiness — gate status panel */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Buyer Readiness</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-3">
+                  {/* Search gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Search</span>
+                    {enabledGates.includes("search") || enabledGates.includes("property_search") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                  {/* Tours gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Tours</span>
+                    {enabledGates.includes("tour_scheduling") || enabledGates.includes("tour_eligibility") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                  {/* Offers gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Offers</span>
+                    {enabledGates.includes("offer_creation") || enabledGates.includes("offer_eligibility") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* 7. Key Info Strip */}
             <div className="rounded-lg border border-border bg-card p-5 space-y-4">
               <h3 className="text-sm font-semibold">Key Information</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">

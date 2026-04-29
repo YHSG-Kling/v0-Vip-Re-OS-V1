@@ -46,6 +46,10 @@ export default async function TransactionsPage() {
   const agentId = agentRecord?.id ?? user.id
   const brokerageId = agentRecord?.brokerage_id ?? null
 
+  const { data: brokerageInfo } = brokerageId
+    ? await supabase.from("brokerages").select("name, logo_url").eq("id", brokerageId).maybeSingle()
+    : { data: null }
+
   // Fetch transactions using server action (proper architecture pattern)
   // getTransactions returns { success, data } or { success: false, error }
   const txResult = await getTransactions({
@@ -71,14 +75,20 @@ export default async function TransactionsPage() {
   }, {} as Record<string, { overall_score: number; risk_level: string }>)
 
   // Calculate stats
-  const activeDeals = transactions.filter(t => t.status === "active" || t.status === "pending")
+  const activeDeals = transactions.filter(t => {
+    const s = (t.status ?? "").toLowerCase()
+    return s === "active" || s === "pending" || s === "in_progress"
+  })
   const closedThisYear = transactions.filter(t => {
-    if (t.status !== "closed" || !t.close_date) return false
+    if ((t.status ?? "").toLowerCase() !== "closed" || !t.close_date) return false
     return new Date(t.close_date).getFullYear() === new Date().getFullYear()
   })
   const totalActiveVolume = activeDeals.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
   const atRiskDeals = activeDeals.filter(t => {
-    return t.health_score != null && t.health_score < 50
+    const health = healthByTxId[t.id]
+    if (!health) return false
+    const rl = (health.risk_level ?? "").toLowerCase()
+    return rl === "high" || rl === "critical" || rl === "medium" || rl === "at_risk" || health.overall_score < 60
   })
 
   // Calculate days to close for active deals
@@ -103,10 +113,13 @@ export default async function TransactionsPage() {
             <h1 className="text-xl sm:text-2xl font-bold text-foreground text-balance">Transaction Command Center</h1>
             <p className="text-muted-foreground text-sm">Monitor deal progress and pipeline health</p>
           </div>
-          {brokerageId && (
-            <div className="text-right shrink-0">
-              <p className="text-[10px] text-muted-foreground">Brokerage ID</p>
-              <p className="font-mono text-xs text-muted-foreground select-all">{brokerageId}</p>
+          {(brokerageInfo?.name || brokerageInfo?.logo_url) && (
+            <div className="flex items-center gap-2 shrink-0">
+              {brokerageInfo.logo_url ? (
+                <img src={brokerageInfo.logo_url} alt={brokerageInfo.name ?? "Brokerage"} className="h-8 w-auto max-w-[120px] object-contain" />
+              ) : (
+                <span className="text-sm font-medium text-muted-foreground">{brokerageInfo.name}</span>
+              )}
             </div>
           )}
         </div>
@@ -212,12 +225,13 @@ export default async function TransactionsPage() {
                 <tbody className="divide-y divide-border">
                   {transactions.length > 0 ? (
                     transactions.map((tx) => {
-                      const statusConfig = STATUS_CONFIG[tx.status] || STATUS_CONFIG.active
+                      const statusConfig = STATUS_CONFIG[(tx.status ?? "").toLowerCase()] || STATUS_CONFIG.active
                       // Health scores fetched separately above and keyed by transaction_id
                       const health = healthByTxId[tx.id]
                       const healthScore = health?.overall_score
                       const riskLevel = health?.risk_level
-                      const isAtRisk = riskLevel === "high" || riskLevel === "critical" || riskLevel === "medium" || riskLevel === "at_risk"
+                      const normalizedRisk = riskLevel?.toLowerCase()
+                      const isAtRisk = normalizedRisk === "high" || normalizedRisk === "critical" || normalizedRisk === "medium" || normalizedRisk === "at_risk"
 
                       return (
                         <tr key={tx.id} className="hover:bg-muted/50 group">
@@ -249,15 +263,15 @@ export default async function TransactionsPage() {
                                   <TooltipTrigger asChild>
                                     <div className="flex items-center gap-1.5 cursor-help w-fit">
                                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                                        riskLevel === "low" || riskLevel === "healthy" ? "bg-green-100 text-green-700" :
-                                        isAtRisk && !(riskLevel === "critical" || riskLevel === "high") ? "bg-amber-100 text-amber-700" :
-                                        (riskLevel === "critical" || riskLevel === "high") ? "bg-red-100 text-red-700" :
+                                        normalizedRisk === "low" || normalizedRisk === "healthy" ? "bg-green-100 text-green-700" :
+                                        isAtRisk && !(normalizedRisk === "critical" || normalizedRisk === "high") ? "bg-amber-100 text-amber-700" :
+                                        (normalizedRisk === "critical" || normalizedRisk === "high") ? "bg-red-100 text-red-700" :
                                         "bg-gray-100 text-gray-600"
                                       }`}>
                                         {healthScore}
                                       </div>
                                       {isAtRisk && (
-                                        <AlertTriangle className={`h-3 w-3 ${(riskLevel === "critical" || riskLevel === "high") ? "text-red-500" : "text-amber-500"}`} />
+                                        <AlertTriangle className={`h-3 w-3 ${(normalizedRisk === "critical" || normalizedRisk === "high") ? "text-red-500" : "text-amber-500"}`} />
                                       )}
                                     </div>
                                   </TooltipTrigger>

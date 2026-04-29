@@ -28,7 +28,9 @@ export default async function TeamFinancialsPage() {
   const supabase = await createClient()
 
   // Get agent context
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = await getAgentContext()
+  const agentId = agentIdRaw!
+  const brokerageId = brokerageIdRaw!
 
   // Check user role - only team_lead and broker allowed
   const { data: { user } } = await supabase.auth.getUser()
@@ -50,29 +52,27 @@ export default async function TeamFinancialsPage() {
   // Load brokerage financial summary via kernel command
   const brokerageFinancialResult = await loadBrokerageFinancialSummaryAction({
     brokerageId,
-    userRole,
-    currentUserId: agentId,
   })
 
   if (!brokerageFinancialResult.success) {
     redirect("/dashboard")
   }
 
-  const brokageFinData = brokerageFinancialResult.data
-  
+  const brokageFinData = brokerageFinancialResult.data as any
+
   // Extract data from kernel result
-  const mtdTotal = brokageFinData.mtdTotal
-  const ytdTotal = brokageFinData.ytdTotal
-  const ytdTransactions = brokageFinData.ytdTransactions
-  const agentCount = brokageFinData.agentCount
-  const leaderboard = brokageFinData.leaderboard
-  const teamAgents = brokageFinData.teamAgents
-  const agentEarningsData = brokageFinData.agentEarningsData
-  const recruitingROI = brokageFinData.recruitingROI
-  const earningsHistory = brokageFinData.earningsHistory
+  const mtdTotal = brokageFinData?.mtdTotal ?? 0
+  const ytdTotal = brokageFinData?.ytdTotal ?? 0
+  const ytdTransactions = brokageFinData?.ytdTransactions ?? 0
+  const agentCount = brokageFinData?.agentCount ?? 0
+  const leaderboard = brokageFinData?.leaderboard ?? { data: [] }
+  const teamAgents = brokageFinData?.teamAgents ?? { data: [] }
+  const agentEarningsData = brokageFinData?.agentEarningsData ?? { data: [] }
+  const recruitingROI = brokageFinData?.recruitingROI ?? []
+  const earningsHistory = brokageFinData?.earningsHistory ?? { data: [] }
 
   // Goals data
-  const perf = brokageFinData.teamPerformance
+  const perf = brokageFinData?.teamPerformance
   const goalPct = perf?.goal_pct || 0
   const goalAmount = perf?.goal_amount || 0
   const currentRevenue = perf?.total_revenue || mtdTotal
@@ -150,7 +150,7 @@ export default async function TeamFinancialsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Team Revenue</h1>
-          <p className="text-muted-foreground">Financial overview for your team{teamIds.length > 1 ? "s" : ""}</p>
+          <p className="text-muted-foreground">Financial overview for your team</p>
         </div>
         <Badge variant="outline" className="text-sm">
           {agentCount} Agent{agentCount !== 1 ? "s" : ""}
@@ -232,7 +232,7 @@ export default async function TeamFinancialsPage() {
             Goals vs Actuals
           </CardTitle>
           <CardDescription>
-            {currentPeriod} performance against target
+            {getCurrentPeriodLabel()} performance against target
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -263,7 +263,7 @@ export default async function TeamFinancialsPage() {
             Top 5 Leaderboard
           </CardTitle>
           <CardDescription>
-            Revenue leaders for {currentPeriod}
+            Revenue leaders for {getCurrentPeriodLabel()}
           </CardDescription>
         </CardHeader>
         <CardContent>

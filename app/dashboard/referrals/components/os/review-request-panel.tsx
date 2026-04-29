@@ -32,6 +32,7 @@ interface RecentClosing {
   address: string
   closeDate: string
   transactionId: string
+  contactEmail?: string
 }
 
 interface ExistingReview {
@@ -71,14 +72,14 @@ export function ReviewRequestPanel({
 
     startTransition(async () => {
       // Check timing first
-      await aiDetermineReviewTiming({ transactionId: closing.transactionId })
+      await aiDetermineReviewTiming({ transactionId: closing.transactionId, agentId })
 
       // Generate request
       const result = await aiGenerateReviewRequest({
         transactionId: closing.transactionId,
         agentId,
         platform: platform as "google" | "zillow" | "realtor" | "yelp" | "facebook",
-        channel: channel as "email" | "sms" | "in_person",
+        channel: (channel === "sms" ? "text" : channel) as "email" | "text" | "in_person",
       })
 
       if (result.success && result.message) {
@@ -111,9 +112,11 @@ export function ReviewRequestPanel({
         agentId,
         reviewText: review.review_text,
         rating: review.rating,
+        platform: review.platform,
+        reviewerName: "",
       })
-      if (result.success && result.response) {
-        setResponseText(result.response)
+      if (result.success && (result as any).data?.publicResponse) {
+        setResponseText((result as any).data?.publicResponse ?? "")
       }
     })
   }

@@ -50,17 +50,17 @@ export function TitleOperationsPanel({ titleCompanyId }: TitleOperationsPanelPro
       }
 
       const totalOrders = orders.length
-      const clear = orders.filter(o => o.status === "clear" || o.status === "completed").length
-      const inProgress = orders.filter(o => ["pending", "ordered", "in_progress"].includes(o.status)).length
-      const issues = orders.filter(o => ["issue", "exception"].includes(o.status)).length
+      const clear = orders.filter((o: any) => o.status === "clear" || o.status === "completed").length
+      const inProgress = orders.filter((o: any) => ["pending", "ordered", "in_progress"].includes(o.status)).length
+      const issues = orders.filter((o: any) => ["issue", "exception"].includes(o.status)).length
 
       const decisioned = clear + issues
       const clearRate = decisioned > 0 ? (clear / decisioned) * 100 : 0
 
       // Calculate avg turnaround for completed orders
-      const completedOrders = orders.filter(o => o.completed_at && o.created_at)
+      const completedOrders = orders.filter((o: any) => o.completed_at && o.created_at)
       const avgTurnaround = completedOrders.length > 0
-        ? completedOrders.reduce((sum, o) => {
+        ? completedOrders.reduce((sum: number, o: any) => {
             const days = (new Date(o.completed_at).getTime() - new Date(o.created_at).getTime()) / (1000 * 60 * 60 * 24)
             return sum + days
           }, 0) / completedOrders.length
@@ -70,8 +70,8 @@ export function TitleOperationsPanel({ titleCompanyId }: TitleOperationsPanelPro
       const now = new Date()
       const weekFromNow = new Date()
       weekFromNow.setDate(weekFromNow.getDate() + 7)
-      
-      const closingsThisWeek = orders.filter(o => {
+
+      const closingsThisWeek = orders.filter((o: any) => {
         if (!o.closing_date) return false
         const closeDate = new Date(o.closing_date)
         return closeDate >= now && closeDate <= weekFromNow

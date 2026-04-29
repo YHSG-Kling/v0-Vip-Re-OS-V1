@@ -34,10 +34,12 @@ interface WeeklyProgress {
 }
 
 interface WeeklyImprovementPanelProps {
-  focusAreas: FocusArea[]
-  weeklyProgress: WeeklyProgress | null
-  lastReportDate: string | null
-  onGenerateReport: () => Promise<void>
+  focusAreas?: FocusArea[]
+  weeklyProgress?: WeeklyProgress | null
+  lastReportDate?: string | null
+  onGenerateReport?: () => Promise<void>
+  agentId?: string
+  brokerageId?: string
 }
 
 const priorityColors = {
@@ -47,10 +49,10 @@ const priorityColors = {
 }
 
 export function WeeklyImprovementPanel({
-  focusAreas,
-  weeklyProgress,
-  lastReportDate,
-  onGenerateReport,
+  focusAreas = [],
+  weeklyProgress = null,
+  lastReportDate = null,
+  onGenerateReport = async () => {},
 }: WeeklyImprovementPanelProps) {
   const [isGenerating, setIsGenerating] = useState(false)
 

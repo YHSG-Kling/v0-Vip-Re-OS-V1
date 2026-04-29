@@ -1,60 +1,74 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabase } from "@/services/supabase"
-import { getAgentContext } from "@/lib/identity"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Auth guard — brokerage scoping always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { id } = await params
-    const { agentId, brokerageId } = await getAgentContext()
 
-    const { data: contact, error } = await supabase
+    let query = supabase
       .from("contacts")
       .select("*")
       .eq("id", id)
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", auth.brokerageId)
       .is("deleted_at", null)
-      .single()
+
+    // Agents can only see their own contacts; brokers/admins see all in the brokerage.
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
+    }
+
+    const { data: contact, error } = await query.single()
 
     if (error) {
-      console.error("[Contact Get] Supabase error:", error)
+      console.error("[Contact GET] Supabase error:", error)
       return NextResponse.json({ success: false, error: "Contact not found" }, { status: 404 })
     }
 
-    return NextResponse.json({
-      success: true,
-      contact,
-    })
+    return NextResponse.json({ success: true, contact })
   } catch (error: any) {
-    console.error("[Contact Get] Error:", error)
+    console.error("[Contact GET] Error:", error)
     return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 })
   }
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Auth guard — brokerage scoping always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { id } = await params
-    const { agentId, brokerageId } = await getAgentContext()
 
-    // Soft delete
-    const { error } = await supabase
+    let query = supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
       .eq("id", id)
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", auth.brokerageId)   // brokerage isolation
+
+    // Agents can only delete their own contacts; brokers/admins can delete any in brokerage.
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
+    }
+
+    const { error } = await query
 
     if (error) {
-      console.error("[Contact Delete] Supabase error:", error)
+      console.error("[Contact DELETE] Supabase error:", error)
       return NextResponse.json({ success: false, error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({
-      success: true,
-      message: "Contact deleted successfully",
-    })
+    return NextResponse.json({ success: true, message: "Contact deleted successfully" })
   } catch (error: any) {
-    console.error("[Contact Delete] Error:", error)
+    console.error("[Contact DELETE] Error:", error)
     return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 })
   }
 }

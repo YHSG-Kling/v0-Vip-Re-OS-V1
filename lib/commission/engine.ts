@@ -1,5 +1,6 @@
 import type { CalculateCommissionParams, CommissionCalculationResult } from "./types"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 import { resolveGrossRate } from "./waterfall/01-resolve-rate"
 import { calculateGrossCommission } from "./waterfall/02-calculate-gross"
 import { applyGrossAdjustments } from "./waterfall/03-apply-gross-adjustments"
@@ -52,7 +53,8 @@ export async function calculateCommission(
     context = await applyRevenueShare(context)
 
     // Step 10: Apply fees
-    context = await applyFees(context)
+    const commissionStructure = await getDefaultCommissionStructure(brokerageId, context.agentId)
+    context = await applyFees(context, commissionStructure)
 
     // Step 11: Validate and persist
     return await validateAndPersist(context, calculationMode, triggeredBy)
@@ -67,7 +69,7 @@ export async function calculateCommission(
       entityId:    transactionId,
       fromState:   "active",
       toState:     "commission_calculation_failed",
-      actorUserId: triggeredBy ?? undefined,
+      actorUserId: triggeredBy ?? "",
       actorRole:   "agent",
       eventType:   "commission.calculation_failed",
       metadata:    { error: error.message },

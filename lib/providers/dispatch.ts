@@ -11,6 +11,9 @@
  * SMS and phone are supported via the existing Twilio messaging provider.
  */
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const LobSDK = require("lob")
+
 import { resolveProvider } from "@/lib/kernel/providers"
 import {
   sendEmail as messagingSendEmail,
@@ -381,6 +384,7 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
 export interface DispatchDirectMailParams extends DispatchActorContext {
   recipientName: string
   mailingAddress: string
+  mailingAddress2?: string
   city: string
   state: string
   zip: string
@@ -415,35 +419,28 @@ export async function dispatchDirectMail(
     return result
   }
 
-  // Lob Letters API — stub implementation (to be fleshed out when Lob is live)
-  const response = await fetch("https://api.lob.com/v1/letters", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${lobApiKey}:`).toString("base64")}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const lob = LobSDK(lobApiKey)
+  let data: { id?: string }
+  try {
+    data = await lob.letters.create({
       to: {
         name: params.recipientName,
         address_line1: params.mailingAddress,
+        ...(params.mailingAddress2 ? { address_line2: params.mailingAddress2 } : {}),
         address_city: params.city,
         address_state: params.state,
         address_zip: params.zip,
         address_country: "US",
       },
-      from: process.env.LOB_RETURN_ADDRESS_ID ?? undefined,
+      from: process.env.LOB_RETURN_ADDRESS_ID,
       file: params.templateId,
       merge_variables: params.mergeVars ?? {},
       color: false,
-    }),
-  })
-
-  if (!response.ok) {
-    const body = await response.text()
-    return { success: false, providerKey, error: `Lob API error: ${body}` }
+    })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, providerKey, error: `Lob API error: ${msg}` }
   }
-
-  const data = (await response.json()) as { id?: string }
 
   void logVendorUsage({
     vendorName: providerKey,

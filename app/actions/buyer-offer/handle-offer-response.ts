@@ -170,7 +170,7 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
                   status:          "pending",
                 }))
               )
-              .catch(() => {})
+              .then(() => {}, () => {})
           }
         }
 
@@ -189,7 +189,7 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
               entity_type:  "transaction",
               entity_id:    finalTransactionId,
             })
-            .catch(() => {})
+            .then(() => {}, () => {})
         }
       }
     }

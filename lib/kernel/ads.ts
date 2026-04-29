@@ -186,11 +186,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
   }
 
   // Feature access check
-  const accessCheck = await canAccessFeature({
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    featureKey: "ads_campaigns",
-  })
+  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature not available" }
   }
@@ -291,11 +287,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
   }
 
   // Feature access check
-  const accessCheck = await canAccessFeature({
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    featureKey: "ads_campaigns",
-  })
+  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature not available" }
   }
@@ -337,11 +329,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
     if (error) throw error
 
     // Increment feature usage
-    await incrementFeatureUsage({
-      brokerageId: ctx.brokerageId,
-      userId: ctx.userId,
-      featureKey: "ads_campaigns",
-    })
+    await incrementFeatureUsage(ctx.userId, "ads_campaigns")
 
     return { success: true, campaignId: campaign!.id, campaign }
   } catch (err) {
@@ -743,7 +731,7 @@ export async function approveAdCreative(input: {
       actorContext: {
         userId: ctx.userId,
         brokerageId: ctx.brokerageId,
-        role: ctx.userType === "admin" ? "admin" : "agent",
+        role: ctx.role,
       },
       journeyType: "seller",
       persona: "other",

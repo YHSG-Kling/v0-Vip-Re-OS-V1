@@ -76,7 +76,7 @@ export function StrategyAdvisor({
 
   if (!rec) return null
 
-  const badge = STRATEGY_BADGES[rec.strategy_type] ?? STRATEGY_BADGES.standard
+  const badge = STRATEGY_BADGES[rec.strategy_type ?? "standard"] ?? STRATEGY_BADGES.standard
   const c = rec.recommended_contingencies
 
   return (
@@ -104,7 +104,7 @@ export function StrategyAdvisor({
           <div className="text-right">
             <p className="text-xs text-muted-foreground">Success probability</p>
             <p className="text-sm font-semibold text-primary">
-              {Math.round(rec.success_probability * 100)}%
+              {Math.round((rec.success_probability ?? 0) * 100)}%
             </p>
           </div>
         </div>
@@ -121,11 +121,11 @@ export function StrategyAdvisor({
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <div>
             <p className="text-xs text-muted-foreground">Offer Price</p>
-            <p className="font-semibold">${rec.recommended_price.toLocaleString()}</p>
+            <p className="font-semibold">${(rec.recommended_price ?? 0).toLocaleString()}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Earnest Money</p>
-            <p className="font-semibold">${rec.recommended_earnest.toLocaleString()}</p>
+            <p className="font-semibold">${(rec.recommended_earnest ?? 0).toLocaleString()}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Financing Contingency</p>
@@ -155,11 +155,11 @@ export function StrategyAdvisor({
       </div>
 
       {/* Risk factors */}
-      {rec.risk_factors.length > 0 && (
+      {(rec.risk_factors ?? []).length > 0 && (
         <div className="px-5 py-3 border-b border-border">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Risk Factors</p>
           <div className="flex flex-wrap gap-1.5">
-            {rec.risk_factors.map((r, i) => (
+            {(rec.risk_factors ?? []).map((r, i) => (
               <span
                 key={i}
                 className="inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-xs text-amber-700"

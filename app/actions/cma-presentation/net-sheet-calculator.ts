@@ -104,11 +104,13 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       return { success: false, error: "Agent brokerage not found" }
     }
 
-    // Get brokerage commission structure and financial defaults
+    // Fetch brokerage commission structure and financial defaults in parallel
     const [commissionStructure, financialDefaults] = await Promise.all([
       getDefaultCommissionStructure(brokerageId),
       getFinancialDefaults(brokerageId),
     ])
+
+    const closingCostPercent = financialDefaults.closing_cost_percent
 
     // Emit start event
     await supabase.from("activities").insert({
@@ -125,19 +127,17 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     // Calculate scenarios
     const scenarios: NetSheetScenario[] = []
     
-    const closingCostPercent = financialDefaults.closing_cost_percent
-
     // Primary scenario
     scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent))
-
+    
     // Alternate scenario if provided
     if (input.alternatePrice && input.alternatePrice > 0) {
       scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent))
     }
-
+    
     // Conservative scenario (-5%)
     scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent))
-
+    
     // Optimistic scenario (+5%)
     scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent))
 
@@ -178,23 +178,23 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 }
 
 /**
- * Calculate a single net sheet scenario
- * Note: Commission rates should be passed from generateNetSheet after fetching from brokerage settings
+ * Calculate a single net sheet scenario.
+ * Pure synchronous function — all async brokerage data is resolved upstream in generateNetSheet.
  */
 function calculateScenario(
   scenarioName: string,
   salePrice: number,
   input: NetSheetInput,
   commissionStructure: Awaited<ReturnType<typeof getDefaultCommissionStructure>>,
-  closingCostPercent: number
+  closingCostPercent: number,
 ): NetSheetScenario {
-  // Use brokerage commission structure if rates not explicitly provided
-  const listingCommissionRate = input.listingCommissionRate || commissionStructure.totalListingSideRate
-  const buyerCommissionRate = input.buyerCommissionRate || commissionStructure.totalBuyerSideRate
-
+  // Commission Engine 8.0 will compute final values.
+  // Use resolver rates from getDefaultCommissionStructure() passed in via commissionStructure.
   const listingCommission = salePrice * (commissionStructure?.agentListingSideRate ?? 0)
   const buyerCommission = salePrice * (commissionStructure?.agentBuyerSideRate ?? 0)
-  const closingCosts = input.closingCosts ?? salePrice * closingCostPercent
+
+  // If a fixed dollar amount is provided use it; otherwise derive from brokerage closing_cost_percent.
+  const closingCosts = input.closingCosts ?? (salePrice * closingCostPercent)
   const mortgagePayoff = input.mortgagePayoffAmount || input.mortgageBalance || 0
   const propertyTaxes = input.propertyTaxes || 0
   const hoaFees = input.hoaFees || 0

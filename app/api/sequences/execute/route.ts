@@ -16,11 +16,18 @@ import { executeSequenceStep } from "@/lib/campaign-sequences/step-executor"
 const LIMIT = 50
 
 export async function GET(request: NextRequest) {
-  // ── Auth: verify Vercel cron secret ────────────────────────────────────────
-  const authHeader = request.headers.get("authorization")
+  // ── Auth: verify Vercel cron secret (fail-closed) ─────────────────────────
+  // If CRON_SECRET is not configured, we reject ALL requests rather than
+  // allowing an unprotected execution path in misconfigured deployments.
   const cronSecret = process.env.CRON_SECRET
+  const authHeader = request.headers.get("authorization")
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) {
+    console.error("[sequences/execute] CRON_SECRET env var is not set — rejecting request")
+    return NextResponse.json({ error: "Service misconfigured" }, { status: 503 })
+  }
+
+  if (authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

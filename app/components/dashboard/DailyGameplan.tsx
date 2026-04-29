@@ -3,9 +3,9 @@
 import type React from "react"
 import { useState, useEffect } from "react"
 import { Zap, Trash2, Loader2, Sparkles, CheckCircle2 } from "lucide-react"
-import { type SmartAssistantSuggestion, FEATURE_FLAGS } from "../../types"
-import { supabaseService } from "../../services/supabaseService"
-import { workflowService } from "../../services/workflowService"
+import { type SmartAssistantSuggestion, FEATURE_FLAGS } from "@/types"
+import { supabaseService } from "@/services/supabaseService"
+import { workflowService } from "@/services/workflowService"
 
 const DailyGameplan: React.FC<{ agentId: string }> = ({ agentId }) => {
   const [suggestions, setSuggestions] = useState<SmartAssistantSuggestion[]>([])

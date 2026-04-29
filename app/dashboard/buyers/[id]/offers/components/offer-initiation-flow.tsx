@@ -16,6 +16,7 @@ import {
   aiOfferStrategyAdvisor,
   getOfferForms,
 } from "@/app/actions/ai-offer-creation"
+import { getConnectedEsignProvider } from "@/app/actions/buyer-offers"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,14 +28,15 @@ import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2, FileT
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
-import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
+import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
 } from "../../../../transactions/[id]/components/transaction-form-esign-flow"
+
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
-type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard" | "send_for_signatures"
+type FlowStep = "address" | "form_source" | "forms" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard" | "send_for_signatures"
 
 interface ResolvedProperty {
   address:         string
@@ -77,7 +79,16 @@ export function OfferInitiationFlow({
   const [addressInput, setAddressInput] = useState(initialAddress ?? "")
   // Track newly created offer id for the send_for_signatures step
   const [createdOfferId, setCreatedOfferId] = useState<string | null>(null)
+
+  // Resolved brokerage e-sign provider — loaded once on mount
+  const [connectedProvider, setConnectedProvider] = useState<{ platform: string; accountName: string | null } | null | undefined>(undefined)
+
+  useEffect(() => {
+    if (!brokerageId) { setConnectedProvider(null); return }
+    getConnectedEsignProvider(brokerageId).then(setConnectedProvider).catch(() => setConnectedProvider(null))
+  }, [brokerageId])
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
+  const [nominatimSuggestions, setNominatimSuggestions] = useState<{ display_name: string; address: { house_number?: string; road?: string; city?: string; town?: string; village?: string; state?: string; postcode?: string } }[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
@@ -138,46 +149,51 @@ export function OfferInitiationFlow({
   const [availableForms, setAvailableForms] = useState<{ required: string[]; addenda: string[]; aiRecommended: string[] } | null>(null)
   const [formsLoading, setFormsLoading] = useState(false)
 
-  // Kernel-loaded offer forms for the in_app path
-  const [offerKernelForms, setOfferKernelForms] = useState<FormTemplate[]>([])
-  const [offerKernelFormsLoading, setOfferKernelFormsLoading] = useState(false)
-  const [offerKernelFormsLoaded, setOfferKernelFormsLoaded] = useState(false)
-  const [selectedOfferForm, setSelectedOfferForm] = useState<FormTemplate | null>(null)
+  // Offer form selection + field values (in_app path — FormSelectorStep)
+  const [offerSelectedFormIds, setOfferSelectedFormIds] = useState<string[]>([])
+  const [offerFormFieldValues, setOfferFormFieldValues] = useState<FormFieldValues>({})
 
-  // Load kernel offer forms when in_app path is active
-  useEffect(() => {
-    if (
-      formSrc?.source !== "in_app" ||
-      offerKernelFormsLoaded ||
-      offerKernelFormsLoading
-    ) return
-    setOfferKernelFormsLoading(true)
-    loadAvailableFormsAction({
-      context_type: "offer",
-      state: property?.state ?? undefined,
-    })
-      .then(res => {
-        if (res.success && (res as any).data?.forms) {
-          setOfferKernelForms((res as any).data.forms as FormTemplate[])
-        }
-        setOfferKernelFormsLoaded(true)
-      })
-      .catch(() => setOfferKernelFormsLoaded(true))
-      .finally(() => setOfferKernelFormsLoading(false))
-  }, [formSrc?.source, offerKernelFormsLoaded, offerKernelFormsLoading, property?.state])
+  function handleOfferFormsComplete(ids: string[], values: FormFieldValues) {
+    setOfferSelectedFormIds(ids)
+    setOfferFormFieldValues(values)
+    setFlowStep("strategy")
+  }
 
   // ── Step 1: Address search ──────────────────────────────────────────────────
 
   const onAddressChange = useCallback((value: string) => {
     setAddressInput(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (value.length < 3) { setSuggestions([]); setShowDropdown(false); return }
+    if (value.length < 3) {
+      setSuggestions([])
+      setNominatimSuggestions([])
+      setShowDropdown(false)
+      return
+    }
 
+    setNominatimSuggestions([])
     debounceRef.current = setTimeout(() => {
       startAddressLoad(async () => {
         const results = await searchListingsByAddress(value, brokerageId)
         setSuggestions(results)
-        setShowDropdown(results.length > 0)
+        setShowDropdown(results.length > 0 || value.length >= 3)
+
+        // Only call Nominatim when internal results are insufficient
+        if (results.length < 2) {
+          try {
+            const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
+            const response = await fetch(nominatimUrl, {
+              headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
+            })
+            if (response.ok) {
+              const nominatimResults = await response.json()
+              setNominatimSuggestions(nominatimResults ?? [])
+              setShowDropdown(true)
+            }
+          } catch {
+            // Nominatim failure is silent — internal results still shown
+          }
+        }
       })
     }, 500)
   }, [brokerageId])
@@ -186,6 +202,7 @@ export function OfferInitiationFlow({
     setAddressInput(s.address)
     setShowDropdown(false)
     setSuggestions([])
+    setNominatimSuggestions([])
     setProperty({
       address:         s.address,
       city:            s.city ?? "",
@@ -193,6 +210,28 @@ export function OfferInitiationFlow({
       zip:             s.zip ?? "",
       listingId:       s.id,
       listPrice:       s.list_price,
+      aiFilledAddress: false,
+    })
+  }
+
+  function selectNominatimResult(result: typeof nominatimSuggestions[0]) {
+    const addr = result.address
+    const street = [addr.house_number, addr.road].filter(Boolean).join(" ")
+    const city = addr.city ?? addr.town ?? addr.village ?? ""
+    const state = addr.state ?? ""
+    const zip = addr.postcode ?? ""
+    const fullAddress = street || result.display_name
+    setAddressInput(fullAddress)
+    setShowDropdown(false)
+    setSuggestions([])
+    setNominatimSuggestions([])
+    setProperty({
+      address:         fullAddress,
+      city,
+      state,
+      zip,
+      listingId:       null,
+      listPrice:       null,
       aiFilledAddress: false,
     })
   }
@@ -252,7 +291,7 @@ export function OfferInitiationFlow({
   // ── Step 2: Form source ─────────────────────────────────────────────────────
 
   function proceedFromFormSource() {
-    setFlowStep("strategy")
+    setFlowStep("forms")
   }
 
   // ── Step 3: Strategy ────────────────────────────────────────────────────────
@@ -274,11 +313,95 @@ export function OfferInitiationFlow({
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
 
-  if (flowStep === "strategy") {
+  // ── Step 3: Forms selection ─────────────────────────────────────────────────
+
+  if (flowStep === "forms") {
+    // For in_app path: use FormSelectorStep for full select + fill experience
+    if (formSrc?.source === "in_app") {
+      return (
+        <div className="flex flex-col h-full overflow-y-auto">
+          <div className="px-5 py-4 border-b border-border">
+            <p className="text-sm font-semibold">Step 3 — Offer Documents</p>
+          </div>
+          <div className="flex-1 px-5 py-4">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2 mb-4">
+              <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Connect a forms provider in Settings for state-approved forms. Using brokerage in-app forms below.
+                </p>
+              </div>
+            </div>
+            <FormSelectorStep
+              contextType="offer"
+              state={property?.state ?? undefined}
+              autoLoad
+              nextLabel="Next: AI Strategy"
+              onBack={() => setFlowStep("form_source")}
+              onComplete={handleOfferFormsComplete}
+            />
+          </div>
+        </div>
+      )
+    }
+
+    // Platform / uploaded_doc paths — show info banner, manual advance
     return (
       <div className="flex flex-col h-full overflow-y-auto">
         <div className="px-5 py-4 border-b border-border flex items-center gap-3">
           <button onClick={() => setFlowStep("form_source")} className="text-sm text-muted-foreground hover:underline">
+            Back
+          </button>
+          <p className="text-sm font-semibold">Step 3 — Offer Documents</p>
+        </div>
+
+        <div className="flex-1 px-5 py-4 space-y-4">
+          {formSrc?.source === "platform" && (
+            <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 flex items-center gap-2">
+              <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-green-800">Forms: {formSrc.providerName}</p>
+                <p className="text-xs text-green-700">
+                  Required forms will be pulled automatically from your connected provider when the offer wizard opens.
+                </p>
+              </div>
+            </div>
+          )}
+          {formSrc?.source === "uploaded_doc" && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 flex items-center gap-2">
+              <FileText className="h-4 w-4 text-blue-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-blue-800">Uploaded Document</p>
+                <p className="text-xs text-blue-700">{formSrc.label}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-border px-5 py-4 flex items-center gap-3">
+          <button
+            onClick={() => setFlowStep("form_source")}
+            className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={() => setFlowStep("strategy")}
+            className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Next: AI Strategy
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (flowStep === "strategy") {
+    return (
+      <div className="flex flex-col h-full overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <button onClick={() => setFlowStep("forms")} className="text-sm text-muted-foreground hover:underline">
             Back
           </button>
           <p className="text-sm font-semibold">AI Strategy Recommendation</p>
@@ -674,7 +797,7 @@ export function OfferInitiationFlow({
                 if (result.success && result.contingencies) {
                   setContingencyResult(result.contingencies)
                   // Auto-select all critical recommended contingencies
-                  const criticals = result.contingencies.recommended
+                  const criticals = (result.contingencies as any).recommended
                     .filter((c: any) => c.critical)
                     .map((c: any) => c.type)
                   setSelectedContingencies(criticals)
@@ -801,6 +924,8 @@ export function OfferInitiationFlow({
         contingencies={selectedContingencies}
         buyerMaxBudget={Number(escalationForm.maxBudget) || undefined}
         buyerRiskTolerance={contingencyForm.riskTolerance}
+        inAppSelectedFormIds={offerSelectedFormIds.length > 0 ? offerSelectedFormIds : undefined}
+        inAppFormFieldValues={Object.keys(offerFormFieldValues).length > 0 ? offerFormFieldValues : undefined}
         onBack={() => setFlowStep("contingencies")}
         onSuccess={(newOfferId?: string) => {
           awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
@@ -828,7 +953,7 @@ export function OfferInitiationFlow({
             <SendForSignaturesPanel
               offerId={createdOfferId}
               userId={agentUserId}
-              connectedProvider={null}
+              connectedProvider={connectedProvider ?? null}
               buyerName={contactName}
               buyerEmail={contactEmail}
               onSent={onSuccess}
@@ -852,7 +977,7 @@ export function OfferInitiationFlow({
     <div className="flex flex-col h-full">
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
         <p className="text-sm font-semibold">
-          {flowStep === "address" ? "Step 1 — Property Address" : "Step 2 — Form Source"}
+          {flowStep === "address" ? "Step 1 — Property Address" : "Step 2 — Provider & Form Source"}
         </p>
         <button onClick={onCancel} className="text-xs text-muted-foreground hover:underline">Cancel</button>
       </div>
@@ -874,21 +999,44 @@ export function OfferInitiationFlow({
                 <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
               </div>
             )}
-            {showDropdown && suggestions.length > 0 && (
+            {showDropdown && (suggestions.length > 0 || nominatimSuggestions.length > 0) && (
               <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-md border border-border bg-popover shadow-md overflow-hidden">
-                {suggestions.map(s => (
-                  <button
-                    key={s.id}
-                    onClick={() => selectListing(s)}
-                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
-                  >
-                    <span className="font-medium">{s.address}</span>
-                    <span className="text-muted-foreground ml-2 text-xs">
-                      {s.city}, {s.state} {s.zip}
-                      {s.list_price ? ` — $${Number(s.list_price).toLocaleString()}` : ""}
-                    </span>
-                  </button>
-                ))}
+                {suggestions.length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
+                      Your Listings
+                    </div>
+                    {suggestions.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => selectListing(s)}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
+                      >
+                        <span className="font-medium">{s.address}</span>
+                        <span className="text-muted-foreground ml-2 text-xs">
+                          {s.city}, {s.state} {s.zip}
+                          {s.list_price ? ` — $${Number(s.list_price).toLocaleString()}` : ""}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {nominatimSuggestions.length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
+                      Address Search
+                    </div>
+                    {nominatimSuggestions.map((n, i) => (
+                      <button
+                        key={i}
+                        onClick={() => selectNominatimResult(n)}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
+                      >
+                        <span className="text-foreground">{n.display_name}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -998,65 +1146,28 @@ export function OfferInitiationFlow({
                   </div>
                 )}
 
-                {/* No provider connected — show kernel forms + connect banner */}
+                {/* No provider connected — in-app brokerage forms available in next step */}
                 {formSrc.source === "in_app" && (
-                  <div className="space-y-3">
-                    <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 space-y-2">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
-                          <p className="text-xs text-amber-700 mt-0.5">
-                            Connect your transaction/forms provider in Settings to pull official state-approved forms.
-                          </p>
-                        </div>
-                      </div>
-                      <a
-                        href="/dashboard/settings/integrations"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 hover:underline"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        Connect a provider in Settings
-                      </a>
-                    </div>
-
-                    {/* Kernel offer forms for this state */}
-                    {offerKernelFormsLoading ? (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Loading state forms...
-                      </div>
-                    ) : offerKernelForms.length > 0 ? (
-                      <div className="rounded-md border border-border overflow-hidden">
-                        <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-muted/40 border-b">
-                          Available Offer Forms{property?.state ? ` · ${property.state}` : ""}
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                          Using brokerage in-app forms. Connect a provider in Settings for state-approved forms.
+                          You will select and fill forms in the next step.
                         </p>
-                        <div className="divide-y divide-border">
-                          {offerKernelForms.map(form => (
-                            <div key={form.id} className="flex items-center justify-between px-3 py-2.5 bg-background hover:bg-muted/20 transition-colors">
-                              <div className="flex items-start gap-2 min-w-0">
-                                <FileText className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                                <div className="min-w-0">
-                                  <p className="text-xs font-medium truncate">{form.name}</p>
-                                  <p className="text-[10px] text-muted-foreground capitalize">
-                                    {form.category.replace(/_/g, " ")}
-                                  </p>
-                                </div>
-                              </div>
-                              <Button
-                                size="sm"
-                                className="text-xs h-6 gap-1 ml-2 shrink-0"
-                                onClick={() => setSelectedOfferForm(form)}
-                              >
-                                Use
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
                       </div>
-                    ) : null}
+                    </div>
+                    <a
+                      href="/dashboard/settings/integrations"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 hover:underline"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Connect a provider in Settings
+                    </a>
                   </div>
                 )}
               </>
@@ -1064,23 +1175,6 @@ export function OfferInitiationFlow({
           </div>
         )}
       </div>
-
-      {/* Offer Form E-Sign Flow Sheet */}
-      {selectedOfferForm && (
-        <TransactionFormEsignFlow
-          open={!!selectedOfferForm}
-          onOpenChange={open => { if (!open) setSelectedOfferForm(null) }}
-          formTemplate={selectedOfferForm}
-          contextType="offer"
-          contextId="pending"
-          defaultSigners={[
-            contactName || contactEmail
-              ? { name: contactName, email: contactEmail, role: "buyer" }
-              : null,
-          ].filter(Boolean) as { name: string; email: string; role: string }[]}
-          onSuccess={() => setSelectedOfferForm(null)}
-        />
-      )}
 
       {/* Footer */}
       <div className="border-t border-border px-5 py-4 flex items-center gap-3">
@@ -1104,7 +1198,7 @@ export function OfferInitiationFlow({
             disabled={isLoadingFormSrc || !formSrc}
             className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
           >
-            Get AI Strategy
+            Next: Select Forms
           </button>
         )}
       </div>

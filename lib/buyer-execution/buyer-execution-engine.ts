@@ -176,7 +176,7 @@ export async function getBuyerJourneyStatus(
       let completedAt: Date | undefined
       if (milestoneEvents) {
         const event = milestoneEvents.find(e => {
-          const metadata = e.type === 'buyer.lifecycle.transitioned' && e.metadata
+          const metadata = e.type === 'buyer.lifecycle.transitioned' && (e as any).metadata
           return metadata && typeof metadata === 'object' && 'to_state' in metadata && metadata.to_state === state
         })
         if (event) {

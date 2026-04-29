@@ -55,7 +55,7 @@ export function AgentStaleContactsPanel({ agentId, brokerageId }: Props) {
       .neq("status", "archived")
       .order("last_contacted_at", { ascending: true, nullsFirst: true })
       .limit(10)
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         setContacts(data ?? [])
         setLoading(false)
       })

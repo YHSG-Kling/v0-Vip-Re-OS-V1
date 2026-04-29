@@ -29,6 +29,12 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const brokerageId = profile.brokerage_id
   const userRole = profile.role ?? "agent"
 
+  const { data: brokerageInfo } = await supabase
+    .from("brokerages")
+    .select("name, logo_url")
+    .eq("id", brokerageId)
+    .maybeSingle()
+
   // Fetch transaction with ownership/brokerage check
   // Uses actual Supabase transactions table columns
   const { data: transaction, error: txnError } = await supabase
@@ -323,6 +329,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}
+      brokerageName={brokerageInfo?.name ?? undefined}
+      brokerageLogoUrl={brokerageInfo?.logo_url ?? undefined}
       userRole={userRole}
       userId={user.id}
       milestones={milestones ?? []}
@@ -355,7 +363,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       availableTCs={availableTCs ?? []}
       currentLenderId={currentLenderId}
       availableLenders={availableLenders ?? []}
-      vendorBookings={vendorBookings ?? []}
+      vendorBookings={(vendorBookings ?? []) as any}
     />
   )
 }

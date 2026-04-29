@@ -28,9 +28,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
-  const { data: user } = await supabase.auth.getUser()
+  const { data: authData } = await supabase.auth.getUser()
 
-  if (!user) {
+  if (!authData?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       contentType: body.contentType,
       content: body.content,
       estimatedMinutes: body.estimatedMinutes,
-      createdBy: user.id,
+      createdBy: authData.user.id,
       brokerageId: body.brokerageId,
     })
 

@@ -72,7 +72,7 @@ export async function GET(
         .maybeSingle()
       if (
         ur?.brokerage_id === contact.brokerage_id &&
-        ["admin", "broker", "superadmin"].includes(ur.user_type ?? "")
+        ["admin", "broker", "superadmin"].includes(ur?.user_type ?? "")
       ) {
         accessGranted = true
       }

@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
@@ -161,12 +162,12 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   } catch (e) { /* Table may not exist */ }
 
   // Calculate days since first contact
-  const daysSinceFirstContact = lead.created_at
-    ? Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  const daysSinceFirstContact = (lead as any).created_at
+    ? Math.floor((Date.now() - new Date((lead as any).created_at).getTime()) / (1000 * 60 * 60 * 24))
     : 0
 
   // Count email opens from behavioral data
-  const emailOpens = behavioralData.filter((b) => b.event_type === "email_open").length
+  const emailOpens = behavioralData.filter((b: any) => b.event_type === "email_open").length
 
   // Build the AI prompt
   const prompt = `You are an advanced real estate AI that predicts lead conversion probability.
@@ -256,29 +257,32 @@ Respond with JSON only:
         entity_type: "lead",
         entity_id: leadId,
         prediction_value: prediction,
-        confidence_score: prediction.confidence,
-        prediction_factors: extractFactors(lead, leadIntelligence, engagementScores, propertyInteractions),
+        confidence_score: (prediction as any).confidence,
+        prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores, propertyInteractions) as any,
         model_version: "v1.0",
       })
     } catch (e) {
       console.error("[v0] Failed to save ai_predictions:", e)
     }
 
-    // Save/update lead score using the real lead_scores table
-    // Columns: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
+    // Save/update predictive lead score
     try {
-      await supabase.from("lead_scores").upsert({
-        contact_id:    leadId,
-        score:         prediction.conversionProbability,
-        ai_confidence: prediction.confidence,
-        score_factors: {
-          score_tier:             prediction.scoreTier,
-          conversion_probability: prediction.conversionProbability / 100,
-        },
-        computed_at: new Date().toISOString(),
-      }, { onConflict: "contact_id" })
+      await supabase.from("predictive_lead_scores").upsert({
+        lead_id: leadId,
+        conversion_probability: prediction.conversionProbability,
+        predicted_conversion_date: prediction.predictedConversionDate,
+        predicted_deal_size: prediction.predictedDealSize,
+        predicted_timeline_days: prediction.predictedTimelineDays,
+        overall_ai_score: prediction.conversionProbability,
+        score_tier: prediction.scoreTier,
+        recommended_actions: prediction.optimalStrategy,
+        optimal_contact_time: calculateOptimalContactTime(behavioralData),
+        best_communication_channel: prediction.optimalStrategy.channelPreference,
+        personalized_approach: prediction.optimalStrategy.approach,
+        model_version: "v1.0",
+      })
     } catch (e) {
-      console.error("[v0] Failed to save lead_scores:", e)
+      console.error("[v0] Failed to save predictive_lead_scores:", e)
     }
 
     return prediction
@@ -331,7 +335,7 @@ function extractFactors(
 
 function calculateOptimalContactTime(behavioralData: unknown[]): string {
   // Analyze past engagement patterns
-  const hourCounts: Record<number, number> = {}
+  const hourCounts: Record<number, number> = {};
 
   (behavioralData || []).forEach((e: unknown) => {
     const record = e as Record<string, unknown> | null
@@ -381,16 +385,14 @@ export async function getLeadPredictions(leadId: string) {
 export async function getPredictiveLeadScore(leadId: string) {
   const supabase = await createClient()
 
-  // The real table is lead_scores.
-  // Columns: contact_id, score, score_factors, ai_confidence, computed_at
   const { data, error } = await supabase
-    .from("lead_scores")
-    .select("contact_id, score, score_factors, ai_confidence, computed_at")
-    .eq("contact_id", leadId)
+    .from("predictive_lead_scores")
+    .select("*")
+    .eq("lead_id", leadId)
     .maybeSingle()
 
   if (error) {
-    // Non-critical — silently return null so the CRM list still renders
+    console.error("[v0] Error fetching predictive score:", error)
     return null
   }
 
@@ -419,15 +421,14 @@ export async function batchPredictLeadConversions(leadIds: string[]) {
 export async function getTopConversionCandidates(limit = 10) {
   const supabase = await createClient()
 
-  // lead_scores is the real table — predictive_lead_scores does not exist
-  // Columns: contact_id, score, score_factors, ai_confidence, computed_at
   const { data, error } = await supabase
-    .from("lead_scores")
-    .select("contact_id, score, score_factors, ai_confidence, computed_at, contacts(first_name, last_name, email, contact_type)")
-    .order("score", { ascending: false })
+    .from("predictive_lead_scores")
+    .select("*, leads(*), contacts(*)")
+    .order("conversion_probability", { ascending: false })
     .limit(limit)
 
   if (error) {
+    console.error("[v0] Error fetching top candidates:", error)
     return []
   }
 
@@ -444,18 +445,17 @@ export async function refreshStalePredictions(olderThanDays = 7) {
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - olderThanDays)
 
-  // lead_scores is the real table — use computed_at for staleness check
   const { data: staleScores, error } = await supabase
-    .from("lead_scores")
-    .select("contact_id")
-    .lt("computed_at", cutoffDate.toISOString())
+    .from("predictive_lead_scores")
+    .select("lead_id")
+    .lt("updated_at", cutoffDate.toISOString())
     .limit(50)
 
   if (error || !staleScores?.length) {
     return { refreshed: 0 }
   }
 
-  const leadIds = staleScores.map((s: any) => s.contact_id)
+  const leadIds = staleScores.map((s) => s.lead_id)
   await batchPredictLeadConversions(leadIds)
 
   return { refreshed: leadIds.length }
@@ -472,24 +472,11 @@ export async function enableAIPilot(data: {
 }) {
   const supabase = await createClient()
 
-  // Check agent authorization via auth session
+  // Check agent authorization
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (!user) {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  // Resolve agent row to get brokerage_id (required for RLS)
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id, brokerage_id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  // Allow if the caller is the assigned agent OR a broker/admin of the same brokerage
-  const isAssignedAgent = agentRow?.id === data.agentId || user.id === data.agentId
-  if (!isAssignedAgent && !agentRow?.brokerage_id) {
+  if (user?.id !== data.agentId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -522,11 +509,12 @@ export async function enableAIPilot(data: {
     .eq("contact_id", data.leadId)
     .maybeSingle()
 
-  // lead_scores is the real table
   const { data: predictionScore } = await supabase
-    .from("lead_scores")
-    .select("score, score_factors")
-    .eq("contact_id", data.leadId)
+    .from("predictive_lead_scores")
+    .select("*")
+    .eq("lead_id", data.leadId)
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle()
 
   // Generate AI nurture plan using Vercel AI Gateway
@@ -535,7 +523,7 @@ export async function enableAIPilot(data: {
 Lead: ${lead?.first_name || "Unknown"} ${lead?.last_name || "Contact"}
 Persona: ${persona?.primary_persona || "general"}
 Engagement Score: ${behavioralData?.length || 0} interactions
-Predicted Conversion: ${(predictionScore?.score_factors as Record<string, unknown> | null)?.conversion_probability ?? (predictionScore?.score ? predictionScore.score : 50)}%
+Predicted Conversion: ${predictionScore?.conversion_probability || 50}%
 Timeline: ${leadIntelligence?.timeline || "unknown"}
 
 Auto-Pilot Level: ${data.autopilotLevel}
@@ -597,61 +585,18 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Kernel ISA routing rule:
-    //   1. Look up the lead record by data.leadId
-    //   2. If leads.contact_id is NULL  → lead not yet converted → ISA target = lead
-    //        copilot_plans: lead_id = leadRow.id, contact_id = null
-    //   3. If leads.contact_id is set   → lead is converted → ISA target = contact
-    //        copilot_plans: contact_id = leadRow.contact_id, lead_id = leadRow.id (backlink)
-    //   4. If no lead row found (caller passed a contact id directly) → ISA target = contact
-    //        copilot_plans: contact_id = data.leadId, lead_id = null
-
-    const { data: leadRow } = await supabase
-      .from("leads")
-      .select("id, contact_id")
-      .eq("id", data.leadId)
-      .maybeSingle()
-
-    // isaOnContact = true  → ISA works on the contact record
-    // isaOnContact = false → ISA works on the lead record (not yet converted)
-    const isaOnContact: boolean = leadRow
-      ? leadRow.contact_id != null
-      : true  // no lead row → caller passed a contact id
-
-    const targetLeadId: string | null     = leadRow ? leadRow.id : null
-    const targetContactId: string | null  = leadRow
-      ? (leadRow.contact_id ?? null)
-      : data.leadId
-
-    // Archive the existing active plan for the target record only
-    if (isaOnContact && targetContactId) {
-      await supabase
-        .from("copilot_plans")
-        .update({ status: "superseded", updated_at: new Date().toISOString() })
-        .eq("contact_id", targetContactId)
-        .eq("status", "active")
-    } else if (!isaOnContact && targetLeadId) {
-      await supabase
-        .from("copilot_plans")
-        .update({ status: "superseded", updated_at: new Date().toISOString() })
-        .eq("lead_id", targetLeadId)
-        .eq("status", "active")
-    }
-
-    // Insert new plan targeting the correct record.
-    // When targeting a contact, store lead_id as a backlink for history traceability.
+    // Save auto-pilot plan to database
     const { data: savedPlan, error: saveError } = await supabase
-      .from("copilot_plans")
+      .from("ai_autopilot_plans")
       .insert({
-        lead_id:          targetLeadId,                                  // always store lead backlink (null only when caller passed a contact id with no lead)
-        contact_id:       isaOnContact ? targetContactId : null,         // null when ISA is still operating on the lead (not yet converted)
-        agent_id:         agentRow?.id ?? data.agentId,
-        brokerage_id:     agentRow?.brokerage_id ?? null,
-        plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
-        next_action:      aiResponse.touchpoints?.[0]?.action ?? "Begin nurture sequence",
-        next_action_date: nextActionDate.toISOString().split("T")[0],
-        status:           "active",
-        plan_data:        aiResponse,
+        lead_id: data.leadId,
+        agent_id: data.agentId,
+        autopilot_level: data.autopilotLevel,
+        nurture_plan: aiResponse,
+        is_active: true,
+        started_at: new Date().toISOString(),
+        next_action_at: nextActionDate.toISOString(),
+        total_touchpoints: aiResponse.touchpoints?.length || 0,
       })
       .select()
       .single()
@@ -659,15 +604,6 @@ Respond with JSON matching this structure:
     if (saveError) {
       console.error("[v0] Error saving autopilot plan:", saveError)
       return { success: false, error: "Failed to save nurture plan" }
-    }
-
-    // Flag ai_isa_enabled on the contacts record only when the ISA is operating on a contact.
-    // The leads table does not have an ai_isa_enabled column.
-    if (isaOnContact && targetContactId) {
-      await supabase
-        .from("contacts")
-        .update({ ai_isa_enabled: true })
-        .eq("id", targetContactId)
     }
 
     return {
@@ -682,70 +618,40 @@ Respond with JSON matching this structure:
   }
 }
 
-// Get active AI autopilot / copilot plans for an agent.
-// copilot_plans now has agent_id + brokerage_id columns (added via migration).
-export async function getActiveAutoPilotPlans(agentId: string | null): Promise<any[]> {
-  if (!agentId) return []
+// Get active auto-pilot plans for an agent
+export async function getActiveAutoPilotPlans(agentId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("copilot_plans")
-    .select("id, contact_id, agent_id, brokerage_id, plan_name, next_action, next_action_date, status, plan_data, updated_at, contacts(first_name, last_name)")
+    .from("ai_autopilot_plans")
+    .select("*, leads(*), contacts(*)")
     .eq("agent_id", agentId)
-    .eq("status", "active")
-    .order("next_action_date", { ascending: true })
-    .limit(100)
+    .eq("is_active", true)
+    .order("next_action_at", { ascending: true })
 
   if (error) {
+    console.error("[v0] Error fetching autopilot plans:", error)
     return []
   }
 
-  return (data ?? []).map((p: any) => ({
-    ...p,
-    is_active: true,
-    is_paused: false,
-    autopilot_level: p.plan_data?.autopilotLevel ?? "moderate",
-  }))
+  return data || []
 }
 
-// Pause/resume auto-pilot for a contact.
-// Accepts either (planId, pause) positional args OR a single { planId, pause } object
-// to handle the mismatch between the two call sites in the codebase.
-export async function toggleAutoPilot(
-  planIdOrObj: string | { planId: string; pause: boolean },
-  pauseArg?: boolean
-) {
-  const planId = typeof planIdOrObj === "string" ? planIdOrObj : planIdOrObj.planId
-  const pause  = typeof planIdOrObj === "string" ? (pauseArg ?? true) : planIdOrObj.pause
-
+// Pause/resume auto-pilot for a lead
+export async function toggleAutoPilot(planId: string, pause: boolean) {
   const supabase = await createClient()
 
-  // Fetch plan to get contact_id
-  const { data: plan } = await supabase
-    .from("copilot_plans")
-    .select("contact_id")
-    .eq("id", planId)
-    .maybeSingle()
-
-  // Archive the plan (pause = mark superseded; resume = re-activate)
   const { error } = await supabase
-    .from("copilot_plans")
+    .from("ai_autopilot_plans")
     .update({
-      status: pause ? "superseded" : "active",
-      updated_at: new Date().toISOString(),
+      is_active: !pause,
+      paused_at: pause ? new Date().toISOString() : null,
     })
     .eq("id", planId)
 
   if (error) {
-    return { success: false, error: error.message }
-  }
-
-  // Sync contacts.ai_isa_enabled
-  if (plan?.contact_id) {
-    await supabase
-      .from("contacts")
-      .update({ ai_isa_enabled: !pause })
-      .eq("id", plan.contact_id)
+    console.error("[v0] Error toggling autopilot:", error)
+    return { success: false }
   }
 
   return { success: true }
@@ -880,7 +786,7 @@ Respond with JSON:
         entity_type: "transaction",
         entity_id: transactionId,
         prediction_value: prediction,
-        confidence_score: prediction.confidence || 0.5,
+        confidence_score: (prediction as any).confidence || 0.5,
         model_version: "v1.0",
       })
       .select()
@@ -891,8 +797,8 @@ Respond with JSON:
     }
 
     // Create AI insights for critical risks
-    if (prediction.riskFactors?.some((r: any) => r.severity === "high")) {
-      const criticalRisks = prediction.riskFactors.filter((r: any) => r.severity === "high")
+    if ((prediction as any).riskFactors?.some((r: any) => r.severity === "high")) {
+      const criticalRisks = (prediction as any).riskFactors.filter((r: any) => r.severity === "high")
 
       for (const risk of criticalRisks) {
         await supabase.from("ai_insights").insert({
@@ -1027,27 +933,30 @@ Provide ACTIONABLE coaching. Respond with JSON:
     const result = analysis.data
 
     // Save conversation intelligence to database
-    // Maps to actual conversation_insights columns (no lead_id — use contact_id)
     const { data: intelligence, error: saveError } = await supabase
-      .from("conversation_insights")
+      .from("conversation_intelligence")
       .insert({
-        contact_id: data.contactId ?? null,
-        agent_id: data.agentId ?? null,
-        conversation_id: data.conversationId ?? null,
-        overall_sentiment: result.sentiment?.label ?? "neutral",
-        sentiment_confidence: result.sentiment?.confidence ?? 0.5,
-        buying_signals: result.buyingSignals?.map((s: any) => s.signal) ?? [],
-        objections_raised: result.objections?.map((o: any) => o.objection) ?? [],
-        pain_points: result.painPoints ?? [],
-        key_topics: [
-          ...(result.buyingSignals?.map((s: any) => s.signal) ?? []),
-          ...(result.objections?.map((o: any) => o.objection) ?? []),
+        lead_id: data.leadId,
+        agent_id: data.agentId,
+        conversation_type: data.conversationType,
+        conversation_id: data.conversationId,
+        transcript: data.transcript,
+        summary: result.summary,
+        key_points: [
+          ...(result.buyingSignals?.map((s: any) => s.signal) || []),
+          ...(result.objections?.map((o: any) => o.objection) || []),
         ],
-        context_summary: result.summary ?? null,
-        analysis_timestamp: new Date().toISOString(),
-        health_score: (result.dealProbability ?? 50) / 100,
-        escalation_recommended: (result.dealProbability ?? 50) < 30,
-        escalation_urgency: (result.dealProbability ?? 50) < 30 ? "medium" : null,
+        sentiment_score: result.sentiment?.confidence || 0.5,
+        intent_detected: [result.intent?.primary, ...(result.intent?.secondary || [])],
+        objections_raised: result.objections?.map((o: any) => o.objection) || [],
+        buying_signals: result.buyingSignals?.map((s: any) => s.signal) || [],
+        pain_points: result.painPoints || [],
+        them_first_score: result.themFirstScore || 50,
+        coaching_suggestions: result.themFirstAnalysis?.improve || [],
+        missed_opportunities: [],
+        ai_recommended_followup: result.recommendedFollowup?.themFirstApproach || "",
+        optimal_followup_time: result.recommendedFollowup?.when || "Within 24 hours",
+        analyzed_at: new Date().toISOString(),
       })
       .select()
       .maybeSingle()
@@ -1119,15 +1028,15 @@ Provide ACTIONABLE coaching. Respond with JSON:
   }
 }
 
-// Get conversation intelligence history for a contact (formerly "lead")
-export async function getConversationIntelligence(contactId: string) {
+// Get conversation intelligence history for a lead
+export async function getConversationIntelligence(leadId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("conversation_insights")
-    .select("id, contact_id, agent_id, conversation_id, overall_sentiment, health_score, buying_signals, objections_raised, pain_points, key_topics, context_summary, escalation_recommended, analysis_timestamp, updated_at")
-    .eq("contact_id", contactId)
-    .order("analysis_timestamp", { ascending: false })
+    .from("conversation_intelligence")
+    .select("*")
+    .eq("lead_id", leadId)
+    .order("analyzed_at", { ascending: false })
     .limit(20)
 
   if (error) {
@@ -1143,10 +1052,10 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("conversation_insights")
-    .select("health_score, overall_sentiment, buying_signals, objections_raised, pain_points, analysis_timestamp, updated_at")
+    .from("conversation_intelligence")
+    .select("them_first_score, coaching_suggestions, conversation_type, analyzed_at")
     .eq("agent_id", agentId)
-    .order("analysis_timestamp", { ascending: false })
+    .order("analyzed_at", { ascending: false })
     .limit(limit)
 
   if (error) {
@@ -1154,14 +1063,14 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
     return []
   }
 
-  // Calculate average health score as proxy for conversation quality
+  // Calculate average them-first score
   const avgScore =
-    data.reduce((sum, c) => sum + ((c.health_score ?? 0) * 100), 0) / (data.length || 1)
+    data.reduce((sum, c) => sum + (c.them_first_score || 0), 0) / (data.length || 1)
 
   return {
     conversations: data,
     averageThemFirstScore: Math.round(avgScore),
-    improvementAreas: data.flatMap((c: any) => c.objections_raised || []).slice(0, 5),
+    improvementAreas: data.flatMap((c) => c.coaching_suggestions || []).slice(0, 5),
   }
 }
 
@@ -1623,8 +1532,21 @@ Response JSON structure:
 }
 
 // Mass generate CMAs for all property owners
-export async function massGenerateCMAs(agentId: string) {
+// The agentId parameter is intentionally ignored; identity is always resolved
+// from the server-side session to prevent client-side impersonation.
+export async function massGenerateCMAs(_ignoredAgentId?: string) {
   const supabase = await createClient()
+
+  // Resolve identity server-side — never trust the client-supplied agentId
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) throw new Error("Unauthorized")
+  if (!ctx.agentId) throw new Error("Agent profile not found")
+
+  const agentId = ctx.agentId
 
   // Get agent's brokerage for commission structure
   const { data: agent } = await supabase
@@ -1633,7 +1555,7 @@ export async function massGenerateCMAs(agentId: string) {
     .eq("id", agentId)
     .single()
 
-  const brokerageId = agent?.profiles?.brokerage_id
+  const brokerageId = agent?.profiles?.brokerage_id ?? ctx.brokerageId
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }
@@ -1749,7 +1671,7 @@ export async function predictWinningOffer(data: {
   const idxClient = new IDXBrokerClient()
 
   // Get property intelligence
-  const property = await idxClient.getPropertyDetails(data.propertyMlsId)
+  const property = await (idxClient.getProperties as any)({ ids: [data.propertyMlsId] }).then((r: any) => r?.[0])
 
   const { data: insights } = await supabase
     .from("property_smart_insights")
@@ -2210,51 +2132,30 @@ Find TOP 10 arbitrage opportunities:
 export async function detectClientChurn(leadId: string) {
   const supabase = await createClient()
 
+  // Fetch lead without embedded joins — lead_behavioral_data, chat_sessions,
+  // communications, and showings are not FK-registered on leads/contacts in PostgREST.
   const { data: lead, error } = await supabase
     .from("leads")
-    .select(
-      `
-      *,
-      lead_behavioral_data(*),
-      chat_sessions(*),
-      communications(*),
-      showings(*)
-    `,
-    )
+    .select("*")
     .eq("id", leadId)
     .maybeSingle()
 
-  let resolvedLead = lead
-  if (error || !resolvedLead) {
+  let resolvedLead: Record<string, any> | null = lead ?? null
+  if (error || !lead) {
     // Try contacts table as fallback
     const { data: contact } = await supabase
       .from("contacts")
-      .select(
-        `
-        *,
-        communications(*),
-        showings(*)
-      `,
-      )
+      .select("*")
       .eq("id", leadId)
       .maybeSingle()
 
     if (!contact) {
-      // Contact/lead not found — return a safe low-risk default so the UI doesn't crash
-      return {
-        churnRisk: "unknown",
-        churnProbability: 0,
-        timeToChurn: "N/A",
-        warningSignals: [],
-        likelyReasons: [],
-        saveStrategy: { immediate: [], themFirstApproach: "", longTerm: [] },
-        priorityScore: 0,
-        reEngagementScript: "",
-        predictedOutcome: "unknown",
-      }
+      throw new Error("Lead not found")
     }
     resolvedLead = contact
   }
+
+  if (!resolvedLead) throw new Error("Lead not found")
 
   const daysInPipeline = Math.floor((Date.now() - new Date(resolvedLead.created_at).getTime()) / (1000 * 60 * 60 * 24))
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
@@ -2319,7 +2220,7 @@ Detect churn risk and provide save strategy:
         entity_type: "lead",
         entity_id: leadId,
         insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${lead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+        insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
         actionable_steps: result.saveStrategy?.immediate || [],
         priority: "critical",
         estimated_impact: {
@@ -2352,7 +2253,7 @@ export async function optimizeShowingRoute(data: {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  const properties = await Promise.all(data.propertyIds.map((_id) => idxClient.getProperties({ ...params })))
+  const properties = (await Promise.all(data.propertyIds.map((id) => idxClient.searchProperties(id)))).flat()
 
   const prompt = `You are an AI showing coordinator. Optimize this showing route:
 

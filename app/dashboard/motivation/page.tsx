@@ -14,5 +14,5 @@ export default async function MotivationPage() {
 
   const { agentId, brokerageId } = await getAgentContext()
 
-  return <MotivationClient agentId={agentId} brokerageId={brokerageId} userId={user.id} />
+  return <MotivationClient agentId={agentId ?? ""} brokerageId={brokerageId ?? ""} userId={user.id} />
 }

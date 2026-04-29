@@ -1,6 +1,7 @@
 "use client"
 
 import { useChat } from "@ai-sdk/react"
+import { DefaultChatTransport } from "ai"
 import { useSearchParams } from "next/navigation"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Send, X, MessageCircle, Loader2, Video, Phone, ArrowLeft } from "lucide-react"
@@ -102,16 +103,18 @@ export default function WidgetChatClient() {
   }, [brokerageId, agentId])
 
   const [inputValue, setInputValue] = useState("")
-  const { messages, append, status } = useChat({
-    api: "/api/widget/message",
-    body: { session_token: sessionToken },
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: "/api/widget/message",
+      body: { session_token: sessionToken },
+    }),
   })
   const isLoading = status === "streaming" || status === "submitted"
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!inputValue.trim() || !sessionReady || isLoading) return
-    append({ role: "user", content: inputValue.trim() })
+    sendMessage({ role: "user", parts: [{ type: "text", text: inputValue.trim() }] })
     setInputValue("")
   }
 
@@ -180,14 +183,14 @@ export default function WidgetChatClient() {
         })
         setIntakeSubmitted(true)
         setShowIntakeForm(false)
-        await append({ role: "user", content: `My name is ${capturedName}, email: ${capturedEmail || "(not provided)"}, phone: ${capturedPhone || "(not provided)"}` })
+        await sendMessage({ role: "user", parts: [{ type: "text", text: `My name is ${capturedName}, email: ${capturedEmail || "(not provided)"}, phone: ${capturedPhone || "(not provided)"}` }] })
       } catch {
         // Silently continue
       } finally {
         setIntakeSubmitting(false)
       }
     },
-    [capturedName, capturedEmail, capturedPhone, messages, agentId, brokerageId, sessionToken, append]
+    [capturedName, capturedEmail, capturedPhone, messages, agentId, brokerageId, sessionToken, sendMessage]
   )
 
   // ── Start Live Agent WebRTC ───────────────────────────────────────────────

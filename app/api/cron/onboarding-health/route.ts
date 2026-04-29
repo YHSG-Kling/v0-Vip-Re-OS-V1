@@ -150,7 +150,7 @@ export async function GET(request: NextRequest) {
           body: `${agentName} has not made onboarding progress in ${STALLED_DAYS_THRESHOLD}+ days (currently on Day ${onboarding.current_day}).`,
           is_read: false,
           priority: 'high',
-        }).catch(err => {
+        }).then(() => {}, (err: unknown) => {
           console.error('[OnboardingHealth] Failed to create admin notification:', err)
         })
       }
@@ -195,7 +195,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     console.error('[OnboardingHealth] Cron failed:', error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: 'main-processing' })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: 'main-processing' })
     return NextResponse.json({ error: errorMessage, context_id: contextId }, { status: 500 })
   }
 }

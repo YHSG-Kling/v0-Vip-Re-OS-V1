@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Heart, MapPin, Bed, Bath, Square, Calendar, Sparkles, Users, Plus, Loader2 } from "lucide-react"
-import { SmartPropertyInsights } from "./SmartPropertyInsights"
+import { SmartPropertyInsights } from "../widgets/SmartPropertyInsights"
 import { addPropertyToSearch, getCollaborativeSearches } from "@/app/actions/collaborative-search"
 import { requestShowing } from "@/app/actions/smart-insights"
 import { getSavedProperties } from "@/app/actions/properties"
@@ -42,7 +42,7 @@ export function PortalPropertiesView({ contactId, contactEmail }: PortalProperti
         getSavedProperties(contactId),
         getCollaborativeSearches(contactId)
       ])
-      setSavedProperties(properties || [])
+      setSavedProperties(properties.success ? properties.properties : [])
       setCollaborativeSearches(searches || [])
     } catch (error) {
       console.error("[PortalPropertiesView] Error loading data:", error)
@@ -147,7 +147,7 @@ export function PortalPropertiesView({ contactId, contactEmail }: PortalProperti
                     </div>
 
                     <div className="flex flex-wrap gap-1 mb-4">
-                      {property.features.slice(0, 3).map((feature) => (
+                      {property.features.slice(0, 3).map((feature: any) => (
                         <Badge key={feature} variant="secondary" className="text-xs">
                           {feature}
                         </Badge>

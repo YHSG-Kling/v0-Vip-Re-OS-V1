@@ -262,7 +262,7 @@ function QuickStatCard({
   }
 
   return (
-    <Card className="hover:shadow-md transition-shadow cursor-pointer" asChild>
+    <Card className="hover:shadow-md transition-shadow cursor-pointer">
       <Link href={href}>
         <CardContent className="p-4">
           <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center mb-2", colorClasses[color])}>

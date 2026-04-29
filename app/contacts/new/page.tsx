@@ -64,13 +64,12 @@ export default function NewContactPage() {
 
     try {
       const result = await createContact({
-        agentId: userContext.agentId,
-        firstName: formData.firstName,
-        lastName: formData.lastName,
+        first_name: formData.firstName,
+        last_name: formData.lastName,
         email: formData.email || undefined,
         phone: formData.phone || undefined,
-        contactType: formData.contactType,
-        leadSource: formData.leadSource || undefined,
+        contact_type: formData.contactType as any,
+        source: formData.leadSource || undefined,
         notes: formData.notes || undefined,
       })
 

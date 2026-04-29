@@ -41,6 +41,8 @@ export async function publishToSocialPlatform(
         return await publishToYouTube(params)
       case "pinterest":
         return await publishToPinterest(params)
+      case "google_business":
+        return await publishToGoogleBusiness(params)
       default:
         return {
           success: false,
@@ -305,14 +307,30 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
     throw new Error(error.error?.message || "YouTube API error")
   }
 
-  // In production, you would continue with the resumable upload
-  // For now, return success with the upload location
   const uploadUrl = initResponse.headers.get("Location")
-  return {
-    success: true,
-    externalPostId: uploadUrl || "pending",
-    platform: "youtube",
+  if (!uploadUrl) throw new Error("YouTube did not return an upload URL")
+
+  // Stream video bytes to the resumable upload URL
+  const videoResponse = await fetch(params.mediaUrls![0])
+  if (!videoResponse.ok) throw new Error("Could not fetch video for YouTube upload")
+  const videoBuffer = await videoResponse.arrayBuffer()
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "video/*",
+      "Content-Length": String(videoBuffer.byteLength),
+    },
+    body: videoBuffer,
+  })
+
+  if (!uploadResponse.ok) {
+    const err = await uploadResponse.json().catch(() => ({}))
+    throw new Error(err.error?.message || "YouTube upload failed")
   }
+
+  const uploadData = await uploadResponse.json()
+  return { success: true, externalPostId: uploadData.id, platform: "youtube" }
 }
 
 async function publishToPinterest(params: PublishParams): Promise<PublishResult> {
@@ -347,6 +365,40 @@ async function publishToPinterest(params: PublishParams): Promise<PublishResult>
     throw new Error(data.message || "Pinterest API error")
   }
   return { success: true, externalPostId: data.id, platform: "pinterest" }
+}
+
+async function publishToGoogleBusiness(params: PublishParams): Promise<PublishResult> {
+  // accountId stored as "accounts/{id}/locations/{id}" after OAuth
+  const locationName = params.accountId
+
+  const body: Record<string, any> = {
+    languageCode: "en-US",
+    summary: params.content.substring(0, 1500), // GMB max 1500 chars
+    callToAction: { actionType: "LEARN_MORE" },
+  }
+
+  if (params.mediaUrls && params.mediaUrls.length > 0) {
+    body.media = [{ mediaFormat: "PHOTO", sourceUrl: params.mediaUrls[0] }]
+  }
+
+  const response = await fetch(
+    `https://mybusiness.googleapis.com/v4/${locationName}/localPosts`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  )
+
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.error?.message || "Google Business API error")
+  }
+  // data.name = "accounts/123/locations/456/localPosts/789"
+  return { success: true, externalPostId: data.name, platform: "google_business" }
 }
 
 /**

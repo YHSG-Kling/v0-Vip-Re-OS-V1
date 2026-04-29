@@ -28,7 +28,7 @@ import {
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import type { PersonaConfig } from "@/lib/portal"
-import { TaskCompletionDialog } from "./TaskCompletionDialog"
+import { TaskCompletionDialog } from '../tools/TaskCompletionDialog'
 
 interface PersonaDashboardTabsProps {
   contact: any

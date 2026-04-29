@@ -165,9 +165,9 @@ export default async function AdminUsersPage() {
                       {u.user_type || "agent"}
                     </span>
                     {!missing ? (
-                      <CheckCircle2 className="w-4 h-4 text-green-500" title="Domain records complete" />
+                      <CheckCircle2 className="w-4 h-4 text-green-500" />
                     ) : (
-                      <AlertTriangle className="w-4 h-4 text-amber-500" title="Domain records missing" />
+                      <AlertTriangle className="w-4 h-4 text-amber-500" />
                     )}
                     <EditUserButton userId={u.id} />
                   </div>

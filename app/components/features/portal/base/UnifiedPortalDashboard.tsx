@@ -36,8 +36,8 @@ import {
   Camera,
 } from "lucide-react"
 import Link from "next/link"
-import { ClientDocumentsWidget } from "./ClientDocumentsWidget"
-import { ClientMessagingWidget } from "./ClientMessagingWidget"
+import { ClientDocumentsWidget } from '../widgets/ClientDocumentsWidget'
+import { ClientMessagingWidget } from '../widgets/ClientMessagingWidget'
 
 interface Contact {
   id: string

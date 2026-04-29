@@ -8,12 +8,10 @@
  * Ownership:
  *   - All dedup, enrichment queue, merge, and suppression logic lives in
  *     lib/kernel/crm.ts — never duplicated here.
- *   - This file validates the actor context, resolves the canonical agentId
- *     (agents.id, not users.id), and delegates to kernel commands.
- *   - contacts.agent_id is ALWAYS agents.id — resolved via agents.user_id = auth user.id
+ *   - This file validates the actor context and delegates to kernel commands.
  *
  * Schema facts used here:
- *   - contacts.agent_id → agents.id (FK to agents table, not users)
+ *   - contacts.agent_id → agents.id (FK corrected in migration 114)
  *   - contacts.phone_digits → normalized digits-only for dedup
  *   - contacts.source, source_family, source_channel, source_subtype — all exist
  *   - activities table (not activity_log) for notes/timeline
@@ -23,6 +21,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { revalidatePath } from "next/cache"
 import {
   createContactManually,
   updateContactRecord,
@@ -35,6 +34,7 @@ export async function getContacts(params?: {
   status?: string
   contact_type?: string
   limit?: number
+  offset?: number
   search?: string
 }) {
   try {
@@ -45,6 +45,9 @@ export async function getContacts(params?: {
       return { success: true, contacts: [] }
     }
 
+    const limit = Math.min(Math.max(Math.floor(params?.limit ?? 100), 1), 500)
+    const offset = Math.max(Math.floor(params?.offset ?? 0), 0)
+
     let query = supabase
       .from("contacts")
       .select(
@@ -53,8 +56,9 @@ export async function getContacts(params?: {
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
       .order("last_contacted_at", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: false })
 
-    // Agents only see their own contacts
+    // Agents only see their own contacts — contacts.agent_id → agents.id
     if (userType === "agent" && agentId) {
       query = query.eq("agent_id", agentId)
     }
@@ -67,9 +71,17 @@ export async function getContacts(params?: {
       query = query.eq("contact_type", params.contact_type)
     }
 
-    if (params?.limit) {
-      query = query.limit(params.limit)
+    // Server-side search across name, email, and phone — avoids the 100-record client cap
+    if (params?.search && params.search.trim().length > 0) {
+      const term = params.search.trim()
+      // Strip PostgREST-breaking chars; escape SQL LIKE wildcards
+      const safeTerm = term.replace(/[(),%]/g, "").replace(/_/g, "\\_")
+      query = query.or(
+        `first_name.ilike.%${safeTerm}%,last_name.ilike.%${safeTerm}%,email.ilike.%${safeTerm}%,phone.ilike.%${safeTerm}%`
+      )
     }
+
+    query = query.range(offset, offset + limit - 1)
 
     const { data, error } = await query
 
@@ -174,9 +186,9 @@ export async function createContact(contactData: {
       zip_code:        contactData.zip_code ?? null,
       contact_type:    contactData.contact_type ?? "buyer",
       status:          contactData.status ?? "new",
-      contact_persona: contactData.contact_persona ?? null,
-      notes:           contactData.notes ?? null,
-      preferred_channel: contactData.preferred_channel ?? null,
+      contact_persona: contactData.contact_persona ?? undefined,
+      notes:           contactData.notes ?? undefined,
+      preferred_channel: contactData.preferred_channel ?? undefined,
       tcpa_consent:    contactData.tcpa_consent ?? false,
       agent_id:        agentId,   // agents.id — FK-correct
       brokerage_id:    brokerageId,
@@ -200,6 +212,19 @@ export async function createContact(contactData: {
       brokerageId,
       agentId,
     }).catch(() => {})
+
+    // Non-blocking portal invite creation — contact gets a portal slot immediately
+    if (data.id && data.email) {
+      void (async () => {
+        const { createPortalInviteForContact } = await import("@/app/actions/portal-invites")
+        await createPortalInviteForContact({
+          contactId: data.id as string,
+          brokerageId,
+          invitedByUserId: userId,
+          sendMagicLink: false,
+        }).catch(() => {})
+      })()
+    }
 
     return { success: true, contact: data, isDuplicate: result.isDuplicate ?? false }
   } catch (error: any) {
@@ -298,6 +323,9 @@ export async function addContactNote(contactId: string, noteText: string) {
     if (error) {
       return { success: false, error: error.message }
     }
+
+    revalidatePath("/crm")
+    revalidatePath("/dashboard")
 
     return { success: true }
   } catch (error: any) {

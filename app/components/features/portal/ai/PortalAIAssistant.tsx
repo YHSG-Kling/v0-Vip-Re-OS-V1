@@ -102,14 +102,6 @@ export default function PortalAIAssistant({
         },
       }),
     }),
-    onResponse: (response) => {
-      // Capture sessionId from response header for persistence
-      const sid = response.headers.get('x-portal-session-id')
-      if (sid && !sessionId) {
-        setSessionId(sid)
-        try { sessionStorage.setItem(sessionStorageKey, sid) } catch { /* noop */ }
-      }
-    },
     onFinish: () => {
       // Increment unread badge when widget is closed/minimized
       if (!isOpen || isMinimized) {

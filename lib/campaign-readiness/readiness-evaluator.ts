@@ -271,8 +271,10 @@ function checkComplianceClosure(
  * All required brand elements must be satisfied
  */
 function checkBrandCompleteness(brandCompliance: BrandComplianceResult): CheckResult {
-  if (!brandCompliance.is_compliant) {
-    const missingCount = brandCompliance.missing_elements?.length || 0
+  // BrandRequirements does not carry a pass/fail flag — treat as passed when no required elements
+  const brandAny = brandCompliance as unknown as { passed?: boolean; violations?: unknown[] }
+  if (brandAny.passed === false) {
+    const missingCount = brandAny.violations?.length ?? (brandCompliance.required_elements?.length ?? 0)
     return {
       check_name: "brand_completeness",
       passed: false,

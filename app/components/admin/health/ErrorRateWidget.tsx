@@ -82,10 +82,10 @@ export function ErrorRateWidget({ data }: ErrorRateWidgetProps) {
               width={120}
             />
             <Tooltip
-              formatter={(value: number | undefined, name: string) => {
+              formatter={((value: number | undefined, name: string) => {
                 const v = value ?? 0
                 return [v, name]
-              }}
+              }) as any}
               contentStyle={{
                 backgroundColor: "hsl(var(--background))",
                 border: "1px solid hsl(var(--border))",

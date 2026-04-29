@@ -123,11 +123,11 @@ export function VideoGenerationPanel({
         // Track which videos need polling
         const needsPolling = data
           .filter(
-            (v) =>
+            (v: any) =>
               ["pending", "generating"].includes(v.status) ||
               ["pending", "generating", "processing"].includes(v.heygen_status || "")
           )
-          .map((v) => v.id)
+          .map((v: any) => v.id)
         setPollingIds(new Set(needsPolling))
       }
     } catch (error) {
@@ -178,7 +178,7 @@ export function VideoGenerationPanel({
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "ai_video_projects" },
-        (payload) => {
+        (payload: any) => {
           setProjects((prev) =>
             prev.map((p) => (p.id === payload.new.id ? { ...p, ...payload.new } : p))
           )
@@ -187,7 +187,7 @@ export function VideoGenerationPanel({
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "ai_video_projects" },
-        (payload) => {
+        (payload: any) => {
           setProjects((prev) => [payload.new as VideoProject, ...prev].slice(0, 10))
         }
       )

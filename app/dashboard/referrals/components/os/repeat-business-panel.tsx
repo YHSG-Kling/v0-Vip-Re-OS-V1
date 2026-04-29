@@ -58,8 +58,8 @@ export function RepeatBusinessPanel({
         contactId: anniversary.contactId,
         touchpointType: "anniversary",
       })
-      if (result.success && result.message) {
-        setDraftMessage(result.message)
+      if (result.success && (result as any).data?.message) {
+        setDraftMessage((result as any).data?.message ?? "")
       }
     })
   }

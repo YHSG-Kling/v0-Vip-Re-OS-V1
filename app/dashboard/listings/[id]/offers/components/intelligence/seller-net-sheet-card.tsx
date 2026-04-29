@@ -74,7 +74,7 @@ export function SellerNetSheetCard({
       })
 
       if (res.success && res.netSheet) {
-        setResult(res.netSheet as NetSheetResult)
+        setResult(res.netSheet as unknown as NetSheetResult)
         setShowForm(false)
       }
     })

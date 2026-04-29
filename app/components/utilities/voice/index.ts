@@ -1,1 +1,1 @@
-export { default as VoiceAssistant } from './VoiceAssistant.tsx'
+export { VoiceAssistant } from './VoiceAssistant.tsx'

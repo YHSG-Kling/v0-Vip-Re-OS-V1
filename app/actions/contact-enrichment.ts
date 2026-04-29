@@ -57,7 +57,7 @@ export async function enrichContact(
       const emailValidation = await validateEmail(contact.email)
       validationResults.email = emailValidation
 
-      if (emailValidation.isValid) {
+      if (emailValidation.valid) {
         await supabase
           .from("contacts")
           .update({
@@ -73,25 +73,24 @@ export async function enrichContact(
       const phoneValidation = await validatePhone(contact.phone)
       validationResults.phone = phoneValidation
 
-      if (phoneValidation.isValid) {
+      if (phoneValidation.valid) {
         await supabase
           .from("contacts")
           .update({
             phone_verified: true,
             phone_verification_date: new Date().toISOString(),
-            phone_type: phoneValidation.lineType,
+            phone_type: phoneValidation.type,
           })
           .eq("id", contactId)
       }
     }
 
     // 3. Enrich with PeopleData
-    const personData = await peopleData.enrichPerson({
+    const personData = await peopleData.enrich({
       firstName: contact.first_name,
       lastName: contact.last_name,
       email: contact.email,
       phone: contact.phone,
-      address: contact.address,
     })
 
     if (personData) {
@@ -103,15 +102,12 @@ export async function enrichContact(
         household_income: personData.householdIncome,
         home_owner_status: personData.homeOwnerStatus,
         home_value_estimate: personData.homeValue,
-        length_of_residence: personData.lengthOfResidence,
-        occupation: personData.occupation,
-        education_level: personData.educationLevel,
-        linkedin_url: personData.socialProfiles?.linkedin,
-        facebook_url: personData.socialProfiles?.facebook,
-        twitter_url: personData.socialProfiles?.twitter,
-        instagram_url: personData.socialProfiles?.instagram,
+        occupation: personData.currentTitle,
+        linkedin_url: personData.linkedinUrl,
+        facebook_url: personData.facebookUrl,
+        twitter_url: personData.twitterUrl,
         data_source: "peopledata",
-        confidence_score: personData.confidenceScore || 70,
+        confidence_score: personData.enrichmentConfidence || 70,
       }
     }
 
@@ -128,18 +124,20 @@ export async function enrichContact(
     if (osintData) {
       enrichmentData = {
         ...enrichmentData,
-        public_records: osintData.publicRecords || [],
-        court_records: osintData.courtRecords || [],
-        property_records: osintData.propertyRecords || [],
-        life_events: osintData.lifeEvents || [],
-        last_life_event_detected: osintData.lifeEvents?.length > 0 ? new Date().toISOString() : null,
+        public_records: osintData.public_records || [],
+        court_records: osintData.court_records || [],
+        property_records: osintData.property_records || [],
+        life_events: osintData.life_events || [],
+        last_life_event_detected: osintData.life_events?.length > 0 ? new Date().toISOString() : null,
       }
 
       // If OSINT found social profiles, merge them
-      if (osintData.socialProfiles) {
-        enrichmentData.linkedin_url = enrichmentData.linkedin_url || osintData.socialProfiles.linkedin
-        enrichmentData.facebook_url = enrichmentData.facebook_url || osintData.socialProfiles.facebook
-        enrichmentData.twitter_url = enrichmentData.twitter_url || osintData.socialProfiles.twitter
+      if (osintData.social_profiles?.length) {
+        const findProfile = (platform: string) =>
+          osintData.social_profiles.find((p) => p.platform === platform)?.url
+        enrichmentData.linkedin_url = enrichmentData.linkedin_url || findProfile("linkedin")
+        enrichmentData.facebook_url = enrichmentData.facebook_url || findProfile("facebook")
+        enrichmentData.twitter_url = enrichmentData.twitter_url || findProfile("twitter")
       }
     }
 
@@ -244,7 +242,7 @@ export async function checkContactLifeChanges(
     }
 
     // Run OSINT search for life events only
-    const osintData = await osint.searchLifeEvents({
+    const osintData = await osint.searchPerson({
       firstName: contact.first_name,
       lastName: contact.last_name,
       city: contact.city,
@@ -253,7 +251,7 @@ export async function checkContactLifeChanges(
 
     let changesFound = 0
 
-    if (osintData?.lifeEvents?.length > 0) {
+    if (osintData?.life_events?.length > 0) {
       // Get existing life events from the contact
       const { data: contactData } = await supabase
         .from("contacts")
@@ -264,18 +262,18 @@ export async function checkContactLifeChanges(
       const existingEvents = (contactData?.life_events as any[]) || []
       const existingTypes = new Set(existingEvents.map((e: any) => e.type))
 
-      for (const event of osintData.lifeEvents) {
+      for (const event of osintData.life_events) {
         // Skip if we already detected this type recently
-        if (existingTypes.has(event.type)) continue
+        if (existingTypes.has(event.event)) continue
 
         // Add new life event to the array
         const updatedEvents = [
           ...existingEvents,
           {
-            type: event.type,
-            details: event.details,
+            type: event.event,
+            details: event.source,
             detected_at: new Date().toISOString(),
-            confidence: event.confidence || 50,
+            confidence: 50,
           },
         ]
 

@@ -119,7 +119,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     listing_date: string | null
   } | null = null
 
-  if (portalView === "buyer") {
+  if (portalView.view === "buyer") {
     // Fetch all active smart searches (property_alerts) for this buyer
     const { data: alerts } = await supabase
       .from("property_alerts")
@@ -146,7 +146,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     buyerInferredPrefs = prefs ?? null
   }
 
-  if (portalView === "seller" || contact.contact_type === "seller") {
+  if (portalView.view === "seller" || contact.contact_type === "seller") {
     // Resolve brokerage-represented listing for this seller
     const { data: listing } = await supabase
       .from("listings")
@@ -164,7 +164,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
 
   // Load AI-recommended properties for buyers only — uses buyer preferences
   // and budget from contacts table to surface matched active listings.
-  const recommendedResult = portalView === "buyer"
+  const recommendedResult = portalView.view === "buyer"
     ? await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
     : { success: false, properties: [] }
   const recommendedProperties = recommendedResult.properties ?? []
@@ -188,7 +188,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       contactId={contactId}
       comingSoonListings={comingSoonAlertResults || []}
       recommendedProperties={recommendedProperties}
-      portalView={portalView}
+      portalView={portalView.view}
       buyerSmartSearches={buyerSmartSearches}
       buyerInferredPrefs={buyerInferredPrefs}
       sellerListing={sellerListing}

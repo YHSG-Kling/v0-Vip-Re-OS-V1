@@ -5,6 +5,9 @@ export type SocialPlatform =
   | "twitter"
   | "x"
   | "youtube"
+  | "tiktok"
+  | "pinterest"
+  | "google_business"
 
 /**
  * Derive the canonical public URL for a published post given its platform
@@ -44,6 +47,18 @@ export function getPublishedPostUrl(
 
   if (p === "youtube") {
     return `https://www.youtube.com/watch?v=${externalPostId}`
+  }
+
+  if (p === "tiktok") {
+    return `https://www.tiktok.com/@/video/${externalPostId}`
+  }
+
+  if (p === "pinterest") {
+    return `https://www.pinterest.com/pin/${externalPostId}/`
+  }
+
+  if (p === "google_business") {
+    return `https://business.google.com/posts/${externalPostId}`
   }
 
   return null

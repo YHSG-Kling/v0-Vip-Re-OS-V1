@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
+import { logEventAndTrigger } from "@/lib/events/event-helpers"
 
 interface SubmitForSignatureParams {
   offerId: string
@@ -42,12 +43,10 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     // Emit block event
     await supabase.from("activities").insert({
       activity_type: "buyer.offer.block",
-      user_id: userId,
-      metadata: {
-        offer_id: offerId,
-        reason: "compliance_gate_failed",
-        attempted_action: "submit_for_signature"
-      }
+      agent_id: userId,
+      entity_type: "offer",
+      title:        "Signature blocked: compliance not passed",
+      description:  `Offer ${offerId} blocked from submission — compliance gate failed`,
     })
 
     return {
@@ -60,12 +59,10 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // Emit signature request event
   const { error: eventError } = await supabase.from("activities").insert({
     activity_type: "buyer.offer.signature.requested",
-    user_id: userId,
-    metadata: {
-      offer_id: offerId,
-      signers,
-      timestamp: new Date().toISOString()
-    }
+    agent_id:      userId,
+    entity_type:   "offer",
+    title:         "Signature requested",
+    description:   `Signature requested for offer ${offerId} (${signers.length} signer(s))`,
   })
 
   if (eventError) {
@@ -96,14 +93,13 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
           })
         }
 
-      await supabase.from("activities").insert({
-        activity_type: "buyer.offer.provider.signature.requested",
-        user_id: userId,
-        metadata: {
-          offer_id: offerId,
-          provider: credential.platform,
-        }
-      })
+        await supabase.from("activities").insert({
+          activity_type: "buyer.offer.provider.signature.requested",
+          agent_id:      userId,
+          entity_type:   "offer",
+          title:         `Provider signature requested via ${credential.platform}`,
+          description:   `Offer ${offerId} sent to ${credential.platform} for signature`,
+        })
     } catch (error) {
       // Provider call failed — event already logged; signature request still proceeds in-app
     }
@@ -121,6 +117,23 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   // Sync status
   await syncOfferStatus(offerId)
+
+  // Fire notification to the buyer contact so they know to expect the signature request
+  if (offer.contact_id) {
+    await logEventAndTrigger({
+      brokerage_id: offer.brokerage_id,
+      event_type: "buyer.offer.signature.sent_to_contact",
+      user_id:    userId,
+      payload: {
+        offerId,
+        contact_id:  offer.contact_id,
+        signerCount: signers.length,
+        provider:    credential?.platform ?? null,
+      },
+      source:     "ui",
+      dedupe_key: `offer-sig-sent-${offerId}-${Date.now()}`,
+    }).catch(() => {})
+  }
 
   return {
     success: true,

@@ -15,6 +15,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { createSocialPost, approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
 import {
   PlusIcon,
   Share2Icon,
@@ -23,6 +24,7 @@ import {
   ShieldCheckIcon,
   ShieldAlertIcon,
   CalendarIcon,
+  Sparkles,
 } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { format } from "date-fns"
@@ -55,6 +57,7 @@ interface SocialAccount {
 interface SocialPanelProps {
   listingId: string
   brokerageId: string
+  agentId: string
   posts: SocialPost[]
   accounts: SocialAccount[]
   canApprove: boolean
@@ -77,9 +80,23 @@ const APPROVAL_BADGE: Record<string, string> = {
   rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 }
 
-export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
+/** Map postType → human-readable brief for AI generation */
+function buildBrief(platform: string, postType: string): string {
+  const typeMap: Record<string, string> = {
+    listing_announcement:    "Announce this listing to potential buyers",
+    open_house_announcement: "Invite followers to an upcoming open house",
+    just_listed:             "Celebrate a brand-new listing hitting the market",
+    price_reduction:         "Share an exciting price improvement on this property",
+    just_sold:               "Celebrate a successful sale and thank everyone involved",
+    custom:                  "Write a compelling post about this property",
+  }
+  return typeMap[postType] ?? "Write a compelling real estate post"
+}
+
+export function SocialPanel({ listingId, brokerageId, agentId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [createOpen, setCreateOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
   const [form, setForm] = useState({
     platform:        "instagram",
     postType:        "listing_announcement",
@@ -114,6 +131,41 @@ export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprov
       setForm({ platform: "instagram", postType: "listing_announcement", content: "", hashtags: "", mediaUrls: "", scheduledFor: "", socialAccountId: "" })
       toast({ title: "Post created", description: "Brand compliance check queued." })
     })
+  }
+
+  const handleGenerateContent = async () => {
+    setGenerating(true)
+    try {
+      const result = await generateSocialPostContent({
+        brief:       buildBrief(form.platform, form.postType),
+        platform:    form.platform,
+        contentType: form.postType,
+        listingId,
+        brokerageId,
+        agentId,
+      })
+
+      if (!result.success || !result.data) {
+        toast({
+          title: "Generation failed",
+          description: result.error ?? "Failed to generate content",
+          variant: "destructive",
+        })
+        return
+      }
+
+      setForm(f => ({
+        ...f,
+        content:  result.data!.content,
+        hashtags: result.data!.hashtags?.join(", ") ?? f.hashtags,
+      }))
+
+      toast({ title: "Content generated", description: "Review and edit before posting." })
+    } catch (err: any) {
+      toast({ title: "Generation error", description: err?.message ?? "Unknown error", variant: "destructive" })
+    } finally {
+      setGenerating(false)
+    }
   }
 
   const handleApprove = (id: string) => {
@@ -298,9 +350,20 @@ export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprov
                 id="content"
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                placeholder="Write your post..."
+                placeholder="Write your post or use AI to generate one..."
                 rows={4}
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateContent}
+                disabled={generating || isPending}
+                className="gap-2 self-start"
+              >
+                <Sparkles className="h-4 w-4" />
+                {generating ? "Generating..." : "Generate with AI"}
+              </Button>
             </div>
 
             <div className="flex flex-col gap-1.5">

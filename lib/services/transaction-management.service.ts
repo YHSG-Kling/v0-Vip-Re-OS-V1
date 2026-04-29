@@ -54,7 +54,7 @@ export async function createTransaction(params: CreateTransactionParams) {
     }
 
     // Validate transaction type
-    const validTypes = Object.values(TRANSACTION_TYPES)
+    const validTypes = TRANSACTION_TYPES as readonly string[]
     if (!validTypes.includes(params.transactionType)) {
       throw new ValidationError(`Invalid transaction type. Must be one of: ${validTypes.join(", ")}`)
     }
@@ -68,7 +68,7 @@ export async function createTransaction(params: CreateTransactionParams) {
       transaction_type: params.transactionType,
       listing_price: params.listingPrice || null,
       offer_price: params.offerPrice || null,
-      status: params.status || TRANSACTION_STATUSES.ACTIVE,
+      status: params.status || "active",
       stage: "Pre-Listing",
       metadata: params.metadata || {},
       created_at: new Date().toISOString(),
@@ -278,7 +278,7 @@ export async function archiveTransaction(transactionId: string, agentId: string)
     const { error } = await supabase
       .from("transactions")
       .update({
-        status: TRANSACTION_STATUSES.ARCHIVED,
+        status: "archived",
         archived_at: new Date().toISOString(),
       })
       .eq("id", transactionId)
@@ -332,7 +332,7 @@ export async function calculateTransactionCommission(params: {
         gross: grossCommission,
         agent: agentSplit,
         brokerage: brokerageSplit,
-        rate: commissionRate,
+        rate: params.commissionRate,
       },
     }
   } catch (error) {

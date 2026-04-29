@@ -146,7 +146,7 @@ Output ONLY valid JSON with this exact structure:
       properties: searchResult.properties,
       filters: filters,
       interpretation: `I found ${searchResult.properties?.length || 0} properties matching: ${data.naturalLanguageQuery}`,
-      isMockData: searchResult.isMockData,
+      isMockData: (searchResult as any)?.isMockData,
     }
   } catch (error: any) {
     console.error("Smart Search error:", error)

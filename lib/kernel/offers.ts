@@ -315,7 +315,7 @@ export async function compareOffersForListing(params: {
   }
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId, agentId)
-  commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
+  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const netByOffer: Record<string, number> = {}
   const matrix = offers.map(o => {
@@ -442,7 +442,7 @@ export async function respondToCounter(params: {
   counterId:   string
   agentId:     string
   brokerageId: string
-  response:    "accept" | "reject" | "counter"
+  response:    "accept" | "reject" | "counter_back"
   counterPrice?: number
   notes?:      string
 }): Promise<KernelOfferResult<{ offerId: string }>> {
@@ -453,8 +453,8 @@ export async function respondToCounter(params: {
   const result = await buyerRespondToCounter({
     offerId:     counterId,
     response,
-    counterPrice,
-    notes,
+    userId:      agentId,
+    counterTerms: counterPrice ? { counter_price: counterPrice, notes } : undefined,
   })
 
   if (!result.success) return { success: false, error: result.error }

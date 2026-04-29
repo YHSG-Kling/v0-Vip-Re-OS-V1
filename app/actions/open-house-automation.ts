@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationService } from "@/lib/services"
+import { ContentGenerationResult } from "@/lib/services"
 import {
   sendOpenHouseInvitation,
   sendOpenHouseReminder,
@@ -183,12 +183,26 @@ function mapInterestLevel(interest?: string): number {
 // AI TIMING OPTIMIZER
 // ============================================
 
+/** Returns the next upcoming Saturday and Sunday from today as YYYY-MM-DD strings */
+function nextWeekendDates(): { saturday: string; sunday: string } {
+  const now = new Date()
+  const day = now.getDay() // 0=Sun, 6=Sat
+  const daysToSat = day === 6 ? 7 : (6 - day)
+  const sat = new Date(now)
+  sat.setDate(now.getDate() + daysToSat)
+  const sun = new Date(sat)
+  sun.setDate(sat.getDate() + 1)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  return { saturday: fmt(sat), sunday: fmt(sun) }
+}
+
 export async function optimizeOpenHouseTiming(params: { propertyId: string; agentId: string; proposedDate?: string }) {
   if (!isValidUUID(params.agentId)) {
+    const { saturday, sunday } = nextWeekendDates()
     return {
       recommended_times: [
-        { date: "2024-02-10", time: "14:00-16:00", score: 92, reasoning: "Saturday afternoon, optimal weather" },
-        { date: "2024-02-11", time: "13:00-15:00", score: 88, reasoning: "Sunday early afternoon, less competition" },
+        { date: saturday, time: "14:00-16:00", score: 92, reasoning: "Saturday afternoon is prime time — families have flexibility after morning activities. 1-3 PM captures both early and mid-afternoon browsers." },
+        { date: sunday, time: "13:00-15:00", score: 88, reasoning: "Sunday early afternoon works well for serious buyers who prefer less crowded viewings. Good natural lighting and comfortable timing." },
       ],
     }
   }
@@ -484,11 +498,10 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
       // Send via email using the AI-generated content
       if (invitation?.id) {
         await sendOpenHouseInvitation({
-          invitationId: invitation.id,
           contactId,
           eventId: params.eventId,
-          emailContent: inviteResult.data.email_body,
-          smsContent: inviteResult.data.sms_message,
+          method: contact?.preferred_contact_method ?? "email",
+          personalizedMessage: inviteResult.data.email_body,
         })
       }
 
@@ -608,7 +621,7 @@ EVENT DETAILS:
 INVITATION METRICS:
 - Total Invitations Sent: ${invitations?.length || 0}
 - RSVPs: ${rsvpYes} Yes, ${rsvpMaybe} Maybe
-- No Response: ${invitations?.length - rsvpYes - rsvpMaybe || 0}
+- No Response: ${(invitations?.length ?? 0) - rsvpYes - rsvpMaybe || 0}
 
 HISTORICAL DATA (Similar Properties):
 ${

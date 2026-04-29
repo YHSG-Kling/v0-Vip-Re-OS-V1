@@ -54,6 +54,7 @@ interface VoiceCloneClientProps {
   brokerageId: string
   userId: string
   initialProfiles: VoiceProfile[]
+  heygenConfigured: boolean
 }
 
 // ─── STATUS CONFIG ───────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ export function VoiceCloneClient({
   brokerageId,
   userId,
   initialProfiles,
+  heygenConfigured,
 }: VoiceCloneClientProps) {
   const router = useRouter()
 
@@ -125,7 +127,7 @@ export function VoiceCloneClient({
       if (existingManifest) {
         setSampleManifest(existingManifest)
         // Find first unrecorded phrase
-        const firstUnrecorded = existingManifest.phrases.findIndex(p => p.status === "pending")
+        const firstUnrecorded = (existingManifest.phrases ?? []).findIndex(p => p.status === "pending")
         setCurrentPhraseIndex(firstUnrecorded >= 0 ? firstUnrecorded : 0)
       } else {
         // Fresh manifest
@@ -181,8 +183,10 @@ export function VoiceCloneClient({
       setActiveTab("record")
       setCreateDialogOpen(false)
       setNewProfileName("")
-    } catch (error) {
+      toast.success("Voice profile created! Now record 5 voice samples to train your clone.")
+    } catch (error: any) {
       console.error("Error creating profile:", error)
+      toast.error("Failed to create voice profile. Please try again.")
     } finally {
       setIsCreating(false)
     }
@@ -212,9 +216,15 @@ export function VoiceCloneClient({
 
       mediaRecorder.start()
       setIsRecording(true)
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error starting recording:", error)
-      toast.error("Could not access microphone — check permissions")
+      if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
+        toast.error("Microphone access denied — please allow microphone permissions in your browser settings and try again.")
+      } else if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+        toast.error("No microphone found — please connect a microphone and try again.")
+      } else {
+        toast.error("Could not access microphone — check browser permissions and try again.")
+      }
     }
   }
 
@@ -251,7 +261,7 @@ export function VoiceCloneClient({
 
     // In production, upload to storage and get URL
     // For now, mark as recorded with placeholder
-    const updatedPhrases = [...sampleManifest.phrases]
+    const updatedPhrases = [...(sampleManifest.phrases ?? [])]
     updatedPhrases[currentPhraseIndex] = {
       ...updatedPhrases[currentPhraseIndex],
       status: "recorded",
@@ -280,17 +290,21 @@ export function VoiceCloneClient({
       // Move to next phrase
       const nextUnrecorded = updatedPhrases.findIndex((p, i) => i > currentPhraseIndex && p.status === "pending")
       if (nextUnrecorded >= 0) {
+        const newRecordedCount = updatedPhrases.filter(p => p.status === "recorded" || p.status === "validated").length
+        toast.success(`Sample ${newRecordedCount} of ${totalRequired} saved — keep going!`)
         setCurrentPhraseIndex(nextUnrecorded)
       } else {
         // Check if all recorded
         const allRecorded = updatedPhrases.every(p => p.status === "recorded" || p.status === "validated")
         if (allRecorded) {
+          toast.success("All samples recorded! You can now start voice training.")
           // Refresh profile to show updated status
           router.refresh()
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving sample:", error)
+      toast.error("Failed to save sample: " + (error?.message ?? "Unknown error"))
     }
   }
 
@@ -301,7 +315,7 @@ export function VoiceCloneClient({
 
     const HEYGEN_MIN_SAMPLES = 5
 
-    const readyPhrases = sampleManifest.phrases.filter(
+    const readyPhrases = (sampleManifest.phrases ?? []).filter(
       (p) =>
         (p.status === "recorded" || p.status === "validated") &&
         p.audio_url &&
@@ -363,20 +377,22 @@ export function VoiceCloneClient({
   async function handleSetDefault(profileId: string) {
     try {
       await setDefaultVoiceProfile(profileId, agentId, brokerageId, userId)
-      
+
       // Update local state
       setProfiles(prev => prev.map(p => ({
         ...p,
         is_default: p.id === profileId,
       })))
-    } catch (error) {
+      toast.success("Default voice profile updated.")
+    } catch (error: any) {
       console.error("Error setting default:", error)
+      toast.error("Failed to set default profile: " + (error?.message ?? "Unknown error"))
     }
   }
 
   // ─── Computed values ────────────────────────────────────────────────────────
 
-  const recordedCount = sampleManifest?.phrases.filter(p => p.status === "recorded" || p.status === "validated").length || 0
+  const recordedCount = (sampleManifest?.phrases ?? []).filter(p => p.status === "recorded" || p.status === "validated").length || 0
   const totalRequired = VOICE_CLONE_SAMPLE_PHRASES.length
   const recordingProgress = (recordedCount / totalRequired) * 100
   const canStartTraining = recordedCount >= totalRequired
@@ -440,6 +456,18 @@ export function VoiceCloneClient({
             Clones below 70% quality threshold will not be auto-approved.
           </AlertDescription>
         </Alert>
+
+        {/* HeyGen not configured warning */}
+        {!heygenConfigured && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>HeyGen Integration Not Enabled</AlertTitle>
+            <AlertDescription>
+              Voice cloning requires HeyGen integration — contact support to enable this feature.
+              You can still create a profile and record samples, but training will be queued until the integration is configured.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "profiles" | "record" | "elevenlabs")}>
           <TabsList className="mb-6">
@@ -597,11 +625,38 @@ export function VoiceCloneClient({
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
+                      {/* "What to expect" note */}
+                      <Alert>
+                        <Info className="h-4 w-4" />
+                        <AlertTitle>Recording tips</AlertTitle>
+                        <AlertDescription>
+                          Record yourself reading the provided phrases naturally. Background noise reduces quality.
+                          Speak at a comfortable pace — avoid rushing or whispering.
+                        </AlertDescription>
+                      </Alert>
+
+                      {/* Training in progress banner */}
+                      {(selectedProfile.training_status === "processing" || selectedProfile.training_status === "queued") && (
+                        <Alert>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <AlertTitle>
+                            {selectedProfile.training_status === "queued"
+                              ? "Training queued"
+                              : "Training your voice clone\u2026"}
+                          </AlertTitle>
+                          <AlertDescription>
+                            {selectedProfile.training_status === "queued"
+                              ? "Your training job is queued and will start shortly."
+                              : "This takes 2\u20133 minutes. You\u2019ll see the profile status update when it\u2019s ready."}
+                          </AlertDescription>
+                        </Alert>
+                      )}
+
                       {/* Progress */}
                       <div>
                         <div className="flex items-center justify-between text-sm mb-2">
-                          <span className="text-muted-foreground">Progress</span>
-                          <span className="font-medium">{recordedCount} / {totalRequired} phrases</span>
+                          <span className="text-muted-foreground">Samples recorded</span>
+                          <span className="font-medium">{recordedCount} of {totalRequired} samples recorded</span>
                         </div>
                         <Progress value={recordingProgress} className="h-2" />
                       </div>
@@ -611,15 +666,15 @@ export function VoiceCloneClient({
                         <div className="flex items-center justify-between mb-2">
                           <Badge variant="outline">Phrase {currentPhraseIndex + 1}</Badge>
                           <Badge className={cn(
-                            sampleManifest.phrases[currentPhraseIndex]?.status === "recorded"
+                            (sampleManifest.phrases ?? [])[currentPhraseIndex]?.status === "recorded"
                               ? "bg-green-100 text-green-700"
                               : "bg-slate-100 text-slate-700"
                           )}>
-                            {sampleManifest.phrases[currentPhraseIndex]?.status === "recorded" ? "Recorded" : "Not Recorded"}
+                            {(sampleManifest.phrases ?? [])[currentPhraseIndex]?.status === "recorded" ? "Recorded" : "Not Recorded"}
                           </Badge>
                         </div>
                         <p className="text-lg leading-relaxed text-foreground">
-                          {sampleManifest.phrases[currentPhraseIndex]?.phrase_text}
+                          {(sampleManifest.phrases ?? [])[currentPhraseIndex]?.phrase_text}
                         </p>
                       </div>
 
@@ -694,7 +749,7 @@ export function VoiceCloneClient({
                       {/* Training readiness + Start Training */}
                       {selectedProfile.training_status !== "completed" && (() => {
                         const HEYGEN_MIN_SAMPLES = 5
-                        const readyCount = sampleManifest.phrases.filter(
+                        const readyCount = (sampleManifest.phrases ?? []).filter(
                           (p) =>
                             (p.status === "recorded" || p.status === "validated") &&
                             p.audio_url &&
@@ -755,7 +810,7 @@ export function VoiceCloneClient({
                     <CardContent>
                       <ScrollArea className="h-[500px]">
                         <div className="space-y-2">
-                          {sampleManifest.phrases.map((phrase, index) => (
+                          {(sampleManifest.phrases ?? []).map((phrase, index) => (
                             <div
                               key={phrase.phrase_id}
                               className={cn(
@@ -786,7 +841,7 @@ export function VoiceCloneClient({
                                         Needs recording
                                       </span>
                                     )
-                                  : phrase.status === "recording"
+                                  : (phrase.status as string) === "recording"
                                     ? (
                                       <span className="flex items-center gap-1 text-[11px] font-medium text-blue-600">
                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />

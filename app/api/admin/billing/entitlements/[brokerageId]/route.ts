@@ -2,32 +2,27 @@
 // Feature entitlements + override endpoint
 
 import { NextRequest, NextResponse } from "next/server"
-import { resolveFeatureEntitlement, applyFeatureOverride } from "@/lib/kernel/billing"
 import { createClient } from "@/lib/supabase/server"
 import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
+import { resolveFeatureEntitlement, applyFeatureOverride } from "@/lib/kernel/billing"
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
-  try {
-    const supabase = await createClient()
-    const auth = await requireSuperadminAuth(supabase)
-    if (!auth.ok) return auth.response
+  const supabase = await createClient()
+  const auth = await requireSuperadminAuth(supabase)
+  if (!auth.ok) return auth.response
 
+  try {
     const featureKey = req.nextUrl.searchParams.get("featureKey")
     if (!featureKey) {
       return NextResponse.json({ error: "Missing featureKey query param" }, { status: 400 })
     }
 
     const { brokerageId } = await params
-
     const result = await resolveFeatureEntitlement({ brokerageId, featureKey })
-
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 })
-    }
-
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })
   } catch (error) {
     console.error("[API] /admin/billing/entitlements GET error:", error)
@@ -42,11 +37,11 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
-  try {
-    const supabase = await createClient()
-    const auth = await requireSuperadminAuth(supabase)
-    if (!auth.ok) return auth.response
+  const supabase = await createClient()
+  const auth = await requireSuperadminAuth(supabase)
+  if (!auth.ok) return auth.response
 
+  try {
     const { brokerageId } = await params
     const body = await req.json()
 
@@ -56,15 +51,12 @@ export async function POST(
       overrideType: body.overrideType,
       trialEndsAt: body.trialEndsAt,
       actorContext: {
-        userId: auth.user.id,
+        userId: auth.userId,   // always from session, never from body/headers
         userType: "superadmin",
       },
     })
 
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 })
-    }
-
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })
   } catch (error) {
     console.error("[API] /admin/billing/entitlements POST error:", error)

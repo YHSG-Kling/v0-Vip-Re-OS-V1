@@ -1,10 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
-import { requireAuth } from "@/lib/kernel/api-auth"
 
 const HEYGEN_API_BASE = "https://api.heygen.com/v2"
 
@@ -83,19 +83,16 @@ async function writeLifecycleEvent(
 }
 
 export async function POST(request: NextRequest) {
+  // Auth guard — brokerage_id and user_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
-
-    // ─── AUTH ────────────────────────────────────────────────────────────────
-    const auth = await requireAuth(supabase)
-    if (!auth.ok) return auth.response
-    const brokerage_id = auth.brokerageId!
-    const user_id = auth.user.id
-
     const body = await request.json()
 
     const {
-      // Required fields
+      // Required fields (brokerage_id and user_id intentionally NOT taken from body)
       script,
       avatar_id,
       voice_id,
@@ -108,6 +105,10 @@ export async function POST(request: NextRequest) {
       output_orientation = "landscape",
       aspect_ratio = "16:9",
     } = body
+
+    // Always use session-resolved values — never trust body-supplied IDs
+    const brokerage_id = auth.brokerageId
+    const user_id = auth.userId
 
     // ─── VALIDATION ───────────────────────────────────────────────────────────
     if (!script || !avatar_id || !voice_id || !video_project_id) {

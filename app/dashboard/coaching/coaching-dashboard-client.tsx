@@ -338,21 +338,21 @@ export function CoachingDashboardClient({
 
       {/* OS Command Strip */}
       <div className="mb-6">
-        <CoachingCommandStrip agentId={agentId} brokerageId={brokerageId} />
+        <CoachingCommandStrip opportunity={null} />
       </div>
 
       {/* OS Panels Grid */}
       <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <ConversionCoachingPanel agentId={agentId} brokerageId={brokerageId} />
-        <ResponseQualityPanel agentId={agentId} brokerageId={brokerageId} />
-        <CallReviewPanel agentId={agentId} brokerageId={brokerageId} />
+        <ConversionCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} topImprovement={null} />
+        <ResponseQualityPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} objectionOpportunities={[]} suggestions={[]} />
+        <CallReviewPanel agentId={agentId} brokerageId={brokerageId} insights={[]} summary={null} />
       </div>
 
       {/* Second Row of OS Panels */}
       <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <HandoffCoachingPanel agentId={agentId} brokerageId={brokerageId} />
-        <AppointmentCoachingPanel agentId={agentId} brokerageId={brokerageId} />
-        <WeeklyImprovementPanel agentId={agentId} brokerageId={brokerageId} />
+        <HandoffCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} totalHandoffs={0} successRate={0} />
+        <AppointmentCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} showRateIssues={[]} overallShowRate={0} appointmentsSet={0} appointmentsKept={0} />
+        <WeeklyImprovementPanel agentId={agentId} brokerageId={brokerageId} focusAreas={[]} weeklyProgress={null} lastReportDate={null} onGenerateReport={handleGenerateReport} />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">

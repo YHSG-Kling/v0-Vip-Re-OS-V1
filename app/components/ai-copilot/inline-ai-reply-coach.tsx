@@ -44,7 +44,13 @@ export function InlineAiReplyCoach({
   const loadDrafts = async () => {
     try {
       const loaded = await loadConversationDrafts(conversationId)
-      setDrafts(loaded || [])
+      const rawDrafts = (loaded?.drafts ?? []).map((d: any) => ({
+        id: d.id,
+        content: d.draft_body,
+        tone: d.suggested_tone ?? "professional",
+        created_at: d.created_at,
+      }))
+      setDrafts(rawDrafts)
     } catch (error) {
       console.error("Error loading drafts:", error)
     }
@@ -55,12 +61,19 @@ export function InlineAiReplyCoach({
     try {
       const profile = await getBrandVoiceProfile(agentId)
 
-      const draft = await generateAIReplyDraft({
+      const result = await generateAIReplyDraft({
         conversationId,
-        agentId,
+        agentUserId: agentId,
         brandVoiceProfile: profile,
         contactName,
-      })
+      } as any)
+
+      const draft: Draft = {
+        id: (result as any).draftId ?? String(Date.now()),
+        content: (result as any).draftBody ?? "",
+        tone: (result as any).suggestedTone ?? "professional",
+        created_at: new Date().toISOString(),
+      }
 
       setDrafts((prev) => [draft, ...prev])
       setSelectedDraftId(draft.id)
@@ -85,8 +98,9 @@ export function InlineAiReplyCoach({
     try {
       await acceptDraft({
         draftId: draft.id,
-        agentId,
-      })
+        agentUserId: agentId,
+        finalBody: draft.content,
+      } as any)
       onAcceptDraft(draft.content)
       toast.success("Draft accepted!")
     } catch (error) {
@@ -99,9 +113,9 @@ export function InlineAiReplyCoach({
     try {
       await rejectDraft({
         draftId,
-        agentId,
-        rejectionReason: "not_helpful",
-      })
+        agentUserId: agentId,
+        reason: "not_helpful",
+      } as any)
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
       toast.success("Draft rejected")
     } catch (error) {

@@ -44,32 +44,60 @@ export function ComplianceContent() {
   async function loadComplianceData() {
     const supabase = createClient()
 
-    // Load unresolved alerts
-    const { data: alertsData } = await supabase
-      .from("compliance_alerts")
-      .select("*")
-      .eq("resolved", false)
-      .order("created_at", { ascending: false })
-      .limit(10)
-
-    setAlerts(alertsData || [])
-
-    // Load recent fair housing logs with risk
-    const { data: fhLogs } = await supabase
-      .from("fair_housing_logs")
-      .select("*, contacts(first_name, last_name)")
-      .eq("steering_risk_detected", true)
-      .order("timestamp", { ascending: false })
-      .limit(10)
-
-    setFairHousingLogs(fhLogs || [])
-
-    // Get current user certifications
+    // Resolve authenticated user and brokerage_id from session
     const {
       data: { user },
     } = await supabase.auth.getUser()
+
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
+    setUserId(user.id)
+
+    const { data: userData } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    const brokerageId = userData?.brokerage_id
+
+    // Load unresolved compliance flags, scoped to this brokerage.
+    // Note: the schema uses compliance_flags (not compliance_alerts).
+    let alertsQuery = supabase
+      .from("compliance_flags")
+      .select("*")
+      .eq("status", "open")
+      .order("detected_at", { ascending: false })
+      .limit(10)
+
+    if (brokerageId) {
+      alertsQuery = alertsQuery.eq("brokerage_id", brokerageId)
+    }
+
+    const { data: alertsData } = await alertsQuery
+    setAlerts(alertsData || [])
+
+    // Load recent compliance events with fair housing risk signals.
+    // fair_housing_logs does not exist; use compliance_flags filtered by violation_type.
+    let fhQuery = supabase
+      .from("compliance_flags")
+      .select("*, contacts(first_name, last_name)")
+      .eq("violation_type", "fair_housing")
+      .order("detected_at", { ascending: false })
+      .limit(10)
+
+    if (brokerageId) {
+      fhQuery = fhQuery.eq("brokerage_id", brokerageId)
+    }
+
+    const { data: fhLogs } = await fhQuery
+    setFairHousingLogs(fhLogs || [])
+
+    // Get current user certifications
     if (user) {
-      setUserId(user.id)
       const certStatus = await trackCertificationExpiration(user.id)
       setCertifications(certStatus)
     }

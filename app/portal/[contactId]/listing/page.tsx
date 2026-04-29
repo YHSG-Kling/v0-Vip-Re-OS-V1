@@ -123,7 +123,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
 
   // Seller documents — merge client_documents + transaction_documents
   const sellerDocs = [
-    ...(documentsResult?.clientDocuments ?? documentsResult?.documents ?? []),
+    ...(documentsResult?.clientDocuments ?? []),
     ...(documentsResult?.transactionDocuments ?? []),
   ]
 

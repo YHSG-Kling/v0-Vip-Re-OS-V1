@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
   resolveSellerContext,
   getShowingStats,
@@ -57,7 +58,7 @@ export async function getListingDetails(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select(`
-      id, seller_contact_id, address, property_address, list_price, status, listing_status,
+      id, contact_id, address, property_address, list_price, status, listing_status,
       listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url,
       lot_size, year_built, property_type, listing_type
     `)
@@ -154,9 +155,9 @@ export async function getShowingInsights(contactId: string) {
   // Calculate sentiment breakdown
   const sentimentBreakdown = { positive: 0, neutral: 0, negative: 0 }
   for (const fb of allFeedback) {
-    if (fb.sentiment === "positive") sentimentBreakdown.positive++
-    else if (fb.sentiment === "neutral") sentimentBreakdown.neutral++
-    else if (fb.sentiment === "negative") sentimentBreakdown.negative++
+    if ((fb as any).sentiment === "positive") sentimentBreakdown.positive++
+    else if ((fb as any).sentiment === "neutral") sentimentBreakdown.neutral++
+    else if ((fb as any).sentiment === "negative") sentimentBreakdown.negative++
   }
 
   // Calculate weekly showing stats (last 8 weeks)
@@ -310,15 +311,30 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 
 // ─── KERNEL EVENT EMISSION ────────────────────────────────────────────────────
 
-export async function emitSellerPortalViewed(contactId: string) {
+export async function emitSellerPortalViewed(contactId: string, moduleName?: string) {
   const supabase = await createClient()
 
-  await processKernelEvent(supabase, {
-    type: KernelEvent.PORTAL_MODULE_VIEWED,
-    payload: {
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  const brokerageId = contact?.brokerage_id
+  if (!brokerageId) return
+
+  // Track which module was viewed in client_portal_activity for analytics
+  if (moduleName) {
+    supabase.from("client_portal_activity").insert({
       contact_id: contactId,
-      module: "seller_home",
-      viewed_at: new Date().toISOString(),
-    },
-  })
+      activity_type: "portal_module_viewed",
+      activity_data: { module: moduleName, viewed_at: new Date().toISOString() },
+    }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
+  }
+
+  await processKernelEvent({
+    event: KernelEvent.PORTAL_MODULE_VIEWED,
+    brokerageId,
+    entityType: "contact",
+    entityId: contactId,
+  }).then(() => {}, (err) => { console.error("[portal-seller] kernel event failed:", err) })
 }

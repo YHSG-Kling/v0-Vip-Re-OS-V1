@@ -50,13 +50,13 @@ interface TourDayOfTabProps {
   onRefresh: () => void
 }
 
-type InterestLevel = 'love_it' | 'like_it' | 'maybe' | 'not_for_us'
+type InterestLevel = 'love_it' | 'like_it' | 'maybe' | 'no'
 
 const INTEREST_LABELS: Record<InterestLevel, { label: string; color: string }> = {
-  love_it:    { label: 'Love It',     color: 'bg-rose-100 text-rose-700 border-rose-200 hover:bg-rose-200' },
-  like_it:    { label: 'Like It',     color: 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' },
-  maybe:      { label: 'Maybe',       color: 'bg-yellow-100 text-yellow-700 border-yellow-200 hover:bg-yellow-200' },
-  not_for_us: { label: 'Not For Us',  color: 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200' },
+  love_it: { label: 'Love It',     color: 'bg-rose-100 text-rose-700 border-rose-200 hover:bg-rose-200' },
+  like_it: { label: 'Like It',     color: 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' },
+  maybe:   { label: 'Maybe',       color: 'bg-yellow-100 text-yellow-700 border-yellow-200 hover:bg-yellow-200' },
+  no:      { label: 'Not For Us',  color: 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200' },
 }
 
 function formatTime(ts: string | null): string {
@@ -257,7 +257,7 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   const lovedCount   = Object.values(ratings).filter(r => r === 'love_it').length
   const likedCount   = Object.values(ratings).filter(r => r === 'like_it').length
   const maybeCount   = Object.values(ratings).filter(r => r === 'maybe').length
-  const noCount      = Object.values(ratings).filter(r => r === 'not_for_us').length
+  const noCount      = Object.values(ratings).filter(r => r === 'no').length
 
   // ── Tour complete screen ────────────────────────────────────────────────────
   if (tourComplete) {

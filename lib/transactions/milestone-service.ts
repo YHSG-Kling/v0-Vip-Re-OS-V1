@@ -177,7 +177,7 @@ export async function setMilestoneDate(
   const supabase = createServiceClient()
   
   // Check if critical milestone
-  if (CRITICAL_MILESTONES.includes(milestoneName) && !reason) {
+  if (Object.values(CRITICAL_MILESTONES).flat().includes(milestoneName) && !reason) {
     throw new Error(`[milestone-service] Reason required to change critical milestone date: ${milestoneName}`)
   }
   

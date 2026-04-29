@@ -369,22 +369,24 @@ export async function POST(req: NextRequest) {
 
   const systemPrompt = buildSystemPrompt(role, ctx, identity)
 
-  // Persist session for this role if not yet created (fire-and-forget)
+  // Persist session for this role if not yet created
   const sessionId = req.headers.get("x-internal-session-id")
+  let newSessionId: string | null = null
   if (!sessionId) {
-    service.from("chat_sessions").insert({
-      contact_id: null,
-      brokerage_id: brokerageId,
-      agent_id: user.id,
-      source: "internal",
-      session_type: `internal_${role}`,
-      status: "active",
-      metadata: { role, user_id: user.id },
-    }).then(({ data }) => {
-      if (data) {
-        // Return session ID via header on first message handled by client
-      }
-    }).catch(() => {})
+    const { data: newSession } = await service
+      .from("chat_sessions")
+      .insert({
+        contact_id: null,
+        brokerage_id: brokerageId,
+        agent_id: user.id,
+        source: "internal",
+        session_type: `internal_${role}`,
+        status: "active",
+        metadata: { role, user_id: user.id },
+      })
+      .select("id")
+      .single()
+    newSessionId = newSession?.id ?? null
   }
 
   // Persist the last user message
@@ -401,7 +403,7 @@ export async function POST(req: NextRequest) {
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
   }
 
@@ -577,9 +579,14 @@ export async function POST(req: NextRequest) {
         role: "assistant",
         content: text,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     },
   })
 
-  return result.toUIMessageStreamResponse()
+  const streamResponse = result.toUIMessageStreamResponse()
+  const resolvedSessionId = sessionId ?? newSessionId
+  if (resolvedSessionId && !sessionId) {
+    streamResponse.headers.set("x-session-id", resolvedSessionId)
+  }
+  return streamResponse
 }

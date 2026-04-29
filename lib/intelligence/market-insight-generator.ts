@@ -413,7 +413,7 @@ export async function generateMarketInsight(
   const { object: insight } = await generateObject({
     model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: MarketInsightSchema,
-    maxTokens: 600,
+    maxOutputTokens: 600,
     system:
       'You are a real estate market analyst. Generate a concise market insight report for an agent. Be specific and actionable.',
     prompt: `Generate a market insight for ${req.marketArea}.

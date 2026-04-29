@@ -24,6 +24,8 @@ interface LaunchActionsPanelProps {
   canLaunch: boolean
   /** Blocker messages to display inline so the agent knows what to fix */
   blockers?: string[]
+  /** Marketing tier is superadmin-only — only show the Studio link to superadmins */
+  isSuperAdmin?: boolean
 }
 
 export function LaunchActionsPanel({
@@ -32,6 +34,7 @@ export function LaunchActionsPanel({
   brokerageId,
   canLaunch,
   blockers = [],
+  isSuperAdmin = false,
 }: LaunchActionsPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [videoStatus, setVideoStatus] = useState<"idle" | "generating" | "success" | "error">("idle")
@@ -66,7 +69,7 @@ export function LaunchActionsPanel({
       </CardHeader>
       <CardContent className="space-y-2">
         {/* Primary Launch Action */}
-        <Link href={`/dashboard/listings/${listingId}/lifecycle`}>
+        <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
           <Button
             size="sm"
             className={`w-full text-xs ${canLaunch ? "bg-green-600 hover:bg-green-700" : ""}`}
@@ -89,13 +92,15 @@ export function LaunchActionsPanel({
           </div>
         )}
 
-        {/* Marketing Studio */}
-        <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
-          <Button size="sm" variant="outline" className="w-full text-xs">
-            <Palette className="h-3.5 w-3.5 mr-1.5" />
-            Open Marketing Studio
-          </Button>
-        </Link>
+        {/* Marketing Studio — superadmin only */}
+        {isSuperAdmin && (
+          <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
+            <Button size="sm" variant="outline" className="w-full text-xs">
+              <Palette className="h-3.5 w-3.5 mr-1.5" />
+              Open Marketing Studio
+            </Button>
+          </Link>
+        )}
 
         {/* Generate Video */}
         <Button

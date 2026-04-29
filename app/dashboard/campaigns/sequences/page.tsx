@@ -37,6 +37,7 @@ export default async function CampaignSequencesPage({
       brokerageId={profile.brokerage_id}
       userId={user.id}
       openCreate={openCreate}
+      pageType="marketing"
     />
   )
 }

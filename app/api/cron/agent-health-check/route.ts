@@ -134,7 +134,7 @@ export async function GET(request: NextRequest) {
 
   } catch (err) {
     console.error('[AgentHealthCheck] Cron failed:', err)
-    await recordCronFailureAction({ context_id: contextId, error: err, stage: 'main-processing' })
+    await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: 'main-processing' })
     return NextResponse.json(
       { error: `Health check failed: ${err}`, context_id: contextId },
       { status: 500 }

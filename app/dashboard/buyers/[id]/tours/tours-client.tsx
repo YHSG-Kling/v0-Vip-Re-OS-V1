@@ -54,12 +54,13 @@ interface ToursClientProps {
     objectionPatterns?: string[]
     pricingSignal?: string
   } | null
+  gateBlocked?: boolean
 }
 
 export function ToursClient({
   contact, agentUserId, brokerageId,
   savedProperties, initialTours, defaultTab = 'plan',
-  tourInsights,
+  tourInsights, gateBlocked = false,
 }: ToursClientProps) {
   const router   = useRouter()
   const [tab, setTab]     = useState<string>(defaultTab)
@@ -115,6 +116,7 @@ export function ToursClient({
           buyerName={buyerName}
           savedProperties={savedProperties}
           onTourCreated={handleTourCreated}
+          disabled={gateBlocked}
         />
       </TabsContent>
 

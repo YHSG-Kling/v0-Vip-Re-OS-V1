@@ -127,7 +127,7 @@ export default function IDXBrokerSettingsPage() {
       .eq("brokerage_id", bid)
       .gte("created_at", monthStart.toISOString())
 
-    const monthSent = (monthRows ?? []).reduce((s, r) => s + (r.properties_sent ?? 0), 0)
+    const monthSent = (monthRows ?? []).reduce((s: number, r: any) => s + (r.properties_sent ?? 0), 0)
 
     // 7-day rows
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)

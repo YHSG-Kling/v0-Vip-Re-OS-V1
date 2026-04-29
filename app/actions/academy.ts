@@ -28,14 +28,43 @@ export async function getAcademyContent(filters?: {
     query = query.ilike("title", `%${filters.searchQuery}%`)
   }
 
-  const { data, error } = await query
+  const { data: academyRows, error } = await query
 
   if (error) {
     console.error("Error fetching academy content:", error)
-    return []
   }
 
-  return data || []
+  // Also include resources saved via EducationEditor (educational_moments table)
+  let momentsQuery = supabase
+    .from("educational_moments")
+    .select("id, title, description, content_type, content, estimated_minutes, created_at")
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  if (filters?.searchQuery) {
+    momentsQuery = momentsQuery.ilike("title", `%${filters.searchQuery}%`)
+  }
+  if (filters?.type) {
+    momentsQuery = momentsQuery.eq("content_type", filters.type)
+  }
+
+  const { data: momentsRows } = await momentsQuery
+
+  const mappedMoments = (momentsRows ?? []).map((m: any) => ({
+    id: m.id,
+    title: m.title,
+    type: m.content_type,
+    description: m.description ?? "",
+    content: m.content ?? "",
+    estimated_minutes: m.estimated_minutes ?? 5,
+    tags: [],
+    view_count: 0,
+    is_published: true,
+    created_at: m.created_at,
+    _source: "educational_moments",
+  }))
+
+  return [...(academyRows ?? []), ...mappedMoments]
 }
 
 export async function getMarketplaceTemplates(filters?: {

@@ -54,7 +54,7 @@ export class ActivityFactory {
     })
   }
 
-  private getActivitiesForStage(stage: TransactionStage, metadata?: Record<string, any>) {
+  private getActivitiesForStage(stage: TransactionStage, metadata?: Record<string, any>): Array<{ type: string; title: string; description: string; priority?: string; dueDate?: string; assignedTo?: string }> {
     switch (stage) {
       case "UNDER_CONTRACT":
         return [

@@ -103,7 +103,7 @@ export function SlaMonitorPanel({ brokerageId }: SlaMonitorPanelProps) {
       setOverdueTasks(tasks)
 
       const totalSla = (slaTracking || []).length
-      const breached = (slaTracking || []).filter((s) => s.breached).length
+      const breached = (slaTracking || []).filter((s: any) => s.breached).length
       const complianceRate = totalSla > 0 ? Math.round(((totalSla - breached) / totalSla) * 100) : 100
 
       setMetrics({

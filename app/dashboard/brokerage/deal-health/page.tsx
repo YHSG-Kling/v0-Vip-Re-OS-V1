@@ -157,7 +157,7 @@ export default async function DealHealthDashboardPage() {
   return (
     <main className="min-h-screen bg-background p-6">
       <DealHealthDashboardClient
-        healthScores={enrichedScores ?? []}
+        healthScores={(enrichedScores ?? []) as any}
         interventions={interventions ?? []}
         summary={summary}
         brokerageId={brokerageId}

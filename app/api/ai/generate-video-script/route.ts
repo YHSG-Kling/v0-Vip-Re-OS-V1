@@ -13,6 +13,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { generateAIResponse } from "@/lib/ai"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -73,8 +74,12 @@ const TONE_ADJUSTMENTS: Record<string, string> = {
 // ─── MAIN HANDLER ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  // Auth guard — agent_id and brokerage_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
     const serviceSupabase = createServiceClient()
     const body = await request.json()
 
@@ -83,13 +88,15 @@ export async function POST(request: NextRequest) {
       listing_id,
       contact_id,
       template_id,
-      agent_id,
-      brokerage_id,
       custom_context,
       brand_voice_tone,
       duration_target_seconds,
       save_to_library,
     } = body
+
+    // Always use session-resolved values — never trust body-supplied IDs
+    const agent_id = auth.agentId
+    const brokerage_id = auth.brokerageId
 
     // Validate required fields
     if (!script_type || !SCRIPT_TYPES.includes(script_type)) {
@@ -97,10 +104,6 @@ export async function POST(request: NextRequest) {
         { error: `Invalid script_type. Must be one of: ${SCRIPT_TYPES.join(", ")}` },
         { status: 400 }
       )
-    }
-
-    if (!brokerage_id) {
-      return NextResponse.json({ error: "brokerage_id is required" }, { status: 400 })
     }
 
     // ── Fetch agent info ─────────────────────────────────────────────────────
@@ -184,7 +187,7 @@ export async function POST(request: NextRequest) {
     try {
       const brandResult = await applyBrandVoice({
         brokerageId: brokerage_id,
-        actorUserId: agent_id,
+        actorUserId: agent_id ?? undefined,
         actorRole: "agent",
         journeyType: script_type.includes("buyer") ? "buyer" : "seller",
         persona: contactInfo.persona ?? "default",
@@ -425,9 +428,9 @@ Return ONLY the script text.`
     const response = await generateAIResponse({
       prompt: `${systemPrompt}\n\n${userPrompt}`,
       temperature: 0.7,
-      maxOutputTokens: 2000,
+      maxTokens: 2000,
       metadata: {
-        userId: agent_id,
+        userId: agent_id ?? "",
         brokerageId: brokerage_id,
         feature: "video_script_generation",
       },
@@ -457,7 +460,7 @@ Return ONLY the script text.`
     try {
       const brandCheck = await applyBrandVoice({
         brokerageId: brokerage_id,
-        actorUserId: agent_id,
+        actorUserId: agent_id ?? undefined,
         actorRole: "agent",
         journeyType: script_type.includes("buyer") ? "buyer" : "seller",
         persona: contactInfo.persona ?? "default",
@@ -520,7 +523,7 @@ Return ONLY the script text.`
     let savedScript: Record<string, any> | null = null
 
     if (save_to_library !== false) {
-      const title = `${script_type.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())} - ${
+      const title = `${script_type.replace(/_/g, " ").replace(/\b\w/g, (l: any) => l.toUpperCase())} - ${
         listingInfo.address ?? contactInfo.name ?? new Date().toLocaleDateString()
       }`
 

@@ -52,7 +52,7 @@ export function WorkflowAiExplainerPanel({
           }`
         : "No specific workflow selected."
 
-      const result = await generateSmartResponse({
+      const result = await (generateSmartResponse as any)({
         agentId,
         context: `${context}\n\nQuestion: ${q}`,
         systemPrompt:
@@ -60,8 +60,8 @@ export function WorkflowAiExplainerPanel({
         type: "general",
       })
 
-      if (result.response) {
-        setExplanation(result.response)
+      if ((result as any).draft) {
+        setExplanation((result as any).draft)
       } else {
         setExplanation("I couldn't generate an explanation. Please try again.")
       }

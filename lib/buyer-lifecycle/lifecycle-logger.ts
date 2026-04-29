@@ -12,6 +12,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { BuyerState } from "./lifecycle-definitions"
+import type { ActorRole } from "@/lib/kernel/types"
 
 export interface LifecycleTransitionEvent {
   contactId: string
@@ -70,10 +71,10 @@ export async function emitLifecycleTransition(
       brokerageId,
       entityType:  "buyer_lifecycle",
       entityId:    contactId,
-      fromState:   fromState ?? null,   // null = unknown prior state; never fake with toState
+      fromState:   fromState ?? "",   // empty string = unknown prior state; never fake with toState
       toState,
       actorUserId: userId,
-      actorRole:   authorityRole,
+      actorRole:   authorityRole as ActorRole,
       eventType:   resolveBuyerKernelEvent(toState),
       metadata: {
         triggered_by:    triggeredBy,

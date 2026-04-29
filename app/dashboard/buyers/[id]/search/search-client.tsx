@@ -406,24 +406,49 @@ export function SearchClient({
   async function handleSaveCriteria() {
     setSavingCriteria(true)
     const supabase = createClient()
-    await supabase.from("property_interests").upsert(
-      {
-        contact_id:          buyerId,
-        brokerage_id:        brokerageId,
-        agent_user_id:       agentUserId,
-        min_price:           filters.minPrice ? Number(filters.minPrice) : null,
-        max_price:           filters.maxPrice ? Number(filters.maxPrice) : null,
-        bedrooms:            filters.minBeds ?? null,
-        bathrooms:           filters.minBaths ? Number(filters.minBaths) : null,
-        property_type:       filters.propertyTypes[0] ?? null,
-        preferred_locations: filters.cities,
-        zip_codes:           filters.zips,
-        updated_at:          new Date().toISOString(),
-      },
-      { onConflict: "contact_id" }
-    )
+    const [interestsResult, preferencesResult] = await Promise.all([
+      supabase.from("property_interests").upsert(
+        {
+          contact_id:          buyerId,
+          brokerage_id:        brokerageId,
+          agent_user_id:       agentUserId,
+          min_price:           filters.minPrice ? Number(filters.minPrice) : null,
+          max_price:           filters.maxPrice ? Number(filters.maxPrice) : null,
+          bedrooms:            filters.minBeds ?? null,
+          bathrooms:           filters.minBaths ? Number(filters.minBaths) : null,
+          property_type:       filters.propertyTypes[0] ?? null,
+          preferred_locations: filters.cities,
+          zip_codes:           filters.zips,
+          updated_at:          new Date().toISOString(),
+        },
+        { onConflict: "contact_id" }
+      ),
+      // Keep property_preferences in sync so AI matching can read these criteria
+      // Column names match the live schema (no preferred_bedrooms/cities — use inferred_ columns)
+      supabase.from("property_preferences").upsert(
+        {
+          contact_id:              buyerId,
+          brokerage_id:            brokerageId,
+          preferred_price_min:     filters.minPrice ? Number(filters.minPrice) : null,
+          preferred_price_max:     filters.maxPrice ? Number(filters.maxPrice) : null,
+          inferred_beds_min:       filters.minBeds ?? null,
+          inferred_baths_min:      filters.minBaths ? Number(filters.minBaths) : null,
+          inferred_cities:         filters.cities.length > 0 ? filters.cities : null,
+          inferred_property_types: filters.propertyTypes.length > 0 ? filters.propertyTypes : null,
+          updated_at:              new Date().toISOString(),
+        },
+        { onConflict: "contact_id" }
+      ),
+    ])
     setSavingCriteria(false)
-    toast({ title: "Search criteria saved" })
+    if (interestsResult.error || preferencesResult.error) {
+      toast({
+        title: "Failed to save search criteria",
+        description: interestsResult.error?.message ?? preferencesResult.error?.message ?? "Please try again",
+      })
+    } else {
+      toast({ title: "Search criteria saved" })
+    }
   }
 
   function togglePropType(type: string) {
@@ -776,7 +801,7 @@ export function SearchClient({
       .eq("contact_id", buyerId)
       .eq("dismissed", false)
       .order("saved_at", { ascending: false })
-      .then(({ data }) => { setSaved(data ?? []); setLoading(false) })
+      .then(({ data }: { data: any[] | null }) => { setSaved(data ?? []); setLoading(false) })
   }, [buyerId])
 
   async function handleRemove(id: string) {

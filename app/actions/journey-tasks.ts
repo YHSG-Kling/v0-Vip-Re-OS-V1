@@ -273,10 +273,10 @@ export async function handleAllTasksCompletedEvent(payload: any) {
 }
 
 // Pre-populate form data based on task type
-export async function getTaskFormFields(taskType: string): {
+export async function getTaskFormFields(taskType: string): Promise<{
   fields: { name: string; label: string; type: string; required: boolean; options?: string[] }[]
   description: string
-} {
+}> {
   switch (taskType) {
     case "pre_approval":
       return {

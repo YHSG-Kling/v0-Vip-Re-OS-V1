@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error("[calendar-sync] cron error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       { error: "Cron job failed", details: error instanceof Error ? error.message : "Unknown", context_id: contextId },
       { status: 500 }

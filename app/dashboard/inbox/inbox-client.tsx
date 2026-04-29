@@ -8,8 +8,8 @@ import {
   markInboxRead,
   type InboxThread,
   type InboxMessageRow,
-  type InboxChannel,
 } from "@/app/actions/inbox"
+import { type InboxChannel } from "@/lib/kernel/communications"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -169,15 +169,17 @@ function MessageBubble({ msg }: { msg: InboxMessage }) {
 export function InboxClient({
   initialContactId,
   initialChannel,
+  initialThreads = [],
 }: {
   initialContactId?: string | null
   initialChannel?: string | null
+  initialThreads?: InboxThread[]
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  const [threads, setThreads] = useState<InboxThread[]>([])
-  const [threadsLoading, setThreadsLoading] = useState(true)
+  const [threads, setThreads] = useState<InboxThread[]>(initialThreads)
+  const [threadsLoading, setThreadsLoading] = useState(initialThreads.length === 0)
   const [search, setSearch] = useState("")
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all")
   const [unreadOnly, setUnreadOnly] = useState(false)
@@ -229,8 +231,11 @@ export function InboxClient({
   )
 
   useEffect(() => {
-    loadThreads()
-    // Poll every 15s
+    // Skip initial fetch when server-hydrated threads are already loaded
+    if (initialThreads.length === 0) {
+      loadThreads()
+    }
+    // Poll every 15s to pick up new messages
     const id = setInterval(loadThreads, 15000)
     return () => clearInterval(id)
   }, [loadThreads])

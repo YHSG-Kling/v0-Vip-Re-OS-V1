@@ -331,7 +331,11 @@ export async function createTourPlan(params: CreateTourParams) {
     channel:     'in_app',
   })
 
-  return { success: true, tourId, stopCount: stops.length }
+  const stopIds = (insertedStops ?? [])
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+    .map(s => s.id)
+
+  return { success: true, tourId, stopCount: stops.length, stopIds }
 }
 
 // ─── 4. Confirm a single stop ─────────────────────────────────────────────────
@@ -666,4 +670,22 @@ Focus on geography flow, any standout properties, and pacing. Be specific and he
       narrative: `This tour covers ${stops.length} properties for ${buyerName}. Properties are ordered for efficient routing. Review access instructions for each stop before departure.`,
     }
   }
+}
+
+// ─── 9. Update tour stop order (manual drag reorder) ─────────────────────────
+
+export async function updateTourStopOrder(
+  tourId: string,
+  orderedStopIds: string[]
+): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+
+  const supabase = createServiceClient()
+  const updates = orderedStopIds.map((id, idx) =>
+    supabase.from('tour_stops').update({ order_index: idx }).eq('id', id).eq('tour_id', tourId)
+  )
+  const results = await Promise.all(updates)
+  const failed = results.find(r => r.error)
+  if (failed?.error) return { success: false, error: failed.error.message }
+  return { success: true }
 }

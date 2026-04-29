@@ -95,7 +95,7 @@ export async function GET(request: Request) {
   })
   } catch (error) {
     console.error('[EnrichmentProcessor] Cron failed:', error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: 'main-processing' })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: 'main-processing' })
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error), context_id: contextId }, { status: 500 })
   }
 }

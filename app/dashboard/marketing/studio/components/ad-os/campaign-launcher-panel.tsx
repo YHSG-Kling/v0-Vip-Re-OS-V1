@@ -87,21 +87,32 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
       previewContent.trim() ||
       `New campaign: ${campaignName}${selectedListing ? ` for ${selectedListing.address}, ${selectedListing.city}` : ""}`
 
-    const res = await runPrelaunchCheck({
-      contentText: content,
-      contentType: "ad_creative",
-      platform,
-    })
+    try {
+      const res = await runPrelaunchCheck({
+        contentText: content,
+        contentType: "ad_creative",
+        platform,
+      })
 
-    if (!res.success) {
-      setError(res.error ?? "Prediction failed")
-      setStage("form")
-      return
+      if (!res.success) {
+        // Non-blocking: show warning but still advance to next step so user can launch
+        setError(res.error ?? "Pre-launch check unavailable — you can still proceed.")
+        setPrediction(null)
+        setReadinessStatus(null)
+        setStage("predicted")
+        return
+      }
+
+      setPrediction(res.prediction ?? null)
+      setReadinessStatus(res.readiness?.readiness_status ?? null)
+      setStage("predicted")
+    } catch (err) {
+      // Non-blocking: allow advancing even on unexpected errors
+      setError("Pre-launch check failed — you can still proceed.")
+      setPrediction(null)
+      setReadinessStatus(null)
+      setStage("predicted")
     }
-
-    setPrediction(res.prediction ?? null)
-    setReadinessStatus(res.readiness?.readiness_status ?? null)
-    setStage("predicted")
   }
 
   async function handleLaunch() {
@@ -274,17 +285,19 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
           </div>
         </div>
 
-        {/* Predict button (gate before launch) */}
+        {/* Step navigation: predict (with preview) or proceed directly */}
         {stage === "form" && (
-          <Button
-            onClick={handlePredict}
-            disabled={!campaignName.trim()}
-            variant="outline"
-            className="w-full border-violet-300 text-violet-700 hover:bg-violet-50"
-          >
-            <TrendingUp className="mr-2 h-4 w-4" />
-            Predict Performance Before Launch
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={handlePredict}
+              disabled={!campaignName.trim()}
+              variant="outline"
+              className="flex-1 border-violet-300 text-violet-700 hover:bg-violet-50"
+            >
+              <TrendingUp className="mr-2 h-4 w-4" />
+              Check &amp; Continue
+            </Button>
+          </div>
         )}
 
         {stage === "predicting" && (

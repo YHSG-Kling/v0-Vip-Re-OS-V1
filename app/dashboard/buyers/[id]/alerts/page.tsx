@@ -132,7 +132,7 @@ export default function BuyerAlertsPage() {
     const res = await getAlertResults(alertId, { filter })
     if (res.success) {
       setResults(res.results as ResultRecord[])
-      setUnviewedCount(res.unviewedCount)
+      setUnviewedCount(res.unviewedCount ?? 0)
     }
     setResultsLoading(false)
   }

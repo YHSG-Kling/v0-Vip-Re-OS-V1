@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -20,23 +21,29 @@ const HEYGEN_API_BASE = "https://api.heygen.com/v2"
  * - voice_name: string (name for the cloned voice)
  */
 export async function POST(request: NextRequest) {
+  // Auth guard — brokerage_id and user_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
     const body = await request.json()
 
     const {
       training_id,
       profile_id,
-      brokerage_id,
-      user_id,
       sample_audio_urls,
       voice_name,
     } = body
 
+    // Always use session-resolved values — never trust body-supplied IDs
+    const brokerage_id = auth.brokerageId
+    const user_id = auth.userId
+
     // ─── VALIDATION ───────────────────────────────────────────────────────────
-    if (!training_id || !profile_id || !brokerage_id || !sample_audio_urls || !voice_name) {
+    if (!training_id || !profile_id || !sample_audio_urls || !voice_name) {
       return NextResponse.json(
-        { error: "Missing required fields: training_id, profile_id, brokerage_id, sample_audio_urls, voice_name" },
+        { error: "Missing required fields: training_id, profile_id, sample_audio_urls, voice_name" },
         { status: 400 }
       )
     }

@@ -7,14 +7,16 @@ export async function askRelationshipAI(params: {
   question: string
   contactName: string
   contactPersona?: string | null
+  systemPrompt?: string
 }): Promise<{ success: boolean; answer?: string; error?: string }> {
-  const { question, contactName, contactPersona } = params
+  const { question, contactName, contactPersona, systemPrompt } = params
 
   if (!question?.trim()) {
     return { success: false, error: "Question is required" }
   }
 
-  const systemPrompt = `You are a real estate relationship advisor. The agent is asking about their client named ${contactName}${contactPersona ? ` (persona: ${contactPersona})` : ""}. Give concise, actionable advice in 2-3 sentences. Be specific and practical.`
+  const resolvedSystemPrompt = systemPrompt ??
+    `You are a real estate relationship advisor. The agent is asking about their client named ${contactName}${contactPersona ? ` (persona: ${contactPersona})` : ""}. Give concise, actionable advice in 2-3 sentences. Be specific and practical.`
 
   // Try Vercel AI Gateway first; fall back to direct OpenAI if gateway key missing
   const hasGateway = !!process.env.AI_GATEWAY_API_KEY
@@ -38,9 +40,9 @@ export async function askRelationshipAI(params: {
 
     const { text } = await generateText({
       model,
-      system: systemPrompt,
+      system: resolvedSystemPrompt,
       prompt: question.trim(),
-      maxTokens: 400,
+      maxOutputTokens: 600,
     })
 
     return { success: true, answer: text.trim() }
@@ -53,9 +55,9 @@ export async function askRelationshipAI(params: {
         const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
         const { text } = await generateText({
           model: openai("gpt-4o-mini"),
-          system: systemPrompt,
+          system: resolvedSystemPrompt,
           prompt: question.trim(),
-          maxTokens: 400,
+          maxOutputTokens: 600,
         })
         return { success: true, answer: text.trim() }
       } catch (fallbackErr: any) {

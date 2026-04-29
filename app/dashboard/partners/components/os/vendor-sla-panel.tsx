@@ -47,18 +47,18 @@ export function VendorSlaPanel({ brokerageId }: VendorSlaPanelProps) {
       }
 
       // Calculate metrics
-      const avgRating = vendors.reduce((sum, v) => sum + (v.rating || 0), 0) / vendors.length
-      const avgOnTimeDelivery = vendors.reduce((sum, v) => sum + (v.on_time_delivery_pct || 85), 0) / vendors.length
-      const avgResponseTime = vendors.reduce((sum, v) => sum + (v.response_time_hours || 24), 0) / vendors.length
+      const avgRating = vendors.reduce((sum: any, v: any) => sum + (v.rating || 0), 0) / vendors.length
+      const avgOnTimeDelivery = vendors.reduce((sum: any, v: any) => sum + (v.on_time_delivery_pct || 85), 0) / vendors.length
+      const avgResponseTime = vendors.reduce((sum: any, v: any) => sum + (v.response_time_hours || 24), 0) / vendors.length
 
       // SLA compliance calculation
-      const compliant = vendors.filter(v => (v.rating || 0) >= 4 && (v.on_time_delivery_pct || 85) >= 90).length
-      const warning = vendors.filter(v => {
+      const compliant = vendors.filter((v: any) => (v.rating || 0) >= 4 && (v.on_time_delivery_pct || 85) >= 90).length
+      const warning = vendors.filter((v: any) => {
         const rating = v.rating || 0
         const delivery = v.on_time_delivery_pct || 85
         return (rating >= 3 && rating < 4) || (delivery >= 75 && delivery < 90)
       }).length
-      const breach = vendors.filter(v => (v.rating || 0) < 3 || (v.on_time_delivery_pct || 85) < 75).length
+      const breach = vendors.filter((v: any) => (v.rating || 0) < 3 || (v.on_time_delivery_pct || 85) < 75).length
 
       const overallCompliance = vendors.length > 0 ? (compliant / vendors.length) * 100 : 0
 

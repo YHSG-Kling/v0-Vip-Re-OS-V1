@@ -399,24 +399,27 @@ Create a comprehensive recovery plan including:
     })
 
     // review_recovery_plans table does not exist in live schema.
-    // Persist recovery plan to ai_assistant_notes (entity_type='agent_review').
-    // Also write a lifecycle_event so the kernel notification engine can fire.
+    // Persist recovery plan to ai_assistant_notes.
+    // entity_type + entity_id columns were added to ai_assistant_notes via migration.
     await supabase.from("ai_assistant_notes").insert({
-      agent_id:    params.agentId,
+      created_by:  params.agentId,
+      role:        "agent",
+      note_text:   JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
+      note_type:   "review_recovery_plan",
+      source:      "ai_review_automation",
       entity_type: "agent_review",
       entity_id:   params.reviewId,
-      note:        JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
-      created_at:  new Date().toISOString(),
-    }).select()
+    })
 
+    // lifecycle_events: actor_user_id (not agent_id), entity_type + entity_id columns.
     await supabase.from("lifecycle_events").insert({
-      agent_id:    params.agentId,
-      entity_type: "agent_review",
-      entity_id:   params.reviewId,
-      event_type:  "review_recovery_plan_created",
-      metadata:    { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
-      created_at:  new Date().toISOString(),
-    }).select()
+      actor_user_id: params.agentId,
+      entity_type:   "agent_review",
+      entity_id:     params.reviewId,
+      event_type:    "review_recovery_plan_created",
+      payload:       { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
+      created_at:    new Date().toISOString(),
+    })
 
     return { success: true, data: recoveryPlan }
   } catch (error) {
@@ -539,7 +542,6 @@ export async function aiSetupReviewMonitoring(params: {
       note_text:  JSON.stringify(config),
       note_type:  "review_monitoring_config",
       source:     "ai_review_automation",
-      created_at: new Date().toISOString(),
     })
 
     return {

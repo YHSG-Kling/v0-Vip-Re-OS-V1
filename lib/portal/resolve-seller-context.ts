@@ -12,6 +12,8 @@ export interface ListingData {
   seller_contact_id: string
   address: string | null
   property_address: string | null
+  city: string | null
+  state: string | null
   list_price: number | null
   status: string | null
   listing_status: string | null
@@ -151,7 +153,7 @@ export async function resolveSellerContext(
   // Get active or most recent listing for this seller
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, seller_contact_id, address, property_address, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .select("id, seller_contact_id, address, property_address, city, state, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
     .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)

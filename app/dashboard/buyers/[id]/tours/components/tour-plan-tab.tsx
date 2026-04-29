@@ -14,6 +14,7 @@ import { toast } from '@/hooks/use-toast'
 import {
   createTourPlan,
   generateTourNarrative,
+  updateTourStopOrder,
   type TourStop,
 } from '@/app/actions/tour-planner'
 import { optimizeTourRoute } from '@/app/actions/ai-showing-management'
@@ -45,6 +46,7 @@ interface TourPlanTabProps {
   buyerName: string
   savedProperties: SavedProperty[]
   onTourCreated: () => void
+  disabled?: boolean
 }
 
 const DURATION_OPTIONS = [
@@ -61,6 +63,7 @@ function formatPrice(price: number | null): string {
 
 export function TourPlanTab({
   contactId, agentUserId, brokerageId, buyerName, savedProperties, onTourCreated,
+  disabled = false,
 }: TourPlanTabProps) {
   const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set())
   const [orderedStops, setOrderedStops] = useState<TourStop[]>([])
@@ -74,8 +77,10 @@ export function TourPlanTab({
   const [optimizingRoute, setOptimizingRoute] = useState(false)
   const [routeSummary, setRouteSummary]       = useState<string | null>(null)
 
-  // Stored tourId after creation so Optimize Route knows which tour to reorder
+  // Stored tourId + stop IDs after creation so drag reorder can persist order
   const [createdTourId, setCreatedTourId]     = useState<string | null>(null)
+  const [createdStopIds, setCreatedStopIds]   = useState<string[]>([])
+  const [dragIdx, setDragIdx]                 = useState<number | null>(null)
 
   function toggleProperty(prop: SavedProperty) {
     const key = prop.listing_id ?? prop.id
@@ -188,6 +193,7 @@ export function TourPlanTab({
       })
       if (res.success) {
         if (res.tourId) setCreatedTourId(res.tourId)
+        if (res.stopIds) setCreatedStopIds(res.stopIds)
         toast({ title: `Tour plan created — ${res.stopCount} stops` })
         onTourCreated()
       } else {
@@ -215,7 +221,18 @@ export function TourPlanTab({
   const previewTimes = computePreviewTimes()
 
   return (
-    <div className="flex gap-6 h-full min-h-0">
+    <div className="relative h-full min-h-0">
+      {/* Gate overlay — blocks all interaction when tour scheduling is locked */}
+      {disabled && (
+        <div className="absolute inset-0 z-10 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center">
+          <p className="text-sm font-medium text-muted-foreground">Tour creation is locked — complete financial verification to unlock.</p>
+        </div>
+      )}
+      {/* Content wrapper — pointer events + keyboard interaction disabled when gate overlay is active */}
+      <div
+        className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}
+        {...(disabled ? { inert: true } : {})}
+      >
       {/* Left panel */}
       <div className="w-72 flex-shrink-0 flex flex-col gap-4">
         <div>
@@ -279,7 +296,32 @@ export function TourPlanTab({
               Tour Stops ({orderedStops.length})
             </p>
             {orderedStops.map((stop, idx) => (
-              <div key={idx} className="flex items-center gap-1 group">
+              <div
+                key={idx}
+                className="flex items-center gap-1 group"
+                draggable
+                onDragStart={() => setDragIdx(idx)}
+                onDragOver={(e) => { e.preventDefault() }}
+                onDrop={() => {
+                  if (dragIdx === null || dragIdx === idx) { setDragIdx(null); return }
+                  const next = [...orderedStops]
+                  const [moved] = next.splice(dragIdx, 1)
+                  next.splice(idx, 0, moved)
+                  setOrderedStops(next)
+                  // Reorder createdStopIds in the same way so they stay in sync
+                  if (createdStopIds.length > 0) {
+                    const nextIds = [...createdStopIds]
+                    const [movedId] = nextIds.splice(dragIdx, 1)
+                    nextIds.splice(idx, 0, movedId)
+                    setCreatedStopIds(nextIds)
+                    if (createdTourId) {
+                      void updateTourStopOrder(createdTourId, nextIds)
+                    }
+                  }
+                  setDragIdx(null)
+                }}
+                onDragEnd={() => setDragIdx(null)}
+              >
                 <GripVertical className="h-3 w-3 text-muted-foreground cursor-grab" />
                 <span className="flex-1 text-xs truncate">{stop.propertyAddress}</span>
                 <Select
@@ -422,7 +464,7 @@ export function TourPlanTab({
             {/* Send plan button */}
             <Button
               onClick={handleCreate}
-              disabled={isPending || !tourDate || orderedStops.length === 0}
+              disabled={disabled || isPending || !tourDate || orderedStops.length === 0}
               className="w-full"
             >
               {isPending ? 'Creating tour plan...' : 'Continue to Confirm \u2192'}
@@ -430,6 +472,7 @@ export function TourPlanTab({
           </>
         )}
       </div>
+      </div>{/* end content wrapper */}
     </div>
   )
 }

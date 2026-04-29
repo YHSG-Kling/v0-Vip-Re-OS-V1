@@ -487,3 +487,12 @@ export async function logUserActivity(
     return { success: true } // Don't fail user action if logging fails
   }
 }
+
+export async function executeWorkflow(workflowId: string, contextData: Record<string, unknown> = {}) {
+  try {
+    return await executeAITool(workflowId, contextData, {})
+  } catch (error: any) {
+    console.error("[executeWorkflow] Error:", error)
+    return { success: false, error: error?.message ?? "Workflow execution failed" }
+  }
+}

@@ -30,7 +30,9 @@ import {
   canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
-import { applyBrandVoice, evaluateOutbound, checkBrandCompliance } from "@/lib/kernel/compliance"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -66,7 +68,7 @@ export interface UpdateCampaignParams {
 
 export interface CreateAssetParams {
   campaignId?: string
-  assetType: "video" | "image" | "document" | "social_post" | "email" | "direct_mail"
+  assetType: "video" | "snippet" | "script" | "graphic" | "template" | "social_post" | "newsletter" | "blog" | "podcast" | "mailer" | "ad_creative" | "qr"
   assetName: string
   sourceTable?: string
   sourceId?: string
@@ -103,57 +105,70 @@ export interface CreateTaskParams {
 
 // ─── FEATURE GATE HELPER ──────────────────────────────────────────────────────
 
-async function assertMarketingStudioAccess(userId: string): Promise<void> {
+async function assertMarketingStudioAccess(userId: string): Promise<{ allowed: boolean; reason?: string }> {
   const access = await canAccessFeature(userId, "marketing_studio")
   if (!access.allowed) {
-    throw new Error(access.reason ?? "Access to Marketing Studio denied")
+    const reason = access.reason === "Feature does not exist"
+      ? "Marketing Studio is not yet enabled for your account. Contact your administrator to enable it."
+      : access.reason
+    return { allowed: false, reason }
   }
+  return { allowed: true }
 }
 
 // ─── CAMPAIGN ACTIONS ─────────────────────────────────────────────────────────
 
 export async function createCampaign(params: CreateCampaignParams) {
-  const { userId, agentId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  try {
+    const { userId, agentId, brokerageId } = await getAgentContext()
+    const access = await assertMarketingStudioAccess(userId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+    }
 
-  const supabase = await createClient()
+    const supabase = await createClient()
 
-  const { data: campaign, error } = await supabase
-    .from("marketing_campaigns")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_user_id: agentId,
-      created_by: userId,
-      campaign_name: params.campaignName,
-      campaign_type: params.campaignType,
-      listing_id: params.listingId ?? null,
-      target_audience: params.targetAudience ?? {},
-      budget_total: params.budgetTotal ?? 0,
-      budget_spent: 0,
-      scheduled_start_at: params.scheduledStartAt ?? null,
-      scheduled_end_at: params.scheduledEndAt ?? null,
-      visibility_scope: params.visibilityScope ?? "agent",
-      status: "draft",
-    })
-    .select("id, status")
-    .maybeSingle()
+    const { data: campaign, error } = await supabase
+      .from("marketing_campaigns")
+      .insert({
+        brokerage_id: brokerageId,
+        agent_user_id: userId,
+        created_by: userId,
+        campaign_name: params.campaignName,
+        campaign_type: params.campaignType,
+        listing_id: params.listingId ?? null,
+        target_audience: params.targetAudience ?? {},
+        budget_total: params.budgetTotal ?? 0,
+        budget_spent: 0,
+        scheduled_start_at: params.scheduledStartAt || null,
+        scheduled_end_at: params.scheduledEndAt || null,
+        visibility_scope: params.visibilityScope ?? "agent",
+        status: "draft",
+      })
+      .select("id, status")
+      .maybeSingle()
 
-  if (error) {
-    console.error("[v0] Error creating campaign:", error)
-    return { success: false, error: error.message }
+    if (error) {
+      console.error("[v0] Error creating campaign:", error)
+      return { success: false, error: error.message }
+    }
+
+    // Emit kernel event
+    await processKernelEvent({
+      event: KernelEvent.MARKETING_CAMPAIGN_CREATED,
+      brokerageId: brokerageId!,
+      entityType: "marketing_campaign",
+      entityId: campaign!.id,
+    }).catch((err) => console.error("[MarketingStudio] Kernel event failed:", err))
+
+    await incrementFeatureUsage(userId, "marketing_studio")
+
+    return { success: true, campaign }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create campaign"
+    console.error("[MarketingStudio] createCampaign error:", message)
+    return { success: false, error: message }
   }
-
-  // Emit kernel event
-  await processKernelEvent({
-    event: KernelEvent.MARKETING_CAMPAIGN_CREATED,
-    brokerageId,
-    entityType: "marketing_campaign",
-    entityId: campaign.id,
-  }).catch((err) => console.error("[MarketingStudio] Kernel event failed:", err))
-
-  await incrementFeatureUsage(userId, "marketing_studio")
-
-  return { success: true, campaign }
 }
 
 export async function getCampaigns(filters?: {
@@ -161,7 +176,7 @@ export async function getCampaigns(filters?: {
   campaignType?: string
   listingId?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty campaigns
@@ -181,11 +196,11 @@ export async function getCampaigns(filters?: {
     .order("created_at", { ascending: false })
 
   // Visibility filter — agent sees own + team + brokerage level
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Filter on agent_user_id (stores userId/auth-user-id, not agents.id)
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},visibility_scope.eq.brokerage`)
   } else {
-    // If no agentId, only show brokerage-wide campaigns
+    // If no userId, only show brokerage-wide campaigns
     query = query.eq("visibility_scope", "brokerage")
   }
 
@@ -237,7 +252,10 @@ export async function getCampaignById(campaignId: string) {
 
 export async function updateCampaign(params: UpdateCampaignParams) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -245,8 +263,8 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (params.campaignName !== undefined) updateData.campaign_name = params.campaignName
   if (params.targetAudience !== undefined) updateData.target_audience = params.targetAudience
   if (params.budgetTotal !== undefined) updateData.budget_total = params.budgetTotal
-  if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt
-  if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt
+  if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt || null
+  if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt || null
 
   const { error } = await supabase
     .from("marketing_campaigns")
@@ -267,7 +285,10 @@ export async function transitionCampaignStatus(
   toStatus: CampaignStatus
 ) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -295,9 +316,12 @@ export async function transitionCampaignStatus(
       .single()
 
     if (fullCampaign) {
-      // Extract content from campaign assets
+      // Extract actual copy text from campaign assets — never use URLs as compliance content
       const campaignContent = fullCampaign.assets
-        ?.map((asset: any) => asset.content_url || asset.asset_name)
+        ?.map((asset: any) =>
+          asset.copy_text || asset.content_text || asset.preview_text || asset.description || asset.headline || asset.asset_name
+        )
+        .filter(Boolean)
         .join(" ") || fullCampaign.campaign_name
 
       // Determine channel and message type
@@ -308,35 +332,31 @@ export async function transitionCampaignStatus(
       
       const messageType: MessageType = campaignType.includes("email") ? "email" :
                                        campaignType.includes("sms") ? "sms" :
-                                       "social_post"
+                                       "social"
 
-      // Run compliance check including DNC/opt-out verification
+      // Fair-housing + misleading-claim compliance gate (broadcast — no specific contact)
       const complianceResult = await evaluateOutbound({
-        brokerageId,
-        actorUserId: userId,
-        actorRole: "agent" as ActorRole,
-        journeyType: "seller",
-        persona: "homeowner" as Persona,
+        actorContext: { brokerageId: brokerageId!, userId: userId!, role: "agent" as any },
+        journeyType: "seller" as any,
+        persona: "homeowner" as any,
         messageType,
         content: campaignContent,
-        channel,
-        recipientContactId: null, // Campaign doesn't have single recipient
+        contact: undefined,
       })
-
-      if (!complianceResult.passed) {
-        console.error("[v0] Campaign failed compliance check:", complianceResult.violations)
+      if (!complianceResult.allowed) {
         return {
           success: false,
-          error: `Campaign cannot be launched: ${complianceResult.violations?.join(", ")}`,
-          violations: complianceResult.violations,
+          error: `Campaign failed compliance review: ${complianceResult.violations?.join(", ") ?? "Unknown violation"}`,
         }
       }
 
-      // Apply brand voice to campaign content
+      // Apply brand voice to campaign content.
+      // Brand voice violation checking is already performed inside evaluateOutbound (Gate 1)
+      // above — do NOT call applyBrandVoice a second time for violation checking.
+      // This single call transforms the content with the correct tone/style.
       const brandVoiceResult = await applyBrandVoice({
-        brokerageId,
-        teamId: null,
-        actorUserId: userId,
+        brokerageId: brokerageId!,
+        actorUserId: userId!,
         actorRole: "agent" as ActorRole,
         journeyType: "seller",
         persona: "homeowner" as Persona,
@@ -350,8 +370,8 @@ export async function transitionCampaignStatus(
 
   // Use kernel lifecycle transition
   const result = await transitionLifecycle({
-    brokerageId,
-    entityType: "marketing_campaign_machine",
+    brokerageId: brokerageId!,
+    entityType: "marketing_campaign_machine" as any,
     entityId: campaignId,
     fromState: fromStatus,
     toState: toStatus,
@@ -380,38 +400,47 @@ export async function transitionCampaignStatus(
 // ─── ASSET ACTIONS ────────────────────────────────────────────────────────────
 
 export async function createAsset(params: CreateAssetParams) {
-  const { userId, agentId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  try {
+    const { userId, agentId, brokerageId } = await getAgentContext()
+    const access = await assertMarketingStudioAccess(userId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+    }
 
-  const supabase = await createClient()
+    const supabase = await createClient()
 
-  const { data: asset, error } = await supabase
-    .from("marketing_assets")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_user_id: agentId,
-      created_by: userId,
-      campaign_id: params.campaignId ?? null,
-      asset_type: params.assetType,
-      asset_name: params.assetName,
-      source_table: params.sourceTable ?? null,
-      source_id: params.sourceId ?? null,
-      asset_url: params.assetUrl ?? null,
-      thumbnail_url: params.thumbnailUrl ?? null,
-      preview_text: params.previewText ?? null,
-      tags: params.tags ?? [],
-      visibility_scope: params.visibilityScope ?? "agent",
-      approval_status: "pending",
-    })
-    .select("id")
-    .maybeSingle()
+    const { data: asset, error } = await supabase
+      .from("marketing_assets")
+      .insert({
+        brokerage_id: brokerageId,
+        agent_user_id: userId,
+        created_by: userId,
+        campaign_id: params.campaignId ?? null,
+        asset_type: params.assetType,
+        asset_name: params.assetName,
+        source_table: params.sourceTable ?? null,
+        source_id: params.sourceId ?? null,
+        asset_url: params.assetUrl ?? null,
+        thumbnail_url: params.thumbnailUrl ?? null,
+        preview_text: params.previewText ?? null,
+        tags: params.tags ?? [],
+        visibility_scope: params.visibilityScope ?? "agent",
+        approval_status: "pending",
+      })
+      .select("id")
+      .maybeSingle()
 
-  if (error) {
-    console.error("[v0] Error creating asset:", error)
-    return { success: false, error: error.message }
+    if (error) {
+      console.error("[v0] Error creating asset:", error)
+      return { success: false, error: error.message }
+    }
+
+    return { success: true, asset }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create asset"
+    console.error("[MarketingStudio] createAsset error:", message)
+    return { success: false, error: message }
   }
-
-  return { success: true, asset }
 }
 
 export async function getAssets(filters?: {
@@ -419,7 +448,7 @@ export async function getAssets(filters?: {
   assetType?: string
   approvalStatus?: AssetApprovalStatus
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty assets
@@ -433,9 +462,9 @@ export async function getAssets(filters?: {
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Filter on agent_user_id (stores userId/auth-user-id, not agents.id)
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},visibility_scope.eq.brokerage`)
   } else {
     query = query.eq("visibility_scope", "brokerage")
   }
@@ -462,7 +491,10 @@ export async function getAssets(filters?: {
 
 export async function approveAsset(assetId: string) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -470,7 +502,7 @@ export async function approveAsset(assetId: string) {
   const complianceResult = await checkBrandCompliance({
     contentType: "listing_media",
     contentId: assetId,
-    brokerageId,
+    brokerageId: brokerageId ?? "",
   })
 
   if (!complianceResult.passed) {
@@ -528,7 +560,10 @@ export async function approveAsset(assetId: string) {
 
 export async function rejectAsset(assetId: string, reason?: string) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -557,35 +592,44 @@ export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks }
 // ─── CALENDAR ACTIONS ─────────────────────────────────────────────────────────
 
 export async function createCalendarEvent(params: CreateCalendarEventParams) {
-  const { userId, agentId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  try {
+    const { userId, agentId, brokerageId } = await getAgentContext()
+    const access = await assertMarketingStudioAccess(userId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+    }
 
-  const supabase = await createClient()
+    const supabase = await createClient()
 
-  const { data: event, error } = await supabase
-    .from("campaign_calendar")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_user_id: agentId,
-      campaign_id: params.campaignId ?? null,
-      event_type: params.eventType,
-      channel: params.channel ?? null,
-      title: params.title,
-      scheduled_at: params.scheduledAt,
-      related_table: params.relatedTable ?? null,
-      related_id: params.relatedId ?? null,
-      notes: params.notes ?? null,
-      status: "scheduled",
-    })
-    .select("id")
-    .maybeSingle()
+    const { data: event, error } = await supabase
+      .from("campaign_calendar")
+      .insert({
+        brokerage_id: brokerageId,
+        agent_user_id: userId,
+        campaign_id: params.campaignId ?? null,
+        event_type: params.eventType,
+        channel: params.channel ?? null,
+        title: params.title,
+        scheduled_at: params.scheduledAt,
+        related_table: params.relatedTable ?? null,
+        related_id: params.relatedId ?? null,
+        notes: params.notes ?? null,
+        status: "scheduled",
+      })
+      .select("id")
+      .maybeSingle()
 
-  if (error) {
-    console.error("[v0] Error creating calendar event:", error)
-    return { success: false, error: error.message }
+    if (error) {
+      console.error("[v0] Error creating calendar event:", error)
+      return { success: false, error: error.message }
+    }
+
+    return { success: true, event }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create calendar event"
+    console.error("[MarketingStudio] createCalendarEvent error:", message)
+    return { success: false, error: message }
   }
-
-  return { success: true, event }
 }
 
 export async function getCalendarEvents(filters?: {
@@ -593,7 +637,7 @@ export async function getCalendarEvents(filters?: {
   startDate?: string
   endDate?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty events
@@ -607,9 +651,9 @@ export async function getCalendarEvents(filters?: {
     .eq("brokerage_id", brokerageId)
     .order("scheduled_at", { ascending: true })
 
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},campaign_id.is.null`)
+  // agent_user_id stores the auth user_id (users.id), not agents.id
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},agent_user_id.is.null`)
   }
 
   if (filters?.campaignId) {
@@ -637,7 +681,10 @@ export async function updateCalendarEventStatus(
   status: "scheduled" | "completed" | "cancelled"
 ) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -659,7 +706,10 @@ export async function updateCalendarEventStatus(
 
 export async function addCampaignComment(params: CreateCommentParams) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -705,7 +755,10 @@ export async function getCampaignComments(campaignId: string) {
 
 export async function createCampaignTask(params: CreateTaskParams) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -755,7 +808,10 @@ export async function updateTaskStatus(
   status: "pending" | "in_progress" | "completed" | "cancelled"
 ) {
   const { userId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -786,7 +842,10 @@ export async function generateCampaignContent(params: {
   persona?: Persona
 }) {
   const { userId, agentId, brokerageId } = await getAgentContext()
-  await assertMarketingStudioAccess(userId)
+  const access = await assertMarketingStudioAccess(userId)
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
+  }
 
   const supabase = await createClient()
 
@@ -877,7 +936,7 @@ export async function generateCampaignContent(params: {
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     actorUserId: userId,
     actorRole: "agent" as ActorRole,
     journeyType: campaign?.campaign_type === "listing" ? "seller" : "buyer",
@@ -967,71 +1026,127 @@ export async function createQrCodeAction(params: {
 }
 
 export async function getMarketingStudioDashboard() {
-  const { agentId, brokerageId } = await getAgentContext()
-  const supabase = await createClient()
+  try {
+    const { agentId, brokerageId } = await getAgentContext()
+    const supabase = await createClient()
 
-  // Parallel queries for dashboard data
-  const [
-    campaignsResult,
-    assetsResult,
-    upcomingEventsResult,
-    pendingTasksResult,
-  ] = await Promise.all([
-    // Campaign counts by status
-    supabase
-      .from("marketing_campaigns")
-      .select("status")
-      .eq("brokerage_id", brokerageId)
-      .or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`),
-    // Asset counts by approval status
-    supabase
-      .from("marketing_assets")
-      .select("approval_status")
-      .eq("brokerage_id", brokerageId)
-      .or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`),
-    // Upcoming calendar events (next 7 days)
-    supabase
-      .from("campaign_calendar")
-      .select("id, title, scheduled_at, event_type")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "scheduled")
-      .gte("scheduled_at", new Date().toISOString())
-      .lte("scheduled_at", new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
-      .order("scheduled_at", { ascending: true })
-      .limit(10),
-    // Pending tasks
-    supabase
-      .from("marketing_campaign_tasks")
-      .select("id, title, due_at, campaign:marketing_campaigns(campaign_name)")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "pending")
-      .order("due_at", { ascending: true, nullsFirst: false })
-      .limit(10),
-  ])
+    // Run two separate campaign queries (agent-owned + brokerage-visible) to
+    // avoid Supabase OR-filter ambiguity that can silently return 0 rows.
+    const now = new Date().toISOString()
+    const weekOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Aggregate campaign status counts
-  const campaignsByStatus: Record<string, number> = {}
-  for (const c of campaignsResult.data ?? []) {
-    const status = c.status ?? "unknown"
-    campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
-  }
+    const [
+      agentCampaignsResult,
+      brokerageCampaignsResult,
+      agentAssetsResult,
+      brokerageAssetsResult,
+      upcomingEventsResult,
+      pendingTasksResult,
+    ] = await Promise.all([
+      // Campaigns owned by this agent
+      supabase
+        .from("marketing_campaigns")
+        .select("status")
+        .eq("brokerage_id", brokerageId)
+        .eq("agent_user_id", agentId),
+      // Brokerage-scoped campaigns (visible to all agents in brokerage)
+      supabase
+        .from("marketing_campaigns")
+        .select("status")
+        .eq("brokerage_id", brokerageId)
+        .eq("visibility_scope", "brokerage")
+        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`), // exclude agent's own brokerage campaigns; include null-owner brokerage assets
+      // Assets owned by this agent
+      supabase
+        .from("marketing_assets")
+        .select("approval_status")
+        .eq("brokerage_id", brokerageId)
+        .eq("agent_user_id", agentId),
+      // Brokerage-scoped assets
+      supabase
+        .from("marketing_assets")
+        .select("approval_status")
+        .eq("brokerage_id", brokerageId)
+        .eq("visibility_scope", "brokerage")
+        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`),
+      // Upcoming calendar events (next 7 days)
+      supabase
+        .from("campaign_calendar")
+        .select("id, title, scheduled_at, event_type")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "scheduled")
+        .gte("scheduled_at", now)
+        .lte("scheduled_at", weekOut)
+        .order("scheduled_at", { ascending: true })
+        .limit(10),
+      // Pending tasks
+      supabase
+        .from("marketing_campaign_tasks")
+        .select("id, title, due_at, campaign:marketing_campaigns(campaign_name)")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
+        .order("due_at", { ascending: true, nullsFirst: false })
+        .limit(10),
+    ])
 
-  // Aggregate asset approval counts
-  const assetsByApproval: Record<string, number> = {}
-  for (const a of assetsResult.data ?? []) {
-    const status = a.approval_status ?? "unknown"
-    assetsByApproval[status] = (assetsByApproval[status] ?? 0) + 1
-  }
+    // Campaign or asset query failures yield incomplete KPIs — surface as error
+    const criticalError =
+      agentCampaignsResult.error ??
+      brokerageCampaignsResult.error ??
+      agentAssetsResult.error ??
+      brokerageAssetsResult.error
+    if (criticalError) {
+      console.error("[marketing-studio] critical query failure:", criticalError.message)
+      return { success: false, error: criticalError.message }
+    }
 
-  return {
-    success: true,
-    dashboard: {
-      campaignsByStatus,
-      totalCampaigns: campaignsResult.data?.length ?? 0,
-      assetsByApproval,
-      totalAssets: assetsResult.data?.length ?? 0,
-      upcomingEvents: upcomingEventsResult.data ?? [],
-      pendingTasks: pendingTasksResult.data ?? [],
-    },
+    if (upcomingEventsResult.error) {
+      console.error("[marketing-studio] upcomingEventsResult error:", upcomingEventsResult.error.message)
+    }
+    if (pendingTasksResult.error) {
+      console.error("[marketing-studio] pendingTasksResult error:", pendingTasksResult.error.message)
+    }
+
+    // Merge the two campaign sets
+    const allCampaigns = [
+      ...(agentCampaignsResult.data ?? []),
+      ...(brokerageCampaignsResult.data ?? []),
+    ]
+
+    // Aggregate campaign status counts
+    const campaignsByStatus: Record<string, number> = {}
+    for (const c of allCampaigns) {
+      const status = c.status ?? "unknown"
+      campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
+    }
+
+    // Merge the two asset sets
+    const allAssets = [
+      ...(agentAssetsResult.data ?? []),
+      ...(brokerageAssetsResult.data ?? []),
+    ]
+
+    // Aggregate asset approval counts
+    const assetsByApproval: Record<string, number> = {}
+    for (const a of allAssets) {
+      const status = a.approval_status ?? "unknown"
+      assetsByApproval[status] = (assetsByApproval[status] ?? 0) + 1
+    }
+
+    return {
+      success: true,
+      dashboard: {
+        campaignsByStatus,
+        totalCampaigns: allCampaigns.length,
+        assetsByApproval,
+        totalAssets: allAssets.length,
+        upcomingEvents: upcomingEventsResult.data ?? [],
+        pendingTasks: pendingTasksResult.data ?? [],
+      },
+    }
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to load dashboard"
+    console.error("[marketing-studio] getMarketingStudioDashboard error:", message)
+    return { success: false, error: message }
   }
 }

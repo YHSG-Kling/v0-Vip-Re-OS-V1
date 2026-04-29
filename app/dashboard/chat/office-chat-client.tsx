@@ -105,22 +105,17 @@ export function OfficeChatClient({
           : `You are speaking with ${selectedContactName}. Context: This is a relationship-focused conversation. Provide personalized, authentic responses.`
 
       const response = await generateSmartResponse({
-        userMessage: input,
-        systemPrompt,
-        brandVoice: brandVoice
-          ? {
-              tone: brandVoice.tone,
-              style: brandVoice.style,
-              keywords: brandVoice.keywords,
-              avoid_words: brandVoice.avoid_words,
-            }
-          : undefined,
+        incomingMessage: input,
+        contactId: selectedContactId ?? userId,
+        agentId,
+        brokerageId,
+        channel: "chat",
       })
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response,
+        content: response.success ? response.draft ?? "" : (response as any).error ?? "Unable to generate response",
         timestamp: new Date(),
       }
 

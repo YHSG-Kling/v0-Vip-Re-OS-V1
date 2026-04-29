@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { generateAIResponse } from "@/lib/ai"
-import { supabase } from "@/services/supabase"
+import { createClient } from "@/lib/supabase/server"
 import { analyzeContentQuality } from "@/lib/quality-checker"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
@@ -40,8 +40,8 @@ Generate a full newsletter with:
     const response = await generateAIResponse({
       prompt,
       metadata: {
-        userId: actorContext?.userId,
-        brokerageId: actorContext?.brokerageId,
+        userId: actorContext?.userId ?? "",
+        brokerageId: actorContext?.brokerageId ?? "",
         feature: "newsletter_generation",
       },
     })
@@ -50,19 +50,17 @@ Generate a full newsletter with:
     // Analyze quality
     const quality = analyzeContentQuality(text)
 
-    // Save generated content
+    // Save generated content — only columns that exist in the schema
+    const supabase = await createClient()
     const { data: savedContent, error: saveError } = await supabase
       .from("generated_content")
       .insert({
         content_type: "newsletter",
         content: text,
-        quality_score: quality.score / 100,
-        them_percentage: quality.themPercentage,
-        agent_percentage: quality.agentPercentage,
-        warnings: quality.warnings,
-        metadata: { audienceType, painPoint, topic },
+        agent_id: agentCtx?.userId ?? null,
+        title: `Newsletter — ${topic || audienceType || 'General'}`,
       })
-      .select()
+      .select("id")
       .single()
 
     if (saveError) throw saveError

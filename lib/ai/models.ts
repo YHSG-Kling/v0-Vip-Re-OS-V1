@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
@@ -13,6 +14,12 @@ import {
 } from "./cost-tracking"
 
 export type { AIModel } from "./cost-tracking"
+
+function toGatewayModel(modelStr: string) {
+  const key = process.env.AI_GATEWAY_API_KEY
+  if (!key) throw new Error("AI_GATEWAY_API_KEY is not configured")
+  return createGateway({ apiKey: key })(modelStr)
+}
 
 const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
   "claude-sonnet": { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
@@ -74,6 +81,8 @@ export const AI_TASK_ROUTING: Record<string, {
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
+  smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },
+  communication_summary_generation: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Summarize communication history for agent quick reference" },
   listing_presentation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Seller presentation content — high stakes, brand quality" },
   cma_narrative:             { model: "claude-sonnet", fallback: "gpt-4o",       reason: "CMA written analysis — professional, data-driven narrative" },
   offer_analysis:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Offer comparison narrative for buyer — decision-critical" },
@@ -150,7 +159,8 @@ export interface ComplianceContext {
 export interface AIRequest {
   model?: AIModel
   system?: string
-  prompt: string
+  prompt?: string
+  messages?: Array<{ role: string; content: unknown }>
   temperature?: number
   maxTokens?: number
   fallbackModel?: AIModel
@@ -236,13 +246,12 @@ async function checkCompliance(
     if (context.requiresFairHousingCheck) {
       try {
         const fairHousingResult = await evaluateContentCompliance({
-          context: content,
-          contentType: context.contentType || "internal",
-          userId: context.userId || "",
-          brokerageId: context.brokerageId || ""
+          raw_content: content,
+          content_type: context.contentType || "internal",
+          channel_intent: context.contentType || "internal",
         })
         
-        if (!fairHousingResult.passed && fairHousingResult.violations) {
+        if (fairHousingResult.compliance_status !== "pass" && fairHousingResult.violations) {
           for (const v of fairHousingResult.violations) {
             const violation: ComplianceViolation = {
               type: "fair_housing",
@@ -278,7 +287,7 @@ async function checkCompliance(
       try {
         const themFirstResult = await validateThemFirstContent(content, "email")
         
-        if (!themFirstResult.isValid || (themFirstResult as any).score < 0.6) {
+        if (!themFirstResult.passed || (themFirstResult as any).score < 0.6) {
           const score = (themFirstResult as any).score ?? 0
           const violation: ComplianceViolation = {
             type: "them_first",
@@ -338,9 +347,9 @@ async function executeModelCall(
     })
     modelInstance = perplexity(config.modelId)
   } else {
-    // All other providers: build "provider/modelId" and resolve via utility
+    // All other providers: build "provider/modelId", resolve alias, wrap with gateway
     const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
-    modelInstance = resolveModel(modelStr)
+    modelInstance = toGatewayModel(resolveModel(modelStr) as string)
   }
 
   const result = await generateText({
@@ -418,7 +427,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     executionResult = await executeModelCall(
       model,
       request.system,
-      request.prompt,
+      request.prompt ?? "",
       temperature,
       maxTokens
     )
@@ -431,7 +440,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
         executionResult = await executeModelCall(
           resolvedFallback,
           request.system,
-          request.prompt,
+          request.prompt ?? "",
           temperature,
           maxTokens
         )
@@ -463,9 +472,9 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Log usage
   await logAIUsage({
     userId: request.metadata.userId,
-    brokerageId: request.metadata.brokerageId,
-    teamId: request.metadata.teamId,
-    agentId: request.metadata.agentId,
+    brokerageId: request.metadata.brokerageId ?? "",
+    teamId: request.metadata.teamId ?? "",
+    agentId: request.metadata.agentId ?? "",
     model: executionResult.modelUsed,
     inputTokens: executionResult.inputTokens,
     outputTokens: executionResult.outputTokens,
@@ -532,10 +541,10 @@ export async function generateTextRouted(
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
-  // Resolve primary model to provider instance via resolveModel utility
+  // Resolve primary model to gateway-wrapped provider instance
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
   const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
-  const primaryInstance = resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0])
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
 
   try {
     const result = await generateText({
@@ -548,10 +557,10 @@ export async function generateTextRouted(
     })
     return { text: result.text }
   } catch {
-    // Automatic fallback to secondary model via resolveModel
+    // Automatic fallback to secondary model via gateway
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
     const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
-    const fallbackInstance = resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0])
+    const fallbackInstance = toGatewayModel(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
     const result = await generateText({
       model: fallbackInstance,
       prompt: request.prompt,

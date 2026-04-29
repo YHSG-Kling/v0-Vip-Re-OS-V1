@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useCallback, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { format, formatDistanceToNow } from "date-fns"
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -36,6 +37,7 @@ import {
   X, RefreshCw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { CreateCampaignModal } from "@/app/dashboard/isa/campaigns/components/CreateCampaignModal"
 import {
   createMarketingCampaign,
   updateMarketingCampaign,
@@ -858,6 +860,7 @@ export function CampaignsHubClient({
   total: initialTotal,
   summary,
 }: CampaignsHubClientProps) {
+  const router = useRouter()
   const [campaigns, setCampaigns] = useState<CampaignWithROI[]>(initialCampaigns)
   const [total] = useState(initialTotal)
   const [search, setSearch] = useState("")
@@ -865,8 +868,12 @@ export function CampaignsHubClient({
   const [typeFilter, setTypeFilter] = useState("all")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [isISACreateOpen, setIsISACreateOpen] = useState(false)
   const [selectedCampaign, setSelectedCampaign] = useState<CampaignWithROI | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  // Agents can create ISA campaigns for contacts assigned to them
+  const isAgent = userRole === "agent"
 
   const filtered = campaigns.filter((c) => {
     const matchSearch = !search || c.campaign_name.toLowerCase().includes(search.toLowerCase())
@@ -942,7 +949,8 @@ export function CampaignsHubClient({
       visibility_scope: "brokerage",
     }
     setCampaigns((prev) => [newCampaign, ...prev])
-  }, [userId, brokerageId])
+    router.refresh()
+  }, [userId, brokerageId, router])
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -1010,6 +1018,11 @@ export function CampaignsHubClient({
         <Button onClick={() => setIsCreateOpen(true)}>
           <Plus className="w-4 h-4 mr-2" /> New Campaign
         </Button>
+        {isAgent && (
+          <Button variant="outline" onClick={() => setIsISACreateOpen(true)}>
+            <Radio className="w-4 h-4 mr-2" /> ISA Campaign
+          </Button>
+        )}
       </div>
 
       {/* Campaign Grid */}
@@ -1060,6 +1073,18 @@ export function CampaignsHubClient({
         onClose={() => setIsCreateOpen(false)}
         onCreated={handleCreated}
       />
+
+      {/* ISA Campaign modal — agents only, creates an ai_isa_campaigns row */}
+      {isAgent && (
+        <CreateCampaignModal
+          open={isISACreateOpen}
+          onClose={() => setIsISACreateOpen(false)}
+          brokerageId={brokerageId}
+          videoEnabled={false}
+          directMailEnabled={false}
+          onCreated={() => setIsISACreateOpen(false)}
+        />
+      )}
 
       {selectedCampaign && (
         <CampaignDetailPanel

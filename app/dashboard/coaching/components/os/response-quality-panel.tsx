@@ -38,15 +38,17 @@ interface ResponseSuggestion {
 }
 
 interface ResponseQualityPanelProps {
-  metrics: ResponseQualityMetric[]
-  objectionOpportunities: ObjectionOpportunity[]
-  suggestions: ResponseSuggestion[]
+  metrics?: ResponseQualityMetric[]
+  objectionOpportunities?: ObjectionOpportunity[]
+  suggestions?: ResponseSuggestion[]
+  agentId?: string
+  brokerageId?: string
 }
 
 export function ResponseQualityPanel({
-  metrics,
-  objectionOpportunities,
-  suggestions,
+  metrics = [],
+  objectionOpportunities = [],
+  suggestions = [],
 }: ResponseQualityPanelProps) {
   return (
     <Card>

@@ -667,7 +667,7 @@ export default async function AIISAOperationsConsolePage() {
 
         {/* Conversation Intelligence Tab */}
         <TabsContent value="intelligence" className="mt-4">
-          <ConversationIntelligencePanel conversations={conversationIntelligence} />
+          <ConversationIntelligencePanel conversations={conversationIntelligence as any} />
         </TabsContent>
 
         {/* Positive Responders Tab */}
@@ -677,7 +677,7 @@ export default async function AIISAOperationsConsolePage() {
 
         {/* Ghost Recovery Tab */}
         <TabsContent value="ghosts" className="mt-4">
-          <GhostRecoveryPanel ghosts={ghosts} brokerageId={brokerageId} />
+          <GhostRecoveryPanel ghosts={ghosts as any} brokerageId={brokerageId} />
         </TabsContent>
 
         {/* Hard Stops Tab */}

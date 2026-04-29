@@ -775,7 +775,7 @@ export async function getPersonalizedLearningPath(
     .eq("contact_id", input.contactId)
     .not("completed_at", "is", null)
 
-  const completedKeys = new Set(progress?.map((p) => p.lesson_key) || [])
+  const completedKeys = new Set(progress?.map((p: { lesson_key: string }) => p.lesson_key) || [])
 
   // Get next uncompleted lesson from kernel education plan
   // (Portal uses lesson feed which already filters completed lessons)
@@ -923,7 +923,7 @@ export async function getResourceUsageAnalytics(
     .eq("brokerage_id", input.brokerageId)
 
   // Count total views (all progress records exist) and completions (have completed_at timestamp)
-  const completed = progress?.filter((p) => p.completed_at) || []
+  const completed = progress?.filter((p: { completed_at: string | null }) => p.completed_at) || []
 
   return {
     viewCount: progress?.length || 0,

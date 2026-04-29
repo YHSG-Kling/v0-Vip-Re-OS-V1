@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,12 +9,14 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp, Bot, ExternalLink, PlusCircle, Home } from "lucide-react"
 import {
   getContactCreditAccounts,
   getContactVideoEngagement,
   getContactTransactions,
   getContactCopilotSuggestions,
+  getContactActivity,
 } from "@/app/actions/contact-details"
 import { createClient } from "@/lib/supabase/client"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
@@ -23,12 +26,25 @@ import {
   OriginalLeadAccessCard,
   ConversionCoachingCard,
 } from "@/app/dashboard/agent/components/conversion"
+import { logActivity } from "@/app/actions/activities"
+import { updateContact } from "@/app/actions/contacts"
+import { toast } from "sonner"
+
+const BUYER_STAGES = [
+  { value: "lead", label: "Lead" },
+  { value: "hot_lead", label: "Hot Lead" },
+  { value: "active_client", label: "Active Client" },
+  { value: "nurture", label: "Nurture" },
+  { value: "post_close", label: "Post Close" },
+  { value: "past_client", label: "Past Client" },
+]
 
 interface ContactDetailContentProps {
   contact: any
 }
 
 export default function ContactDetailContent({ contact }: ContactDetailContentProps) {
+  const router = useRouter()
   const [creditAccounts, setCreditAccounts] = useState<any[]>([])
   const [videos, setVideos] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
@@ -36,22 +52,36 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [listingWizardOpen, setListingWizardOpen] = useState(false)
   const [agentUserId, setAgentUserId] = useState<string | null>(null)
   const [teamId, setTeamId] = useState<string | null>(null)
+  const [activity, setActivity] = useState<any[]>([])
+  const [buyerStage, setBuyerStage] = useState<string>(contact.buyer_stage ?? "lead")
+  const [stageUpdating, setStageUpdating] = useState(false)
 
   const isBuyer = contact.contact_type?.includes("buyer") || contact.contact_persona?.includes("buyer")
 
   useEffect(() => {
-    async function loadData() {
-      const [credit, video, trans, sugg] = await Promise.all([
-        getContactCreditAccounts(contact.id),
-        getContactVideoEngagement(contact.id),
-        getContactTransactions(contact.id),
-        getContactCopilotSuggestions(contact.id),
-      ])
+    setBuyerStage(contact.buyer_stage ?? "lead")
+  }, [contact.id])
 
-      setCreditAccounts(credit.accounts)
-      setVideos(video.videos)
-      setTransactions(trans.transactions)
-      setSuggestions(sugg.suggestions)
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [credit, video, trans, sugg, act] = await Promise.all([
+          getContactCreditAccounts(contact.id),
+          getContactVideoEngagement(contact.id),
+          getContactTransactions(contact.id),
+          getContactCopilotSuggestions(contact.id),
+          getContactActivity(contact.id),
+        ])
+
+        setCreditAccounts(credit?.accounts ?? [])
+        setVideos(video?.videos ?? [])
+        setTransactions(trans?.transactions ?? [])
+        setSuggestions(sugg?.suggestions ?? [])
+        setActivity(act?.activity ?? [])
+      } catch (err) {
+        console.error("[ContactDetail] Failed to load contact data:", err)
+        // Keep empty arrays — component renders gracefully with no data
+      }
     }
     loadData()
 
@@ -65,6 +95,27 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
       }
     })
   }, [contact.id])
+
+  const handleStageChange = async (newStage: string) => {
+    const previousStage = buyerStage
+    setBuyerStage(newStage) // optimistic update
+    setStageUpdating(true)
+    try {
+      const result = await updateContact(contact.id, { buyer_stage: newStage })
+      if (result.success) {
+        const label = BUYER_STAGES.find((s) => s.value === newStage)?.label ?? newStage
+        toast.success(`Stage updated to ${label}`)
+      } else {
+        setBuyerStage(previousStage) // revert on error
+        toast.error(result.error ?? "Failed to update stage")
+      }
+    } catch {
+      setBuyerStage(previousStage) // revert on exception
+      toast.error("Failed to update stage")
+    } finally {
+      setStageUpdating(false)
+    }
+  }
 
   const initials = `${contact.first_name?.[0] || ""}${contact.last_name?.[0] || ""}`.toUpperCase()
 
@@ -88,7 +139,26 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                     <div className="flex items-center gap-2 mt-1">
                       <Badge>{contact.contact_persona || contact.contact_type}</Badge>
                       <Badge variant="outline">Lead Score: {contact.lead_score || 50}</Badge>
-                      <Badge variant="secondary">{contact.stage}</Badge>
+                      {contact.buyer_stage !== undefined && contact.buyer_stage !== null ? (
+                        <Select
+                          value={buyerStage}
+                          onValueChange={handleStageChange}
+                          disabled={stageUpdating}
+                        >
+                          <SelectTrigger className="h-6 text-xs px-2 py-0 w-auto min-w-[110px] border-0 bg-secondary text-secondary-foreground rounded-full font-medium">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BUYER_STAGES.map((s) => (
+                              <SelectItem key={s.value} value={s.value} className="text-xs">
+                                {s.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Badge variant="secondary">{contact.stage}</Badge>
+                      )}
                     </div>
                     <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
                       {contact.email && (
@@ -106,28 +176,68 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                     </div>
                   </div>
                 </div>
-                {/* Action buttons — C1 fix: all are now functional */}
                 <div className="flex flex-wrap gap-2">
-                  {contact.phone && (
-                    <Button size="sm" variant="outline" asChild>
-                      <a href={`tel:${contact.phone}`} aria-label="Call">
-                        <Phone className="h-4 w-4" />
-                      </a>
-                    </Button>
-                  )}
-                  {contact.email && (
-                    <Button size="sm" variant="outline" asChild>
-                      <a href={`mailto:${contact.email}`} aria-label="Email">
-                        <Mail className="h-4 w-4" />
-                      </a>
-                    </Button>
-                  )}
-                  <Button size="sm" variant="outline" asChild>
-                    <Link href={`/portal/${contact.id}`} aria-label="Message">
-                      <MessageSquare className="h-4 w-4" />
-                    </Link>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "call_initiated",
+                          title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
+                      router.push(`/dashboard/voice?contactId=${contact.id}`)
+                    }}
+                  >
+                    <Phone className="h-4 w-4" />
                   </Button>
-                  {/* C2: View Portal + Create Offer */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "email_sent",
+                          title: `Email initiated to ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
+                      if (contact.email) {
+                        window.location.href = `mailto:${contact.email}`
+                      } else {
+                        router.push(`/dashboard/inbox?compose=1&contactId=${contact.id}`)
+                      }
+                    }}
+                  >
+                    <Mail className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "sms_sent",
+                          title: `Message initiated with ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
+                      router.push(`/dashboard/inbox?contactId=${contact.id}`)
+                    }}
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                  </Button>
                   <Button size="sm" variant="outline" asChild>
                     <Link href={`/portal/${contact.id}`}>
                       <ExternalLink className="h-4 w-4 mr-1" />
@@ -260,6 +370,7 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                         title={suggestion.title}
                         description={suggestion.description}
                         action="Take Action"
+                        onAction={() => router.push(`/crm?contactId=${contact.id}&tab=comms`)}
                       />
                     ))
                   )}
@@ -277,7 +388,11 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                     {creditAccounts.length === 0 ? (
                       <div className="p-4 border rounded-lg text-center">
                         <p className="text-sm text-muted-foreground mb-2">No active credit accounts</p>
-                        <Button size="sm" variant="outline">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => router.push(`/dashboard/credit-pipeline?contactId=${contact.id}`)}
+                        >
                           Add to Credit Pipeline
                         </Button>
                       </div>
@@ -339,13 +454,13 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                         <TransactionCard
                           key={transaction.id}
                           property={
-                            transaction.listings
-                              ? `${transaction.listings.address}, ${transaction.listings.city}`
+                            transaction.property_address
+                              ? `${transaction.property_address}${transaction.city ? `, ${transaction.city}` : ""}`
                               : "Property"
                           }
                           status={transaction.status}
-                          stage={transaction.current_stage || "Active"}
-                          progress={calculateProgress(transaction.current_stage)}
+                          stage={transaction.transaction_type || "Active"}
+                          progress={calculateProgress(transaction.status)}
                         />
                       ))
                     )}
@@ -451,22 +566,30 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
-                    {contact.interactions?.map((interaction: any) => (
-                      <div key={interaction.id} className="flex gap-3 pb-4 border-b last:border-0">
-                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
-                        <div className="flex-1 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-sm capitalize">
-                              {interaction.interaction_type.replace("_", " ")}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {new Date(interaction.interaction_date).toLocaleDateString()}
-                            </span>
+                    {activity.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-8">No activity recorded yet</p>
+                    ) : (
+                      activity.map((item: any) => (
+                        <div key={`${item.activity_type}-${item.id}`} className="flex gap-3 pb-4 border-b last:border-0">
+                          <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                          <div className="flex-1 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-sm capitalize">
+                                {item.activity_type.replace("_", " ")}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(item.activity_date).toLocaleDateString()}
+                              </span>
+                            </div>
+                            {(item.notes || item.body || item.title || item.subject) && (
+                              <p className="text-sm text-muted-foreground">
+                                {item.notes || item.body || item.title || item.subject}
+                              </p>
+                            )}
                           </div>
-                          {interaction.notes && <p className="text-sm text-muted-foreground">{interaction.notes}</p>}
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -546,8 +669,18 @@ function calculateProgress(stage: string): number {
   return stageMap[stage] || 35
 }
 
-function CopilotSuggestion({ priority, title, description, action }: {
-  priority: string; title: string; description: string; action: string
+function CopilotSuggestion({
+  priority,
+  title,
+  description,
+  action,
+  onAction,
+}: {
+  priority: string
+  title: string
+  description: string
+  action: string
+  onAction?: () => void
 }) {
   const colors = { high: "border-red-500", medium: "border-yellow-500", low: "border-blue-500" }
   return (
@@ -560,7 +693,7 @@ function CopilotSuggestion({ priority, title, description, action }: {
           </div>
           <p className="text-sm text-muted-foreground">{description}</p>
         </div>
-        <Button size="sm">{action}</Button>
+        <Button size="sm" onClick={onAction}>{action}</Button>
       </div>
     </div>
   )

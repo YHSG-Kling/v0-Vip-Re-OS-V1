@@ -32,7 +32,7 @@ export async function searchKnowledge(
   const { brokerageId } = await getAgentContext()
 
   const results = await ragSearch(query, {
-    brokerageId,
+    brokerageId: brokerageId ?? undefined,
     ...options,
   })
 
@@ -53,7 +53,7 @@ export async function searchHelpTopicsRAG(
   const { brokerageId } = await getAgentContext()
 
   const results = await semanticSearchHelpTopics(query, {
-    brokerageId,
+    brokerageId: brokerageId ?? undefined,
     ...options,
   })
 
@@ -74,7 +74,7 @@ export async function searchArticlesRAG(
   const { brokerageId } = await getAgentContext()
 
   const results = await semanticSearchArticles(query, {
-    brokerageId,
+    brokerageId: brokerageId ?? undefined,
     ...options,
   })
 
@@ -351,7 +351,7 @@ export async function rateArticle(id: string, helpful: boolean) {
     if (article) {
       await supabase
         .from('knowledge_articles')
-        .update({ [column]: (article[column] || 0) + 1 })
+        .update({ [column]: ((article as any)[column] || 0) + 1 })
         .eq('id', id)
     }
   }
