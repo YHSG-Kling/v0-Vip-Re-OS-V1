@@ -3,35 +3,25 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { loadBillingWorkspace } from "@/lib/kernel/billing"
-import { createServiceClient } from "@/lib/supabase/service"
-import { headers } from "next/headers"
+import { createClient } from "@/lib/supabase/server"
+import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(req: NextRequest) {
   try {
-    const headersList = await headers()
-    const userId = headersList.get("x-user-id")
-    const userType = headersList.get("x-user-type")
+    const supabase = await createClient()
+    const auth = await requireSuperadminAuth(supabase)
+    if (!auth.ok) return auth.response
+
     const brokerageId = req.nextUrl.searchParams.get("brokerageId")
-
-    if (!userId || !userType || !brokerageId) {
-      return NextResponse.json(
-        { error: "Missing required headers or query params" },
-        { status: 400 }
-      )
-    }
-
-    if (userType !== "superadmin") {
-      return NextResponse.json(
-        { error: "Only superadmins can access billing dashboard" },
-        { status: 403 }
-      )
+    if (!brokerageId) {
+      return NextResponse.json({ error: "Missing brokerageId query param" }, { status: 400 })
     }
 
     const result = await loadBillingWorkspace({
       brokerageId,
       actorContext: {
-        userId,
-        userType: userType as "superadmin" | "broker_admin" | "agent",
+        userId: auth.user.id,
+        userType: "superadmin",
       },
     })
 

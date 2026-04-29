@@ -3,22 +3,17 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { resolveSubscriptionTier, updateSubscriptionState } from "@/lib/kernel/billing"
-import { headers } from "next/headers"
+import { createClient } from "@/lib/supabase/server"
+import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
   try {
-    const headersList = await headers()
-    const userType = headersList.get("x-user-type")
-
-    if (userType !== "superadmin") {
-      return NextResponse.json(
-        { error: "Only superadmins can access subscription details" },
-        { status: 403 }
-      )
-    }
+    const supabase = await createClient()
+    const auth = await requireSuperadminAuth(supabase)
+    if (!auth.ok) return auth.response
 
     const { brokerageId } = await params
 
@@ -43,16 +38,9 @@ export async function POST(
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
   try {
-    const headersList = await headers()
-    const userId = headersList.get("x-user-id")
-    const userType = headersList.get("x-user-type")
-
-    if (userType !== "superadmin") {
-      return NextResponse.json(
-        { error: "Only superadmins can update subscriptions" },
-        { status: 403 }
-      )
-    }
+    const supabase = await createClient()
+    const auth = await requireSuperadminAuth(supabase)
+    if (!auth.ok) return auth.response
 
     const { brokerageId } = await params
     const body = await req.json()
@@ -63,7 +51,7 @@ export async function POST(
       newStatus: body.newStatus,
       cancellationReason: body.cancellationReason,
       actorContext: {
-        userId: userId || "",
+        userId: auth.user.id,
         userType: "superadmin",
       },
     })

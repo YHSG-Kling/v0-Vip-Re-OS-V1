@@ -198,6 +198,14 @@ RETURNS UUID AS $$
   LIMIT 1;
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
+-- Get agent.id for the current user (agents.id ≠ users.id)
+-- contacts.agent_id / transactions.agent_id store agents.id, not users.id.
+-- Always use this instead of auth.uid() when comparing against agent_id columns.
+CREATE OR REPLACE FUNCTION auth.agent_id()
+RETURNS UUID AS $$
+  SELECT id FROM agents WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE SQL SECURITY DEFINER STABLE;
+
 -- =====================================================
 -- GRANT EXECUTE TO AUTHENTICATED USERS
 -- =====================================================

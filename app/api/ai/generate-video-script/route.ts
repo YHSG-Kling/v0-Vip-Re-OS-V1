@@ -22,10 +22,16 @@ import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 
 const SCRIPT_TYPES = [
   "property_tour",
-  "buyer_education", 
+  "buyer_education",
+  "seller_education",
   "market_update",
   "agent_intro",
   "listing_presentation",
+  "quick_tip",
+  "market_fact",
+  "personal_story",
+  "listing_spotlight",
+  "education_bite",
 ] as const
 
 type ScriptType = (typeof SCRIPT_TYPES)[number]
@@ -312,6 +318,71 @@ Structure the script with:
 5. NEXT STEPS (10 seconds) - What happens if they choose you
 
 Return ONLY the script text, ready to be read by the agent.`
+        break
+
+      case "seller_education":
+        userPrompt = `Create an educational video script for home sellers.
+
+${custom_context ? `TOPIC/FOCUS:\n${custom_context}` : "Focus on the home selling process and how to maximize sale price"}
+
+Structure the script with:
+1. HOOK (5 seconds) - Surprising fact about selling or common seller mistake
+2. THE CHALLENGE (15 seconds) - What sellers get wrong
+3. EDUCATION (40 seconds) - Clear, actionable guidance for sellers
+4. EXPERT TIP (20 seconds) - Insider knowledge to maximize their outcome
+5. NEXT STEP (10 seconds) - How to take action
+
+Return ONLY the script text, ready to be read by a presenter.`
+        break
+
+      case "quick_tip":
+      case "market_fact":
+      case "education_bite":
+        userPrompt = `Create a short-form UGC-style video script (30-60 seconds max).
+
+STYLE: Casual, authentic, conversational — like talking to a friend. No corporate jargon.
+FORMAT: Portrait (TikTok/Reels/Shorts)
+${custom_context ? `TOPIC:\n${custom_context}` : "Share one genuinely useful real estate insight"}
+
+Structure:
+1. HOOK (3 seconds) - Open with the most interesting/surprising statement
+2. CONTENT (20-45 seconds) - Deliver the tip or insight conversationally
+3. CTA (5 seconds) - One simple, low-friction next step
+
+Keep it under 150 words. Sound human, not scripted.
+Return ONLY the script text.`
+        break
+
+      case "personal_story":
+        userPrompt = `Create a short personal story video script for social media (30-60 seconds).
+
+STYLE: Vulnerable, real, first-person — a genuine moment from your real estate career.
+${custom_context ? `STORY ANGLE:\n${custom_context}` : "A client success story or lesson learned"}
+
+Structure:
+1. HOOK (3 seconds) - Start mid-story with the most emotionally resonant moment
+2. THE STORY (40 seconds) - Brief, human, specific detail
+3. THE LESSON (10 seconds) - What it taught you
+4. CONNECT (5 seconds) - Invite viewers to share their own experience
+
+Return ONLY the script text.`
+        break
+
+      case "listing_spotlight":
+        userPrompt = `Create a short listing spotlight video script for social media (30-60 seconds).
+
+${listingInfo.address ? `PROPERTY: ${listingInfo.address}` : ""}
+${listingInfo.price ? `PRICE: $${listingInfo.price}` : ""}
+${custom_context ? `PROPERTY HIGHLIGHTS:\n${custom_context}` : "Focus on 1-2 standout features"}
+
+STYLE: Excited but authentic — like you genuinely love this home.
+
+Structure:
+1. HOOK (3 seconds) - Lead with the most unique/surprising feature
+2. THE STORY (40 seconds) - Paint a picture of life in this home
+3. CTA (5 seconds) - Easy next step (DM, link in bio, etc.)
+
+Return ONLY the script text.`
         break
     }
 

@@ -232,6 +232,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline' },
         ],
       },
+      { id: 'isa-control', label: 'AI ISA Control', href: '/dashboard/isa', icon: 'Bot' },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'vendors', label: 'Partner Portal', href: '/dashboard/vendors', icon: 'Users' },
       { id: 'system-intel', label: 'System Intelligence', href: '/dashboard/system', icon: 'Radar' },

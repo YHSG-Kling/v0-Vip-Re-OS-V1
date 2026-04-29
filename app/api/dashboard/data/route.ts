@@ -1,28 +1,21 @@
-
-
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
-
-// Consolidated API endpoint for fetching dashboard data
-// Reduces duplicate API routes and centralizes data fetching
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
+    const auth = await requireAuth(supabase)
+    if (!auth.ok) return auth.response
+
+    const { user, agentId, brokerageId, userType } = auth
+
+    if (!agentId) {
+      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
 
     const { searchParams } = new URL(request.url)
     const dataType = searchParams.get("type")
-    // Resolve agent ID - never use user.id for agent_id
-    const agentId = searchParams.get("agent_id") || await resolveAgentId(supabase, user.id)
-    if (!agentId) {
-      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
-    }
 
     let data: any = null
 
@@ -142,7 +135,7 @@ export async function GET(request: NextRequest) {
         const { data: notifications } = await supabase
           .from("notifications")
           .select("*")
-          .eq("user_id", agentId)
+          .eq("user_id", user.id)
           .eq("read", false)
           .order("created_at", { ascending: false })
           .limit(50)
@@ -159,18 +152,11 @@ export async function GET(request: NextRequest) {
         break
 
       case "agents":
-        // For admin/broker views
-        const { data: profile } = await supabase
-          .from("user_profiles")
-          .select("brokerage_id, role")
-          .eq("id", user.id)
-          .single()
-
-        if (profile?.role === "broker" || profile?.role === "admin") {
+        if (userType === "broker" || userType === "admin") {
           const { data: agents } = await supabase
             .from("agents")
-            .select("*, user_profiles(*)")
-            .eq("brokerage_id", profile.brokerage_id)
+            .select("*, users(*)")
+            .eq("brokerage_id", brokerageId)
             .order("created_at", { ascending: false })
           data = agents || []
         } else {
@@ -191,6 +177,7 @@ export async function GET(request: NextRequest) {
         const { data: vendors } = await supabase
           .from("vendors")
           .select("*")
+          .eq("brokerage_id", brokerageId)
           .eq("is_active", true)
           .order("rating", { ascending: false })
         data = vendors || []
@@ -203,13 +190,13 @@ export async function GET(request: NextRequest) {
           .select("*, contacts(*)")
           .order("created_at", { ascending: false })
           .limit(100)
-        
+
         if (contactId) {
           commQuery = commQuery.eq("contact_id", contactId)
         } else {
           commQuery = commQuery.eq("agent_id", agentId)
         }
-        
+
         const { data: communications } = await commQuery
         data = communications || []
         break

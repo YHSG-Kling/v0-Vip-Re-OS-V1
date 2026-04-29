@@ -4,6 +4,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 const HEYGEN_API_BASE = "https://api.heygen.com/v2"
 
@@ -84,6 +85,13 @@ async function writeLifecycleEvent(
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+
+    // ─── AUTH ────────────────────────────────────────────────────────────────
+    const auth = await requireAuth(supabase)
+    if (!auth.ok) return auth.response
+    const brokerage_id = auth.brokerageId!
+    const user_id = auth.user.id
+
     const body = await request.json()
 
     const {
@@ -92,10 +100,8 @@ export async function POST(request: NextRequest) {
       avatar_id,
       voice_id,
       video_project_id,
-      brokerage_id,
       // Optional configuration
       background,
-      user_id,
       script_id,
       branding_preset_id,
       quality_preset = "1080p",
@@ -104,9 +110,9 @@ export async function POST(request: NextRequest) {
     } = body
 
     // ─── VALIDATION ───────────────────────────────────────────────────────────
-    if (!script || !avatar_id || !voice_id || !video_project_id || !brokerage_id) {
+    if (!script || !avatar_id || !voice_id || !video_project_id) {
       return NextResponse.json(
-        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id, brokerage_id" },
+        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id" },
         { status: 400 }
       )
     }

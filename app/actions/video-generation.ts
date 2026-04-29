@@ -1123,6 +1123,53 @@ export async function generateVideoFromScript(params: {
   }
 }
 
+// ============================================
+// VIDEO TEMPLATES — SAVE / CRUD
+// ============================================
+
+export async function saveVideoTemplate(data: {
+  brokerageId: string
+  agentId?: string
+  templateName: string
+  category: string
+  scriptType?: string
+  defaultScript?: string
+  durationSeconds?: number
+  tags?: string[]
+  createdBy: string
+}) {
+  const supabase = await createClient()
+
+  const { data: result, error } = await supabase
+    .from("video_templates")
+    .insert({
+      brokerage_id: data.brokerageId,
+      agent_id: data.agentId ?? null,
+      template_name: data.templateName,
+      category: data.category,
+      script_type: data.scriptType ?? null,
+      default_script: data.defaultScript ?? null,
+      duration_seconds: data.durationSeconds ?? null,
+      tags: data.tags ?? [],
+      is_active: true,
+      created_by: data.createdBy,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error saving template:", error)
+    throw new Error(error.message)
+  }
+
+  revalidatePath("/dashboard/videos/templates")
+  return result
+}
+
+export async function getEducationTemplates() {
+  return getVideoTemplates({ category: "education" })
+}
+
 export async function createAvatarVideo(params: {
   scriptId: string
   script: string

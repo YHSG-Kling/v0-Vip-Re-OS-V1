@@ -1,45 +1,37 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function POST(request: Request) {
   try {
     const supabase = await createClient()
+    const auth = await requireAuth(supabase)
+    if (!auth.ok) return auth.response
 
-    // Check authentication
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    // Parse request body
     const body = await request.json()
-    const { id, agent_id, notes } = body
+    const { id, notes } = body
 
-    if (!id || !agent_id) {
-      return NextResponse.json({ error: "Missing required fields: id, agent_id" }, { status: 400 })
+    if (!id) {
+      return NextResponse.json({ error: "Missing required field: id" }, { status: 400 })
     }
 
-    // Verify the approval item belongs to the agent
+    // Verify the approval item belongs to this user's brokerage (never trust body-supplied agent_id)
     const { data: existingItem, error: fetchError } = await supabase
       .from("approval_items")
       .select("*")
       .eq("id", id)
-      .eq("agent_id", agent_id)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     if (fetchError || !existingItem) {
       return NextResponse.json({ error: "Approval item not found" }, { status: 404 })
     }
 
-    // Update approval item
     const { error: updateError } = await supabase
       .from("approval_items")
       .update({
         status: "approved",
-        approved_by: user.id,
+        approved_by: auth.user.id,
         approved_at: new Date().toISOString(),
         notes: notes || null,
         updated_at: new Date().toISOString(),
