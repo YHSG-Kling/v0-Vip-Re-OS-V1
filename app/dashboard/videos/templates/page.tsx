@@ -23,18 +23,22 @@ export default async function VideoTemplatesPage() {
 
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, team_id")
     .eq("user_id", user.id)
     .maybeSingle()
 
   const templates = await getVideoTemplates()
 
-  // Filter: show system + brokerage templates + own agent templates
+  // Filter: system, brokerage-wide, team-scoped (if agent has a team), own agent templates
   const visible = templates.filter(t =>
     t.is_system ||
-    t.brokerage_id === userData?.brokerage_id ||
+    (t.brokerage_id === userData?.brokerage_id && !t.agent_id && !t.team_id) ||
+    (t.team_id && t.team_id === agentRow?.team_id) ||
     t.agent_id === agentRow?.id
   )
+
+  const canCreateBrokerageTemplate = ["broker", "admin", "superadmin"].includes(userData?.user_type ?? "")
+  const canCreateTeamTemplate = ["team_lead", "broker", "admin", "superadmin"].includes(userData?.user_type ?? "")
 
   return (
     <div className="container mx-auto py-8 space-y-6">
@@ -55,7 +59,8 @@ export default async function VideoTemplatesPage() {
               <div className="flex items-start justify-between gap-2">
                 <CardTitle className="text-base leading-snug">{template.template_name}</CardTitle>
                 {template.is_system && <Badge variant="secondary">System</Badge>}
-                {!template.is_system && !template.agent_id && <Badge variant="outline">Brokerage</Badge>}
+                {!template.is_system && !template.agent_id && !template.team_id && <Badge variant="outline">Brokerage</Badge>}
+                {template.team_id && <Badge variant="outline">Team</Badge>}
                 {template.agent_id === agentRow?.id && <Badge>Mine</Badge>}
               </div>
             </CardHeader>

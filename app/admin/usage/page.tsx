@@ -547,7 +547,6 @@ export default async function UsageMeteringDashboard() {
                   Costs are calculated based on token usage and model pricing. Model breakdowns show which AI models are being used most frequently across your organization.
                 </p>
               </div>
-            </TabsContent>
 
                 {/* Feature Usage Tracking */}
                 <div>
@@ -579,7 +578,6 @@ export default async function UsageMeteringDashboard() {
                     </TableBody>
                   </Table>
                 </div>
-              </div>
             </TabsContent>
 
             <TabsContent value="by-brokerage">

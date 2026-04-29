@@ -43,6 +43,7 @@ const SCRIPT_TYPES = [
 interface TemplateFormProps {
   brokerageId: string
   agentId: string
+  teamId?: string | null
   userType: string
   initial?: {
     id?: string
@@ -53,15 +54,18 @@ interface TemplateFormProps {
     duration_seconds?: number
     tags?: string[]
     agent_id?: string | null
+    team_id?: string | null
   }
 }
 
-export function TemplateFormClient({ brokerageId, agentId, userType, initial }: TemplateFormProps) {
+export function TemplateFormClient({ brokerageId, agentId, teamId, userType, initial }: TemplateFormProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
-  const canCreateBrokerageWide = ["team_lead", "broker", "admin", "superadmin"].includes(userType)
+  const canCreateBrokerageTemplate = ["broker", "admin", "superadmin"].includes(userType)
+  const canCreateTeamTemplate = ["team_lead", "broker", "admin", "superadmin"].includes(userType)
+  const canCreateBrokerageWide = canCreateBrokerageTemplate
 
   const [form, setForm] = useState({
     template_name: initial?.template_name ?? "",
@@ -70,7 +74,7 @@ export function TemplateFormClient({ brokerageId, agentId, userType, initial }: 
     default_script: initial?.default_script ?? "",
     duration_seconds: initial?.duration_seconds ?? 60,
     tags: (initial?.tags ?? []).join(", "),
-    brokerage_wide: canCreateBrokerageWide && !initial?.agent_id,
+    scope: initial?.team_id ? "team" : (canCreateBrokerageTemplate && !initial?.agent_id ? "brokerage" : "agent"),
   })
 
   function set(key: string, value: string | number | boolean) {
@@ -90,7 +94,8 @@ export function TemplateFormClient({ brokerageId, agentId, userType, initial }: 
       try {
         await saveVideoTemplate({
           brokerageId,
-          agentId: form.brokerage_wide ? undefined : agentId,
+          agentId: form.scope === "agent" ? agentId : undefined,
+          teamId: form.scope === "team" ? (teamId ?? undefined) : undefined,
           templateName: form.template_name.trim(),
           category: form.category,
           scriptType: form.script_type || undefined,
@@ -189,19 +194,28 @@ export function TemplateFormClient({ brokerageId, agentId, userType, initial }: 
         </div>
       </div>
 
-      {canCreateBrokerageWide && (
-        <div className="flex items-center gap-3 rounded-lg border p-4">
-          <Switch
-            id="brokerage_wide"
-            checked={form.brokerage_wide}
-            onCheckedChange={v => set("brokerage_wide", v)}
-          />
-          <div>
-            <Label htmlFor="brokerage_wide" className="cursor-pointer">Brokerage-Wide Template</Label>
-            <p className="text-xs text-muted-foreground">
-              Make this template available to all agents in your brokerage
-            </p>
-          </div>
+      {(canCreateTeamTemplate || canCreateBrokerageTemplate) && (
+        <div className="space-y-2">
+          <Label>Template Scope</Label>
+          <Select value={form.scope} onValueChange={v => set("scope", v)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="agent">My Templates (just me)</SelectItem>
+              {canCreateTeamTemplate && teamId && (
+                <SelectItem value="team">Team Templates (visible to my team)</SelectItem>
+              )}
+              {canCreateBrokerageTemplate && (
+                <SelectItem value="brokerage">Brokerage Templates (all agents)</SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {form.scope === "brokerage" && "All agents in your brokerage can use this template."}
+            {form.scope === "team" && "All agents in your team can use this template."}
+            {form.scope === "agent" && "Only you can see and use this template."}
+          </p>
         </div>
       )}
 

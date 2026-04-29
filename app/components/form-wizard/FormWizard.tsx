@@ -1,0 +1,647 @@
+"use client"
+
+import { useState, useCallback, useRef } from "react"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink } from "lucide-react"
+import type { Contact } from "@/lib/domain/types"
+import { createClient } from "@/lib/supabase/client"
+import { createOffer } from "@/app/actions/buyer-offers"
+import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
+import { OfferWorkspace } from "@/app/components/features/offers/offer-workspace"
+
+type TransactionProvider = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
+
+interface FormRef {
+  source: "my_forms" | "transaction_provider"
+  formRef: string
+  name: string
+  scope?: "brokerage" | "team" | "agent"
+}
+
+interface Signer {
+  name: string
+  email: string
+  phone?: string
+  role: "buyer" | "seller" | "agent" | "co_buyer" | "listing_agent"
+}
+
+interface WizardState {
+  // Step 1 — Context
+  propertyAddress: string
+  propertyCity: string
+  propertyState: string
+  propertyZip: string
+  listingId?: string
+  listPrice?: number
+  sellerName?: string
+  propertyType?: string
+  // Step 2 — Form Selection
+  selectedForms: FormRef[]
+  // Step 3 — Fill Forms (provider forms filled via iframe; "my forms" tracked manually)
+  filledFormRefs: string[]
+  // Step 4 — Signers
+  signers: Signer[]
+  // Step 5/6
+  offerId?: string
+  esignProvider?: string | null
+  transactionProvider?: TransactionProvider | null
+  transactionProviderEmbedUrl?: string | null
+}
+
+export interface FormWizardProps {
+  mode: "offer" | "listing"
+  contact?: Contact
+  brokerageId: string
+  agentUserId: string
+  teamId?: string | null
+  agentName?: string
+  agentEmail?: string
+  open: boolean
+  onClose: () => void
+}
+
+const STEP_LABELS_OFFER = ["Context", "Forms", "Fill", "Signers", "E-Sign", "Monitor"]
+const STEP_LABELS_LISTING = ["Context", "Forms", "Fill", "Signers", "E-Sign", "Monitor"]
+
+function stepLabels(mode: "offer" | "listing") {
+  return mode === "offer" ? STEP_LABELS_OFFER : STEP_LABELS_LISTING
+}
+
+export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, agentName, agentEmail, open, onClose }: FormWizardProps) {
+  const [step, setStep] = useState(1)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [myForms, setMyForms] = useState<{ name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]>([])
+  const [formsLoaded, setFormsLoaded] = useState(false)
+  const [providerInfo, setProviderInfo] = useState<{ provider: TransactionProvider; embedUrl: string | null } | null | "loading">("loading")
+  const [esignProvider, setEsignProvider] = useState<string | null>(null)
+
+  const [state, setState] = useState<WizardState>(() => ({
+    propertyAddress: "",
+    propertyCity: "",
+    propertyState: "",
+    propertyZip: "",
+    selectedForms: [],
+    filledFormRefs: [],
+    signers: buildInitialSigners(mode, contact, agentName, agentEmail),
+    transactionProvider: null,
+    transactionProviderEmbedUrl: null,
+  }))
+
+  const update = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
+    setState(prev => ({ ...prev, [key]: value }))
+  }, [])
+
+  // Load forms + provider info when step 2 is reached
+  const loadStep2 = useCallback(async () => {
+    if (formsLoaded) return
+    setFormsLoaded(true)
+
+    const supabase = createClient()
+
+    // Load "My Forms" from Storage at brokerage, team, agent scope
+    const paths: { prefix: string; scope: "brokerage" | "team" | "agent" }[] = [
+      { prefix: `brokerage/${brokerageId}/`, scope: "brokerage" },
+      ...(teamId ? [{ prefix: `teams/${teamId}/`, scope: "team" as const }] : []),
+      { prefix: `agents/${agentUserId}/`, scope: "agent" },
+    ]
+
+    const collected: typeof myForms = []
+    await Promise.all(
+      paths.map(async ({ prefix, scope }) => {
+        const { data } = await supabase.storage.from("brokerage-forms").list(prefix, { limit: 50 })
+        if (data) {
+          for (const f of data) {
+            if (f.name.endsWith(".pdf") || f.name.endsWith(".docx")) {
+              const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(`${prefix}${f.name}`)
+              collected.push({ name: f.name, url: urlData.publicUrl, scope, path: `${prefix}${f.name}` })
+            }
+          }
+        }
+      })
+    )
+    setMyForms(collected)
+
+    // Load provider info via API
+    try {
+      const res = await fetch(`/api/form-wizard/resolve-provider?agentUserId=${agentUserId}&teamId=${teamId ?? ""}&brokerageId=${brokerageId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setProviderInfo(data.provider ? { provider: data.provider, embedUrl: data.embedUrl } : null)
+        setEsignProvider(data.esignProvider ?? null)
+        setState(prev => ({ ...prev, transactionProvider: data.provider ?? null, transactionProviderEmbedUrl: data.embedUrl ?? null }))
+      } else {
+        setProviderInfo(null)
+      }
+    } catch {
+      setProviderInfo(null)
+    }
+  }, [brokerageId, teamId, agentUserId, formsLoaded])
+
+  const goToStep = useCallback(async (next: number) => {
+    setError(null)
+    if (next === 2 && step < 2) await loadStep2()
+    if (next === 4 && step === 3) {
+      setState(prev => ({ ...prev, filledFormRefs: prev.selectedForms.map(f => f.formRef) }))
+    }
+    setStep(next)
+  }, [step, loadStep2])
+
+  const handleSubmitOffer = useCallback(async () => {
+    if (!contact) { setError("No contact selected"); return }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await createOffer(contact.id, brokerageId, agentUserId, {
+        property_address: state.propertyAddress,
+        property_city: state.propertyCity,
+        property_state: state.propertyState,
+        property_zip: state.propertyZip,
+        listing_id: state.listingId ?? null,
+        offer_price: 0,
+        earnest_money: 0,
+        earnest_money_amount: 0,
+        financing_type: "conventional",
+        financing_contingency: true,
+        financing_contingency_days: 21,
+        inspection_contingency: true,
+        inspection_period_days: 10,
+        appraisal_contingency: true,
+        appraisal_contingency_days: 21,
+        closing_date: "",
+        possession_terms: "at_closing",
+        escalation_clause: false,
+        form_source: state.selectedForms.map(f => f.source).join(","),
+        form_provider_ref: state.selectedForms.map(f => f.formRef).join(","),
+        esign_provider: esignProvider ?? undefined,
+      })
+      if (!result.success || !result.offerId) { setError(result.error ?? "Failed to create offer"); return }
+      setState(prev => ({ ...prev, offerId: result.offerId, esignProvider: esignProvider }))
+
+      await submitForSignature({
+        offerId: result.offerId,
+        userId: agentUserId,
+        signers: state.signers
+          .filter(s => s.email)
+          .map(s => ({ name: s.name, email: s.email, role: s.role === "seller" || s.role === "listing_agent" ? "agent" : s.role === "co_buyer" ? "co_buyer" : s.role === "buyer" ? "buyer" : "agent" })),
+      })
+      setStep(6)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error")
+    } finally {
+      setBusy(false)
+    }
+  }, [contact, brokerageId, agentUserId, state, esignProvider])
+
+  const labels = stepLabels(mode)
+
+  return (
+    <Sheet open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <SheetContent side="right" className="w-full sm:max-w-3xl flex flex-col gap-0 p-0 overflow-hidden">
+        <SheetHeader className="px-6 py-4 border-b">
+          <SheetTitle>{mode === "offer" ? "Create Offer" : "New Listing"}</SheetTitle>
+          <StepBar step={step} labels={labels} />
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
+          {step === 2 && <Step2Forms mode={mode} state={state} update={update} myForms={myForms} providerInfo={providerInfo} />}
+          {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} />}
+          {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
+          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
+          {step === 6 && state.offerId && <OfferWorkspace offerId={state.offerId} />}
+        </div>
+
+        <div className="border-t px-6 py-4 flex items-center justify-between">
+          <Button variant="outline" onClick={() => step > 1 ? setStep(s => s - 1) : onClose()} disabled={busy}>
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            {step === 1 ? "Cancel" : "Back"}
+          </Button>
+          {step < 5 && (
+            <Button onClick={() => goToStep(step + 1)} disabled={busy || !canAdvance(step, state, mode)}>
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          )}
+          {step === 5 && (
+            <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} disabled={busy}>
+              {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Send for E-Sign
+            </Button>
+          )}
+          {step === 6 && (
+            <Button onClick={onClose}>Done</Button>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+// ─── Step helpers ────────────────────────────────────────────────────────────
+
+function canAdvance(step: number, state: WizardState, mode: "offer" | "listing"): boolean {
+  if (step === 1) return state.propertyAddress.trim().length > 0
+  if (step === 2) return state.selectedForms.length > 0
+  if (step === 3) return true
+  if (step === 4) return state.signers.some(s => s.email)
+  return true
+}
+
+function buildInitialSigners(
+  mode: "offer" | "listing",
+  contact?: Contact,
+  agentName?: string,
+  agentEmail?: string
+): Signer[] {
+  const signers: Signer[] = []
+  if (mode === "offer") {
+    if (contact) signers.push({ name: `${contact.first_name} ${contact.last_name}`.trim(), email: contact.email, phone: contact.phone, role: "buyer" })
+    if (agentName) signers.push({ name: agentName, email: agentEmail ?? "", role: "agent" })
+    signers.push({ name: "", email: "", role: "listing_agent" })
+  } else {
+    if (contact) signers.push({ name: `${contact.first_name} ${contact.last_name}`.trim(), email: contact.email, phone: contact.phone, role: "seller" })
+    if (agentName) signers.push({ name: agentName, email: agentEmail ?? "", role: "agent" })
+  }
+  return signers
+}
+
+function StepBar({ step, labels }: { step: number; labels: string[] }) {
+  return (
+    <div className="flex items-center gap-1 mt-2">
+      {labels.map((label, i) => {
+        const n = i + 1
+        const done = n < step
+        const active = n === step
+        return (
+          <div key={label} className="flex items-center gap-1">
+            <div className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${done ? "bg-green-500 text-white" : active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+              {done ? <Check className="h-3 w-3" /> : n}
+            </div>
+            <span className={`text-xs ${active ? "font-medium" : "text-muted-foreground"} hidden sm:inline`}>{label}</span>
+            {i < labels.length - 1 && <div className="h-px w-4 bg-muted-foreground/30" />}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── Step 1 — Context ────────────────────────────────────────────────────────
+
+function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; state: WizardState; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void }) {
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">{mode === "offer" ? "Property Details" : "Listing Details"}</h3>
+
+      {mode === "listing" && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2 space-y-1">
+            <Label>List Price</Label>
+            <Input type="number" placeholder="500000" value={state.listPrice ?? ""} onChange={e => update("listPrice", Number(e.target.value))} />
+          </div>
+          <div className="col-span-2 space-y-1">
+            <Label>Property Type</Label>
+            <Input placeholder="Single Family, Condo…" value={state.propertyType ?? ""} onChange={e => update("propertyType", e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        <Label>Street Address *</Label>
+        <Input placeholder="123 Main St" value={state.propertyAddress} onChange={e => update("propertyAddress", e.target.value)} />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-1 space-y-1">
+          <Label>City</Label>
+          <Input placeholder="Austin" value={state.propertyCity} onChange={e => update("propertyCity", e.target.value)} />
+        </div>
+        <div className="space-y-1">
+          <Label>State</Label>
+          <Input placeholder="TX" maxLength={2} value={state.propertyState} onChange={e => update("propertyState", e.target.value)} />
+        </div>
+        <div className="space-y-1">
+          <Label>ZIP</Label>
+          <Input placeholder="78701" value={state.propertyZip} onChange={e => update("propertyZip", e.target.value)} />
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label>MLS # (optional)</Label>
+        <Input placeholder="MLS-12345" value={state.listingId ?? ""} onChange={e => update("listingId", e.target.value)} />
+      </div>
+    </div>
+  )
+}
+
+// ─── Step 2 — Form Selection ─────────────────────────────────────────────────
+
+function Step2Forms({ mode, state, update, myForms, providerInfo }: {
+  mode: "offer" | "listing"
+  state: WizardState
+  update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
+  myForms: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]
+  providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"
+}) {
+  const selected = state.selectedForms
+
+  function toggleMyForm(f: typeof myForms[0]) {
+    const exists = selected.find(s => s.formRef === f.path && s.source === "my_forms")
+    if (exists) {
+      update("selectedForms", selected.filter(s => !(s.formRef === f.path && s.source === "my_forms")))
+    } else {
+      update("selectedForms", [...selected, { source: "my_forms", formRef: f.path, name: f.name, scope: f.scope }])
+    }
+  }
+
+  function toggleProvider() {
+    if (!providerInfo || providerInfo === "loading") return
+    const exists = selected.find(s => s.source === "transaction_provider")
+    if (exists) {
+      update("selectedForms", selected.filter(s => s.source !== "transaction_provider"))
+    } else {
+      update("selectedForms", [...selected, { source: "transaction_provider", formRef: "provider_forms", name: `${providerInfo.provider} forms` }])
+    }
+  }
+
+  const scopeIcon = (scope: "brokerage" | "team" | "agent") =>
+    scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
+
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">Select Forms</h3>
+      <p className="text-sm text-muted-foreground">Choose forms from your library and/or your transaction provider. You can select from both.</p>
+
+      <Tabs defaultValue="my-forms">
+        <TabsList className="w-full">
+          <TabsTrigger value="my-forms" className="flex-1">My Forms</TabsTrigger>
+          <TabsTrigger value="provider" className="flex-1">Transaction Provider</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="my-forms" className="mt-3">
+          {myForms.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              No forms found in your brokerage, team, or agent library.
+              <br />
+              <span className="text-xs">Upload forms via Settings → Forms Library.</span>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {myForms.map(f => {
+                const checked = !!selected.find(s => s.formRef === f.path && s.source === "my_forms")
+                return (
+                  <label key={f.path} className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
+                    <Checkbox checked={checked} onCheckedChange={() => toggleMyForm(f)} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{f.name.replace(/\.[^.]+$/, "")}</p>
+                    </div>
+                    <Badge variant="outline" className="flex items-center gap-1 text-xs shrink-0">
+                      {scopeIcon(f.scope)}
+                      {f.scope}
+                    </Badge>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="provider" className="mt-3">
+          {providerInfo === "loading" && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {providerInfo === null && (
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                No transaction provider configured.{" "}
+                <a href="/admin/integrations" className="underline">Set one up in Integrations.</a>
+              </AlertDescription>
+            </Alert>
+          )}
+          {providerInfo && providerInfo !== "loading" && (
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
+                <Checkbox
+                  checked={!!selected.find(s => s.source === "transaction_provider")}
+                  onCheckedChange={toggleProvider}
+                />
+                <div>
+                  <p className="text-sm font-medium capitalize">{providerInfo.provider} — include provider forms</p>
+                  <p className="text-xs text-muted-foreground">You'll fill forms directly in the {providerInfo.provider} interface in the next step.</p>
+                </div>
+              </label>
+              {providerInfo.embedUrl && (
+                <a href={providerInfo.embedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                  <ExternalLink className="h-3 w-3" />
+                  Open {providerInfo.provider} in new tab
+                </a>
+              )}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {selected.length > 0 && (
+        <div className="pt-2 border-t">
+          <p className="text-xs text-muted-foreground mb-1">Selected ({selected.length}):</p>
+          <div className="flex flex-wrap gap-1">
+            {selected.map(s => (
+              <Badge key={`${s.source}-${s.formRef}`} variant="secondary" className="text-xs">
+                {s.name}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Step 3 — Fill Forms ─────────────────────────────────────────────────────
+
+function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading" }) {
+  const myFormsList = state.selectedForms.filter(f => f.source === "my_forms")
+  const hasProvider = state.selectedForms.some(f => f.source === "transaction_provider")
+
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">Fill Forms</h3>
+
+      {myFormsList.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">Forms from your library — fields are pre-filled where possible. Review and complete any remaining fields.</p>
+          {myFormsList.map(f => (
+            <div key={f.formRef} className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2 bg-muted/50 border-b flex items-center gap-2">
+                <Badge variant="outline" className="text-xs">{f.scope}</Badge>
+                <span className="text-sm font-medium">{f.name}</span>
+              </div>
+              <div className="p-4">
+                <p className="text-xs text-muted-foreground mb-3">Pre-filled: property address, buyer/seller name, agent info.</p>
+                <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
+                  <ExternalLink className="h-3 w-3" />
+                  Open form to review
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hasProvider && providerInfo && providerInfo !== "loading" && providerInfo.embedUrl && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium capitalize">{providerInfo.provider} — fill forms in provider interface</p>
+          <div className="border rounded-lg overflow-hidden" style={{ height: 480 }}>
+            <iframe
+              src={providerInfo.embedUrl}
+              className="w-full h-full"
+              title={`${providerInfo.provider} form fill`}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            />
+          </div>
+        </div>
+      )}
+
+      {myFormsList.length === 0 && !hasProvider && (
+        <p className="text-sm text-muted-foreground py-4">No forms selected. Go back and select forms.</p>
+      )}
+    </div>
+  )
+}
+
+// ─── Step 4 — Verify Signers ─────────────────────────────────────────────────
+
+function Step4Signers({ state, update, mode }: { state: WizardState; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void; mode: "offer" | "listing" }) {
+  const signers = state.signers
+
+  function updateSigner(i: number, field: keyof Signer, value: string) {
+    const next = signers.map((s, idx) => idx === i ? { ...s, [field]: value } : s)
+    update("signers", next)
+  }
+
+  function addSigner() {
+    update("signers", [...signers, { name: "", email: "", role: "buyer" }])
+  }
+
+  function removeSigner(i: number) {
+    update("signers", signers.filter((_, idx) => idx !== i))
+  }
+
+  const roleLabel = (role: Signer["role"]) => {
+    const labels: Record<string, string> = { buyer: "Buyer", seller: "Seller", agent: "Agent", co_buyer: "Co-Buyer", listing_agent: "Listing Agent" }
+    return labels[role] ?? role
+  }
+
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">Verify Signers</h3>
+      <p className="text-sm text-muted-foreground">Confirm who needs to sign. All signers will receive an email with the document.</p>
+
+      <div className="space-y-3">
+        {signers.map((signer, i) => (
+          <div key={i} className="border rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <Badge variant="secondary" className="text-xs">{roleLabel(signer.role)}</Badge>
+              {i > 0 && <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => removeSigner(i)}>Remove</Button>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Name</Label>
+                <Input className="h-8 text-sm" value={signer.name} onChange={e => updateSigner(i, "name", e.target.value)} placeholder="Full name" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Email</Label>
+                <Input className="h-8 text-sm" type="email" value={signer.email} onChange={e => updateSigner(i, "email", e.target.value)} placeholder="email@example.com" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Phone (optional)</Label>
+                <Input className="h-8 text-sm" type="tel" value={signer.phone ?? ""} onChange={e => updateSigner(i, "phone", e.target.value)} placeholder="+1 555 000 0000" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Button variant="outline" size="sm" onClick={addSigner}>+ Add Signer</Button>
+    </div>
+  )
+}
+
+// ─── Step 5 — Send for E-Sign ─────────────────────────────────────────────────
+
+function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
+  state: WizardState
+  mode: "offer" | "listing"
+  esignProvider: string | null
+  busy: boolean
+  onSubmit: () => void
+}) {
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">Review & Send for E-Sign</h3>
+
+      <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
+        <div>
+          <p className="text-xs text-muted-foreground">Property</p>
+          <p className="text-sm font-medium">{state.propertyAddress}{state.propertyCity ? `, ${state.propertyCity}` : ""}{state.propertyState ? `, ${state.propertyState}` : ""}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Forms selected ({state.selectedForms.length})</p>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {state.selectedForms.map(f => (
+              <Badge key={`${f.source}-${f.formRef}`} variant="secondary" className="text-xs">{f.name}</Badge>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Signers ({state.signers.filter(s => s.email).length})</p>
+          <div className="space-y-0.5 mt-1">
+            {state.signers.filter(s => s.email).map((s, i) => (
+              <p key={i} className="text-xs">{s.name || "—"} · {s.email}</p>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border p-4 space-y-2">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Providers</p>
+        {state.transactionProvider && (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">Forms from:</Badge>
+            <span className="text-sm capitalize">{state.transactionProvider}</span>
+          </div>
+        )}
+        {esignProvider ? (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">Signatures via:</Badge>
+            <span className="text-sm capitalize">{esignProvider}</span>
+          </div>
+        ) : (
+          <Alert className="py-2">
+            <AlertCircle className="h-3 w-3" />
+            <AlertDescription className="text-xs">
+              No e-sign provider configured.{" "}
+              <a href="/admin/integrations" className="underline">Set one up in Integrations.</a>
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+    </div>
+  )
+}

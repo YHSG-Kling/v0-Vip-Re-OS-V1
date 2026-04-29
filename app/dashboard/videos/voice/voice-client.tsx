@@ -990,6 +990,7 @@ export function VoiceCloneClient({
                       const form = new FormData()
                       form.append("file", didSourceFile)
                       form.append("bucket", "agent-photos")
+                      if (didSourceType === "photo") form.append("validate_photo", "true")
                       const res = await fetch("/api/storage/upload-temp", {
                         method: "POST",
                         body: form,
@@ -1006,11 +1007,15 @@ export function VoiceCloneClient({
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           [didSourceType === "photo" ? "did_photo_url" : "did_video_url"]: data.url,
+                          ...(data.warnings?.length ? { did_photo_warnings: data.warnings } : {}),
                         }),
                       })
 
+                      const warningText = data.warnings?.length
+                        ? `\n⚠️ ${data.warnings.join(" ")}`
+                        : ""
                       setDidStatus(profileRes.ok
-                        ? `${didSourceType === "photo" ? "Photo" : "Video"} saved! D-ID avatar ready.`
+                        ? `${didSourceType === "photo" ? "Photo" : "Video"} saved! D-ID avatar ready.${warningText}`
                         : "Saved to storage but profile update failed — retry.")
                     } catch (err: any) {
                       setDidStatus(`Error: ${err.message}`)

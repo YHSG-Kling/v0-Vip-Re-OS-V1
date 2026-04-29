@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client"
  * For security-critical operations, always verify on the server
  */
 
-export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "tc" | "compliance_officer"
+export type Role = "agent" | "broker" | "admin" | "tc" | "isa" | "team_lead" | "compliance_officer" | "vendor" | "lender" | "superadmin" | "contact" | "system"
 
 export interface UserRole {
   roleName: Role
@@ -73,5 +73,5 @@ export async function clientHasCapability(capability: string): Promise<boolean> 
  */
 export async function clientIsAdmin(): Promise<boolean> {
   const role = await getClientUserRole()
-  return ["BrokerOwner", "ManagingBroker"].includes(role?.roleName || "") || false
+  return ["broker", "admin", "superadmin"].includes(role?.roleName || "") || false
 }

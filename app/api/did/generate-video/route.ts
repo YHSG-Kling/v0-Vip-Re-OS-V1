@@ -26,6 +26,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
       elevenlabs_voice_id,
       agent_photo_url,
       agent_video_url,
+      ugc_mode,
     } = body
 
     if (!video_project_id || !script || !elevenlabs_voice_id) {
@@ -71,6 +73,25 @@ export async function POST(request: NextRequest) {
 
     const isVideoSource = !!agent_video_url
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+
+    // ─── Brand compliance gate ────────────────────────────────────────────────
+    if (auth.brokerageId) {
+      const compliance = await checkBrandCompliance({
+        contentType: "video",
+        contentId: video_project_id,
+        brokerageId: auth.brokerageId,
+      })
+      if (!compliance.passed) {
+        await supabase
+          .from("ai_video_projects")
+          .update({ status: "failed", error_message: `Compliance: ${compliance.violations.join("; ")}` })
+          .eq("id", video_project_id)
+        return NextResponse.json(
+          { error: "Brand compliance check failed", violations: compliance.violations },
+          { status: 422 }
+        )
+      }
+    }
 
     // ─── STEP 1: Generate voice audio via ElevenLabs ─────────────────────────
     const ttsRes = await fetch(`${appUrl}/api/elevenlabs/tts`, {
@@ -97,9 +118,11 @@ export async function POST(request: NextRequest) {
     // For photo sources D-ID uses /talks (photo animation).
     const endpoint = isVideoSource ? `${DID_API_BASE}/clips` : `${DID_API_BASE}/talks`
 
+    const expression = ugc_mode ? "happy" : "neutral"
+
     const didPayload = isVideoSource
       ? {
-          // /clips endpoint — lip-sync an existing agent video
+          // /clips endpoint — lip-sync an existing agent video (natural movement from source clip)
           source_url: sourceUrl,
           script: {
             type: "audio",
@@ -108,13 +131,16 @@ export async function POST(request: NextRequest) {
           config: { stitch: true, result_format: "mp4" },
         }
       : {
-          // /talks endpoint — animate a still photo
+          // /talks endpoint — animate a still photo with natural movement
           source_url: sourceUrl,
           script: {
             type: "audio",
             audio_url: ttsData.audio_url,
           },
-          config: { fluent: true, pad_audio: 0, stitch: true },
+          driver_url: "bank://natural",
+          expression,
+          config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
+          face: { size: 1, top_x: 0, top_y: 0, overlap: "NO" },
         }
 
     const didRes = await fetch(endpoint, {

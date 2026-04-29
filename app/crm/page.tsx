@@ -62,6 +62,7 @@ import Link from "next/link"
 import { format } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 
 // Import all 10 Contact OS components
 import {
@@ -264,6 +265,7 @@ export default function CRMPage() {
   const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
+  const [offerWizardOpen, setOfferWizardOpen] = useState(false)
 
   // Portal invite status for selected contact
   const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
@@ -973,19 +975,10 @@ export default function CRMPage() {
                       Create Listing
                     </Button>
                   </Link>
-                  <Link href={
-                    `/dashboard/buyers/${selectedContactId}/offers/new` +
-                    `?firstName=${encodeURIComponent(selectedContact?.first_name ?? "")}` +
-                    `&lastName=${encodeURIComponent(selectedContact?.last_name ?? "")}` +
-                    `&email=${encodeURIComponent(selectedContact?.email ?? "")}` +
-                    `&phone=${encodeURIComponent(selectedContact?.phone ?? "")}` +
-                    (relatedListing?.address ? `&propertyAddress=${encodeURIComponent(relatedListing.address)}` : "")
-                  }>
-                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
-                      <TrendingUp className="h-3.5 w-3.5" />
-                      Create Offer
-                    </Button>
-                  </Link>
+                  <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start" onClick={() => setOfferWizardOpen(true)}>
+                    <TrendingUp className="h-3.5 w-3.5" />
+                    Create Offer
+                  </Button>
                   {relatedTransaction ? (
                     <Link href={`/dashboard/transactions/${relatedTransaction.id}`}>
                       <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
@@ -2079,6 +2072,17 @@ export default function CRMPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {selectedContact && brokerageId && (
+        <FormWizard
+          mode="offer"
+          contact={selectedContact}
+          brokerageId={brokerageId}
+          agentUserId={selectedContact.agent_id ?? ""}
+          open={offerWizardOpen}
+          onClose={() => setOfferWizardOpen(false)}
+        />
+      )}
     </div>
   )
 }

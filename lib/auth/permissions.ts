@@ -3,36 +3,20 @@
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
 
-// Type definitions — canonical user_type values from the users table
+// Canonical user_type values — must match users.user_type in the DB
 export type Role =
-  | "BrokerOwner"
-  | "ManagingBroker"
-  | "Agent"
+  | "agent"
+  | "broker"
+  | "admin"
   | "tc"
-  | "compliance_officer"
-  | "team_lead"
-  | "superadmin"
   | "isa"
+  | "team_lead"
+  | "compliance_officer"
   | "vendor"
   | "lender"
-  | "admin"
-  | "broker"
-  | "agent"
-
-// Maps users.user_type → legacy Role label (keeps callers that check
-// "BrokerOwner" / "ManagingBroker" working)
-const USER_TYPE_TO_ROLE: Record<string, Role> = {
-  broker: "BrokerOwner",
-  admin: "ManagingBroker",
-  agent: "Agent",
-  team_lead: "team_lead",
-  tc: "tc",
-  compliance_officer: "compliance_officer",
-  superadmin: "superadmin",
-  isa: "isa",
-  vendor: "vendor",
-  lender: "lender",
-}
+  | "superadmin"
+  | "contact"
+  | "system"
 
 // Static capability sets per role (replaces role_capabilities DB table)
 const ROLE_CAPABILITIES: Record<string, string[]> = {
@@ -139,7 +123,7 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
     (user.user_metadata?.user_type as string | undefined) ??
     "agent"
 
-  const roleName: Role = USER_TYPE_TO_ROLE[rawUserType] ?? (rawUserType as Role)
+  const roleName: Role = rawUserType as Role
   const capabilities: string[] = ROLE_CAPABILITIES[rawUserType] ?? ROLE_CAPABILITIES.agent
 
   // Brokerage name from user_role_assignments join (optional enrichment)
@@ -247,7 +231,7 @@ export async function hasRole(roleName: Role): Promise<boolean> {
 }
 
 /**
- * Check if the current user is an admin (BrokerOwner or ManagingBroker)
+ * Check if the current user is an admin (broker, admin, or superadmin)
  * @returns true if user is an admin, false otherwise
  */
 export async function isAdmin(): Promise<boolean> {
@@ -257,7 +241,7 @@ export async function isAdmin(): Promise<boolean> {
     return false
   }
 
-  return ["BrokerOwner", "ManagingBroker"].includes(user.roleName)
+  return ["broker", "admin", "superadmin"].includes(user.roleName)
 }
 
 /**
@@ -300,7 +284,7 @@ export async function assertAdmin(): Promise<void> {
 
   if (!admin) {
     const user = await getCurrentUserWithRole()
-    throw new Error(`Access denied. User ${user?.email || "unknown"} must be a BrokerOwner or ManagingBroker`)
+    throw new Error(`Access denied. User ${user?.email || "unknown"} must have role: broker, admin, or superadmin`)
   }
 }
 

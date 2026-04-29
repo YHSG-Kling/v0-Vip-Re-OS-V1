@@ -8,13 +8,15 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
-import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp, Bot, ExternalLink, PlusCircle } from "lucide-react"
+import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp, Bot, ExternalLink, PlusCircle, Home } from "lucide-react"
 import {
   getContactCreditAccounts,
   getContactVideoEngagement,
   getContactTransactions,
   getContactCopilotSuggestions,
 } from "@/app/actions/contact-details"
+import { createClient } from "@/lib/supabase/client"
+import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 import {
   HandoffContextCard,
   FirstHumanTouchCard,
@@ -31,6 +33,9 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [videos, setVideos] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [suggestions, setSuggestions] = useState<any[]>([])
+  const [listingWizardOpen, setListingWizardOpen] = useState(false)
+  const [agentUserId, setAgentUserId] = useState<string | null>(null)
+  const [teamId, setTeamId] = useState<string | null>(null)
 
   const isBuyer = contact.contact_type?.includes("buyer") || contact.contact_persona?.includes("buyer")
 
@@ -49,6 +54,16 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
       setSuggestions(sugg.suggestions)
     }
     loadData()
+
+    // Get current agent user context for FormWizard
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setAgentUserId(user.id)
+        supabase.from("agents").select("team_id").eq("user_id", user.id).maybeSingle()
+          .then(({ data }) => setTeamId(data?.team_id ?? null))
+      }
+    })
   }, [contact.id])
 
   const initials = `${contact.first_name?.[0] || ""}${contact.last_name?.[0] || ""}`.toUpperCase()
@@ -124,6 +139,10 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                       <PlusCircle className="h-4 w-4 mr-1" />
                       Create Offer
                     </Link>
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setListingWizardOpen(true)}>
+                    <Home className="h-4 w-4 mr-1" />
+                    Create New Listing
                   </Button>
                 </div>
               </div>
@@ -497,6 +516,18 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
           </Card>
         </div>
       </div>
+
+      {agentUserId && (
+        <FormWizard
+          mode="listing"
+          contact={contact}
+          brokerageId={contact.brokerage_id}
+          agentUserId={agentUserId}
+          teamId={teamId}
+          open={listingWizardOpen}
+          onClose={() => setListingWizardOpen(false)}
+        />
+      )}
     </div>
   )
 }

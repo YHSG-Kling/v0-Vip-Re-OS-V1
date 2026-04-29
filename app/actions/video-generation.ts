@@ -1130,6 +1130,7 @@ export async function generateVideoFromScript(params: {
 export async function saveVideoTemplate(data: {
   brokerageId: string
   agentId?: string
+  teamId?: string
   templateName: string
   category: string
   scriptType?: string
@@ -1145,6 +1146,7 @@ export async function saveVideoTemplate(data: {
     .insert({
       brokerage_id: data.brokerageId,
       agent_id: data.agentId ?? null,
+      team_id: data.teamId ?? null,
       template_name: data.templateName,
       category: data.category,
       script_type: data.scriptType ?? null,

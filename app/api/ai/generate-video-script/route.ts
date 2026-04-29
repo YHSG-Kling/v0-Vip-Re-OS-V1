@@ -177,8 +177,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── Fetch brand voice settings ───────────────────────────────────────────
+    // ── Fetch brand voice settings + prohibited words ─────────────────────────
     let brandVoiceGuidance = ""
+    let brandVoiceProfile: any = null
+    let hardConstraintBlock = ""
     try {
       const brandResult = await applyBrandVoice({
         brokerageId: brokerage_id,
@@ -190,8 +192,36 @@ export async function POST(request: NextRequest) {
         content: "",
       })
 
+      brandVoiceProfile = brandResult
+
       if (brandResult.notes.length > 0) {
         brandVoiceGuidance = `\n\nBRAND VOICE GUIDELINES:\n${brandResult.notes.join("\n")}`
+      }
+
+      // Fetch global_settings for additional prohibited language
+      const serviceClient = createServiceClient()
+      const { data: globalSettings } = await serviceClient
+        .from("global_settings")
+        .select("additional_settings")
+        .eq("brokerage_id", brokerage_id)
+        .maybeSingle()
+
+      const prohibited: string[] = [
+        ...(brandResult.prohibitedWords ?? []),
+        ...((globalSettings?.additional_settings as any)?.prohibited_language ?? []),
+      ]
+
+      if (prohibited.length > 0 || brandResult.tagline || brandResult.tone) {
+        hardConstraintBlock = `
+MANDATORY BRAND COMPLIANCE — VIOLATIONS WILL REJECT THIS SCRIPT:
+${prohibited.length > 0 ? `- NEVER use these words or phrases: ${prohibited.join(", ")}` : ""}
+${brandResult.tagline ? `- Tagline if used must be verbatim: "${brandResult.tagline}"` : ""}
+- Tone: ${brandResult.tone ?? "professional"}
+- Formality: ${brandResult.formalityLevel ?? 3}/5
+- FAIR HOUSING: Never mention school quality, safety, demographics, or family suitability
+- INVESTMENT: Never use "guaranteed", "sure investment", "will appreciate"
+- No pressure language: "act now", "won't last", "best deal"
+`.trim()
       }
     } catch (err) {
       console.warn("[generate-video-script] Brand voice fetch failed:", err)
@@ -202,7 +232,7 @@ export async function POST(request: NextRequest) {
     const targetDuration = duration_target_seconds ?? (templateData?.duration_seconds ?? 90)
     const wordCount = Math.round((targetDuration / 60) * 150) // ~150 words per minute
 
-    const systemPrompt = `You are an expert real estate video script writer creating content for professional agents.
+    const systemPrompt = `${hardConstraintBlock ? hardConstraintBlock + "\n\n" : ""}You are an expert real estate video script writer creating content for professional agents.
 
 CRITICAL COMPLIANCE RULES:
 - NEVER use Fair Housing violation language (protected classes, steering, discriminatory phrases)
@@ -402,7 +432,7 @@ Return ONLY the script text.`
         feature: "video_script_generation",
       },
     })
-    const generatedScript = response.text
+    let generatedScript = response.text
 
     // ── Compliance check ─────────────────────────────────────────────────────
     const scriptLower = generatedScript.toLowerCase()
@@ -423,7 +453,7 @@ Return ONLY the script text.`
       complianceReviewNotes = `Auto-flagged for review: ${complianceIssues.join("; ")}`
     }
 
-    // ── Brand voice check ────────────────────────────────────────────────────
+    // ── Brand voice check + auto-correction ──────────────────────────────────
     try {
       const brandCheck = await applyBrandVoice({
         brokerageId: brokerage_id,
@@ -436,11 +466,40 @@ Return ONLY the script text.`
       })
 
       if (brandCheck.violations.length > 0) {
-        approvalStatus = "pending_review"
-        const brandIssues = brandCheck.violations.join("; ")
-        complianceReviewNotes = complianceReviewNotes 
-          ? `${complianceReviewNotes}. Brand voice: ${brandIssues}`
-          : `Brand voice issues: ${brandIssues}`
+        // Auto-correction pass — minimal edits to fix violations only
+        try {
+          const correctionPrompt = `Fix ONLY the listed violations in this script. Minimal edits, preserve all meaning and structure.\n\nScript:\n${generatedScript}\n\nViolations to fix:\n${brandCheck.violations.join("\n")}\n\nReturn ONLY the corrected script, no explanation.`
+          const corrected = await generateAIResponse({
+            prompt: correctionPrompt,
+            temperature: 0.3,
+            maxOutputTokens: 2000,
+            metadata: { userId: agent_id, brokerageId: brokerage_id, feature: "brand_correction" },
+          })
+          generatedScript = corrected.text
+
+          // Re-check after correction
+          const recheck = await applyBrandVoice({
+            brokerageId: brokerage_id,
+            actorUserId: agent_id,
+            actorRole: "agent",
+            journeyType: script_type.includes("buyer") ? "buyer" : "seller",
+            persona: contactInfo.persona ?? "default",
+            messageType: "ai",
+            content: generatedScript,
+          })
+
+          if (recheck.violations.length > 0) {
+            approvalStatus = "pending_review"
+            complianceReviewNotes = complianceReviewNotes
+              ? `${complianceReviewNotes}. Brand voice (after correction): ${recheck.violations.join("; ")}`
+              : `Brand voice issues after auto-correction: ${recheck.violations.join("; ")}`
+          }
+        } catch {
+          approvalStatus = "pending_review"
+          complianceReviewNotes = complianceReviewNotes
+            ? `${complianceReviewNotes}. Brand voice: ${brandCheck.violations.join("; ")}`
+            : `Brand voice issues: ${brandCheck.violations.join("; ")}`
+        }
       }
     } catch (err) {
       console.warn("[generate-video-script] Brand voice check failed:", err)
