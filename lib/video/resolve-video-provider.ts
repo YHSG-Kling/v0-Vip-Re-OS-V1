@@ -4,6 +4,7 @@ export interface AgentVideoProfile {
   preferred_avatar_provider?: string | null
   elevenlabs_voice_id?: string | null
   did_photo_url?: string | null
+  did_video_url?: string | null
   heygen_voice_clone_id?: string | null
 }
 

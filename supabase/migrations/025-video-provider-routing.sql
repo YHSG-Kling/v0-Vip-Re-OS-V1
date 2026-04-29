@@ -11,6 +11,7 @@
 ALTER TABLE agent_voice_profiles
   ADD COLUMN IF NOT EXISTS elevenlabs_voice_id      TEXT,
   ADD COLUMN IF NOT EXISTS did_photo_url            TEXT,
+  ADD COLUMN IF NOT EXISTS did_video_url            TEXT,
   ADD COLUMN IF NOT EXISTS preferred_avatar_provider TEXT NOT NULL DEFAULT 'did'
     CHECK (preferred_avatar_provider IN ('did', 'heygen'));
 

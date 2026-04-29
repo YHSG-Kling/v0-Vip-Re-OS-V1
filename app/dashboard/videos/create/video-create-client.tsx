@@ -52,44 +52,24 @@ import {
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 
+import { Switch } from "@/components/ui/switch"
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const SCRIPT_TYPES = [
-  {
-    id: "property_tour",
-    label: "Property Tour",
-    icon: Home,
-    description: "Showcase a listing with engaging narration",
-    requiresListing: true,
-  },
-  {
-    id: "buyer_education",
-    label: "Buyer Education",
-    icon: Users,
-    description: "Educational content for home buyers",
-    requiresListing: false,
-  },
-  {
-    id: "market_update",
-    label: "Market Update",
-    icon: TrendingUp,
-    description: "Local market analysis and trends",
-    requiresListing: false,
-  },
-  {
-    id: "agent_intro",
-    label: "Agent Introduction",
-    icon: User,
-    description: "Personal brand introduction video",
-    requiresListing: false,
-  },
-  {
-    id: "listing_presentation",
-    label: "Listing Presentation",
-    icon: FileText,
-    description: "Seller presentation for listing appointments",
-    requiresListing: true,
-  },
+  { id: "property_tour", label: "Property Tour", icon: Home, description: "Showcase a listing with engaging narration", requiresListing: true },
+  { id: "buyer_education", label: "Buyer Education", icon: Users, description: "Educational content for home buyers", requiresListing: false },
+  { id: "market_update", label: "Market Update", icon: TrendingUp, description: "Local market analysis and trends", requiresListing: false },
+  { id: "agent_intro", label: "Agent Introduction", icon: User, description: "Personal brand introduction video", requiresListing: false },
+  { id: "listing_presentation", label: "Listing Presentation", icon: FileText, description: "Seller presentation for listing appointments", requiresListing: true },
+]
+
+const UGC_SCRIPT_TYPES = [
+  { id: "quick_tip", label: "Quick Tip", icon: Sparkles, description: "One bite-sized insight (30–45s)", requiresListing: false },
+  { id: "market_fact", label: "Market Fact", icon: TrendingUp, description: "Surprising stat or market data (30s)", requiresListing: false },
+  { id: "personal_story", label: "Personal Story", icon: User, description: "Authentic agent story (45–60s)", requiresListing: false },
+  { id: "listing_spotlight", label: "Listing Spotlight", icon: Home, description: "Quick social-ready listing feature (30s)", requiresListing: true },
+  { id: "education_bite", label: "Education Bite", icon: Users, description: "Short buyer/seller tip (30–45s)", requiresListing: false },
 ]
 
 const QUALITY_PRESETS = [
@@ -127,6 +107,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const supabase = createClient()
 
   // Wizard state
+  const [ugcMode, setUgcMode] = useState(false)
   const [currentStep, setCurrentStep] = useState(0) // Start at step 0 (business context)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -277,6 +258,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           heygen_avatar_id: selectedAvatar || null,
           heygen_voice_id: selectedVoice || null,
           video_provider: "heygen",
+          ugc_mode: ugcMode,
           // listing_id is only relevant when the user explicitly selected a listing as the
           // video context. Other context types (contact, homeowner, market, none) do not
           // involve a listing and must leave this null.
@@ -518,10 +500,34 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back
           </Button>
-          <h1 className="text-3xl font-bold text-foreground">Create AI Video</h1>
-          <p className="text-muted-foreground mt-1">
-            Generate professional avatar videos with kernel governance
-          </p>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h1 className="text-3xl font-bold text-foreground">Create AI Video</h1>
+              <p className="text-muted-foreground mt-1">
+                Generate professional avatar videos with kernel governance
+              </p>
+            </div>
+            {/* F1: UGC Mode toggle */}
+            <div className="flex items-center gap-3 rounded-lg border px-4 py-2 bg-muted/30">
+              <div>
+                <p className="text-sm font-medium leading-none">UGC Mode</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Short-form social content</p>
+              </div>
+              <Switch
+                checked={ugcMode}
+                onCheckedChange={(v) => {
+                  setUgcMode(v)
+                  if (v) {
+                    setOutputOrientation("portrait")
+                    setAiScriptDuration(45)
+                  } else {
+                    setOutputOrientation("landscape")
+                    setAiScriptDuration(60)
+                  }
+                }}
+              />
+            </div>
+          </div>
         </div>
 
         {/* Progress Steps */}
@@ -762,11 +768,15 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {SCRIPT_TYPES.map(t => (
+                                {(ugcMode ? UGC_SCRIPT_TYPES : SCRIPT_TYPES).map(t => (
                                   <SelectItem key={t.id} value={t.id} className="text-xs">{t.label}</SelectItem>
                                 ))}
-                                <SelectItem value="tips" className="text-xs">Tips</SelectItem>
-                                <SelectItem value="testimonial" className="text-xs">Testimonial</SelectItem>
+                                {!ugcMode && (
+                                  <>
+                                    <SelectItem value="tips" className="text-xs">Tips</SelectItem>
+                                    <SelectItem value="testimonial" className="text-xs">Testimonial</SelectItem>
+                                  </>
+                                )}
                                 <SelectItem value="custom" className="text-xs">Custom</SelectItem>
                               </SelectContent>
                             </Select>
