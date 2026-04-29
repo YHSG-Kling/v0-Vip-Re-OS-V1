@@ -1108,6 +1108,7 @@ export default function CRMPage() {
                           router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
                         }
                         onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
+                        onCreateOffer={() => setOfferWizardOpen(true)}
                       />
                     </div>
 
