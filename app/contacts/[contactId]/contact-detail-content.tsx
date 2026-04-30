@@ -50,6 +50,7 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [transactions, setTransactions] = useState<any[]>([])
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [listingWizardOpen, setListingWizardOpen] = useState(false)
+  const [offerWizardOpen, setOfferWizardOpen] = useState(false)
   const [agentUserId, setAgentUserId] = useState<string | null>(null)
   const [teamId, setTeamId] = useState<string | null>(null)
   const [activity, setActivity] = useState<any[]>([])
@@ -244,11 +245,9 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                       View Portal
                     </Link>
                   </Button>
-                  <Button size="sm" asChild>
-                    <Link href={`/contacts/${contact.id}/offers/new`}>
-                      <PlusCircle className="h-4 w-4 mr-1" />
-                      Create Offer
-                    </Link>
+                  <Button size="sm" onClick={() => setOfferWizardOpen(true)}>
+                    <PlusCircle className="h-4 w-4 mr-1" />
+                    Create Offer
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setListingWizardOpen(true)}>
                     <Home className="h-4 w-4 mr-1" />
@@ -649,6 +648,17 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
           teamId={teamId}
           open={listingWizardOpen}
           onClose={() => setListingWizardOpen(false)}
+        />
+      )}
+      {agentUserId && (
+        <FormWizard
+          mode="offer"
+          contact={contact}
+          brokerageId={contact.brokerage_id}
+          agentUserId={agentUserId}
+          teamId={teamId}
+          open={offerWizardOpen}
+          onClose={() => setOfferWizardOpen(false)}
         />
       )}
     </div>
