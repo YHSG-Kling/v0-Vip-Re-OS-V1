@@ -53,9 +53,10 @@ import {
   SellerUpdateVideoModeCard,
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
-import { generateVideoScript } from "@/app/actions/video/generate-script"
+import { generateVideoScript } from "@/app/actions/video-generation"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { getHeyGenAvatars } from "@/app/actions/heygen-avatars"
+import { getPlatformVideoProvider } from "@/app/actions/settings/global-settings-actions"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -200,6 +201,14 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bgFileInputRef = useRef<HTMLInputElement>(null)
 
+  // Platform provider (loaded once from global_settings)
+  const [platformProvider, setPlatformProvider] = useState<"did" | "heygen">("did")
+  const [agentDIDProfile, setAgentDIDProfile] = useState<{
+    elevenlabs_voice_id: string | null
+    did_photo_url: string | null
+    did_video_url: string | null
+  } | null>(null)
+
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
   const [avatars, setAvatars] = useState<any[]>([])
@@ -224,6 +233,10 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
       if (!brokerage?.id) return
 
       try {
+        // Load platform provider and agent D-ID profile in parallel with other data
+        const provider = await getPlatformVideoProvider()
+        setPlatformProvider(provider)
+
         // Load approved scripts from library
         const { data: scriptsData } = await supabase
           .from("video_scripts_library")
@@ -257,6 +270,14 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
           clonedVoiceProfiles = voiceData || []
           setVoiceProfiles(clonedVoiceProfiles)
+
+          // Load D-ID profile for the agent (used when platform provider = "did")
+          const { data: didProfileData } = await supabase
+            .from("agent_did_profiles")
+            .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+            .eq("agent_id", agentData.id)
+            .maybeSingle()
+          setAgentDIDProfile(didProfileData ?? null)
         }
 
         // Load branding presets — use agents.id (FK), not auth user id
@@ -382,33 +403,47 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
       if (projectError || !project) throw projectError ?? new Error("Failed to create video project")
 
-      // 2. Submit to HeyGen via API
-      const response = await fetch("/api/heygen/generate-video", {
+      // 2. Submit to video generation API (provider-aware)
+      const endpoint = platformProvider === "did"
+        ? "/api/did/generate-video"
+        : "/api/heygen/generate-video"
+
+      const body = platformProvider === "did"
+        ? {
+            video_project_id: project.id,
+            script,
+            elevenlabs_voice_id: agentDIDProfile?.elevenlabs_voice_id,
+            agent_photo_url: agentDIDProfile?.did_photo_url,
+            agent_video_url: agentDIDProfile?.did_video_url,
+          }
+        : {
+            script,
+            avatar_id: selectedAvatar,
+            voice_id: selectedVoice,
+            video_project_id: project.id,
+            brokerage_id: brokerage.id,
+            user_id: user.id,
+            script_id: scriptSource === "library" ? selectedScript : null,
+            branding_preset_id: brandingPresetId || null,
+            quality_preset: qualityPreset,
+            output_orientation: outputOrientation,
+            aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
+            background: backgroundStyle === "custom" && customBgUrl
+              ? { type: "image", value: customBgUrl }
+              : (() => {
+                  const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
+                  const bgColorValue = bgPreset?.color ?? "#ffffff"
+                  return {
+                    type: bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
+                    value: bgColorValue,
+                  }
+                })(),
+          }
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          script,
-          avatar_id: selectedAvatar,
-          voice_id: selectedVoice,
-          video_project_id: project.id,
-          brokerage_id: brokerage.id,
-          user_id: user.id,
-          script_id: scriptSource === "library" ? selectedScript : null,
-          branding_preset_id: brandingPresetId || null,
-          quality_preset: qualityPreset,
-          output_orientation: outputOrientation,
-          aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
-          background: backgroundStyle === "custom" && customBgUrl
-            ? { type: "image", value: customBgUrl }
-            : (() => {
-                const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
-                const bgColorValue = bgPreset?.color ?? "#ffffff"
-                return {
-                  type: bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-                  value: bgColorValue,
-                }
-              })(),
-        }),
+        body: JSON.stringify(body),
       })
 
       const result = await response.json()
@@ -455,8 +490,11 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
       case 1:
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
-        // Voice is required only if profiles exist; if none are configured the user
-        // can still proceed (HeyGen will use its default voice).
+        if (platformProvider === "did") {
+          // D-ID: require at least one profile attribute to be set
+          return !!(agentDIDProfile?.elevenlabs_voice_id || agentDIDProfile?.did_photo_url || agentDIDProfile?.did_video_url)
+        }
+        // HeyGen: avatar required; voice required only if profiles exist
         if (!selectedAvatar) return false
         if (voiceProfiles.length > 0 && !selectedVoice) return false
         return true
@@ -1056,11 +1094,48 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                 <div>
                   <h2 className="text-xl font-semibold mb-2">Choose Avatar & Voice</h2>
                   <p className="text-muted-foreground">
-                    Select who will present your video and which voice to use
+                    {platformProvider === "did"
+                      ? "Your video uses your own face and cloned voice"
+                      : "Select who will present your video and which voice to use"}
                   </p>
                 </div>
 
-                {/* Avatar Selection */}
+                {/* D-ID setup gate — shown when agent has no D-ID profile configured */}
+                {platformProvider === "did" && !agentDIDProfile?.elevenlabs_voice_id && !agentDIDProfile?.did_photo_url && !agentDIDProfile?.did_video_url && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Avatar & Voice Setup Required</AlertTitle>
+                    <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
+                      <span>Your videos use your own face and cloned voice. Complete setup before creating a video.</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0"
+                        onClick={() => router.push("/dashboard/videos/voice")}
+                      >
+                        Set Up Avatar & Voice
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* D-ID profile confirmed */}
+                {platformProvider === "did" && (agentDIDProfile?.elevenlabs_voice_id || agentDIDProfile?.did_photo_url || agentDIDProfile?.did_video_url) && (
+                  <Alert>
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Avatar & Voice Ready</AlertTitle>
+                    <AlertDescription>
+                      Your personalized avatar and cloned voice are configured and will be used for this video.
+                      <a href="/dashboard/videos/voice" className="ml-2 underline hover:text-foreground text-sm">
+                        Update setup
+                      </a>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* Avatar Selection — only shown for HeyGen platform */}
+                {platformProvider === "heygen" && (
+                  <>{/* Avatar Selection */}
                 <div className="space-y-3">
                   <Label>Avatar</Label>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -1160,6 +1235,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     </Alert>
                   )}
                 </div>
+                </>)}
               </div>
             )}
 

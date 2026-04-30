@@ -54,6 +54,55 @@ export async function updateSettings(
   await updateGlobalSettings({ userId: user.id, updates })
 }
 
+export async function getPlatformVideoProvider(): Promise<"did" | "heygen"> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return "did"
+
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!userRow?.brokerage_id) return "did"
+
+  const serviceClient = createServiceClient()
+  const { data: gs } = await serviceClient
+    .from("global_settings")
+    .select("additional_settings")
+    .eq("brokerage_id", userRow.brokerage_id)
+    .maybeSingle()
+
+  return (gs?.additional_settings as any)?.platform_video_provider ?? "did"
+}
+
+export async function setPlatformVideoProvider(provider: "did" | "heygen"): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) throw new Error("Unauthorized")
+
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!userRow?.brokerage_id) throw new Error("Brokerage not found")
+
+  const serviceClient = createServiceClient()
+  const { data: gs } = await serviceClient
+    .from("global_settings")
+    .select("id, additional_settings")
+    .eq("brokerage_id", userRow.brokerage_id)
+    .maybeSingle()
+  if (!gs) throw new Error("Global settings not found")
+
+  const existing = (gs.additional_settings as Record<string, unknown>) ?? {}
+  await serviceClient
+    .from("global_settings")
+    .update({ additional_settings: { ...existing, platform_video_provider: provider } })
+    .eq("id", gs.id)
+}
+
 export async function fetchWidgetScope(): Promise<WidgetScope | null> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

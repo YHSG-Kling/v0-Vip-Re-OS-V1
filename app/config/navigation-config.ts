@@ -17,17 +17,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
       { id: 'divider1', divider: true },
+      { id: 'offers', label: 'Offers Pipeline', href: '/offers', icon: 'FileText' },
       {
         id: 'video-tools',
         label: 'Video Tools',
         icon: 'Video',
         children: [
-          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
-          { id: 'video-assistant', label: 'Video Assistant', href: '/video-assistant' },
-          { id: 'video-board', label: 'Video Board', href: '/dashboard/videos/board' },
-          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
-          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
-          { id: 'video-snippets', label: 'Snippets', href: '/dashboard/videos/snippets' },
+          { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
+          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/videos/voice' },
+          { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
+          { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
       },
       {
@@ -191,9 +190,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Video Tools',
         icon: 'Video',
         children: [
-          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
-          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
-          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
+          { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
+          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/videos/voice' },
+          { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
+          { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
       },
       {
@@ -310,8 +310,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Video Tools',
         icon: 'Video',
         children: [
-          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
-          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
+          { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
+          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/videos/voice' },
+          { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
         ],
       },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
@@ -624,9 +625,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Video Tools',
         icon: 'Video',
         children: [
-          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
-          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
-          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
+          { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
+          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/videos/voice' },
+          { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
+          { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
       },
       {
