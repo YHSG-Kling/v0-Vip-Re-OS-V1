@@ -185,6 +185,9 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   // Step 2: Avatar & Voice
   const [selectedAvatar, setSelectedAvatar] = useState<string>("")
   const [selectedVoice, setSelectedVoice] = useState<string>("")
+  // D-ID-specific selections (used when platformProvider === "did")
+  const [selectedElevenLabsVoiceId, setSelectedElevenLabsVoiceId] = useState<string | null>(null)
+  const [selectedDIDAvatarSource, setSelectedDIDAvatarSource] = useState<"photo" | "video" | null>(null)
 
   // Step 3: Style & Output
   const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
@@ -278,6 +281,20 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             .eq("agent_id", agentData.id)
             .maybeSingle()
           setAgentDIDProfile(didProfileData ?? null)
+
+          // Auto-select defaults for D-ID path
+          // Voice: pick the default profile's elevenlabs_voice_id
+          const defaultVoice = (voiceData ?? []).find((v: any) => v.is_default && v.elevenlabs_voice_id)
+            ?? (voiceData ?? []).find((v: any) => v.elevenlabs_voice_id)
+          if (defaultVoice?.elevenlabs_voice_id) {
+            setSelectedElevenLabsVoiceId(defaultVoice.elevenlabs_voice_id)
+          }
+          // Avatar: prefer video (brand quality), fall back to photo
+          if (didProfileData?.did_video_url) {
+            setSelectedDIDAvatarSource("video")
+          } else if (didProfileData?.did_photo_url) {
+            setSelectedDIDAvatarSource("photo")
+          }
         }
 
         // Load branding presets — use agents.id (FK), not auth user id
@@ -377,13 +394,13 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
           script_content: script,
           video_type: scriptSource === "library"
-            ? scripts.find(s => s.id === selectedScript)?.script_type ?? "custom"
+            ? scripts.find((s: any) => s.id === selectedScript)?.script_type ?? "custom"
             : aiScriptVideoType ?? "custom",
           status: "pending",
           heygen_status: "pending",
-          heygen_avatar_id: selectedAvatar || null,
-          heygen_voice_id: selectedVoice || null,
-          video_provider: "heygen",
+          heygen_avatar_id: platformProvider === "heygen" ? (selectedAvatar || null) : null,
+          heygen_voice_id: platformProvider === "heygen" ? (selectedVoice || null) : null,
+          video_provider: platformProvider,
           // listing_id is only relevant when the user explicitly selected a listing as the
           // video context. Other context types (contact, homeowner, market, none) do not
           // involve a listing and must leave this null.
@@ -412,9 +429,9 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         ? {
             video_project_id: project.id,
             script,
-            elevenlabs_voice_id: agentDIDProfile?.elevenlabs_voice_id,
-            agent_photo_url: agentDIDProfile?.did_photo_url,
-            agent_video_url: agentDIDProfile?.did_video_url,
+            elevenlabs_voice_id: selectedElevenLabsVoiceId,
+            agent_photo_url: selectedDIDAvatarSource === "photo" ? agentDIDProfile?.did_photo_url : null,
+            agent_video_url: selectedDIDAvatarSource === "video" ? agentDIDProfile?.did_video_url : null,
           }
         : {
             script,
@@ -491,8 +508,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
         if (platformProvider === "did") {
-          // D-ID: require at least one profile attribute to be set
-          return !!(agentDIDProfile?.elevenlabs_voice_id || agentDIDProfile?.did_photo_url || agentDIDProfile?.did_video_url)
+          return !!(selectedElevenLabsVoiceId && selectedDIDAvatarSource)
         }
         // HeyGen: avatar required; voice required only if profiles exist
         if (!selectedAvatar) return false
@@ -1100,38 +1116,149 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                   </p>
                 </div>
 
-                {/* D-ID setup gate — shown when agent has no D-ID profile configured */}
-                {platformProvider === "did" && !agentDIDProfile?.elevenlabs_voice_id && !agentDIDProfile?.did_photo_url && !agentDIDProfile?.did_video_url && (
-                  <Alert variant="destructive">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>Avatar & Voice Setup Required</AlertTitle>
-                    <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                      <span>Your videos use your own face and cloned voice. Complete setup before creating a video.</span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="shrink-0"
-                        onClick={() => router.push("/dashboard/videos/voice")}
-                      >
-                        Set Up Avatar & Voice
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
-                )}
+                {/* D-ID: Voice clone + avatar selection */}
+                {platformProvider === "did" && (() => {
+                  const elVoiceProfiles = voiceProfiles.filter((v: any) => v.elevenlabs_voice_id)
+                  const hasPhoto = !!agentDIDProfile?.did_photo_url
+                  const hasVideo = !!agentDIDProfile?.did_video_url
+                  const hasAnyAvatar = hasPhoto || hasVideo
+                  const hasAnyVoice = elVoiceProfiles.length > 0
 
-                {/* D-ID profile confirmed */}
-                {platformProvider === "did" && (agentDIDProfile?.elevenlabs_voice_id || agentDIDProfile?.did_photo_url || agentDIDProfile?.did_video_url) && (
-                  <Alert>
-                    <CheckCircle2 className="h-4 w-4" />
-                    <AlertTitle>Avatar & Voice Ready</AlertTitle>
-                    <AlertDescription>
-                      Your personalized avatar and cloned voice are configured and will be used for this video.
-                      <a href="/dashboard/videos/voice" className="ml-2 underline hover:text-foreground text-sm">
-                        Update setup
-                      </a>
-                    </AlertDescription>
-                  </Alert>
-                )}
+                  return (
+                    <div className="space-y-6">
+                      {/* Voice Clone Selection */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label>Voice Clone</Label>
+                          <a href="/dashboard/videos/voice" className="text-xs text-muted-foreground underline hover:text-foreground">
+                            Manage voice setup
+                          </a>
+                        </div>
+                        {hasAnyVoice ? (
+                          <div className="space-y-2">
+                            {elVoiceProfiles.map((voice: any) => (
+                              <div
+                                key={voice.id}
+                                onClick={() => setSelectedElevenLabsVoiceId(voice.elevenlabs_voice_id)}
+                                className={cn(
+                                  "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-center gap-4",
+                                  selectedElevenLabsVoiceId === voice.elevenlabs_voice_id
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+                                  <Mic className="h-5 w-5 text-muted-foreground" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium">{voice.profile_name}</p>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    {voice.is_default && (
+                                      <Badge variant="secondary" className="text-xs">Default</Badge>
+                                    )}
+                                    {voice.quality_score && (
+                                      <span className="text-xs text-muted-foreground">
+                                        Quality: {(voice.quality_score * 100).toFixed(0)}%
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {selectedElevenLabsVoiceId === voice.elevenlabs_voice_id && (
+                                  <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <Alert variant="destructive">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertTitle>No voice clone set up</AlertTitle>
+                            <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
+                              <span>Upload a voice recording in Avatar & Voice Setup to clone your voice.</span>
+                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
+                                Set Up Voice
+                              </Button>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+
+                      {/* Avatar Source Selection */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label>Avatar</Label>
+                          <a href="/dashboard/videos/voice" className="text-xs text-muted-foreground underline hover:text-foreground">
+                            Manage avatar setup
+                          </a>
+                        </div>
+                        {hasAnyAvatar ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            {hasPhoto && (
+                              <div
+                                onClick={() => setSelectedDIDAvatarSource("photo")}
+                                className={cn(
+                                  "p-4 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
+                                  selectedDIDAvatarSource === "photo"
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={agentDIDProfile!.did_photo_url!}
+                                  alt="Your photo"
+                                  className="w-20 h-20 rounded-full object-cover mx-auto"
+                                />
+                                <p className="font-medium text-sm">Photo</p>
+                                <p className="text-xs text-muted-foreground">Best for social</p>
+                                {selectedDIDAvatarSource === "photo" && (
+                                  <CheckCircle2 className="h-4 w-4 text-primary mx-auto" />
+                                )}
+                              </div>
+                            )}
+                            {hasVideo && (
+                              <div
+                                onClick={() => setSelectedDIDAvatarSource("video")}
+                                className={cn(
+                                  "p-4 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
+                                  selectedDIDAvatarSource === "video"
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                <div className="w-20 h-20 rounded-full bg-muted mx-auto flex items-center justify-center overflow-hidden">
+                                  <video
+                                    src={agentDIDProfile!.did_video_url!}
+                                    className="w-full h-full object-cover"
+                                    muted
+                                    loop
+                                    autoPlay
+                                  />
+                                </div>
+                                <p className="font-medium text-sm">Video Clip</p>
+                                <p className="text-xs text-muted-foreground">Best for brand</p>
+                                {selectedDIDAvatarSource === "video" && (
+                                  <CheckCircle2 className="h-4 w-4 text-primary mx-auto" />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <Alert variant="destructive">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertTitle>No avatar uploaded</AlertTitle>
+                            <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
+                              <span>Upload a headshot or short video clip in Avatar & Voice Setup.</span>
+                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
+                                Set Up Avatar
+                              </Button>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
 
                 {/* Avatar Selection — only shown for HeyGen platform */}
                 {platformProvider === "heygen" && (
