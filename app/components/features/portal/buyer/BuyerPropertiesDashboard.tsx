@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { getBuyerPortalMatches, type BuyerPortalMatch } from "@/app/actions/buyer-portal-matches"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -44,6 +45,41 @@ interface BuyerPropertiesDashboardProps {
   contactId: string
 }
 
+interface DisplayMatch {
+  id: string | number
+  address: string
+  city: string
+  state: string
+  price: number
+  beds: number
+  baths: number
+  sqft: number
+  matchScore: number
+  matchReasons: string[]
+  status: string
+  daysOnMarket: number
+  image?: string
+  priceDropAmount?: number
+}
+
+function matchToDisplay(m: BuyerPortalMatch): DisplayMatch {
+  return {
+    id: m.id,
+    address: m.address ?? "Address pending",
+    city: m.city ?? "",
+    state: m.state ?? "",
+    price: m.list_price ?? 0,
+    beds: m.bedrooms ?? 0,
+    baths: m.bathrooms ?? 0,
+    sqft: m.sqft ?? 0,
+    matchScore: m.match_score,
+    matchReasons: m.match_reasons.slice(0, 3),
+    status: m.status ?? "active",
+    daysOnMarket: m.days_on_market ?? 0,
+    image: m.primary_photo_url ?? undefined,
+  }
+}
+
 export default function BuyerPropertiesDashboard({
   contact,
   savedProperties,
@@ -54,8 +90,32 @@ export default function BuyerPropertiesDashboard({
   const [activeTab, setActiveTab] = useState("matches")
   const [priceRange, setPriceRange] = useState([300000, 600000])
 
-  // Mock smart matches data - in production this would come from AI/algorithm
-  const smartMatches = [
+  // Real matches loaded from cached property_matches (written by generatePropertyMatches).
+  const [smartMatches, setSmartMatches] = useState<DisplayMatch[]>([])
+  const [matchesLoading, setMatchesLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const result = await getBuyerPortalMatches(contactId, 12)
+        if (cancelled) return
+        if (result.success && result.matches.length > 0) {
+          setSmartMatches(result.matches.map(matchToDisplay))
+        } else {
+          setSmartMatches([])
+        }
+      } finally {
+        if (!cancelled) setMatchesLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [contactId])
+
+  // ── Mock data preserved as fallback only when no real matches exist ────────
+  const fallbackMatches: DisplayMatch[] = [
     {
       id: 1,
       address: "456 Oak Lane",
@@ -119,6 +179,11 @@ export default function BuyerPropertiesDashboard({
     },
   ]
 
+  // Use real matches when loaded; otherwise show fallback so the portal
+  // never renders an empty state for a brand-new buyer.
+  const displayMatches: DisplayMatch[] =
+    smartMatches.length > 0 ? smartMatches : matchesLoading ? [] : fallbackMatches
+
   // Mock mortgage data
   const mortgageData = {
     preApprovalAmount: 550000,
@@ -179,7 +244,7 @@ export default function BuyerPropertiesDashboard({
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{smartMatches.length}</p>
+              <p className="text-2xl font-bold">{displayMatches.length}</p>
               <p className="text-xs text-muted-foreground">New Matches</p>
             </div>
           </CardContent>
@@ -246,7 +311,7 @@ export default function BuyerPropertiesDashboard({
                 <div>
                   <h3 className="font-semibold">AI Property Matches</h3>
                   <p className="text-sm text-muted-foreground">
-                    Based on your search history, saved properties, and preferences, we found {smartMatches.length} new
+                    Based on your search history, saved properties, and preferences, we found {displayMatches.length} new
                     properties that match your criteria.
                   </p>
                 </div>
@@ -279,7 +344,7 @@ export default function BuyerPropertiesDashboard({
 
           {/* Property Cards */}
           <div className="grid md:grid-cols-2 gap-6">
-            {smartMatches.map((property) => (
+            {displayMatches.map((property) => (
               <Card key={property.id} className="overflow-hidden hover:shadow-lg transition-shadow">
                 <div className="relative h-48 bg-slate-100">
                   <img
