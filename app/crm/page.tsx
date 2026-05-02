@@ -1154,6 +1154,29 @@ export default function CRMPage() {
                       </Badge>
                     )}
                   </div>
+
+                  {/* AI Follow-up toggle — always visible in sidebar */}
+                  {contactIntelligence && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <Switch
+                        checked={contactIntelligence.ai_isa_enabled === true}
+                        onCheckedChange={async (checked) => {
+                          const res = await toggleAIISA(selectedContactId, checked)
+                          if (res.success) {
+                            setContactIntelligence((prev: any) =>
+                              prev ? { ...prev, ai_isa_enabled: checked } : prev
+                            )
+                            toast.success(checked ? "AI follow-up enabled" : "AI follow-up disabled")
+                          } else {
+                            toast.error("Failed to update AI follow-up")
+                          }
+                        }}
+                      />
+                      <span className={cn("text-xs font-medium", contactIntelligence.ai_isa_enabled ? "text-emerald-600" : "text-muted-foreground")}>
+                        {contactIntelligence.ai_isa_enabled ? "AI Follow-up On" : "AI Follow-up Off"}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <Separator />
@@ -1637,54 +1660,36 @@ export default function CRMPage() {
                       />
                     </div>
 
-                    {/* Buyer Intelligence — merged from former "Full Buyer Profile" button */}
+                    {/* Buyer readiness signals — shown inline when data is available */}
                     {isBuyerContact && (buyerInsights || fatigueData) && (
-                      <Card className="border-blue-200">
-                        <CardHeader className="pb-2">
-                          <CardTitle className="text-sm flex items-center gap-2">
-                            <UserCircle className="h-4 w-4 text-blue-600" />
-                            Buyer Intelligence
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-3">
-                          {fatigueData && (
-                            <div className={cn("rounded p-2 text-sm",
-                              fatigueData.risk_level === "critical" ? "bg-red-50 text-red-800" :
-                              fatigueData.risk_level === "high"     ? "bg-orange-50 text-orange-800" :
-                              fatigueData.risk_level === "moderate" ? "bg-amber-50 text-amber-800" :
-                                                                      "bg-green-50 text-green-800"
-                            )}>
-                              <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
-                              <p className="text-xs mt-0.5">
-                                Score: {fatigueData.fatigue_score}/100 &middot; {fatigueData.days_searching} days searching &middot; {fatigueData.total_showings} showings
+                      <div className="rounded-lg border bg-blue-50/50 px-3 py-2 space-y-1">
+                        {fatigueData && (
+                          <div className={cn("rounded px-2 py-1 text-xs",
+                            fatigueData.risk_level === "critical" ? "bg-red-100 text-red-800" :
+                            fatigueData.risk_level === "high"     ? "bg-orange-100 text-orange-800" :
+                            fatigueData.risk_level === "moderate" ? "bg-amber-100 text-amber-800" :
+                                                                    "bg-green-100 text-green-800"
+                          )}>
+                            <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
+                            <p className="mt-0.5">
+                              Score: {fatigueData.fatigue_score}/100 &middot; {fatigueData.days_searching}d searching &middot; {fatigueData.total_showings} showings
                               </p>
                             </div>
                           )}
-                          {buyerInsights?.prediction && (
-                            <div className="space-y-1 text-xs">
-                              {buyerInsights.prediction.predicted_ready_to_offer && (
-                                <p className="text-green-700 font-medium">Ready to make an offer</p>
-                              )}
-                              {buyerInsights.prediction.predicted_next_action && (
-                                <p className="text-blue-700">Next predicted action: {buyerInsights.prediction.predicted_next_action}</p>
-                              )}
-                              {buyerInsights.prediction.engagement_velocity && (
-                                <p className="text-muted-foreground capitalize">Engagement: {buyerInsights.prediction.engagement_velocity}</p>
-                              )}
-                            </div>
-                          )}
-                          {isBuyerContact && (
-                            <BuyerMatchPanel
-                              contactId={selectedContactId}
-                              agentId={agentId || ""}
-                              brokerageId={brokerageId || ""}
-                              isBuyerContact={isBuyerContact}
-                              buyerStage={selectedContact.buyer_stage}
-                              contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
-                            />
-                          )}
-                        </CardContent>
-                      </Card>
+                        {buyerInsights?.prediction && (
+                          <div className="space-y-0.5 text-xs">
+                            {buyerInsights.prediction.predicted_ready_to_offer && (
+                              <p className="text-green-700 font-medium">Ready to make an offer</p>
+                            )}
+                            {buyerInsights.prediction.predicted_next_action && (
+                              <p className="text-blue-700">Predicted next: {buyerInsights.prediction.predicted_next_action}</p>
+                            )}
+                            {buyerInsights.prediction.engagement_velocity && (
+                              <p className="text-muted-foreground capitalize">Engagement: {buyerInsights.prediction.engagement_velocity}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     <TimelineContextPanel
@@ -2371,67 +2376,33 @@ export default function CRMPage() {
                   {/* ── PROPERTIES TAB (buyers only) ── */}
                   {isBuyerContact && (
                     <TabsContent value="properties" className="space-y-4 mt-0">
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <CardTitle className="text-sm">Buyer Search Criteria</CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-3 text-sm">
+                      {/* Search criteria summary row */}
+                      {((selectedContact as any).preferred_location || (selectedContact as any).budget_min) && (
+                        <div className="rounded-lg border bg-muted/30 px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                           {(selectedContact as any).preferred_location && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Preferred Location</span>
-                              <span className="font-medium">{(selectedContact as any).preferred_location}</span>
-                            </div>
+                            <div><span className="text-muted-foreground block">Location</span><span className="font-medium">{(selectedContact as any).preferred_location}</span></div>
                           )}
                           {(selectedContact as any).budget_min && (selectedContact as any).budget_max && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Budget</span>
-                              <span className="font-medium">
-                                ${Number((selectedContact as any).budget_min).toLocaleString()} – $
-                                {Number((selectedContact as any).budget_max).toLocaleString()}
-                              </span>
-                            </div>
+                            <div><span className="text-muted-foreground block">Budget</span><span className="font-medium">${Number((selectedContact as any).budget_min).toLocaleString()} – ${Number((selectedContact as any).budget_max).toLocaleString()}</span></div>
                           )}
                           {(selectedContact as any).preferred_bedrooms && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Bedrooms</span>
-                              <span className="font-medium">{(selectedContact as any).preferred_bedrooms}+</span>
-                            </div>
-                          )}
-                          {(selectedContact as any).preferred_bathrooms && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Bathrooms</span>
-                              <span className="font-medium">{(selectedContact as any).preferred_bathrooms}+</span>
-                            </div>
+                            <div><span className="text-muted-foreground block">Beds</span><span className="font-medium">{(selectedContact as any).preferred_bedrooms}+</span></div>
                           )}
                           {(selectedContact as any).move_timeline && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Move Timeline</span>
-                              <span className="font-medium">{(selectedContact as any).move_timeline}</span>
-                            </div>
+                            <div><span className="text-muted-foreground block">Timeline</span><span className="font-medium">{(selectedContact as any).move_timeline}</span></div>
                           )}
-                          {!(selectedContact as any).preferred_location && !(selectedContact as any).budget_min && (
-                            <p className="text-muted-foreground text-center py-4">
-                              No search criteria recorded yet
-                            </p>
-                          )}
-                        </CardContent>
-                      </Card>
+                        </div>
+                      )}
 
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <CardTitle className="text-sm">Saved Properties</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="text-sm text-muted-foreground text-center py-4">
-                            Saved properties will appear here from the buyer portal.
-                          </p>
-                          <Link href={`/portal/${selectedContactId}/properties`} target="_blank">
-                            <Button size="sm" variant="outline" className="w-full">
-                              Open Buyer Portal
-                            </Button>
-                          </Link>
-                        </CardContent>
-                      </Card>
+                      {/* AI property matching — full BuyerMatchPanel with PropertyAlertsPanel inside */}
+                      <BuyerMatchPanel
+                        contactId={selectedContactId}
+                        agentId={agentId || ""}
+                        brokerageId={brokerageId || ""}
+                        isBuyerContact={isBuyerContact}
+                        buyerStage={selectedContact.buyer_stage}
+                        contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
+                      />
                     </TabsContent>
                   )}
 
@@ -2580,26 +2551,6 @@ export default function CRMPage() {
                                 negativeLabel="No consent"
                                 positiveLabel={contactIntelligence.tcpa_consent_source ?? "OK"}
                               />
-                              <div className="flex flex-col items-center gap-1 min-w-[72px]">
-                                <span className="text-xs text-muted-foreground font-medium">AI Follow-up</span>
-                                <Switch
-                                  checked={contactIntelligence.ai_isa_enabled === true}
-                                  onCheckedChange={async (checked) => {
-                                    const res = await toggleAIISA(selectedContactId, checked)
-                                    if (res.success) {
-                                      setContactIntelligence((prev: any) =>
-                                        prev ? { ...prev, ai_isa_enabled: checked } : prev
-                                      )
-                                      toast.success(checked ? "AI follow-up enabled" : "AI follow-up disabled")
-                                    } else {
-                                      toast.error("Failed to update AI follow-up")
-                                    }
-                                  }}
-                                />
-                                <span className={`text-[10px] ${contactIntelligence.ai_isa_enabled ? "text-emerald-600 font-semibold" : "text-muted-foreground"}`}>
-                                  {contactIntelligence.ai_isa_enabled ? "On" : "Off"}
-                                </span>
-                              </div>
                               <Flag
                                 label="AI outreach paused"
                                 ok={!contactIntelligence.ai_outreach_paused}
@@ -2610,15 +2561,24 @@ export default function CRMPage() {
                         </Card>
 
                         {/* Score factors */}
-                        {contactIntelligence.latest_score_factors && (
+                        {contactIntelligence.latest_score_factors && typeof contactIntelligence.latest_score_factors === "object" && (
                           <Card>
                             <CardHeader className="pb-3">
                               <CardTitle className="text-sm">Score factors</CardTitle>
                             </CardHeader>
                             <CardContent>
-                              <pre className="text-xs bg-muted/30 rounded p-3 overflow-x-auto">
-                                {JSON.stringify(contactIntelligence.latest_score_factors, null, 2)}
-                              </pre>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
+                                {Object.entries(contactIntelligence.latest_score_factors as Record<string, unknown>)
+                                  .filter(([, v]) => v !== null && v !== undefined && v !== "")
+                                  .map(([k, v]) => (
+                                    <div key={k} className="flex justify-between gap-2">
+                                      <span className="text-muted-foreground capitalize">{k.replace(/_/g, " ")}</span>
+                                      <span className="font-medium text-right max-w-[140px] truncate">
+                                        {typeof v === "boolean" ? (v ? "Yes" : "No") : String(v)}
+                                      </span>
+                                    </div>
+                                  ))}
+                              </div>
                             </CardContent>
                           </Card>
                         )}
@@ -2944,6 +2904,11 @@ export default function CRMPage() {
                         >
                           <TrendingUp className="h-3 w-3 mr-1" />
                           {leadScores[contact.id].label} Conversion
+                        </Badge>
+                      )}
+                      {(contact as any).ai_isa_enabled && (
+                        <Badge className="text-xs bg-emerald-100 text-emerald-700">
+                          AI Follow-up
                         </Badge>
                       )}
                     </div>

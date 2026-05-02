@@ -164,7 +164,7 @@ Be thorough but practical. Focus on actionable issues.`,
 
     // Log compliance event if issues found
     if (review.issues.length > 0) {
-      await supabase.from("compliance_events").insert({
+      await supabase.from("compliance_checks").insert({
         transaction_id: params.transactionId,
         agent_id: params.agentId,
         event_type: "contract_review_issues",
