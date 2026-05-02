@@ -83,6 +83,25 @@ export async function getLifetimeContext(contactId: string) {
     preferredVendors = vendors || []
   }
 
+  // Get neighborhood activity (recent listings near same city/address)
+  let neighborhoodListings: any[] = []
+  if (transaction?.property_address) {
+    // Extract city/zip from address - simple heuristic: last 2 parts after last comma
+    const parts = transaction.property_address.split(",").map((p: string) => p.trim())
+    const cityState = parts.length >= 2 ? parts[parts.length - 2] : parts[0]
+    if (cityState) {
+      const { data: nearby } = await supabase
+        .from("listings")
+        .select("id, address, list_price, status, created_at")
+        .ilike("address", `%${cityState}%`)
+        .in("status", ["active", "sold", "pending"])
+        .neq("id", (transaction as any).listing_id ?? "00000000-0000-0000-0000-000000000000")
+        .order("created_at", { ascending: false })
+        .limit(5)
+      neighborhoodListings = nearby ?? []
+    }
+  }
+
   return {
     contact,
     agent: agentInfo,
@@ -91,6 +110,7 @@ export async function getLifetimeContext(contactId: string) {
     touchpoints: touchpoints || [],
     referrals: referrals || [],
     preferredVendors,
+    neighborhoodListings,
   }
 }
 

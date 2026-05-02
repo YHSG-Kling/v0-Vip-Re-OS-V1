@@ -353,6 +353,162 @@ Create a complete checklist of all required and recommended documents, marking w
   }
 }
 
+// Extract key contract terms from raw contract text using AI
+export async function extractContractTerms(params: {
+  contractText: string
+  transactionId: string
+  agentId: string
+}): Promise<{
+  success: boolean
+  extracted?: {
+    purchasePrice: number | null
+    earnestMoneyAmount: number | null
+    inspectionDeadline: string | null
+    appraisalDeadline: string | null
+    financingDeadline: string | null
+    closingDate: string | null
+    buyerName: string | null
+    sellerName: string | null
+    propertyAddress: string | null
+  }
+  error?: string
+}> {
+  try {
+    const ContractTermsSchema = z.object({
+      purchasePrice: z.number().nullable(),
+      earnestMoneyAmount: z.number().nullable(),
+      inspectionDeadline: z.string().nullable(),
+      appraisalDeadline: z.string().nullable(),
+      financingDeadline: z.string().nullable(),
+      closingDate: z.string().nullable(),
+      buyerName: z.string().nullable(),
+      sellerName: z.string().nullable(),
+      propertyAddress: z.string().nullable(),
+    })
+
+    const { object: extracted } = await generateObject({
+      model: resolveModel("openai/gpt-4o"),
+      schema: ContractTermsSchema,
+      prompt: `Extract key fields from this real estate purchase contract. Return all monetary values as numbers (no currency symbols), all dates as ISO 8601 strings (YYYY-MM-DD), and return null for any field not found in the contract.
+
+CONTRACT TEXT:
+${params.contractText}`,
+    })
+
+    return { success: true, extracted }
+  } catch (error) {
+    console.error("[extractContractTerms Error]:", error)
+    return { success: false, error: error instanceof Error ? error.message : "Failed to extract contract terms" }
+  }
+}
+
+// Apply extracted contract terms to the transaction and create milestone rows
+export async function applyContractExtraction(params: {
+  transactionId: string
+  agentId: string
+  extracted: {
+    purchasePrice: number | null
+    earnestMoneyAmount: number | null
+    inspectionDeadline: string | null
+    appraisalDeadline: string | null
+    financingDeadline: string | null
+    closingDate: string | null
+    buyerName: string | null
+    sellerName: string | null
+    propertyAddress: string | null
+  }
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+
+  try {
+    // Build transaction updates from non-null extracted values
+    const transactionUpdates: Record<string, unknown> = {}
+
+    if (params.extracted.purchasePrice !== null) {
+      transactionUpdates.contract_price = params.extracted.purchasePrice
+    }
+    if (params.extracted.earnestMoneyAmount !== null) {
+      transactionUpdates.earnest_money_amount = params.extracted.earnestMoneyAmount
+    }
+    if (params.extracted.closingDate !== null) {
+      transactionUpdates.close_date = params.extracted.closingDate
+    }
+    if (params.extracted.propertyAddress !== null) {
+      transactionUpdates.property_address = params.extracted.propertyAddress
+    }
+
+    // Update the transactions row if there is anything to update
+    if (Object.keys(transactionUpdates).length > 0) {
+      const { error: txError } = await supabase
+        .from("transactions")
+        .update(transactionUpdates)
+        .eq("id", params.transactionId)
+
+      if (txError) {
+        return { success: false, error: txError.message }
+      }
+    }
+
+    // Upsert milestone rows for each deadline
+    const milestoneEntries: Array<{
+      transaction_id: string
+      milestone_name: string
+      status: string
+      due_date: string
+    }> = []
+
+    if (params.extracted.inspectionDeadline !== null) {
+      milestoneEntries.push({
+        transaction_id: params.transactionId,
+        milestone_name: "inspection_deadline",
+        status: "pending",
+        due_date: params.extracted.inspectionDeadline,
+      })
+    }
+    if (params.extracted.appraisalDeadline !== null) {
+      milestoneEntries.push({
+        transaction_id: params.transactionId,
+        milestone_name: "appraisal_deadline",
+        status: "pending",
+        due_date: params.extracted.appraisalDeadline,
+      })
+    }
+    if (params.extracted.financingDeadline !== null) {
+      milestoneEntries.push({
+        transaction_id: params.transactionId,
+        milestone_name: "financing_deadline",
+        status: "pending",
+        due_date: params.extracted.financingDeadline,
+      })
+    }
+    if (params.extracted.closingDate !== null) {
+      milestoneEntries.push({
+        transaction_id: params.transactionId,
+        milestone_name: "closing_day",
+        status: "pending",
+        due_date: params.extracted.closingDate,
+      })
+    }
+
+    for (const milestone of milestoneEntries) {
+      const { error: msError } = await supabase
+        .from("transaction_milestones")
+        .upsert(milestone, { onConflict: "transaction_id,milestone_name" })
+
+      if (msError) {
+        return { success: false, error: msError.message }
+      }
+    }
+
+    revalidatePath(`/transactions/${params.transactionId}`)
+
+    return { success: true }
+  } catch (error) {
+    console.error("[applyContractExtraction Error]:", error)
+    return { success: false, error: error instanceof Error ? error.message : "Failed to apply contract extraction" }
+  }
+}
+
 // Helper to infer document type from name
 function inferDocumentType(name: string): "purchase_agreement" | "listing_agreement" | "disclosure" | "addendum" | "amendment" | "other" {
   const lower = name.toLowerCase()

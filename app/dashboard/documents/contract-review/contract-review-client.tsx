@@ -4,6 +4,9 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -14,8 +17,17 @@ import {
   Loader2,
   ShieldCheck,
   ClipboardList,
+  Scan,
+  Save,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
-import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
+import {
+  reviewTransactionDocuments,
+  generateDocumentChecklist,
+  extractContractTerms,
+  applyContractExtraction,
+} from "@/app/actions/ai-contract-review"
 
 interface Transaction {
   id: string
@@ -69,7 +81,79 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
   const [checklist, setChecklist] = useState<any>(null)
   const [activeTab, setActiveTab] = useState<"review" | "checklist">("review")
 
+  // Contract extraction state
+  const [extractOpen, setExtractOpen] = useState(false)
+  const [contractText, setContractText] = useState("")
+  const [extracting, setExtracting] = useState(false)
+  const [extractResult, setExtractResult] = useState<any>(null)
+  const [savingExtract, setSavingExtract] = useState(false)
+  // Editable fields from extraction
+  const [exPurchasePrice, setExPurchasePrice] = useState("")
+  const [exEarnestMoney, setExEarnestMoney] = useState("")
+  const [exInspectionDate, setExInspectionDate] = useState("")
+  const [exAppraisalDate, setExAppraisalDate] = useState("")
+  const [exFinancingDate, setExFinancingDate] = useState("")
+  const [exClosingDate, setExClosingDate] = useState("")
+  const [exBuyerName, setExBuyerName] = useState("")
+  const [exSellerName, setExSellerName] = useState("")
+  const [exPropertyAddress, setExPropertyAddress] = useState("")
+
   const selectedTx = transactions.find((t) => t.id === selectedTxId)
+
+  async function handleExtract() {
+    if (!selectedTxId || !contractText.trim()) return
+    setExtracting(true)
+    setExtractResult(null)
+    try {
+      const res = await extractContractTerms({
+        contractText,
+        transactionId: selectedTxId,
+        agentId,
+      })
+      if (res.success && res.extracted) {
+        setExtractResult(res.extracted)
+        setExPurchasePrice(res.extracted.purchasePrice != null ? String(res.extracted.purchasePrice) : "")
+        setExEarnestMoney(res.extracted.earnestMoneyAmount != null ? String(res.extracted.earnestMoneyAmount) : "")
+        setExInspectionDate(res.extracted.inspectionDeadline ?? "")
+        setExAppraisalDate(res.extracted.appraisalDeadline ?? "")
+        setExFinancingDate(res.extracted.financingDeadline ?? "")
+        setExClosingDate(res.extracted.closingDate ?? "")
+        setExBuyerName(res.extracted.buyerName ?? "")
+        setExSellerName(res.extracted.sellerName ?? "")
+        setExPropertyAddress(res.extracted.propertyAddress ?? "")
+      }
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  async function handleSaveExtract() {
+    if (!selectedTxId || !extractResult) return
+    setSavingExtract(true)
+    try {
+      const res = await applyContractExtraction({
+        transactionId: selectedTxId,
+        agentId,
+        extracted: {
+          purchasePrice: exPurchasePrice ? Number(exPurchasePrice) : null,
+          earnestMoneyAmount: exEarnestMoney ? Number(exEarnestMoney) : null,
+          inspectionDeadline: exInspectionDate || null,
+          appraisalDeadline: exAppraisalDate || null,
+          financingDeadline: exFinancingDate || null,
+          closingDate: exClosingDate || null,
+          buyerName: exBuyerName || null,
+          sellerName: exSellerName || null,
+          propertyAddress: exPropertyAddress || null,
+        },
+      })
+      if (res.success) {
+        setExtractResult(null)
+        setContractText("")
+      }
+    } finally {
+      setSavingExtract(false)
+    }
+  }
 
   async function handleReview() {
     if (!selectedTxId) return
@@ -190,6 +274,106 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
             </Button>
           </div>
         </CardContent>
+      </Card>
+
+      {/* ─── CONTRACT DATA EXTRACTION ─────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-2">
+          <button
+            className="flex items-center justify-between w-full text-left"
+            onClick={() => setExtractOpen((o) => !o)}
+          >
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Scan className="h-4 w-4 text-primary" />
+                Extract Contract Terms
+              </CardTitle>
+              <CardDescription className="mt-0.5 text-xs">
+                Paste contract text → AI extracts purchase price, deadlines, and parties → auto-populates transaction record
+              </CardDescription>
+            </div>
+            {extractOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+          </button>
+        </CardHeader>
+        {extractOpen && (
+          <CardContent className="space-y-4">
+            {!selectedTxId && (
+              <p className="text-xs text-amber-600">Select a transaction above before extracting contract terms.</p>
+            )}
+            <div>
+              <Label className="text-xs">Paste contract text below</Label>
+              <Textarea
+                value={contractText}
+                onChange={(e) => setContractText(e.target.value)}
+                placeholder="Paste the full text of the purchase agreement here…"
+                rows={6}
+                className="mt-1 text-xs font-mono resize-y"
+              />
+            </div>
+            <Button
+              onClick={handleExtract}
+              disabled={!selectedTxId || !contractText.trim() || extracting}
+              className="gap-1.5"
+            >
+              {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scan className="h-4 w-4" />}
+              Extract Terms
+            </Button>
+
+            {extractResult && (
+              <div className="space-y-3 pt-2 border-t">
+                <p className="text-sm font-medium">Extracted terms — review and edit before saving</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Purchase price</Label>
+                    <Input value={exPurchasePrice} onChange={(e) => setExPurchasePrice(e.target.value)} placeholder="0" type="number" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Earnest money</Label>
+                    <Input value={exEarnestMoney} onChange={(e) => setExEarnestMoney(e.target.value)} placeholder="0" type="number" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Inspection deadline</Label>
+                    <Input value={exInspectionDate} onChange={(e) => setExInspectionDate(e.target.value)} type="date" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Appraisal deadline</Label>
+                    <Input value={exAppraisalDate} onChange={(e) => setExAppraisalDate(e.target.value)} type="date" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Financing deadline</Label>
+                    <Input value={exFinancingDate} onChange={(e) => setExFinancingDate(e.target.value)} type="date" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Closing date</Label>
+                    <Input value={exClosingDate} onChange={(e) => setExClosingDate(e.target.value)} type="date" className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Buyer name</Label>
+                    <Input value={exBuyerName} onChange={(e) => setExBuyerName(e.target.value)} className="h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Seller name</Label>
+                    <Input value={exSellerName} onChange={(e) => setExSellerName(e.target.value)} className="h-8 mt-1" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label className="text-xs">Property address</Label>
+                    <Input value={exPropertyAddress} onChange={(e) => setExPropertyAddress(e.target.value)} className="h-8 mt-1" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button onClick={handleSaveExtract} disabled={savingExtract} className="gap-1.5">
+                    {savingExtract ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Save to Transaction + Create Milestones
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setExtractResult(null)}>Clear</Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Saving will update the transaction record and create milestone entries for each deadline.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        )}
       </Card>
 
       {/* Tab selector when both are loaded */}

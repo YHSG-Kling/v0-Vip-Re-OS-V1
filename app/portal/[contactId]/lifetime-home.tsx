@@ -6,6 +6,8 @@ import { CongratsCard } from "@/app/components/portal/lifetime/CongratsCard"
 import { MyHomeCard } from "@/app/components/portal/lifetime/MyHomeCard"
 import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstimateCard"
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
+import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
+import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import {
   Bell,
@@ -36,7 +38,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     )
   }
 
-  const { contact, transaction, homeValueEstimate, touchpoints, preferredVendors } = context
+  const { contact, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
   const firstName = contact.first_name || contact.name?.split(" ")[0] || "Homeowner"
   const agentName = (contact as any).agents?.name
 
@@ -99,7 +101,21 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           generatedAt={homeValueEstimate?.generated_at}
         />
 
-        {/* 4. Market Updates Preview */}
+        {/* 4. Neighborhood Activity */}
+        <NeighborhoodActivityCard
+          listings={neighborhoodListings}
+          propertyAddress={transaction?.property_address}
+        />
+
+        {/* 5. Refinance Opportunity */}
+        {transaction?.sale_price && transaction.sale_price > 0 && (
+          <RefinanceIndicatorCard
+            purchasePrice={transaction.sale_price}
+            closeDate={transaction.close_date}
+          />
+        )}
+
+        {/* 6. Market Updates Preview */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
