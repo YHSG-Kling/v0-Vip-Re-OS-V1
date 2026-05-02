@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
-import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2 } from "lucide-react"
+import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2, Scissors } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/app/components/ui/dialog"
 import { Input } from "@/app/components/ui/input"
 import { Label } from "@/app/components/ui/label"
@@ -13,6 +13,8 @@ import { EpisodesTab } from "./components/episodes-tab"
 import { TemplatesTab } from "./components/templates-tab"
 import { DistributionChannelsTab } from "./components/distribution-channels-tab"
 import { CreateEpisodeDialog } from "./components/create-episode-dialog"
+import { AnalyticsTab } from "./components/analytics-tab"
+import { RepurposeTab } from "./components/repurpose-tab"
 import {
   getPodcastEpisodes,
   getPodcastTemplates,
@@ -245,6 +247,14 @@ export function PodcastDashboard({
                 <Radio className="h-4 w-4" />
                 Episodes
               </TabsTrigger>
+              <TabsTrigger value="analytics" className="gap-2">
+                <BarChart2 className="h-4 w-4" />
+                Analytics
+              </TabsTrigger>
+              <TabsTrigger value="repurpose" className="gap-2">
+                <Scissors className="h-4 w-4" />
+                Repurpose
+              </TabsTrigger>
               <TabsTrigger value="templates" className="gap-2">
                 <Settings className="h-4 w-4" />
                 Templates
@@ -264,6 +274,14 @@ export function PodcastDashboard({
                 onRefresh={loadData}
                 channels={channels}
               />
+            </TabsContent>
+
+            <TabsContent value="analytics" className="mt-0 h-full">
+              <AnalyticsTab />
+            </TabsContent>
+
+            <TabsContent value="repurpose" className="mt-0 h-full">
+              <RepurposeTab episodes={episodes} />
             </TabsContent>
 
             <TabsContent value="templates" className="mt-0 h-full">
