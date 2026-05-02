@@ -348,6 +348,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      { id: 'education', label: 'Education Content', href: '/dashboard/admin/education', icon: 'GraduationCap' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },

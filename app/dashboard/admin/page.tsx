@@ -3,6 +3,8 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { AdminDashboardClient } from './admin-dashboard-client'
 import { ProvisioningHealthPanel } from './components/provisioning-health-panel'
+import { LicenseExpiryPanel } from './components/os/license-expiry-panel'
+import { getBrokerageAgentLicenseStatuses } from '@/app/actions/admin/license-tracking'
 
 // Force dynamic rendering to prevent build-time prerendering errors
 export const dynamic = 'force-dynamic'
@@ -107,13 +109,16 @@ export default async function AdminPage() {
     degradedProviders:    (degradedProviders.data ?? []).map((r) => r.provider_name as string),
   }
 
+  const { agents: licenseAgents } = await getBrokerageAgentLicenseStatuses(brokerageId)
+
   return (
     <>
       <AdminDashboardClient
         brokerageId={brokerageId}
         operationalSnapshot={operationalSnapshot}
       />
-      <div className="px-6 pb-6">
+      <div className="px-6 pb-6 space-y-6">
+        <LicenseExpiryPanel agents={licenseAgents} />
         <ProvisioningHealthPanel brokerageId={brokerageId} />
       </div>
     </>

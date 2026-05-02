@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { getBuyerPortalMatches, type BuyerPortalMatch } from "@/app/actions/buyer-portal-matches"
+import { searchPropertiesWithNaturalLanguage } from "@/app/actions/buyer-property-search"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -34,6 +35,8 @@ import {
   Calculator,
   CheckCircle2,
   X,
+  Search,
+  Loader2,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -89,6 +92,38 @@ export default function BuyerPropertiesDashboard({
 }: BuyerPropertiesDashboardProps) {
   const [activeTab, setActiveTab] = useState("matches")
   const [priceRange, setPriceRange] = useState([300000, 600000])
+
+  // Natural language search
+  const [nlQuery, setNlQuery] = useState("")
+  const [nlResults, setNlResults] = useState<DisplayMatch[] | null>(null)
+  const [nlLoading, setNlLoading] = useState(false)
+
+  const handleNlSearch = async () => {
+    if (!nlQuery.trim()) { setNlResults(null); return }
+    setNlLoading(true)
+    try {
+      const result = await searchPropertiesWithNaturalLanguage({ contactId, naturalLanguageQuery: nlQuery })
+      if (result.success && "results" in result && result.results) {
+        setNlResults((result.results as any[]).map((r: any) => ({
+          id: r.listing_id,
+          address: r.address ?? r.city ?? r.listing_id,
+          city: r.city ?? "",
+          state: r.state ?? "",
+          price: r.price ?? r.list_price ?? 0,
+          beds: r.bedrooms ?? 0,
+          baths: r.bathrooms ?? 0,
+          sqft: r.sqft ?? 0,
+          matchScore: r.internal_match_score ?? r.match_score ?? 0,
+          matchReasons: r.match_reasons ?? [],
+          status: r.status ?? "active",
+          daysOnMarket: r.days_on_market ?? 0,
+          image: r.primary_photo_url ?? undefined,
+        })))
+      }
+    } finally {
+      setNlLoading(false)
+    }
+  }
 
   // Real matches loaded from cached property_matches (written by generatePropertyMatches).
   const [smartMatches, setSmartMatches] = useState<DisplayMatch[]>([])
@@ -182,7 +217,13 @@ export default function BuyerPropertiesDashboard({
   // Use real matches when loaded; otherwise show fallback so the portal
   // never renders an empty state for a brand-new buyer.
   const displayMatches: DisplayMatch[] =
-    smartMatches.length > 0 ? smartMatches : matchesLoading ? [] : fallbackMatches
+    nlResults !== null
+      ? nlResults
+      : smartMatches.length > 0
+        ? smartMatches
+        : matchesLoading
+          ? []
+          : fallbackMatches
 
   // Mock mortgage data
   const mortgageData = {
@@ -319,6 +360,35 @@ export default function BuyerPropertiesDashboard({
                   <Bell className="w-4 h-4 mr-2" /> Get Alerts
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Natural Language Search */}
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <p className="text-sm font-medium">Search in your own words</p>
+              <div className="flex gap-2">
+                <input
+                  value={nlQuery}
+                  onChange={(e) => setNlQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleNlSearch()}
+                  placeholder='e.g. "3-bed with pool near good schools under $600k"'
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+                <Button size="sm" onClick={handleNlSearch} disabled={nlLoading || !nlQuery.trim()}>
+                  {nlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                </Button>
+                {nlResults !== null && (
+                  <Button size="sm" variant="ghost" onClick={() => { setNlResults(null); setNlQuery("") }}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+              {nlResults !== null && (
+                <p className="text-xs text-muted-foreground">
+                  Showing {nlResults.length} AI-matched results for your search
+                </p>
+              )}
             </CardContent>
           </Card>
 
