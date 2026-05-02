@@ -123,3 +123,18 @@ export async function getContactIntelligence(contactId: string): Promise<{
     },
   }
 }
+
+export async function toggleAIISA(contactId: string, enabled: boolean) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "No brokerage context" }
+
+  const supabase = createServiceClient()
+  const { error } = await supabase
+    .from("contacts")
+    .update({ ai_isa_enabled: enabled })
+    .eq("id", contactId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}

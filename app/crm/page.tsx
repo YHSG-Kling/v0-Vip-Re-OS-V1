@@ -10,7 +10,7 @@ import {
   getContactTransactions,
   getContactActivity,
 } from "@/app/actions/contact-details"
-import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
+import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
@@ -253,7 +253,7 @@ export default function CRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
-  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor">("all")
+  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor" | "lifetime_customer">("all")
   const [loading, setLoading] = useState(true)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2580,13 +2580,26 @@ export default function CRMPage() {
                                 negativeLabel="No consent"
                                 positiveLabel={contactIntelligence.tcpa_consent_source ?? "OK"}
                               />
-                              <Flag
-                                label="AI ISA"
-                                ok={contactIntelligence.ai_isa_enabled === true}
-                                positiveLabel="Enabled"
-                                negativeLabel="Off"
-                                neutral
-                              />
+                              <div className="flex flex-col items-center gap-1 min-w-[72px]">
+                                <span className="text-xs text-muted-foreground font-medium">AI Follow-up</span>
+                                <Switch
+                                  checked={contactIntelligence.ai_isa_enabled === true}
+                                  onCheckedChange={async (checked) => {
+                                    const res = await toggleAIISA(selectedContactId, checked)
+                                    if (res.success) {
+                                      setContactIntelligence((prev: any) =>
+                                        prev ? { ...prev, ai_isa_enabled: checked } : prev
+                                      )
+                                      toast.success(checked ? "AI follow-up enabled" : "AI follow-up disabled")
+                                    } else {
+                                      toast.error("Failed to update AI follow-up")
+                                    }
+                                  }}
+                                />
+                                <span className={`text-[10px] ${contactIntelligence.ai_isa_enabled ? "text-emerald-600 font-semibold" : "text-muted-foreground"}`}>
+                                  {contactIntelligence.ai_isa_enabled ? "On" : "Off"}
+                                </span>
+                              </div>
                               <Flag
                                 label="AI outreach paused"
                                 ok={!contactIntelligence.ai_outreach_paused}
@@ -2643,13 +2656,16 @@ export default function CRMPage() {
     )
   }
 
-  // Apply contact-type filter from the type tabs (Buyer / Seller / Investor)
+  // Apply contact-type filter from the type tabs (Buyer / Seller / Investor / Lifetime)
   const displayedContacts =
     typeFilter === "all"
       ? filtered
       : filtered.filter((c) => {
           const t = (c.contact_type ?? "").toLowerCase()
           const p = (c.contact_persona ?? "").toLowerCase()
+          if (typeFilter === "lifetime_customer") {
+            return t === "lifetime_customer" || t === "past_client"
+          }
           return t.includes(typeFilter) || p.includes(typeFilter)
         })
 
@@ -2705,19 +2721,21 @@ export default function CRMPage() {
 
       {/* Contact type filter tabs */}
       <div className="flex gap-1 border-b">
-        {(["all", "buyer", "seller", "investor"] as const).map((t) => (
+        {(["all", "buyer", "seller", "investor", "lifetime_customer"] as const).map((t) => (
           <button
             key={t}
             type="button"
             onClick={() => setTypeFilter(t)}
             className={cn(
-              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px",
+              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px whitespace-nowrap",
               typeFilter === t
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             )}
           >
-            {t === "all" ? "All Contacts" : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
+            {t === "all" ? "All Contacts"
+              : t === "lifetime_customer" ? "Lifetime Customers"
+              : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
           </button>
         ))}
       </div>
@@ -2873,7 +2891,7 @@ export default function CRMPage() {
       {/* Empty state for active type filter when underlying list is non-empty */}
       {!loading && filtered.length > 0 && displayedContacts.length === 0 && (
         <div className="text-center py-8 text-sm text-muted-foreground">
-          No {typeFilter} contacts.{" "}
+          No {typeFilter === "lifetime_customer" ? "lifetime customer" : typeFilter} contacts.{" "}
           <button className="underline text-primary" onClick={() => setTypeFilter("all")}>
             Show all
           </button>
