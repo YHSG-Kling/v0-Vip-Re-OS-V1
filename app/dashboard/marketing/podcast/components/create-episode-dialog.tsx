@@ -31,9 +31,12 @@ import {
   Mic2,
   Settings,
   Upload,
+  Play,
+  AlertCircle,
 } from "lucide-react"
 import {
   createPodcastEpisode,
+  generatePodcastAudio,
   generatePodcastEpisodeDescription,
   getVideoScriptsLibrary,
   getVideoProjects,
@@ -129,6 +132,12 @@ export function CreateEpisodeDialog({
   const [category, setCategory] = useState("general")
   const [selectedChannels, setSelectedChannels] = useState<string[]>([])
 
+  // Audio generation state (step 3)
+  const [generatingAudio, setGeneratingAudio] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [audioError, setAudioError] = useState<string | null>(null)
+  const [createdEpisodeId, setCreatedEpisodeId] = useState<string | null>(null)
+
   const handleGenerateDescription = async () => {
     if (!title.trim()) return
     setGeneratingDesc(true)
@@ -193,6 +202,10 @@ export function CreateEpisodeDialog({
     setTemplateId("")
     setCategory("general")
     setSelectedChannels([])
+    setGeneratingAudio(false)
+    setAudioUrl(null)
+    setAudioError(null)
+    setCreatedEpisodeId(null)
   }
 
   function handleAddKeyword() {
@@ -255,13 +268,18 @@ export function CreateEpisodeDialog({
   async function handleCreate() {
     setProcessing(true)
     try {
+      // If episode was already created during audio preview, just mark it ready and close
+      if (createdEpisodeId) {
+        onCreated()
+        return
+      }
       const result = await createPodcastEpisode({
         title,
         description,
         script: sourceType === "keywords" ? undefined : script,
         keywords: sourceType === "keywords" ? keywords : undefined,
         templateId: templateId || undefined,
-        voiceId: voiceId || undefined,
+        voiceId: voiceId !== "default" ? voiceId : undefined,
         category,
         sourceVideoProjectId: selectedProjectId || undefined,
         publishChannels: selectedChannels.length > 0 ? selectedChannels : undefined,
@@ -269,9 +287,6 @@ export function CreateEpisodeDialog({
 
       if (result.success) {
         onCreated()
-      } else {
-        console.error("Failed to create episode:", result.error)
-        // Could show error toast here
       }
     } finally {
       setProcessing(false)
@@ -565,21 +580,94 @@ export function CreateEpisodeDialog({
             </div>
           )}
 
-          {/* Step 3: Voice */}
+          {/* Step 3: Voice & Audio */}
           {currentStep === 2 && (
             <div className="flex flex-col gap-4">
-              <p className="text-sm text-gray-600">
-                Select the voice for your podcast narration.
-              </p>
+              <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm">
+                <p className="font-medium mb-1">Your cloned voice</p>
+                <p className="text-muted-foreground text-xs">
+                  Audio is generated using the ElevenLabs voice clone set up in{" "}
+                  <a href="/dashboard/settings/integrations" className="underline text-primary">Settings → Integrations → Voice Setup</a>.
+                  If not configured, generation will fail with a clear error.
+                </p>
+              </div>
+
+              {audioError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                  <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                  <p className="text-xs text-red-700">{audioError}</p>
+                </div>
+              )}
+
+              {audioUrl ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-emerald-700 font-medium">Audio generated successfully</p>
+                  <audio src={audioUrl} controls className="w-full h-10" />
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="gap-2 w-full"
+                  disabled={generatingAudio || !title || (!script && keywords.length === 0)}
+                  onClick={async () => {
+                    setGeneratingAudio(true)
+                    setAudioError(null)
+                    try {
+                      // Create draft episode first to get an ID
+                      const created = await createPodcastEpisode({
+                        title,
+                        description,
+                        script: sourceType === "keywords" ? undefined : script,
+                        keywords: sourceType === "keywords" ? keywords : undefined,
+                        templateId: templateId || undefined,
+                        voiceId: voiceId !== "default" ? voiceId : undefined,
+                        category,
+                        sourceVideoProjectId: selectedProjectId || undefined,
+                      })
+                      if (!created.success || !created.episode?.id) {
+                        setAudioError(created.error ?? "Failed to create episode record")
+                        return
+                      }
+                      setCreatedEpisodeId(created.episode.id)
+                      const audioResult = await generatePodcastAudio(created.episode.id)
+                      if (audioResult.success && audioResult.episode?.audio_url) {
+                        setAudioUrl(audioResult.episode.audio_url)
+                      } else {
+                        setAudioError(
+                          audioResult.error ??
+                          "Audio generation failed. Make sure your ElevenLabs voice clone is configured in Settings → Integrations → Voice Setup."
+                        )
+                      }
+                    } catch (err: any) {
+                      setAudioError(err?.message ?? "Unexpected error during audio generation")
+                    } finally {
+                      setGeneratingAudio(false)
+                    }
+                  }}
+                >
+                  {generatingAudio ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generating audio…
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4" />
+                      Generate Audio Preview
+                    </>
+                  )}
+                </Button>
+              )}
 
               <div className="flex flex-col gap-2">
-                <Label htmlFor="voice">Voice</Label>
+                <Label>Override voice (optional)</Label>
                 <Select value={voiceId} onValueChange={setVoiceId}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select voice" />
+                    <SelectValue placeholder="Use agent's cloned voice" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">Default Voice</SelectItem>
+                    <SelectItem value="default">Agent's cloned voice (default)</SelectItem>
                     {heygenVoices.map((v) => (
                       <SelectItem key={v.voice_id} value={v.voice_id}>
                         {v.name}{v.language && v.language !== "en" ? ` (${v.language})` : ""}{v.gender ? ` · ${v.gender}` : ""}
@@ -587,9 +675,6 @@ export function CreateEpisodeDialog({
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-gray-500">
-                  Voice settings can be customized further in your template.
-                </p>
               </div>
             </div>
           )}
