@@ -144,7 +144,7 @@ export async function getContactActivity(contactId: string) {
   const supabase = await createClient()
 
   // Fetch all activity types
-  const [conversations, messages, tasks, activities] = await Promise.all([
+  const [conversations, messages, tasks, activities, portalActivity] = await Promise.all([
     supabase
       .from("conversations")
       .select("*")
@@ -168,30 +168,42 @@ export async function getContactActivity(contactId: string) {
       .select("*")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("client_portal_activity")
+      .select("id, contact_id, activity_type, metadata, created_at")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
       .limit(50)
   ])
 
   // Combine and sort by date
   const activity = [
-    ...(conversations.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "conversation", 
-      activity_date: item.created_at 
+    ...(conversations.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "conversation",
+      activity_date: item.created_at
     })),
-    ...(messages.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "message", 
-      activity_date: item.created_at 
+    ...(messages.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "message",
+      activity_date: item.created_at
     })),
-    ...(tasks.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "task", 
-      activity_date: item.created_at 
+    ...(tasks.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "task",
+      activity_date: item.created_at
     })),
-    ...(activities.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "activity", 
-      activity_date: item.created_at 
+    ...(activities.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "activity",
+      activity_date: item.created_at
+    })),
+    ...(portalActivity.data || []).map((item: any) => ({
+      ...item,
+      activity_type: item.activity_type ?? "portal_view",
+      activity_date: item.created_at,
+      notes: item.metadata ? JSON.stringify(item.metadata) : "Portal activity",
     }))
   ].sort((a, b) => new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime())
 
