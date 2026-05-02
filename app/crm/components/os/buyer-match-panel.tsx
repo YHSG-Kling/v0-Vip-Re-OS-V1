@@ -1,13 +1,15 @@
 "use client"
 
 import { useState, useRef } from "react"
+import ReactMarkdown from "react-markdown"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, FlaskConical, CheckCircle2, AlertCircle } from "lucide-react"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, CheckCircle2, AlertCircle } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
   previewSearchIntent,
@@ -83,21 +85,21 @@ export function BuyerMatchPanel({
   const [sendingEmail, setSendingEmail] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<any>(null)
   const [matches, setMatches] = useState<PropertyMatch[]>([])
-  const [selectedMatch, setSelectedMatch] = useState<string | null>(null)
-  const [explanation, setExplanation] = useState<string | null>(null)
   const [showingForm, setShowingForm] = useState<string | null>(null)
   const [showingDate, setShowingDate] = useState("")
   const [showingNotes, setShowingNotes] = useState("")
   const [loading, setLoading] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [explainLoading, setExplainLoading] = useState<string | null>(null)
   const [showingLoading, setShowingLoading] = useState(false)
-  // Deep analysis per property
-  const [deepAnalysisLoading, setDeepAnalysisLoading] = useState<string | null>(null)
-  const [deepAnalysisResults, setDeepAnalysisResults] = useState<Record<string, any>>({})
   // Notify new matches
   const [notifyLoading, setNotifyLoading] = useState(false)
   const [notifyResult, setNotifyResult] = useState<{ notified: number } | null>(null)
+  // Analysis Sheet
+  const [analysisSheetMatch, setAnalysisSheetMatch] = useState<PropertyMatch | null>(null)
+  const [analysisSheetLoading, setAnalysisSheetLoading] = useState(false)
+  const [analysisSheetData, setAnalysisSheetData] = useState<{ explanation: string | null; deep: any | null }>(
+    { explanation: null, deep: null }
+  )
 
   // Only render for buyer contacts
   if (!isBuyerContact) {
@@ -169,28 +171,6 @@ export function BuyerMatchPanel({
     }
   }
 
-  const handleExplainMatch = async (listingId: string) => {
-    setExplainLoading(listingId)
-    setSelectedMatch(listingId)
-    try {
-      const result = await explainPropertyMatchForBuyer({ contactId, listingId })
-      if (result.success) {
-        const expl = (result as any).explanation
-        if (typeof expl === "string") {
-          setExplanation(expl)
-        } else if (expl && typeof expl === "object") {
-          setExplanation(expl.narrative ?? expl.headline ?? "This property matches based on your criteria.")
-        } else {
-          setExplanation("This property matches based on your criteria.")
-        }
-      }
-    } catch (err) {
-      console.error("Explain match failed:", err)
-    } finally {
-      setExplainLoading(null)
-    }
-  }
-
   const handleFeedback = async (listingId: string, feedback: "liked" | "disliked") => {
     try {
       await learnFromBuyerFeedback({ contactId, propertyId: listingId, feedback, agentId })
@@ -227,17 +207,26 @@ export function BuyerMatchPanel({
     }
   }
 
-  const handleDeepAnalysis = async (listingId: string) => {
-    setDeepAnalysisLoading(listingId)
+  const handleOpenAnalysisSheet = async (match: PropertyMatch) => {
+    setAnalysisSheetMatch(match)
+    setAnalysisSheetData({ explanation: null, deep: null })
+    setAnalysisSheetLoading(true)
     try {
-      const result = await analyzePropertyForBuyer({ contactId, propertyId: listingId, agentId })
-      if (result.success) {
-        setDeepAnalysisResults((prev) => ({ ...prev, [listingId]: result }))
-      }
+      const [explainRes, deepRes] = await Promise.all([
+        explainPropertyMatchForBuyer({ contactId, listingId: match.listing_id }),
+        analyzePropertyForBuyer({ contactId, propertyId: match.listing_id, agentId }),
+      ])
+      const expl = (explainRes as any).explanation
+      const explanationText =
+        typeof expl === "string" ? expl
+        : expl && typeof expl === "object" ? (expl.narrative ?? expl.headline ?? null)
+        : null
+      const deepData = deepRes.success ? deepRes : null
+      setAnalysisSheetData({ explanation: explanationText, deep: deepData })
     } catch (err) {
-      console.error("Deep analysis failed:", err)
+      console.error("Analysis sheet fetch failed:", err)
     } finally {
-      setDeepAnalysisLoading(null)
+      setAnalysisSheetLoading(false)
     }
   }
 
@@ -428,14 +417,9 @@ export function BuyerMatchPanel({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleExplainMatch(match.listing_id)}
-                    disabled={explainLoading === match.listing_id}
+                    onClick={() => handleOpenAnalysisSheet(match)}
                   >
-                    {explainLoading === match.listing_id ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3 w-3 mr-1" />
-                    )}
+                    <Sparkles className="h-3 w-3 mr-1" />
                     Why This Fits
                   </Button>
                   <Button
@@ -457,19 +441,6 @@ export function BuyerMatchPanel({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleDeepAnalysis(match.listing_id)}
-                    disabled={deepAnalysisLoading === match.listing_id}
-                  >
-                    {deepAnalysisLoading === match.listing_id ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <FlaskConical className="h-3 w-3 mr-1" />
-                    )}
-                    Deep Analysis
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
                     onClick={() => setShowingForm(match.listing_id)}
                   >
                     <Calendar className="h-3 w-3 mr-1" />
@@ -477,42 +448,6 @@ export function BuyerMatchPanel({
                   </Button>
                 </div>
 
-                {/* Deep analysis result */}
-                {deepAnalysisResults[match.listing_id] && (
-                  <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded-md space-y-1.5">
-                    <p className="text-xs font-semibold text-indigo-800 flex items-center gap-1">
-                      <FlaskConical className="h-3 w-3" /> Deep Analysis
-                    </p>
-                    {deepAnalysisResults[match.listing_id].fit_summary && (
-                      <p className="text-xs text-indigo-900">{deepAnalysisResults[match.listing_id].fit_summary}</p>
-                    )}
-                    {deepAnalysisResults[match.listing_id].strengths?.length > 0 && (
-                      <ul className="space-y-0.5">
-                        {deepAnalysisResults[match.listing_id].strengths.slice(0, 3).map((s: string, i: number) => (
-                          <li key={i} className="flex items-start gap-1 text-xs text-emerald-700">
-                            <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0" />{s}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {deepAnalysisResults[match.listing_id].concerns?.length > 0 && (
-                      <ul className="space-y-0.5">
-                        {deepAnalysisResults[match.listing_id].concerns.slice(0, 2).map((c: string, i: number) => (
-                          <li key={i} className="flex items-start gap-1 text-xs text-amber-700">
-                            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />{c}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
-                {/* Explanation panel */}
-                {selectedMatch === match.listing_id && explanation && (
-                  <div className="mt-3 p-2 bg-white rounded border text-sm">
-                    {explanation}
-                  </div>
-                )}
 
                 {/* Showing form */}
                 {showingForm === match.listing_id && (
@@ -649,6 +584,136 @@ export function BuyerMatchPanel({
           />
         )}
       </CardContent>
+
+      {/* Analysis Sheet */}
+      <Sheet open={!!analysisSheetMatch} onOpenChange={(v) => { if (!v) setAnalysisSheetMatch(null) }}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="pb-4 border-b">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-4 w-4 text-blue-600" />
+              {analysisSheetMatch?.address || "Property"} — Match Analysis
+            </SheetTitle>
+            {analysisSheetMatch?.price && (
+              <p className="text-sm text-muted-foreground">
+                ${analysisSheetMatch.price.toLocaleString()}
+                {analysisSheetMatch.match_score != null && (
+                  <span className="ml-2 font-medium text-foreground">{analysisSheetMatch.match_score}% match</span>
+                )}
+              </p>
+            )}
+          </SheetHeader>
+
+          {analysisSheetLoading && (
+            <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground justify-center">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Analyzing this property for {firstName}…
+            </div>
+          )}
+
+          {!analysisSheetLoading && (
+            <div className="space-y-5 pt-4">
+              {/* Why This Fits narrative */}
+              {analysisSheetData.explanation && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why This Fits</p>
+                  <div className="text-sm text-foreground [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5">
+                    <ReactMarkdown>{analysisSheetData.explanation}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
+              {/* Pros */}
+              {analysisSheetData.deep?.strengths?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Strengths</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.strengths.map((s: string, i: number) => (
+                      <li key={i} className="flex items-start gap-2 text-sm">
+                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-500" />
+                        <span className="[&_p]:inline"><ReactMarkdown>{s}</ReactMarkdown></span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Cons */}
+              {analysisSheetData.deep?.concerns?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Potential Concerns</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.concerns.map((c: string, i: number) => (
+                      <li key={i} className="flex items-start gap-2 text-sm">
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+                        <span className="[&_p]:inline"><ReactMarkdown>{c}</ReactMarkdown></span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Questions to ask */}
+              {analysisSheetData.deep?.questions?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Questions to Ask</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.questions.map((q: string, i: number) => (
+                      <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                        <span className="font-medium text-foreground shrink-0">{i + 1}.</span>
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Negotiation tips */}
+              {analysisSheetData.deep?.negotiation_tips && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Negotiation Tips</p>
+                  <div className="text-sm text-foreground [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5">
+                    <ReactMarkdown>
+                      {typeof analysisSheetData.deep.negotiation_tips === "string"
+                        ? analysisSheetData.deep.negotiation_tips
+                        : Array.isArray(analysisSheetData.deep.negotiation_tips)
+                        ? analysisSheetData.deep.negotiation_tips.join("\n")
+                        : ""}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
+              {/* Fit summary fallback */}
+              {analysisSheetData.deep?.fit_summary && !analysisSheetData.explanation && (
+                <div className="p-3 bg-muted/50 rounded-md text-sm">
+                  {analysisSheetData.deep.fit_summary}
+                </div>
+              )}
+
+              {/* No data fallback */}
+              {!analysisSheetData.explanation && !analysisSheetData.deep && (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No analysis data available for this property.
+                </p>
+              )}
+
+              {/* Request Showing CTA */}
+              <div className="pt-2 border-t">
+                <Button
+                  className="w-full gap-2"
+                  onClick={() => {
+                    setAnalysisSheetMatch(null)
+                    if (analysisSheetMatch) setShowingForm(analysisSheetMatch.listing_id)
+                  }}
+                >
+                  <Calendar className="h-4 w-4" />
+                  Request a Showing
+                </Button>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </Card>
   )
 }
