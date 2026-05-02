@@ -92,6 +92,14 @@ export async function createPodcastEpisode(params: {
       templateData = template
     }
 
+    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio)
+    const { data: agentRow } = await supabase
+      .from("users")
+      .select("elevenlabs_voice_id")
+      .eq("id", agentId)
+      .maybeSingle()
+    const agentVoiceId = agentRow?.elevenlabs_voice_id ?? null
+
     // Generate script from keywords if no script provided
     let finalScript = params.script
     if (!finalScript && params.keywords && params.keywords.length > 0) {
@@ -178,7 +186,7 @@ export async function createPodcastEpisode(params: {
         description: params.description || "",
         script: finalScript,
         keywords: params.keywords || [],
-        primary_voice_id: params.voiceId || templateData?.default_voice_id || provider.config?.default_voice_id || "default",
+        primary_voice_id: params.voiceId || agentVoiceId || templateData?.default_voice_id || provider.config?.default_voice_id || "default",
         voice_settings: templateData?.voice_settings || provider.config?.voice_settings || {
           stability: 0.5,
           similarity_boost: 0.75,
@@ -317,6 +325,16 @@ export async function generatePodcastAudio(episodeId: string) {
     if (episodeError) throw episodeError
     if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
+    }
+
+    // Require a real ElevenLabs voice id before kicking off generation.
+    // "default" is a sentinel value indicating no voice clone was configured —
+    // surfacing a clear error here prevents silent empty-buffer failures downstream.
+    if (!episode.primary_voice_id || episode.primary_voice_id === "default") {
+      return {
+        success: false,
+        error: "Voice clone not configured. Set up your ElevenLabs voice clone at /dashboard/videos/voice before generating podcast audio.",
+      }
     }
 
     // ══════════════════════════════════════════════════════════════════════════

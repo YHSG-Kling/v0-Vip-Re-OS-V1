@@ -105,11 +105,11 @@ export function MyShowTab({ channels, hasVoiceClone }: Props) {
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {hasVoiceClone
-                  ? "Your cloned voice will be used for AI-generated podcast audio."
-                  : "Set up your ElevenLabs voice clone in Settings before generating podcast audio."}
+                  ? "Your ElevenLabs cloned voice will be used for AI-generated podcast audio."
+                  : "Clone your voice with ElevenLabs before generating podcast audio."}
               </p>
               {!hasVoiceClone && (
-                <Link href="/dashboard/settings/integrations" className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium mt-1.5 hover:underline">
+                <Link href="/dashboard/videos/voice" className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium mt-1.5 hover:underline">
                   <ExternalLink className="h-3 w-3" />
                   Set up Voice Clone →
                 </Link>
