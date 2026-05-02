@@ -978,13 +978,29 @@ export async function saveBrandingPreset(data: {
 // ============================================
 
 export async function generateVideoScript(params: {
-  purpose: string
-  persona: string
-  contactName: string
+  // Original prompt-driven shape
+  purpose?: string
+  persona?: string
+  contactName?: string
   tone?: string
   length?: string
+  // Identity / context shape used by /dashboard/videos/create caller
   userId?: string
   brokerageId?: string
+  agentId?: string
+  description?: string
+  videoType?: string
+  targetDurationSeconds?: number
+  listingContext?: {
+    address?: string
+    city?: string
+    state?: string
+    listPrice?: number
+    bedrooms?: number | null
+    bathrooms?: number | null
+    sqft?: number | null
+  }
+  saveToLibrary?: boolean
 }) {
   try {
     const { generateAIResponse } = await import("@/lib/ai")
@@ -1022,7 +1038,9 @@ export async function generateVideoScript(params: {
       long: "2-3 minutes (approximately 300-400 words)",
     }
     
-    const prompt = `Generate a compelling video script for ${purposeDescriptions[params.purpose] || params.purpose} targeting ${personaDescriptions[params.persona] || params.persona}.
+    const purposeKey = params.purpose ?? params.videoType ?? "welcome"
+    const personaKey = params.persona ?? "first_time_buyer"
+    const prompt = `Generate a compelling video script for ${purposeDescriptions[purposeKey] || params.description || purposeKey} targeting ${personaDescriptions[personaKey] || personaKey}.
     
 Tone: ${toneMap[params.tone || "friendly"] || "warm and professional"}
 Length: ${lengthMap[params.length || "medium"] || "60-90 seconds"}

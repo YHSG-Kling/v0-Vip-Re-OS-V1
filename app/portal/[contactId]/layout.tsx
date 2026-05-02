@@ -232,7 +232,7 @@ export default async function PortalLayout({
         isSeller={isSeller}
         persona={persona}
         agentName={agentName}
-        agentFirstName={agentData?.first_name ?? agentName}
+        agentFirstName={agentData?.full_name?.split(" ")[0] ?? agentName}
         agentHasDIDAvatar={agentHasDIDAvatar}
         agentDIDPhotoUrl={agentDIDPhotoUrl}
         agentDIDVideoUrl={agentDIDVideoUrl}

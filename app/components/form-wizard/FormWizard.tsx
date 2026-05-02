@@ -14,7 +14,7 @@ import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
-import { OfferWorkspace } from "@/app/components/features/offers/offer-workspace"
+import Link from "next/link"
 
 type TransactionProvider = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
 
@@ -223,7 +223,21 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
           {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
-          {step === 6 && state.offerId && <OfferWorkspace offerId={state.offerId} />}
+          {step === 6 && state.offerId && (
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <Check className="h-10 w-10 text-emerald-600" />
+              <h3 className="text-lg font-semibold">Offer submitted</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Your offer is recorded. Open the offer workspace to view details, history, and next steps.
+              </p>
+              <Button asChild className="mt-2">
+                <Link href={`/dashboard/buyers/${contact?.id ?? ""}/offers/${state.offerId}`}>
+                  Open Offer Workspace
+                  <ExternalLink className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="border-t px-6 py-4 flex items-center justify-between">

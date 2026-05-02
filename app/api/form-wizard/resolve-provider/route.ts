@@ -25,6 +25,6 @@ export async function GET(req: NextRequest) {
     provider: resolved?.provider ?? null,
     credentialsId: resolved?.credentialsId ?? null,
     embedUrl: resolved?.provider ? getTransactionProviderEmbedUrl(resolved.provider) : null,
-    esignProvider: esignResult?.provider ?? null,
+    esignProvider: esignResult?.platform ?? null,
   })
 }

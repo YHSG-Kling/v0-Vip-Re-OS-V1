@@ -37,6 +37,14 @@ export interface BrandVoiceResult {
   violations: string[]
   /** Advisory notes — tone guidance, preferred phrasing reminders, etc. */
   notes: string[]
+  /** Resolved voice settings — exposed so callers (e.g., AI prompt builders) can build hard-constraint blocks. */
+  tone?: string | null
+  formalityLevel?: string | null
+  prohibitedWords?: string[]
+  preferredWords?: string[]
+  tagline?: string | null
+  missionStatement?: string | null
+  keyBrandMessages?: string[]
 }
 
 // ─── INTERNAL: RESOLVED SETTINGS ─────────────────────────────────────────────
@@ -370,5 +378,12 @@ export async function applyBrandVoice(
     content: params.content,
     violations,
     notes,
+    tone: voice.tone,
+    formalityLevel: voice.formalityLevel,
+    prohibitedWords: voice.prohibitedWords,
+    preferredWords: voice.preferredWords,
+    tagline: voice.tagline,
+    missionStatement: voice.missionStatement,
+    keyBrandMessages: voice.keyBrandMessages,
   }
 }

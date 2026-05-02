@@ -2910,9 +2910,9 @@ export default function CRMPage() {
       {selectedContact && brokerageId && (
         <FormWizard
           mode="offer"
-          contact={selectedContact}
+          contact={selectedContact as any}
           brokerageId={brokerageId}
-          agentUserId={selectedContact.agent_id ?? ""}
+          agentUserId={(selectedContact as any).agent_id ?? agentId ?? ""}
           open={offerWizardOpen}
           onClose={() => setOfferWizardOpen(false)}
         />

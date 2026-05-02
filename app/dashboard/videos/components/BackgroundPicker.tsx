@@ -140,7 +140,7 @@ export function BackgroundPicker({ value, onChange, brokerageId }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const isColor = (hex: string) => value.type === "color" && value.value === hex
-  const isImage = (url: string) => value.type === "image" && value.value === url
+  const isImage = (url: string) => value.type === "image" && value.url === url
 
   const handleCustomHexChange = (hex: string) => {
     setCustomHex(hex)
