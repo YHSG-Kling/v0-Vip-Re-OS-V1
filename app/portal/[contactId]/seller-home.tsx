@@ -17,6 +17,7 @@ import {
   getShowingInsights,
 } from "@/app/actions/portal-seller"
 import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
+import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
@@ -572,7 +573,13 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         </CardContent>
       </Card>
 
-      {/* NOTE: AlertTriangle available for future price-reduction-recommended banner */}
+      {/* 12. SHARE MY HOME — social posts about this listing pushed by agent */}
+      {context.listing?.id && (
+        <ShareMyHomeCard
+          listingId={context.listing.id}
+          listingAddress={context.listing.address ?? "your home"}
+        />
+      )}
     </div>
   )
 }
