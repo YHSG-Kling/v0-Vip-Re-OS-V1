@@ -17,6 +17,8 @@ export default async function PodcastPage() {
   let initialEpisodes: any[] = []
   let totalPlays = 0
 
+  let hasVoiceClone = false
+
   try {
     const ctx = await getAgentContext()
     agentId = ctx?.agentId ?? ""
@@ -42,6 +44,16 @@ export default async function PodcastPage() {
         .eq("event_type", "play")
       totalPlays = count ?? 0
     }
+
+    // Check if agent has a voice clone configured
+    if (agentId) {
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("heygen_voice_id")
+        .eq("id", agentId)
+        .maybeSingle()
+      hasVoiceClone = !!userRow?.heygen_voice_id
+    }
   } catch (error) {
     console.error("[Podcast] Failed to load initial data:", error)
   }
@@ -55,6 +67,7 @@ export default async function PodcastPage() {
           initialEpisodes={initialEpisodes}
           totalPlays={totalPlays}
           userType={userType}
+          hasVoiceClone={hasVoiceClone}
         />
       </Suspense>
     </div>

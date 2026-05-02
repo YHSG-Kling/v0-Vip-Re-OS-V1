@@ -15,6 +15,7 @@ import { DistributionChannelsTab } from "./components/distribution-channels-tab"
 import { CreateEpisodeDialog } from "./components/create-episode-dialog"
 import { AnalyticsTab } from "./components/analytics-tab"
 import { RepurposeTab } from "./components/repurpose-tab"
+import { MyShowTab } from "./components/my-show-tab"
 import {
   getPodcastEpisodes,
   getPodcastTemplates,
@@ -59,6 +60,7 @@ interface PodcastDashboardProps {
   initialEpisodes?: Episode[]
   totalPlays?: number
   userType?: string
+  hasVoiceClone?: boolean
 }
 
 export function PodcastDashboard({
@@ -67,6 +69,7 @@ export function PodcastDashboard({
   initialEpisodes = [],
   totalPlays = 0,
   userType = "agent",
+  hasVoiceClone = false,
 }: PodcastDashboardProps) {
   const isAdmin = userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin"
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes)
@@ -78,7 +81,7 @@ export function PodcastDashboard({
   const [newTemplateName, setNewTemplateName] = useState("")
   const [newTemplateDesc, setNewTemplateDesc] = useState("")
   const [creatingTemplate, setCreatingTemplate] = useState(false)
-  const [activeTab, setActiveTab] = useState("episodes")
+  const [activeTab, setActiveTab] = useState("my-show")
 
   useEffect(() => {
     loadData()
@@ -243,6 +246,10 @@ export function PodcastDashboard({
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
           <div className="px-6 pt-4 border-b border-gray-200 bg-white">
             <TabsList>
+              <TabsTrigger value="my-show" className="gap-2">
+                <Mic className="h-4 w-4" />
+                My Show
+              </TabsTrigger>
               <TabsTrigger value="episodes" className="gap-2">
                 <Radio className="h-4 w-4" />
                 Episodes
@@ -267,6 +274,10 @@ export function PodcastDashboard({
           </div>
 
           <div className="flex-1 overflow-auto p-6 bg-gray-50">
+            <TabsContent value="my-show" className="mt-0 h-full">
+              <MyShowTab channels={channels} hasVoiceClone={hasVoiceClone} />
+            </TabsContent>
+
             <TabsContent value="episodes" className="mt-0 h-full">
               <EpisodesTab
                 episodes={episodes}
