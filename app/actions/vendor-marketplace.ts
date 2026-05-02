@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { dispatchEmail } from "@/lib/providers/dispatch"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -598,6 +599,70 @@ export async function assignVendorToTransaction(data: {
     created_at: new Date().toISOString(),
   })
 
+  // Auto-email the vendor with job details (fire and forget — must not
+  // block the assignment if email fails).
+  ;(async () => {
+    try {
+      const { data: vendor } = await supabase
+        .from("vendors")
+        .select("name, email, category")
+        .eq("id", data.vendorId)
+        .maybeSingle()
+
+      if (!vendor?.email) return
+
+      const { data: txn } = await supabase
+        .from("transactions")
+        .select("id, property_address, city, state, close_date")
+        .eq("id", data.transactionId)
+        .maybeSingle()
+
+      const propertyLine = txn?.property_address
+        ? `${txn.property_address}${txn.city ? `, ${txn.city}` : ""}${txn.state ? `, ${txn.state}` : ""}`
+        : "(property address pending)"
+      const closeDateLine = txn?.close_date
+        ? new Date(txn.close_date).toLocaleDateString()
+        : "TBD"
+      const scheduledLine = data.scheduledDate
+        ? new Date(data.scheduledDate).toLocaleString()
+        : "Will be coordinated separately"
+
+      const subject = `New ${data.assignmentType} job assigned for ${propertyLine}`
+      const html = `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;background:#f9fafb;padding:32px 0">
+        <table width="560" style="margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
+          <tr><td style="padding:20px;background:#1f2937;color:#fff">
+            <h2 style="margin:0">New job assigned</h2>
+            <p style="margin:4px 0 0;opacity:.85;font-size:13px">Hi ${vendor.name ?? "there"},</p>
+          </td></tr>
+          <tr><td style="padding:20px">
+            <p style="margin:0 0 12px;font-size:14px">You've been assigned a new <strong>${data.assignmentType}</strong> job.</p>
+            <table style="width:100%;font-size:13px">
+              <tr><td style="padding:6px 0;color:#6b7280;width:140px">Property</td><td>${propertyLine}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280">Scheduled</td><td>${scheduledLine}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280">Close date</td><td>${closeDateLine}</td></tr>
+              ${data.notes ? `<tr><td style="padding:6px 0;color:#6b7280;vertical-align:top">Notes</td><td>${data.notes.replace(/</g, "&lt;")}</td></tr>` : ""}
+            </table>
+            <p style="margin:16px 0 0;font-size:13px">Confirm the assignment in your vendor portal so the agent knows you're on it.</p>
+          </td></tr>
+        </table></body></html>`
+
+      const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+      await dispatchEmail({
+        brokerageId: profile?.brokerage_id ?? "",
+        agentId: agentRowId,
+        userId: user.id,
+        systemSource: "vendor_assignment",
+        from: `VIP Real Estate OS <${fromEmail}>`,
+        to: vendor.email,
+        subject,
+        html,
+        channelPurpose: "transactional",
+      })
+    } catch (err: any) {
+      console.error("[vendor-marketplace] auto-email failed:", err?.message)
+    }
+  })()
+
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
@@ -659,6 +724,72 @@ export async function createVendorBookingWithKernelEvent(data: {
     },
     created_at: new Date().toISOString(),
   })
+
+  // Auto-email vendor with booking details (fire and forget).
+  ;(async () => {
+    try {
+      const { data: vendor } = await supabase
+        .from("vendors")
+        .select("name, email")
+        .eq("id", data.vendorId)
+        .maybeSingle()
+
+      if (!vendor?.email) return
+
+      const { data: txn } = await supabase
+        .from("transactions")
+        .select("property_address, city, state, close_date")
+        .eq("id", data.transactionId)
+        .maybeSingle()
+
+      const propertyLine = txn?.property_address
+        ? `${txn.property_address}${txn.city ? `, ${txn.city}` : ""}${txn.state ? `, ${txn.state}` : ""}`
+        : "(property address pending)"
+      const closeDateLine = txn?.close_date
+        ? new Date(txn.close_date).toLocaleDateString()
+        : "TBD"
+      const scheduledLine = data.scheduledDate
+        ? new Date(data.scheduledDate).toLocaleString()
+        : "Will be coordinated separately"
+      const costLine = typeof data.cost === "number"
+        ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(data.cost)
+        : "Quote pending"
+
+      const subject = `New booking: ${data.serviceType} for ${propertyLine}`
+      const html = `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;background:#f9fafb;padding:32px 0">
+        <table width="560" style="margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
+          <tr><td style="padding:20px;background:#1f2937;color:#fff">
+            <h2 style="margin:0">New booking confirmed</h2>
+            <p style="margin:4px 0 0;opacity:.85;font-size:13px">Hi ${vendor.name ?? "there"},</p>
+          </td></tr>
+          <tr><td style="padding:20px">
+            <p style="margin:0 0 12px;font-size:14px">A new <strong>${data.serviceType}</strong> booking has been created for you.</p>
+            <table style="width:100%;font-size:13px">
+              <tr><td style="padding:6px 0;color:#6b7280;width:140px">Property</td><td>${propertyLine}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280">Scheduled</td><td>${scheduledLine}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280">Close date</td><td>${closeDateLine}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280">Cost</td><td>${costLine}</td></tr>
+              ${data.notes ? `<tr><td style="padding:6px 0;color:#6b7280;vertical-align:top">Notes</td><td>${data.notes.replace(/</g, "&lt;")}</td></tr>` : ""}
+            </table>
+            <p style="margin:16px 0 0;font-size:13px">View and confirm in your vendor portal.</p>
+          </td></tr>
+        </table></body></html>`
+
+      const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+      await dispatchEmail({
+        brokerageId: profile?.brokerage_id ?? "",
+        userId: user.id,
+        systemSource: "vendor_booking",
+        from: `VIP Real Estate OS <${fromEmail}>`,
+        to: vendor.email,
+        subject,
+        html,
+        channelPurpose: "transactional",
+      })
+    } catch (err: any) {
+      console.error("[vendor-marketplace] booking auto-email failed:", err?.message)
+    }
+  })()
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
