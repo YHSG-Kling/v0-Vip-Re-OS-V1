@@ -9,9 +9,11 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles, Wand2, AlertTriangle } from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import Link from "next/link"
 import { saveSequenceSteps, type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/app/actions/campaign-sequences"
+import { composeSequenceStepCopy } from "@/app/actions/sequence-step-ai"
 import { useToast } from "@/hooks/use-toast"
 
 interface Props {
@@ -41,6 +43,59 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+
+  // AI compose state
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [composeGoal, setComposeGoal] = useState("")
+  const [composeAudience, setComposeAudience] = useState("")
+  const [composeTone, setComposeTone] = useState("")
+  const [composing, setComposing] = useState(false)
+  const [composeViolations, setComposeViolations] = useState<string[]>([])
+  const [composeNotes, setComposeNotes] = useState<string[]>([])
+
+  function openCompose() {
+    setComposeGoal("")
+    setComposeAudience("")
+    setComposeTone("")
+    setComposeViolations([])
+    setComposeNotes([])
+    setComposeOpen(true)
+  }
+
+  async function runCompose() {
+    if (selectedIdx === null) return
+    const step = steps[selectedIdx]
+    if (step.step_type === "wait") return
+    if (!composeGoal.trim()) {
+      toast({ title: "Describe what this step should accomplish", variant: "destructive" })
+      return
+    }
+    setComposing(true)
+    try {
+      const result = await composeSequenceStepCopy({
+        stepType: step.step_type,
+        goal: composeGoal,
+        audience: composeAudience,
+        tone: composeTone,
+        existingBody: step.body,
+      })
+      if (!result.success) {
+        toast({ title: result.error ?? "AI compose failed", variant: "destructive" })
+        return
+      }
+      const patch: Partial<SequenceStep> = { body: result.text ?? "" }
+      if (step.step_type === "email" && result.subject) patch.subject = result.subject
+      updateStep(selectedIdx, patch)
+      setComposeViolations(result.violations ?? [])
+      setComposeNotes(result.notes ?? [])
+      if ((result.violations ?? []).length === 0) {
+        toast({ title: "Draft inserted into the step body" })
+        setComposeOpen(false)
+      }
+    } finally {
+      setComposing(false)
+    }
+  }
 
   const addStep = (type: SequenceStep["step_type"]) => {
     setSteps((prev) => {
@@ -243,11 +298,23 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
                       </div>
                     )}
                     <div>
-                      <Label className="text-xs">
-                        {selected.step_type === "email" ? "Email Body" : selected.step_type === "sms" ? "SMS Message" : selected.step_type === "voice_drop" ? "Voice Script" : selected.step_type === "ai_call" ? "Call Script Outline" : "Mail Copy"}
-                      </Label>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs">
+                          {selected.step_type === "email" ? "Email Body" : selected.step_type === "sms" ? "SMS Message" : selected.step_type === "voice_drop" ? "Voice Script" : selected.step_type === "ai_call" ? "Call Script Outline" : "Mail Copy"}
+                        </Label>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={openCompose}
+                          className="h-7 gap-1.5 text-xs"
+                        >
+                          <Wand2 className="h-3 w-3" />
+                          Compose with AI
+                        </Button>
+                      </div>
                       <Textarea
-                        placeholder={`Write your ${selected.step_type === "sms" ? "SMS message" : "content"} here...`}
+                        placeholder={`Write your ${selected.step_type === "sms" ? "SMS message" : "content"} here, or click Compose with AI...`}
                         value={selected.body}
                         onChange={(e) => updateStep(selectedIdx!, { body: e.target.value })}
                         rows={8}
@@ -264,6 +331,96 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
           )}
         </div>
       </div>
+
+      {/* AI compose dialog */}
+      <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wand2 className="h-4 w-4 text-primary" />
+              Compose with AI
+            </DialogTitle>
+            <DialogDescription>
+              Describe the goal of this step. The model uses your brand voice and runs a compliance check before inserting the draft.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">What should this step accomplish?</Label>
+              <Textarea
+                value={composeGoal}
+                onChange={(e) => setComposeGoal(e.target.value)}
+                rows={3}
+                placeholder='e.g. "Re-engage a buyer who has gone quiet for 14 days; offer to send 3 fresh listings."'
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Audience (optional)</Label>
+                <Input
+                  value={composeAudience}
+                  onChange={(e) => setComposeAudience(e.target.value)}
+                  placeholder="first-time buyer, sphere, etc."
+                  className="h-8"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Tone (optional)</Label>
+                <Input
+                  value={composeTone}
+                  onChange={(e) => setComposeTone(e.target.value)}
+                  placeholder="warm, casual, urgent…"
+                  className="h-8"
+                />
+              </div>
+            </div>
+
+            {composeViolations.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-1">
+                <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3" /> Brand voice / compliance flags
+                </p>
+                <ul className="list-disc pl-5 text-xs text-amber-900 space-y-0.5">
+                  {composeViolations.map((v, i) => (
+                    <li key={i}>{v}</li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-amber-800 mt-1">
+                  Draft was inserted into the step body. Review and edit before saving.
+                </p>
+              </div>
+            )}
+            {composeNotes.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3">
+                <p className="text-xs font-semibold text-blue-900 mb-1">Brand voice notes</p>
+                <ul className="list-disc pl-5 text-xs text-blue-900 space-y-0.5">
+                  {composeNotes.map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setComposeOpen(false)} disabled={composing}>
+              Cancel
+            </Button>
+            <Button onClick={runCompose} disabled={composing || !composeGoal.trim()}>
+              {composing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Composing…
+                </>
+              ) : (
+                <>
+                  <Wand2 className="h-4 w-4 mr-2" />
+                  Generate draft
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

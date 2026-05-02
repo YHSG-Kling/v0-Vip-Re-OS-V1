@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
@@ -44,6 +45,8 @@ import {
   deleteCampaignSequence,
   type CampaignSequence,
 } from "@/app/actions/campaign-sequences"
+import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
+import { AlertTriangle, ShieldCheck } from "lucide-react"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -160,11 +163,44 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
     }
   }, [form, brokerageId, router])
 
+  // Compliance precheck dialog state
+  const [precheckOpen, setPrecheckOpen] = useState(false)
+  const [precheckLoading, setPrecheckLoading] = useState(false)
+  const [precheckChecks, setPrecheckChecks] = useState<SequenceStepCheck[]>([])
+  const [precheckSequence, setPrecheckSequence] = useState<CampaignSequence | null>(null)
+
   const handleToggleActive = useCallback(async (seq: CampaignSequence) => {
     const next = !seq.is_active
-    setSequences(prev => prev.map(s => s.id === seq.id ? { ...s, is_active: next } : s))
-    await updateCampaignSequence(seq.id, { is_active: next })
+    if (!next) {
+      // Deactivate immediately — no precheck needed.
+      setSequences(prev => prev.map(s => s.id === seq.id ? { ...s, is_active: next } : s))
+      await updateCampaignSequence(seq.id, { is_active: next })
+      return
+    }
+    // Activating: run brand-voice / compliance gate first.
+    setPrecheckSequence(seq)
+    setPrecheckOpen(true)
+    setPrecheckLoading(true)
+    try {
+      const result = await precheckSequenceCompliance(seq.id)
+      setPrecheckChecks(result.checks ?? [])
+      if (result.success && !result.blocked) {
+        // Clean — activate now and close dialog.
+        setSequences(prev => prev.map(s => s.id === seq.id ? { ...s, is_active: true } : s))
+        await updateCampaignSequence(seq.id, { is_active: true })
+        setPrecheckOpen(false)
+      }
+    } finally {
+      setPrecheckLoading(false)
+    }
   }, [])
+
+  const confirmActivateAfterReview = useCallback(async () => {
+    if (!precheckSequence) return
+    setSequences(prev => prev.map(s => s.id === precheckSequence.id ? { ...s, is_active: true } : s))
+    await updateCampaignSequence(precheckSequence.id, { is_active: true })
+    setPrecheckOpen(false)
+  }, [precheckSequence])
 
   const handleDuplicate = useCallback(async (seq: CampaignSequence) => {
     setBusy(true)
@@ -392,6 +428,110 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
             >
               {busy ? "Deleting..." : "Delete"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Compliance precheck dialog — runs on activation */}
+      <Dialog open={precheckOpen} onOpenChange={setPrecheckOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {precheckLoading ? (
+                <>
+                  <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                  Running compliance check…
+                </>
+              ) : precheckChecks.some(c => c.violations.length > 0) ? (
+                <>
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  Review issues before activating
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                  No compliance issues
+                </>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {precheckLoading && (
+            <p className="text-sm text-muted-foreground py-4">
+              Checking each step against your brand voice and fair-housing rules…
+            </p>
+          )}
+          {!precheckLoading && precheckChecks.length === 0 && (
+            <p className="text-sm text-muted-foreground py-4">
+              No messaging steps to check (sequence has only wait steps).
+            </p>
+          )}
+          {!precheckLoading && precheckChecks.length > 0 && (
+            <div className="space-y-3 mt-2">
+              {precheckChecks.map((c) => {
+                const hasIssues = c.violations.length > 0
+                return (
+                  <div
+                    key={c.stepId}
+                    className={`rounded-lg border p-3 ${hasIssues ? "border-amber-300 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-sm font-semibold">
+                        Step {c.stepNumber} — {c.stepName}{" "}
+                        <span className="text-xs font-normal text-muted-foreground">({c.channel})</span>
+                      </p>
+                      {hasIssues ? (
+                        <Badge variant="outline" className="text-amber-900 border-amber-400">
+                          {c.violations.length} {c.violations.length === 1 ? "issue" : "issues"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-emerald-900 border-emerald-400">
+                          OK
+                        </Badge>
+                      )}
+                    </div>
+                    {hasIssues && (
+                      <ul className="list-disc pl-5 text-xs text-amber-900 space-y-0.5">
+                        {c.violations.map((v, i) => (
+                          <li key={i}>{v}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {c.notes.length > 0 && (
+                      <ul className="list-disc pl-5 text-xs text-blue-900 mt-1 space-y-0.5">
+                        {c.notes.map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          <DialogFooter className="mt-2">
+            <Button variant="outline" onClick={() => setPrecheckOpen(false)} disabled={precheckLoading}>
+              Cancel
+            </Button>
+            {!precheckLoading && precheckSequence && (
+              <>
+                {precheckSequence.id && (
+                  <Button asChild variant="outline">
+                    <Link href={`/dashboard/campaigns/sequences/${precheckSequence.id}/builder`}>
+                      Open builder to fix
+                    </Link>
+                  </Button>
+                )}
+                {precheckChecks.some(c => c.violations.length > 0) ? (
+                  <Button variant="default" onClick={confirmActivateAfterReview}>
+                    Activate anyway
+                  </Button>
+                ) : (
+                  <Button variant="default" onClick={confirmActivateAfterReview}>
+                    Activate
+                  </Button>
+                )}
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
