@@ -11,6 +11,7 @@ import {
   getContactActivity,
 } from "@/app/actions/contact-details"
 import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
+import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -77,6 +78,7 @@ import {
   CreditCard,
   Video,
   Activity,
+  DollarSign,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -1543,6 +1545,12 @@ export default function CRMPage() {
                       <Brain className="h-3.5 w-3.5" />
                       Intelligence
                     </TabsTrigger>
+                    {isBuyerContact && (
+                      <TabsTrigger value="finance" className="text-xs gap-1.5">
+                        <DollarSign className="h-3.5 w-3.5" />
+                        Finance
+                      </TabsTrigger>
+                    )}
                   </TabsList>
 
                   {/* ── OVERVIEW TAB ── */}
@@ -2572,6 +2580,17 @@ export default function CRMPage() {
                       </>
                     )}
                   </TabsContent>
+
+                  {/* ── FINANCE TAB (buyers only) ── */}
+                  {isBuyerContact && (
+                    <TabsContent value="finance" className="space-y-4 mt-0">
+                      <FinancialVerificationPanel
+                        contactId={selectedContactId}
+                        brokerageId={brokerageId ?? ""}
+                        agentUserId={agentId ?? ""}
+                      />
+                    </TabsContent>
+                  )}
 
                 </Tabs>
               </main>
