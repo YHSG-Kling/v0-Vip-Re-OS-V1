@@ -51,6 +51,12 @@ import {
   scheduleEmailCampaign,
   aiComposeEmail,
 } from "@/app/actions/email-campaigns"
+import {
+  aiGenerateSubjectLines,
+  aiOptimizeSendTime,
+  getNewsletterAnalytics,
+  aiAnalyzeNewsletterPerformance,
+} from "@/app/actions/ai-newsletter"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -111,6 +117,53 @@ export function NewslettersClient({
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [scheduleDate, setScheduleDate] = useState("")
+
+  // AI subject line variants
+  const [subjectVariants, setSubjectVariants] = useState<string[]>([])
+  const [subjectVariantsLoading, setSubjectVariantsLoading] = useState(false)
+
+  // Analytics
+  const [analyticsData, setAnalyticsData] = useState<any>(null)
+  const [analyticsInsights, setAnalyticsInsights] = useState<any>(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
+
+  async function handleGenerateSubjectVariants() {
+    if (!campaignName.trim() && !composeTopic.trim()) return
+    setSubjectVariantsLoading(true)
+    setSubjectVariants([])
+    try {
+      const res = await aiGenerateSubjectLines({
+        agentId,
+        brokerageId,
+        newsletterTopic: composeTopic.trim() || campaignName.trim(),
+        tone: "professional",
+      })
+      if ((res as any).success && (res as any).subjectLines) {
+        setSubjectVariants((res as any).subjectLines.slice(0, 5))
+      }
+    } finally {
+      setSubjectVariantsLoading(false)
+    }
+  }
+
+  async function handleLoadAnalytics() {
+    if (analyticsLoaded) return
+    setAnalyticsLoading(true)
+    try {
+      const [analyticsRes, insightsRes] = await Promise.all([
+        campaigns.length > 0
+          ? getNewsletterAnalytics({ newsletterId: campaigns[0].id, agentId })
+          : Promise.resolve(null),
+        aiAnalyzeNewsletterPerformance({ agentId }),
+      ])
+      setAnalyticsData(analyticsRes)
+      setAnalyticsInsights(insightsRes)
+      setAnalyticsLoaded(true)
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
 
   async function handleCreate() {
     if (!campaignName.trim() || !subjectLine.trim()) {
@@ -305,13 +358,44 @@ export function NewslettersClient({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="subjectLine">Subject Line</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="subjectLine">Subject Line</Label>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 text-xs gap-1"
+                    onClick={handleGenerateSubjectVariants}
+                    disabled={subjectVariantsLoading || (!campaignName.trim() && !composeTopic.trim())}
+                  >
+                    {subjectVariantsLoading ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3 w-3" />
+                    )}
+                    AI variants
+                  </Button>
+                </div>
                 <Input
                   id="subjectLine"
                   placeholder="e.g. The market is shifting — what you need to know"
                   value={subjectLine}
                   onChange={(e) => setSubjectLine(e.target.value)}
                 />
+                {subjectVariants.length > 0 && (
+                  <div className="space-y-1 pt-1">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Pick one:</p>
+                    {subjectVariants.map((v, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        className="block w-full text-left text-xs px-2 py-1.5 rounded border hover:bg-muted transition-colors"
+                        onClick={() => { setSubjectLine(v); setSubjectVariants([]) }}
+                      >
+                        {v}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -354,6 +438,10 @@ export function NewslettersClient({
           <TabsTrigger value="ai-writer" className="flex items-center gap-1.5">
             <Sparkles className="h-3.5 w-3.5" />
             AI Writer
+          </TabsTrigger>
+          <TabsTrigger value="analytics" className="flex items-center gap-1.5" onClick={handleLoadAnalytics}>
+            <TrendingUp className="h-3.5 w-3.5" />
+            Analytics
           </TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
         </TabsList>
@@ -573,6 +661,69 @@ export function NewslettersClient({
                 Sign in as an agent to use the AI newsletter tools.
               </AlertDescription>
             </Alert>
+          )}
+        </TabsContent>
+
+        {/* ANALYTICS TAB */}
+        <TabsContent value="analytics" className="space-y-4">
+          {analyticsLoading ? (
+            <div className="flex items-center gap-2 py-12 justify-center text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading analytics…
+            </div>
+          ) : (
+            <>
+              {/* Per-newsletter stats */}
+              {analyticsData?.success && (analyticsData as any).metrics && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {[
+                    { label: "Open Rate", value: `${((analyticsData as any).metrics.openRate ?? 0).toFixed(1)}%` },
+                    { label: "Click Rate", value: `${((analyticsData as any).metrics.clickRate ?? 0).toFixed(1)}%` },
+                    { label: "Unsubscribes", value: (analyticsData as any).metrics.unsubscribeCount ?? 0 },
+                    { label: "Bounces", value: (analyticsData as any).metrics.bounceCount ?? 0 },
+                  ].map((m) => (
+                    <Card key={m.label}>
+                      <CardContent className="pt-4 pb-4">
+                        <p className="text-xs text-muted-foreground">{m.label}</p>
+                        <p className="text-2xl font-bold tabular-nums">{m.value}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              {/* AI performance insights */}
+              {analyticsInsights && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-amber-500" />
+                      AI Performance Insights
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    {(analyticsInsights as any).insights?.map((insight: string, i: number) => (
+                      <p key={i} className="text-muted-foreground">• {insight}</p>
+                    ))}
+                    {(analyticsInsights as any).recommendations?.map((rec: string, i: number) => (
+                      <p key={i} className="text-foreground font-medium">→ {rec}</p>
+                    ))}
+                    {!(analyticsInsights as any).insights?.length && !(analyticsInsights as any).recommendations?.length && (
+                      <p className="text-muted-foreground">No insights available yet. Send more campaigns to generate analysis.</p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {!analyticsLoaded && (
+                <Card>
+                  <CardContent className="py-12 text-center">
+                    <TrendingUp className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
+                    <p className="text-muted-foreground text-sm">Click the Analytics tab to load your data.</p>
+                  </CardContent>
+                </Card>
+              )}
+            </>
           )}
         </TabsContent>
 
