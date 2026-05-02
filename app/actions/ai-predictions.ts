@@ -2440,7 +2440,7 @@ export async function mineSphereOfInfluence(agentId: string) {
 
   const prompt = `You are an AI sphere of influence miner. Find referral opportunities:
 
-Past Clients: ${pastClients?.length || 0}
+Lifetime Customers: ${pastClients?.length || 0}
 
 Analyze for:
 1. Neighbors (same street referrals)

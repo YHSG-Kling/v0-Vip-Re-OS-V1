@@ -43,7 +43,7 @@ export async function scheduleLifetimeCustomerTouchpoints(contactId: string, tra
 
   if (error) throw error
 
-  revalidatePath("/past-clients")
+  revalidatePath("/lifetime-customers")
   return { success: true }
 }
 
@@ -96,7 +96,7 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     occasionType: "Home Anniversary",
   })
 
-  revalidatePath("/past-clients")
+  revalidatePath("/lifetime-customers")
   return { success: true }
 }
 
@@ -130,7 +130,7 @@ export async function sendBirthdayMessage(contactId: string) {
 
   if (error) throw error
 
-  revalidatePath("/past-clients")
+  revalidatePath("/lifetime-customers")
   return { success: true }
 }
 
@@ -170,7 +170,7 @@ export async function sendReferralRequest(contactId: string) {
 
   if (error) throw error
 
-  revalidatePath("/past-clients")
+  revalidatePath("/lifetime-customers")
   return { success: true }
 }
 

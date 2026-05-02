@@ -39,7 +39,7 @@ interface SequencesClientProps {
 const CAMPAIGN_TYPES = [
   { value: "buyer_nurture",   label: "Buyer Nurture" },
   { value: "seller_nurture",  label: "Seller Nurture" },
-  { value: "past_client",     label: "Past Client" },
+  { value: "lifetime_customer",     label: "Lifetime Customer" },
   { value: "sphere",          label: "Sphere of Influence" },
   { value: "investor",        label: "Investor" },
   { value: "relocation",      label: "Relocation" },

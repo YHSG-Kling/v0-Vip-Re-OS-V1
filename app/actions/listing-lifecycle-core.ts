@@ -28,6 +28,7 @@ import {
   getLifecycleStatistics,
   getStageTimingMetrics,
 } from "@/lib/listing-lifecycle"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 // ============================================
 // LIFECYCLE VALIDATION ACTIONS
@@ -361,9 +362,9 @@ async function handleSellerToLifetimeTransition(
   await supabase
     .from("contacts")
     .update({
-      contact_type: "lifetime",
+      contact_type: LIFETIME_CUSTOMER_TYPE,
       contact_persona: "past_seller",
-      status: "past_client",
+      status: LIFETIME_CUSTOMER_TYPE,
       notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
       updated_at: now,
     })

@@ -49,7 +49,7 @@ export interface AiComposeEmailParams {
   brokerageId: string
   agentId?: string
   topic: string
-  audience?: "buyers" | "sellers" | "investors" | "past_clients" | "all"
+  audience?: "buyers" | "sellers" | "investors" | "lifetime_customers" | "all"
   tone?: "professional" | "friendly" | "urgent" | "informational"
   campaignId?: string
 }

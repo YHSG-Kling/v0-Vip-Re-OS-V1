@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -336,7 +337,7 @@ Business Diagnosis Data:
                               className={
                                 opp.type === "sphere"
                                   ? "bg-blue-100 text-blue-700 border-blue-200"
-                                  : opp.type === "past_client"
+                                  : opp.type === LIFETIME_CUSTOMER_TYPE
                                     ? "bg-purple-100 text-purple-700 border-purple-200"
                                     : opp.type === "referral"
                                       ? "bg-amber-100 text-amber-700 border-amber-200"
@@ -360,7 +361,7 @@ Business Diagnosis Data:
                           href={
                             opp.type === "referral"
                               ? "/referrals"
-                              : opp.type === "past_client"
+                              : opp.type === LIFETIME_CUSTOMER_TYPE
                                 ? "/past-clients"
                                 : `/crm?contactId=${opp.contact_id || opp.id}`
                           }

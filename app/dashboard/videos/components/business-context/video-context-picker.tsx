@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
@@ -301,7 +302,7 @@ export function VideoContextPicker({
                 {contacts
                   .filter((c) =>
                     requiredContext === "homeowner"
-                      ? c.contact_type === "homeowner" || c.contact_type === "past_client"
+                      ? c.contact_type === "homeowner" || c.contact_type === LIFETIME_CUSTOMER_TYPE
                       : true
                   )
                   .map((contact) => (

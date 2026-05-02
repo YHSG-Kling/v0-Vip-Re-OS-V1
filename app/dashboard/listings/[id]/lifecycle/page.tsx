@@ -287,7 +287,7 @@ const { data: listingVendorBookings } = await supabase
                 </Button>
               )}
               <Button size="sm" variant="outline" asChild>
-                <Link href="/past-clients">Past Clients Dashboard</Link>
+                <Link href="/lifetime-customers">Lifetime Customers</Link>
               </Button>
             </div>
           </div>

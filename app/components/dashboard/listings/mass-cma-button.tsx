@@ -71,7 +71,7 @@ export function MassCMAButton({ agentId: _agentId }: MassCMAButtonProps) {
                 <p className="text-muted-foreground text-xs">{result.message}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                View generated CMAs in the CMA History or contact your past clients with equity buildup.
+                View generated CMAs in the CMA History or contact your lifetime customers with equity buildup.
               </p>
             </div>
           )}

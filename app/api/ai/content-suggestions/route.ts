@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 export async function POST(request: Request) {
   // Auth guard — agentId always from session, never from body
@@ -139,7 +140,7 @@ function generateContentSuggestions(contact: any) {
     })
   }
 
-  if (stage === "closed" || stage === "past_client") {
+  if (stage === "closed" || stage === LIFETIME_CUSTOMER_TYPE) {
     suggestions.push({
       type: "email",
       title: "Congratulations & Follow-up",

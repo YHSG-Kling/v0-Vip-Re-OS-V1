@@ -143,7 +143,7 @@ Provide scores 0-100 for each category, identify positive/negative factors, and 
 export async function aiGenerateDripCampaign(params: {
   contactId: string
   agentId: string
-  campaignType: "buyer_nurture" | "seller_nurture" | "past_client" | "sphere" | "investor" | "relocation"
+  campaignType: "buyer_nurture" | "seller_nurture" | "lifetime_customer" | "sphere" | "investor" | "relocation"
   duration: "30_days" | "60_days" | "90_days" | "6_months" | "12_months"
 }): Promise<{ success: boolean; campaign?: any; error?: string }> {
   if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {

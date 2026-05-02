@@ -313,7 +313,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           brokerageId: brokerageId,
           agentId: userId,
           topic,
-          targetAudience: "past_clients",
+          targetAudience: "lifetime_customers",
           tone: "friendly",
         }),
         aiGenerateSubjectLines({

@@ -57,7 +57,7 @@ const TARGET_AUDIENCE_OPTIONS = [
   { value: "expired", label: "Expired Listings" },
   { value: "divorce_probate", label: "Divorce / Probate Prospects" },
   { value: "investors", label: "Investor Prospects" },
-  { value: "past_clients", label: "Past Clients (Sphere of Influence)" },
+  { value: "lifetime_customers", label: "Lifetime Customers (Sphere of Influence)" },
   { value: "geographic_farm", label: "Geographic Farm (Neighborhood)" },
   { value: "new_movers", label: "New Movers" },
 ]
@@ -69,7 +69,7 @@ export type AudienceSegment =
   | "expired"
   | "divorce_probate"
   | "investors"
-  | "past_clients"
+  | "lifetime_customers"
   | "geographic_farm"
   | "new_movers"
 
@@ -81,7 +81,7 @@ const AVG_COMMISSION_BY_SEGMENT: Record<AudienceSegment, number> = {
   expired: 16000,
   divorce_probate: 14000,
   investors: 12000,
-  past_clients: 15000,
+  lifetime_customers: 15000,
   geographic_farm: 13000,
   new_movers: 10000,
 }
@@ -94,7 +94,7 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   expired: 0.022,
   divorce_probate: 0.018,
   investors: 0.015,
-  past_clients: 0.035,
+  lifetime_customers: 0.035,
   geographic_farm: 0.01,
   new_movers: 0.014,
 }
@@ -136,7 +136,7 @@ export function CreateCampaignDialog({
     quantity: 500,
     mailingDate: "",
     perPieceCost: 0.79,
-    campaignGoal: "brand_awareness" as "listings" | "buyers" | "farming" | "brand_awareness" | "past_clients",
+    campaignGoal: "brand_awareness" as "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers",
     area: "",
     budget: 500,
   })
@@ -605,7 +605,7 @@ export function CreateCampaignDialog({
                       <SelectItem value="buyers">Find Buyers</SelectItem>
                       <SelectItem value="farming">Farming</SelectItem>
                       <SelectItem value="brand_awareness">Brand Awareness</SelectItem>
-                      <SelectItem value="past_clients">Past Clients</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime Customers</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

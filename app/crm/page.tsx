@@ -18,6 +18,7 @@ import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientCh
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
@@ -2624,7 +2625,7 @@ export default function CRMPage() {
           const t = (c.contact_type ?? "").toLowerCase()
           const p = (c.contact_persona ?? "").toLowerCase()
           if (typeFilter === "lifetime_customer") {
-            return t === "lifetime_customer" || t === "past_client"
+            return t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE
           }
           return t.includes(typeFilter) || p.includes(typeFilter)
         })

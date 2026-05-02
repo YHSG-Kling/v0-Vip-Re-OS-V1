@@ -85,7 +85,7 @@ export async function aiGenerateSubjectLines(params: {
   agentId: string
   brokerageId: string
   newsletterTopic: string
-  audience?: "all" | "buyers" | "sellers" | "investors" | "past_clients"
+  audience?: "all" | "buyers" | "sellers" | "investors" | "lifetime_customers"
   tone?: "professional" | "friendly" | "urgent" | "curious"
   includeEmoji?: boolean
 }) {

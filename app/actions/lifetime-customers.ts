@@ -14,7 +14,7 @@ import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { identifyReferralOpportunities } from "@/app/actions/ai-referral-management"
 
 /**
- * Log a touchpoint for a past client
+ * Log a touchpoint for a lifetime customer
  */
 export async function logTouchpoint({
   contactId,
@@ -67,7 +67,7 @@ export async function logTouchpoint({
 }
 
 /**
- * Send a market update to a past client (draft-first)
+ * Send a market update to a lifetime customer (draft-first)
  */
 export async function sendMarketUpdate({
   contactId,
@@ -133,7 +133,7 @@ export async function sendMarketUpdate({
 }
 
 /**
- * Get past clients with engagement scores
+ * Get lifetime customers with engagement scores
  */
 export async function getLifetimeCustomers({
   search,

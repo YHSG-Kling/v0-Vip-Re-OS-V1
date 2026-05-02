@@ -83,7 +83,7 @@ export async function aiWritePostcardCopy(params: {
     | "expired"
     | "divorce_probate"
     | "investors"
-    | "past_clients"
+    | "lifetime_customers"
     | "geographic_farm"
     | "new_movers"
   callToAction: "call" | "scan_qr" | "visit_website" | "text"
@@ -242,7 +242,7 @@ Consider:
 export async function aiSelectTargetAudience(params: {
   agentId: string
   brokerageId: string
-  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "past_clients"
+  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers"
   budget: number
   area: string
 }) {

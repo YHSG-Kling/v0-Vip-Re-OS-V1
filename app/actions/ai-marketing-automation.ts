@@ -12,7 +12,7 @@ import { handleError } from "@/lib/errors"
 
 export interface NewsletterGenerationParams {
   agentId: string
-  audienceSegment: "buyers" | "sellers" | "investors" | "past_clients" | "sphere" | "all"
+  audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
   topic?: string
   tone?: "professional" | "friendly" | "educational" | "urgent"
   includeMarketData?: boolean
@@ -83,7 +83,7 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       buyers: "Focus on buying opportunities, market timing, financing tips, and new listings",
       sellers: "Focus on selling strategies, home value insights, staging tips, and market conditions",
       investors: "Focus on ROI analysis, market trends, cap rates, and investment opportunities",
-      past_clients: "Focus on home maintenance, refinancing opportunities, and referral programs",
+      lifetime_customers: "Focus on home maintenance, refinancing opportunities, and referral programs",
       sphere: "Focus on community events, market updates, and staying connected",
       all: "Balance content for buyers, sellers, and homeowners with broad appeal",
     }

@@ -460,7 +460,7 @@ export function ReputationPanel({
           { label: "Total Reviews",  value: totalReviews,           icon: Star,         bg: "bg-yellow-50", color: "text-yellow-500" },
           { label: "Avg Rating",     value: avgRating,              icon: ThumbsUp,     bg: "bg-green-50",  color: "text-green-500"  },
           { label: "Review Ready",   value: reviewReadyClients.length, icon: MessageSquare, bg: "bg-blue-50", color: "text-blue-500" },
-          { label: "Past Clients",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-500"   },
+          { label: "Lifetime Customers",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-500"   },
         ].map(({ label, value, icon: Icon, bg, color }) => (
           <Card key={label}>
             <CardContent className="p-4 flex items-center justify-between">
@@ -714,7 +714,7 @@ export function ReputationPanel({
                     <div className="min-w-0">
                       <p className="font-medium text-sm truncate">{client.first_name} {client.last_name}</p>
                       <p className="text-xs text-muted-foreground truncate">
-                        {client.transactions?.[0]?.property_address || "Past Client"}
+                        {client.transactions?.[0]?.property_address || "Lifetime Customer"}
                       </p>
                     </div>
                     <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>

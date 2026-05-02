@@ -114,7 +114,7 @@ export function ReferralAiDraftingPanel({
             <SelectContent>
               <SelectItem value="friend">Friend</SelectItem>
               <SelectItem value="family">Family</SelectItem>
-              <SelectItem value="past-client">Past Client</SelectItem>
+              <SelectItem value="lifetime-customer">Lifetime Customer</SelectItem>
               <SelectItem value="colleague">Colleague</SelectItem>
             </SelectContent>
           </Select>
