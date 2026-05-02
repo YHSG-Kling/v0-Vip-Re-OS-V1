@@ -1063,6 +1063,87 @@ export function TransactionDetailClient({
         </div>
       </div>
 
+      {/* Milestone Timeline Ribbon */}
+      {(() => {
+        const KEY_MILESTONES = [
+          "Earnest Money",
+          "Inspection",
+          "Appraisal",
+          "Financing",
+          "Clear to Close",
+          "Final Walkthrough",
+          "Closing Date",
+        ]
+        const ribbonItems = KEY_MILESTONES.map((label) => {
+          const found = milestones.find((m) =>
+            m.milestone_name?.toLowerCase().includes(label.toLowerCase())
+          ) ?? deadlines.find((d) =>
+            d.deadline_type?.toLowerCase().includes(label.toLowerCase())
+          )
+          const date = found
+            ? new Date((found as any).milestone_date ?? (found as any).deadline_date ?? "")
+            : null
+          const completed = (found as any)?.status === "completed" || (found as any)?.status === "done"
+          const overdue = date && date < new Date() && !completed
+          return { label, date, completed, overdue }
+        })
+        return (
+          <div className="border-b bg-muted/30">
+            <div className="container py-3 overflow-x-auto">
+              <div className="flex items-center gap-0 min-w-max">
+                {ribbonItems.map((item, i) => (
+                  <div key={item.label} className="flex items-center">
+                    <div className="flex flex-col items-center px-3">
+                      <div
+                        className={cn(
+                          "h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                          item.completed
+                            ? "bg-emerald-500 text-white"
+                            : item.overdue
+                            ? "bg-red-500 text-white"
+                            : "bg-muted border-2 border-border text-muted-foreground"
+                        )}
+                      >
+                        {item.completed ? "✓" : i + 1}
+                      </div>
+                      <p className="text-[10px] font-medium mt-1 text-center w-16 leading-tight">
+                        {item.label}
+                      </p>
+                      {item.date && (
+                        <p
+                          className={cn(
+                            "text-[9px] tabular-nums",
+                            item.overdue
+                              ? "text-red-600 font-medium"
+                              : item.completed
+                              ? "text-emerald-600"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {item.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                        </p>
+                      )}
+                    </div>
+                    {i < ribbonItems.length - 1 && (
+                      <div
+                        className={cn(
+                          "h-px w-8 shrink-0",
+                          ribbonItems[i + 1]?.completed
+                            ? "bg-emerald-400"
+                            : ribbonItems[i + 1]?.overdue
+                            ? "bg-red-300"
+                            : "bg-border"
+                        )}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Main Layout: LEFT / CENTER / RIGHT */}
       <div className="container py-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

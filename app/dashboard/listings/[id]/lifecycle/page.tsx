@@ -25,6 +25,7 @@ import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
+import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { CheckCircle } from "lucide-react"
@@ -442,6 +443,14 @@ const { data: listingVendorBookings } = await supabase
           canLaunch={mediaReady && publishReady && marketingReady}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
+        />
+        <PriceReductionSheet
+          listingId={listingId}
+          currentPrice={listing.list_price ?? 0}
+          listingAddress={`${listing.address}, ${listing.city}`}
+          agentId={user.id}
+          brokerageId={userRow.brokerage_id}
+          status={(listing as any).status ?? null}
         />
         <StageTimeline
           listing={listing}
