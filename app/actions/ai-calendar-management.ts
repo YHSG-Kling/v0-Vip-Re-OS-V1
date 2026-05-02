@@ -96,6 +96,26 @@ export async function createAppointment(params: {
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
 
+    // Auto-trigger listing appointment prep for consultation appointments
+    if (params.type === "listing_consultation" && params.contactId && data?.id) {
+      try {
+        const { enrollContactInSequence } = await import("@/app/actions/campaign-sequences")
+        // Look up the listing-appointment-drip sequence by name
+        const { data: seq } = await supabase
+          .from("campaign_sequences")
+          .select("id")
+          .eq("brokerage_id", params.brokerageId)
+          .ilike("name", "%listing%appt%drip%")
+          .limit(1)
+          .maybeSingle()
+        if (seq?.id) {
+          await enrollContactInSequence({ sequenceId: seq.id, contactId: params.contactId }).catch(() => null)
+        }
+      } catch {
+        // Non-critical: don't fail appointment creation if sequence enrollment fails
+      }
+    }
+
     return { success: true, appointment: data }
   } catch (error) {
     return handleError(error, "createAppointment")
