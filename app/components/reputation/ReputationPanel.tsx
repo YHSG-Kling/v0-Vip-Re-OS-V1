@@ -66,6 +66,7 @@ import {
   loadGiftHistoryAction,
   createReviewRequestAction,
 } from "@/app/actions/reputation-kernel"
+import { getReputationPreferences, saveReputationPreferences } from "@/app/actions/settings/reputation-preferences"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -139,6 +140,26 @@ export function ReputationPanel({
   const [reviewFilterRange, setReviewFilterRange] = useState<"30d" | "90d" | "all">("all")
   const [autoRespondMode, setAutoRespondMode] = useState<"off" | "review" | "auto">("off")
   const [autoRespondApprovalHours, setAutoRespondApprovalHours] = useState<number>(24)
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
+
+  // Load preferences on mount
+  useEffect(() => {
+    if (!agentId || prefsLoaded) return
+    getReputationPreferences(agentId).then((prefs) => {
+      setAutoRespondMode(prefs.autoRespondMode)
+      setAutoRespondApprovalHours(prefs.autoRespondApprovalHours)
+      setPrefsLoaded(true)
+    })
+  }, [agentId, prefsLoaded])
+
+  // Persist auto-respond mode change
+  const handleAutoRespondModeChange = useCallback((mode: "off" | "review" | "auto") => {
+    setAutoRespondMode(mode)
+    if (agentId) {
+      saveReputationPreferences(agentId, { autoRespondMode: mode, autoRespondApprovalHours })
+        .then((res) => { if (!res.success) toast.error("Failed to save preference") })
+    }
+  }, [agentId, autoRespondApprovalHours])
 
   function copy(text: string, id: string) {
     navigator.clipboard.writeText(text)
@@ -608,7 +629,7 @@ export function ReputationPanel({
                 {(["off", "review", "auto"] as const).map((m) => (
                   <button
                     key={m}
-                    onClick={() => setAutoRespondMode(m)}
+                    onClick={() => handleAutoRespondModeChange(m)}
                     className={`px-2.5 py-1 rounded-full border ${
                       autoRespondMode === m
                         ? "bg-primary text-primary-foreground border-primary"
@@ -628,15 +649,17 @@ export function ReputationPanel({
                     max={168}
                     value={autoRespondApprovalHours}
                     onChange={(e) => setAutoRespondApprovalHours(Math.max(1, Number(e.target.value) || 24))}
+                    onBlur={(e) => {
+                      const hours = Math.max(1, Number(e.target.value) || 24)
+                      if (agentId) {
+                        saveReputationPreferences(agentId, { autoRespondMode, autoRespondApprovalHours: hours })
+                      }
+                    }}
                     className="w-16 h-7 rounded border px-2 text-xs"
                   />
                   <span className="text-muted-foreground">hours</span>
                 </div>
               )}
-              <p className="text-[10px] text-muted-foreground italic">
-                Local UI state only — wiring to backend persistence + the auto-publish job comes with
-                the broader reputation automation work.
-              </p>
             </CardContent>
           </Card>
         </TabsContent>
