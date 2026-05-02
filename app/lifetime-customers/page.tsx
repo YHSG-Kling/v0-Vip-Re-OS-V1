@@ -71,6 +71,7 @@ import { generateReferralRequest, nurturePendingReferral, recommendReferralRewar
 import { loadReferralPipelineAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
+import { CampaignsGiftingPanel } from "./components/campaigns-gifting-panel"
 
 // Types
 interface PastClient {
@@ -167,6 +168,7 @@ export default function LifetimeCustomersPage() {
   const [loading, setLoading] = useState(true)
   const [currentAgentId, setCurrentAgentId] = useState("")
   const [currentUserId, setCurrentUserId] = useState("")
+  const [currentBrokerageId, setCurrentBrokerageId] = useState("")
 
   // Filter state
   const [search, setSearch] = useState("")
@@ -278,12 +280,12 @@ export default function LifetimeCustomersPage() {
       const { data: { user: authUser } } = await supabase.auth.getUser()
       if (!authUser) return
       setCurrentUserId(authUser.id)
-      const { data: agentRow } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("user_id", authUser.id)
-        .maybeSingle()
+      const [{ data: agentRow }, { data: userRow }] = await Promise.all([
+        supabase.from("agents").select("id").eq("user_id", authUser.id).maybeSingle(),
+        supabase.from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle(),
+      ])
       setCurrentAgentId(agentRow?.id ?? authUser.id)
+      setCurrentBrokerageId(userRow?.brokerage_id ?? "")
     }
     resolveAgent()
   }, [])
@@ -664,7 +666,7 @@ export default function LifetimeCustomersPage() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="w-full grid grid-cols-5">
+          <TabsList className="w-full grid grid-cols-6">
             <TabsTrigger value="feed" className="flex items-center gap-2">
               <Heart className="w-4 h-4" />
               <span className="hidden sm:inline">Relationship Feed</span>
@@ -672,6 +674,10 @@ export default function LifetimeCustomersPage() {
             <TabsTrigger value="intelligence" className="flex items-center gap-2">
               <Sparkles className="w-4 h-4" />
               <span className="hidden sm:inline">Sphere Intelligence</span>
+            </TabsTrigger>
+            <TabsTrigger value="campaigns" className="flex items-center gap-2">
+              <Send className="w-4 h-4" />
+              <span className="hidden sm:inline">Campaigns &amp; Gifting</span>
             </TabsTrigger>
             <TabsTrigger value="radar" className="flex items-center gap-2">
               <TrendingUp className="w-4 h-4" />
@@ -1205,7 +1211,21 @@ export default function LifetimeCustomersPage() {
             )}
           </TabsContent>
 
-          {/* TAB 3: Opportunity Radar */}
+          {/* TAB 3: Campaigns & Gifting */}
+          <TabsContent value="campaigns" className="space-y-6">
+            <CampaignsGiftingPanel
+              brokerageId={currentBrokerageId}
+              agentId={currentAgentId}
+              contacts={clients.map((c) => ({
+                id: c.id,
+                first_name: c.first_name,
+                last_name: c.last_name,
+                email: c.email,
+              }))}
+            />
+          </TabsContent>
+
+          {/* TAB 4: Opportunity Radar */}
           <TabsContent value="radar" className="space-y-6">
             {/* Top Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
