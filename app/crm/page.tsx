@@ -18,6 +18,7 @@ import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientCh
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
+import { getUnifiedLeadProfiles, getSocialIntelligence } from "@/app/actions/lead-intelligence"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
@@ -301,6 +302,8 @@ export default function CRMPage() {
   const [contactTransactions, setContactTransactions] = useState<any[]>([])
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
   const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
+  const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
+  const [socialSignals, setSocialSignals] = useState<any[]>([])
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
@@ -469,6 +472,14 @@ export default function CRMPage() {
             else setContactIntelligence(null)
           })
           .catch(() => setContactIntelligence(null))
+
+        // Unified lead profile + social intelligence signals — non-blocking
+        getUnifiedLeadProfiles({ contact_id: contactId })
+          .then((res) => setUnifiedLeadProfile(res.profiles?.[0] ?? null))
+          .catch(() => setUnifiedLeadProfile(null))
+        getSocialIntelligence()
+          .then((res) => setSocialSignals(res.signals ?? []))
+          .catch(() => setSocialSignals([]))
 
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
@@ -2453,7 +2464,100 @@ export default function CRMPage() {
 
                   {/* ── INTELLIGENCE TAB ── */}
                   <TabsContent value="intelligence" className="space-y-4 mt-0">
-                    {!contactIntelligence && (
+
+                    {/* Unified lead profile — intent badge, confidence bar, urgency, motivation */}
+                    {unifiedLeadProfile && (
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            Lead Profile
+                            {unifiedLeadProfile.intent_type && (
+                              <Badge className={cn(
+                                "text-xs capitalize",
+                                unifiedLeadProfile.intent_type === "buyer" ? "bg-blue-100 text-blue-700" :
+                                unifiedLeadProfile.intent_type === "seller" ? "bg-amber-100 text-amber-700" :
+                                "bg-purple-100 text-purple-700"
+                              )}>
+                                {unifiedLeadProfile.intent_type}
+                              </Badge>
+                            )}
+                            {unifiedLeadProfile.temperature && (
+                              <Badge className={cn(
+                                "text-xs capitalize",
+                                unifiedLeadProfile.temperature === "hot" ? "bg-red-100 text-red-700" :
+                                unifiedLeadProfile.temperature === "warm" ? "bg-orange-100 text-orange-700" :
+                                "bg-sky-100 text-sky-700"
+                              )}>
+                                {unifiedLeadProfile.temperature}
+                              </Badge>
+                            )}
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          {unifiedLeadProfile.confidence_score != null && (
+                            <div>
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="text-muted-foreground">Confidence</span>
+                                <span className="font-medium">{Math.round(Number(unifiedLeadProfile.confidence_score) * 100)}%</span>
+                              </div>
+                              <Progress value={Number(unifiedLeadProfile.confidence_score) * 100} className="h-1.5" />
+                            </div>
+                          )}
+                          <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
+                            {unifiedLeadProfile.urgency_level && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Timeline urgency</span>
+                                <span className="font-medium capitalize">{unifiedLeadProfile.urgency_level}</span>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.motivation_signals && (
+                              <div className="col-span-2">
+                                <p className="text-muted-foreground mb-1">Motivation signals</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {(Array.isArray(unifiedLeadProfile.motivation_signals)
+                                    ? unifiedLeadProfile.motivation_signals
+                                    : [unifiedLeadProfile.motivation_signals]
+                                  ).map((sig: string, i: number) => (
+                                    <Badge key={i} variant="outline" className="text-xs">{sig}</Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.enrichment_source && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Enrichment source</span>
+                                <Badge variant="outline" className="text-xs">{unifiedLeadProfile.enrichment_source}</Badge>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.ready_for_outreach != null && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Ready for outreach</span>
+                                <span className={cn("text-xs font-medium", unifiedLeadProfile.ready_for_outreach ? "text-emerald-600" : "text-muted-foreground")}>
+                                  {unifiedLeadProfile.ready_for_outreach ? "Yes" : "No"}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          {socialSignals.length > 0 && (
+                            <div>
+                              <p className="text-xs text-muted-foreground mb-1.5">Market social signals</p>
+                              <div className="space-y-1">
+                                {socialSignals.slice(0, 3).map((s: any) => (
+                                  <div key={s.id} className="flex items-center justify-between text-xs rounded border px-2 py-1">
+                                    <span className="truncate max-w-[180px]">{s.signal_text || s.source}</span>
+                                    {s.ai_intent_score != null && (
+                                      <span className="text-muted-foreground ml-2 shrink-0">Score {Math.round(s.ai_intent_score * 100)}%</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {!contactIntelligence && !unifiedLeadProfile && (
                       <Card>
                         <CardContent className="p-6 text-sm text-muted-foreground text-center">
                           Loading intelligence…

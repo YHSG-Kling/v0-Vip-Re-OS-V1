@@ -39,7 +39,7 @@ export async function scheduleLifetimeCustomerTouchpoints(contactId: string, tra
     }
   })
 
-  const { error } = await supabase.from("past_client_touchpoints").insert(touchpoints)
+  const { error } = await supabase.from("lifetime_customer_touchpoints").insert(touchpoints)
 
   if (error) throw error
 
@@ -73,7 +73,7 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   const message = `Hi ${contact.first_name}! Can you believe it's been ${yearsAgo} year${yearsAgo > 1 ? "s" : ""} since you closed on your home? Time flies! Hope you're still loving it. Here's a quick market update for your neighborhood...`
 
   // Create touchpoint record only after confirming email exists — status "sent" must be truthful
-  const { error } = await supabase.from("past_client_touchpoints").insert({
+  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "home_anniversary",
@@ -117,7 +117,7 @@ export async function sendBirthdayMessage(contactId: string) {
 
   const message = `Happy Birthday ${contact.first_name}! Wishing you an amazing year ahead!`
 
-  const { error } = await supabase.from("past_client_touchpoints").insert({
+  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "birthday",
@@ -157,7 +157,7 @@ export async function sendReferralRequest(contactId: string) {
 
   const message = `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agent?.full_name || "Your Agent"}`
 
-  const { error } = await supabase.from("past_client_touchpoints").insert({
+  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "referral_request",
@@ -251,7 +251,7 @@ export async function getTouchpointCalendar(month: number, year: number) {
   const endDate = new Date(year, month + 1, 0)
 
   const { data, error } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .select("*, contacts(first_name, last_name)")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
@@ -275,7 +275,7 @@ export async function calculateEngagementScore(contactId: string) {
   if (!agentId) throw new Error("Agent profile not found")
 
   const { data: touchpoints } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .select("*")
     .eq("contact_id", contactId)
     .eq("status", "sent")

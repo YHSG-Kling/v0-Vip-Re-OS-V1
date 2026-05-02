@@ -165,6 +165,7 @@ export async function getUnifiedLeadProfiles(filters?: {
   intent_type?: string
   min_confidence?: number
   ready_for_outreach?: boolean
+  contact_id?: string
 }) {
   try {
     const supabase = createServiceClient()
@@ -177,6 +178,9 @@ export async function getUnifiedLeadProfiles(filters?: {
       `)
       .order("confidence_score", { ascending: false })
 
+    if (filters?.contact_id) {
+      query = query.eq("contact_id", filters.contact_id)
+    }
     if (filters?.temperature) {
       query = query.eq("temperature", filters.temperature)
     }

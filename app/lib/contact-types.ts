@@ -1,8 +1,7 @@
 // Single source of truth for the canonical "Lifetime Customer" contact type.
-// The DB enum currently still says 'past_client' until the Phase 1B migration
-// flips it to 'lifetime_customer'. Application code should reference this
-// constant instead of inlining the literal so the DB rename is a one-line change here.
-export const LIFETIME_CUSTOMER_TYPE = "past_client" as const
+// Migration 433-rename-past-client-to-lifetime-customer.sql backfills all DB rows.
+// This constant is now 'lifetime_customer' — the canonical value going forward.
+export const LIFETIME_CUSTOMER_TYPE = "lifetime_customer" as const
 
 // Audience-segment string used by app-layer filters (campaigns, automations, AI prompts).
 // This is NOT a DB-enforced enum — safe to use the new term immediately.

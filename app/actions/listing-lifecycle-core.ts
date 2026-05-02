@@ -391,7 +391,7 @@ async function handleSellerToLifetimeTransition(
     }
   })
 
-  await supabase.from("past_client_touchpoints").insert(touchpoints).then(() => {})
+  await supabase.from("lifetime_customer_touchpoints").insert(touchpoints).then(() => {})
 
   // 3. Send portal message (body column per schema)
   await supabase

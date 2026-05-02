@@ -56,7 +56,7 @@ export async function getLifetimeContext(contactId: string) {
 
   // Get recent touchpoints
   const { data: touchpoints } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .select("*")
     .eq("contact_id", contactId)
     .order("sent_at", { ascending: false })
@@ -239,7 +239,7 @@ export async function getMarketUpdates(contactId: string) {
 
   // Get market update touchpoints
   const { data: touchpoints } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .select("*")
     .eq("contact_id", contactId)
     .in("touchpoint_type", ["market_update", "anniversary"])

@@ -31,7 +31,7 @@ export async function logTouchpoint({
   const { agentId, brokerageId } = await getAgentContext()
 
   const { data, error } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .insert({
       contact_id: contactId,
       agent_id: agentId,
@@ -101,7 +101,7 @@ export async function sendMarketUpdate({
 
   // Insert touchpoint record
   const { error: touchpointError } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .insert({
       contact_id: contactId,
       agent_id: agentId,
@@ -227,7 +227,7 @@ export async function getTouchpointTimeline(contactId: string) {
   const { agentId, brokerageId } = await getAgentContext()
 
   const { data, error } = await supabase
-    .from("past_client_touchpoints")
+    .from("lifetime_customer_touchpoints")
     .select("*")
     .eq("contact_id", contactId)
     .eq("agent_id", agentId)
