@@ -285,6 +285,54 @@ async function generateScriptFromKeywords(keywords: string[], category?: string,
   }
 }
 
+// Public wrapper: generate a draft script from a topic / keywords for the wizard.
+// Returns the draft script PLUS a brand-voice compliance summary so the UI can
+// surface violations before the user proceeds.
+export async function generatePodcastScriptDraft(params: {
+  topic?: string
+  keywords?: string[]
+  category?: string
+}): Promise<{
+  success: boolean
+  script?: string
+  brandVoice?: { passed: boolean; violations: string[]; suggestions: string[] }
+  error?: string
+}> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.userId || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+    const seed: string[] = []
+    if (params.topic?.trim()) seed.push(params.topic.trim())
+    if (params.keywords?.length) seed.push(...params.keywords)
+    if (seed.length === 0) return { success: false, error: "Provide a topic or at least one keyword." }
+
+    const script = await generateScriptFromKeywords(seed, params.category, ctx.userId)
+
+    // Run brand-voice check so the UI can show pass/fail before the user advances.
+    const bv = await applyBrandVoice({
+      brokerageId:   ctx.brokerageId,
+      actorUserId:   ctx.userId,
+      actorRole:     "agent",
+      journeyType:   "buyer",
+      persona:       "first_time",
+      messageType:   "social",
+      content:       script,
+    })
+    return {
+      success: true,
+      script,
+      brandVoice: {
+        passed:      bv.violations.length === 0,
+        violations:  bv.violations,
+        suggestions: bv.notes ?? [],
+      },
+    }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to generate script" }
+  }
+}
+
 // Generate audio from script using voice synthesis
 export async function generatePodcastAudio(episodeId: string) {
   // Get agent context for proper FK relationships and kernel calls
@@ -584,8 +632,15 @@ export async function getPodcastEpisodes(filters?: { status?: string; category?:
   }
 }
 
-// Publish podcast episode with kernel wiring
-export async function publishPodcastEpisode(episodeId: string, channels: string[]) {
+// Publish podcast episode with kernel wiring.
+// Optional `scheduledAt` (ISO string) — if in the future, the episode is set to
+// status="scheduled" with `scheduled_at` populated; a separate cron job actually
+// fires the distribution at the scheduled time.
+export async function publishPodcastEpisode(
+  episodeId: string,
+  channels: string[],
+  scheduledAt?: string | null,
+) {
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
@@ -643,12 +698,17 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
       }
     }
 
+    // Determine if this is a scheduled publish (future) vs immediate.
+    const scheduledTimestamp = scheduledAt ? new Date(scheduledAt) : null
+    const isScheduled = scheduledTimestamp != null && scheduledTimestamp.getTime() > Date.now()
+
     // Update episode status and channels
     const { error } = await supabase
       .from("podcast_episodes")
       .update({
-        status: "published",
-        published_at: new Date().toISOString(),
+        status: isScheduled ? "scheduled" : "published",
+        published_at: isScheduled ? null : new Date().toISOString(),
+        scheduled_at: isScheduled ? scheduledTimestamp!.toISOString() : null,
         publish_channels: channels,
       })
       .eq("id", episodeId)
@@ -656,6 +716,15 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
+
+    // For scheduled publishes, defer kernel distribution event until the cron picks it up.
+    if (isScheduled) {
+      return {
+        success: true,
+        scheduled: true,
+        scheduledAt: scheduledTimestamp!.toISOString(),
+      }
+    }
 
     // Get enabled distribution channels for this brokerage
     const { data: distributionChannels } = await supabase
@@ -1148,6 +1217,401 @@ Focus on what the listener gains — lead with the value, not the host.`,
     })
 
     return { success: true, description: text.trim() }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J5A — My Show settings (per-agent show branding)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getPodcastShowSettings() {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", settings: null }
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("podcast_show_settings")
+    .select("*")
+    .eq("agent_id", agentId)
+    .maybeSingle()
+  if (error) return { success: false, error: error.message, settings: null }
+  return { success: true, settings: data }
+}
+
+export async function savePodcastShowSettings(params: {
+  showName?: string
+  hostName?: string
+  description?: string
+  category?: string
+  language?: string
+  coverArtUrl?: string
+  websiteUrl?: string
+}) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("podcast_show_settings")
+    .upsert(
+      {
+        agent_id: agentId,
+        brokerage_id: brokerageId,
+        show_name: params.showName ?? null,
+        host_name: params.hostName ?? null,
+        description: params.description ?? null,
+        category: params.category ?? "Real Estate",
+        language: params.language ?? "en",
+        cover_art_url: params.coverArtUrl ?? null,
+        website_url: params.websiteUrl ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "agent_id" }
+    )
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+export async function uploadPodcastCoverArt(formData: FormData) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const file = formData.get("file") as File | null
+  if (!file) return { success: false, error: "No file provided" }
+  if (!file.type.startsWith("image/")) return { success: false, error: "File must be an image" }
+  try {
+    const ext = file.name.split(".").pop() ?? "png"
+    const blob = await put(`podcast-cover-art/${agentId}-${Date.now()}.${ext}`, file, {
+      access: "public",
+      contentType: file.type,
+    })
+    return { success: true, url: blob.url }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J5A — Distribution channel test connection
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function testDistributionChannelConnection(channelId: string): Promise<{
+  success: boolean
+  ok?: boolean
+  message?: string
+  error?: string
+}> {
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "Missing agent context" }
+  const supabase = await createClient()
+  const { data: ch, error } = await supabase
+    .from("podcast_distribution_channels")
+    .select("id, channel_name, external_show_id, distribution_config, is_enabled")
+    .eq("id", channelId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (error || !ch) return { success: false, error: error?.message ?? "Channel not found" }
+  if (!ch.is_enabled) return { success: true, ok: false, message: "Channel disabled" }
+  if (!ch.external_show_id) return { success: true, ok: false, message: "External show ID missing" }
+
+  // Lightweight reachability check per platform — read-only, never writes.
+  const name = (ch.channel_name ?? "").toLowerCase()
+  const showId = ch.external_show_id
+  try {
+    let url: string | null = null
+    if (name === "spotify") url = `https://open.spotify.com/show/${showId}`
+    else if (name === "apple" || name === "apple_podcasts") url = `https://podcasts.apple.com/podcast/id${showId}`
+    else if (name === "youtube") url = `https://www.youtube.com/channel/${showId}`
+    else if (name === "rss") url = showId.startsWith("http") ? showId : null
+
+    if (!url) {
+      return { success: true, ok: false, message: `No reachability check available for ${name}` }
+    }
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" })
+    return {
+      success: true,
+      ok: res.ok,
+      message: res.ok ? `Reachable (${res.status})` : `Unreachable (${res.status})`,
+    }
+  } catch (err: any) {
+    return { success: true, ok: false, message: err?.message ?? "Connection failed" }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J5A — Repurpose: snippet suggestions, blog post, newsletter teaser
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function generatePodcastSnippetSuggestions(params: { episodeId: string }) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", snippets: [] }
+  const supabase = await createClient()
+  const { data: episode } = await supabase
+    .from("podcast_episodes")
+    .select("id, title, script, category")
+    .eq("id", params.episodeId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!episode) return { success: false, error: "Episode not found", snippets: [] }
+  if (!episode.script) return { success: false, error: "Episode has no script to extract from", snippets: [] }
+  try {
+    const { text } = await generateTextRouted({
+      feature: "podcast_snippet_suggestions",
+      maxTokens: 800,
+      temperature: 0.7,
+      prompt: `Extract 3-5 short, social-ready snippet suggestions from this real estate podcast episode.
+Lead with the listener's value, not the host. Each snippet should be 30-60 seconds when read aloud.
+
+Title: ${episode.title}
+Category: ${episode.category ?? "general"}
+Script:
+${episode.script.slice(0, 4000)}
+
+Return as JSON array of {hook: string, body: string, suggested_caption: string, estimated_duration_seconds: number}.`,
+    })
+    let snippets: any[] = []
+    try {
+      const match = text.match(/\[[\s\S]*\]/)
+      snippets = match ? JSON.parse(match[0]) : []
+    } catch {
+      snippets = []
+    }
+    return { success: true, snippets }
+  } catch (error: any) {
+    return { success: false, error: error.message, snippets: [] }
+  }
+}
+
+export async function generatePodcastBlogPost(params: { episodeId: string }) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const supabase = await createClient()
+  const { data: episode } = await supabase
+    .from("podcast_episodes")
+    .select("id, title, description, script, category")
+    .eq("id", params.episodeId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!episode) return { success: false, error: "Episode not found" }
+  if (!episode.script) return { success: false, error: "Episode has no script" }
+  try {
+    const { text } = await generateTextRouted({
+      feature: "podcast_blog_post",
+      maxTokens: 1500,
+      temperature: 0.6,
+      prompt: `Turn this podcast episode transcript into a long-form blog post (markdown, 600-900 words).
+Lead with reader value. Use H2 section headers, short paragraphs, and a clear takeaway list at the end.
+
+Title: ${episode.title}
+Description: ${episode.description ?? ""}
+Transcript:
+${episode.script.slice(0, 6000)}`,
+    })
+    const blogTitle = `${episode.title}`
+    // Persist to blog_posts table if it exists; fail gracefully if not.
+    let savedId: string | null = null
+    try {
+      const { data: row } = await supabase
+        .from("blog_posts")
+        .insert({
+          brokerage_id: brokerageId,
+          author_id: agentId,
+          title: blogTitle,
+          content_md: text,
+          status: "draft",
+          source_type: "podcast",
+          source_id: episode.id,
+        })
+        .select("id")
+        .single()
+      savedId = row?.id ?? null
+    } catch {
+      savedId = null
+    }
+    return { success: true, blogPostId: savedId, content: text, title: blogTitle }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function generatePodcastNewsletterTeaser(params: { episodeId: string }) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const supabase = await createClient()
+  const { data: episode } = await supabase
+    .from("podcast_episodes")
+    .select("id, title, description, script")
+    .eq("id", params.episodeId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!episode) return { success: false, error: "Episode not found" }
+  try {
+    const { text } = await generateTextRouted({
+      feature: "podcast_newsletter_teaser",
+      maxTokens: 220,
+      temperature: 0.65,
+      prompt: `Write a 1-paragraph newsletter teaser (4-5 sentences) promoting this podcast episode.
+Lead with what the reader gains. End with a CTA to listen.
+
+Title: ${episode.title}
+Description: ${episode.description ?? ""}
+Transcript excerpt:
+${(episode.script ?? "").slice(0, 1500)}`,
+    })
+    let teaserId: string | null = null
+    try {
+      const { data: row } = await supabase
+        .from("newsletter_teasers")
+        .insert({
+          brokerage_id: brokerageId,
+          agent_id: agentId,
+          source_type: "podcast",
+          source_id: episode.id,
+          content: text,
+          status: "draft",
+        })
+        .select("id")
+        .single()
+      teaserId = row?.id ?? null
+    } catch {
+      teaserId = null
+    }
+    return { success: true, teaserId, content: text }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J5A — Analytics: per-channel breakdown, daily trend, completion rate, subscribers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number }) {
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "Missing agent context" }
+  const supabase = await createClient()
+  const trendDays = params?.trendDays ?? 30
+  const sinceTrend = new Date(Date.now() - trendDays * 24 * 60 * 60 * 1000).toISOString()
+  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const since60 = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+
+  try {
+    const { data: events } = await supabase
+      .from("podcast_analytics_events")
+      .select("event_type, episode_id, platform, duration_listened_seconds, completion_pct, occurred_at, created_at")
+      .eq("brokerage_id", brokerageId)
+
+    const rows = events ?? []
+
+    // Total plays
+    const totalPlays = rows.filter((r: any) => r.event_type === "play").length
+
+    // Total listen minutes
+    const totalListenMinutes = Math.round(
+      rows.reduce((s: number, r: any) => s + (r.duration_listened_seconds ?? 0), 0) / 60
+    )
+
+    // Avg completion rate (only for events that record completion_pct)
+    const completionRows = rows.filter((r: any) => typeof r.completion_pct === "number")
+    const avgCompletionRate = completionRows.length
+      ? Math.round(
+          (completionRows.reduce((s: number, r: any) => s + (r.completion_pct ?? 0), 0) / completionRows.length) * 100
+        ) / 100
+      : 0
+
+    // Subscriber growth: new subscribe events over last 30 days vs prior 30 days
+    const subs30 = rows.filter(
+      (r: any) => r.event_type === "subscribe" && (r.occurred_at ?? r.created_at) >= since30
+    ).length
+    const subs60 = rows.filter(
+      (r: any) =>
+        r.event_type === "subscribe" &&
+        (r.occurred_at ?? r.created_at) >= since60 &&
+        (r.occurred_at ?? r.created_at) < since30
+    ).length
+    const subscriberGrowthPct = subs60 > 0 ? Math.round(((subs30 - subs60) / subs60) * 100) : null
+
+    // Per-channel breakdown
+    const byChannel: Record<string, { plays: number; minutes: number }> = {}
+    for (const r of rows) {
+      if (r.event_type !== "play") continue
+      const k = (r.platform ?? "unknown").toString()
+      if (!byChannel[k]) byChannel[k] = { plays: 0, minutes: 0 }
+      byChannel[k].plays += 1
+      byChannel[k].minutes += Math.round((r.duration_listened_seconds ?? 0) / 60)
+    }
+    const channelBreakdown = Object.entries(byChannel).map(([channel, v]) => ({
+      channel,
+      plays: v.plays,
+      minutes: v.minutes,
+    }))
+
+    // Daily trend (plays per day, last `trendDays` days)
+    const trendMap: Record<string, number> = {}
+    for (let i = 0; i < trendDays; i++) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000)
+      const key = d.toISOString().slice(0, 10)
+      trendMap[key] = 0
+    }
+    for (const r of rows) {
+      if (r.event_type !== "play") continue
+      const ts = (r.occurred_at ?? r.created_at) as string | null
+      if (!ts || ts < sinceTrend) continue
+      const key = ts.slice(0, 10)
+      if (key in trendMap) trendMap[key] += 1
+    }
+    const dailyTrend = Object.entries(trendMap)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([date, plays]) => ({ date, plays }))
+
+    // Per-episode with platform deep links
+    const { data: episodeRows } = await supabase
+      .from("podcast_episodes")
+      .select("id, title, audio_url, publish_channels, status")
+      .eq("brokerage_id", brokerageId)
+
+    const playsByEpisode: Record<string, number> = {}
+    for (const r of rows) {
+      if (r.event_type !== "play") continue
+      playsByEpisode[r.episode_id] = (playsByEpisode[r.episode_id] ?? 0) + 1
+    }
+
+    // Build per-channel deep link map from distribution channels (we use external_show_id)
+    const { data: channels } = await supabase
+      .from("podcast_distribution_channels")
+      .select("channel_name, external_show_id, is_enabled")
+      .eq("brokerage_id", brokerageId)
+
+    const platformLinks: Record<string, string | null> = {}
+    for (const ch of channels ?? []) {
+      if (!ch.is_enabled || !ch.external_show_id) continue
+      const n = ch.channel_name.toLowerCase()
+      if (n === "spotify") platformLinks.spotify = `https://open.spotify.com/show/${ch.external_show_id}`
+      else if (n === "apple" || n === "apple_podcasts")
+        platformLinks.apple = `https://podcasts.apple.com/podcast/id${ch.external_show_id}`
+      else if (n === "youtube") platformLinks.youtube = `https://www.youtube.com/channel/${ch.external_show_id}`
+      else if (n === "rss") platformLinks.rss = ch.external_show_id
+    }
+
+    const perEpisode = (episodeRows ?? []).map((ep: any) => ({
+      id: ep.id,
+      title: ep.title,
+      plays: playsByEpisode[ep.id] ?? 0,
+      audioUrl: ep.audio_url,
+      publishedChannels: ep.publish_channels ?? [],
+      platformLinks,
+    }))
+
+    return {
+      success: true,
+      totalPlays,
+      totalListenMinutes,
+      avgCompletionRate,
+      subscriberGrowthPct,
+      subscribersLast30: subs30,
+      channelBreakdown,
+      dailyTrend,
+      perEpisode,
+    }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

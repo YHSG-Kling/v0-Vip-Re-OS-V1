@@ -4,18 +4,18 @@ import { useState, useEffect } from "react"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
-import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2, Scissors } from "lucide-react"
+import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2, Scissors, Code2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/app/components/ui/dialog"
 import { Input } from "@/app/components/ui/input"
 import { Label } from "@/app/components/ui/label"
 import { Textarea } from "@/app/components/ui/textarea"
 import { EpisodesTab } from "./components/episodes-tab"
-import { TemplatesTab } from "./components/templates-tab"
-import { DistributionChannelsTab } from "./components/distribution-channels-tab"
 import { CreateEpisodeDialog } from "./components/create-episode-dialog"
 import { AnalyticsTab } from "./components/analytics-tab"
 import { RepurposeTab } from "./components/repurpose-tab"
 import { MyShowTab } from "./components/my-show-tab"
+import { SetupTab } from "./components/setup-tab"
+import { EmbedWidgetTab } from "./components/embed-widget-tab"
 import {
   getPodcastEpisodes,
   getPodcastTemplates,
@@ -262,13 +262,13 @@ export function PodcastDashboard({
                 <Scissors className="h-4 w-4" />
                 Repurpose
               </TabsTrigger>
-              <TabsTrigger value="templates" className="gap-2">
+              <TabsTrigger value="setup" className="gap-2">
                 <Settings className="h-4 w-4" />
-                Templates
+                Setup
               </TabsTrigger>
-              <TabsTrigger value="distribution" className="gap-2">
-                <Mic className="h-4 w-4" />
-                Distribution Channels
+              <TabsTrigger value="embed" className="gap-2">
+                <Code2 className="h-4 w-4" />
+                Embed Widget
               </TabsTrigger>
             </TabsList>
           </div>
@@ -295,20 +295,21 @@ export function PodcastDashboard({
               <RepurposeTab episodes={episodes} />
             </TabsContent>
 
-            <TabsContent value="templates" className="mt-0 h-full">
-              <TemplatesTab
+            <TabsContent value="setup" className="mt-0 h-full">
+              <SetupTab
                 templates={templates}
+                channels={channels}
                 loading={loading}
-                onUpdate={handleTemplateUpdated}
+                isAdmin={isAdmin}
+                onTemplatesUpdate={handleTemplateUpdated}
+                onChannelsUpdate={handleChannelUpdated}
               />
             </TabsContent>
 
-            <TabsContent value="distribution" className="mt-0 h-full">
-              <DistributionChannelsTab
-                channels={channels}
-                loading={loading}
-                onUpdate={handleChannelUpdated}
-                isAdmin={isAdmin}
+            <TabsContent value="embed" className="mt-0 h-full">
+              <EmbedWidgetTab
+                episodes={episodes.map((e) => ({ id: e.id, title: e.title, status: e.status, audio_url: e.audio_url }))}
+                agentId={agentId}
               />
             </TabsContent>
           </div>
@@ -322,6 +323,7 @@ export function PodcastDashboard({
         templates={templates}
         channels={channels}
         onCreated={handleEpisodeCreated}
+        hasVoiceClone={hasVoiceClone}
       />
 
       {/* Create Template Dialog */}
