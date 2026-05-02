@@ -39,6 +39,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
+import { sendEmail } from "@/lib/providers/messaging"
 
 // ─── STATUS TRANSITION GRAPH ─────────────────────────────────────────────────
 // Allowed booking status transitions. Any→cancelled and any→no_show are always
@@ -479,7 +480,7 @@ export async function assignVendorToListing(
   // Verify listing ownership
   const { data: listing } = await supabase
     .from("listings")
-    .select("id")
+    .select("id, address")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -491,7 +492,7 @@ export async function assignVendorToListing(
   // Verify vendor accessibility (brokerage-specific or global)
   const { data: vendor } = await supabase
     .from("vendors")
-    .select("id")
+    .select("id, name, email")
     .eq("id", vendorId)
     .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .maybeSingle()
@@ -530,6 +531,30 @@ export async function assignVendorToListing(
     metadata:     { vendorId, listingId, serviceType },
   })
 
+  // Best-effort vendor notification email
+  if (vendor.email) {
+    const propertyAddress = (listing as any).address ?? "the property"
+    const scheduledStr = scheduledDate
+      ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
+      : "TBD — the agent will confirm timing shortly"
+    sendEmail({
+      to: vendor.email,
+      subject: `New Job Booked: ${serviceType} at ${propertyAddress}`,
+      html: `
+        <p>Hello ${vendor.name},</p>
+        <p>You have been booked for a new job. Here are the details:</p>
+        <table style="border-collapse:collapse;width:100%;max-width:520px">
+          <tr><td style="padding:6px 0;font-weight:600;width:140px">Service</td><td>${serviceType}</td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Property</td><td>${propertyAddress}</td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Scheduled Date</td><td>${scheduledStr}</td></tr>
+          ${notes ? `<tr><td style="padding:6px 0;font-weight:600;vertical-align:top">Notes</td><td>${notes}</td></tr>` : ""}
+        </table>
+        <p>Please confirm your availability by replying to this email. If you have any questions, contact the booking agent directly.</p>
+        <p style="color:#666;font-size:12px">Booking ID: ${booking.id}</p>
+      `,
+    }).catch(() => null)
+  }
+
   return { success: true, data: { bookingId: booking.id } }
 }
 
@@ -567,7 +592,7 @@ export async function assignVendorToTransaction(
   // Verify vendor accessibility
   const { data: vendor } = await supabase
     .from("vendors")
-    .select("id, name")
+    .select("id, name, email")
     .eq("id", vendorId)
     .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .maybeSingle()
@@ -623,6 +648,29 @@ export async function assignVendorToTransaction(
     event:        KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
     metadata:     { vendorId, transactionId, assignmentType, jobId: job.id },
   })
+
+  // Best-effort vendor notification email
+  if (vendor.email) {
+    const scheduledStr = scheduledDate
+      ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
+      : "TBD — the agent will confirm timing shortly"
+    sendEmail({
+      to: vendor.email,
+      subject: `New Job Assignment: ${assignmentType} at ${transaction.property_address}`,
+      html: `
+        <p>Hello ${vendor.name},</p>
+        <p>You have been assigned to a transaction. Here are the details:</p>
+        <table style="border-collapse:collapse;width:100%;max-width:520px">
+          <tr><td style="padding:6px 0;font-weight:600;width:160px">Assignment Type</td><td>${assignmentType}</td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Property Address</td><td>${transaction.property_address}</td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Scheduled Date</td><td>${scheduledStr}</td></tr>
+          ${notes ? `<tr><td style="padding:6px 0;font-weight:600;vertical-align:top">Notes</td><td>${notes}</td></tr>` : ""}
+        </table>
+        <p>Please reply to this email to confirm your availability. The assigned agent will follow up with additional details.</p>
+        <p style="color:#666;font-size:12px">Assignment ID: ${assignment.id} | Job ID: ${job.id}</p>
+      `,
+    }).catch(() => null)
+  }
 
   return { success: true, data: { assignmentId: assignment.id, jobId: job.id } }
 }
