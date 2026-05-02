@@ -21,7 +21,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // ── Step 1: Fetch QR code ──────────────────────────────────────────────────
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_user_id, scan_count')
+      .select('id, brokerage_id, agent_id, scan_count, purpose')
       .eq('slug', slug)
       .eq('is_active', true)
       .single()
@@ -34,10 +34,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const userAgent = req.headers.get('user-agent') ?? null
     const referrer = req.headers.get('referer') ?? null
 
+    // ── Step 1b: Attribute scan to direct mail campaign if applicable ─────────
+    let campaignId: string | null = null
+    if (qr.purpose === 'campaign') {
+      const { data: dm } = await supabase
+        .from('direct_mail_campaigns')
+        .select('id')
+        .eq('qr_code_id', qr.id)
+        .maybeSingle()
+      campaignId = dm?.id ?? null
+    }
+
     // ── Step 2: Insert qr_scan_events (audit row only) ────────────────────────
     await supabase.from('qr_scan_events').insert({
       qr_code_id: qr.id,
       brokerage_id: qr.brokerage_id,
+      campaign_id: campaignId,
       ip_address: ip,
       user_agent: userAgent,
       referrer,
