@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/client"
 import { getAgentStats } from "@/app/actions/agents"
 import { generateDailyGameplan } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions } from "@/app/actions/briefing-actions"
-import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
+import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
@@ -15,6 +15,7 @@ import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
+import ReactMarkdown from "react-markdown"
 // Components
 import { AgentCommandStrip } from "./components/agent-command-strip"
 import { AgentOperatingRadar } from "./components/agent-operating-radar"
@@ -325,8 +326,8 @@ export default function AgentDashboard() {
                     </div>
                   )}
                   {gameplan.ai_summary && (
-                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground italic">
-                      {gameplan.ai_summary}
+                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground [&_strong]:font-semibold [&_strong]:text-foreground [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:my-1">
+                      <ReactMarkdown>{gameplan.ai_summary}</ReactMarkdown>
                     </div>
                   )}
                 </div>

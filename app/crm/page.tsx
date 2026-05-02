@@ -4,6 +4,12 @@ import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
+import {
+  getContactCreditAccounts,
+  getContactVideoEngagement,
+  getContactTransactions,
+  getContactActivity,
+} from "@/app/actions/contact-details"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -67,6 +73,9 @@ import {
   MessageCircle,
   CalendarPlus,
   Workflow,
+  CreditCard,
+  Video,
+  Activity,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -277,6 +286,13 @@ export default function CRMPage() {
   // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
   const [contactActivities, setContactActivities] = useState<any[]>([])
   const [callAnalyses, setCallAnalyses] = useState<Record<string, any>>({})
+
+  // Contact-detail data for the Credit / Videos / Transactions / Activity tabs
+  // (these tabs were previously only available on the deprecated /contacts/[id] route)
+  const [creditAccounts, setCreditAccounts] = useState<any[]>([])
+  const [contactVideos, setContactVideos] = useState<any[]>([])
+  const [contactTransactions, setContactTransactions] = useState<any[]>([])
+  const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
@@ -410,15 +426,33 @@ export default function CRMPage() {
       setBuyerInsights(null)
       setFatigueData(null)
       try {
-        // Core data loads — contact + churn + autopilot + followup + conv intel in parallel
-        const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
-          await Promise.all([
-            getContactById(contactId),
-            detectClientChurn(contactId).catch(() => null),
-            getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
-            aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
-            getConversationIntelligence(contactId).catch(() => null),
-          ])
+        // Core data loads — contact + churn + autopilot + followup + conv intel + tab data in parallel
+        const [
+          contactResult,
+          churnResult,
+          autopilotResult,
+          followUpResult,
+          convIntelResult,
+          creditResult,
+          videosResult,
+          transactionsResult,
+          activityResult,
+        ] = await Promise.all([
+          getContactById(contactId),
+          detectClientChurn(contactId).catch(() => null),
+          getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
+          aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
+          getConversationIntelligence(contactId).catch(() => null),
+          getContactCreditAccounts(contactId).catch(() => ({ accounts: [] })),
+          getContactVideoEngagement(contactId).catch(() => ({ videos: [] })),
+          getContactTransactions(contactId).catch(() => ({ transactions: [] })),
+          getContactActivity(contactId).catch(() => ({ activity: [] })),
+        ])
+
+        setCreditAccounts(creditResult?.accounts ?? [])
+        setContactVideos(videosResult?.videos ?? [])
+        setContactTransactions(transactionsResult?.transactions ?? [])
+        setContactActivityTimeline(activityResult?.activity ?? [])
 
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
@@ -994,6 +1028,38 @@ export default function CRMPage() {
         )
       : null
 
+    // Derived: message temperature from conversation sentiment for RelationshipRadar
+    const messageTemperature: "hot" | "warm" | "cold" | null =
+      conversationIntelligence?.sentiment_score != null
+        ? conversationIntelligence.sentiment_score >= 0.6
+          ? "hot"
+          : conversationIntelligence.sentiment_score >= 0.4
+          ? "warm"
+          : "cold"
+        : null
+
+    // Derived: value metrics from contact activities for ValueDeliveredPanel
+    const valueMetrics = {
+      milestonesCompleted: contactActivities.filter(
+        (a: any) =>
+          a.activity_type === "milestone_completed" ||
+          a.activity_type === "transaction_closed"
+      ).length,
+      contentSent: contactActivities.filter(
+        (a: any) =>
+          a.activity_type === "video_sent" ||
+          a.activity_type === "email_sent" ||
+          a.activity_type === "content_shared"
+      ).length,
+      showingsArranged: contactActivities.filter(
+        (a: any) => a.activity_type === "showing" || a.activity_type === "showing_scheduled"
+      ).length,
+      offersSubmitted: contactActivities.filter(
+        (a: any) => a.activity_type === "offer_submitted"
+      ).length,
+      trustCapitalScore: selectedContact.engagement_score ?? undefined,
+    }
+
     return (
       <div className="flex flex-col h-full min-h-0">
         {/* Back button */}
@@ -1441,6 +1507,28 @@ export default function CRMPage() {
                       <Globe className="h-3.5 w-3.5" />
                       Portal
                     </TabsTrigger>
+                    <TabsTrigger value="credit" className="text-xs gap-1.5">
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Credit
+                    </TabsTrigger>
+                    <TabsTrigger value="videos" className="text-xs gap-1.5">
+                      <Video className="h-3.5 w-3.5" />
+                      Videos
+                    </TabsTrigger>
+                    <TabsTrigger value="transactions" className="text-xs gap-1.5">
+                      <FileText className="h-3.5 w-3.5" />
+                      Transactions
+                    </TabsTrigger>
+                    {isBuyerContact && (
+                      <TabsTrigger value="properties" className="text-xs gap-1.5">
+                        <Home className="h-3.5 w-3.5" />
+                        Properties
+                      </TabsTrigger>
+                    )}
+                    <TabsTrigger value="activity" className="text-xs gap-1.5">
+                      <Activity className="h-3.5 w-3.5" />
+                      Activity
+                    </TabsTrigger>
                   </TabsList>
 
                   {/* ── OVERVIEW TAB ── */}
@@ -1461,7 +1549,7 @@ export default function CRMPage() {
                         contactId={selectedContactId}
                         engagementScore={selectedContact.engagement_score}
                         daysSinceContact={daysSinceContact}
-                        messageTemperature={null}
+                        messageTemperature={messageTemperature}
                         referralPotential={selectedContact.referral_potential}
                         openThreadCount={conversations.length}
                       />
@@ -1485,7 +1573,7 @@ export default function CRMPage() {
                       <ValueDeliveredPanel
                         contactId={selectedContactId}
                         agentId={agentId || ""}
-                        valueMetrics={null}
+                        valueMetrics={valueMetrics}
                       />
                       <ReferralLikelihoodPanel
                         contactId={selectedContactId}
@@ -2107,6 +2195,236 @@ export default function CRMPage() {
                     </Card>
                   </TabsContent>
 
+                  {/* ── CREDIT TAB ── */}
+                  <TabsContent value="credit" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Credit Pipeline Status</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {creditAccounts.length === 0 ? (
+                          <div className="p-4 border rounded-lg text-center">
+                            <p className="text-sm text-muted-foreground mb-2">No active credit accounts</p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => router.push(`/dashboard/credit-pipeline?contactId=${selectedContactId}`)}
+                            >
+                              Add to Credit Pipeline
+                            </Button>
+                          </div>
+                        ) : (
+                          creditAccounts.map((account: any) => (
+                            <div key={account.id} className="rounded-lg border p-3 flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">{account.lender_name || "Lender"}</p>
+                                <p className="text-xs text-muted-foreground capitalize">
+                                  {(account.credit_pipeline_stage || "Lead").replace(/_/g, " ")}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-semibold text-sm">
+                                  ${Number(account.loan_amount || 0).toLocaleString()}
+                                </p>
+                                <Badge variant="secondary" className="text-xs">
+                                  {account.status || "active"}
+                                </Badge>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── VIDEOS TAB ── */}
+                  <TabsContent value="videos" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Video Engagement</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {contactVideos.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">No videos sent yet</p>
+                        ) : (
+                          contactVideos.map((video: any) => (
+                            <div key={video.id} className="rounded-lg border p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="font-medium text-sm">{video.script_title || "Video"}</p>
+                                <span className="text-xs text-muted-foreground">
+                                  Sent {new Date(video.created_at).toLocaleDateString()}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                                <div>
+                                  <span className="block font-semibold text-foreground">{video.view_count || 0}</span>
+                                  views
+                                </div>
+                                <div>
+                                  <span className="block font-semibold text-foreground">
+                                    {Math.round((video.avg_completion_rate || 0) * 100)}%
+                                  </span>
+                                  completion
+                                </div>
+                                <div>
+                                  <span className="block font-semibold text-foreground">
+                                    {video.last_viewed_at
+                                      ? new Date(video.last_viewed_at).toLocaleDateString()
+                                      : "Never"}
+                                  </span>
+                                  last viewed
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── TRANSACTIONS TAB ── */}
+                  <TabsContent value="transactions" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Transaction History</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {contactTransactions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">No transactions yet</p>
+                        ) : (
+                          contactTransactions.map((t: any) => (
+                            <div key={t.id} className="rounded-lg border p-3 flex items-center justify-between">
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium text-sm truncate">
+                                  {t.property_address
+                                    ? `${t.property_address}${t.city ? `, ${t.city}` : ""}`
+                                    : "Property"}
+                                </p>
+                                <p className="text-xs text-muted-foreground capitalize">
+                                  {(t.transaction_type || "Active").replace(/_/g, " ")}
+                                </p>
+                              </div>
+                              <Badge variant="secondary" className="text-xs capitalize">
+                                {(t.status || "pending").replace(/_/g, " ")}
+                              </Badge>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── PROPERTIES TAB (buyers only) ── */}
+                  {isBuyerContact && (
+                    <TabsContent value="properties" className="space-y-4 mt-0">
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">Buyer Search Criteria</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3 text-sm">
+                          {(selectedContact as any).preferred_location && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Preferred Location</span>
+                              <span className="font-medium">{(selectedContact as any).preferred_location}</span>
+                            </div>
+                          )}
+                          {(selectedContact as any).budget_min && (selectedContact as any).budget_max && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Budget</span>
+                              <span className="font-medium">
+                                ${Number((selectedContact as any).budget_min).toLocaleString()} – $
+                                {Number((selectedContact as any).budget_max).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                          {(selectedContact as any).preferred_bedrooms && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Bedrooms</span>
+                              <span className="font-medium">{(selectedContact as any).preferred_bedrooms}+</span>
+                            </div>
+                          )}
+                          {(selectedContact as any).preferred_bathrooms && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Bathrooms</span>
+                              <span className="font-medium">{(selectedContact as any).preferred_bathrooms}+</span>
+                            </div>
+                          )}
+                          {(selectedContact as any).move_timeline && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Move Timeline</span>
+                              <span className="font-medium">{(selectedContact as any).move_timeline}</span>
+                            </div>
+                          )}
+                          {!(selectedContact as any).preferred_location && !(selectedContact as any).budget_min && (
+                            <p className="text-muted-foreground text-center py-4">
+                              No search criteria recorded yet
+                            </p>
+                          )}
+                        </CardContent>
+                      </Card>
+
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">Saved Properties</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            Saved properties will appear here from the buyer portal.
+                          </p>
+                          <Link href={`/portal/${selectedContactId}/properties`} target="_blank">
+                            <Button size="sm" variant="outline" className="w-full">
+                              Open Buyer Portal
+                            </Button>
+                          </Link>
+                        </CardContent>
+                      </Card>
+                    </TabsContent>
+                  )}
+
+                  {/* ── ACTIVITY TIMELINE TAB ── */}
+                  <TabsContent value="activity" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Activity Timeline</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {contactActivityTimeline.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">
+                            No activity recorded yet
+                          </p>
+                        ) : (
+                          <div className="space-y-4">
+                            {contactActivityTimeline.map((item: any, idx: number) => (
+                              <div
+                                key={`${item.activity_type}-${item.id ?? idx}`}
+                                className="flex gap-3 pb-4 border-b last:border-0"
+                              >
+                                <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                                <div className="flex-1 space-y-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-medium text-sm capitalize">
+                                      {(item.activity_type || "event").replace(/_/g, " ")}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground shrink-0">
+                                      {item.activity_date
+                                        ? new Date(item.activity_date).toLocaleDateString()
+                                        : ""}
+                                    </span>
+                                  </div>
+                                  {(item.notes || item.body || item.title || item.subject) && (
+                                    <p className="text-sm text-muted-foreground line-clamp-2">
+                                      {item.notes || item.body || item.title || item.subject}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
                 </Tabs>
               </main>
 
@@ -2116,6 +2434,16 @@ export default function CRMPage() {
       </div>
     )
   }
+
+  // Apply contact-type filter from the type tabs (Buyer / Seller / Investor)
+  const displayedContacts =
+    typeFilter === "all"
+      ? filtered
+      : filtered.filter((c) => {
+          const t = (c.contact_type ?? "").toLowerCase()
+          const p = (c.contact_persona ?? "").toLowerCase()
+          return t.includes(typeFilter) || p.includes(typeFilter)
+        })
 
   // Contact List View
   return (
@@ -2127,7 +2455,7 @@ export default function CRMPage() {
           <p className="text-sm text-gray-500 mt-1">
             {loading
               ? "Loading..."
-              : `${filtered.length} contact${filtered.length !== 1 ? "s" : ""}`}
+              : `${displayedContacts.length} contact${displayedContacts.length !== 1 ? "s" : ""}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -2334,10 +2662,20 @@ export default function CRMPage() {
         </div>
       )}
 
+      {/* Empty state for active type filter when underlying list is non-empty */}
+      {!loading && filtered.length > 0 && displayedContacts.length === 0 && (
+        <div className="text-center py-8 text-sm text-muted-foreground">
+          No {typeFilter} contacts.{" "}
+          <button className="underline text-primary" onClick={() => setTypeFilter("all")}>
+            Show all
+          </button>
+        </div>
+      )}
+
       {/* Contact list */}
-      {!loading && filtered.length > 0 && (
+      {!loading && displayedContacts.length > 0 && (
         <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
-          {filtered.map((contact) => (
+          {displayedContacts.map((contact) => (
             <Card
               key={contact.id}
               className="hover:shadow-md transition-shadow cursor-pointer"

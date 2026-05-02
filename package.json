@@ -93,6 +93,7 @@
     "react-dom": "19.2.4",
     "react-dropzone": "^15.0.0",
     "react-hook-form": "7.71.1",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "4.5.2",
     "recharts": "3.7.0",
     "sass": "1.97.3",

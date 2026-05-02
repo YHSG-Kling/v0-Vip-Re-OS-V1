@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
-import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/past-client-touchpoints"
+import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/lifetime-customer-touchpoints"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -19,8 +19,8 @@ export async function GET(request: Request) {
   }
 
   const contextResult = await createCronRunContextAction({
-    cron_name: "past-client-touchpoints",
-    cron_path: "/app/api/cron/past-client-touchpoints/route.ts",
+    cron_name: "lifetime-customer-touchpoints",
+    cron_path: "/app/api/cron/lifetime-customer-touchpoints/route.ts",
   })
   if (!contextResult.success || !contextResult.data) {
     return Response.json({ error: "Failed to create cron context" }, { status: 500 })

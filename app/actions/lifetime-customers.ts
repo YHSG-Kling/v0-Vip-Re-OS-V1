@@ -56,7 +56,7 @@ export async function logTouchpoint({
     agent_id: agentId,
     contact_id: contactId,
     activity_type: "past_client_touchpoint_sent",
-    title: `Past client touchpoint: ${touchpointType}`,
+    title: `Lifetime customer touchpoint: ${touchpointType}`,
     description: notes ?? `${touchpointType} sent via ${channel}`,
     notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT }),
     status: "completed",
@@ -135,7 +135,7 @@ export async function sendMarketUpdate({
 /**
  * Get past clients with engagement scores
  */
-export async function getPastClients({
+export async function getLifetimeCustomers({
   search,
   lastContactFilter,
   engagementFilter,

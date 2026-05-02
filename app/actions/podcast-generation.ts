@@ -472,64 +472,68 @@ function parseScriptIntoSegments(script: string) {
   return segments
 }
 
-// Synthesize voice using ElevenLabs or HeyGen voice API based on resolved provider
+// Synthesize voice using ElevenLabs or HeyGen voice API based on resolved provider.
+// Throws on failure so callers surface a real error to the user — never returns an empty buffer.
 async function synthesizeVoice(
-  text: string, 
-  voiceId: string, 
+  text: string,
+  voiceId: string,
   settings: any,
   providerKey: string = "heygen"
 ): Promise<Buffer> {
-  try {
-    // HeyGen provider (default via kernel provider resolution)
-    if (providerKey === "heygen") {
-      const response = await fetch("https://api.heygen.com/v1/voice/tts", {
-        method: "POST",
-        headers: {
-          Accept: "audio/mpeg",
-          "Content-Type": "application/json",
-          "X-Api-Key": process.env.HEYGEN_API_KEY || "",
-        },
-        body: JSON.stringify({
-          text,
-          voice_id: voiceId,
-          output_format: "mp3",
-        }),
-      })
+  if (!voiceId) {
+    throw new Error(
+      "Voice not configured. Set up your voice clone in Settings → Voice & Avatar Setup before generating audio."
+    )
+  }
 
-      if (!response.ok) {
-        throw new Error(`HeyGen voice synthesis failed: ${response.status}`)
-      }
-
-      const arrayBuffer = await response.arrayBuffer()
-      return Buffer.from(arrayBuffer)
+  if (providerKey === "heygen") {
+    if (!process.env.HEYGEN_API_KEY) {
+      throw new Error("HEYGEN_API_KEY is not configured. Contact your administrator to enable HeyGen voice synthesis.")
     }
-
-    // ElevenLabs fallback
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    const response = await fetch("https://api.heygen.com/v1/voice/tts", {
       method: "POST",
       headers: {
         Accept: "audio/mpeg",
         "Content-Type": "application/json",
-        "xi-api-key": process.env.ELEVENLABS_API_KEY || "",
+        "X-Api-Key": process.env.HEYGEN_API_KEY,
       },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_monolingual_v1",
-        voice_settings: settings,
-      }),
+      body: JSON.stringify({ text, voice_id: voiceId, output_format: "mp3" }),
     })
 
     if (!response.ok) {
-      throw new Error("Voice synthesis failed")
+      const body = await response.text().catch(() => "")
+      throw new Error(`HeyGen voice synthesis failed (${response.status}): ${body || response.statusText}`)
     }
 
     const arrayBuffer = await response.arrayBuffer()
     return Buffer.from(arrayBuffer)
-  } catch (error) {
-    console.error("[v0] Voice synthesis error:", error)
-    // Return empty buffer as fallback
-    return Buffer.from([])
   }
+
+  // ElevenLabs
+  if (!process.env.ELEVENLABS_API_KEY) {
+    throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
+  }
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    method: "POST",
+    headers: {
+      Accept: "audio/mpeg",
+      "Content-Type": "application/json",
+      "xi-api-key": process.env.ELEVENLABS_API_KEY,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: "eleven_monolingual_v1",
+      voice_settings: settings,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(`ElevenLabs voice synthesis failed (${response.status}): ${body || response.statusText}`)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  return Buffer.from(arrayBuffer)
 }
 
 // Get all podcast episodes for agent

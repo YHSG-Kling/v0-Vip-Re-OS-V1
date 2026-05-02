@@ -5,8 +5,8 @@ import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
-// Schedule automatic touchpoints after transaction closes
-export async function schedulePastClientTouchpoints(contactId: string, transactionId: string, closeDate: Date) {
+// Schedule automatic touchpoints after transaction closes (sphere-of-influence retention sequence)
+export async function scheduleLifetimeCustomerTouchpoints(contactId: string, transactionId: string, closeDate: Date) {
   const supabase = await createClient()
   const {
     data: { user },
@@ -175,7 +175,7 @@ export async function sendReferralRequest(contactId: string) {
 }
 
 // Get past client contacts for agent
-export async function getPastClientContacts() {
+export async function getLifetimeCustomerContacts() {
   const context = await getAgentContext()
   if (!context?.agentId) {
     return { success: false, error: "Agent context not available", contacts: [] }

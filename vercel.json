@@ -7,7 +7,7 @@
       "schedule": "0 */6 * * *"
     },
     {
-      "path": "/api/cron/past-client-touchpoints",
+      "path": "/api/cron/lifetime-customer-touchpoints",
       "schedule": "0 9 * * *"
     },
     {
