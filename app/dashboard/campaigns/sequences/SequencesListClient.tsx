@@ -322,7 +322,7 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
               />
               <SequenceCard
                 sequence={seq}
-                onEdit={() => router.push(`/dashboard/campaigns/sequences/${seq.id}`)}
+                onEdit={() => router.push(`/dashboard/campaigns/workflows?id=${seq.id}`)}
                 onToggle={() => handleToggleActive(seq)}
                 onDuplicate={() => handleDuplicate(seq)}
                 onDelete={() => setDeleting(seq.id)}

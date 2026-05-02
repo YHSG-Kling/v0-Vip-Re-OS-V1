@@ -52,6 +52,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Megaphone',
         children: [
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
+          { id: 'workflow-builder', label: 'Workflow Builder', href: '/dashboard/campaigns/workflows' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },

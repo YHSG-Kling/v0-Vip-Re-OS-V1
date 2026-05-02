@@ -22,6 +22,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import {
@@ -150,12 +151,12 @@ export default function LifetimeCustomersPage() {
   const searchParams = useSearchParams()
 
   // Tab state — supports ?tab= URL param for deep-linking (e.g. from redirects)
-  const VALID_TABS = ["feed", "intelligence", "radar", "portal", "reputation", "referrals", "reviews", "gifting"]
+  const VALID_TABS = ["feed", "intelligence", "campaigns", "engagement", "milestones", "segments", "radar", "portal", "reputation", "referrals", "reviews", "gifting"]
   const tabParam = searchParams.get("tab")
   const TAB_ALIAS: Record<string, string> = {
     referrals: "radar",
     reviews: "reputation",
-    gifting: "intelligence",
+    gifting: "campaigns",
   }
   const resolvedTab = tabParam
     ? TAB_ALIAS[tabParam] ?? (VALID_TABS.includes(tabParam) ? tabParam : "feed")
@@ -666,32 +667,46 @@ export default function LifetimeCustomersPage() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="w-full grid grid-cols-6">
-            <TabsTrigger value="feed" className="flex items-center gap-2">
-              <Heart className="w-4 h-4" />
-              <span className="hidden sm:inline">Relationship Feed</span>
-            </TabsTrigger>
-            <TabsTrigger value="intelligence" className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              <span className="hidden sm:inline">Sphere Intelligence</span>
-            </TabsTrigger>
-            <TabsTrigger value="campaigns" className="flex items-center gap-2">
-              <Send className="w-4 h-4" />
-              <span className="hidden sm:inline">Campaigns &amp; Gifting</span>
-            </TabsTrigger>
-            <TabsTrigger value="radar" className="flex items-center gap-2">
-              <TrendingUp className="w-4 h-4" />
-              <span className="hidden sm:inline">Opportunity Radar</span>
-            </TabsTrigger>
-            <TabsTrigger value="portal" className="flex items-center gap-2">
-              <ExternalLink className="w-4 h-4" />
-              <span className="hidden sm:inline">Portal Actions</span>
-            </TabsTrigger>
-            <TabsTrigger value="reputation" className="flex items-center gap-2">
-              <Star className="w-4 h-4" />
-              <span className="hidden sm:inline">Reputation</span>
-            </TabsTrigger>
-          </TabsList>
+          <div className="overflow-x-auto -mx-1 px-1">
+            <TabsList className="inline-flex h-10 items-center gap-1 min-w-max">
+              <TabsTrigger value="feed" className="flex items-center gap-1.5 text-xs px-3">
+                <Heart className="w-3.5 h-3.5" />
+                Feed
+              </TabsTrigger>
+              <TabsTrigger value="intelligence" className="flex items-center gap-1.5 text-xs px-3">
+                <Sparkles className="w-3.5 h-3.5" />
+                Intelligence
+              </TabsTrigger>
+              <TabsTrigger value="campaigns" className="flex items-center gap-1.5 text-xs px-3">
+                <Send className="w-3.5 h-3.5" />
+                Campaigns
+              </TabsTrigger>
+              <TabsTrigger value="engagement" className="flex items-center gap-1.5 text-xs px-3">
+                <TrendingUp className="w-3.5 h-3.5" />
+                Engagement
+              </TabsTrigger>
+              <TabsTrigger value="milestones" className="flex items-center gap-1.5 text-xs px-3">
+                <Heart className="w-3.5 h-3.5" />
+                Milestones
+              </TabsTrigger>
+              <TabsTrigger value="segments" className="flex items-center gap-1.5 text-xs px-3">
+                <Sparkles className="w-3.5 h-3.5" />
+                Segments
+              </TabsTrigger>
+              <TabsTrigger value="radar" className="flex items-center gap-1.5 text-xs px-3">
+                <TrendingUp className="w-3.5 h-3.5" />
+                Radar
+              </TabsTrigger>
+              <TabsTrigger value="portal" className="flex items-center gap-1.5 text-xs px-3">
+                <ExternalLink className="w-3.5 h-3.5" />
+                Portal
+              </TabsTrigger>
+              <TabsTrigger value="reputation" className="flex items-center gap-1.5 text-xs px-3">
+                <Star className="w-3.5 h-3.5" />
+                Reputation
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
           {/* TAB 1: Relationship Feed */}
           <TabsContent value="feed" className="space-y-6">
@@ -1223,6 +1238,159 @@ export default function LifetimeCustomersPage() {
                 email: c.email,
               }))}
             />
+          </TabsContent>
+
+          {/* TAB: Engagement Scores */}
+          <TabsContent value="engagement" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">Engagement Scores</h3>
+                <p className="text-sm text-muted-foreground">Lifetime customers ranked by relationship health</p>
+              </div>
+              <Button size="sm" onClick={() => {
+                // Reuse existing sphere scoring logic — trigger from radar tab
+                setActiveTab("radar")
+                setTimeout(() => document.getElementById("load-life-signals")?.click(), 100)
+              }} variant="outline" className="gap-1.5 text-xs">
+                <Sparkles className="h-3.5 w-3.5" />
+                Run AI Scoring
+              </Button>
+            </div>
+            {filteredClients.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">No contacts to score.</p>
+            ) : (
+              <div className="space-y-2">
+                {filteredClients
+                  .slice()
+                  .sort((a, b) => {
+                    const sa = a.client_engagement_scores?.[0]?.engagement_score ?? 0
+                    const sb = b.client_engagement_scores?.[0]?.engagement_score ?? 0
+                    return sb - sa
+                  })
+                  .map((client) => {
+                    const score = client.client_engagement_scores?.[0]?.engagement_score ?? null
+                    const risk = score == null ? null : score >= 70 ? "champion" : score >= 40 ? "warm" : "at_risk"
+                    return (
+                      <div key={client.id} className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">{client.first_name} {client.last_name}</p>
+                          <p className="text-xs text-muted-foreground truncate">{client.email}</p>
+                        </div>
+                        {score != null ? (
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="w-24">
+                              <div className="flex justify-between text-xs mb-0.5">
+                                <span className="text-muted-foreground">Score</span>
+                                <span className="font-medium">{Math.round(score)}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                <div
+                                  className={cn("h-full rounded-full", score >= 70 ? "bg-emerald-500" : score >= 40 ? "bg-amber-500" : "bg-red-400")}
+                                  style={{ width: `${Math.min(100, score)}%` }}
+                                />
+                              </div>
+                            </div>
+                            <Badge className={cn("text-xs capitalize", risk === "champion" ? "bg-emerald-100 text-emerald-700" : risk === "warm" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700")}>
+                              {risk === "champion" ? "Champion" : risk === "warm" ? "Warm" : "At Risk"}
+                            </Badge>
+                          </div>
+                        ) : (
+                          <Badge variant="outline" className="text-xs">Not scored</Badge>
+                        )}
+                        <Button size="sm" variant="outline" className="text-xs h-7 gap-1 shrink-0"
+                          onClick={() => handleGenerateTouchpoint(client.id, "check_in")}>
+                          <Sparkles className="h-3 w-3" />
+                          Touch
+                        </Button>
+                      </div>
+                    )
+                  })}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* TAB: Upcoming Milestones */}
+          <TabsContent value="milestones" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">Upcoming Milestones</h3>
+                <p className="text-sm text-muted-foreground">Home anniversaries, birthdays, and life events across your lifetime customers</p>
+              </div>
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={handleLoadMilestones} disabled={isPending}>
+                <Sparkles className="h-3.5 w-3.5" />
+                {milestones.length > 0 ? "Refresh" : "Load Milestones"}
+              </Button>
+            </div>
+            {milestones.length === 0 ? (
+              <div className="rounded-lg border bg-muted/20 p-8 text-center">
+                <p className="text-sm text-muted-foreground">Click "Load Milestones" to find upcoming home anniversaries, birthdays, and life events.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {milestones.map((m: any, i: number) => (
+                  <div key={i} className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{m.contactName}</p>
+                      <p className="text-xs text-muted-foreground capitalize">{m.type?.replace(/_/g, " ")} — {m.date}</p>
+                    </div>
+                    <div className="flex gap-1.5 shrink-0">
+                      <Button size="sm" variant="outline" className="text-xs h-7 gap-1"
+                        onClick={() => handleGenerateTouchpoint(m.contactId, m.type === "anniversary" ? "anniversary" : "birthday")}
+                        disabled={isPending}>
+                        <Sparkles className="h-3 w-3" />
+                        Message
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* TAB: Segments */}
+          <TabsContent value="segments" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">AI Segments</h3>
+                <p className="text-sm text-muted-foreground">Behavioral clusters automatically detected across your lifetime customers</p>
+              </div>
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={handleSegmentSphere} disabled={isPending}>
+                <Sparkles className="h-3.5 w-3.5" />
+                {sphereSegments ? "Re-Segment" : "Run Segmentation"}
+              </Button>
+            </div>
+            {!sphereSegments ? (
+              <div className="rounded-lg border bg-muted/20 p-8 text-center">
+                <p className="text-sm text-muted-foreground">Click "Run Segmentation" to let AI group your lifetime customers into behavioral clusters — High-Value, Referral Champions, At-Risk, and Dormant.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {sphereSegments.segments?.map((seg: any, i: number) => (
+                  <Card key={i}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center justify-between gap-2">
+                        {seg.name}
+                        <Badge variant="outline" className="text-xs">{seg.count} contacts</Badge>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-xs text-muted-foreground">{seg.description}</p>
+                      {seg.recommendedCadence && (
+                        <p className="text-xs border-t pt-2"><span className="font-medium">Recommended cadence:</span> {seg.recommendedCadence}</p>
+                      )}
+                      <Button size="sm" variant="outline" className="w-full text-xs gap-1.5 h-7"
+                        onClick={() => setActiveTab("campaigns")}>
+                        <Send className="h-3 w-3" />
+                        Enroll in Campaign
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+                {(!sphereSegments.segments || sphereSegments.segments.length === 0) && (
+                  <p className="text-sm text-muted-foreground col-span-2 text-center py-4">No segments returned. Try adding more lifetime customers first.</p>
+                )}
+              </div>
+            )}
           </TabsContent>
 
           {/* TAB 4: Opportunity Radar */}
