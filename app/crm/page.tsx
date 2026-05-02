@@ -10,6 +10,7 @@ import {
   getContactTransactions,
   getContactActivity,
 } from "@/app/actions/contact-details"
+import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -293,6 +294,7 @@ export default function CRMPage() {
   const [contactVideos, setContactVideos] = useState<any[]>([])
   const [contactTransactions, setContactTransactions] = useState<any[]>([])
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
+  const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
@@ -453,6 +455,14 @@ export default function CRMPage() {
         setContactVideos(videosResult?.videos ?? [])
         setContactTransactions(transactionsResult?.transactions ?? [])
         setContactActivityTimeline(activityResult?.activity ?? [])
+
+        // Intelligence loads independently — non-blocking
+        getContactIntelligence(contactId)
+          .then((res) => {
+            if (res.success && res.intelligence) setContactIntelligence(res.intelligence)
+            else setContactIntelligence(null)
+          })
+          .catch(() => setContactIntelligence(null))
 
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
@@ -1529,6 +1539,10 @@ export default function CRMPage() {
                       <Activity className="h-3.5 w-3.5" />
                       Activity
                     </TabsTrigger>
+                    <TabsTrigger value="intelligence" className="text-xs gap-1.5">
+                      <Brain className="h-3.5 w-3.5" />
+                      Intelligence
+                    </TabsTrigger>
                   </TabsList>
 
                   {/* ── OVERVIEW TAB ── */}
@@ -2425,6 +2439,140 @@ export default function CRMPage() {
                     </Card>
                   </TabsContent>
 
+                  {/* ── INTELLIGENCE TAB ── */}
+                  <TabsContent value="intelligence" className="space-y-4 mt-0">
+                    {!contactIntelligence && (
+                      <Card>
+                        <CardContent className="p-6 text-sm text-muted-foreground text-center">
+                          Loading intelligence…
+                        </CardContent>
+                      </Card>
+                    )}
+                    {contactIntelligence && (
+                      <>
+                        {/* Score grid */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Lead intelligence scores</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <ScoreCell label="Confidence" value={contactIntelligence.confidence_score} suffix="%" />
+                              <ScoreCell label="Intent" value={contactIntelligence.intent_score} suffix="%" />
+                              <ScoreCell label="Engagement" value={contactIntelligence.engagement_score} suffix="%" />
+                              <ScoreCell
+                                label="Latest lead score"
+                                value={contactIntelligence.latest_lead_score}
+                                subText={
+                                  contactIntelligence.latest_score_ai_confidence != null
+                                    ? `AI conf: ${Math.round(Number(contactIntelligence.latest_score_ai_confidence) * 100)}%`
+                                    : undefined
+                                }
+                              />
+                            </div>
+                            {contactIntelligence.latest_scored_at && (
+                              <p className="text-xs text-muted-foreground mt-3">
+                                Last scored {new Date(contactIntelligence.latest_scored_at).toLocaleString()}
+                              </p>
+                            )}
+                          </CardContent>
+                        </Card>
+
+                        {/* Source / origin */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Lead origin & enrichment</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                              <KV label="Source" value={contactIntelligence.source} />
+                              <KV label="Source channel" value={contactIntelligence.source_channel} />
+                              <KV label="Source family" value={contactIntelligence.source_family} />
+                              <KV label="Source subtype" value={contactIntelligence.source_subtype} />
+                              <KV label="Data source" value={contactIntelligence.data_source} />
+                              <KV label="Enrichment source" value={contactIntelligence.enrichment_source} />
+                              <KV
+                                label="Enrichment confidence"
+                                value={
+                                  contactIntelligence.enrichment_confidence != null
+                                    ? `${Math.round(Number(contactIntelligence.enrichment_confidence) * 100)}%`
+                                    : null
+                                }
+                              />
+                              <KV
+                                label="Last enriched"
+                                value={
+                                  contactIntelligence.last_enriched_at
+                                    ? new Date(contactIntelligence.last_enriched_at).toLocaleString()
+                                    : contactIntelligence.enriched_at
+                                    ? new Date(contactIntelligence.enriched_at).toLocaleString()
+                                    : null
+                                }
+                              />
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        {/* Compliance & contact-ability */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Contact-ability & compliance</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                              <Flag
+                                label="Email verified"
+                                ok={contactIntelligence.email_verified === true}
+                              />
+                              <Flag
+                                label="Email opt-out"
+                                ok={!contactIntelligence.email_opt_out && !contactIntelligence.email_unsubscribed}
+                                negativeLabel={contactIntelligence.email_unsubscribed ? "Unsubscribed" : "Opted out"}
+                              />
+                              <Flag
+                                label="Direct mail opt-out"
+                                ok={!contactIntelligence.direct_mail_opt_out}
+                                negativeLabel="Opted out"
+                              />
+                              <Flag
+                                label="TCPA consent"
+                                ok={!!contactIntelligence.tcpa_consent_source}
+                                negativeLabel="No consent"
+                                positiveLabel={contactIntelligence.tcpa_consent_source ?? "OK"}
+                              />
+                              <Flag
+                                label="AI ISA"
+                                ok={contactIntelligence.ai_isa_enabled === true}
+                                positiveLabel="Enabled"
+                                negativeLabel="Off"
+                                neutral
+                              />
+                              <Flag
+                                label="AI outreach paused"
+                                ok={!contactIntelligence.ai_outreach_paused}
+                                negativeLabel="Paused"
+                              />
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        {/* Score factors */}
+                        {contactIntelligence.latest_score_factors && (
+                          <Card>
+                            <CardHeader className="pb-3">
+                              <CardTitle className="text-sm">Score factors</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <pre className="text-xs bg-muted/30 rounded p-3 overflow-x-auto">
+                                {JSON.stringify(contactIntelligence.latest_score_factors, null, 2)}
+                              </pre>
+                            </CardContent>
+                          </Card>
+                        )}
+                      </>
+                    )}
+                  </TabsContent>
+
                 </Tabs>
               </main>
 
@@ -2917,6 +3065,71 @@ export default function CRMPage() {
           onClose={() => setOfferWizardOpen(false)}
         />
       )}
+    </div>
+  )
+}
+
+// ─── Intelligence-tab helper components ──────────────────────────────────────
+
+function ScoreCell({
+  label,
+  value,
+  suffix,
+  subText,
+}: {
+  label: string
+  value: number | null
+  suffix?: string
+  subText?: string
+}) {
+  return (
+    <div className="rounded-lg border p-3">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="text-2xl font-semibold tabular-nums">
+        {value != null ? `${value}${suffix ?? ""}` : <span className="text-muted-foreground/50 text-base">—</span>}
+      </p>
+      {subText && <p className="text-[10px] text-muted-foreground mt-0.5">{subText}</p>}
+    </div>
+  )
+}
+
+function KV({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2 border-b last:border-0 py-1.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-right truncate">
+        {value ?? <span className="text-muted-foreground/50">—</span>}
+      </span>
+    </div>
+  )
+}
+
+function Flag({
+  label,
+  ok,
+  positiveLabel,
+  negativeLabel,
+  neutral,
+}: {
+  label: string
+  ok: boolean
+  positiveLabel?: string
+  negativeLabel?: string
+  neutral?: boolean
+}) {
+  const variantClass = neutral
+    ? ok
+      ? "bg-blue-50 text-blue-900 border-blue-200"
+      : "bg-gray-50 text-gray-700 border-gray-200"
+    : ok
+    ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+    : "bg-amber-50 text-amber-900 border-amber-200"
+  return (
+    <div className={`rounded-md border p-2 text-xs ${variantClass}`}>
+      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+      <p className="font-semibold mt-0.5">
+        {ok ? positiveLabel ?? "OK" : negativeLabel ?? "Issue"}
+      </p>
     </div>
   )
 }
