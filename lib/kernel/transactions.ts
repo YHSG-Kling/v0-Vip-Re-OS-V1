@@ -1014,6 +1014,24 @@ export async function closeTransactionCommand(params: {
       }),
     ])
 
+    // Schedule review request 5 days post-close (J8.1)
+    // Schedule by inserting a pending review_request row with send_after set to T+5 days.
+    // The cron job / webhook consumer picks this up and sends it.
+    try {
+      const sendAfter = new Date()
+      sendAfter.setDate(sendAfter.getDate() + 5)
+      await supabase.from("review_requests").insert({
+        brokerage_id:   params.brokerageId,
+        agent_user_id:  params.agentId,
+        transaction_id: params.transactionId,
+        status:         "scheduled",
+        send_after:     sendAfter.toISOString(),
+        created_at:     new Date().toISOString(),
+      }).then(() => null, () => null) // best-effort, non-blocking
+    } catch {
+      // Non-critical — close transaction success is not dependent on review scheduling
+    }
+
     return { success: true }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "Unknown error in closeTransactionCommand" }
