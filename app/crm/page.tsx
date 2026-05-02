@@ -13,6 +13,7 @@ import {
 import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
+import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -80,6 +81,7 @@ import {
   Video,
   Activity,
   DollarSign,
+  CheckSquare,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -1564,6 +1566,10 @@ export default function CRMPage() {
                         Finance
                       </TabsTrigger>
                     )}
+                    <TabsTrigger value="closing" className="text-xs gap-1.5">
+                      <CheckSquare className="h-3.5 w-3.5" />
+                      Closing
+                    </TabsTrigger>
                   </TabsList>
 
                   {/* ── OVERVIEW TAB ── */}
@@ -2616,6 +2622,15 @@ export default function CRMPage() {
                       />
                     </TabsContent>
                   )}
+
+                  {/* ── CLOSING WORKFLOW TAB ── */}
+                  <TabsContent value="closing" className="space-y-4 mt-0">
+                    <ClosingWorkflowTab
+                      contactId={selectedContactId}
+                      agentId={agentId ?? ""}
+                      brokerageId={brokerageId ?? ""}
+                    />
+                  </TabsContent>
 
                 </Tabs>
               </main>
