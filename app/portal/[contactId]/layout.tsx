@@ -13,6 +13,7 @@ import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
 import PortalChatLauncher from "@/app/components/features/portal/ai/PortalChatLauncher"
+import { PortalNotificationBell } from "./components/PortalNotificationBell"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -176,6 +177,13 @@ export default async function PortalLayout({
     agentHasDIDAvatar = !!(agentDIDPhotoUrl || agentDIDVideoUrl)
   }
 
+  // Unread notification count for bell badge
+  const { count: unreadNotifications } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("contact_id", contactId)
+    .eq("is_read", false)
+
   // Kernel-driven portal view determination — use normalized contract objects
   const viewOutput = await determinePortalView(supabase, { contactId })
   const modulesOutput = await determinePortalModules(supabase, { contactId, view: viewOutput.view })
@@ -215,7 +223,13 @@ export default async function PortalLayout({
               Your agent: {agentName}
             </p>
           </div>
-          <PortalUserMenu contact={contact} contactId={contactId} />
+          <div className="flex items-center gap-2">
+            <PortalNotificationBell
+              contactId={contactId}
+              initialUnread={unreadNotifications ?? 0}
+            />
+            <PortalUserMenu contact={contact} contactId={contactId} />
+          </div>
         </div>
       </header>
 
