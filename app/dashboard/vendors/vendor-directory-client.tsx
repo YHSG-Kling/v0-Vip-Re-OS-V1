@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -165,6 +165,9 @@ export function VendorDirectoryClient({
   const [bookingDate, setBookingDate] = useState("")
   const [bookingCost, setBookingCost] = useState("")
   const [bookingNotes, setBookingNotes] = useState("")
+  // Real-time availability: existing bookings on selected date for selected vendor
+  const [vendorBookingsOnDate, setVendorBookingsOnDate] = useState<{ scheduled_date: string; status: string; service_type: string | null }[]>([])
+  const [availabilityLoading, setAvailabilityLoading] = useState(false)
 
   // Rating dialog state
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -181,6 +184,34 @@ export function VendorDirectoryClient({
   const [reviewsDialogOpen, setReviewsDialogOpen] = useState(false)
   const [reviewsVendor, setReviewsVendor] = useState<Vendor | null>(null)
   const [vendorReviews, setVendorReviews] = useState<any[]>([])
+
+  // Availability check: load bookings for selected vendor on selected date
+  useEffect(() => {
+    if (!selectedVendor || !bookingDate) {
+      setVendorBookingsOnDate([])
+      return
+    }
+    let cancelled = false
+    setAvailabilityLoading(true)
+    import("@/lib/supabase/client").then(({ createClient }) => {
+      const supabase = createClient()
+      const dayStart = `${bookingDate}T00:00:00`
+      const dayEnd   = `${bookingDate}T23:59:59`
+      supabase
+        .from("vendor_bookings")
+        .select("scheduled_date, status, service_type")
+        .eq("vendor_id", selectedVendor.id)
+        .gte("scheduled_date", dayStart)
+        .lte("scheduled_date", dayEnd)
+        .then(({ data }: { data: { scheduled_date: string; status: string; service_type: string | null }[] | null }) => {
+          if (!cancelled) {
+            setVendorBookingsOnDate(data ?? [])
+            setAvailabilityLoading(false)
+          }
+        })
+    })
+    return () => { cancelled = true }
+  }, [selectedVendor?.id, bookingDate])
 
   const handleCreateVendor = () => {
     if (!newVendorName.trim()) {
@@ -879,6 +910,28 @@ export function VendorDirectoryClient({
                 value={bookingDate}
                 onChange={(e) => setBookingDate(e.target.value)}
               />
+              {bookingDate && (
+                <div className="text-xs mt-1">
+                  {availabilityLoading ? (
+                    <span className="text-muted-foreground">Checking availability…</span>
+                  ) : vendorBookingsOnDate.length === 0 ? (
+                    <span className="text-emerald-700 font-medium">✓ Available on this date</span>
+                  ) : (
+                    <div>
+                      <span className="text-amber-700 font-medium">
+                        {vendorBookingsOnDate.length} booking{vendorBookingsOnDate.length > 1 ? "s" : ""} already on this date:
+                      </span>
+                      <ul className="ml-2 mt-0.5 space-y-0.5">
+                        {vendorBookingsOnDate.map((b, i) => (
+                          <li key={i} className="text-muted-foreground capitalize">
+                            • {b.service_type ?? "booking"} ({b.status})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">
