@@ -12,6 +12,7 @@ import {
 } from "@/app/actions/contact-details"
 import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
+import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -1033,6 +1034,18 @@ export default function CRMPage() {
       selectedContact.contact_type?.toLowerCase().includes("buyer") ||
       !!selectedContact.buyer_stage
 
+    // A contact is a candidate for a listing consultation if they are a seller
+    // OR a generic 'contact' (no specific type assigned yet) — not a confirmed
+    // buyer. The plan keeps this scheduler on the contact card because no
+    // listing record exists yet at this stage.
+    const ct = selectedContact.contact_type?.toLowerCase() ?? ""
+    const isListingCandidate =
+      ct.includes("seller") ||
+      ct === "" ||
+      ct === "contact" ||
+      ct === "lead" ||
+      ct === "both"
+
     const daysSinceContact = selectedContact.last_contacted_at
       ? Math.floor(
           (Date.now() - new Date(selectedContact.last_contacted_at).getTime()) /
@@ -1565,6 +1578,18 @@ export default function CRMPage() {
                         router.push(`/dashboard/inbox?contact=${selectedContactId}`)
                       }
                     />
+
+                    {/* Quick contact-card actions */}
+                    {isListingCandidate && agentId && brokerageId && (
+                      <div className="flex flex-wrap gap-2">
+                        <ListingConsultationScheduler
+                          contactId={selectedContactId}
+                          contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim()}
+                          agentId={agentId}
+                          brokerageId={brokerageId}
+                        />
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                       <RelationshipRadar
