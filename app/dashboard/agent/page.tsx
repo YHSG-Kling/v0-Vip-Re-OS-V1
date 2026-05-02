@@ -25,6 +25,7 @@ import { AgentDealIntelligence } from "./components/agent-deal-intelligence"
 import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-customers-panel"
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
+import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
@@ -270,7 +271,12 @@ export default function AgentDashboard() {
         <AgentOperatingRadar stats={stats} loading={loading} />
 
         {/* Weekly Plan widget — sits above the gameplan to set the week context */}
-        {agentId && <WeeklyPlanWidget agentId={agentId} />}
+        {agentId && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <WeeklyPlanWidget agentId={agentId} />
+            <LicenseComplianceWidget agentId={agentId} />
+          </div>
+        )}
 
         {/* Today's Gameplan */}
         {(gameplan || gameplanLoading) && (
