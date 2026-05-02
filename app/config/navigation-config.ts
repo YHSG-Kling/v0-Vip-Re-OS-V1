@@ -103,6 +103,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'reporting-center', label: 'Pipeline Analytics', href: '/dashboard/reporting', icon: 'BarChart3' },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
       { id: 'goals', label: 'My Goals', href: '/dashboard/goals', icon: 'Target' },
+      { id: 'voice-intelligence', label: 'Voice Intelligence', href: '/dashboard/voice-intelligence', icon: 'Mic' },
       { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
       { id: 'diagnosis', label: 'Business Diagnosis', href: '/dashboard/diagnosis', icon: 'Stethoscope' },
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
