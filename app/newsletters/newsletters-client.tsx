@@ -118,6 +118,15 @@ export function NewslettersClient({
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [scheduleDate, setScheduleDate] = useState("")
 
+  // Section picker (J5E — newsletter 7-step flow)
+  const NEWSLETTER_SECTIONS = [
+    "Market Update", "Featured Listing", "Just Sold", "Home Tips",
+    "Local Events", "Client Spotlight", "Agent News", "Open Houses",
+    "Educational Article", "Video of the Month",
+  ] as const
+  const [selectedSections, setSelectedSections] = useState<string[]>(["Market Update", "Home Tips"])
+  const [sendOptSuggestion, setSendOptSuggestion] = useState<string | null>(null)
+
   // AI subject line variants
   const [subjectVariants, setSubjectVariants] = useState<string[]>([])
   const [subjectVariantsLoading, setSubjectVariantsLoading] = useState(false)
@@ -209,19 +218,33 @@ export function NewslettersClient({
     if (!composeTopic.trim()) return
     setIsComposing(true)
     try {
-      const result = await aiComposeEmail({
-        brokerageId,
-        agentId: agentId || undefined,
-        topic: composeTopic.trim(),
-        audience: "all",
-        tone: "professional",
-      })
-      if (result.success && result.subject && result.body) {
-        setSubjectLine(result.subject)
-        setContent(result.body)
+      // Use aiWriteNewsletterContent when sections are selected for richer output
+      const [composeResult, sendOptResult] = await Promise.all([
+        aiComposeEmail({
+          brokerageId,
+          agentId: agentId || undefined,
+          topic: composeTopic.trim(),
+          audience: "all",
+          tone: "professional",
+        }),
+        aiOptimizeSendTime({ agentId, audienceSegment: "all" }).catch(() => null),
+      ])
+      if (composeResult.success && composeResult.subject && composeResult.body) {
+        setSubjectLine(composeResult.subject)
+        // Inject section headers from selectedSections into the content
+        const sectionHeader = selectedSections.length > 0
+          ? `<!-- Sections: ${selectedSections.join(", ")} -->\n\n`
+          : ""
+        setContent(sectionHeader + composeResult.body)
+        if (sendOptResult && "success" in sendOptResult && sendOptResult.success && "optimization" in sendOptResult) {
+          const opt = (sendOptResult as any).optimization
+          if (opt?.recommendedDay && opt?.recommendedTime) {
+            setSendOptSuggestion(`AI recommends sending: ${opt.recommendedDay} at ${opt.recommendedTime} (${opt.confidence ?? ""}% confidence) — ${opt.reasoning ?? ""}`)
+          }
+        }
         toast.success("AI composed email — review and save below")
       } else {
-        toast.error(result.error ?? "AI compose failed")
+        toast.error(composeResult.error ?? "AI compose failed")
       }
     } catch {
       toast.error("AI compose failed")
@@ -314,6 +337,32 @@ export function NewslettersClient({
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
+              {/* Section Picker */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Select Sections to Include</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {NEWSLETTER_SECTIONS.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() =>
+                        setSelectedSections((prev) =>
+                          prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
+                        )
+                      }
+                      className={`px-2 py-0.5 rounded-full border text-xs transition-colors ${
+                        selectedSections.includes(s)
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-muted-foreground/30 hover:border-primary/50"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">AI will write content for each selected section.</p>
+              </div>
+
               {/* AI Compose */}
               <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
                 <p className="text-sm font-medium flex items-center gap-1.5">
@@ -409,6 +458,13 @@ export function NewslettersClient({
                   className="text-sm font-mono"
                 />
               </div>
+
+              {sendOptSuggestion && (
+                <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800 flex items-start gap-1.5">
+                  <Clock className="h-3.5 w-3.5 shrink-0 mt-0.5 text-blue-500" />
+                  <span>{sendOptSuggestion}</span>
+                </div>
+              )}
 
               {createError && (
                 <p className="text-sm text-destructive">{createError}</p>
