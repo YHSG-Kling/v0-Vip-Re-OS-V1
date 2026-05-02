@@ -25,6 +25,7 @@ import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { draftSmartEmail } from "@/app/actions/ai-insights"
 import { sendEmail } from "@/app/actions/communications"
+import { PropertyAlertsPanel } from "./property-alerts-panel"
 
 function escapeHtml(str: string): string {
   return str
@@ -48,6 +49,7 @@ const BUYER_STAGES = [
 interface BuyerMatchPanelProps {
   contactId: string
   agentId: string
+  brokerageId?: string
   isBuyerContact: boolean
   buyerStage?: string | null
   contactName: string
@@ -66,6 +68,7 @@ interface PropertyMatch {
 export function BuyerMatchPanel({
   contactId,
   agentId,
+  brokerageId,
   isBuyerContact,
   buyerStage,
   contactName,
@@ -635,6 +638,15 @@ export function BuyerMatchPanel({
           <p className="text-sm text-muted-foreground text-center py-4">
             No saved criteria yet. Describe what {firstName} is looking for above.
           </p>
+        )}
+
+        {/* Property Alerts collapsible */}
+        {brokerageId && (
+          <PropertyAlertsPanel
+            contactId={contactId}
+            brokerageId={brokerageId}
+            agentId={agentId}
+          />
         )}
       </CardContent>
     </Card>

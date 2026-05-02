@@ -1677,6 +1677,7 @@ export default function CRMPage() {
                             <BuyerMatchPanel
                               contactId={selectedContactId}
                               agentId={agentId || ""}
+                              brokerageId={brokerageId || ""}
                               isBuyerContact={isBuyerContact}
                               buyerStage={selectedContact.buyer_stage}
                               contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
