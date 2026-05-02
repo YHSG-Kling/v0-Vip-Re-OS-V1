@@ -234,6 +234,25 @@ export async function loadFinancialProfile(params: {
   return { success: true, profile: profile ?? null, documents: documents ?? [] }
 }
 
+// ─── GET BROKERAGE LENDER USERS ───────────────────────────────────────────────
+
+export async function getBrokerageLenders(params: {
+  brokerageId: string
+}): Promise<{ success: boolean; lenders?: { id: string; full_name: string; email: string | null; phone: string | null }[]; error?: string }> {
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, full_name, email, phone")
+    .eq("brokerage_id", params.brokerageId)
+    .eq("user_type", "lender")
+    .eq("is_active", true)
+    .order("full_name", { ascending: true })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, lenders: (data ?? []).map((u) => ({ id: u.id, full_name: u.full_name ?? "Unnamed Lender", email: u.email ?? null, phone: u.phone ?? null })) }
+}
+
 // ─── LOAD MORTGAGE BROKER PARTNERS ───────────────────────────────────────────
 
 export async function loadMortgageBrokers(params: {

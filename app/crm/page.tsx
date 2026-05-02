@@ -2698,6 +2698,7 @@ export default function CRMPage() {
                         contactId={selectedContactId}
                         brokerageId={brokerageId ?? ""}
                         agentUserId={agentId ?? ""}
+                        buyerName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || undefined}
                       />
                     </TabsContent>
                   )}

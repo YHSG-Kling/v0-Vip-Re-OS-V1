@@ -20,20 +20,20 @@ export default async function LenderDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get lender/vendor ID for this user
-  const { data: vendor } = await supabase
-    .from('vendors')
-    .select('id')
+  // Get this lender's portal record (lenders are users with user_type='lender')
+  const { data: lenderPortal } = await supabase
+    .from('lender_portal_users')
+    .select('id, lender_company, brokerage_id')
     .eq('user_id', user.id)
-    .eq('category', 'lender')
     .maybeSingle()
 
-  const lenderId = vendor?.id || user.id
+  const lenderId = lenderPortal?.id ?? user.id
 
-  // Fetch lender's transactions
+  // Fetch transactions assigned to this lender via transactions.lender_id
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, contract_price, client_name, close_date, transaction_type')
+    .eq('lender_id', lenderId)
     .order('created_at', { ascending: false })
     .limit(20)
 
