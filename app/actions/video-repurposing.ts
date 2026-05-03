@@ -327,13 +327,16 @@ export async function deleteSnippet(snippetId: string) {
 export async function generateSnippetSuggestions(params: {
   videoProjectId?: string
   sourceVideoAssetId?: string
+  /** External URL or pasted script/transcript — used when no DB video project exists */
+  sourceScript?: string
+  sourceTitle?: string
   brokerageId: string
   platforms: PlatformTarget[]
 }) {
   const supabase = await createClient()
 
   // Get video details
-  let videoDetails = null
+  let videoDetails: { id: string; title: string; duration_seconds: number } | null = null
   let scriptContent = ""
 
   if (params.videoProjectId) {
@@ -352,6 +355,14 @@ export async function generateSnippetSuggestions(params: {
       .single()
     videoDetails = data
     scriptContent = data?.description || ""
+  } else if (params.sourceScript) {
+    // External URL or pasted transcript — synthesize a virtual source
+    videoDetails = {
+      id: "external",
+      title: params.sourceTitle ?? "External Content",
+      duration_seconds: 120,
+    }
+    scriptContent = params.sourceScript
   }
 
   if (!videoDetails) {

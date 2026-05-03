@@ -36,7 +36,7 @@ const PLATFORMS: { value: PlatformTarget; label: string }[] = [
 ]
 
 type Step = 1 | 2 | 3 | 4
-type SourceType = "video_project" | "podcast_episode"
+type SourceType = "video_project" | "podcast_episode" | "external_url"
 
 interface Suggestion {
   title: string
@@ -55,6 +55,8 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
   // Step 1 — source
   const [sourceType, setSourceType] = useState<SourceType>("video_project")
   const [sourceId, setSourceId] = useState<string>("")
+  const [externalUrl, setExternalUrl] = useState<string>("")
+  const [externalScript, setExternalScript] = useState<string>("")
   const [videoProjects, setVideoProjects] = useState<{ id: string; title: string }[]>([])
   const [podcastEpisodes, setPodcastEpisodes] = useState<{ id: string; title: string }[]>([])
   const [sourcesLoading, setSourcesLoading] = useState(true)
@@ -90,7 +92,10 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
 
   const sources = sourceType === "video_project" ? videoProjects : podcastEpisodes
 
-  const canAdvanceToStep2 = sourceId !== ""
+  const canAdvanceToStep2 =
+    sourceType === "external_url"
+      ? externalScript.trim().length > 20
+      : sourceId !== ""
   const canAdvanceToStep3 = platforms.length > 0
   const canAdvanceToStep4 = suggestions.length > 0
 
@@ -106,8 +111,9 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
         const result = await generateSnippetSuggestions({
           brokerageId,
           videoProjectId: sourceType === "video_project" ? sourceId : undefined,
-          // Podcast as source is not yet supported by the backend; surface gracefully.
           sourceVideoAssetId: undefined,
+          sourceScript: sourceType === "external_url" ? externalScript : undefined,
+          sourceTitle: sourceType === "external_url" ? (externalUrl || "External content") : undefined,
           platforms,
         })
         if (!(result as any).success) {
@@ -168,6 +174,8 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
   function reset() {
     setStep(1)
     setSourceId("")
+    setExternalUrl("")
+    setExternalScript("")
     setPlatforms(["instagram_reels", "tiktok"])
     setSuggestions([])
     setCreatedSnippetIds([])
@@ -195,16 +203,40 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
           <div className="space-y-4">
             <div className="space-y-1.5">
               <Label>Source type</Label>
-              <Select value={sourceType} onValueChange={(v) => { setSourceType(v as SourceType); setSourceId("") }}>
+              <Select value={sourceType} onValueChange={(v) => { setSourceType(v as SourceType); setSourceId(""); setExternalUrl(""); setExternalScript("") }}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="video_project">Video project</SelectItem>
-                  <SelectItem value="podcast_episode">Podcast episode (preview only — backend support coming)</SelectItem>
+                  <SelectItem value="podcast_episode">Podcast episode</SelectItem>
+                  <SelectItem value="external_url">External URL</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+
+            {sourceType === "external_url" && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Content URL <span className="text-muted-foreground text-xs">(optional — for your reference)</span></Label>
+                  <Input
+                    placeholder="https://example.com/video-or-article"
+                    value={externalUrl}
+                    onChange={(e) => setExternalUrl(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Paste transcript or script <span className="text-xs text-muted-foreground">*required</span></Label>
+                  <Textarea
+                    placeholder="Paste the transcript or script text from the external content here. The AI will generate snippet suggestions from this text."
+                    value={externalScript}
+                    onChange={(e) => setExternalScript(e.target.value)}
+                    rows={6}
+                  />
+                  <p className="text-xs text-muted-foreground">Minimum 20 characters required to generate suggestions.</p>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label>{sourceType === "video_project" ? "Video project" : "Podcast episode"}</Label>
