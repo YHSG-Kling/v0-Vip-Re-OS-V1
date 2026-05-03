@@ -25,6 +25,7 @@ import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
+import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
@@ -413,6 +414,18 @@ const { data: listingVendorBookings } = await supabase
             />
           </div>
         )}
+
+        {/* Pre-listing workflow panel — shown for pre-active stages */}
+        <PreListingWorkflowPanel
+          listingId={listingId}
+          currentStage={currentStage}
+          vendorBookings={(listingVendorBookings ?? []).map((b: any) => ({
+            service_type: b.service_type,
+            status: b.status,
+          }))}
+          tasks={(tasks ?? []).map((t: any) => ({ title: t.title, status: t.status }))}
+          goLiveDate={listing.go_live_date ?? null}
+        />
 
         <DecisionHistoryPanel listingId={listingId} />
 

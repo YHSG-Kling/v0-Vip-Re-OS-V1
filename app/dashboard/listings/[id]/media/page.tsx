@@ -26,7 +26,7 @@ export default async function ListingMediaPage({ params }: PageProps) {
 
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, address, lifecycle_stage, status")
+    .select("id, address, lifecycle_stage, status, seller_contact_id")
     .eq("id", listingId)
     .eq("brokerage_id", ctx.brokerageId)
     .single()
@@ -48,6 +48,7 @@ export default async function ListingMediaPage({ params }: PageProps) {
       brokerageId={ctx.brokerageId}
       agentId={ctx.agentId ?? ""}
       userRole={userRole}
+      sellerContactId={(listing as any).seller_contact_id ?? null}
       initialMedia={mediaResult.data ?? []}
       initialVideos={videosResult.data ?? []}
       initialPosts={socialResult.data ?? []}
