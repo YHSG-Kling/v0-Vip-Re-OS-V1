@@ -21,12 +21,15 @@ import {
   Save,
   ChevronDown,
   ChevronUp,
+  Upload,
+  GitCompare,
 } from "lucide-react"
 import {
   reviewTransactionDocuments,
   generateDocumentChecklist,
   extractContractTerms,
   applyContractExtraction,
+  compareContractVersions,
 } from "@/app/actions/ai-contract-review"
 
 interface Transaction {
@@ -81,6 +84,17 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
   const [checklist, setChecklist] = useState<any>(null)
   const [activeTab, setActiveTab] = useState<"review" | "checklist">("review")
 
+  // Drag-drop state
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  // Compare versions state
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [txDocs, setTxDocs] = useState<{ id: string; name: string }[]>([])
+  const [compareDoc1, setCompareDoc1] = useState("")
+  const [compareDoc2, setCompareDoc2] = useState("")
+  const [comparing, setComparing] = useState(false)
+  const [compareResult, setCompareResult] = useState<string | null>(null)
+
   // Contract extraction state
   const [extractOpen, setExtractOpen] = useState(false)
   const [contractText, setContractText] = useState("")
@@ -99,6 +113,45 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
   const [exPropertyAddress, setExPropertyAddress] = useState("")
 
   const selectedTx = transactions.find((t) => t.id === selectedTxId)
+
+  function handleFileDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string
+      if (text) setContractText(text)
+      setExtractOpen(true)
+    }
+    reader.readAsText(file)
+  }
+
+  async function loadTxDocs() {
+    if (!selectedTxId) return
+    const { createClient } = await import("@/lib/supabase/client")
+    const supabase = createClient()
+    const { data } = await supabase
+      .from("transaction_documents")
+      .select("id, doc_label, doc_type")
+      .eq("transaction_id", selectedTxId)
+    setTxDocs((data ?? []).map((d: any) => ({ id: d.id, name: d.doc_label ?? d.doc_type ?? d.id })))
+  }
+
+  async function handleCompare() {
+    if (!compareDoc1 || !compareDoc2) return
+    setComparing(true)
+    setCompareResult(null)
+    try {
+      const res = await compareContractVersions({ documentId1: compareDoc1, documentId2: compareDoc2, agentId })
+      if (res.success && (res as any).comparison) {
+        setCompareResult((res as any).comparison)
+      }
+    } finally {
+      setComparing(false)
+    }
+  }
 
   async function handleExtract() {
     if (!selectedTxId || !contractText.trim()) return
@@ -215,6 +268,41 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         <p className="text-muted-foreground text-sm mt-1">
           AI-powered signature completeness check and compliance analysis
         </p>
+      </div>
+
+      {/* Drag-drop upload zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={handleFileDrop}
+        className={[
+          "border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer",
+          isDragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30",
+        ].join(" ")}
+        onClick={() => document.getElementById("contract-file-input")?.click()}
+      >
+        <Upload className={`h-8 w-8 mx-auto mb-2 ${isDragOver ? "text-primary" : "text-muted-foreground"}`} />
+        <p className="text-sm font-medium">Drop contract file here or click to browse</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          Text files (.txt) are read automatically · PDF text will be extracted for review
+        </p>
+        <input
+          id="contract-file-input"
+          type="file"
+          accept=".txt,.pdf,.doc,.docx"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (!file) return
+            const reader = new FileReader()
+            reader.onload = (ev) => {
+              const text = ev.target?.result as string
+              if (text) setContractText(text)
+              setExtractOpen(true)
+            }
+            reader.readAsText(file)
+          }}
+        />
       </div>
 
       {/* Transaction picker */}
@@ -370,6 +458,88 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
                 <p className="text-xs text-muted-foreground">
                   Saving will update the transaction record and create milestone entries for each deadline.
                 </p>
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
+      {/* ─── COMPARE VERSIONS ─────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-2">
+          <button
+            className="flex items-center justify-between w-full text-left"
+            onClick={() => {
+              setCompareOpen((o) => !o)
+              if (!compareOpen) loadTxDocs()
+            }}
+          >
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <GitCompare className="h-4 w-4 text-primary" />
+                Compare Contract Versions
+              </CardTitle>
+              <CardDescription className="mt-0.5 text-xs">
+                Select two documents from the transaction to compare clauses, terms, and changes
+              </CardDescription>
+            </div>
+            {compareOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+          </button>
+        </CardHeader>
+        {compareOpen && (
+          <CardContent className="space-y-4">
+            {!selectedTxId && (
+              <p className="text-xs text-amber-600">Select a transaction above before comparing versions.</p>
+            )}
+            {txDocs.length === 0 && selectedTxId && (
+              <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>
+            )}
+            {txDocs.length > 0 && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Version 1 (original)</Label>
+                    <Select value={compareDoc1} onValueChange={setCompareDoc1}>
+                      <SelectTrigger className="mt-1 h-8">
+                        <SelectValue placeholder="Pick document…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {txDocs.map((d) => (
+                          <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Version 2 (revised)</Label>
+                    <Select value={compareDoc2} onValueChange={setCompareDoc2}>
+                      <SelectTrigger className="mt-1 h-8">
+                        <SelectValue placeholder="Pick document…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {txDocs.filter((d) => d.id !== compareDoc1).map((d) => (
+                          <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <Button
+                  onClick={handleCompare}
+                  disabled={!compareDoc1 || !compareDoc2 || comparing}
+                  className="gap-1.5"
+                >
+                  {comparing ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
+                  Compare Versions
+                </Button>
+              </>
+            )}
+            {compareResult && (
+              <div className="pt-2 border-t space-y-2">
+                <p className="text-sm font-medium">Comparison Result</p>
+                <div className="rounded-lg border bg-muted/30 p-4 text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-80 overflow-y-auto">
+                  {compareResult}
+                </div>
               </div>
             )}
           </CardContent>

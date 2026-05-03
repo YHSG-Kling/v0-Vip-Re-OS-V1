@@ -1065,16 +1065,17 @@ export function TransactionDetailClient({
 
       {/* Milestone Timeline Ribbon */}
       {(() => {
-        const KEY_MILESTONES = [
-          "Earnest Money",
-          "Inspection",
-          "Appraisal",
-          "Financing",
-          "Clear to Close",
-          "Final Walkthrough",
-          "Closing Date",
+        const KEY_MILESTONES: Array<{ label: string; owner: string }> = [
+          { label: "Earnest Money", owner: "TC / Buyer" },
+          { label: "Inspection",    owner: "TC / Agent" },
+          { label: "Appraisal",     owner: "Lender" },
+          { label: "Financing",     owner: "Lender" },
+          { label: "Clear to Close", owner: "Lender" },
+          { label: "Final Walkthrough", owner: "Agent" },
+          { label: "Closing Date",  owner: "TC / Title" },
         ]
-        const ribbonItems = KEY_MILESTONES.map((label) => {
+        const now = new Date()
+        const ribbonItems = KEY_MILESTONES.map(({ label, owner }) => {
           const found = milestones.find((m) =>
             m.milestone_name?.toLowerCase().includes(label.toLowerCase())
           ) ?? deadlines.find((d) =>
@@ -1084,15 +1085,23 @@ export function TransactionDetailClient({
             ? new Date((found as any).milestone_date ?? (found as any).deadline_date ?? "")
             : null
           const completed = (found as any)?.status === "completed" || (found as any)?.status === "done"
-          const overdue = date && date < new Date() && !completed
-          return { label, date, completed, overdue }
+          const overdue = !!(date && date < now && !completed)
+          const daysOverdue = overdue && date ? Math.floor((now.getTime() - date.getTime()) / 86400000) : 0
+          return { label, owner, date, completed, overdue, daysOverdue }
         })
+
+        // Compliance flags derived from available data
+        const hasAllDocs = (documentCountsByStatus?.approved ?? 0) > 0 && (documentCountsByStatus?.missing ?? 0) === 0
+        const tridDoc = documents.find((d) => d.doc_type?.includes("closing_disclosure") || d.doc_type?.includes("trid"))
+        const tridSent = !!tridDoc && tridDoc.status !== "missing" && tridDoc.status !== "rejected"
+
         return (
           <div className="border-b bg-muted/30">
-            <div className="container py-3 overflow-x-auto">
-              <div className="flex items-center gap-0 min-w-max">
+            {/* Milestone dots */}
+            <div className="container pt-3 pb-1 overflow-x-auto">
+              <div className="flex items-start gap-0 min-w-max">
                 {ribbonItems.map((item, i) => (
-                  <div key={item.label} className="flex items-center">
+                  <div key={item.label} className="flex items-start">
                     <div className="flex flex-col items-center px-3">
                       <div
                         className={cn(
@@ -1104,30 +1113,37 @@ export function TransactionDetailClient({
                             : "bg-muted border-2 border-border text-muted-foreground"
                         )}
                       >
-                        {item.completed ? "✓" : i + 1}
+                        {item.completed ? "✓" : item.overdue ? "!" : i + 1}
                       </div>
                       <p className="text-[10px] font-medium mt-1 text-center w-16 leading-tight">
                         {item.label}
                       </p>
+                      <p className="text-[9px] text-muted-foreground text-center w-16">{item.owner}</p>
                       {item.date && (
                         <p
                           className={cn(
                             "text-[9px] tabular-nums",
                             item.overdue
-                              ? "text-red-600 font-medium"
+                              ? "text-red-600 font-semibold"
                               : item.completed
                               ? "text-emerald-600"
                               : "text-muted-foreground"
                           )}
                         >
                           {item.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                          {item.overdue && item.daysOverdue > 0 && ` (+${item.daysOverdue}d)`}
                         </p>
+                      )}
+                      {item.overdue && (
+                        <span className="text-[8px] uppercase tracking-wide text-red-600 font-bold mt-0.5">
+                          OVERDUE
+                        </span>
                       )}
                     </div>
                     {i < ribbonItems.length - 1 && (
                       <div
                         className={cn(
-                          "h-px w-8 shrink-0",
+                          "h-px w-8 shrink-0 mt-3",
                           ribbonItems[i + 1]?.completed
                             ? "bg-emerald-400"
                             : ribbonItems[i + 1]?.overdue
@@ -1139,6 +1155,23 @@ export function TransactionDetailClient({
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Compliance flags strip */}
+            <div className="container pb-2 flex items-center gap-4 flex-wrap text-[10px]">
+              <span className="text-muted-foreground font-medium uppercase tracking-wide">Compliance:</span>
+              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-600" : "text-amber-600")}>
+                {tridSent ? "✓" : "⚠"} TRID Disclosure
+              </span>
+              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-600" : "text-amber-600")}>
+                {hasAllDocs ? "✓" : "⚠"} All Docs Uploaded
+              </span>
+              <Link
+                href={`/dashboard/transactions/${transaction.id}/cda`}
+                className="flex items-center gap-1 text-primary hover:underline"
+              >
+                → CDA Status
+              </Link>
             </div>
           </div>
         )
