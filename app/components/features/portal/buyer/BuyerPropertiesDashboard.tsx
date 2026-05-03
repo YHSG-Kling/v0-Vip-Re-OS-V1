@@ -149,110 +149,18 @@ export default function BuyerPropertiesDashboard({
     }
   }, [contactId])
 
-  // ── Mock data preserved as fallback only when no real matches exist ────────
-  const fallbackMatches: DisplayMatch[] = [
-    {
-      id: 1,
-      address: "456 Oak Lane",
-      city: "Austin",
-      state: "TX",
-      price: 485000,
-      beds: 4,
-      baths: 2.5,
-      sqft: 2100,
-      matchScore: 96,
-      matchReasons: ["Perfect commute", "Great schools", "Under budget"],
-      status: "new",
-      daysOnMarket: 3,
-      image: "/beautiful-home-exterior-oak-lane.jpg",
-    },
-    {
-      id: 2,
-      address: "789 Maple Dr",
-      city: "Austin",
-      state: "TX",
-      price: 512000,
-      beds: 4,
-      baths: 3,
-      sqft: 2300,
-      matchScore: 92,
-      matchReasons: ["Large backyard", "Updated kitchen", "Pool"],
-      status: "hot",
-      daysOnMarket: 5,
-      image: "/modern-home-with-pool.jpg",
-    },
-    {
-      id: 3,
-      address: "321 Pine St",
-      city: "Austin",
-      state: "TX",
-      price: 478000,
-      beds: 3,
-      baths: 2,
-      sqft: 2050,
-      matchScore: 88,
-      matchReasons: ["Quiet neighborhood", "Near parks", "Move-in ready"],
-      status: "price_drop",
-      daysOnMarket: 12,
-      priceDropAmount: 15000,
-      image: "/charming-home-pine-trees.jpg",
-    },
-    {
-      id: 4,
-      address: "654 Cedar Ave",
-      city: "Austin",
-      state: "TX",
-      price: 495000,
-      beds: 4,
-      baths: 2,
-      sqft: 2200,
-      matchScore: 85,
-      matchReasons: ["Open floor plan", "Corner lot", "New roof"],
-      status: "new",
-      daysOnMarket: 1,
-      image: "/spacious-home-corner-lot.jpg",
-    },
-  ]
-
-  // Use real matches when loaded; otherwise show fallback so the portal
-  // never renders an empty state for a brand-new buyer.
   const displayMatches: DisplayMatch[] =
     nlResults !== null
       ? nlResults
       : smartMatches.length > 0
         ? smartMatches
-        : matchesLoading
-          ? []
-          : fallbackMatches
+        : []
 
-  // Mock mortgage data
-  const mortgageData = {
-    preApprovalAmount: 550000,
-    preApprovalLender: "First National Bank",
-    preApprovalExpires: "2024-03-15",
-    estimatedRate: 6.75,
-    estimatedMonthly: 3247,
-    downPayment: 20,
-    loanType: "Conventional 30-Year",
-  }
-
-  // Mock neighborhood data for a property
-  const neighborhoodData = {
-    overallScore: 87,
-    categories: [
-      { name: "Schools", score: 92, icon: School },
-      { name: "Safety", score: 88, icon: Shield },
-      { name: "Shopping", score: 85, icon: ShoppingBag },
-      { name: "Parks", score: 90, icon: Trees },
-      { name: "Commute", score: 82, icon: Car },
-      { name: "Transit", score: 78, icon: Train },
-    ],
-    nearbySchools: [
-      { name: "Oak Hill Elementary", rating: 9, distance: "0.4 mi", type: "Public" },
-      { name: "Westlake Middle", rating: 8, distance: "1.2 mi", type: "Public" },
-      { name: "Austin High", rating: 9, distance: "2.1 mi", type: "Public" },
-    ],
-  }
+  // Pre-approval data from contact financial verification record
+  const preApprovalAmount: number | null = contact?.pre_approval_amount ?? null
+  const preApprovalLender: string | null = contact?.pre_approval_lender ?? null
+  const preApprovalExpires: string | null = contact?.pre_approval_expiration ?? null
+  const financingType: string | null = contact?.financing_type ?? null
 
   return (
     <div className="space-y-6">
@@ -297,7 +205,9 @@ export default function BuyerPropertiesDashboard({
               <DollarSign className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-2xl font-bold">${(mortgageData.preApprovalAmount / 1000).toFixed(0)}K</p>
+              <p className="text-2xl font-bold">
+                {preApprovalAmount ? `$${(preApprovalAmount / 1000).toFixed(0)}K` : "—"}
+              </p>
               <p className="text-xs text-muted-foreground">Pre-Approved</p>
             </div>
           </CardContent>
@@ -568,39 +478,37 @@ export default function BuyerPropertiesDashboard({
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm text-green-700">Pre-Approved Amount</span>
-                    <Badge variant="outline" className="bg-green-100 text-green-700 border-green-300">
-                      Active
-                    </Badge>
+                {preApprovalAmount ? (
+                  <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-green-700">Pre-Approved Amount</span>
+                      <Badge variant="outline" className="bg-green-100 text-green-700 border-green-300">
+                        Active
+                      </Badge>
+                    </div>
+                    <p className="text-3xl font-bold text-green-700">
+                      ${preApprovalAmount.toLocaleString()}
+                    </p>
+                    {preApprovalLender && <p className="text-sm text-green-600 mt-1">{preApprovalLender}</p>}
+                    {financingType && (
+                      <p className="text-xs text-green-600 mt-0.5 capitalize">{financingType.replace(/_/g, " ")}</p>
+                    )}
                   </div>
-                  <p className="text-3xl font-bold text-green-700">
-                    ${mortgageData.preApprovalAmount.toLocaleString()}
-                  </p>
-                  <p className="text-sm text-green-600 mt-1">{mortgageData.preApprovalLender}</p>
-                </div>
+                ) : (
+                  <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 text-center">
+                    <p className="text-sm text-amber-700 font-medium">Pre-Approval Not Yet Verified</p>
+                    <p className="text-xs text-amber-600 mt-1">Contact your agent to complete financial verification.</p>
+                  </div>
+                )}
 
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                    <span className="text-sm">Loan Type</span>
-                    <span className="font-medium">{mortgageData.loanType}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                    <span className="text-sm">Interest Rate</span>
-                    <span className="font-medium">{mortgageData.estimatedRate}%</span>
-                  </div>
-                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                    <span className="text-sm">Down Payment</span>
-                    <span className="font-medium">{mortgageData.downPayment}%</span>
-                  </div>
+                {preApprovalExpires && (
                   <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                     <span className="text-sm">Expires</span>
                     <span className="font-medium">
-                      {new Date(mortgageData.preApprovalExpires).toLocaleDateString()}
+                      {new Date(preApprovalExpires).toLocaleDateString()}
                     </span>
                   </div>
-                </div>
+                )}
 
                 <Button variant="outline" className="w-full bg-transparent">
                   <Percent className="w-4 h-4 mr-2" /> Request Rate Update
@@ -615,77 +523,33 @@ export default function BuyerPropertiesDashboard({
                   <Calculator className="w-5 h-5" />
                   Payment Calculator
                 </CardTitle>
-                <CardDescription>Estimate your monthly payment</CardDescription>
+                <CardDescription>Estimate your monthly payment based on your pre-approval</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                  <p className="text-sm text-blue-700 mb-1">Estimated Monthly Payment</p>
-                  <p className="text-3xl font-bold text-blue-700">${mortgageData.estimatedMonthly.toLocaleString()}</p>
-                  <p className="text-xs text-blue-600 mt-1">For a $485,000 home</p>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span>Principal & Interest</span>
-                    <span>$2,547</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span>Property Taxes</span>
-                    <span>$450</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span>Home Insurance</span>
-                    <span>$150</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span>PMI</span>
-                    <span>$0</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span>HOA (if applicable)</span>
-                    <span>$100</span>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t">
-                  <div className="mb-4">
-                    <label className="text-sm font-medium">Home Price</label>
-                    <Slider defaultValue={[485000]} min={200000} max={800000} step={5000} className="mt-2" />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Down Payment</label>
-                    <Slider defaultValue={[20]} min={3} max={50} step={1} className="mt-2" />
-                  </div>
-                </div>
+                <PaymentCalculator preApprovalAmount={preApprovalAmount} />
               </CardContent>
             </Card>
           </div>
 
           {/* Lender Contact */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Your Lender</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
-                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                  <Building className="w-6 h-6 text-blue-600" />
+          {preApprovalLender && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Your Lender</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Building className="w-6 h-6 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-semibold">{preApprovalLender}</p>
+                    <p className="text-sm text-muted-foreground">Contact your agent for lender details</p>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <p className="font-semibold">First National Bank</p>
-                  <p className="text-sm text-muted-foreground">Jennifer Smith, Loan Officer</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" className="bg-transparent">
-                    Call
-                  </Button>
-                  <Button variant="outline" size="sm" className="bg-transparent">
-                    Email
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* Neighborhood Tab */}
@@ -696,53 +560,15 @@ export default function BuyerPropertiesDashboard({
                 <MapPin className="w-5 h-5" />
                 Neighborhood Explorer
               </CardTitle>
-              <CardDescription>Compare neighborhoods based on what matters most to you</CardDescription>
+              <CardDescription>Neighborhood insights for properties you're interested in</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Overall Score */}
-              <div className="flex items-center gap-6 p-4 bg-slate-50 rounded-lg">
-                <div className="text-center">
-                  <div className="w-20 h-20 rounded-full bg-green-100 flex items-center justify-center">
-                    <span className="text-2xl font-bold text-green-700">{neighborhoodData.overallScore}</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-2">Overall Score</p>
-                </div>
-                <div className="flex-1 grid grid-cols-3 gap-4">
-                  {neighborhoodData.categories.map((category) => (
-                    <div key={category.name} className="text-center">
-                      <category.icon className="w-5 h-5 mx-auto text-muted-foreground mb-1" />
-                      <p className="text-sm font-medium">{category.name}</p>
-                      <Progress value={category.score} className="h-2 mt-1" />
-                      <p className="text-xs text-muted-foreground mt-1">{category.score}/100</p>
-                    </div>
-                  ))}
-                </div>
+            <CardContent className="space-y-4">
+              <div className="p-6 border border-dashed rounded-lg text-center space-y-2">
+                <MapPin className="h-8 w-8 mx-auto text-muted-foreground" />
+                <p className="text-sm font-medium text-muted-foreground">
+                  Select a property from your matches to view neighborhood scores, nearby schools, and commute times.
+                </p>
               </div>
-
-              {/* Schools */}
-              <div>
-                <h4 className="font-semibold mb-3 flex items-center gap-2">
-                  <School className="w-5 h-5" /> Nearby Schools
-                </h4>
-                <div className="space-y-2">
-                  {neighborhoodData.nearbySchools.map((school, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div>
-                        <p className="font-medium">{school.name}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {school.type} • {school.distance}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-                        <span className="font-bold">{school.rating}/10</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Commute Calculator */}
               <div>
                 <h4 className="font-semibold mb-3 flex items-center gap-2">
                   <Car className="w-5 h-5" /> Commute Calculator
@@ -815,6 +641,59 @@ export default function BuyerPropertiesDashboard({
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+// ─── Payment Calculator ───────────────────────────────────────────────────────
+
+function PaymentCalculator({ preApprovalAmount }: { preApprovalAmount: number | null }) {
+  const [homePrice, setHomePrice] = useState(preApprovalAmount ?? 400000)
+  const [downPct, setDownPct] = useState(20)
+  const [rate, setRate] = useState(7.0)
+
+  const loanAmount = homePrice * (1 - downPct / 100)
+  const monthlyRate = rate / 100 / 12
+  const numPayments = 360
+  const pi =
+    monthlyRate > 0
+      ? (loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, numPayments))) /
+        (Math.pow(1 + monthlyRate, numPayments) - 1)
+      : loanAmount / numPayments
+  const taxes = Math.round(homePrice * 0.012 / 12)
+  const insurance = Math.round(homePrice * 0.005 / 12)
+  const pmi = downPct < 20 ? Math.round(loanAmount * 0.005 / 12) : 0
+  const total = Math.round(pi + taxes + insurance + pmi)
+
+  return (
+    <div className="space-y-4">
+      <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+        <p className="text-sm text-blue-700 mb-1">Estimated Monthly Payment</p>
+        <p className="text-3xl font-bold text-blue-700">${total.toLocaleString()}</p>
+        <p className="text-xs text-blue-600 mt-1">For a ${homePrice.toLocaleString()} home</p>
+      </div>
+
+      <div className="space-y-2 text-sm">
+        <div className="flex justify-between"><span>Principal & Interest</span><span>${Math.round(pi).toLocaleString()}</span></div>
+        <div className="flex justify-between"><span>Property Taxes (est.)</span><span>${taxes.toLocaleString()}/mo</span></div>
+        <div className="flex justify-between"><span>Home Insurance (est.)</span><span>${insurance.toLocaleString()}/mo</span></div>
+        {pmi > 0 && <div className="flex justify-between"><span>PMI</span><span>${pmi.toLocaleString()}/mo</span></div>}
+      </div>
+
+      <div className="pt-3 border-t space-y-3">
+        <div>
+          <div className="flex justify-between text-sm mb-1"><span>Home Price</span><span>${homePrice.toLocaleString()}</span></div>
+          <Slider value={[homePrice]} onValueChange={([v]) => setHomePrice(v)} min={100000} max={2000000} step={5000} />
+        </div>
+        <div>
+          <div className="flex justify-between text-sm mb-1"><span>Down Payment</span><span>{downPct}%</span></div>
+          <Slider value={[downPct]} onValueChange={([v]) => setDownPct(v)} min={3} max={50} step={1} />
+        </div>
+        <div>
+          <div className="flex justify-between text-sm mb-1"><span>Interest Rate</span><span>{rate.toFixed(2)}%</span></div>
+          <Slider value={[rate]} onValueChange={([v]) => setRate(v)} min={3} max={15} step={0.05} />
+        </div>
+      </div>
     </div>
   )
 }
