@@ -531,12 +531,22 @@ export async function assignVendorToListing(
     metadata:     { vendorId, listingId, serviceType },
   })
 
+  // Fetch agent contact info for email
+  const { data: agentProfile } = await supabase
+    .from("users")
+    .select("full_name, email, phone")
+    .eq("id", agentUserId)
+    .maybeSingle()
+
   // Best-effort vendor notification email
   if (vendor.email) {
     const propertyAddress = (listing as any).address ?? "the property"
     const scheduledStr = scheduledDate
       ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
       : "TBD — the agent will confirm timing shortly"
+    const agentName = (agentProfile as any)?.full_name ?? "the agent"
+    const agentEmail = (agentProfile as any)?.email ?? ""
+    const agentPhone = (agentProfile as any)?.phone ?? ""
     sendEmail({
       to: vendor.email,
       subject: `New Job Booked: ${serviceType} at ${propertyAddress}`,
@@ -548,8 +558,12 @@ export async function assignVendorToListing(
           <tr><td style="padding:6px 0;font-weight:600">Property</td><td>${propertyAddress}</td></tr>
           <tr><td style="padding:6px 0;font-weight:600">Scheduled Date</td><td>${scheduledStr}</td></tr>
           ${notes ? `<tr><td style="padding:6px 0;font-weight:600;vertical-align:top">Notes</td><td>${notes}</td></tr>` : ""}
+          <tr><td colspan="2" style="padding-top:12px;border-top:1px solid #eee"></td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Booking Agent</td><td>${agentName}</td></tr>
+          ${agentPhone ? `<tr><td style="padding:6px 0;font-weight:600">Agent Phone</td><td>${agentPhone}</td></tr>` : ""}
+          ${agentEmail ? `<tr><td style="padding:6px 0;font-weight:600">Agent Email</td><td>${agentEmail}</td></tr>` : ""}
         </table>
-        <p>Please confirm your availability by replying to this email. If you have any questions, contact the booking agent directly.</p>
+        <p>Please confirm your availability by replying to this email.</p>
         <p style="color:#666;font-size:12px">Booking ID: ${booking.id}</p>
       `,
     }).catch(() => null)
@@ -649,11 +663,21 @@ export async function assignVendorToTransaction(
     metadata:     { vendorId, transactionId, assignmentType, jobId: job.id },
   })
 
+  // Fetch agent contact info for email
+  const { data: agentProfileTxn } = await supabase
+    .from("users")
+    .select("full_name, email, phone")
+    .eq("id", agentUserId)
+    .maybeSingle()
+
   // Best-effort vendor notification email
   if (vendor.email) {
     const scheduledStr = scheduledDate
       ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
       : "TBD — the agent will confirm timing shortly"
+    const agentName = (agentProfileTxn as any)?.full_name ?? "the agent"
+    const agentEmail = (agentProfileTxn as any)?.email ?? ""
+    const agentPhone = (agentProfileTxn as any)?.phone ?? ""
     sendEmail({
       to: vendor.email,
       subject: `New Job Assignment: ${assignmentType} at ${transaction.property_address}`,
@@ -665,8 +689,12 @@ export async function assignVendorToTransaction(
           <tr><td style="padding:6px 0;font-weight:600">Property Address</td><td>${transaction.property_address}</td></tr>
           <tr><td style="padding:6px 0;font-weight:600">Scheduled Date</td><td>${scheduledStr}</td></tr>
           ${notes ? `<tr><td style="padding:6px 0;font-weight:600;vertical-align:top">Notes</td><td>${notes}</td></tr>` : ""}
+          <tr><td colspan="2" style="padding-top:12px;border-top:1px solid #eee"></td></tr>
+          <tr><td style="padding:6px 0;font-weight:600">Assigning Agent</td><td>${agentName}</td></tr>
+          ${agentPhone ? `<tr><td style="padding:6px 0;font-weight:600">Agent Phone</td><td>${agentPhone}</td></tr>` : ""}
+          ${agentEmail ? `<tr><td style="padding:6px 0;font-weight:600">Agent Email</td><td>${agentEmail}</td></tr>` : ""}
         </table>
-        <p>Please reply to this email to confirm your availability. The assigned agent will follow up with additional details.</p>
+        <p>Please reply to this email to confirm your availability.</p>
         <p style="color:#666;font-size:12px">Assignment ID: ${assignment.id} | Job ID: ${job.id}</p>
       `,
     }).catch(() => null)

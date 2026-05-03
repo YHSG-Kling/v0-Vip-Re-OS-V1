@@ -185,7 +185,43 @@ export function VendorDirectoryClient({
   const [reviewsVendor, setReviewsVendor] = useState<Vendor | null>(null)
   const [vendorReviews, setVendorReviews] = useState<any[]>([])
 
-  // Availability check: load bookings for selected vendor on selected date
+  // Calendar overlay: all bookings for selected vendor in next 30 days
+  const [vendorCalendarBookings, setVendorCalendarBookings] = useState<{ date: string; count: number }[]>([])
+  const [calendarLoading, setCalendarLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedVendor || !bookingDialogOpen) {
+      setVendorCalendarBookings([])
+      setVendorBookingsOnDate([])
+      return
+    }
+    let cancelled = false
+    setCalendarLoading(true)
+    import("@/lib/supabase/client").then(({ createClient }) => {
+      const supabase = createClient()
+      const today = new Date()
+      const in30 = new Date(today); in30.setDate(in30.getDate() + 30)
+      supabase
+        .from("vendor_bookings")
+        .select("scheduled_date, status, service_type")
+        .eq("vendor_id", selectedVendor.id)
+        .gte("scheduled_date", today.toISOString().slice(0, 10))
+        .lte("scheduled_date", in30.toISOString().slice(0, 10))
+        .then(({ data }: { data: { scheduled_date: string; status: string; service_type: string | null }[] | null }) => {
+          if (cancelled) return
+          const byDate: Record<string, number> = {}
+          for (const b of data ?? []) {
+            const d = (b.scheduled_date ?? "").slice(0, 10)
+            if (d) byDate[d] = (byDate[d] ?? 0) + 1
+          }
+          setVendorCalendarBookings(Object.entries(byDate).map(([date, count]) => ({ date, count })))
+          setCalendarLoading(false)
+        })
+    })
+    return () => { cancelled = true }
+  }, [selectedVendor?.id, bookingDialogOpen])
+
+  // Availability check: existing bookings on selected date
   useEffect(() => {
     if (!selectedVendor || !bookingDate) {
       setVendorBookingsOnDate([])
@@ -905,21 +941,26 @@ export function VendorDirectoryClient({
 
             <div className="space-y-2">
               <Label>Scheduled Date</Label>
-              <Input
-                type="date"
-                value={bookingDate}
-                onChange={(e) => setBookingDate(e.target.value)}
-              />
-              {bookingDate && (
+              {/* 30-day mini calendar availability overlay */}
+              {calendarLoading ? (
+                <p className="text-xs text-muted-foreground">Loading availability…</p>
+              ) : (
+                <VendorAvailabilityCalendar
+                  bookedDates={vendorCalendarBookings}
+                  selectedDate={bookingDate}
+                  onSelectDate={setBookingDate}
+                />
+              )}
+              {bookingDate && !calendarLoading && (
                 <div className="text-xs mt-1">
                   {availabilityLoading ? (
-                    <span className="text-muted-foreground">Checking availability…</span>
+                    <span className="text-muted-foreground">Checking…</span>
                   ) : vendorBookingsOnDate.length === 0 ? (
                     <span className="text-emerald-700 font-medium">✓ Available on this date</span>
                   ) : (
                     <div>
                       <span className="text-amber-700 font-medium">
-                        {vendorBookingsOnDate.length} booking{vendorBookingsOnDate.length > 1 ? "s" : ""} already on this date:
+                        {vendorBookingsOnDate.length} existing booking{vendorBookingsOnDate.length > 1 ? "s" : ""} — confirm with vendor
                       </span>
                       <ul className="ml-2 mt-0.5 space-y-0.5">
                         {vendorBookingsOnDate.map((b, i) => (
@@ -1318,6 +1359,71 @@ export function VendorDirectoryClient({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+// ─── Vendor Availability Calendar ────────────────────────────────────────────
+
+function VendorAvailabilityCalendar({
+  bookedDates,
+  selectedDate,
+  onSelectDate,
+}: {
+  bookedDates: { date: string; count: number }[]
+  selectedDate: string
+  onSelectDate: (date: string) => void
+}) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const bookedSet = new Set(bookedDates.map((b) => b.date))
+  const bookedCountMap = Object.fromEntries(bookedDates.map((b) => [b.date, b.count]))
+
+  // Build 30-day grid starting today
+  const days: Date[] = []
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(today)
+    d.setDate(today.getDate() + i)
+    days.push(d)
+  }
+
+  const toISO = (d: Date) => d.toISOString().slice(0, 10)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs text-muted-foreground flex items-center gap-3">
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-300" /> Available</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300" /> Has booking(s)</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-primary border-primary border" /> Selected</span>
+      </div>
+      <div className="grid grid-cols-6 gap-1">
+        {days.map((day) => {
+          const iso = toISO(day)
+          const isSelected = iso === selectedDate
+          const isBooked = bookedSet.has(iso)
+          const count = bookedCountMap[iso] ?? 0
+          return (
+            <button
+              key={iso}
+              type="button"
+              onClick={() => onSelectDate(iso)}
+              title={isBooked ? `${count} booking${count > 1 ? "s" : ""} on this day` : "Available"}
+              className={[
+                "rounded text-xs py-1 text-center transition-colors",
+                isSelected
+                  ? "bg-primary text-primary-foreground font-semibold"
+                  : isBooked
+                  ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                  : "bg-emerald-50 text-emerald-800 hover:bg-emerald-100",
+              ].join(" ")}
+            >
+              <div className="font-medium">{day.getDate()}</div>
+              <div className="text-[9px] opacity-70">{day.toLocaleDateString("en-US", { month: "short" })}</div>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
