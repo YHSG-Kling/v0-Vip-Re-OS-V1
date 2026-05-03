@@ -34,6 +34,10 @@ import {
   GripVertical,
   ArrowLeft,
   FileText,
+  CheckSquare,
+  Tag,
+  UserMinus,
+  Eye,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -47,11 +51,14 @@ import {
 import { cn } from "@/lib/utils"
 
 const STEP_TYPES = [
-  { value: "email",       label: "Send Email",        icon: Mail,          color: "bg-blue-100 text-blue-700" },
-  { value: "sms",         label: "Send SMS",          icon: MessageSquare, color: "bg-green-100 text-green-700" },
-  { value: "direct_mail", label: "Send Direct Mail",  icon: FileText,      color: "bg-amber-100 text-amber-700" },
-  { value: "wait",        label: "Wait",              icon: Clock,         color: "bg-gray-100 text-gray-600" },
-  { value: "condition",   label: "Condition",         icon: GitBranch,     color: "bg-purple-100 text-purple-700" },
+  { value: "email",                 label: "Send Email",           icon: Mail,          color: "bg-blue-100 text-blue-700" },
+  { value: "sms",                   label: "Send SMS",             icon: MessageSquare, color: "bg-green-100 text-green-700" },
+  { value: "direct_mail",           label: "Send Direct Mail",     icon: FileText,      color: "bg-amber-100 text-amber-700" },
+  { value: "wait",                  label: "Wait",                 icon: Clock,         color: "bg-gray-100 text-gray-600" },
+  { value: "condition",             label: "Condition",            icon: GitBranch,     color: "bg-purple-100 text-purple-700" },
+  { value: "assign_task",           label: "Assign Task",          icon: CheckSquare,   color: "bg-orange-100 text-orange-700" },
+  { value: "add_to_segment",        label: "Add to Segment",       icon: Tag,           color: "bg-teal-100 text-teal-700" },
+  { value: "remove_from_campaign",  label: "Remove from Campaign", icon: UserMinus,     color: "bg-red-100 text-red-600" },
 ] as const
 
 const TRIGGER_EVENTS = [
@@ -79,6 +86,8 @@ interface LocalStep {
   condition_field?: string
   condition_operator?: string
   condition_value?: string
+  task_description?: string
+  segment_name?: string
   isNew?: boolean
 }
 
@@ -117,6 +126,7 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
   const [editingStep, setEditingStep] = useState<LocalStep | null>(null)
   const [saving, setSaving] = useState(false)
   const [launching, setLaunching] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
 
   function addStep(channel: StepChannel) {
     const newStep: LocalStep = {
@@ -257,6 +267,12 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {steps.length > 0 && (
+            <Button variant="outline" size="sm" onClick={() => setShowPreview(true)} className="gap-2">
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={saveWorkflow} disabled={saving} className="gap-2">
             <Save className="h-3.5 w-3.5" />
             {saving ? "Saving…" : "Save"}
@@ -520,37 +536,42 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
               )}
               {editingStep.channel === "condition" && (
                 <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                  <p className="text-xs font-medium">Condition</p>
+                  <p className="text-xs font-medium">Condition (if/then branch)</p>
                   <div className="grid grid-cols-3 gap-2">
-                    <Input
-                      placeholder="Field"
-                      className="text-xs"
-                      value={editingStep.condition_field ?? ""}
-                      onChange={(e) => {
-                        setEditingStep({ ...editingStep, condition_field: e.target.value })
-                        updateLocalStep(editingIndex, { condition_field: e.target.value })
-                      }}
-                    />
                     <Select
-                      value={editingStep.condition_operator ?? "equals"}
+                      value={editingStep.condition_field ?? "email_opened"}
+                      onValueChange={(v) => {
+                        setEditingStep({ ...editingStep, condition_field: v })
+                        updateLocalStep(editingIndex, { condition_field: v })
+                      }}
+                    >
+                      <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="email_opened" className="text-xs">Opened email</SelectItem>
+                        <SelectItem value="replied" className="text-xs">Replied to message</SelectItem>
+                        <SelectItem value="stage_changed" className="text-xs">Stage changed</SelectItem>
+                        <SelectItem value="tag" className="text-xs">Has tag</SelectItem>
+                        <SelectItem value="contact_type" className="text-xs">Contact type</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={editingStep.condition_operator ?? "is_true"}
                       onValueChange={(v) => {
                         setEditingStep({ ...editingStep, condition_operator: v })
                         updateLocalStep(editingIndex, { condition_operator: v })
                       }}
                     >
-                      <SelectTrigger className="h-9 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="is_true" className="text-xs">is true</SelectItem>
+                        <SelectItem value="is_false" className="text-xs">is false</SelectItem>
                         <SelectItem value="equals" className="text-xs">equals</SelectItem>
                         <SelectItem value="not_equals" className="text-xs">not equals</SelectItem>
                         <SelectItem value="contains" className="text-xs">contains</SelectItem>
-                        <SelectItem value="is_true" className="text-xs">is true</SelectItem>
-                        <SelectItem value="is_false" className="text-xs">is false</SelectItem>
                       </SelectContent>
                     </Select>
                     <Input
-                      placeholder="Value"
+                      placeholder="Value (if applicable)"
                       className="text-xs"
                       value={editingStep.condition_value ?? ""}
                       onChange={(e) => {
@@ -561,10 +582,118 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                   </div>
                 </div>
               )}
+              {editingStep.channel === "assign_task" && (
+                <div className="space-y-2">
+                  <Label className="text-xs mb-1 block">Task description</Label>
+                  <Textarea
+                    rows={3}
+                    placeholder="Describe the task to assign to the agent… e.g., 'Call contact to confirm appointment'"
+                    value={editingStep.task_description ?? ""}
+                    onChange={(e) => {
+                      setEditingStep({ ...editingStep, task_description: e.target.value })
+                      updateLocalStep(editingIndex, { task_description: e.target.value })
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">The task will appear in the agent's task queue with a due date equal to the step's wait duration.</p>
+                </div>
+              )}
+              {editingStep.channel === "add_to_segment" && (
+                <div className="space-y-2">
+                  <Label className="text-xs mb-1 block">Segment name or ID</Label>
+                  <Input
+                    placeholder="e.g., hot-leads, post-close-followup"
+                    value={editingStep.segment_name ?? ""}
+                    onChange={(e) => {
+                      setEditingStep({ ...editingStep, segment_name: e.target.value })
+                      updateLocalStep(editingIndex, { segment_name: e.target.value })
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">The contact will be added to this segment when this step runs.</p>
+                </div>
+              )}
+              {editingStep.channel === "remove_from_campaign" && (
+                <div className="rounded-lg border bg-amber-50 p-3 text-xs text-amber-800">
+                  When this step runs, the contact will be unenrolled from this workflow and no further steps will execute. Use as a terminal exit node (e.g., after a conversion goal is met).
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setEditingStep(null)}>Done</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Workflow preview dialog */}
+      <Dialog open={showPreview} onOpenChange={setShowPreview}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-sm flex items-center gap-2">
+              <Eye className="h-4 w-4" />
+              Workflow Timeline Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1 py-2">
+            <p className="text-xs text-muted-foreground mb-3">
+              Simulated timeline for a contact enrolled at Day 0. Trigger: <strong>{TRIGGER_EVENTS.find(t => t.value === triggerEvent)?.label ?? triggerEvent}</strong>
+            </p>
+            {(() => {
+              let cumulativeDays = 0
+              return steps.map((step, idx) => {
+                const dayOffset = cumulativeDays
+                cumulativeDays += step.delay_days + (step.delay_hours > 0 ? 1 : 0)
+                const info = stepTypeInfo(step.channel)
+                const Icon = info.icon
+                return (
+                  <div key={idx} className="flex gap-3">
+                    <div className="flex flex-col items-center">
+                      <div className={cn("rounded p-1.5 mt-0.5 shrink-0", info.color)}>
+                        <Icon className="h-3.5 w-3.5" />
+                      </div>
+                      {idx < steps.length - 1 && <div className="w-px flex-1 bg-border my-1" />}
+                    </div>
+                    <div className="pb-4 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-medium">{step.step_name}</span>
+                        <Badge variant="outline" className="text-[10px] py-0 h-4">
+                          Day {dayOffset}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {step.delay_days > 0 || step.delay_hours > 0
+                          ? `After ${step.delay_days > 0 ? `${step.delay_days}d ` : ""}${step.delay_hours > 0 ? `${step.delay_hours}h` : ""}:`
+                          : "Immediately:"}
+                        {" "}{info.label.toLowerCase()}
+                      </p>
+                      {step.subject && (
+                        <p className="text-xs text-muted-foreground italic mt-0.5 truncate">
+                          Subject: "{step.subject}"
+                        </p>
+                      )}
+                      {step.task_description && (
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">Task: {step.task_description}</p>
+                      )}
+                      {step.segment_name && (
+                        <p className="text-xs text-muted-foreground mt-0.5">→ Segment: <strong>{step.segment_name}</strong></p>
+                      )}
+                      {step.condition_field && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          If {step.condition_field} {step.condition_operator} {step.condition_value || "—"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })
+            })()}
+            <div className="border-t pt-3 mt-1">
+              <p className="text-xs text-muted-foreground">
+                Total estimated duration: <strong>{steps.reduce((d, s) => d + s.delay_days + (s.delay_hours > 0 ? 1 : 0), 0)} days</strong> · {steps.length} steps
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button size="sm" variant="outline" onClick={() => setShowPreview(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

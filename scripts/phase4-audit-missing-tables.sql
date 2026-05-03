@@ -1,0 +1,14 @@
+-- phase4-audit-missing-tables.sql
+-- Phase 4 audit findings:
+-- All three tables (script_variations, agent_voice_profiles, email_queue) already exist in the DB.
+-- This file documents the column discrepancies found and the code fixes applied:
+--
+-- 1. script_variations — table exists; video-generation.ts uses correct column names.
+-- 2. agent_voice_profiles — table exists; video-generation.ts uses correct column names.
+-- 3. email_queue — table exists with columns: id, brokerage_id, to_email, to_name, subject, body,
+--    template, metadata, status, attempts, sent_at, error_msg, created_at.
+--    ai-newsletter.ts was fixed to use correct column names (was using send_id, subscriber_id,
+--    contact_email which don't exist in the table).
+--
+-- No DDL changes needed.
+SELECT 1;

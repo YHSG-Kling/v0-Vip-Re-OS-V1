@@ -71,7 +71,7 @@ export interface SequenceEnrollment {
 
 // ─── Valid step types ─────────────────────────────────────────────────────────
 
-export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"] as const)
+export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail", "assign_task", "add_to_segment", "remove_from_campaign", "condition"] as const)
 
 // ─── Sequence type categories ─────────────────────────────────────────────────
 

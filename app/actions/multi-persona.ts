@@ -16,7 +16,7 @@ export async function getBrokerageDashboard(brokerageId: string) {
     { data: brokerage },
     { data: agents },
     { data: activeTransactions },
-    // compliance_reviews table does not exist — use compliance_events (allowed=false)
+    // compliance_checks: pending reviews where allowed=false
     { data: pendingReviews },
     { data: recentCommissions },
   ] = await Promise.all([
@@ -27,9 +27,9 @@ export async function getBrokerageDashboard(brokerageId: string) {
       .select("*")
       .eq("brokerage_id", brokerageId)
       .not("status", "in", "(closed,lost)"),
-    // compliance_events: allowed=false means a violation was detected
+    // compliance_checks: allowed=false means a violation was detected
     supabase
-      .from("compliance_events")
+      .from("compliance_checks")
       .select("*")
       .eq("brokerage_id", brokerageId)
       .eq("allowed", false)
@@ -445,7 +445,7 @@ export async function getComplianceOfficerDashboard(officerId: string) {
     await Promise.all([
       // compliance_events where allowed=false = blocked outbound attempts
       supabase
-        .from("compliance_events")
+        .from("compliance_checks")
         .select("*")
         .eq("allowed", false)
         .order("created_at", { ascending: false })

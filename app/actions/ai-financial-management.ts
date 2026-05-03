@@ -646,16 +646,20 @@ async function syncCommissionToQuickBooks(commission: any) {
   }
 
   try {
-    // Map to QuickBooks invoice/payment format
+    // Map to QuickBooks invoice/payment format.
+    // CustomerRef.value comes from the integration metadata (QB customer ID for this brokerage).
+    // ItemRef.value comes from the integration metadata (QB commission income item ID).
+    const qbCustomerRef = (integration.metadata as any)?.qb_customer_id ?? agent.brokerage_id
+    const qbItemRef     = (integration.metadata as any)?.qb_commission_item_id ?? "COMMISSION"
     const qbInvoice = {
-      CustomerRef: { value: "1" }, // Would be actual customer/brokerage ID
+      CustomerRef: { value: qbCustomerRef },
       TotalAmt: commission.gross_commission,
       Line: [
         {
           DetailType: "SalesItemLineDetail",
           Amount: commission.agent_net,
           SalesItemLineDetail: {
-            ItemRef: { value: "1" }, // Commission income item
+            ItemRef: { value: qbItemRef },
           },
         },
       ],

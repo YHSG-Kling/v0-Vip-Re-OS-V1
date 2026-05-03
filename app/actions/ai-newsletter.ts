@@ -621,14 +621,21 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .select()
       .maybeSingle()
 
-    // Queue emails for each subscriber
+    // Queue emails for each subscriber using actual email_queue schema
     for (const subscriber of subscribers) {
-      // In production, this would integrate with SendGrid, Resend, etc.
+      const contactEmail: string | null = subscriber.contact?.email ?? null
+      if (!contactEmail) continue
       await supabase.from("email_queue").insert({
-        send_id: sendRecord?.id,
-        subscriber_id: subscriber.id,
-        contact_email: subscriber.contact?.email,
-        status: "queued",
+        brokerage_id: params.brokerageId,
+        to_email:     contactEmail,
+        to_name:      subscriber.contact
+          ? `${subscriber.contact.first_name ?? ""} ${subscriber.contact.last_name ?? ""}`.trim() || null
+          : null,
+        subject:      newsletter.subject ?? "Newsletter",
+        body:         newsletter.content ?? "",
+        template:     "newsletter",
+        metadata:     { send_record_id: sendRecord?.id, newsletter_id: params.newsletterId },
+        status:       "queued",
       })
     }
 
