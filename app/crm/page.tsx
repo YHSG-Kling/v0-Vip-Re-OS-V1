@@ -20,6 +20,7 @@ import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { getUnifiedLeadProfiles, getSocialIntelligence } from "@/app/actions/lead-intelligence"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { listCampaignSequences, enrollContactInSequence } from "@/app/actions/campaign-sequences"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
@@ -33,6 +34,7 @@ import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/a
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -361,6 +363,13 @@ export default function CRMPage() {
 
   // Active CRM tab
   const [activeTab, setActiveTab] = useState("overview")
+
+  // Bulk select + Enroll in Campaign
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set())
+  const [enrollDialogOpen, setEnrollDialogOpen] = useState(false)
+  const [availableSequences, setAvailableSequences] = useState<{ id: string; name: string; sequence_type: string }[]>([])
+  const [selectedSequenceId, setSelectedSequenceId] = useState<string>("")
+  const [enrolling, setEnrolling] = useState(false)
 
   // AI Copilot Plan state (copilotPlan and loadingPlan already declared above)
   const [generatingPlan, setGeneratingPlan] = useState(false)
@@ -2964,17 +2973,57 @@ export default function CRMPage() {
         </div>
       )}
 
+      {/* Bulk action bar */}
+      {selectedContactIds.size > 0 && (
+        <div className="sticky top-0 z-10 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-2.5 text-sm">
+          <span className="font-medium text-primary">{selectedContactIds.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 h-7"
+            onClick={async () => {
+              if (availableSequences.length === 0 && brokerageId) {
+                const res = await listCampaignSequences(brokerageId)
+                if (res.sequences) setAvailableSequences(res.sequences.map((s: any) => ({ id: s.id, name: s.name, sequence_type: s.sequence_type })))
+              }
+              setEnrollDialogOpen(true)
+            }}
+          >
+            <Workflow className="h-3.5 w-3.5" />
+            Enroll in Campaign
+          </Button>
+          <button
+            className="ml-auto text-xs text-muted-foreground underline"
+            onClick={() => setSelectedContactIds(new Set())}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {/* Contact list */}
       {!loading && displayedContacts.length > 0 && (
         <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
           {displayedContacts.map((contact) => (
             <Card
               key={contact.id}
-              className="hover:shadow-md transition-shadow cursor-pointer"
+              className={cn("hover:shadow-md transition-shadow cursor-pointer", selectedContactIds.has(contact.id) && "border-primary ring-1 ring-primary")}
               onClick={() => handleSelectContact(contact.id)}
             >
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-2 flex-1 min-w-0">
+                    <Checkbox
+                      checked={selectedContactIds.has(contact.id)}
+                      onCheckedChange={(checked) => {
+                        const next = new Set(selectedContactIds)
+                        if (checked) next.add(contact.id)
+                        else next.delete(contact.id)
+                        setSelectedContactIds(next)
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-1 shrink-0"
+                    />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <h3 className="font-semibold text-gray-900 truncate">
@@ -3041,12 +3090,37 @@ export default function CRMPage() {
                       )}
                     </div>
                   </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
+
+      {/* ── Enroll in Campaign Dialog ──────────────────────────────────────── */}
+      <EnrollCampaignDialog
+        open={enrollDialogOpen}
+        onOpenChange={setEnrollDialogOpen}
+        selectedCount={selectedContactIds.size}
+        sequences={availableSequences}
+        selectedSequenceId={selectedSequenceId}
+        onSequenceChange={setSelectedSequenceId}
+        enrolling={enrolling}
+        onEnroll={async () => {
+          if (!selectedSequenceId) return
+          setEnrolling(true)
+          let successCount = 0
+          for (const contactId of Array.from(selectedContactIds)) {
+            const result = await enrollContactInSequence({ contactId, sequenceId: selectedSequenceId })
+            if (result.enrollment) successCount++
+          }
+          setEnrolling(false)
+          setEnrollDialogOpen(false)
+          setSelectedContactIds(new Set())
+          setSelectedSequenceId("")
+        }}
+      />
 
       {/* ── Add Contact Dialog ──────────────────────────────────────────────── */}
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
@@ -3215,6 +3289,68 @@ export default function CRMPage() {
         />
       )}
     </div>
+  )
+}
+
+// ─── Enroll in Campaign Dialog ───────────────────────────────────────────────
+
+function EnrollCampaignDialog({
+  open,
+  onOpenChange,
+  selectedCount,
+  sequences,
+  selectedSequenceId,
+  onSequenceChange,
+  enrolling,
+  onEnroll,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  selectedCount: number
+  sequences: { id: string; name: string; sequence_type: string }[]
+  selectedSequenceId: string
+  onSequenceChange: (id: string) => void
+  enrolling: boolean
+  onEnroll: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Enroll {selectedCount} Contact{selectedCount !== 1 ? "s" : ""} in Campaign</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          {sequences.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No sequences found. Create sequences in the Campaign Sequences library first.</p>
+          ) : (
+            <div className="space-y-1.5">
+              <Label>Select Campaign Sequence</Label>
+              <Select value={selectedSequenceId} onValueChange={onSequenceChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a sequence..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {sequences.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      <span className="font-medium">{s.name}</span>
+                      {s.sequence_type && (
+                        <span className="ml-2 text-xs text-muted-foreground capitalize">{s.sequence_type.replace(/_/g, " ")}</span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={enrolling}>Cancel</Button>
+          <Button onClick={onEnroll} disabled={enrolling || !selectedSequenceId || sequences.length === 0}>
+            {enrolling ? "Enrolling..." : `Enroll ${selectedCount} Contact${selectedCount !== 1 ? "s" : ""}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
