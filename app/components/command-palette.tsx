@@ -33,7 +33,7 @@ const NAV_ITEMS = [
   { label: "My Financials", href: "/dashboard/financials/agent", icon: DollarSign, group: "Navigation" },
   { label: "Goals Dashboard", href: "/dashboard/goals", icon: Activity, group: "Navigation" },
   { label: "Education Library", href: "/dashboard/education", icon: GraduationCap, group: "Navigation" },
-  { label: "Referrals & Reviews", href: "/past-clients?tab=referrals", icon: Users, group: "Navigation" },
+  { label: "Referrals & Reviews", href: "/lifetime-customers?tab=referrals", icon: Users, group: "Navigation" },
   { label: "Content Approvals", href: "/dashboard/content/approvals", icon: Shield, group: "Admin" },
   { label: "Data Health", href: "/dashboard/admin/data-health", icon: Activity, group: "Admin" },
   { label: "AI Usage & Cost", href: "/dashboard/admin/ai-usage", icon: Sparkles, group: "Admin" },

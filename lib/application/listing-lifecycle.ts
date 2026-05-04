@@ -374,7 +374,7 @@ async function enrollLifetimeCustomer(contactId: string) {
   const supabase = await createClient()
   await supabase
     .from("contacts")
-    .update({ status: "past_client", lifetime_customer: true })
+    .update({ status: "lifetime_customer", lifetime_customer: true })
     .eq("id", contactId)
 
   const touchpoints = [
@@ -385,7 +385,7 @@ async function enrollLifetimeCustomer(contactId: string) {
   ]
 
   for (const touchpoint of touchpoints) {
-    await supabase.from("past_client_touchpoints").insert({
+    await supabase.from("lifetime_customer_touchpoints").insert({
       contact_id: contactId,
       touchpoint_type: touchpoint.type,
       scheduled_date: new Date(Date.now() + touchpoint.days * 24 * 60 * 60 * 1000).toISOString(),

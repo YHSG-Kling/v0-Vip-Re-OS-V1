@@ -2359,7 +2359,7 @@ Agent Service Areas: ${serviceAreas.join(", ")}
 Contacts in Database: ${agent.leads?.length || 0}
 
 Find opportunities:
-1. Past clients ready to move again (5-7 years, equity built)
+1. Lifetime customers ready to move again (5-7 years, equity built)
 2. Sphere of influence (neighbors of recent sales)
 3. Motivated sellers (life events, financial signals)
 4. Rental to ownership (renters ready to buy)
@@ -2368,7 +2368,7 @@ Find opportunities:
 {
   "opportunities": [
     {
-      "type": "past_client_ready",
+      "type": "lifetime_customer_ready",
       "leadId": "...",
       "leadName": "John Smith",
       "reason": "Bought 6 years ago, home value up 35%, kids growing",

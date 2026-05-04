@@ -362,7 +362,7 @@ Business Diagnosis Data:
                             opp.type === "referral"
                               ? "/referrals"
                               : opp.type === LIFETIME_CUSTOMER_TYPE
-                                ? "/past-clients"
+                                ? "/lifetime-customers"
                                 : `/crm?contactId=${opp.contact_id || opp.id}`
                           }
                         >

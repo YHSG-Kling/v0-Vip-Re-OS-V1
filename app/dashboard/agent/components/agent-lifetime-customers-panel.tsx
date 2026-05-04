@@ -72,7 +72,7 @@ export function AgentLifetimeCustomersPanel({
         {isEmpty ? (
           <div className="text-center py-6">
             <Heart className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
-            <Link href="/past-clients" className="text-sm text-primary hover:underline">
+            <Link href="/lifetime-customers" className="text-sm text-primary hover:underline">
               Open Relationship Intelligence →
             </Link>
           </div>
@@ -133,7 +133,7 @@ export function AgentLifetimeCustomersPanel({
             )}
 
             <div className="pt-2">
-              <Link href="/past-clients" className="text-sm text-primary hover:underline">
+              <Link href="/lifetime-customers" className="text-sm text-primary hover:underline">
                 View All Lifetime Customers →
               </Link>
             </div>

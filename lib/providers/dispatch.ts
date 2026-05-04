@@ -483,8 +483,162 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
       teamId: params.teamId,
     },
   })
-  // providerKey will always be 'heygen' until a superadmin override exists
 
+  // Platform-level video provider preference. Default per kernel-OS plan = "did" (D-ID + ElevenLabs).
+  const { getPlatformVideoProvider } = await import("@/app/actions/settings/global-settings-actions")
+  const platformProvider = await getPlatformVideoProvider().catch(() => "did" as const)
+
+  if (platformProvider === "did") {
+    return dispatchVideoViaDID({ params, providerKey })
+  }
+
+  return dispatchVideoViaHeyGen({ params, providerKey })
+}
+
+// ─── D-ID + ElevenLabs path (default per plan) ────────────────────────────────
+async function dispatchVideoViaDID({
+  params,
+  providerKey,
+}: {
+  params: DispatchVideoParams
+  providerKey: string
+}): Promise<DispatchResult> {
+  const didApiKey = process.env.DID_API_KEY
+  const elApiKey = process.env.ELEVENLABS_API_KEY
+
+  if (!didApiKey || !elApiKey) {
+    return {
+      success: false,
+      providerKey,
+      error:
+        "Video provider (D-ID + ElevenLabs) not configured. Set DID_API_KEY and ELEVENLABS_API_KEY in the platform Settings → Providers page.",
+    }
+  }
+
+  // Resolve agent's D-ID + ElevenLabs identity profile.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const supabase = createServiceClient()
+
+  const agentUserId = params.userId ?? params.agentId
+  if (!agentUserId) {
+    return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+  }
+
+  const { data: didProfile } = await supabase
+    .from("agent_did_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", agentUserId)
+    .maybeSingle()
+
+  if (!didProfile?.elevenlabs_voice_id) {
+    return {
+      success: false,
+      providerKey,
+      error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated.",
+    }
+  }
+
+  const sourceUrl = didProfile.did_video_url ?? didProfile.did_photo_url
+  if (!sourceUrl) {
+    return {
+      success: false,
+      providerKey,
+      error: "Avatar not set up. The agent must upload a headshot or video clip in Settings → Voice & Avatar.",
+    }
+  }
+
+  const isVideoSource = !!didProfile.did_video_url
+
+  // Render the script with template variables filled in.
+  const renderedScript = (params.scriptVars ? Object.entries(params.scriptVars) : []).reduce(
+    (acc, [k, v]) => acc.replace(new RegExp(`{{\\s*${k}\\s*}}`, "g"), String(v ?? "")),
+    String(params.templateId ?? "")
+  ) || JSON.stringify(params.scriptVars ?? {})
+
+  // ─── 1. Generate audio via ElevenLabs TTS ───────────────────────────────────
+  const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + didProfile.elevenlabs_voice_id, {
+    method: "POST",
+    headers: { "xi-api-key": elApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
+    body: JSON.stringify({ text: renderedScript, model_id: "eleven_multilingual_v2" }),
+  })
+
+  if (!ttsRes.ok) {
+    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: HTTP ${ttsRes.status}` }
+  }
+
+  // For D-ID we need a hosted audio URL — write to Supabase storage.
+  const audioBuf = await ttsRes.arrayBuffer()
+  const audioPath = `isa-videos/${agentUserId}/${Date.now()}.mp3`
+  const { error: uploadError } = await supabase.storage
+    .from("media")
+    .upload(audioPath, new Uint8Array(audioBuf), { contentType: "audio/mpeg", upsert: false })
+  if (uploadError) {
+    return { success: false, providerKey: "did", error: `Failed to host audio: ${uploadError.message}` }
+  }
+  const { data: pub } = supabase.storage.from("media").getPublicUrl(audioPath)
+  const audioUrl = pub.publicUrl
+
+  // ─── 2. Submit to D-ID ──────────────────────────────────────────────────────
+  const endpoint = isVideoSource ? "https://api.d-id.com/clips" : "https://api.d-id.com/talks"
+  const didPayload = isVideoSource
+    ? {
+        source_url: sourceUrl,
+        script: { type: "audio", audio_url: audioUrl },
+        config: { stitch: true, result_format: "mp4" },
+      }
+    : {
+        source_url: sourceUrl,
+        script: { type: "audio", audio_url: audioUrl },
+        driver_url: "bank://natural",
+        config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
+      }
+
+  const didRes = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(didPayload),
+  })
+
+  if (!didRes.ok) {
+    const errBody = await didRes.text()
+    return { success: false, providerKey: "did", error: `D-ID API error: ${errBody}` }
+  }
+
+  const didData = (await didRes.json()) as { id?: string }
+
+  void logVendorUsage({
+    vendorName: "did",
+    usageType: "video_renders",
+    unitCount: 1,
+    estimatedCost: 0.3, // D-ID + ElevenLabs ~$0.30/render combined
+    systemSource: params.systemSource ?? "dispatch",
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    leadId: params.leadId,
+    metadata: {
+      did_talk_id: didData.id,
+      mode: isVideoSource ? "clip" : "talk",
+      recipient_email: params.recipientEmail,
+      provider_key: "did",
+      ...(params.metadata ?? {}),
+    },
+  })
+
+  return { success: true, providerKey: "did", messageId: didData.id }
+}
+
+// ─── HeyGen path (legacy / opt-in) ────────────────────────────────────────────
+async function dispatchVideoViaHeyGen({
+  params,
+  providerKey,
+}: {
+  params: DispatchVideoParams
+  providerKey: string
+}): Promise<DispatchResult> {
   const heygenApiKey = process.env.HEYGEN_API_KEY
   if (!heygenApiKey) {
     return {
@@ -494,17 +648,10 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
     }
   }
 
-  // HeyGen Video Generation API
   const response = await fetch("https://api.heygen.com/v2/video/generate", {
     method: "POST",
-    headers: {
-      "X-Api-Key": heygenApiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      template_id: params.templateId,
-      variables: params.scriptVars ?? {},
-    }),
+    headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ template_id: params.templateId, variables: params.scriptVars ?? {} }),
   })
 
   if (!response.ok) {
@@ -518,7 +665,7 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
     vendorName: providerKey,
     usageType: "video_renders",
     unitCount: 1,
-    estimatedCost: 0.5, // HeyGen ~$0.50/render estimate
+    estimatedCost: 0.5,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,

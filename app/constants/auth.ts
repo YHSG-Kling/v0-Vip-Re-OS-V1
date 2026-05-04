@@ -70,7 +70,7 @@ export const PROTECTED_ROUTES = [
   '/workflows',
   '/social-planner',
   '/video-assistant',
-  '/past-clients',
+  '/lifetime-customers',
   '/referrals',
   '/referral-partners',
   '/listings',

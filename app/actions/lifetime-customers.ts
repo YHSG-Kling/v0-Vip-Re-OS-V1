@@ -55,10 +55,10 @@ export async function logTouchpoint({
     brokerage_id: brokerageId,
     agent_id: agentId,
     contact_id: contactId,
-    activity_type: "past_client_touchpoint_sent",
+    activity_type: "lifetime_customer_touchpoint_sent",
     title: `Lifetime customer touchpoint: ${touchpointType}`,
     description: notes ?? `${touchpointType} sent via ${channel}`,
-    notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT }),
+    notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT }),
     status: "completed",
     entity_type: "contact",
   }).then(() => {}, err => console.error("Error recording activity:", err))
@@ -147,7 +147,7 @@ export async function getLifetimeCustomers({
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
 
-  // Get past clients (contacts with closed transactions)
+  // Get lifetime customers (contacts with closed transactions)
   // Fetch contacts first, then get their closed transactions separately
   const { data: contacts, error: contactError } = await supabase
     .from("contacts")

@@ -32,7 +32,7 @@ export function ReferralAiDraftingPanel({
 }: ReferralAiDraftingPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [context, setContext] = useState<string>("")
-  const [relationshipType, setRelationshipType] = useState<string>("past-client")
+  const [relationshipType, setRelationshipType] = useState<string>("lifetime-customer")
   const [draft, setDraft] = useState<string>("")
   const [brandVoice, setBrandVoice] = useState<any>(null)
   const [complianceResult, setComplianceResult] = useState<{

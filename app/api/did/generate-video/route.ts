@@ -17,6 +17,7 @@
  *   elevenlabs_voice_id: string,
  *   agent_photo_url?: string,   // preferred for UGC / social content
  *   agent_video_url?: string,   // preferred for formal / brand videos
+ *   background?: { type: "color" | "image"; value: string },
  * }
  * Provide at least one of agent_photo_url or agent_video_url.
  */
@@ -53,12 +54,13 @@ export async function POST(request: NextRequest) {
       elevenlabs_voice_id,
       agent_photo_url,
       agent_video_url,
+      background,
       ugc_mode,
     } = body
 
     if (!video_project_id || !script || !elevenlabs_voice_id) {
       return NextResponse.json(
-        { error: "Missing required fields: video_project_id, script, elevenlabs_voice_id" },
+        { error: "Voice clone not set up. Configure your voice in Settings → Voice & Avatar before generating videos." },
         { status: 400 }
       )
     }
@@ -66,7 +68,7 @@ export async function POST(request: NextRequest) {
     const sourceUrl: string | undefined = agent_video_url ?? agent_photo_url
     if (!sourceUrl) {
       return NextResponse.json(
-        { error: "Provide agent_photo_url or agent_video_url" },
+        { error: "Avatar not set up. Upload your headshot or video clip in Settings → Voice & Avatar before generating videos." },
         { status: 400 }
       )
     }
@@ -120,6 +122,15 @@ export async function POST(request: NextRequest) {
 
     const expression = ugc_mode ? "happy" : "neutral"
 
+    // Background handling — D-ID supports `background` on /talks (color hex or image URL).
+    // For /clips, background gets baked in via the source clip itself.
+    const bgValue: string | { type: string; url?: string; color?: string } | undefined =
+      background?.type === "image" && background?.value
+        ? { type: "image", url: background.value }
+        : background?.type === "color" && background?.value
+        ? { type: "color", color: background.value }
+        : undefined
+
     const didPayload = isVideoSource
       ? {
           // /clips endpoint — lip-sync an existing agent video (natural movement from source clip)
@@ -128,6 +139,7 @@ export async function POST(request: NextRequest) {
             type: "audio",
             audio_url: ttsData.audio_url,
           },
+          ...(bgValue ? { background: bgValue } : {}),
           config: { stitch: true, result_format: "mp4" },
         }
       : {
@@ -139,6 +151,7 @@ export async function POST(request: NextRequest) {
           },
           driver_url: "bank://natural",
           expression,
+          ...(bgValue ? { background: bgValue } : {}),
           config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
           face: { size: 1, top_x: 0, top_y: 0, overlap: "NO" },
         }

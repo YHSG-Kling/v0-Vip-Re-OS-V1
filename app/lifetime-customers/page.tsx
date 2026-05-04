@@ -1646,7 +1646,7 @@ export default function LifetimeCustomersPage() {
                                   draft_subject: `Market Update from ${agentName}`,
                                   draft_body: `Hi ${c.first_name}, here's what's happening in your market...`,
                                   status: "pending",
-                                  trigger_event: "bulk_past_client_reach",
+                                  trigger_event: "bulk_lifetime_customer_reach",
                                 }))
 
                               const { error } = await supabase.from("ai_message_drafts").insert(inserts)

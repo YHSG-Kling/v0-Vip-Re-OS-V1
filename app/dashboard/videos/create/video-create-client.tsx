@@ -385,6 +385,24 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         throw new Error("Script content is required")
       }
 
+      // ─── Setup guard ────────────────────────────────────────────────────────
+      // Block generation if the agent hasn't completed Voice & Avatar setup.
+      // Surfaces a clear, actionable error instead of silently failing downstream.
+      if (platformProvider === "did") {
+        if (!selectedElevenLabsVoiceId) {
+          throw new Error(
+            "Voice clone not set up. Visit Settings → Voice & Avatar to record your voice before generating videos."
+          )
+        }
+        const hasPhotoAvatar = selectedDIDAvatarSource === "photo" && agentDIDProfile?.did_photo_url
+        const hasVideoAvatar = selectedDIDAvatarSource === "video" && agentDIDProfile?.did_video_url
+        if (!hasPhotoAvatar && !hasVideoAvatar) {
+          throw new Error(
+            "Avatar not set up. Visit Settings → Voice & Avatar to upload your headshot or video clip before generating videos."
+          )
+        }
+      }
+
       // 1. Create ai_video_projects record
       const { data: project, error: projectError } = await supabase
         .from("ai_video_projects")
@@ -425,6 +443,20 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         ? "/api/did/generate-video"
         : "/api/heygen/generate-video"
 
+      // Resolve background payload (color hex or image URL) for the D-ID API
+      const didBackground = backgroundStyle === "custom" && customBgUrl
+        ? { type: "image" as const, value: customBgUrl }
+        : (() => {
+            const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
+            const bgColorValue = bgPreset?.color
+            if (!bgColorValue) return undefined
+            // Gradients / patterns can't be passed as a flat color — fall back to white
+            if (bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating")) {
+              return { type: "color" as const, value: "#ffffff" }
+            }
+            return { type: "color" as const, value: bgColorValue }
+          })()
+
       const body = platformProvider === "did"
         ? {
             video_project_id: project.id,
@@ -432,6 +464,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             elevenlabs_voice_id: selectedElevenLabsVoiceId,
             agent_photo_url: selectedDIDAvatarSource === "photo" ? agentDIDProfile?.did_photo_url : null,
             agent_video_url: selectedDIDAvatarSource === "video" ? agentDIDProfile?.did_video_url : null,
+            background: didBackground,
           }
         : {
             script,

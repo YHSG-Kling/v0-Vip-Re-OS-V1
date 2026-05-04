@@ -396,7 +396,7 @@ export enum KernelEvent {
   CRON_FAILED                        = 'cron_failed',
 
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
-  PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
+  LIFETIME_CUSTOMER_TOUCHPOINT_SENT  = 'lifetime_customer_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
   MARKET_UPDATE_SENT                 = 'market_update_sent',
   REFERRAL_ASK_SENT                  = 'referral_ask_sent',
