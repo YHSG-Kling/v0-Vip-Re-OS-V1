@@ -498,7 +498,7 @@ export async function generatePodcastAudio(episodeId: string) {
       brokerageId,
       entityType: "podcast_episode",
       entityId: episodeId,
-    }).catch(() => {})
+    }).catch((err) => console.error("[podcast] kernel event PODCAST_EPISODE_FAILED failed:", err))
 
     return { success: false, error: error.message }
   }
@@ -782,7 +782,7 @@ export async function publishPodcastEpisode(
             brokerageId,
             entityType: "podcast_episode",
             entityId: episodeId,
-          }).catch(() => {})
+          }).catch((err) => console.error("[podcast] kernel event PODCAST_EPISODE_DISTRIBUTED failed:", err))
 
         } catch (distError: any) {
           // Update log entry as failed
@@ -804,7 +804,7 @@ export async function publishPodcastEpisode(
             brokerageId,
             entityType: "podcast_episode",
             entityId: episodeId,
-          }).catch(() => {})
+          }).catch((err) => console.error("[podcast] kernel event distribution PODCAST_EPISODE_FAILED failed:", err))
         }
       }
     }

@@ -185,9 +185,27 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   // Step 2: Avatar & Voice
   const [selectedAvatar, setSelectedAvatar] = useState<string>("")
   const [selectedVoice, setSelectedVoice] = useState<string>("")
-  // D-ID-specific selections (used when platformProvider === "did")
+  // D-ID-specific selections
   const [selectedElevenLabsVoiceId, setSelectedElevenLabsVoiceId] = useState<string | null>(null)
   const [selectedDIDAvatarSource, setSelectedDIDAvatarSource] = useState<"photo" | "video" | null>(null)
+  // D-ID avatar library (agent_avatar_assets rows) — "photo" fallback is not an asset row
+  const [didAvatarAssets, setDidAvatarAssets] = useState<Array<{
+    id: string
+    label: string
+    source_type: "photo" | "video"
+    did_avatar_id: string | null
+    status: string
+    thumbnail_url: string | null
+    is_default: boolean
+  }>>([])
+  // Which asset row (or "photo" for the legacy photo fallback) the agent selected
+  const [selectedDidAssetId, setSelectedDidAssetId] = useState<string | "photo" | null>(null)
+  // Inline "add avatar" upload state
+  const [showAddAvatar, setShowAddAvatar] = useState(false)
+  const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
+  const [newAvatarLabel, setNewAvatarLabel] = useState("")
+  const [isAddingAvatar, setIsAddingAvatar] = useState(false)
+  const [addAvatarError, setAddAvatarError] = useState<string | null>(null)
 
   // Step 3: Style & Output
   const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
@@ -282,6 +300,17 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             .maybeSingle()
           setAgentDIDProfile(didProfileData ?? null)
 
+          // Load avatar library for this agent
+          const { data: assetRows } = await supabase
+            .from("agent_avatar_assets")
+            .select("id, label, source_type, did_avatar_id, status, thumbnail_url, is_default")
+            .eq("agent_id", agentData.id)
+            .order("is_default", { ascending: false })
+            .order("created_at", { ascending: false })
+
+          const assets = assetRows ?? []
+          setDidAvatarAssets(assets)
+
           // Auto-select defaults for D-ID path
           // Voice: pick the default profile's elevenlabs_voice_id
           const defaultVoice = (voiceData ?? []).find((v: any) => v.is_default && v.elevenlabs_voice_id)
@@ -289,11 +318,20 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           if (defaultVoice?.elevenlabs_voice_id) {
             setSelectedElevenLabsVoiceId(defaultVoice.elevenlabs_voice_id)
           }
-          // Avatar: prefer video (brand quality), fall back to photo
-          if (didProfileData?.did_video_url) {
+
+          // Avatar: prefer default ready video avatar from library, then photo fallback
+          type AssetRow = typeof assets[number]
+          const defaultReadyAsset = assets.find((a: AssetRow) => a.is_default && a.status === "ready")
+            ?? assets.find((a: AssetRow) => a.status === "ready")
+          if (defaultReadyAsset) {
+            setSelectedDidAssetId(defaultReadyAsset.id)
+            setSelectedDIDAvatarSource("video")
+          } else if (didProfileData?.did_video_url) {
+            // No library asset yet — fall back to raw video URL (legacy)
             setSelectedDIDAvatarSource("video")
           } else if (didProfileData?.did_photo_url) {
             setSelectedDIDAvatarSource("photo")
+            setSelectedDidAssetId("photo")
           }
         }
 
@@ -394,11 +432,13 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             "Voice clone not set up. Visit Settings → Voice & Avatar to record your voice before generating videos."
           )
         }
-        const hasPhotoAvatar = selectedDIDAvatarSource === "photo" && agentDIDProfile?.did_photo_url
-        const hasVideoAvatar = selectedDIDAvatarSource === "video" && agentDIDProfile?.did_video_url
-        if (!hasPhotoAvatar && !hasVideoAvatar) {
+        const selectedAsset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
+        const hasReadyAvatar =
+          (selectedAsset?.status === "ready") ||
+          (selectedDidAssetId === "photo" && agentDIDProfile?.did_photo_url)
+        if (!hasReadyAvatar) {
           throw new Error(
-            "Avatar not set up. Visit Settings → Voice & Avatar to upload your headshot or video clip before generating videos."
+            "No avatar selected. Choose an avatar from the gallery or upload a new video clip."
           )
         }
       }
@@ -457,13 +497,23 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             return { type: "color" as const, value: bgColorValue }
           })()
 
+      // Resolve the did_avatar_id for the selected asset (null for photo fallback)
+      const selectedAssetRow = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
+      const resolvedDidAvatarId = selectedAssetRow?.did_avatar_id ?? null
+
       const body = platformProvider === "did"
         ? {
             video_project_id: project.id,
             script,
             elevenlabs_voice_id: selectedElevenLabsVoiceId,
+            // Pass avatar_id when available (faster, consistent renders via D-ID avatar library)
+            ...(resolvedDidAvatarId ? { did_avatar_id: resolvedDidAvatarId } : {}),
+            // Source URL fallbacks for photo mode and legacy profiles without avatar_id
             agent_photo_url: selectedDIDAvatarSource === "photo" ? agentDIDProfile?.did_photo_url : null,
-            agent_video_url: selectedDIDAvatarSource === "video" ? agentDIDProfile?.did_video_url : null,
+            agent_video_url:
+              selectedDIDAvatarSource === "video" && !resolvedDidAvatarId
+                ? agentDIDProfile?.did_video_url
+                : null,
             background: didBackground,
           }
         : {
@@ -541,7 +591,11 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
         if (platformProvider === "did") {
-          return !!(selectedElevenLabsVoiceId && selectedDIDAvatarSource)
+          const asset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
+          const hasReadyAvatar =
+            (asset?.status === "ready") ||
+            (selectedDidAssetId === "photo" && !!agentDIDProfile?.did_photo_url)
+          return !!(selectedElevenLabsVoiceId && hasReadyAvatar)
         }
         // HeyGen: avatar required; voice required only if profiles exist
         if (!selectedAvatar) return false
@@ -1149,13 +1203,56 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                   </p>
                 </div>
 
-                {/* D-ID: Voice clone + avatar selection */}
+                {/* D-ID: Voice clone + avatar gallery */}
                 {platformProvider === "did" && (() => {
                   const elVoiceProfiles = voiceProfiles.filter((v: any) => v.elevenlabs_voice_id)
                   const hasPhoto = !!agentDIDProfile?.did_photo_url
-                  const hasVideo = !!agentDIDProfile?.did_video_url
-                  const hasAnyAvatar = hasPhoto || hasVideo
+                  const readyAssets = didAvatarAssets.filter((a) => a.status === "ready")
+                  const pendingAssets = didAvatarAssets.filter((a) => a.status === "pending" || a.status === "processing")
+                  const hasAnyAvatar = readyAssets.length > 0 || hasPhoto
                   const hasAnyVoice = elVoiceProfiles.length > 0
+
+                  async function handleAddAvatar() {
+                    if (!newAvatarFile || !resolvedAgentId) return
+                    setIsAddingAvatar(true)
+                    setAddAvatarError(null)
+                    try {
+                      const form = new FormData()
+                      form.append("file", newAvatarFile)
+                      form.append("bucket", "agent-photos")
+                      const uploadRes = await fetch("/api/storage/upload-temp", { method: "POST", body: form })
+                      const uploadData = uploadRes.ok ? await uploadRes.json() : null
+                      if (!uploadData?.url) throw new Error("Upload failed — please try again.")
+
+                      const createRes = await fetch("/api/did/create-avatar", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          source_url: uploadData.url,
+                          label: newAvatarLabel || "My Avatar",
+                          set_as_default: readyAssets.length === 0,
+                        }),
+                      })
+                      const createData = await createRes.json()
+                      if (!createRes.ok) throw new Error(createData.error ?? "Avatar creation failed.")
+
+                      // Refresh avatar list
+                      const { data: refreshed } = await supabase
+                        .from("agent_avatar_assets")
+                        .select("id, label, source_type, did_avatar_id, status, thumbnail_url, is_default")
+                        .eq("agent_id", resolvedAgentId)
+                        .order("is_default", { ascending: false })
+                        .order("created_at", { ascending: false })
+                      setDidAvatarAssets(refreshed ?? [])
+                      setShowAddAvatar(false)
+                      setNewAvatarFile(null)
+                      setNewAvatarLabel("")
+                    } catch (err: any) {
+                      setAddAvatarError(err.message)
+                    } finally {
+                      setIsAddingAvatar(false)
+                    }
+                  }
 
                   return (
                     <div className="space-y-6">
@@ -1216,22 +1313,112 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                         )}
                       </div>
 
-                      {/* Avatar Source Selection */}
+                      {/* Avatar Gallery */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <Label>Avatar</Label>
-                          <a href="/dashboard/videos/voice" className="text-xs text-muted-foreground underline hover:text-foreground">
-                            Manage avatar setup
-                          </a>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-xs h-7 gap-1"
+                            onClick={() => setShowAddAvatar((v) => !v)}
+                          >
+                            <Upload className="h-3 w-3" />
+                            Add Avatar
+                          </Button>
                         </div>
+
+                        {/* Inline add-avatar form */}
+                        {showAddAvatar && (
+                          <div className="p-4 rounded-lg border bg-muted/50 space-y-3">
+                            <p className="text-sm font-medium">Upload a new avatar video clip (5–15 sec)</p>
+                            <input
+                              type="text"
+                              placeholder="Avatar name (e.g. Outdoor Casual)"
+                              value={newAvatarLabel}
+                              onChange={(e) => setNewAvatarLabel(e.target.value)}
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                            <input
+                              type="file"
+                              accept="video/mp4,video/webm"
+                              onChange={(e) => setNewAvatarFile(e.target.files?.[0] ?? null)}
+                              className="block text-sm"
+                            />
+                            {addAvatarError && (
+                              <p className="text-xs text-destructive">{addAvatarError}</p>
+                            )}
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                disabled={!newAvatarFile || isAddingAvatar}
+                                onClick={handleAddAvatar}
+                              >
+                                {isAddingAvatar ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                                {isAddingAvatar ? "Uploading…" : "Upload & Create Avatar"}
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => { setShowAddAvatar(false); setAddAvatarError(null) }}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Processing avatars banner */}
+                        {pendingAssets.length > 0 && (
+                          <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                            <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                            {pendingAssets.length === 1
+                              ? `"${pendingAssets[0].label}" is being processed by D-ID (1–3 min)…`
+                              : `${pendingAssets.length} avatars are being processed…`}
+                          </div>
+                        )}
+
                         {hasAnyAvatar ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            {hasPhoto && (
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                            {/* Ready library avatars */}
+                            {readyAssets.map((asset) => (
                               <div
-                                onClick={() => setSelectedDIDAvatarSource("photo")}
+                                key={asset.id}
+                                onClick={() => {
+                                  setSelectedDidAssetId(asset.id)
+                                  setSelectedDIDAvatarSource("video")
+                                }}
                                 className={cn(
-                                  "p-4 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
-                                  selectedDIDAvatarSource === "photo"
+                                  "p-3 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
+                                  selectedDidAssetId === asset.id
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                <div className="w-16 h-16 rounded-full bg-muted mx-auto flex items-center justify-center overflow-hidden">
+                                  {asset.thumbnail_url ? (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img src={asset.thumbnail_url} alt={asset.label} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <Video className="h-6 w-6 text-muted-foreground" />
+                                  )}
+                                </div>
+                                <p className="font-medium text-xs truncate">{asset.label}</p>
+                                {asset.is_default && (
+                                  <Badge variant="secondary" className="text-xs">Default</Badge>
+                                )}
+                                {selectedDidAssetId === asset.id && (
+                                  <CheckCircle2 className="h-4 w-4 text-primary mx-auto" />
+                                )}
+                              </div>
+                            ))}
+
+                            {/* Legacy photo fallback — shown when no library video avatars yet */}
+                            {hasPhoto && readyAssets.filter((a) => a.source_type === "video").length === 0 && (
+                              <div
+                                onClick={() => {
+                                  setSelectedDidAssetId("photo")
+                                  setSelectedDIDAvatarSource("photo")
+                                }}
+                                className={cn(
+                                  "p-3 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
+                                  selectedDidAssetId === "photo"
                                     ? "border-primary bg-primary/5"
                                     : "border-border hover:border-primary/50"
                                 )}
@@ -1240,37 +1427,11 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                                 <img
                                   src={agentDIDProfile!.did_photo_url!}
                                   alt="Your photo"
-                                  className="w-20 h-20 rounded-full object-cover mx-auto"
+                                  className="w-16 h-16 rounded-full object-cover mx-auto"
                                 />
-                                <p className="font-medium text-sm">Photo</p>
+                                <p className="font-medium text-xs">Photo</p>
                                 <p className="text-xs text-muted-foreground">Best for social</p>
-                                {selectedDIDAvatarSource === "photo" && (
-                                  <CheckCircle2 className="h-4 w-4 text-primary mx-auto" />
-                                )}
-                              </div>
-                            )}
-                            {hasVideo && (
-                              <div
-                                onClick={() => setSelectedDIDAvatarSource("video")}
-                                className={cn(
-                                  "p-4 rounded-lg border-2 cursor-pointer transition-all text-center space-y-2",
-                                  selectedDIDAvatarSource === "video"
-                                    ? "border-primary bg-primary/5"
-                                    : "border-border hover:border-primary/50"
-                                )}
-                              >
-                                <div className="w-20 h-20 rounded-full bg-muted mx-auto flex items-center justify-center overflow-hidden">
-                                  <video
-                                    src={agentDIDProfile!.did_video_url!}
-                                    className="w-full h-full object-cover"
-                                    muted
-                                    loop
-                                    autoPlay
-                                  />
-                                </div>
-                                <p className="font-medium text-sm">Video Clip</p>
-                                <p className="text-xs text-muted-foreground">Best for brand</p>
-                                {selectedDIDAvatarSource === "video" && (
+                                {selectedDidAssetId === "photo" && (
                                   <CheckCircle2 className="h-4 w-4 text-primary mx-auto" />
                                 )}
                               </div>
@@ -1281,7 +1442,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                             <AlertTriangle className="h-4 w-4" />
                             <AlertTitle>No avatar uploaded</AlertTitle>
                             <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                              <span>Upload a headshot or short video clip in Avatar & Voice Setup.</span>
+                              <span>Upload a video clip above or go to Avatar & Voice Setup.</span>
                               <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
                                 Set Up Avatar
                               </Button>

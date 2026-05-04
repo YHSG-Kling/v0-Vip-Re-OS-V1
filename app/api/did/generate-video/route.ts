@@ -54,6 +54,8 @@ export async function POST(request: NextRequest) {
       elevenlabs_voice_id,
       agent_photo_url,
       agent_video_url,
+      // did_avatar_id: caller may pass a specific avatar from the library
+      did_avatar_id: callerAvatarId,
       background,
       ugc_mode,
     } = body
@@ -65,15 +67,42 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // ─── Resolve D-ID avatar: prefer persistent avatar_id over raw source_url ──
+    // Persistent avatars (created via /api/did/create-avatar) render faster and
+    // more consistently because D-ID has already processed the source video.
+    // Fall back to source_url for photo mode and legacy profiles without an avatar_id.
+    let resolvedAvatarId: string | null = callerAvatarId ?? null
+    if (!resolvedAvatarId && auth.userId) {
+      // Check if agent has a ready default avatar in their library
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", auth.userId)
+        .maybeSingle()
+
+      if (agentRow?.id) {
+        const { data: defaultAsset } = await supabase
+          .from("agent_avatar_assets")
+          .select("did_avatar_id")
+          .eq("agent_id", agentRow.id)
+          .eq("status", "ready")
+          .eq("is_default", true)
+          .maybeSingle()
+        resolvedAvatarId = defaultAsset?.did_avatar_id ?? null
+      }
+    }
+
     const sourceUrl: string | undefined = agent_video_url ?? agent_photo_url
-    if (!sourceUrl) {
+    // Need at least one of: a ready avatar_id OR a source URL
+    if (!resolvedAvatarId && !sourceUrl) {
       return NextResponse.json(
         { error: "Avatar not set up. Upload your headshot or video clip in Settings → Voice & Avatar before generating videos." },
         { status: 400 }
       )
     }
 
-    const isVideoSource = !!agent_video_url
+    // When using a persistent avatar_id it's always a video-quality /clips render
+    const isVideoSource = !!resolvedAvatarId || !!agent_video_url
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
 
     // ─── Brand compliance gate ────────────────────────────────────────────────
@@ -133,8 +162,11 @@ export async function POST(request: NextRequest) {
 
     const didPayload = isVideoSource
       ? {
-          // /clips endpoint — lip-sync an existing agent video (natural movement from source clip)
-          source_url: sourceUrl,
+          // /clips endpoint — use persistent avatar_id if available, else raw source_url
+          // avatar_id gives faster + more consistent renders; source_url is the fallback
+          ...(resolvedAvatarId
+            ? { avatar_id: resolvedAvatarId }
+            : { source_url: sourceUrl }),
           script: {
             type: "audio",
             audio_url: ttsData.audio_url,
@@ -195,6 +227,7 @@ export async function POST(request: NextRequest) {
           mode: isVideoSource ? "clip" : "talk",
           talk_id: did_talk_id,
           source_type: isVideoSource ? "video" : "photo",
+          used_avatar_id: resolvedAvatarId ?? null,
         },
         error_message: null,
       })

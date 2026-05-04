@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, provider_job_id, provider_metadata, status, retry_count, video_type")
+      .select("id, agent_id, brokerage_id, provider_job_id, provider_metadata, status, retry_count, video_type, provider_metadata")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -97,21 +97,92 @@ export async function GET(request: NextRequest) {
         const didStatus: string = data.status
 
         if (didStatus === "done") {
-          const videoUrl: string | null = data.result_url ?? null
-          const thumbnailUrl: string | null = data.thumbnail_url ?? null
+          const didResultUrl: string | null = data.result_url ?? null
+          const didThumbnailUrl: string | null = data.thumbnail_url ?? null
           const duration: number | null =
             typeof data.duration === "number" ? Math.round(data.duration) : null
+
+          // ─── Persist video to Supabase Storage ─────────────────────────────
+          // D-ID result URLs are signed and expire in ~24–48h. Download immediately
+          // and store in our own bucket so emails, newsletters, and portals can
+          // embed a durable URL that never expires.
+          let persistedVideoUrl: string | null = null
+          let persistedThumbnailUrl: string | null = null
+
+          if (didResultUrl) {
+            try {
+              const agentFolder = video.agent_id ?? "shared"
+              const videoPath = `agent-videos/${agentFolder}/${video.id}.mp4`
+
+              const videoFetch = await fetch(didResultUrl)
+              if (videoFetch.ok) {
+                const videoBuffer = await videoFetch.arrayBuffer()
+                const { error: uploadErr } = await supabase.storage
+                  .from("listing-media")
+                  .upload(videoPath, videoBuffer, {
+                    contentType: "video/mp4",
+                    upsert: true,
+                  })
+                if (!uploadErr) {
+                  const { data: { publicUrl } } = supabase.storage
+                    .from("listing-media")
+                    .getPublicUrl(videoPath)
+                  persistedVideoUrl = publicUrl
+                } else {
+                  console.error("[poll-did-videos] Storage upload failed:", uploadErr)
+                }
+              }
+            } catch (storageErr: any) {
+              // Non-fatal — fall back to D-ID URL if storage fails
+              console.error("[poll-did-videos] Video persist failed:", storageErr.message)
+            }
+          }
+
+          if (didThumbnailUrl) {
+            try {
+              const agentFolder = video.agent_id ?? "shared"
+              const thumbPath = `agent-videos/${agentFolder}/${video.id}-thumb.jpg`
+
+              const thumbFetch = await fetch(didThumbnailUrl)
+              if (thumbFetch.ok) {
+                const thumbBuffer = await thumbFetch.arrayBuffer()
+                const { error: thumbErr } = await supabase.storage
+                  .from("listing-media")
+                  .upload(thumbPath, thumbBuffer, {
+                    contentType: "image/jpeg",
+                    upsert: true,
+                  })
+                if (!thumbErr) {
+                  const { data: { publicUrl } } = supabase.storage
+                    .from("listing-media")
+                    .getPublicUrl(thumbPath)
+                  persistedThumbnailUrl = publicUrl
+                }
+              }
+            } catch { /* thumbnail is non-critical */ }
+          }
+
+          // Use our persisted URL when available; keep D-ID URL as provider fallback
+          const finalVideoUrl = persistedVideoUrl ?? didResultUrl
+          const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
 
           await supabase
             .from("ai_video_projects")
             .update({
               status: "completed",
               provider_status: "done",
-              video_url: videoUrl,
-              thumbnail_url: thumbnailUrl,
+              video_url: finalVideoUrl,
+              thumbnail_url: finalThumbnailUrl,
               duration_seconds: duration,
               completed_at: new Date().toISOString(),
               error_message: null,
+              // Preserve original D-ID URL in metadata for reference
+              provider_metadata: {
+                ...((video as any).provider_metadata ?? {}),
+                did_result_url: didResultUrl,
+                did_thumbnail_url: didThumbnailUrl,
+                persisted_to_storage: !!persistedVideoUrl,
+              },
             })
             .eq("id", video.id)
 

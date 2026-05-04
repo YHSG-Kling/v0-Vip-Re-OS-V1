@@ -173,6 +173,7 @@ export function VoiceCloneClient({
         return
       }
 
+      // Save source URL to agent voice profile (backwards-compatible fallback)
       const profileRes = await fetch("/api/agent/update-video-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -182,15 +183,38 @@ export function VoiceCloneClient({
         }),
       })
 
-      if (profileRes.ok) {
-        setAvatarStatus("success")
-        const warningText = data.warnings?.length ? ` Note: ${data.warnings.join(" ")}` : ""
-        setAvatarMessage(`Your ${avatarType === "photo" ? "photo" : "video"} has been saved.${warningText}`)
-        setAvatarDone(true)
-      } else {
+      if (!profileRes.ok) {
         setAvatarStatus("error")
         setAvatarMessage("Saved to storage but profile update failed — please retry.")
+        return
       }
+
+      // For video uploads: create a persistent D-ID avatar so renders use avatar_id
+      // (faster + more consistent quality). Runs in background — no need to wait.
+      if (avatarType === "video") {
+        fetch("/api/did/create-avatar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_url: data.url,
+            label: "My Avatar",
+            set_as_default: true,
+          }),
+        }).catch((err) =>
+          console.error("[voice-client] D-ID avatar creation failed:", err)
+        )
+      }
+
+      const warningText = data.warnings?.length ? ` Note: ${data.warnings.join(" ")}` : ""
+      const processingNote =
+        avatarType === "video"
+          ? " D-ID is processing your avatar (1–3 min) — you'll be notified when it's ready."
+          : ""
+      setAvatarStatus("success")
+      setAvatarMessage(
+        `Your ${avatarType === "photo" ? "photo" : "video"} has been saved.${warningText}${processingNote}`
+      )
+      setAvatarDone(true)
     } catch (err: any) {
       setAvatarStatus("error")
       setAvatarMessage(err.message ?? "An error occurred.")

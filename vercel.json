@@ -35,6 +35,10 @@
       "schedule": "*/2 * * * *"
     },
     {
+      "path": "/api/cron/poll-did-avatars",
+      "schedule": "*/3 * * * *"
+    },
+    {
       "path": "/api/cron/onboarding-reminders",
       "schedule": "0 9 * * *"
     },
