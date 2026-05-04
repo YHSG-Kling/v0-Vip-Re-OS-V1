@@ -309,6 +309,174 @@ Use simple language, avoid jargon, and be reassuring.`,
       })
       .eq("id", documentId)
 
+    // Step 7: For contract document types — run state-specific signature compliance scan
+    // Plan FIX 0B/J10: when any contract is uploaded, scan for signature/initial completeness per state requirements
+    const CONTRACT_TYPES = ["purchase_agreement", "listing_agreement", "addendum", "disclosure_form"]
+    let signatureScan: any = null
+    if (CONTRACT_TYPES.includes(classification.document_type)) {
+      try {
+        // Resolve state from brokerage
+        let brokerageState: string | null = null
+        if (docRecord?.brokerage_id) {
+          const { data: brokerage } = await supabase
+            .from("brokerages")
+            .select("state")
+            .eq("id", docRecord.brokerage_id)
+            .maybeSingle()
+          brokerageState = brokerage?.state ?? null
+        }
+
+        // Pull state requirements
+        const { data: stateReqs } = brokerageState
+          ? await supabase
+              .from("state_compliance_requirements")
+              .select("requirement_name, description, document_type, severity")
+              .eq("state", brokerageState)
+              .eq("document_type", classification.document_type)
+          : { data: null }
+
+        const reqList = stateReqs?.length
+          ? stateReqs.map((r: any) => `- ${r.requirement_name}: ${r.description}`).join("\n")
+          : "Standard state requirements apply."
+
+        const scanResult = await generateText({
+          model: "openai/gpt-4o",
+          messages: [
+            {
+              role: "user",
+              content: ([
+                {
+                  type: "text",
+                  text: `You are a real estate compliance reviewer. Examine this ${classification.document_type} for ${brokerageState ?? "the applicable state"} and return ONLY valid JSON — no markdown.
+
+Check:
+1. Are all required signature blocks signed?
+2. Are all required initials initialed?
+3. Does it meet these state-specific requirements?
+${reqList}
+
+Return this exact structure:
+{
+  "signatureCompleteness": {
+    "allRequiredSignaturesPresent": boolean,
+    "allRequiredInitialsPresent": boolean,
+    "missingSignatures": [{ "page": number|null, "location": string, "signer_role": "buyer|seller|agent|broker|witness|notary", "severity": "critical|warning|info" }],
+    "missingInitials": [{ "page": number|null, "location": string, "signer_role": string }]
+  },
+  "stateComplianceIssues": [{ "requirement": string, "status": "pass|fail|unclear", "note": string }],
+  "overallStatus": "pass|warnings|blocking_issues"
+}
+
+Set overallStatus to "blocking_issues" only if missing signatures would invalidate the contract.`,
+                },
+                { type: "image", image: fileUrl },
+              ] as any),
+            },
+          ],
+        })
+
+        let scan: any = null
+        try {
+          const cleaned = scanResult.text.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim()
+          scan = JSON.parse(cleaned)
+        } catch (parseErr) {
+          console.error("[v0] Failed to parse signature scan JSON:", parseErr)
+          scan = {
+            signatureCompleteness: {
+              allRequiredSignaturesPresent: false,
+              allRequiredInitialsPresent: false,
+              missingSignatures: [],
+              missingInitials: [],
+            },
+            stateComplianceIssues: [],
+            overallStatus: "warnings",
+          }
+        }
+        signatureScan = scan
+
+        // Persist scan as a row in compliance_checks (table created by migration 565)
+        // Schema: id, contract_review_id (nullable), check_type, status, findings JSONB
+        await supabase
+          .from("compliance_checks")
+          .insert({
+            check_type: "signature_completeness",
+            status: scan.overallStatus,
+            findings: {
+              ...scan,
+              document_id: documentId,
+              brokerage_id: docRecord?.brokerage_id ?? null,
+              state: brokerageState,
+              source: "client_document_upload",
+            } as any,
+          })
+          .then(() => {}, (err) => console.error("[v0] compliance_checks insert error:", err))
+
+        // Activity log entry — surfaces issues to agent
+        const issueCount =
+          scan.signatureCompleteness.missingSignatures.length +
+          scan.signatureCompleteness.missingInitials.length +
+          scan.stateComplianceIssues.filter((i: any) => i.status === "fail").length
+        supabase
+          .from("activities")
+          .insert({
+            brokerage_id: docRecord?.brokerage_id ?? null,
+            agent_id: docRecord?.brokerage_id ?? null,
+            contact_id: docRecord?.contact_id ?? null,
+            activity_type: "compliance_scan",
+            title:
+              scan.overallStatus === "pass"
+                ? `Compliance scan passed: ${classification.document_type}`
+                : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
+            description: `State-specific signature/initial scan ran on uploaded document.`,
+            notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
+            status: scan.overallStatus === "pass" ? "completed" : "needs_review",
+            entity_type: "document",
+          })
+          .then(() => {}, () => {})
+      } catch (scanErr) {
+        console.error("[v0] Signature compliance scan error:", scanErr)
+      }
+    }
+
+    // Step 8: For purchase agreements — extract terms and auto-populate transaction
+    if (classification.document_type === "purchase_agreement" && classification.key_fields) {
+      try {
+        // Find an open transaction for this contact (most recent)
+        if (docRecord?.contact_id) {
+          const { data: tx } = await supabase
+            .from("transactions")
+            .select("id, status")
+            .eq("contact_id", docRecord.contact_id)
+            .in("status", ["pending", "under_contract", "active"])
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+          if (tx?.id) {
+            const { applyContractExtraction } = await import("./ai-contract-review")
+            const k = classification.key_fields
+            await applyContractExtraction({
+              transactionId: tx.id,
+              agentId: docRecord.brokerage_id ?? "",
+              extracted: {
+                purchasePrice: typeof k.purchase_price === "number" ? k.purchase_price : null,
+                earnestMoneyAmount: typeof k.earnest_money === "number" ? k.earnest_money : null,
+                inspectionDeadline: k.inspection_deadline ?? null,
+                appraisalDeadline: k.appraisal_deadline ?? null,
+                financingDeadline: k.financing_deadline ?? null,
+                closingDate: k.closing_date ?? null,
+                buyerName: k.buyer_name ?? null,
+                sellerName: k.seller_name ?? null,
+                propertyAddress: k.property_address ?? null,
+              },
+            })
+          }
+        }
+      } catch (applyErr) {
+        console.error("[v0] applyContractExtraction error:", applyErr)
+      }
+    }
+
     // Log activity (fire-and-forget)
     supabase.from("activities").insert({
       brokerage_id: docRecord?.brokerage_id ?? null,
@@ -322,7 +490,7 @@ Use simple language, avoid jargon, and be reassuring.`,
       entity_type: "contact",
     }).then(() => {}, () => {})
 
-    return { success: true, classification, explanation: explanationResult.text }
+    return { success: true, classification, explanation: explanationResult.text, signatureScan }
   } catch (error) {
     console.error("AI processing error:", error)
     return { success: false, error }

@@ -276,7 +276,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
           // Load D-ID profile for the agent (used when platform provider = "did")
           const { data: didProfileData } = await supabase
-            .from("agent_did_profiles")
+            .from("agent_voice_profiles")
             .select("elevenlabs_voice_id, did_photo_url, did_video_url")
             .eq("agent_id", agentData.id)
             .maybeSingle()

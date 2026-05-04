@@ -47,6 +47,32 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
     }
   }
 
+  // Subscribe to realtime INSERTs on the notifications table for this contact
+  useEffect(() => {
+    const supabase = createClient()
+    const channel = supabase
+      .channel(`portal-notifications-${contactId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `contact_id=eq.${contactId}`,
+        },
+        (payload: { new: Notification }) => {
+          const n = payload.new
+          setNotifications((prev) => [n, ...prev].slice(0, 20))
+          if (!n.is_read) setUnread((prev) => prev + 1)
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [contactId])
+
   async function markAllRead() {
     const supabase = createClient()
     await supabase

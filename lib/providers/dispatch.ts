@@ -525,7 +525,7 @@ async function dispatchVideoViaDID({
   }
 
   const { data: didProfile } = await supabase
-    .from("agent_did_profiles")
+    .from("agent_voice_profiles")
     .select("elevenlabs_voice_id, did_photo_url, did_video_url")
     .eq("agent_id", agentUserId)
     .maybeSingle()

@@ -216,6 +216,7 @@ export enum KernelEvent {
 
   // ── Layer 8.2 — Video Generation Engine ────────────────────────────────
   VIDEO_GENERATION_REQUESTED     = 'video_generation_requested',
+  VIDEO_GENERATION_COMPLETED     = 'video_generation_completed',
   VIDEO_PREVIEW_READY            = 'video_preview_ready',
   VIDEO_PUBLISHED                = 'video_published',
   VIDEO_GENERATION_FAILED        = 'video_generation_failed',
