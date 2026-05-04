@@ -183,6 +183,7 @@ export default async function SettingsControlOSPage() {
           isa_auto_respond_ghost_threshold_days: (globalSettings?.additional_settings as any)?.isa_auto_respond_ghost_threshold_days ?? 14,
           isa_require_admin_approval_before_send: (globalSettings?.additional_settings as any)?.isa_require_admin_approval_before_send ?? true,
           isa_auto_respond_hours: (globalSettings?.additional_settings as any)?.isa_auto_respond_hours ?? "8-20",
+          isa_voice_provider: (globalSettings?.additional_settings as any)?.isa_voice_provider ?? "elevenlabs",
         },
         existing: (globalSettings?.additional_settings as Record<string, unknown>) ?? {},
       }}

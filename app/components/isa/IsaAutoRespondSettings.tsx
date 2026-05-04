@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
-import { Bot, Loader2, AlertTriangle } from "lucide-react"
+import { Bot, Loader2, AlertTriangle, Phone } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "sonner"
 
 interface IsaSettings {
@@ -16,6 +17,7 @@ interface IsaSettings {
   isa_auto_respond_ghost_threshold_days: number
   isa_require_admin_approval_before_send: boolean
   isa_auto_respond_hours: string
+  isa_voice_provider: "elevenlabs" | "vapi"
 }
 
 const DEFAULTS: IsaSettings = {
@@ -23,6 +25,7 @@ const DEFAULTS: IsaSettings = {
   isa_auto_respond_ghost_threshold_days: 14,
   isa_require_admin_approval_before_send: true,
   isa_auto_respond_hours: "8-20",
+  isa_voice_provider: "elevenlabs",
 }
 
 interface IsaAutoRespondSettingsProps {
@@ -51,6 +54,7 @@ export function IsaAutoRespondSettings({
         isa_auto_respond_ghost_threshold_days: settings.isa_auto_respond_ghost_threshold_days,
         isa_require_admin_approval_before_send: settings.isa_require_admin_approval_before_send,
         isa_auto_respond_hours: settings.isa_auto_respond_hours,
+        isa_voice_provider: settings.isa_voice_provider,
       }
 
       const { error } = await supabase
@@ -169,6 +173,39 @@ export function IsaAutoRespondSettings({
           />
           <p className="text-xs text-muted-foreground">
             Hours during which AI can auto-respond (24h format, e.g. &quot;8-20&quot;)
+          </p>
+        </div>
+
+        <Separator />
+
+        {/* Voice Provider */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Phone className="h-4 w-4 text-muted-foreground" />
+            <Label className="text-sm font-medium">AI Calling Voice Provider</Label>
+          </div>
+          <Select
+            value={settings.isa_voice_provider}
+            onValueChange={(v) =>
+              setSettings((s) => ({ ...s, isa_voice_provider: v as IsaSettings["isa_voice_provider"] }))
+            }
+          >
+            <SelectTrigger className="max-w-[240px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="elevenlabs">
+                ElevenLabs — uses your voice clone
+              </SelectItem>
+              <SelectItem value="vapi">
+                VAPI — programmable voice AI
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {settings.isa_voice_provider === "elevenlabs"
+              ? "AI ISA calls use your ElevenLabs cloned voice. Set up your voice clone at Settings → Voice & Avatar."
+              : "AI ISA calls use VAPI. Configure your VAPI API key at Settings → Integrations."}
           </p>
         </div>
 
