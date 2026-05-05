@@ -165,6 +165,14 @@
     {
       "path": "/api/cron/stale-contact-monitor",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/annual-home-value-reports",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/gbp-auto-posts",
+      "schedule": "0 * * * *"
     }
   ]
 }
