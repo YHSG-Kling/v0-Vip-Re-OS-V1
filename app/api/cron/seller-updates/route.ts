@@ -6,6 +6,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { buildShowingSentimentSummary } from "@/app/actions/seller-showing-sentiment"
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization") ?? ""
@@ -48,16 +49,39 @@ export async function GET(req: NextRequest) {
     } else {
       for (const listing of listings ?? []) {
         try {
+          // Build the heat-map summary from the past week's showing feedback.
+          // Stored on seller_updates so the seller portal can render it
+          // without recomputing — agents see the same payload in the
+          // listing detail "Showing Sentiment" panel.
+          const sentiment = await buildShowingSentimentSummary(listing.id).catch((err) => {
+            console.warn(`[seller-updates] sentiment failed for ${listing.id}:`, err)
+            return null
+          })
+
           await supabase.from("activities").insert({
             agent_id: listing.agent_id,
             contact_id: listing.contact_id,
             activity_type: "seller_update_due",
             title: `Seller update due for ${listing.property_address}`,
-            description: "No seller update sent in 7+ days. Consider sending an update.",
+            description: sentiment
+              ? `Weekly summary ready: ${sentiment.feedbackCount} feedback / ${sentiment.showingCount} showings. ${sentiment.recommendedAction}`
+              : "No seller update sent in 7+ days. Consider sending an update.",
             status: "pending",
             priority: "medium",
-            metadata: { listing_id: listing.id },
+            metadata: { listing_id: listing.id, sentiment },
           })
+
+          if (sentiment && sentiment.feedbackCount > 0) {
+            await supabase.from("seller_updates").insert({
+              listing_id: listing.id,
+              update_type: "showing_sentiment_weekly",
+              window_start: sentiment.windowStart,
+              window_end: sentiment.windowEnd,
+              payload: sentiment,
+              created_at: ranAt,
+            }).catch(() => { /* table may not exist yet — non-fatal */ })
+          }
+
           processed++
         } catch (err: any) {
           skipped++
