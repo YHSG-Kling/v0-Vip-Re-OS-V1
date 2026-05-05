@@ -180,9 +180,39 @@ export interface RecordAiIsaOutcomeInput {
   ctx: AiIsaActorContext
   leadId: string
   callId?: string
-  outcome: "appointment_set" | "not_interested" | "no_answer" | "callback_requested" | "disqualified" | "wrong_number"
+  /**
+   * ISA call/outreach outcome.
+   *
+   * Three-bucket "not interested" model (replaces the legacy single
+   * `not_interested` dead-end):
+   *  - `explicit_opt_out` — caller explicitly refused contact ("stop", "DNC").
+   *    Adds phone+email to platform_suppression_list (cross-tenant, permanent).
+   *  - `not_ready_now` — caller is genuinely interested someday but not now.
+   *    Moves lead to long_term_nurture for monthly market updates + signal
+   *    re-activation.
+   *  - `not_interested` — legacy bucket, soft pause only. Ghost re-engagement
+   *    cron will pick them up on its normal cadence.
+   *
+   * Engine 2 fires on `qualified` outcome.
+   */
+  outcome:
+    | "appointment_set"
+    | "qualified"
+    | "not_ready_now"
+    | "explicit_opt_out"
+    | "not_interested"
+    | "no_answer"
+    | "callback_requested"
+    | "disqualified"
+    | "wrong_number"
   notes?: string
   appointmentDate?: string
+  /**
+   * For `not_ready_now`, optional duration in days (default 90 — feeds the
+   * monthly market-update sequence; signal re-activation may pull them out
+   * earlier).
+   */
+  nurtureDays?: number
 }
 
 export interface RouteHistoryInput {
@@ -859,7 +889,7 @@ export async function recordAiIsaOutcome(
   input: RecordAiIsaOutcomeInput
 ): Promise<KernelAiIsaResult<void>> {
   try {
-    const { ctx, leadId, callId, outcome, notes, appointmentDate } = input
+    const { ctx, leadId, callId, outcome, notes, appointmentDate, nurtureDays } = input
     const supabase = createServiceClient()
 
     const now = new Date().toISOString()
@@ -868,6 +898,29 @@ export async function recordAiIsaOutcome(
     const leadUpdate: Record<string, unknown> = { updated_at: now }
     if (outcome === "appointment_set") {
       leadUpdate.lifecycle_stage = "appointment"
+    } else if (outcome === "qualified") {
+      // Engine 2 trigger: setting lead_stage='qualified' lets the
+      // assignment-engine fire on the next pass. handleConsentReceived
+      // should already have set lifecycle_state='consented' upstream.
+      leadUpdate.lead_stage = "qualified"
+      leadUpdate.ai_isa_owner = false
+    } else if (outcome === "explicit_opt_out") {
+      // Permanent cross-tenant suppression. Adds phone+email to
+      // platform_suppression_list so NO subscriber can ever contact again.
+      leadUpdate.ai_isa_owner = false
+      leadUpdate.ai_outreach_paused = true
+      leadUpdate.opted_out_at = now
+      leadUpdate.is_active = false
+    } else if (outcome === "not_ready_now") {
+      // Long-term nurture: monthly market updates + signal re-activation.
+      // Default 90-day window; signal re-activation can pull them out earlier.
+      const days = nurtureDays ?? 90
+      const nurtureUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+      leadUpdate.long_term_nurture_until = nurtureUntil
+      leadUpdate.long_term_nurture_started_at = now
+      leadUpdate.long_term_nurture_reason = notes ?? "ISA: not ready now"
+      leadUpdate.ai_outreach_paused = true
+      leadUpdate.lifecycle_state = "long_term_nurture"
     } else if (outcome === "disqualified") {
       leadUpdate.ai_isa_owner = false
       leadUpdate.lifecycle_stage = "raw"
@@ -915,6 +968,63 @@ export async function recordAiIsaOutcome(
         event_type: "ai_isa_outcome_recorded",
         metadata: { outcome, call_id: callId ?? null, actor: ctx.userId },
       })
+
+    // ── Side-effects gated on outcome ────────────────────────────────────
+    if (outcome === "explicit_opt_out") {
+      // Cross-tenant suppression — read lead identifiers and write to
+      // platform_suppression_list. Permanent. Reason is auditable.
+      const { data: leadRow } = await supabase
+        .from("leads")
+        .select("phone, phone_digits, email")
+        .eq("id", leadId)
+        .single()
+
+      const { addToSuppressionList } = await import("@/lib/platform/suppression-list")
+      await addToSuppressionList({
+        phone: leadRow?.phone_digits ?? leadRow?.phone ?? null,
+        email: leadRow?.email ?? null,
+        reason: "explicit_opt_out",
+        sourceLeadId: leadId,
+        sourceBrokerageId: ctx.brokerageId,
+        addedByUserId: ctx.userId,
+        notes: notes ?? "ISA recorded explicit opt-out",
+      })
+    } else if (outcome === "qualified") {
+      // Engine 2 — Qualification-Triggered Assignment.
+      // Fires after the ISA marks the lead as fully qualified. Reads the
+      // brokerage's assignment_rules to pick an agent.
+      const { evaluateAndAssignLead } = await import(
+        "@/lib/lead-assignment/assignment-engine"
+      )
+      await evaluateAndAssignLead({ leadId, brokerageId: ctx.brokerageId })
+    } else if (outcome === "not_ready_now") {
+      // Enroll in long-term nurture sequence (monthly market updates +
+      // annual home value report). Best-effort; failure is non-blocking.
+      // The sequence is looked up by a known name pattern; if the brokerage
+      // hasn't built one yet, the long-term-nurture cron handles cadence
+      // directly without sequence enrollment.
+      try {
+        const { data: sequenceRow } = await supabase
+          .from("campaign_sequences")
+          .select("id")
+          .eq("brokerage_id", ctx.brokerageId)
+          .ilike("name", "%long-term nurture%")
+          .limit(1)
+          .maybeSingle()
+
+        if (sequenceRow?.id) {
+          const { enrollContactInSequence } = await import(
+            "@/app/actions/campaign-sequences"
+          )
+          await enrollContactInSequence({
+            sequenceId: sequenceRow.id,
+            leadId,
+          })
+        }
+      } catch (e) {
+        // best effort
+      }
+    }
 
     return { success: true }
   } catch (err) {

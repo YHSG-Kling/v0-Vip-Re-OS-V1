@@ -118,6 +118,30 @@ export async function promoteLead(
       })
     }
 
+    // Step 5: Engine 1 — Platform Distribution
+    // Only fires for platform-origin leads. Brokerage-scraped leads stay with
+    // their owning brokerage and skip distribution. Awaits to ensure the lead
+    // has a brokerage_id before any downstream ISA work attempts to read it.
+    if (promotion.leadId) {
+      try {
+        const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
+        const distResult = await distributePlatformLead({ leadId: promotion.leadId })
+        if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
+          await supabase.from('activities').insert({
+            brokerage_id: brokerageId,
+            activity_type: 'lead_distribution_failed',
+            title: 'Platform lead distribution failed',
+            description: distResult.reason,
+            notes: JSON.stringify({ lead_id: promotion.leadId, reason: distResult.reason }),
+            status: 'completed',
+            created_at: new Date().toISOString(),
+          })
+        }
+      } catch (err: any) {
+        console.error(`[v0] Distribution engine failed for ${promotion.leadId}:`, err)
+      }
+    }
+
     return {
       success: true,
       leadId: promotion.leadId,

@@ -10,15 +10,17 @@ interface PromotionResult {
 
 /**
  * Promotes an eligible raw record into the leads table.
- * 
+ *
  * DOES NOT:
  * - Assign agents
  * - Contact the lead
  * - Run deduplication (consumes existing results)
- * 
+ *
  * DOES:
  * - Insert into leads table
  * - Set initial lead_stage to 'new'
+ * - Carry the source_origin flag from the raw record (platform vs brokerage)
+ * - Set brokerage_id to NULL for platform leads (Engine 1 will set it on distribution)
  * - Update raw_scraped_leads.lead_id link
  */
 export async function promoteRawRecordToLead(
@@ -29,6 +31,16 @@ export async function promoteRawRecordToLead(
   const supabase = createServiceClient()
 
   try {
+    // Read the raw record's source_origin (set at ingest time by lib/kernel/scraping)
+    const { data: rawRecord } = await supabase
+      .from('raw_scraped_leads')
+      .select('source_origin')
+      .eq('id', rawRecordId)
+      .single()
+
+    const sourceOrigin: 'platform' | 'brokerage' =
+      (rawRecord?.source_origin as 'platform' | 'brokerage') ?? 'brokerage'
+
     // Extract fields from enriched raw_data
     const firstName = rawData.first_name
     const lastName = rawData.last_name
@@ -40,19 +52,29 @@ export async function promoteRawRecordToLead(
     const motivationConfidence = rawData.motivation_confidence || null
     const propertyInterest = rawData.property_address || null
     const enrichmentConfidence = rawData.enrichmentConfidence || null
+    const propertyZipCode =
+      rawData.property_zip_code || rawData.zip_code || rawData.zip || null
+    const mailingZip = rawData.mailing_zip || null
+
+    // Platform-origin leads have NO brokerage until Engine 1 distributes them.
+    // Brokerage-origin leads keep the brokerage that initiated the scrape.
+    const initialBrokerageId = sourceOrigin === 'platform' ? null : brokerageId
 
     // Insert into leads table
     const { data: newLead, error: insertError } = await supabase
       .from('leads')
       .insert({
-        brokerage_id: brokerageId,
+        brokerage_id: initialBrokerageId,
         first_name: firstName,
         last_name: lastName,
         email: email,
         phone: phone,
         phone_secondary: phoneSecondary,
         source: source,
-        lead_stage: 'new', // Initial stage - NO agent assignment
+        source_origin: sourceOrigin,
+        property_zip_code: propertyZipCode,
+        mailing_zip: mailingZip,
+        lead_stage: 'new',
         lead_type: motivationType,
         property_interest: propertyInterest,
         motivation_type: motivationType,
@@ -62,9 +84,7 @@ export async function promoteRawRecordToLead(
         last_enriched_at: new Date().toISOString(),
         source_raw_ids: [rawRecordId],
         is_active: true,
-        lead_score: 0, // Will be set by scoring system
-        // Session G: promoted scraped leads must enter with unconsented lifecycle
-        // and be owned by the AI-ISA engine until explicit consent is obtained.
+        lead_score: 0,
         lifecycle_state: 'unconsented',
         ai_isa_owner: true,
         minimum_viable_for_isa: !!(rawData.email),

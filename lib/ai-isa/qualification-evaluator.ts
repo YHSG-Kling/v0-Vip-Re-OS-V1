@@ -125,99 +125,60 @@ export async function persistQualificationSignals(
     consentSource: 'reply',
   })
 
-  // Clear AI ISA ownership now that the lead has been consented
+  // Step 3: Mark the lead as qualified — this satisfies Engine 2's gate
+  //         (lead_stage = 'qualified' AND lifecycle_state = 'consented').
+  //         Engine 2 (assignment-engine.evaluateAndAssignLead) is the SOLE
+  //         agent-assignment path going forward — governLead is now scoring-only.
   await supabase
     .from('leads')
     .update({
+      lead_stage: 'qualified',
       ai_isa_owner: false,
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
 
-  // Step 3: Run governLead — selects agent and evaluates routing eligibility
+  // Step 4: Score the lead (governLead in scoring-only mode keeps the score
+  //         current for Engine 2's rule conditions like min_score).
   const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
   const govResult = await governLead(leadId, lead.brokerage_id)
 
-  if (!govResult.success) {
-    console.error('[AI ISA] governLead failed for lead', leadId, govResult.message)
-    return
+  // Step 5: Engine 2 — Qualification-Triggered Assignment
+  //         Reads brokerage assignment_rules and selects an agent.
+  const { evaluateAndAssignLead } = await import('@/lib/lead-assignment/assignment-engine')
+  const assignResult = await evaluateAndAssignLead({
+    leadId,
+    brokerageId: lead.brokerage_id,
+  })
+
+  // Step 6: Update qualification record with the outcome
+  if (qualRecord?.id) {
+    await supabase
+      .from('ai_isa_qualifications')
+      .update({
+        assigned_to_agent_id: assignResult.agentId ?? null,
+        assigned_at: assignResult.assigned ? new Date().toISOString() : null,
+        qualified_at: new Date().toISOString(),
+        qualification_result: 'qualified',
+      })
+      .eq('id', qualRecord.id)
   }
 
-  const assignedAgentId = govResult.agentAssigned
-
-  // Step 4: If agent is available, run full assignment + contact creation
-  if (assignedAgentId) {
-    const { handleLeadAssigned } = await import('@/lib/kernel/lead-acquisition-handlers')
-    await handleLeadAssigned({
-      leadId,
-      brokerageId: lead.brokerage_id,
-      agentId: assignedAgentId,
-      method: 'ai_isa_qualified',
-      scoreAtAssignment: govResult.score,
-    })
-
-    // Step 4a: Stamp handed_to_agent_at
-    await supabase
-      .from('leads')
-      .update({
-        handed_to_agent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', leadId)
-
-    // Step 5: Insert notification to the assigned agent's user record
-    // Look up the agent's user_id
-    const { data: agentRow } = await supabase
-      .from('agents')
-      .select('user_id')
-      .eq('id', assignedAgentId)
-      .maybeSingle()
-
-    if (agentRow?.user_id) {
-      await supabase.from('notifications').insert({
-        user_id: agentRow.user_id,
-        brokerage_id: lead.brokerage_id,
-        type: 'new_contact_assigned',
-        title: `${lead.first_name ?? 'A lead'} is ready for you`,
-        body: `AI-ISA confirmed intent. Review their profile and make first contact.`,
-        entity_type: 'lead',
-        entity_id: leadId,
-        is_read: false,
-        priority: 'high',
-        created_at: new Date().toISOString(),
-      })
-    }
-
-    // Step 6: Update qualification record with agent assignment
-    if (qualRecord?.id) {
-      await supabase
-        .from('ai_isa_qualifications')
-        .update({
-          assigned_to_agent_id: assignedAgentId,
-          assigned_at: new Date().toISOString(),
-          qualified_at: new Date().toISOString(),
-          qualification_result: 'qualified',
-        })
-        .eq('id', qualRecord.id)
-    }
-
-    // Emit lifecycle event for the handoff
-    await supabase.from('lifecycle_events').insert({
-      entity_type: 'lead',
-      entity_id: leadId,
-      event_type: KernelEvent.LEAD_ASSIGNED,
-      brokerage_id: lead.brokerage_id,
-      metadata: { assignedAgentId, source: 'ai_isa_qualification', score: qualificationScore },
-      created_at: new Date().toISOString(),
-    })
-  } else {
-    // No agent available yet — log for manual assignment
+  // Step 7: If Engine 2 couldn't find an agent, log for manual assignment.
+  //         handleLeadAssigned (called inside Engine 2) already handles
+  //         lifecycle transition + contact creation + notification on success.
+  if (!assignResult.assigned) {
     await supabase.from('lifecycle_events').insert({
       entity_type: 'lead',
       entity_id: leadId,
       event_type: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
       brokerage_id: lead.brokerage_id,
-      metadata: { source: 'ai_isa_qualification', score: qualificationScore },
+      metadata: {
+        source: 'ai_isa_qualification',
+        score: qualificationScore,
+        gov_score: govResult?.score,
+        assign_reason: assignResult.reason,
+      },
       created_at: new Date().toISOString(),
     })
   }
