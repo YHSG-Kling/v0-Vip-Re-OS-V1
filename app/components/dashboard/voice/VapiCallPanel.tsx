@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { PreCallBriefCard } from "@/app/components/dashboard/voice/PreCallBriefCard"
 
 interface Contact {
   id: string
@@ -194,6 +195,10 @@ export function VapiCallPanel({ contacts, scripts, agentId, brokerageId }: VapiC
                 </p>
               )}
             </div>
+
+            {selectedContact && (
+              <PreCallBriefCard contactId={selectedContact.id} channel="phone" />
+            )}
 
             {/* Script selector */}
             {scripts.length > 0 && (
