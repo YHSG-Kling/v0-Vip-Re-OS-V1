@@ -315,8 +315,10 @@ export async function handleLeadAssigned(params: {
     .from('leads')
     .select(
       'first_name, last_name, email, phone, source, source_family, source_channel, ' +
-        'source_subtype, motivation_type, persona, lead_type, property_zip_code, ' +
-        'tcpa_consent, tcpa_consent_at, tcpa_consent_text, tcpa_consent_source'
+        'source_subtype, motivation_type, motivation_confidence, persona, lead_type, ' +
+        'property_zip_code, budget_min, budget_max, timeline, urgency_level, ' +
+        'lender_status, equity_estimate, qualification_summary, isa_handoff_brief, ' +
+        'lead_score, tcpa_consent, tcpa_consent_at, tcpa_consent_text, tcpa_consent_source'
     )
     .eq('id', leadId)
     .single()
@@ -336,9 +338,19 @@ export async function handleLeadAssigned(params: {
     source_channel: string | null
     source_subtype: string | null
     motivation_type: string | null
+    motivation_confidence: number | null
     persona: string | null
     lead_type: string | null
     property_zip_code: string | null
+    budget_min: number | null
+    budget_max: number | null
+    timeline: string | null
+    urgency_level: string | null
+    lender_status: string | null
+    equity_estimate: number | null
+    qualification_summary: string | null
+    isa_handoff_brief: Record<string, unknown> | null
+    lead_score: number | null
     tcpa_consent: boolean | null
     tcpa_consent_at: string | null
     tcpa_consent_text: string | null
@@ -435,6 +447,20 @@ export async function handleLeadAssigned(params: {
       contact_type: contactType,
       contact_persona: contactPersona,
       zip_code: lead.property_zip_code,
+      // Carry forward ALL ISA-captured qualification data so the agent
+      // sees the full picture the moment the contact arrives in their CRM.
+      budget_min: lead.budget_min,
+      budget_max: lead.budget_max,
+      motivation_type: lead.motivation_type,
+      motivation_confidence: lead.motivation_confidence,
+      timeline: lead.timeline,
+      urgency_level: lead.urgency_level,
+      lender_status: lead.lender_status,
+      equity_estimate: lead.equity_estimate,
+      qualification_summary: lead.qualification_summary,
+      isa_handoff_brief: lead.isa_handoff_brief,
+      isa_handoff_at: lead.isa_handoff_brief ? new Date().toISOString() : null,
+      isa_qualification_score: lead.lead_score,
       tcpa_consent: tcpaConsent,
       tcpa_consent_date: tcpaConsent ? tcpaConsentAt : null,
       tcpa_consent_at: tcpaConsent ? tcpaConsentAt : null,

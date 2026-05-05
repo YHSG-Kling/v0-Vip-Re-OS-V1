@@ -105,6 +105,8 @@ import {
   RelationshipAiChatPanel,
   SmartNoteComposer,
   BuyerMatchPanel,
+  QualificationSummaryCard,
+  type IsaHandoffBriefShape,
 } from "./components/os"
 
 interface Contact {
@@ -1548,6 +1550,20 @@ export default function CRMPage() {
 
               {/* ── RIGHT AREA — tabbed content ── */}
               <main className="flex-1 min-w-0 overflow-y-auto px-4 py-4">
+                {/* AI ISA Handoff Brief — shown when this contact was qualified
+                    and assigned by the AI ISA. Pulled from contacts.isa_handoff_brief. */}
+                {(selectedContact as { isa_handoff_brief?: IsaHandoffBriefShape | null })?.isa_handoff_brief && (
+                  <div className="mb-4">
+                    <QualificationSummaryCard
+                      brief={(selectedContact as { isa_handoff_brief?: IsaHandoffBriefShape | null }).isa_handoff_brief}
+                      contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || "Contact"}
+                      handoffAt={(selectedContact as { isa_handoff_at?: string | null }).isa_handoff_at ?? null}
+                      onSchedule={() => setActiveTab("comms")}
+                      onSendMessage={() => setActiveTab("comms")}
+                      onViewFullProfile={() => setActiveTab("overview")}
+                    />
+                  </div>
+                )}
                 <Tabs
                   value={activeTab}
                   onValueChange={(tab) => {

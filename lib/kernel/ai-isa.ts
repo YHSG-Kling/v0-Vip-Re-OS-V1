@@ -990,9 +990,21 @@ export async function recordAiIsaOutcome(
         notes: notes ?? "ISA recorded explicit opt-out",
       })
     } else if (outcome === "qualified") {
-      // Engine 2 — Qualification-Triggered Assignment.
-      // Fires after the ISA marks the lead as fully qualified. Reads the
-      // brokerage's assignment_rules to pick an agent.
+      // 1. Generate the ISA handoff brief BEFORE assignment so it's on the
+      //    lead row when handleLeadAssigned reads it and carries it forward
+      //    to the contact.
+      try {
+        const { generateAndStoreHandoffBrief } = await import(
+          "@/lib/ai-isa/generate-handoff-brief"
+        )
+        await generateAndStoreHandoffBrief({ leadId, brokerageId: ctx.brokerageId })
+      } catch (e) {
+        // best effort — assignment still proceeds without brief
+      }
+
+      // 2. Engine 2 — Qualification-Triggered Assignment. Fires after the
+      //    ISA marks the lead as fully qualified. Reads the brokerage's
+      //    assignment_rules to pick an agent.
       const { evaluateAndAssignLead } = await import(
         "@/lib/lead-assignment/assignment-engine"
       )
