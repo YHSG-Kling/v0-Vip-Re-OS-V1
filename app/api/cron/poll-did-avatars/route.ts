@@ -68,6 +68,21 @@ export async function GET(request: NextRequest) {
     const results = { processed: 0, ready: 0, failed: 0, still_processing: 0 }
     const auth = `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`
 
+    // Resolve agent_id → user_id once per cron tick so notifications go to
+    // the right inbox. notifications.user_id references users.id, but
+    // agent_avatar_assets.agent_id is agents.id — the two are different.
+    const agentIds = Array.from(new Set((pending ?? []).map((a: any) => a.agent_id).filter(Boolean)))
+    const userByAgent = new Map<string, string>()
+    if (agentIds.length) {
+      const { data: agentRows } = await supabase
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+      for (const a of agentRows ?? []) {
+        if (a.user_id) userByAgent.set(a.id as string, a.user_id as string)
+      }
+    }
+
     for (const asset of pending ?? []) {
       results.processed++
 
@@ -80,6 +95,7 @@ export async function GET(request: NextRequest) {
 
         const data = await statusRes.json()
         const didStatus: string = data.status
+        const notifyUserId = asset.agent_id ? userByAgent.get(asset.agent_id) ?? null : null
 
         if (didStatus === "done" || didStatus === "ready") {
           const thumbnailUrl: string | null = data.thumbnail_url ?? data.preview_url ?? null
@@ -103,10 +119,10 @@ export async function GET(request: NextRequest) {
               .eq("agent_id", asset.agent_id)
           }
 
-          // In-app notification to the agent
-          if (asset.agent_id) {
+          // In-app notification to the agent (uses users.id, not agents.id)
+          if (notifyUserId) {
             await supabase.from("notifications").insert({
-              user_id: asset.agent_id,
+              user_id: notifyUserId,
               brokerage_id: asset.brokerage_id,
               type: "avatar_ready",
               title: "Avatar Ready",
@@ -131,9 +147,9 @@ export async function GET(request: NextRequest) {
             })
             .eq("id", asset.id)
 
-          if (asset.agent_id) {
+          if (notifyUserId) {
             await supabase.from("notifications").insert({
-              user_id: asset.agent_id,
+              user_id: notifyUserId,
               brokerage_id: asset.brokerage_id,
               type: "avatar_failed",
               title: "Avatar Processing Failed",

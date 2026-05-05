@@ -187,12 +187,13 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     transaction_id: input.transactionId,
     brokerage_id: txn.brokerage_id,
     agent_id: txn.agent_id,
+    entity_type: "transaction",
     activity_type: "preliminary_cd_received",
     title: "Preliminary CD received",
     description: "TC / title uploaded the preliminary closing disclosure. CDA draft required.",
     priority: "high",
     status: "pending",
-    metadata: { cda_id: cdaId, document_id: input.documentId },
+    notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId }),
   })
 
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
