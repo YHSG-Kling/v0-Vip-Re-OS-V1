@@ -43,6 +43,7 @@ interface ClassifyResult {
   classification: CallerClassification
   contactId?: string
   vendorId?: string
+  outsideAgentId?: string
   portalInvited?: boolean
   notes?: string
 }
@@ -68,8 +69,28 @@ function classifyFromSignals(input: {
 
   const has = (term: string) => text.includes(term) || kw.includes(term)
 
-  // Cooperating agent — REALTOR®, fellow agent
-  if (has("cooperating agent") || has("buyer's agent") || has("listing agent") || has("fellow realtor") || has("co-op")) {
+  // Cooperating agent — REALTOR® calling about a property or another agent.
+  // Common signals: identifying as an agent, requesting a showing on our
+  // listing for their buyer, asking about co-op commission, or referring a
+  // contact.
+  if (
+    has("cooperating agent") ||
+    has("buyer's agent") ||
+    has("buyers agent") ||
+    has("listing agent") ||
+    has("fellow realtor") ||
+    has("co-op") ||
+    has("i have a buyer") ||
+    has("represents a buyer") ||
+    has("schedule a showing") ||
+    has("request a showing") ||
+    has("i'm a realtor") ||
+    has("i am a realtor") ||
+    has("i'm an agent") ||
+    has("i am an agent") ||
+    has("my license") ||
+    has("license number")
+  ) {
     return "cooperating_agent"
   }
 
@@ -167,6 +188,7 @@ export async function classifyAndIngestInboundCaller(
   // 3. Branch by classification — create the right entity
   let contactId: string | undefined
   let vendorId: string | undefined
+  let outsideAgentId: string | undefined
   let portalInvited = false
 
   if (
@@ -254,32 +276,32 @@ export async function classifyAndIngestInboundCaller(
 
     vendorId = newVendor?.id
   } else if (classification === "cooperating_agent") {
-    // Cooperating agent — special contact type, no portal
+    // Cooperating agent — REALTOR® from another brokerage. NOT a contact.
+    // They go into the outside_agents directory. Brokerage staff (agent /
+    // admin / TC) can later link them to a specific contact's record via
+    // outside_agent_contact_links (e.g., "this buyer's representing agent
+    // is Bob from XYZ Realty").
+    //
+    // No portal invite — cooperating agents do not use our client portal.
     const [firstName, ...rest] = (input.callerName ?? "").trim().split(" ")
     const lastName = rest.join(" ") || null
+    const fullName = (input.callerName ?? "").trim() || null
 
-    const { data: newContact } = await supabase
-      .from("contacts")
+    const { data: newOutsideAgent } = await supabase
+      .from("outside_agents")
       .insert({
         brokerage_id: input.brokerageId,
-        first_name: firstName || "Unknown",
+        first_name: firstName || null,
         last_name: lastName,
+        full_name: fullName,
         phone: input.callerPhone,
         phone_digits: phoneDigits,
-        contact_type: "cooperating_agent",
-        source: "inbound_call",
-        source_family: "phone",
-        source_channel: "inbound",
-        tcpa_consent: true,
-        tcpa_consent_at: new Date().toISOString(),
-        tcpa_consent_source: "inbound_call_implicit",
         notes: input.conversationSummary ?? null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        source: "inbound_call",
       })
       .select("id")
       .single()
-    contactId = newContact?.id
+    outsideAgentId = newOutsideAgent?.id
   } else if (classification === "business_general") {
     // No record created — admin gets a notification with the call details.
     // Find the brokerage's admin user.
@@ -305,7 +327,9 @@ export async function classifyAndIngestInboundCaller(
     }
   }
 
-  // 4. Persist classification decision for audit
+  // 4. Persist classification decision for audit. Note: outsideAgentId is
+  //    captured separately in the result; the inbound_call_classifications
+  //    table only tracks contact + vendor outcomes for now.
   await supabase.from("inbound_call_classifications").insert({
     call_log_id: input.callLogId ?? null,
     brokerage_id: input.brokerageId,
@@ -318,5 +342,5 @@ export async function classifyAndIngestInboundCaller(
     classified_at: new Date().toISOString(),
   })
 
-  return { classification, contactId, vendorId, portalInvited }
+  return { classification, contactId, vendorId, outsideAgentId, portalInvited }
 }
