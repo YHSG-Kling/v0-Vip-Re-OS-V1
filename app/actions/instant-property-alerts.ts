@@ -107,8 +107,12 @@ export async function sendFirstLookText(input: {
     brokerage_id: auth.brokerageId,
     agent_id: auth.agentId,
     activity_type: "first_look_text",
+    title: "First-look SMS sent",
     description: `First-look SMS: ${propertyLine || input.externalListingUrl || "(no property)"}`,
-    occurred_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    status: "completed",
+    channel: "sms",
+    entity_type: "contact",
   })
 
   return { success: true }

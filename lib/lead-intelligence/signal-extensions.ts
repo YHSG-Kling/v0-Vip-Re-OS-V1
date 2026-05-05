@@ -149,15 +149,26 @@ export function buildPredictiveSellerSignal(input: {
 /**
  * Apply a signal delta directly. Idempotent per (contactId, source,
  * evidenceId, day). Only pushes scores UP, never overwrites a higher
- * existing value. Writes a lead_score_history row tagged with the signal
- * source so the audit trail is always traceable.
+ * existing value.
+ *
+ * Schema notes (verified against live DB on 2026-05-05):
+ *   • contacts                — has engagement_score + intent_score ONLY
+ *     (no lead_score / motivation_score / qualification_score / readiness_level)
+ *   • lead_score_history      — carries the FULL score set
+ *     (overall_score / engagement_score / intent_score / motivation_score /
+ *      qualification_score / factors / ai_recommendations / scored_at)
+ *
+ * So: writes the full delta to lead_score_history (the audit log source of
+ * truth) and only updates the two columns that exist on contacts. This
+ * preserves the existing AI scoring model — we never overwrite higher
+ * values, never invent contact columns.
  */
 export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: boolean; reason?: string }> {
   const supabase = createServiceClient()
   const today = new Date().toISOString().slice(0, 10)
   const idempotencyKey = `${delta.source}:${delta.evidenceId ?? "noevidence"}:${today}`
 
-  // Idempotency check: did we already log this exact signal today?
+  // Idempotency: did we already log this exact signal today?
   const { data: existing } = await supabase
     .from("lead_score_history")
     .select("id")
@@ -167,59 +178,67 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
     .maybeSingle()
   if (existing) return { applied: false, reason: "already_applied_today" }
 
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("lead_score, engagement_score, intent_score, motivation_score, qualification_score, readiness_level")
-    .eq("id", delta.contactId)
-    .maybeSingle()
+  // Read the previous full scoring snapshot from history (it carries every
+  // bucket); fall back to whatever's on contacts when there's no history.
+  const [{ data: contact }, { data: lastHistory }] = await Promise.all([
+    supabase
+      .from("contacts")
+      .select("engagement_score, intent_score")
+      .eq("id", delta.contactId)
+      .maybeSingle(),
+    supabase
+      .from("lead_score_history")
+      .select(
+        "overall_score, engagement_score, intent_score, motivation_score, qualification_score",
+      )
+      .eq("contact_id", delta.contactId)
+      .order("scored_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
   if (!contact) return { applied: false, reason: "contact_not_found" }
 
+  const prev = {
+    overall: Number(lastHistory?.overall_score ?? 0),
+    engagement: Number(lastHistory?.engagement_score ?? contact.engagement_score ?? 0),
+    intent: Number(lastHistory?.intent_score ?? contact.intent_score ?? 0),
+    motivation: Number(lastHistory?.motivation_score ?? 0),
+    qualification: Number(lastHistory?.qualification_score ?? 0),
+  }
+
   const next = {
-    lead_score: Math.max(
-      Number(contact.lead_score ?? 0),
-      Number(contact.lead_score ?? 0) + (delta.boosts.overall ?? 0),
-    ),
-    engagement_score: Math.max(
-      Number(contact.engagement_score ?? 0),
-      Number(contact.engagement_score ?? 0) + (delta.boosts.engagement ?? 0),
-    ),
-    intent_score: Math.max(
-      Number(contact.intent_score ?? 0),
-      Number(contact.intent_score ?? 0) + (delta.boosts.intent ?? 0),
-    ),
-    motivation_score: Math.max(
-      Number(contact.motivation_score ?? 0),
-      Number(contact.motivation_score ?? 0) + (delta.boosts.motivation ?? 0),
-    ),
-    qualification_score: Math.max(
-      Number(contact.qualification_score ?? 0),
-      Number(contact.qualification_score ?? 0) + (delta.boosts.qualification ?? 0),
-    ),
+    overall: Math.min(100, Math.max(prev.overall, prev.overall + (delta.boosts.overall ?? 0))),
+    engagement: Math.min(100, Math.max(prev.engagement, prev.engagement + (delta.boosts.engagement ?? 0))),
+    intent: Math.min(100, Math.max(prev.intent, prev.intent + (delta.boosts.intent ?? 0))),
+    motivation: Math.min(100, Math.max(prev.motivation, prev.motivation + (delta.boosts.motivation ?? 0))),
+    qualification: Math.min(100, Math.max(prev.qualification, prev.qualification + (delta.boosts.qualification ?? 0))),
   }
+
+  // contacts has only the two scalar score columns. Update them — and only
+  // them — so we don't overwrite higher existing values.
+  const contactUpdate: Record<string, unknown> = {}
+  if (next.engagement > Number(contact.engagement_score ?? 0)) {
+    contactUpdate.engagement_score = next.engagement
+  }
+  if (next.intent > Number(contact.intent_score ?? 0)) {
+    contactUpdate.intent_score = next.intent
+  }
+  if (Object.keys(contactUpdate).length) {
+    await supabase.from("contacts").update(contactUpdate).eq("id", delta.contactId)
+  }
+
+  // Write the full audit snapshot. Readiness lives in factors only (no
+  // column on contacts) — a later reader can derive it from overall_score.
   const nextReadiness = delta.setReadinessAtLeast
-  const currentRank = READINESS_RANK[String(contact.readiness_level ?? "cold")] ?? 0
-  const proposedRank = nextReadiness ? READINESS_RANK[nextReadiness] ?? 0 : -1
-
-  const update: Record<string, unknown> = {
-    lead_score: Math.min(100, next.lead_score),
-    engagement_score: Math.min(100, next.engagement_score),
-    intent_score: Math.min(100, next.intent_score),
-    motivation_score: Math.min(100, next.motivation_score),
-    qualification_score: Math.min(100, next.qualification_score),
-  }
-  if (nextReadiness && proposedRank > currentRank) {
-    update.readiness_level = nextReadiness
-  }
-
-  await supabase.from("contacts").update(update).eq("id", delta.contactId)
+  const proposedReadinessRank = nextReadiness ? READINESS_RANK[nextReadiness] ?? 0 : -1
 
   await supabase.from("lead_score_history").insert({
     contact_id: delta.contactId,
-    overall_score: update.lead_score,
-    engagement_score: update.engagement_score,
-    intent_score: update.intent_score,
-    motivation_score: update.motivation_score,
-    qualification_score: update.qualification_score,
+    overall_score: next.overall,
+    engagement_score: next.engagement,
+    intent_score: next.intent,
+    motivation_score: next.motivation,
+    qualification_score: next.qualification,
     factors: {
       source: delta.source,
       reason: delta.reason,
@@ -227,6 +246,8 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
       evidence: delta.evidence ?? null,
       evidence_id: delta.evidenceId ?? null,
       delta_boosts: delta.boosts,
+      readiness_signal: nextReadiness ?? null,
+      readiness_rank: proposedReadinessRank >= 0 ? proposedReadinessRank : null,
     },
     ai_recommendations: null,
     scored_at: new Date().toISOString(),

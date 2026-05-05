@@ -83,8 +83,8 @@ export async function buildAppraisalDefensePackage(
   const { data: report } = await supabase
     .from("cma_reports")
     .select(
-      `id, brokerage_id, listing_id, subject_address, subject_sqft, subject_beds, subject_baths,
-       subject_year_built, list_price, market_context`,
+      `id, brokerage_id, listing_id, property_address, square_feet, bedrooms, bathrooms,
+       year_built, recommended_price, price_range_low, price_range_high, market_conditions`,
     )
     .eq("id", input.cmaReportId)
     .maybeSingle()
@@ -97,14 +97,14 @@ export async function buildAppraisalDefensePackage(
     supabase
       .from("cma_comparables")
       .select(
-        `id, address, sale_price, sale_date, sqft, bedrooms, bathrooms, year_built, distance_mi`,
+        `id, address, sale_price, sale_date, square_feet, bedrooms, bathrooms, distance_miles, adjusted_price`,
       )
-      .eq("report_id", report.id)
+      .eq("cma_id", report.id)
       .order("sale_date", { ascending: false }),
     supabase
       .from("cma_price_adjustments")
-      .select("comparable_id, label, amount, direction, rationale")
-      .eq("report_id", report.id),
+      .select("comparable_property_id, adjustment_type, adjustment_amount, rationale")
+      .eq("cma_report_id", report.id),
   ])
 
   if (!comps || comps.length === 0) {
@@ -113,29 +113,33 @@ export async function buildAppraisalDefensePackage(
 
   const adjByComp = new Map<string, any[]>()
   for (const a of adjustments ?? []) {
-    if (!adjByComp.has(a.comparable_id)) adjByComp.set(a.comparable_id, [])
-    adjByComp.get(a.comparable_id)!.push(a)
+    const k = a.comparable_property_id as string
+    if (!adjByComp.has(k)) adjByComp.set(k, [])
+    adjByComp.get(k)!.push(a)
   }
 
   const builtComps = comps.map((c) => {
-    const adjs = adjByComp.get(c.id) ?? []
-    const adjustedValue = adjs.reduce(
-      (sum, a) => sum + (a.direction === "subtract" ? -1 : 1) * Number(a.amount),
-      Number(c.sale_price),
-    )
+    const adjs = adjByComp.get(c.id as string) ?? []
+    // adjustment_amount is signed (negative subtracts, positive adds);
+    // direction is encoded in the sign rather than a separate column.
+    const adjustedValue = adjs.length
+      ? adjs.reduce((sum, a) => sum + Number(a.adjustment_amount), Number(c.sale_price))
+      : c.adjusted_price != null
+        ? Number(c.adjusted_price)
+        : Number(c.sale_price)
     return {
       address: c.address as string,
       salePrice: Number(c.sale_price),
       saleDate: c.sale_date as string | null,
-      sqft: c.sqft as number | null,
+      sqft: c.square_feet as number | null,
       bedrooms: c.bedrooms as number | null,
       bathrooms: c.bathrooms as number | null,
-      yearBuilt: c.year_built as number | null,
-      distanceMi: c.distance_mi as number | null,
+      yearBuilt: null as number | null, // not on cma_comparables
+      distanceMi: c.distance_miles as number | null,
       adjustments: adjs.map((a) => ({
-        label: a.label as string,
-        amount: Number(a.amount),
-        direction: a.direction as "add" | "subtract",
+        label: a.adjustment_type as string,
+        amount: Math.abs(Number(a.adjustment_amount)),
+        direction: (Number(a.adjustment_amount) < 0 ? "subtract" : "add") as "add" | "subtract",
         rationale: (a.rationale as string | null) ?? null,
       })),
       adjustedValue,
@@ -155,7 +159,7 @@ export async function buildAppraisalDefensePackage(
   const indicatedRangeHigh = Math.max(...adjusted)
   const indicatedMidpoint = adjusted.reduce((s, n) => s + n, 0) / adjusted.length
 
-  const contractPrice = input.contractPrice ?? report.list_price ?? null
+  const contractPrice = input.contractPrice ?? report.recommended_price ?? null
   const contractWithinRange =
     contractPrice != null && contractPrice >= indicatedRangeLow && contractPrice <= indicatedRangeHigh
   const spread = indicatedRangeHigh - indicatedRangeLow
@@ -185,20 +189,20 @@ export async function buildAppraisalDefensePackage(
     )
   }
 
-  const market = (report.market_context ?? null) as any
+  const market = (report.market_conditions ?? null) as any
 
   return {
     success: true,
     package: {
       generatedAt: new Date().toISOString(),
       subjectProperty: {
-        address: report.subject_address as string,
-        listPrice: (report.list_price as number | null) ?? null,
+        address: report.property_address as string,
+        listPrice: (report.recommended_price as number | null) ?? null,
         contractPrice,
-        sqft: (report.subject_sqft as number | null) ?? null,
-        bedrooms: (report.subject_beds as number | null) ?? null,
-        bathrooms: (report.subject_baths as number | null) ?? null,
-        yearBuilt: (report.subject_year_built as number | null) ?? null,
+        sqft: (report.square_feet as number | null) ?? null,
+        bedrooms: (report.bedrooms as number | null) ?? null,
+        bathrooms: (report.bathrooms as number | null) ?? null,
+        yearBuilt: (report.year_built as number | null) ?? null,
       },
       comparables: top,
       summary: {

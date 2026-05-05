@@ -49,26 +49,40 @@ interface ListingPayload {
 
 async function loadListing(listingId: string): Promise<ListingPayload | null> {
   const supabase = createServiceClient()
-  const { data } = await supabase
+  const { data: listing } = await supabase
     .from("listings")
     .select(
-      "id, brokerage_id, agent_id, address, city, state, bedrooms, bathrooms, sqft, list_price, lifecycle_stage, status, cover_photo_url",
+      "id, brokerage_id, agent_id, address, city, state, bedrooms, bathrooms, sqft, list_price, lifecycle_stage, status",
     )
     .eq("id", listingId)
     .maybeSingle()
-  return (data as ListingPayload) ?? null
+  if (!listing) return null
+
+  // Cover photo lives on listing_media (is_primary OR sort_order=0). Fall
+  // back to the first photo when no primary is flagged.
+  const { data: primary } = await supabase
+    .from("listing_media")
+    .select("file_url, is_primary, sort_order")
+    .eq("listing_id", listingId)
+    .eq("media_type", "photo")
+    .order("is_primary", { ascending: false })
+    .order("sort_order", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  return {
+    ...(listing as any),
+    cover_photo_url: (primary?.file_url as string | null) ?? null,
+  }
 }
 
 async function gbpEnabledFor(brokerageId: string): Promise<boolean> {
-  const supabase = createServiceClient()
-  // Brokerage-level toggle is optional — fail-open.
-  const { data } = await supabase
-    .from("brokerage_settings")
-    .select("settings")
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-  const enabled = (data?.settings as any)?.gbp_auto_post_enabled
-  return enabled !== false
+  // No per-brokerage toggle table exists yet (brokerage_brand_settings is
+  // brand-only — has tagline / colors / signature etc., no JSON settings
+  // bag). Default to enabled; broker can disconnect the GBP social account
+  // in social_media_accounts to opt out.
+  void brokerageId
+  return true
 }
 
 async function alreadyPosted(listingId: string, trigger: Trigger): Promise<boolean> {

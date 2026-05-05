@@ -97,11 +97,15 @@ export async function getRevenuePipelineProjectionAction(input?: {
   const now = new Date()
   const horizon = new Date(now.getTime() + 95 * 86_400_000)
 
+  // transactions live schema: uses `stage` (not lifecycle_stage),
+  // `commission_amount` (the negotiated GCI on the deal),
+  // `estimated_commission` (the forecast at intake), and
+  // `commission_percentage` (the rate).
   let q = supabase
     .from("transactions")
     .select(
-      `id, agent_id, lifecycle_stage, status, close_date, contract_date,
-       purchase_price, commission_total, commission_split,
+      `id, agent_id, stage, status, close_date, contract_date,
+       purchase_price, commission_amount, estimated_commission, commission_percentage,
        agent:agent_id (id, first_name, last_name)`,
     )
     .eq("brokerage_id", auth.brokerageId)
@@ -127,7 +131,7 @@ export async function getRevenuePipelineProjectionAction(input?: {
   const perAgent = new Map<string, RevenuePipelineProjection["perAgent"][number]>()
 
   for (const txn of transactions ?? []) {
-    const stage = (txn.lifecycle_stage as string | null) ?? (txn.status as string | null)
+    const stage = (txn.stage as string | null) ?? (txn.status as string | null)
     const probability = toMid(stage)
     if (probability === 0) continue
 
@@ -144,9 +148,13 @@ export async function getRevenuePipelineProjectionAction(input?: {
     const daysToClose = Math.max(0, Math.ceil((estClose.getTime() - now.getTime()) / 86_400_000))
     if (daysToClose > 90 || estClose > horizon) continue
 
-    // GCI estimate: explicit commission_total wins; else 2.5% of price.
+    // GCI estimate priority: negotiated commission_amount → estimated_commission
+    // → percentage × price → 2.5% default.
+    const pct = txn.commission_percentage != null ? Number(txn.commission_percentage) / 100 : null
     const rawGci = Number(
-      txn.commission_total ??
+      txn.commission_amount ??
+        txn.estimated_commission ??
+        (txn.purchase_price && pct ? Number(txn.purchase_price) * pct : null) ??
         (txn.purchase_price ? Number(txn.purchase_price) * 0.025 : 0),
     )
     if (!rawGci) continue

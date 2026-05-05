@@ -45,11 +45,18 @@ export async function POST(request: NextRequest) {
 
   // Resolve the agent's voice + avatar so the worker can pick them up off
   // room metadata without an extra round-trip.
-  const { data: voiceProfile } = await supabase
-    .from("agent_voice_profiles")
-    .select("elevenlabs_voice_id, did_avatar_id, did_video_url, did_photo_url")
-    .eq("user_id", auth.userId)
-    .maybeSingle()
+  // agent_voice_profiles is keyed by agent_id (NOT user_id). When the user
+  // doesn't have an agents row yet (e.g. broker accounts) we just skip the
+  // lookup so token issuance still works.
+  const voiceProfile = auth.agentId
+    ? (
+        await supabase
+          .from("agent_voice_profiles")
+          .select("elevenlabs_voice_id, did_video_url, did_photo_url")
+          .eq("agent_id", auth.agentId)
+          .maybeSingle()
+      ).data
+    : null
 
   const roomName = `${mode}-${auth.userId}-${uuidv4().slice(0, 8)}`
   const identity = `user-${auth.userId}-${uuidv4().slice(0, 6)}`
@@ -69,7 +76,11 @@ export async function POST(request: NextRequest) {
         contactId: body.contactId ?? null,
         context: body.context ?? null,
         elevenlabs_voice_id: voiceProfile?.elevenlabs_voice_id ?? null,
-        did_avatar_id: voiceProfile?.did_avatar_id ?? null,
+        // No persistent did_avatar_id column on agent_voice_profiles in the
+        // live schema — the worker falls back to did_video_url / did_photo_url
+        // when it needs an avatar source.
+        did_video_url: voiceProfile?.did_video_url ?? null,
+        did_photo_url: voiceProfile?.did_photo_url ?? null,
       },
     })
 

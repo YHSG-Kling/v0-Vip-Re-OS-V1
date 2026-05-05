@@ -60,9 +60,17 @@ export async function POST(
     brokerage_id: auth.brokerageId,
     agent_id: auth.agentId,
     activity_type: "voice_note",
+    title: "Voice note captured",
     description: parsed.noteBody.slice(0, 500),
-    metadata: { sentiment: parsed.sentiment, nextStep: parsed.nextStep, transcriptHash: transcript.length },
-    occurred_at: stamp,
+    notes: JSON.stringify({
+      sentiment: parsed.sentiment,
+      nextStep: parsed.nextStep,
+      transcriptLength: transcript.length,
+    }),
+    completed_at: stamp,
+    status: "completed",
+    channel: "voice",
+    entity_type: "contact",
   })
 
   const createdTasks: Array<{ id: string; title: string; due_date: string | null }> = []
@@ -75,13 +83,13 @@ export async function POST(
       .insert({
         contact_id: contactId,
         brokerage_id: auth.brokerageId,
-        agent_id: auth.agentId,
-        assigned_to: auth.userId,
+        created_by_agent_id: auth.agentId,
+        assigned_to_agent_id: auth.agentId,
         title: t.title,
         priority: t.priority,
         status: "open",
         due_date: due,
-        source: "voice_note",
+        auto_generated: true,
       })
       .select("id, title, due_date")
       .single()

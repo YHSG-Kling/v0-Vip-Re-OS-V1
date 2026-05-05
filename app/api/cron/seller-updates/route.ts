@@ -35,13 +35,16 @@ export async function GET(req: NextRequest) {
   let skipped = 0
 
   try {
+    // Pick active / under-contract listings whose most recent seller-update
+    // activity is older than 7 days. We can't filter directly on a
+    // `last_seller_update_at` column (it isn't on listings) so we look at the
+    // newest seller_update_due / seller_update_sent activity per listing.
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: listings, error } = await supabase
       .from("listings")
-      .select("id, agent_id, contact_id, property_address, lifecycle_stage")
+      .select("id, agent_id, brokerage_id, seller_contact_id, contact_id, address, city, state, lifecycle_stage")
       .in("lifecycle_stage", ["active", "under_contract"])
-      .or(`last_seller_update_at.is.null,last_seller_update_at.lt.${sevenDaysAgo}`)
       .limit(50)
 
     if (error) {
@@ -49,38 +52,47 @@ export async function GET(req: NextRequest) {
     } else {
       for (const listing of listings ?? []) {
         try {
+          const { data: lastUpdate } = await supabase
+            .from("activities")
+            .select("created_at")
+            .eq("entity_type", "listing")
+            .in("activity_type", ["seller_update_due", "seller_update_sent"])
+            .or(`description.ilike.%${listing.id}%`)
+            .gte("created_at", sevenDaysAgo)
+            .limit(1)
+            .maybeSingle()
+
+          if (lastUpdate) {
+            // Already touched this week — skip.
+            skipped++
+            continue
+          }
+
           // Build the heat-map summary from the past week's showing feedback.
-          // Stored on seller_updates so the seller portal can render it
-          // without recomputing — agents see the same payload in the
-          // listing detail "Showing Sentiment" panel.
+          // Surfaced via the activity description so the agent's CRM picks it
+          // up without an extra side-table.
           const sentiment = await buildShowingSentimentSummary(listing.id).catch((err) => {
             console.warn(`[seller-updates] sentiment failed for ${listing.id}:`, err)
             return null
           })
 
+          const sellerContactId = listing.seller_contact_id ?? listing.contact_id ?? null
+          const propertyAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+
           await supabase.from("activities").insert({
             agent_id: listing.agent_id,
-            contact_id: listing.contact_id,
+            brokerage_id: listing.brokerage_id,
+            contact_id: sellerContactId,
+            entity_type: "listing",
             activity_type: "seller_update_due",
-            title: `Seller update due for ${listing.property_address}`,
+            title: `Seller update due for ${propertyAddress || listing.id}`,
             description: sentiment
-              ? `Weekly summary ready: ${sentiment.feedbackCount} feedback / ${sentiment.showingCount} showings. ${sentiment.recommendedAction}`
-              : "No seller update sent in 7+ days. Consider sending an update.",
+              ? `Weekly summary: ${sentiment.feedbackCount} feedback / ${sentiment.showingCount} showings. ${sentiment.recommendedAction} (listing:${listing.id})`
+              : `No seller update sent in 7+ days. Consider sending an update. (listing:${listing.id})`,
             status: "pending",
             priority: "medium",
-            metadata: { listing_id: listing.id, sentiment },
+            notes: sentiment ? JSON.stringify(sentiment) : null,
           })
-
-          if (sentiment && sentiment.feedbackCount > 0) {
-            await supabase.from("seller_updates").insert({
-              listing_id: listing.id,
-              update_type: "showing_sentiment_weekly",
-              window_start: sentiment.windowStart,
-              window_end: sentiment.windowEnd,
-              payload: sentiment,
-              created_at: ranAt,
-            }).catch(() => { /* table may not exist yet — non-fatal */ })
-          }
 
           processed++
         } catch (err: any) {

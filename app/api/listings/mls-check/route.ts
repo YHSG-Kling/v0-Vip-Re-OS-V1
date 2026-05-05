@@ -21,12 +21,18 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
 
   if (body?.listingId) {
+    // Live listings table only persists structural fields. Description / public
+    // remarks / lockbox details / school district / sqft source / property type
+    // / year built do not live on `listings` directly — they're either on the
+    // listing form (during draft) or denormalised via the marketing tier or MLS
+    // sync. Callers that have those values should pass them inline through
+    // `body.overrides`; for stored listings we validate the structural fields
+    // and any override the caller supplies.
     const { data: listing } = await supabase
       .from("listings")
       .select(
-        `id, brokerage_id, mls_code, list_price, bedrooms, bathrooms, sqft, sqft_source,
-         year_built, property_type, description, public_remarks, lockbox_type, showing_instructions,
-         school_district`,
+        `id, brokerage_id, mls_number, list_price, bedrooms, bathrooms, sqft,
+         showing_instructions`,
       )
       .eq("id", body.listingId)
       .maybeSingle()
@@ -41,22 +47,24 @@ export async function POST(req: NextRequest) {
       .eq("listing_id", listing.id)
       .eq("media_type", "photo")
 
+    const overrides = (body.overrides ?? {}) as Record<string, unknown>
+
     const result = checkMlsRules({
-      mlsCode: listing.mls_code,
+      mlsCode: (overrides.mlsCode as string | null) ?? null,
       listPrice: listing.list_price,
       bedrooms: listing.bedrooms,
       bathrooms: listing.bathrooms,
       sqft: listing.sqft,
-      sqftSource: listing.sqft_source,
-      yearBuilt: listing.year_built,
-      propertyType: listing.property_type,
-      description: listing.description,
-      publicRemarks: listing.public_remarks,
+      sqftSource: (overrides.sqftSource as string | null) ?? null,
+      yearBuilt: (overrides.yearBuilt as number | null) ?? null,
+      propertyType: (overrides.propertyType as string | null) ?? null,
+      description: (overrides.description as string | null) ?? null,
+      publicRemarks: (overrides.publicRemarks as string | null) ?? null,
       photoCount: photoCount ?? 0,
-      hasVirtualTour: false, // would join virtual_tours table when present
-      schoolDistrict: listing.school_district,
-      showsSchoolNames: !!listing.school_district,
-      lockboxType: listing.lockbox_type,
+      hasVirtualTour: !!overrides.hasVirtualTour,
+      schoolDistrict: (overrides.schoolDistrict as string | null) ?? null,
+      showsSchoolNames: !!overrides.schoolDistrict,
+      lockboxType: (overrides.lockboxType as string | null) ?? null,
       showingInstructions: listing.showing_instructions,
     })
 

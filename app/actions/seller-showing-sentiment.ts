@@ -109,7 +109,7 @@ export async function buildShowingSentimentSummary(
       `id, scheduled_at,
        feedback:showing_feedback(
          id, sentiment_score, presentation_rating, cleanliness_rating,
-         overall_impression, buyer_interest_level, ai_summary, freeform_notes
+         overall_impression, buyer_interest_level, ai_summary, additional_notes
        )`,
     )
     .eq("listing_id", listingId)
@@ -152,7 +152,7 @@ export async function buildShowingSentimentSummary(
   const lowInterestCount = allFeedback.filter((f: any) => (f.buyer_interest_level ?? 0) <= 2).length
 
   const texts = allFeedback
-    .map((f: any) => [f.ai_summary, f.freeform_notes].filter(Boolean).join(" "))
+    .map((f: any) => [f.ai_summary, f.additional_notes].filter(Boolean).join(" "))
     .filter((s: string) => s.length > 0)
 
   let positiveThemes: string[] = []

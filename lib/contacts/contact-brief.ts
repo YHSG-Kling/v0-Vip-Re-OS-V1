@@ -96,9 +96,9 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   const [{ data: activities }, { data: openTasks }, { data: txn }] = await Promise.all([
     supabase
       .from("activities")
-      .select("activity_type, description, occurred_at")
+      .select("activity_type, description, completed_at, scheduled_at, created_at")
       .eq("contact_id", contactId)
-      .order("occurred_at", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(5),
     supabase
       .from("tasks")
@@ -107,7 +107,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
       .neq("status", "completed"),
     supabase
       .from("transactions")
-      .select("id, status, lifecycle_stage")
+      .select("id, status, stage")
       .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
       .not("status", "in", "(closed,cancelled)")
       .order("created_at", { ascending: false })
@@ -118,7 +118,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   const recentActivities = (activities ?? []).map((a) => ({
     type: a.activity_type as string,
     description: a.description as string | null,
-    occurredAt: a.occurred_at as string,
+    occurredAt: (a.completed_at as string | null) ?? (a.scheduled_at as string | null) ?? (a.created_at as string),
   }))
 
   const lastContactDays = contact.last_contacted_at
@@ -142,8 +142,8 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
         : `Last contact ${lastContactDays} day${lastContactDays === 1 ? "" : "s"} ago.`,
     )
   }
-  if (txn?.lifecycle_stage) {
-    talkingPoints.push(`Active deal stage: ${String(txn.lifecycle_stage).replace(/_/g, " ")}.`)
+  if (txn?.stage) {
+    talkingPoints.push(`Active deal stage: ${String(txn.stage).replace(/_/g, " ")}.`)
   }
   if (recentActivities[0]?.description) {
     talkingPoints.push(`Last activity: ${recentActivities[0].description.slice(0, 120)}`)
@@ -169,7 +169,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     emailOptOut: !!contact.email_opt_out,
     smsOptOut: !!contact.sms_opt_out,
     phoneOptOut: !!contact.phone_opt_out,
-    activeDealStage: (txn?.lifecycle_stage as string | null) ?? null,
+    activeDealStage: (txn?.stage as string | null) ?? null,
     openTaskCount: (openTasks as any)?.length ?? 0,
     recentActivities,
     talkingPoints,

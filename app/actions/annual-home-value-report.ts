@@ -58,7 +58,7 @@ export async function buildAnnualHomeValueReport(
   const { data: txn } = await supabase
     .from("transactions")
     .select(
-      "id, brokerage_id, property_address, close_date, purchase_price, estimated_loan_balance, agent_id",
+      "id, brokerage_id, property_address, close_date, purchase_price, agent_id",
     )
     .eq("id", input.closedTransactionId)
     .maybeSingle()
@@ -72,24 +72,25 @@ export async function buildAnnualHomeValueReport(
     Math.floor((now.getTime() - closedDate.getTime()) / (365 * 86_400_000)),
   )
 
-  // Prefer a recent property_valuations row; fall back to a recent cma_report
-  // for the same address; final fallback is a 4% / yr regional default.
+  // Prefer a recent home_value_estimates row (this is the live AVM table —
+  // there is no `property_valuations` table); fall back to a 4%/yr regional
+  // default so the report is never empty.
   const originalPrice = Number(txn.purchase_price ?? 0) || null
   let currentValue: number | null = null
   let comparablesUsed = 0
   let marketSummary = ""
 
   const { data: latestValuation } = await supabase
-    .from("property_valuations")
-    .select("valuation_amount, comparables_count, summary")
+    .from("home_value_estimates")
+    .select("estimated_value_mid, estimated_value_low, estimated_value_high, estimated_equity, comps_json, ai_narrative, generated_at")
     .eq("contact_id", input.contactId)
-    .order("created_at", { ascending: false })
+    .order("generated_at", { ascending: false })
     .limit(1)
     .maybeSingle()
   if (latestValuation) {
-    currentValue = Number(latestValuation.valuation_amount)
-    comparablesUsed = Number(latestValuation.comparables_count ?? 0)
-    marketSummary = (latestValuation.summary as string) ?? ""
+    currentValue = Number(latestValuation.estimated_value_mid)
+    comparablesUsed = Array.isArray(latestValuation.comps_json) ? latestValuation.comps_json.length : 0
+    marketSummary = (latestValuation.ai_narrative as string) ?? ""
   }
 
   if (!currentValue && originalPrice) {
@@ -104,10 +105,10 @@ export async function buildAnnualHomeValueReport(
   const estimatedAppreciationPercent =
     estimatedAppreciation != null && originalPrice ? (estimatedAppreciation / originalPrice) * 100 : null
 
-  const estimatedLoanBalance = Number(txn.estimated_loan_balance ?? 0) || null
+  // home_value_estimates already carries the equity column when available.
   const estimatedEquity =
-    currentValue != null && estimatedLoanBalance != null
-      ? currentValue - estimatedLoanBalance
+    latestValuation?.estimated_equity != null
+      ? Number(latestValuation.estimated_equity)
       : null
 
   const agentRecommendation =
@@ -169,7 +170,9 @@ export async function generateAnnualHomeValueReportsCronTick() {
     const anniversaryYear = today.getFullYear()
     if (anniversaryYear === close.getFullYear()) continue // skip closing year itself
 
-    // Idempotency check
+    // Idempotency check — lifetime_customer_touchpoints actual columns are
+    // touchpoint_type / scheduled_date / sent_date / engagement_data (no
+    // `payload` column, no `scheduled_for` column).
     const { data: existing } = await supabase
       .from("lifetime_customer_touchpoints")
       .select("id")
@@ -194,9 +197,11 @@ export async function generateAnnualHomeValueReportsCronTick() {
       agent_id: c.agent_id,
       contact_id: c.buyer_contact_id,
       touchpoint_type: "annual_home_value_report",
+      channel: "in_app",
       status: "pending_review",
-      payload: report,
-      scheduled_for: new Date().toISOString(),
+      scheduled_date: new Date().toISOString().slice(0, 10),
+      related_transaction_id: c.id,
+      engagement_data: report,
     })
 
     generated.push({ contactId: c.buyer_contact_id as string, transactionId: c.id as string, ok: true })

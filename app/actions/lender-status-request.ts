@@ -50,12 +50,15 @@ export async function requestLenderStatusUpdateAction(input: {
 
   if (!input.items?.length) return { success: false as const, error: "no_items" }
 
+  // Schema layout (verified against live DB):
+  //   transactions.lender_id  → lender_portal_users.id  (gives company name)
+  //   transaction_lenders.transaction_id  → lender contact + loan officer info
+  //
+  // Email/phone for the lender LIVE on transaction_lenders.loan_officer_*,
+  // not on lender_portal_users.
   const { data: txn } = await supabase
     .from("transactions")
-    .select(
-      `id, brokerage_id, property_address, lender_id,
-       lender:lender_id (id, lender_company, lender_email, lender_phone, user_id)`,
-    )
+    .select("id, brokerage_id, property_address, lender_id")
     .eq("id", input.transactionId)
     .maybeSingle()
 
@@ -63,10 +66,28 @@ export async function requestLenderStatusUpdateAction(input: {
     return { success: false as const, error: "transaction_not_found" }
   }
 
-  const lender = (txn as any).lender as
-    | { id: string; lender_company: string | null; lender_email: string | null; lender_phone: string | null }
-    | null
-  if (!lender) return { success: false as const, error: "no_lender_assigned" }
+  const [{ data: portalLender }, { data: txnLender }] = await Promise.all([
+    txn.lender_id
+      ? supabase
+          .from("lender_portal_users")
+          .select("id, user_id, lender_company")
+          .eq("id", txn.lender_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null as any }),
+    supabase
+      .from("transaction_lenders")
+      .select("lender_name, loan_officer_name, loan_officer_email, loan_officer_phone")
+      .eq("transaction_id", input.transactionId)
+      .maybeSingle(),
+  ])
+
+  const companyName = portalLender?.lender_company ?? txnLender?.lender_name ?? null
+  const recipientEmail = txnLender?.loan_officer_email ?? null
+  const recipientPhone = txnLender?.loan_officer_phone ?? null
+
+  if (!companyName && !recipientEmail && !recipientPhone) {
+    return { success: false as const, error: "no_lender_contact_on_file" }
+  }
 
   const channel = input.channel ?? "email"
   const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/portal/lender/${txn.id}`
@@ -75,7 +96,7 @@ export async function requestLenderStatusUpdateAction(input: {
 
   const subject = `Status update requested${propertyLine}`
   const body =
-    `Hi ${lender.lender_company ?? "there"},\n\n` +
+    `Hi ${txnLender?.loan_officer_name ?? companyName ?? "there"},\n\n` +
     `Could you update the loan file${propertyLine} on the items below?\n\n` +
     `${itemList}\n\n` +
     (input.note ? `Note: ${input.note}\n\n` : "") +
@@ -85,10 +106,10 @@ export async function requestLenderStatusUpdateAction(input: {
   const sent: string[] = []
   const errors: string[] = []
 
-  if ((channel === "email" || channel === "both") && lender.lender_email) {
+  if ((channel === "email" || channel === "both") && recipientEmail) {
     try {
       const r = await sendEmail({
-        to: lender.lender_email,
+        to: recipientEmail,
         subject,
         body,
         brokerageId: txn.brokerage_id,
@@ -100,10 +121,10 @@ export async function requestLenderStatusUpdateAction(input: {
     }
   }
 
-  if ((channel === "sms" || channel === "both") && lender.lender_phone) {
+  if ((channel === "sms" || channel === "both") && recipientPhone) {
     try {
       const r = await sendSMS({
-        to: lender.lender_phone,
+        to: recipientPhone,
         body: `Quick lender update needed${propertyLine}: ${input.items
           .map((i) => ITEM_LABEL[i])
           .join(", ")}. ${portalUrl}`,
@@ -119,12 +140,17 @@ export async function requestLenderStatusUpdateAction(input: {
   await supabase.from("activities").insert({
     brokerage_id: txn.brokerage_id,
     agent_id: auth.agentId,
+    transaction_id: txn.id,
+    entity_type: "transaction",
     activity_type: "lender_status_requested",
-    description: `Requested ${input.items.length} update(s) from ${lender.lender_company ?? "lender"}: ${input.items
+    title: "Lender status update requested",
+    description: `Requested ${input.items.length} update(s) from ${companyName ?? "lender"}: ${input.items
       .map((i) => ITEM_LABEL[i])
       .join(", ")}`,
-    metadata: { transaction_id: txn.id, items: input.items, channels_sent: sent, errors },
-    occurred_at: new Date().toISOString(),
+    notes: JSON.stringify({ items: input.items, channels_sent: sent, errors }),
+    completed_at: new Date().toISOString(),
+    status: "completed",
+    channel: sent[0] ?? "email",
   })
 
   if (sent.length === 0) {
