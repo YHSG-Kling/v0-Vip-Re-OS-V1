@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/stripe"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import Stripe from "stripe"
 
 // Stripe webhook handler
@@ -197,8 +198,20 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      // ─── STRIPE CONNECT: ACCOUNT UPDATED (onboarding complete) ───────────────
+      case "account.updated": {
+        const svc = createServiceClient()
+        const account = event.data.object as Stripe.Account
+        if (account.details_submitted && account.charges_enabled) {
+          await svc
+            .from("vendor_marketplace_profiles")
+            .update({ stripe_onboarding_complete: true })
+            .eq("stripe_account_id", account.id)
+        }
+        break
+      }
+
       default:
-        // Unhandled event type
         console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
     }
 
