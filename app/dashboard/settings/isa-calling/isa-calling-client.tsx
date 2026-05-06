@@ -32,6 +32,12 @@ import {
   toggleIsaPhoneNumber,
   type VapiPhoneNumberRow,
 } from "@/app/actions/isa-phone-numbers"
+import {
+  saveAIISASettings,
+  type IsaCapability,
+  type IsaCapabilityDescriptor,
+} from "@/app/actions/ai-isa-settings"
+import { ShieldCheck, ShieldAlert, ShieldX } from "lucide-react"
 
 interface DutyAgent {
   id: string
@@ -45,6 +51,8 @@ interface Props {
   phoneNumbers: VapiPhoneNumberRow[]
   dutyAgent: DutyAgent | null
   currentUserRole: string | null
+  capabilityCatalog: IsaCapabilityDescriptor[]
+  enabledCapabilities: IsaCapability[]
 }
 
 const NUMBER_SOURCE_LABELS: Record<string, string> = {
@@ -64,11 +72,27 @@ const DEPARTMENTS = [
 ]
 
 export function IsaCallingClient(props: Props) {
-  const { brokerageId, phoneNumbers: initialNumbers, dutyAgent } = props
+  const { brokerageId, phoneNumbers: initialNumbers, dutyAgent, capabilityCatalog, enabledCapabilities: initialEnabledCapabilities } = props
   const [isPending, startTransition] = useTransition()
   const [numbers, setNumbers] = useState(initialNumbers)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [enabledCapabilities, setEnabledCapabilities] = useState<Set<IsaCapability>>(
+    new Set(initialEnabledCapabilities)
+  )
+
+  function handleToggleCapability(capability: IsaCapability) {
+    const next = new Set(enabledCapabilities)
+    if (next.has(capability)) next.delete(capability)
+    else next.add(capability)
+    setEnabledCapabilities(next)
+
+    startTransition(async () => {
+      await saveAIISASettings(brokerageId, {
+        enabled_capabilities: Array.from(next),
+      })
+    })
+  }
 
   // New phone number form state
   const [newPhoneNumber, setNewPhoneNumber] = useState("")
@@ -180,6 +204,10 @@ export function IsaCallingClient(props: Props) {
           <TabsTrigger value="numbers" className="gap-1.5">
             <Phone className="h-4 w-4" />
             Phone Numbers
+          </TabsTrigger>
+          <TabsTrigger value="capabilities" className="gap-1.5">
+            <ShieldCheck className="h-4 w-4" />
+            Capabilities
           </TabsTrigger>
           <TabsTrigger value="duty" className="gap-1.5">
             <PhoneForwarded className="h-4 w-4" />
@@ -367,6 +395,94 @@ export function IsaCallingClient(props: Props) {
                   </div>
                 ))
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="capabilities" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>AI ISA Capabilities</CardTitle>
+              <CardDescription>
+                Approve which actions the AI ISA can take on calls and conversations.
+                Disabled capabilities are politely declined with a fallback message
+                ("I'll have someone reach out shortly"). Brokerage admins control
+                this setting.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {(["core", "compliance", "outreach", "booking", "information", "ghost", "reputation"] as const).map((category) => {
+                const items = capabilityCatalog.filter((c) => c.category === category)
+                if (items.length === 0) return null
+                return (
+                  <div key={category}>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                      {category === "core"
+                        ? "Core (recommended always on)"
+                        : category === "compliance"
+                        ? "Compliance & DNC (recommended always on)"
+                        : category === "outreach"
+                        ? "Outreach actions"
+                        : category === "booking"
+                        ? "Booking & scheduling"
+                        : category === "information"
+                        ? "Information lookups (existing contacts)"
+                        : category === "ghost"
+                        ? "Ghost re-engagement"
+                        : "Reputation & reviews"}
+                    </p>
+                    <div className="space-y-2">
+                      {items.map((cap) => {
+                        const isEnabled = enabledCapabilities.has(cap.key)
+                        const RiskIcon = cap.riskLevel === "high"
+                          ? ShieldX
+                          : cap.riskLevel === "medium"
+                          ? ShieldAlert
+                          : ShieldCheck
+                        const riskColor = cap.riskLevel === "high"
+                          ? "text-red-600 dark:text-red-400"
+                          : cap.riskLevel === "medium"
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-green-600 dark:text-green-400"
+                        return (
+                          <div
+                            key={cap.key}
+                            className="flex items-start justify-between gap-3 p-3 border rounded-lg bg-card"
+                          >
+                            <div className="flex items-start gap-2 min-w-0 flex-1">
+                              <RiskIcon className={`h-4 w-4 mt-0.5 shrink-0 ${riskColor}`} />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-medium text-sm">{cap.label}</span>
+                                  {cap.requiresConsent && (
+                                    <Badge variant="outline" className="text-[10px]">consent required</Badge>
+                                  )}
+                                  {!cap.defaultEnabled && (
+                                    <Badge variant="outline" className="text-[10px]">opt-in</Badge>
+                                  )}
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                  {cap.description}
+                                </p>
+                              </div>
+                            </div>
+                            <Switch
+                              checked={isEnabled}
+                              onCheckedChange={() => handleToggleCapability(cap.key)}
+                              disabled={isPending}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+              <div className="text-xs text-muted-foreground border-t pt-3">
+                Changes take effect on the AI ISA's next call. Existing call logs
+                and recordings are not affected. TCPA, DNC, and Fair Housing rules
+                are enforced regardless of these toggles.
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

@@ -3,6 +3,11 @@ import { redirect } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { listIsaPhoneNumbers } from "@/app/actions/isa-phone-numbers"
+import {
+  getAIISASettings,
+  defaultEnabledCapabilities,
+  ISA_CAPABILITY_CATALOG,
+} from "@/app/actions/ai-isa-settings"
 import { IsaCallingClient } from "./isa-calling-client"
 
 export const metadata = {
@@ -42,7 +47,10 @@ async function IsaCallingContent() {
     )
   }
 
-  const phoneNumbers = await listIsaPhoneNumbers(profile.brokerage_id)
+  const [phoneNumbers, isaSettings] = await Promise.all([
+    listIsaPhoneNumbers(profile.brokerage_id),
+    getAIISASettings(profile.brokerage_id),
+  ])
 
   // Resolve duty agent — the brokerage Admin user (defaults to first Admin)
   const { data: dutyAgent } = await supabase
@@ -53,12 +61,16 @@ async function IsaCallingContent() {
     .limit(1)
     .maybeSingle()
 
+  const enabledCapabilities = isaSettings.enabled_capabilities ?? defaultEnabledCapabilities()
+
   return (
     <IsaCallingClient
       brokerageId={profile.brokerage_id}
       phoneNumbers={phoneNumbers}
       dutyAgent={dutyAgent ?? null}
       currentUserRole={profile.role ?? null}
+      capabilityCatalog={ISA_CAPABILITY_CATALOG}
+      enabledCapabilities={enabledCapabilities}
     />
   )
 }
