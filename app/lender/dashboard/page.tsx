@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
+import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
+import { generateUserTypeBrief } from '@/lib/intelligence/user-type-briefs'
 import {
   ExternalPartnerCommandStrip,
   ExternalActiveFilesPanel,
@@ -40,8 +42,16 @@ export default async function LenderDashboardPage() {
   const active = (transactions || []).filter((t: any) => !['closed', 'cancelled'].includes(t.status))
   const closing = (transactions || []).filter((t: any) => t.status === 'pending')
 
+  // Today's AI brief for this lender
+  const lenderBrief = await generateUserTypeBrief({
+    userType: 'lender',
+    userId: user.id,
+    brokerageId: lenderPortal?.brokerage_id ?? null,
+  })
+
   return (
     <div className="p-6 space-y-6">
+      <TodaysFocusCard brief={lenderBrief} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Lender Dashboard</h1>

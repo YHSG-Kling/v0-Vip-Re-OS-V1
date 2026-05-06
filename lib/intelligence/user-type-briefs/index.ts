@@ -14,6 +14,7 @@
 
 import type { UserTypeBrief } from "./types"
 import { generateBrokerBrief } from "./broker"
+import { generateTeamLeadBrief, isTeamLead } from "./team-lead"
 import {
   generateTcBrief,
   generateComplianceBrief,
@@ -22,6 +23,7 @@ import {
 } from "./tc-compliance-lender-vendor"
 
 export type { UserTypeBrief, BriefPriority, BriefMetric, Severity } from "./types"
+export { isTeamLead } from "./team-lead"
 
 interface GenerateBriefInput {
   userType: string
@@ -35,8 +37,15 @@ export async function generateUserTypeBrief(input: GenerateBriefInput): Promise<
 
   // Agents use the existing daily-briefing-generator (richer agent-specific
   // logic). The new generators here cover the remaining staff user_types.
+  // Team leads (agents who lead a team) get an extended brief with team data.
   switch (userType) {
     case "agent": {
+      // If this agent leads a team, swap in the team-lead brief (agent
+      // signals + team-level pipeline + member coaching cues)
+      if (brokerageId && (await isTeamLead(userId, brokerageId))) {
+        return generateTeamLeadBrief({ userId, brokerageId, forceRegenerate })
+      }
+
       // Reuse existing rich agent generator — wraps in the new shape
       const { generateDailyBriefing } = await import("@/lib/intelligence/daily-briefing-generator")
       const agent = await generateDailyBriefing(userId, brokerageId ?? "", forceRegenerate ?? false)

@@ -8,6 +8,8 @@ import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
 import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
@@ -231,6 +233,13 @@ export default async function CoordinatorDashboard({
     }
   })
 
+  // Today's AI brief — closings, at-risk deals, missing docs, interventions
+  const tcBrief = await generateUserTypeBrief({
+    userType: "TC",
+    userId: user.id,
+    brokerageId: brokerageId ?? null,
+  })
+
   return (
     <div className="min-h-screen bg-background p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -253,6 +262,9 @@ export default async function CoordinatorDashboard({
           </Badge>
         </div>
       </div>
+
+      {/* Today's Focus — AI Brief */}
+      <TodaysFocusCard brief={tcBrief} />
 
       {/* Deadline Risk Alert Banner */}
       {atRiskCount > 0 && (

@@ -16,6 +16,8 @@ import ViolationsDashboard from "@/app/components/shared/compliance/violations-d
 import ApprovedContentLibrary from "@/app/components/shared/compliance/approved-content-library"
 import { TransactionComplianceTab } from "@/app/components/compliance/transaction-compliance-tab"
 import { FairHousingScanner } from "@/app/components/compliance/FairHousingScanner"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import {
   ComplianceCommandStrip,
   ComplianceRiskRadar,
@@ -47,6 +49,25 @@ export default async function ComplianceDashboardPage() {
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
     user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
   ])
+
+  // Resolve brokerage for the AI brief
+  let brokerageId: string | null = null
+  if (user) {
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    brokerageId = userRow?.brokerage_id ?? null
+  }
+
+  const complianceBrief = user
+    ? await generateUserTypeBrief({
+        userType: "compliance_officer",
+        userId: user.id,
+        brokerageId,
+      })
+    : null
 
   const complianceRate =
     monthlyReport.totalCommunications > 0
@@ -104,6 +125,9 @@ export default async function ComplianceDashboardPage() {
           </p>
         </div>
       </div>
+
+      {/* Today's Focus — AI Brief */}
+      {complianceBrief && <TodaysFocusCard brief={complianceBrief} />}
 
       {/* OS Command Strip - Priority Action */}
       <ComplianceCommandStrip
