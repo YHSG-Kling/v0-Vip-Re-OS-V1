@@ -37,7 +37,8 @@ const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["rets", "spark", "bridge"],
+  // MLS feeds (full IDX licensing) and MLS-adjacent paid data (Rentcast)
+  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -56,6 +57,8 @@ const PLATFORM_LABELS: Record<string, string> = {
   rets:       "RETS",
   spark:      "Spark API",
   bridge:     "Bridge Interactive",
+  idx_broker: "IDX Broker",
+  rentcast:   "Rentcast (no IDX needed)",
   none:       "None (Disabled)",
 }
 
