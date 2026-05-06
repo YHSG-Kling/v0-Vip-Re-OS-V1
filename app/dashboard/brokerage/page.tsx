@@ -23,6 +23,8 @@ import {
   BarChart3,
 } from "lucide-react"
 import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
 import {
@@ -424,6 +426,14 @@ export default async function BrokerageDashboard({
       : 0,
   }
 
+  // Generate today's AI brief for the broker — synthesizes critical deals,
+  // license expirations, compliance flags, unassigned leads into 3 priorities
+  const brokerBrief = await generateUserTypeBrief({
+    userType: "broker",
+    userId: user.id,
+    brokerageId,
+  })
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -439,6 +449,9 @@ export default async function BrokerageDashboard({
           </Badge>
         )}
       </div>
+
+      {/* Today's Focus — AI Brief synthesizing what matters today */}
+      <TodaysFocusCard brief={brokerBrief} />
 
       {/* Command Strip */}
       <BrokerCommandStrip
