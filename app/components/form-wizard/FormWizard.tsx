@@ -1,5 +1,32 @@
 "use client"
 
+/**
+ * FormWizard — CANONICAL creation flow for both listings AND offers.
+ *
+ * mode="listing" — used by `app/dashboard/listings/listings-new-button.tsx`
+ *   (the one-and-only listing creation entry point)
+ * mode="offer"   — used by `app/contacts/[contactId]/offers/new` and the
+ *   CRM contact action menu. Going forward this is also the canonical
+ *   buyer-detail offer creation flow, replacing OfferInitiationFlow +
+ *   OfferFormWizard once those are retired.
+ *
+ * Step pattern (both modes):
+ *   1. Context     — property address, parties
+ *   2. Forms       — pick the right document set
+ *   3. Fill        — populate forms (provider iframe if applicable)
+ *   4. Signers     — collect signer roles + emails
+ *   5. E-Sign      — review + dispatch
+ *   6. Monitor     — track signature progress
+ *
+ * Strategic AI features (price advisor, escalation, buyer letter,
+ * contingency reco) will be added as optional steps inside mode="offer"
+ * in a follow-up commit, retiring OfferInitiationFlow.
+ *
+ * Inbound offer upload (PDF ingestion from cooperating agents) is a
+ * SEPARATE flow — not part of FormWizard. Counter-offers use
+ * parent_offer_id in offer detail, not a wizard.
+ */
+
 import { useState, useCallback, useRef } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"

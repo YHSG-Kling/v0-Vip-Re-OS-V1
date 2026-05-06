@@ -1,5 +1,41 @@
 "use client"
 
+/**
+ * @deprecated USE FormWizard mode="offer" GOING FORWARD.
+ *
+ * Per the canonical wizard pattern: offers should be created via the same
+ * FormWizard surface that listings use (`@/app/components/form-wizard/FormWizard`
+ * with `mode="offer"`). OfferInitiationFlow + OfferFormWizard are a
+ * second-generation strategic-prep wizard that pre-dates the canonical
+ * decision; their value-adds (StrategyAdvisor, escalation calc, buyer letter,
+ * contingency reco) need to be folded into FormWizard mode="offer" as
+ * optional advanced steps.
+ *
+ * MIGRATION PLAN (separate commit):
+ *   1. Add an "Advanced strategy" step group to FormWizard mode="offer"
+ *      that exposes:
+ *        - StrategyAdvisor (uses `aiOfferStrategyAdvisor`)
+ *        - Escalation calculator (`aiCalculateEscalation`)
+ *        - Buyer letter generator (`aiGenerateBuyerLetter`)
+ *        - Contingency recommender (`aiRecommendContingencies`)
+ *      All optional / collapsible — agent can skip if doing a quick capture
+ *   2. Update `app/dashboard/buyers/[id]/offers/new/new-offer-page-client.tsx`
+ *      and `app/dashboard/buyers/[id]/offers/offers-client.tsx` to launch
+ *      FormWizard mode="offer" with strategic mode enabled
+ *   3. Delete OfferInitiationFlow + OfferFormWizard (~1944 lines retired)
+ *
+ * UNCHANGED by this consolidation:
+ *   - Inbound offer upload (PDF + AI extraction) stays a separate flow —
+ *     different concept (ingest, not create). See app/dashboard/listings/
+ *     [id]/offers/upload (or equivalent route).
+ *   - Counter-offer flow stays in offer detail page using parent_offer_id
+ *     chain. Not a wizard.
+ *
+ * Until the migration ships, this file remains the active offer creation
+ * surface from the buyer-detail flow. Do NOT add new features here that
+ * aren't also in FormWizard mode="offer".
+ */
+
 import { useState, useCallback, useTransition, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import {
