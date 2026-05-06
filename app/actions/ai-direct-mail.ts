@@ -423,6 +423,18 @@ export async function getDirectMailCampaigns(agentId: string) {
   }
 }
 
+/**
+ * AI-enhanced direct mail campaign creation.
+ *
+ * NOTE — overlaps with `createMailCampaign` in `app/actions/direct-mail.ts`.
+ * Both insert into `direct_mail_campaigns`. Long-term plan: this function
+ * should DELEGATE the table insert to `createMailCampaign` and only layer
+ * AI-driven content (ai-generated copy, audience selection, ROI prediction)
+ * on top. Until that consolidation lands, callers should prefer:
+ *   - `createDirectMailCampaign` (this fn) for AI-driven flows
+ *   - `createMailCampaign` for manual / minimal flows
+ * Do NOT introduce a third creator.
+ */
 export async function createDirectMailCampaign(params: {
   agentId: string
   brokerageId: string

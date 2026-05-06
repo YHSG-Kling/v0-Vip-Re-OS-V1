@@ -1,4 +1,5 @@
-import { generateText } from "ai"
+import { generateText, Output } from "ai"
+import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
@@ -99,6 +100,7 @@ export const AI_TASK_ROUTING: Record<string, {
   home_value_estimate:       { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Live AVM + recent sales context" },
 
   // ── STRUCTURED DATA EXTRACTION + JSON OUTPUT ──────────────────────────────
+  // (offer_analysis lives above under decision-critical tasks; reuses same key)
   offer_data_extraction:     { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Extract structured fields from offer documents — schema strict" },
   document_parsing:          { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Parse contracts/forms into structured data" },
   lead_data_extraction:      { model: "gpt-4o", fallback: "claude-haiku",   reason: "Extract contact fields from raw lead payloads" },
@@ -533,6 +535,53 @@ export interface RoutedTextRequest {
   userId?: string
   brokerageId?: string | null
   agentId?: string
+}
+
+/**
+ * Structured-output variant of generateTextRouted — same routing, fallback,
+ * and gateway wrapping as the text version, but returns a typed object via
+ * the AI SDK's experimental_output schema.
+ *
+ * Use this instead of importing `generateText` from "ai" when you need
+ * structured JSON output. Bypassing this skips brokerage routing + fallback +
+ * gateway billing.
+ */
+export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
+  request: RoutedTextRequest & { schema: TSchema }
+): Promise<{ object: z.infer<TSchema> }> {
+  const feature = request.feature ?? 'unspecified'
+  const { model: routedModel, fallback } = selectModelForTask(feature)
+
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  try {
+    const result = await generateText({
+      model: primaryInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+      experimental_output: Output.object({ schema: request.schema }),
+    })
+    return { object: result.experimental_output as z.infer<TSchema> }
+  } catch {
+    const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
+    const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const fallbackInstance = toGatewayModel(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
+    const result = await generateText({
+      model: fallbackInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+      experimental_output: Output.object({ schema: request.schema }),
+    })
+    return { object: result.experimental_output as z.infer<TSchema> }
+  }
 }
 
 export async function generateTextRouted(

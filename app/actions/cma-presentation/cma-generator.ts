@@ -45,7 +45,19 @@ export interface CMAResult {
 export const CMA_DISCLAIMER = `This Comparative Market Analysis (CMA) is provided for informational purposes only and is not an appraisal. An appraisal can only be performed by a licensed appraiser.`
 
 /**
- * Generate CMA for seller
+ * Generate CMA for seller (presentation-flow variant).
+ *
+ * @deprecated FOR NEW CALLERS — use `generateAICMA` from `@/app/actions/ai-cma`
+ * for direct CMA generation that writes to the canonical `cma_reports` table.
+ * This function is the SELLER PRESENTATION variant: it loads the listing +
+ * contact, fetches comps, emits `seller.cma.*` lifecycle activities, and
+ * stores the CMA payload inside `activities` (not `cma_reports`) so it can be
+ * stitched into a full presentation alongside net sheet + video.
+ *
+ * Existing callers (presentation flow only) may continue using this. New
+ * callers must use `generateAICMA`. A future refactor will have THIS function
+ * delegate to `generateAICMA` for the valuation work and only handle the
+ * presentation-specific event emission.
  */
 export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult> {
   try {

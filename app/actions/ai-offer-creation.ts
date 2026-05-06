@@ -2,7 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText as generateTextBase, Output } from "ai"
+// generateObjectRouted replaces direct `generateText` from "ai" — keeps
+// brokerage routing + fallback + gateway wrapping for structured outputs.
+import { generateObjectRouted } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
@@ -87,9 +89,9 @@ export async function aiOfferStrategyAdvisor(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const { experimental_output: strategy } = await generateTextBase({
-      model: resolveModel("openai/gpt-4o"),
-      experimental_output: Output.object({ schema: z.object({
+    const { object: strategy } = await generateObjectRouted({
+      feature: "offer_analysis",
+      schema: z.object({
         recommendedOfferPrice: z.number(),
         priceRangeLow: z.number(),
         priceRangeHigh: z.number(),
@@ -116,7 +118,7 @@ export async function aiOfferStrategyAdvisor(params: {
         closeDateStrategy: z.string(),
         personalLetterRecommendation: z.boolean(),
         additionalSuggestions: z.array(z.string()),
-      }) }),
+      }),
       prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.
 
 Listing Details:
@@ -156,9 +158,9 @@ export async function aiCalculateEscalation(params: {
   marketTrend: "appreciating" | "stable" | "declining"
 }) {
   try {
-    const { experimental_output: escalation } = await generateTextBase({
-      model: resolveModel("openai/gpt-4o-mini"),
-      experimental_output: Output.object({ schema: z.object({
+    const { object: escalation } = await generateObjectRouted({
+      feature: "offer_analysis",
+      schema: z.object({
         recommended: z.boolean(),
         startingOffer: z.number(),
         escalationIncrement: z.number(),
@@ -168,7 +170,7 @@ export async function aiCalculateEscalation(params: {
         reasoning: z.string(),
         riskAssessment: z.string(),
         sampleClauseText: z.string(),
-      }) }),
+      }),
       prompt: `Calculate optimal escalation clause parameters:
 
 List Price: $${params.listPrice.toLocaleString()}
