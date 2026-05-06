@@ -5,10 +5,20 @@ import { handleError } from "@/lib/errors"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 /**
- * AI-Powered Lead Scoring System
- * Analyzes lead behavior, engagement, and intent to provide actionable scores
+ * LAYER 2 — AI Scoring (nuance refinement of conversational/behavioral signals).
+ *
+ * Refines the AI-nuanced score columns (`engagement_score`, `intent_score`,
+ * `qualification_score`, `motivation_score`, `readiness_level`). When called
+ * via explicit agent UI action ("Run AI Score" button on the CRM), this also
+ * overrides `lead_score` — that's the documented agent-driven override.
+ *
+ * Background / cron callers should NOT overwrite `lead_score` (Layer 1 owns
+ * the deterministic baseline). A future commit will add a `mode: 'override'
+ * | 'refine'` parameter so background callers can opt into refine-only.
+ *
+ * See `lib/lead-scoring/LAYERING.md` for full layering rules and the four
+ * scoring systems that touch these columns.
  */
-
 export async function scoreLeadWithAI(params: {
   contactId: string
   agentId: string

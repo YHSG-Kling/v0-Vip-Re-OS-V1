@@ -32,9 +32,18 @@ export interface LeadScoringResult {
 }
 
 /**
- * Calculate comprehensive lead score
- * Works for BOTH contacts table AND leads table
- * Consolidates scoring logic from multiple files
+ * ORCHESTRATOR — fetch record + apply Layer 1 (Multi-Factor) + persist.
+ *
+ * NOT a separate scoring algorithm. This is the async orchestration wrapper
+ * around `calculateLeadScore` from `lib/lead-governance/multi-factor-scorer.ts`
+ * (Layer 1) — it loads the contact/lead row, runs the deterministic scorer,
+ * and writes the result back to the table.
+ *
+ * Use this from background flows that need scoring + persistence in one call.
+ * Use Layer 1 directly if you have the lead/contact object in memory and just
+ * need the number.
+ *
+ * See `lib/lead-scoring/LAYERING.md` for full layering rules.
  */
 export async function calculateLeadScore(params: LeadScoringParams): Promise<LeadScoringResult> {
   try {
