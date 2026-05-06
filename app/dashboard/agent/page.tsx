@@ -32,6 +32,8 @@ import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { PredictiveListingCard } from "./components/predictive-listing-card"
+import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 
@@ -57,6 +59,17 @@ export default function AgentDashboard() {
   const [commissions, setCommissions] = useState<any[]>([])
   const [monthlyExpenses, setMonthlyExpenses] = useState<any[]>([])
   const [hotLeads, setHotLeads] = useState<any[]>([])
+  const [predictedSellers, setPredictedSellers] = useState<PredictiveSellerRow[]>([])
+  const [queuedAutoTouches, setQueuedAutoTouches] = useState<Array<{
+    id: string
+    contactId: string
+    contactName: string
+    channel: string | null
+    scheduledSendAt: string | null
+    triggeringPlsScore: number | null
+    triggeringSignals: Array<{ key: string; label: string }> | null
+  }>>([])
+  const [userId, setUserId] = useState("")
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -97,6 +110,23 @@ export default function AgentDashboard() {
         if (agentRow) {
           setAgentId(agentRow.id)
           setBrokerageId(agentRow.brokerage_id)
+          setUserId(user.id)
+
+          // Predictive Listing Score — top 5 likely sellers + queued auto-touches
+          getTopPredictiveSellers({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setPredictedSellers)
+            .catch(() => setPredictedSellers([]))
+
+          listQueuedAutoTouches({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+          })
+            .then(setQueuedAutoTouches)
+            .catch(() => setQueuedAutoTouches([]))
         }
 
         // 4. Calculate month start
@@ -344,6 +374,15 @@ export default function AgentDashboard() {
               )}
             </CardContent>
           </Card>
+        )}
+
+        {brokerageId && userId && (predictedSellers.length > 0 || queuedAutoTouches.length > 0) && (
+          <PredictiveListingCard
+            brokerageId={brokerageId}
+            userId={userId}
+            predictedSellers={predictedSellers}
+            queuedAutoTouches={queuedAutoTouches}
+          />
         )}
 
         {(hotLeads.length > 0 || loading) && (

@@ -49,6 +49,16 @@ export interface AIISASettings {
    * undefined, falls back to defaultEnabledCapabilities().
    */
   enabled_capabilities?: IsaCapability[]
+  /**
+   * Predictive Listing auto-send tuning. All optional — sensible defaults
+   * apply when undefined. Only consulted when capability
+   * `predictive_listing_auto_touch` is enabled.
+   */
+  pls_auto_send_score_threshold?: number          // default 75
+  pls_auto_send_review_window_hours?: number      // default 24, set 0 for immediate send
+  pls_auto_send_cooldown_days?: number            // default 90 — don't auto-touch same contact more than once per quarter
+  pls_auto_send_max_per_day?: number              // default 5 — global per-brokerage daily rate limit
+  pls_auto_send_eligible_channels?: ("email" | "sms")[] // default ['email'] — SMS requires explicit opt-in
 }
 
 export const DEFAULT_AISA_SETTINGS: AIISASettings = {
@@ -103,6 +113,8 @@ export type IsaCapability =
   | "ghost_recovery_outreach"
   // Review / reputation
   | "send_review_request"
+  // Predictive Listing auto-send
+  | "predictive_listing_auto_touch"
 
 export interface IsaCapabilityDescriptor {
   key: IsaCapability
@@ -140,6 +152,8 @@ export const ISA_CAPABILITY_CATALOG: IsaCapabilityDescriptor[] = [
   { key: "ghost_recovery_outreach", label: "Run ghost recovery sequence", description: "Re-engage contacts who have gone quiet (after configured ghosted_threshold_days).", category: "ghost", requiresConsent: true, riskLevel: "medium", defaultEnabled: false },
   // Reputation
   { key: "send_review_request", label: "Send review request post-close", description: "Auto-send the post-close review request to lifetime customers.", category: "reputation", requiresConsent: true, riskLevel: "low", defaultEnabled: false },
+  // Predictive Listing Auto-Touch (high-value automation, opt-in)
+  { key: "predictive_listing_auto_touch", label: "Auto-send touches to likely sellers", description: "When a contact's Predictive Listing Score crosses the threshold, automatically queue a soft check-in touch (with configurable review window). Sensitive life events (divorce, foreclosure, death) are always excluded — those require human judgement.", category: "outreach", requiresConsent: true, riskLevel: "high", defaultEnabled: false },
 ]
 
 /**
