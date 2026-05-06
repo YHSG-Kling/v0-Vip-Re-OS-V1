@@ -1495,9 +1495,8 @@ export async function getLenderDashboard(lenderId: string) {
 }
 
 /**
- * Submit vendor invoice
- * vendor_invoices table does not exist in schema.
- * Stores invoice data as a note on the vendor_bookings record instead.
+ * Submit vendor invoice — creates a proper record in vendor_invoices table
+ * and marks it submitted. Supersedes the old vendor_bookings.notes workaround.
  */
 export async function submitVendorInvoice(params: {
   bookingId: string
@@ -1510,27 +1509,42 @@ export async function submitVendorInvoice(params: {
   try {
     const supabase = createServiceClient()
 
-    // Store invoice details on the booking record (cost + notes)
-    const invoiceData = {
-      invoice_number: params.invoiceNumber,
-      invoice_date: params.invoiceDate,
-      due_date: params.dueDate,
-      notes: params.notes,
-    }
-
-    const { data, error } = await supabase
+    // Resolve vendor_id and brokerage_id from the booking
+    const { data: booking } = await supabase
       .from("vendor_bookings")
-      .update({
-        cost: params.amount,
-        notes: JSON.stringify(invoiceData),
-      })
+      .select("vendor_id, brokerage_id, listing_id")
       .eq("id", params.bookingId)
+      .single()
+
+    const { data: invoice, error } = await supabase
+      .from("vendor_invoices")
+      .insert({
+        vendor_id: booking?.vendor_id ?? null,
+        brokerage_id: booking?.brokerage_id ?? null,
+        booking_id: params.bookingId,
+        listing_id: booking?.listing_id ?? null,
+        billed_to: "brokerage",
+        invoice_number: params.invoiceNumber,
+        invoice_date: params.invoiceDate,
+        due_date: params.dueDate,
+        line_items: [{ description: "Services rendered", quantity: 1, unitPrice: params.amount, amount: params.amount }],
+        subtotal: params.amount,
+        total_amount: params.amount,
+        status: "submitted",
+        notes: params.notes ?? null,
+      })
       .select("id")
       .single()
 
     if (error) throw error
 
-    return { success: true, invoiceId: data.id }
+    // Also update the booking cost for backwards-compatible UIs
+    await supabase
+      .from("vendor_bookings")
+      .update({ cost: params.amount })
+      .eq("id", params.bookingId)
+
+    return { success: true, invoiceId: invoice.id }
   } catch (error) {
     console.error("[Multi-persona] Submit invoice error:", error)
     return { success: false, error: String(error) }

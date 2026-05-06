@@ -98,6 +98,50 @@ export async function ingestMessageService(
       }
     }
 
+    // STEP 3b: TCPA/DNC opt-out detection on inbound contact messages.
+    // If the contact sends an opt-out phrase, immediately suppress all outreach
+    // and notify the agent. Message is still persisted for the audit trail.
+    if (params.rawMessage && authorType === 'contact') {
+      const body = (params.rawMessage.body ?? '').trim().toLowerCase()
+      const channel = params.rawMessage.channel
+
+      // Per TCPA: any inbound SMS with just "STOP" (or common variants) is a
+      // hard opt-out — no follow-up permitted on that channel.
+      const smsOptOut = (channel === 'sms') &&
+        /^\s*(stop|unsubscribe|cancel|end|quit|remove)\s*$/i.test(body)
+
+      // Global DNC phrases — any channel.
+      const globalOptOut =
+        /\b(do not contact|do not call|remove me|dnc|stop all|unsubscribe all)\b/i.test(body)
+
+      if (smsOptOut || globalOptOut) {
+        const optOutChannel = globalOptOut ? 'all' : (channel === 'email' ? 'email' : 'sms')
+        const source = channel === 'sms' ? 'inbound_sms' : 'inbound_email'
+
+        // Fire-and-forget: update contact suppression flags
+        supabase
+          .from('contacts')
+          .update({
+            ...(globalOptOut ? {
+              dnc_status: true,
+              email_opt_out: true,
+              sms_opt_out: true,
+              phone_opt_out: true,
+              direct_mail_opt_out: true,
+              isa_reengage_allowed: false,
+            } : channel === 'sms' ? { sms_opt_out: true } : { email_opt_out: true }),
+            opted_out_at: new Date().toISOString(),
+            opt_out_reason: params.rawMessage.body?.slice(0, 500) ?? `Opt-out via ${source}`,
+            opt_out_source: source,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', params.contactId)
+          .then(({ error }) => {
+            if (error) console.error('[communication-spine] DNC update failed:', error)
+          })
+      }
+    }
+
     // STEP 4: Validate role-based messaging rules
     const validation = validateMessageInitiationRules({
       authorType,
