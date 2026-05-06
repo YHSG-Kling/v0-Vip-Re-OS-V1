@@ -21,15 +21,16 @@ interface ShellContextValue {
   setInboxOpen: (open: boolean) => void
   toggleInbox: () => void
 
-  // Voice / chat assistants are owned by InternalAIAssistant; these are
-  // signals for the header buttons to fire opens. The InternalAIAssistant
-  // listens via its own hooks for keyboard shortcuts; we just open it here.
   aiAssistantOpen: boolean
   setAiAssistantOpen: (open: boolean) => void
   toggleAiAssistant: () => void
 
   voiceListening: boolean
   setVoiceListening: (listening: boolean) => void
+
+  mobileSidebarOpen: boolean
+  setMobileSidebarOpen: (open: boolean) => void
+  toggleMobileSidebar: () => void
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null)
@@ -38,9 +39,11 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
   const [inboxOpen, setInboxOpen] = useState(false)
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [voiceListening, setVoiceListening] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   const toggleInbox = useCallback(() => setInboxOpen((prev) => !prev), [])
   const toggleAiAssistant = useCallback(() => setAiAssistantOpen((prev) => !prev), [])
+  const toggleMobileSidebar = useCallback(() => setMobileSidebarOpen((prev) => !prev), [])
 
   // Register global keyboard shortcuts
   useEffect(() => {
@@ -76,6 +79,9 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
         toggleAiAssistant,
         voiceListening,
         setVoiceListening,
+        mobileSidebarOpen,
+        setMobileSidebarOpen,
+        toggleMobileSidebar,
       }}
     >
       {children}

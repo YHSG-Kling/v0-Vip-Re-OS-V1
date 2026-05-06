@@ -16,12 +16,18 @@ interface HeaderProps {
 }
 
 export function Header({ navigation, userContext }: HeaderProps) {
-  const { toggleInbox, toggleAiAssistant } = useShell()
+  const { toggleInbox, toggleAiAssistant, toggleMobileSidebar } = useShell()
 
   return (
     <header className="border-b border-gray-200 bg-white h-16 flex items-center justify-between px-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" className="lg:hidden">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="lg:hidden"
+          onClick={toggleMobileSidebar}
+          aria-label="Toggle navigation"
+        >
           <Menu className="w-5 h-5 text-gray-700" />
         </Button>
       </div>

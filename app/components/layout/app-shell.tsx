@@ -8,12 +8,14 @@ import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import type { BadgeCounts } from '@/app/types/navigation'
+import type { NavigationConfig } from '@/app/types/navigation'
+import type { UserContext } from '@/app/types/roles'
 
 const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -144,6 +146,7 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <ShellProvider>
       <div className="flex h-screen bg-white">
+        {/* Desktop sidebar — hidden below lg breakpoint */}
         <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
           <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
         </div>
@@ -161,6 +164,13 @@ export function AppShell({ children }: AppShellProps) {
             </div>
           )}
         </div>
+
+        {/* Mobile sidebar drawer — slide-in from left, toggled by hamburger */}
+        <MobileSidebarDrawer
+          navigation={navigation}
+          userContext={safeUserContext}
+          badgeCounts={badgeCounts}
+        />
 
         {/* Internal AI Assistant — staff roles only */}
         {showAIAssistant && (
@@ -180,11 +190,55 @@ export function AppShell({ children }: AppShellProps) {
   )
 }
 
-/**
- * Inner outlet that consumes ShellContext so the slide-out can be controlled
- * from anywhere in the app via the header buttons or `U` keystroke.
- */
 function ShellInboxOutlet() {
   const { inboxOpen, setInboxOpen } = useShell()
   return <UnifiedInboxSlideOut open={inboxOpen} onOpenChange={setInboxOpen} />
+}
+
+interface MobileSidebarDrawerProps {
+  navigation: NavigationConfig
+  userContext: UserContext
+  badgeCounts?: Partial<BadgeCounts>
+}
+
+function MobileSidebarDrawer({ navigation, userContext, badgeCounts }: MobileSidebarDrawerProps) {
+  const { mobileSidebarOpen, setMobileSidebarOpen } = useShell()
+  const pathname = usePathname()
+
+  // Close drawer on navigation
+  useEffect(() => {
+    setMobileSidebarOpen(false)
+  }, [pathname, setMobileSidebarOpen])
+
+  if (!mobileSidebarOpen) return null
+
+  return (
+    // Backdrop
+    <div
+      className="fixed inset-0 z-50 lg:hidden"
+      onClick={() => setMobileSidebarOpen(false)}
+    >
+      {/* Dim overlay */}
+      <div className="absolute inset-0 bg-black/40" />
+
+      {/* Drawer panel — stop click propagation so clicks inside don't close */}
+      <div
+        className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-end p-3 border-b">
+          <button
+            onClick={() => setMobileSidebarOpen(false)}
+            className="p-1.5 rounded hover:bg-gray-100 transition-colors"
+            aria-label="Close navigation"
+          >
+            <X className="w-5 h-5 text-gray-600" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <Sidebar navigation={navigation} userContext={userContext} badgeCounts={badgeCounts} />
+        </div>
+      </div>
+    </div>
+  )
 }
