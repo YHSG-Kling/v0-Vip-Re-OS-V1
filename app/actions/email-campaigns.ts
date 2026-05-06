@@ -8,6 +8,13 @@
  * Full lifecycle: create → AI compose → preview → schedule/send → archive
  * Kernel gates: canAccessFeature('email_campaigns')
  * Kernel events: EMAIL_CAMPAIGN_CREATED, EMAIL_CAMPAIGN_SENT
+ *
+ * STORAGE: writes to `email_campaigns` table — distinct from `newsletter_campaigns`.
+ *   - email_campaigns = one-off blasts, drip emails, transactional, segmented sends
+ *   - newsletter_campaigns = recurring publication with sections + subscribers
+ *
+ * For newsletter creation see app/actions/ai-newsletter.ts and the Newsletter
+ * Wizard. Do NOT write to newsletter_campaigns from this file.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -70,7 +77,7 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
     const supabase = await createClient()
 
     const { data: campaign, error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .insert({
         brokerage_id: params.brokerageId,
         agent_id: params.agentId ?? null,
@@ -118,7 +125,7 @@ export async function getEmailCampaigns(brokerageId: string, agentId?: string) {
     const supabase = await createClient()
 
     let query = supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("*")
       .eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false })
@@ -148,7 +155,7 @@ export async function getEmailCampaign(campaignId: string) {
     const supabase = await createClient()
 
     const { data, error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("*")
       .eq("id", campaignId)
       .maybeSingle()
@@ -177,7 +184,7 @@ export async function updateEmailCampaign(
     const supabase = await createClient()
 
     const { data: existing } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
@@ -196,7 +203,7 @@ export async function updateEmailCampaign(
     if (updates.approvalStatus !== undefined) payload.approval_status = updates.approvalStatus
 
     const { data, error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .update(payload)
       .eq("id", campaignId)
       .select()
@@ -223,7 +230,7 @@ export async function deleteEmailCampaign(campaignId: string) {
     const supabase = await createClient()
 
     const { data: existing } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("status")
       .eq("id", campaignId)
       .maybeSingle()
@@ -234,7 +241,7 @@ export async function deleteEmailCampaign(campaignId: string) {
     }
 
     const { error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .delete()
       .eq("id", campaignId)
 
@@ -320,7 +327,7 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
     const supabase = await createClient()
 
     const { data: campaign } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("*")
       .eq("id", campaignId)
       .maybeSingle()
@@ -340,7 +347,7 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
 
     // Mark as sent
     const { error: updateError } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .update({
         status: "sent",
         send_date: new Date().toISOString(),
@@ -381,7 +388,7 @@ export async function scheduleEmailCampaign(
     const supabase = await createClient()
 
     const { data: existing } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .select("status, content, subject_line")
       .eq("id", campaignId)
       .maybeSingle()
@@ -392,7 +399,7 @@ export async function scheduleEmailCampaign(
     if (!existing.subject_line) return { success: false, error: "Add a subject line before scheduling" }
 
     const { data, error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .update({
         status: "scheduled",
         send_date: scheduledDate,
@@ -423,7 +430,7 @@ export async function getEmailCampaignStats(brokerageId: string) {
 
     const [campaignsResult, subscribersResult] = await Promise.all([
       supabase
-        .from("newsletter_campaigns")
+        .from("email_campaigns")
         .select("id, status, open_rate, click_rate")
         .eq("brokerage_id", brokerageId),
       supabase
@@ -505,7 +512,7 @@ export async function prepareListingEmailCampaign(params: {
     const brokerageId = (listing as any).brokerage_id ?? transaction.brokerage_id ?? null
 
     const { data: campaign, error } = await supabase
-      .from("newsletter_campaigns")
+      .from("email_campaigns")
       .insert({
         brokerage_id: brokerageId,
         agent_id: transaction.agent_id,
@@ -543,7 +550,7 @@ export async function prepareListingEmailCampaign(params: {
       .single()
 
     if (template) {
-      await supabase.from("newsletter_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
+      await supabase.from("email_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
     }
 
     const uniqueRecipients = [...new Set(recipients.filter(Boolean))]
