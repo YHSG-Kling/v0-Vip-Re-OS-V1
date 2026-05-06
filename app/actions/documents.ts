@@ -477,6 +477,66 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
       }
     }
 
+    // Step 9: Trigger compliance-pass workflow chains when scan PASSES on
+    // a contract document. Each chain self-decides whether to act on its
+    // trigger event (e.g. listing-agreement → auto-create listing,
+    // executed purchase-agreement → auto-create transaction).
+    if (signatureScan?.overallStatus === "pass" && docRecord?.brokerage_id) {
+      try {
+        const { triggerChainsForEvent } = await import("./workflow-orchestrator")
+
+        const baseExtracted = {
+          propertyAddress: classification.key_fields?.property_address ?? null,
+          listPrice: classification.key_fields?.list_price ?? classification.key_fields?.listing_price ?? null,
+          listDate: classification.key_fields?.list_date ?? null,
+          expirationDate: classification.key_fields?.expiration_date ?? null,
+          commissionRate: classification.key_fields?.commission_rate ?? null,
+          purchasePrice: classification.key_fields?.purchase_price ?? null,
+          earnestMoneyAmount: classification.key_fields?.earnest_money ?? null,
+          inspectionDeadline: classification.key_fields?.inspection_deadline ?? null,
+          appraisalDeadline: classification.key_fields?.appraisal_deadline ?? null,
+          financingDeadline: classification.key_fields?.financing_deadline ?? null,
+          closingDate: classification.key_fields?.closing_date ?? null,
+          contractDate: classification.key_fields?.contract_date ?? null,
+          buyerName: classification.key_fields?.buyer_name ?? null,
+          sellerName: classification.key_fields?.seller_name ?? null,
+          city: classification.key_fields?.city ?? null,
+          state: classification.key_fields?.state ?? null,
+          zipCode: classification.key_fields?.zip_code ?? null,
+        }
+
+        if (classification.document_type === "listing_agreement") {
+          await triggerChainsForEvent({
+            eventType: "compliance.listing_agreement_passed",
+            brokerageId: docRecord.brokerage_id,
+            contactId: docRecord.contact_id ?? null,
+            metadata: {
+              document_id: docRecord.id,
+              extracted: baseExtracted,
+              signature_scan: signatureScan,
+            },
+          })
+        } else if (classification.document_type === "purchase_agreement") {
+          // Only auto-create transaction when there is an offer record but
+          // no transaction yet; otherwise existing applyContractExtraction
+          // path above updates the existing transaction.
+          await triggerChainsForEvent({
+            eventType: "compliance.executed_offer_passed",
+            brokerageId: docRecord.brokerage_id,
+            contactId: docRecord.contact_id ?? null,
+            metadata: {
+              document_id: docRecord.id,
+              offer_id: classification.key_fields?.offer_id ?? null,
+              extracted: baseExtracted,
+              signature_scan: signatureScan,
+            },
+          })
+        }
+      } catch (chainErr) {
+        console.error("[v0] Compliance-pass chain trigger failed:", chainErr)
+      }
+    }
+
     // Log activity (fire-and-forget)
     supabase.from("activities").insert({
       brokerage_id: docRecord?.brokerage_id ?? null,

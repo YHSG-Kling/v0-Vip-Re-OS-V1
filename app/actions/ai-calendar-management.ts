@@ -96,23 +96,63 @@ export async function createAppointment(params: {
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
 
-    // Auto-trigger listing appointment prep for consultation appointments
+    // Auto-trigger listing appointment prep workflow chain for consultation appointments.
+    // The chain runs CMA → presentation → chapter videos → drip in sequence.
     if (params.type === "listing_consultation" && params.contactId && data?.id) {
       try {
-        const { enrollContactInSequence } = await import("@/app/actions/campaign-sequences")
-        // Look up the listing-appointment-drip sequence by name
-        const { data: seq } = await supabase
-          .from("campaign_sequences")
-          .select("id")
-          .eq("brokerage_id", params.brokerageId)
-          .ilike("name", "%listing%appt%drip%")
-          .limit(1)
+        // Resolve agent user_id from agents.id (chain context expects auth user_id)
+        const { data: agentRow } = await supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", params.agentId)
           .maybeSingle()
-        if (seq?.id) {
-          await enrollContactInSequence({ sequenceId: seq.id, contactId: params.contactId }).catch(() => null)
+
+        // Enrich property data from location string via Perplexity address lookup.
+        // If location is empty or lookup fails, the chain still runs but the CMA
+        // step will fail and surface that to the agent.
+        let propertyData: Record<string, any> = { address: params.location ?? null }
+        if (params.location) {
+          try {
+            const { lookupAddressAction } = await import("@/app/actions/address-lookup")
+            // Best-effort split: "123 Main St, Tampa, FL 33601"
+            const parts = params.location.split(",").map((s) => s.trim())
+            const lookup = await lookupAddressAction({
+              address: parts[0] ?? params.location,
+              city: parts[1] ?? "",
+              state: (parts[2] ?? "").split(/\s+/)[0] ?? "",
+              zip: (parts[2] ?? "").split(/\s+/)[1],
+            })
+            propertyData = {
+              address: parts[0] ?? params.location,
+              city: parts[1] ?? null,
+              state: (parts[2] ?? "").split(/\s+/)[0] ?? null,
+              zip: (parts[2] ?? "").split(/\s+/)[1] ?? null,
+              bedrooms: lookup.beds ?? null,
+              bathrooms: lookup.baths ?? null,
+              sqft: lookup.sqft ?? null,
+              propertyType: lookup.propertyType ?? "single_family",
+            }
+          } catch {
+            // Non-fatal — chain CMA step will report missing data
+          }
         }
-      } catch {
-        // Non-critical: don't fail appointment creation if sequence enrollment fails
+
+        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
+        await triggerChainsForEvent({
+          eventType: "listing.appointment_set",
+          brokerageId: params.brokerageId,
+          contactId: params.contactId,
+          agentUserId: agentRow?.user_id ?? null,
+          metadata: {
+            appointment_id: data.id,
+            appointment_date: params.startTime,
+            property_data: propertyData,
+          },
+        })
+      } catch (err) {
+        // Non-critical: appointment is scheduled even if chain trigger fails.
+        // The error is logged for follow-up.
+        console.error("[createAppointment] listing-appt-prep chain trigger failed:", err)
       }
     }
 
