@@ -43,13 +43,20 @@ interface AvmRequest {
   /** Cached AVM if we've fetched recently — used by the cache-hit short circuit */
   cachedValue?: number | null
   cachedAt?: string | null
-  /** Stale threshold in days — within this window we use cached */
+  /** Stale threshold in days — within this window we use cached. Default 14. */
   cacheStaleAfterDays?: number
   /** Allow caller to skip certain providers (e.g., for testing) */
   skipProviders?: AvmSource[]
+  /**
+   * When true, fall through to PAID providers (HouseCanary, BatchData,
+   * ZenRows/Zillow) as Tier 2/3 if Perplexity returns nothing confident.
+   * Default false — agents pay only when they explicitly request a Premium
+   * CMA before a listing appointment via runAiCma({ mode: 'premium' }).
+   */
+  usePaidProviders?: boolean
 }
 
-const DEFAULT_CACHE_STALE_DAYS = 30
+const DEFAULT_CACHE_STALE_DAYS = 14
 
 /**
  * Get the current AVM. Cascades through providers until one returns a
@@ -72,37 +79,41 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
     }
   }
 
-  // ── 1. HouseCanary (best accuracy) ─────────────────────────────────────
-  if (!skip.has("housecanary") && process.env.HOUSECANARY_API_KEY) {
-    const hc = await tryHouseCanary(req)
-    if (hc && hc.confidence >= 0.6) return hc
-  }
-
-  // ── 2. BatchData ────────────────────────────────────────────────────────
-  if (!skip.has("batchdata") && process.env.BATCHDATA_API_KEY) {
-    const bd = await tryBatchData(req)
-    if (bd && bd.confidence >= 0.6) return bd
-  }
-
-  // ── 3. ZenRows + Zillow ────────────────────────────────────────────────
-  if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
-    const zen = await tryZillowViaZenRows(req)
-    if (zen && zen.confidence >= 0.55) return zen
-  }
-
-  // ── 4. Perplexity Sonar (live context AVM) ──────────────────────────────
+  // ── 1. Perplexity Sonar (FREE Tier 1, primary) ─────────────────────────
+  // ~$0.01/call via web-search-grounded AI. No rate limits, always-current.
+  // This is the default value source — daily background work, dashboard
+  // reads, wealth/PLS scans all flow through here when cache is stale.
   if (!skip.has("perplexity")) {
     const px = await tryPerplexitySonar(req)
     if (px && px.confidence >= 0.5) return px
   }
 
-  // ── 5. OSINT public records (sale records + nearby comps) ──────────────
+  // ── 2. OSINT public records (free fallback) ────────────────────────────
   if (!skip.has("osint")) {
     const os = await tryOsintPublicRecords(req)
     if (os && os.confidence >= 0.45) return os
   }
 
-  // ── 6. Market appreciation fallback ────────────────────────────────────
+  // ── 3. Paid providers — agent-triggered Premium CMA only ───────────────
+  // Caller must pass usePaidProviders=true to opt into these. The standard
+  // entry point for that is runAiCma({ mode: 'premium' }) which sets the
+  // flag explicitly. Daily background work never sets it.
+  if (req.usePaidProviders) {
+    if (!skip.has("housecanary") && process.env.HOUSECANARY_API_KEY) {
+      const hc = await tryHouseCanary(req)
+      if (hc && hc.confidence >= 0.6) return hc
+    }
+    if (!skip.has("batchdata") && process.env.BATCHDATA_API_KEY) {
+      const bd = await tryBatchData(req)
+      if (bd && bd.confidence >= 0.6) return bd
+    }
+    if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
+      const zen = await tryZillowViaZenRows(req)
+      if (zen && zen.confidence >= 0.55) return zen
+    }
+  }
+
+  // ── 4. Market appreciation fallback ────────────────────────────────────
   // Take the cached value (even if stale) and apply zip-level appreciation.
   if (req.cachedValue && req.zipCode) {
     const adjusted = await marketAppreciationFallback(req.cachedValue, req.zipCode, req.cachedAt)

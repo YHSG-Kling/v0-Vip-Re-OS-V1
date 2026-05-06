@@ -10,15 +10,18 @@
  *   - equity_milestone          — equity passed a round-number threshold
  *                                 (first time crossing $100k, $250k, $500k, $1M)
  *
- * COST DISCIPLINE:
- *   - Reads CACHED home_value_estimate (no AVM API call in daily cron)
- *   - Reads ONE market rate row per day (refreshed by separate cron)
- *   - Refreshes AVM only when an opportunity fires AND cached value > 6 months old
- *   - Refresh budgeted: max N AVM calls per brokerage per day
+ * VALUE FRESHNESS:
+ *   - getCurrentAvm() uses Perplexity AI-CMA as Tier 1 (~$0.01 per call)
+ *   - Cache window: 14 days. Stale values auto-refresh every cron run.
+ *   - No daily budget cap on refreshes — Perplexity cost is small enough that
+ *     keeping data current beats budgeting against it.
+ *   - Premium paid providers only fire via runAiCma({ mode: 'premium' }) on
+ *     agent click, never from this background scan.
  *
  * AI generation: one OpenAI/Claude call per opportunity (~$0.005). For 5000
  * lifetime customers with ~15% triggering an opportunity, that's ~750 calls/day
- * = ~$4/day or $1,500/year per brokerage.
+ * = ~$4/day or $1,500/year per brokerage. Plus AVM refresh: 5000 stale × $0.01
+ * spread over 14 days = ~$3.50/day. Total ~$2,700/year per 5000-LC brokerage.
  */
 
 import "server-only"
@@ -28,12 +31,10 @@ import { getCurrentAvm } from "@/lib/avm/provider-chain"
 
 const REFI_OPPORTUNITY_BPS_THRESHOLD = 100   // 1.0% rate drop
 const EQUITY_MILESTONES = [100_000, 250_000, 500_000, 1_000_000]
-const DEFAULT_AVM_REFRESH_BUDGET_PER_BROKERAGE = 25  // per day
 
 interface RunOptions {
   brokerageId?: string
   maxContactsPerBrokerage?: number
-  avmRefreshBudgetPerBrokerage?: number
 }
 
 export async function runDailyWealthScan(opts?: RunOptions): Promise<{
@@ -45,7 +46,6 @@ export async function runDailyWealthScan(opts?: RunOptions): Promise<{
 }> {
   const supabase = createServiceClient()
   const limit = opts?.maxContactsPerBrokerage ?? 500
-  const avmBudget = opts?.avmRefreshBudgetPerBrokerage ?? DEFAULT_AVM_REFRESH_BUDGET_PER_BROKERAGE
 
   // 1. Today's market rates
   const marketRate = await getOrFetchTodaysMarketRate()
@@ -70,7 +70,7 @@ export async function runDailyWealthScan(opts?: RunOptions): Promise<{
   let totals = zeroResult()
 
   for (const b of brokerages) {
-    const r = await processBrokerageWealthScan(b.id, marketRate, limit, avmBudget)
+    const r = await processBrokerageWealthScan(b.id, marketRate, limit)
     totals.brokeragesProcessed++
     totals.contactsProcessed += r.contactsProcessed
     totals.opportunitiesCreated += r.opportunitiesCreated
@@ -84,8 +84,7 @@ export async function runDailyWealthScan(opts?: RunOptions): Promise<{
 async function processBrokerageWealthScan(
   brokerageId: string,
   marketRate: MarketRate,
-  contactLimit: number,
-  avmBudget: number
+  contactLimit: number
 ): Promise<{
   contactsProcessed: number
   opportunitiesCreated: number
@@ -152,8 +151,6 @@ async function processBrokerageWealthScan(
         contact: c,
         prior,
         marketRate,
-        // Refresh AVM only if cached value is missing OR > 6 months old AND budget remains
-        canRefreshAvm: avmRefreshes < avmBudget,
       })
       if (opportunities.refreshedAvm) avmRefreshes++
 
@@ -247,20 +244,20 @@ async function detectOpportunities(input: {
   }
   prior?: { purchase_price: number | null; close_date: string | null }
   marketRate: MarketRate
-  canRefreshAvm: boolean
 }): Promise<{ opportunities: DetectedOpportunity[]; refreshedAvm: boolean }> {
-  const { contact, prior, marketRate, canRefreshAvm } = input
+  const { contact, prior, marketRate } = input
   const opportunities: DetectedOpportunity[] = []
   let refreshedAvm = false
   let avm = contact.home_value_estimate ?? null
 
-  // Refresh AVM if missing OR stale (>180 days) AND budget remains
+  // Refresh AVM if missing or stale (>14 days). Free Perplexity AI-CMA, no
+  // budget cap — keeping the value current beats stale-data risk.
   const needsRefresh =
     !avm ||
     !contact.last_enriched_at ||
-    Date.now() - new Date(contact.last_enriched_at).getTime() > 180 * 24 * 60 * 60 * 1000
+    Date.now() - new Date(contact.last_enriched_at).getTime() > 14 * 24 * 60 * 60 * 1000
 
-  if (needsRefresh && canRefreshAvm && contact.address) {
+  if (needsRefresh && contact.address) {
     const fresh = await getCurrentAvm({
       address: contact.address,
       city: contact.city,
@@ -268,7 +265,7 @@ async function detectOpportunities(input: {
       zipCode: contact.zip_code,
       cachedValue: avm,
       cachedAt: contact.last_enriched_at,
-      cacheStaleAfterDays: 180,
+      cacheStaleAfterDays: 14,
     })
     if (fresh && fresh.value > 0) {
       avm = fresh.value

@@ -34,7 +34,6 @@ export async function GET(request: Request) {
   try {
     const summary = await runDailyWealthScan({
       maxContactsPerBrokerage: 500,
-      avmRefreshBudgetPerBrokerage: 25,
     })
     await recordCronSuccessAction({
       context_id: ctx.data.context_id,
