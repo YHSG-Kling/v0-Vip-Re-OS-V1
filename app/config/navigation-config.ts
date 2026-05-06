@@ -592,6 +592,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'divider3', divider: true },
       { id: 'system-health', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
       { id: 'ai-audit', label: 'AI Audit', href: '/admin/ai-audit', icon: 'Eye' },
+      { id: 'system-providers', label: 'API Providers', href: '/dashboard/admin/system/providers', icon: 'Server' },
       { id: 'integrations', label: 'Integrations', href: '/admin/integrations', icon: 'Plug' },
       { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },
     ],
