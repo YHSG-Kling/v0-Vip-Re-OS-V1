@@ -1303,7 +1303,8 @@ export default function CRMPage() {
                     className="w-full gap-1.5 text-xs justify-start"
                     onClick={async () => {
                       if (!selectedContactId || !user) return
-                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id })
+                      // Agent-triggered scoring: mode='override' lets AI overwrite the lead_score baseline
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id, mode: "override" })
                       if (result.success && (result as any).scores) {
                         const overall = (result as any).scores.overallScore ?? 0
                         setLeadScores(prev => ({

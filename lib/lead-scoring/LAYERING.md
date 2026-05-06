@@ -56,9 +56,28 @@ contributors don't add a fifth or bypass a layer.
 4. **No new scoring functions.** If you need new logic, add it as a factor inside Layer 1 (deterministic) or as a signal source inside Layer 3 (additive). Do not create a fifth top-level scorer.
 5. **`lead_score_history` is the single audit log** for all score changes regardless of which layer wrote them.
 
-## Open work (deferred to follow-up commit)
+## Enforcement state (current)
 
-- Audit every callsite of every scoring function and document the call graph
-- Add a runtime guard: `scoreLeadWithAI` checks a `mode: 'override' | 'refine'` parameter; in `'refine'` mode it does not write `lead_score`
-- Migrate `ai-auto-response.ts:calculateLeadScore` to delegate to the lead-management service
+Confirmed writers of `contacts.lead_score`:
+
+| Writer | Status |
+|---|---|
+| `lib/services/lead-management.service.ts:calculateLeadScore` | ✅ CANONICAL — uses Layer 1 (multi-factor) baseline + 30% behavioral refinement |
+| `lib/lead-governance/multi-factor-scorer.ts:calculateLeadScore` | ✅ Layer 1 algorithm — called by orchestrator + govern-lead |
+| `app/actions/lead-governance/govern-lead.ts` | ✅ Calls multi-factor directly (canonical); writes via lifecycle pipeline |
+| `app/actions/ai-lead-scoring.ts:scoreLeadWithAI` | ✅ MODE-GATED — `override` writes lead_score (agent UI only); `refine` (default) writes AI-nuanced columns only |
+| `app/actions/ai-lead-nurturing.ts` | ✅ NO LONGER writes lead_score — writes engagement_score / intent_score / ai_insights blob only |
+| `app/actions/ai-auto-response.ts:calculateLeadScore` | ⚠️ Writes to separate `lead_scores` TABLE (not `contacts.lead_score` column) — different concern; deprecated for new callers |
+
+Confirmed callers of `scoreLeadWithAI`:
+
+| Caller | Mode | Reason |
+|---|---|---|
+| CRM page "Run AI Score" button | `override` | explicit agent action |
+| ai-lead-scoring.ts internal bulk rescore | default `refine` | background |
+
+## Open follow-ups (lower priority)
+
+- `ai-auto-response.ts:calculateLeadScore` writes to separate `lead_scores` table — review whether this table should be merged with `lead_score_history` or kept as a per-agent attribution log
 - Add a CI check: any new function named `calculateLeadScore` or `scoreLead*` blocks the commit
+- Add metrics: track which layer last wrote each contact's score so we can audit drift

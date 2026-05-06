@@ -105,13 +105,20 @@ ${JSON.stringify(emailActivity?.slice(0, 10), null, 2)}
 Provide scores 0-100 for each category, identify positive/negative factors, and recommend next actions.`,
     })
 
-    // Update contact with AI score
+    // AI-derived nurturing scores. Per lib/lead-scoring/LAYERING.md:
+    //   - DO NOT write lead_score from this background analysis (Layer 1
+    //     multi-factor owns the baseline). Write AI-nuanced columns + the
+    //     ai_insights metadata blob only.
+    //   - If you need to refresh lead_score, call the canonical orchestrator
+    //     `calculateLeadScore` from `lib/services/lead-management.service`.
     await supabase
       .from("contacts")
       .update({
-        lead_score: analysis.overallScore,
+        engagement_score: analysis.engagementScore,
+        intent_score: analysis.intentScore,
         ai_insights: {
           lastScored: new Date().toISOString(),
+          aiOverallScore: analysis.overallScore,  // surfaced for agent reference, not the canonical lead_score
           engagementScore: analysis.engagementScore,
           intentScore: analysis.intentScore,
           timelineScore: analysis.timelineScore,
