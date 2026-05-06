@@ -11,6 +11,8 @@ import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2 } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
+import { ShellProvider, useShell } from './shell-context'
+import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import type { BadgeCounts } from '@/app/types/navigation'
 
 const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -140,35 +142,49 @@ export function AppShell({ children }: AppShellProps) {
   const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
 
   return (
-    <div className="flex h-screen bg-white">
-      <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
-        <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
-      </div>
+    <ShellProvider>
+      <div className="flex h-screen bg-white">
+        <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
+          <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
+        </div>
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header navigation={navigation} userContext={safeUserContext} />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <Header navigation={navigation} userContext={safeUserContext} />
 
-        <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
-          <div className="h-full">{children}</div>
-        </main>
+          <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
+            <div className="h-full">{children}</div>
+          </main>
 
-        {!hideBottomNav && (
-          <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
-            <MobileBottomNav items={navigation.mobileBottomNav} />
-          </div>
+          {!hideBottomNav && (
+            <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
+              <MobileBottomNav items={navigation.mobileBottomNav} />
+            </div>
+          )}
+        </div>
+
+        {/* Internal AI Assistant — staff roles only */}
+        {showAIAssistant && (
+          <InternalAIAssistant
+            role={primaryRole}
+            userId={safeUserContext.id}
+          />
         )}
+
+        {/* Cmd+K Command Palette — available to all authenticated users */}
+        <CommandPalette />
+
+        {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
+        <ShellInboxOutlet />
       </div>
-
-      {/* Internal AI Assistant — staff roles only */}
-      {showAIAssistant && (
-        <InternalAIAssistant
-          role={primaryRole}
-          userId={safeUserContext.id}
-        />
-      )}
-
-      {/* Cmd+K Command Palette — available to all authenticated users */}
-      <CommandPalette />
-    </div>
+    </ShellProvider>
   )
+}
+
+/**
+ * Inner outlet that consumes ShellContext so the slide-out can be controlled
+ * from anywhere in the app via the header buttons or `U` keystroke.
+ */
+function ShellInboxOutlet() {
+  const { inboxOpen, setInboxOpen } = useShell()
+  return <UnifiedInboxSlideOut open={inboxOpen} onOpenChange={setInboxOpen} />
 }
