@@ -34,6 +34,8 @@ import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 import { PredictiveListingCard } from "./components/predictive-listing-card"
 import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
+import { DealRiskWidget } from "./components/deal-risk-widget"
+import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 
@@ -70,6 +72,7 @@ export default function AgentDashboard() {
     triggeringSignals: Array<{ key: string; label: string }> | null
   }>>([])
   const [userId, setUserId] = useState("")
+  const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -127,6 +130,15 @@ export default function AgentDashboard() {
           })
             .then(setQueuedAutoTouches)
             .catch(() => setQueuedAutoTouches([]))
+
+          // Deal Risk Radar — at-risk + critical transactions for this agent
+          getAgentAtRiskTransactions({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskTxns)
+            .catch(() => setAtRiskTxns([]))
         }
 
         // 4. Calculate month start
@@ -384,6 +396,8 @@ export default function AgentDashboard() {
             queuedAutoTouches={queuedAutoTouches}
           />
         )}
+
+        {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
 
         {(hotLeads.length > 0 || loading) && (
           <AgentHotLeadsPanel

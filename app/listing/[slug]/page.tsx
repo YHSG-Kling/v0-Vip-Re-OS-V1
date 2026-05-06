@@ -31,6 +31,63 @@ interface PageProps {
   }>
 }
 
+/**
+ * Social meta for rich previews when sellers share their listing on
+ * Facebook, LinkedIn, Twitter, iMessage, etc. OpenGraph + Twitter Card +
+ * canonical URL. Falls back gracefully when the listing isn't found.
+ */
+export async function generateMetadata({ params }: PageProps) {
+  const { slug } = await params
+  const listing = await getListingBySlug(slug)
+  if (!listing) {
+    return { title: "Listing", description: "Real estate listing" }
+  }
+  const l = listing as unknown as {
+    address?: string
+    city?: string
+    state?: string
+    zip?: string
+    list_price?: number
+    bedrooms?: number
+    bathrooms?: number
+    square_feet?: number
+    photos?: Array<{ url?: string }>
+    description?: string
+    slug: string
+  }
+  const title = `${l.address ?? "Property"} — ${[l.city, l.state].filter(Boolean).join(", ")}`
+  const priceLabel = l.list_price ? `$${l.list_price.toLocaleString()}` : null
+  const features = [
+    l.bedrooms ? `${l.bedrooms} bed` : null,
+    l.bathrooms ? `${l.bathrooms} bath` : null,
+    l.square_feet ? `${l.square_feet.toLocaleString()} sqft` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+  const description = [priceLabel, features, l.description?.slice(0, 140)]
+    .filter(Boolean)
+    .join(" · ")
+  const heroImage = l.photos?.[0]?.url ?? null
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "website",
+      images: heroImage ? [{ url: heroImage, width: 1200, height: 630, alt: title }] : [],
+      siteName: "Listing",
+    },
+    twitter: {
+      card: heroImage ? "summary_large_image" : "summary",
+      title,
+      description,
+      images: heroImage ? [heroImage] : [],
+    },
+  }
+}
+
 export default async function ListingLandingPage({ params, searchParams }: PageProps) {
   const { slug } = await params
   const search = await searchParams

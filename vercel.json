@@ -67,6 +67,14 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/wealth-opportunity-scan",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/sphere-resonance",
+      "schedule": "30 7 * * *"
+    },
+    {
       "path": "/api/cron/territory-metrics",
       "schedule": "0 2 * * *"
     },

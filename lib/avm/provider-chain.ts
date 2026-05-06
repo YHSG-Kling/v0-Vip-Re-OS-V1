@@ -117,38 +117,114 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 // Each adapter is a no-op stub returning null. Wiring the real API calls is
 // done in a follow-up session. The cascade runs identically once they're real.
 
-async function tryHouseCanary(_req: AvmRequest): Promise<AvmResult | null> {
-  // POST https://api.housecanary.com/v2/property/value
-  // Auth: Basic <key>:<secret>
-  // Body: { address, zipcode } | { address, city, state }
-  // Response: { property_value: { value, confidence_score } }
-  return null
+async function tryHouseCanary(req: AvmRequest): Promise<AvmResult | null> {
+  if (!req.zipCode) return null
+  try {
+    const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
+    const comps = await fetchHouseCanaryComps({
+      address: req.address,
+      zipCode: req.zipCode,
+      bedrooms: 3,    // sensible default if subject features unknown
+      squareFeet: 1500,
+      maxAgeDays: 180,
+      limit: 10,
+    })
+    if (!comps || comps.length === 0) return null
+    const prices = comps.map((c) => (c as { sale_price?: number }).sale_price ?? 0).filter((p) => p > 0)
+    if (prices.length === 0) return null
+    prices.sort((a, b) => a - b)
+    const median = prices[Math.floor(prices.length / 2)]
+    const confidence = Math.min(0.95, 0.5 + prices.length * 0.05)
+    return {
+      value: median,
+      confidence,
+      source: "housecanary",
+      fetchedAt: new Date().toISOString(),
+      notes: `Median of ${prices.length} HouseCanary sales-history comps`,
+    }
+  } catch {
+    return null
+  }
 }
 
-async function tryBatchData(_req: AvmRequest): Promise<AvmResult | null> {
-  // POST https://api.batchdata.com/api/v1/property/lookup/all-attributes
-  // Auth: Bearer <BATCHDATA_API_KEY>
-  // Response: { results.properties[0].valuation.estimatedValue }
-  return null
+async function tryBatchData(req: AvmRequest): Promise<AvmResult | null> {
+  try {
+    const { enrichPropertyWithBatchData } = await import("@/lib/external/batchdata-client")
+    const result = await enrichPropertyWithBatchData(req.address)
+    if (!result || !result.estimatedValue || result.estimatedValue <= 0) return null
+    return {
+      value: result.estimatedValue,
+      confidence: 0.8,
+      source: "batchdata",
+      fetchedAt: new Date().toISOString(),
+      notes: `BatchData property enrichment (condition: ${result.condition})`,
+    }
+  } catch {
+    return null
+  }
 }
 
-async function tryZillowViaZenRows(_req: AvmRequest): Promise<AvmResult | null> {
-  // GET https://api.zenrows.com/v1/?apikey=<>&url=https://www.zillow.com/homes/<address>_rb/
-  // Parse Zestimate from HTML or schema.org/Place data block
-  return null
+async function tryZillowViaZenRows(req: AvmRequest): Promise<AvmResult | null> {
+  try {
+    const { scrapeWithZenRows } = await import("@/lib/external/zenrows-client")
+    // Zillow URL pattern: /homes/<address>_rb/
+    const slug = req.address.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase()
+    const url = `https://www.zillow.com/homes/${slug}_rb/`
+    const response = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
+    if (!response || !response.body) return null
+    // Parse Zestimate from HTML body — looks for `"zestimate":NUMBER` JSON pattern
+    const m = response.body.match(/"zestimate"\s*:\s*(\d+)/i)
+    if (!m) return null
+    const value = parseInt(m[1], 10)
+    if (!value || value < 10000) return null
+    return {
+      value,
+      confidence: 0.65,
+      source: "zenrows_zillow",
+      fetchedAt: new Date().toISOString(),
+      notes: "Zillow Zestimate scraped via ZenRows",
+    }
+  } catch {
+    return null
+  }
 }
 
-async function tryPerplexitySonar(_req: AvmRequest): Promise<AvmResult | null> {
-  // Uses lib/ai/models.ts → home_value_estimate model (perplexity-sonar)
-  // Prompt asks Perplexity to research the address and return a current value
-  // estimate with citation links. Confidence reflects agreement across cited
-  // sources.
-  return null
+async function tryPerplexitySonar(req: AvmRequest): Promise<AvmResult | null> {
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text } = await generateTextRouted({
+      feature: "home_value_estimate",
+      prompt:
+        `Research the current estimated home value for ${req.address}` +
+        (req.city ? `, ${req.city}` : "") +
+        (req.state ? `, ${req.state}` : "") +
+        (req.zipCode ? ` ${req.zipCode}` : "") +
+        `.\n\nUse Redfin, Zillow Zestimate, Realtor.com, public records, and recent comparable sales within 1 mile in the last 6 months. Return JSON ONLY:\n{ "value": <integer dollars>, "confidence": <0-1 float>, "source_count": <int>, "notes": "<brief>" }\n\nReturn JSON only.`,
+      temperature: 0.2,
+      maxTokens: 400,
+    })
+    const cleaned = text.replace(/```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const match = cleaned.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    const parsed = JSON.parse(match[0]) as { value?: number; confidence?: number; notes?: string }
+    if (!parsed.value || parsed.value < 10000) return null
+    return {
+      value: Math.round(parsed.value),
+      confidence: Math.max(0, Math.min(1, parsed.confidence ?? 0.6)),
+      source: "perplexity",
+      fetchedAt: new Date().toISOString(),
+      notes: parsed.notes,
+    }
+  } catch {
+    return null
+  }
 }
 
 async function tryOsintPublicRecords(_req: AvmRequest): Promise<AvmResult | null> {
-  // Reads from lib/osint-client.ts — assemble value from last-known sale price
-  // + zip-level appreciation since sale date.
+  // OSINT client provides life events + property records but not direct AVM.
+  // Defer to existing osint-client.ts integration; for AVM we rely on the
+  // higher-confidence providers above. Returns null to fall through to
+  // appreciation fallback.
   return null
 }
 
