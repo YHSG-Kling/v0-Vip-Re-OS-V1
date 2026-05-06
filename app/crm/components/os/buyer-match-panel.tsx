@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, CheckCircle2, AlertCircle } from "lucide-react"
+import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, CheckCircle2, AlertCircle, Send } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
   previewSearchIntent,
@@ -21,6 +21,7 @@ import {
   analyzePropertyForBuyer,
   notifyNewMatches,
 } from "@/app/actions/ai-property-matching"
+import { searchAndPushToBuyer } from "@/app/actions/ai-buyer-search-push"
 import { requestShowing } from "@/app/actions/smart-insights"
 import { updateContact } from "@/app/actions/contacts"
 import { toast } from "sonner"
@@ -94,6 +95,9 @@ export function BuyerMatchPanel({
   // Notify new matches
   const [notifyLoading, setNotifyLoading] = useState(false)
   const [notifyResult, setNotifyResult] = useState<{ notified: number } | null>(null)
+  // Send search results to buyer portal
+  const [pushLoading, setPushLoading] = useState(false)
+  const [pushResult, setPushResult] = useState<{ matchCount: number } | null>(null)
   // Analysis Sheet
   const [analysisSheetMatch, setAnalysisSheetMatch] = useState<PropertyMatch | null>(null)
   const [analysisSheetLoading, setAnalysisSheetLoading] = useState(false)
@@ -245,6 +249,26 @@ export function BuyerMatchPanel({
     }
   }
 
+  const handlePushToBuyer = async () => {
+    if (!query.trim()) return
+    setPushLoading(true)
+    setPushResult(null)
+    try {
+      const result = await searchAndPushToBuyer({
+        contactId,
+        searchQuery: query,
+      })
+      if (result.success) {
+        setPushResult({ matchCount: result.matchCount })
+        toast.success(`${result.matchCount} propert${result.matchCount !== 1 ? "ies" : "y"} pushed to ${contactName}'s portal.`)
+      }
+    } catch {
+      toast.error("Push failed. Try again.")
+    } finally {
+      setPushLoading(false)
+    }
+  }
+
   const getMatchScoreColor = (score?: number) => {
     if (!score) return "bg-gray-100 text-gray-600"
     if (score >= 70) return "bg-emerald-100 text-emerald-700"
@@ -354,6 +378,24 @@ export function BuyerMatchPanel({
                 <Sparkles className="h-4 w-4 mr-1" />
               )}
               Use Saved Criteria
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePushToBuyer}
+              disabled={pushLoading || !query.trim()}
+              title="Run this search and push results to the buyer's portal"
+            >
+              {pushLoading ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : pushResult ? (
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+              ) : (
+                <Send className="h-4 w-4 mr-1" />
+              )}
+              {pushResult
+                ? `Sent (${pushResult.matchCount})`
+                : "Send to Buyer"}
             </Button>
           </div>
 

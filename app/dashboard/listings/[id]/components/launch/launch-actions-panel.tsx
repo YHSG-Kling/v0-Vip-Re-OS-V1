@@ -14,6 +14,8 @@ import {
   Loader2,
   Sparkles,
   AlertCircle,
+  Share2,
+  QrCode,
 } from "lucide-react"
 import { generateListingVideo } from "@/app/actions/listing-video"
 
@@ -135,6 +137,14 @@ export function LaunchActionsPanel({
           <Button size="sm" variant="outline" className="w-full text-xs">
             <Home className="h-3.5 w-3.5 mr-1.5" />
             Open House Promotion
+          </Button>
+        </Link>
+
+        {/* Share + QR */}
+        <Link href={`/dashboard/listings/${listingId}/share`}>
+          <Button size="sm" variant="outline" className="w-full text-xs">
+            <QrCode className="h-3.5 w-3.5 mr-1.5" />
+            QR Code & Sharing
           </Button>
         </Link>
 

@@ -16,6 +16,7 @@
 import { useState, useTransition } from "react"
 import { cn } from "@/lib/utils"
 import { createListingWithSellerContact } from "@/app/actions/listings-kernel"
+import { lookupAddressAction } from "@/app/actions/address-lookup"
 import { submitListingForSignature } from "@/app/actions/listing/submit-listing-for-signature"
 import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
 import { Button } from "@/components/ui/button"
@@ -141,6 +142,37 @@ export function ListingInitiationFlow({
     setForm(prev => ({ ...prev, [key]: value }))
   }
 
+  async function handleAutoFill() {
+    if (!form.address.trim() || !form.city.trim() || !form.state) {
+      setLookupMessage("Enter address, city, and state first.")
+      return
+    }
+    setLookupLoading(true)
+    setLookupMessage(null)
+    try {
+      const result = await lookupAddressAction({
+        address: form.address,
+        city: form.city,
+        state: form.state,
+        zip: form.zip || undefined,
+      })
+      const updates: Partial<typeof form> = {}
+      if (result.beds != null)           updates.bedrooms    = String(result.beds)
+      if (result.baths != null)          updates.bathrooms   = String(result.baths)
+      if (result.sqft != null)           updates.sqft        = String(result.sqft)
+      if (result.propertyType)           updates.propertyType = result.propertyType
+      if (Object.keys(updates).length > 0) {
+        setForm((prev) => ({ ...prev, ...updates }))
+        setLookupMessage(`Auto-filled from public records (${result.dataConfidence} confidence). Review and adjust as needed.`)
+      } else {
+        setLookupMessage("No public record data found for this address. Fill in manually.")
+      }
+    } catch {
+      setLookupMessage("Lookup failed. Fill in manually.")
+    }
+    setLookupLoading(false)
+  }
+
   function handleSubmitAddress() {
     if (!form.address.trim() || !form.city.trim() || !form.state) {
       setError("Address, city, and state are required.")
@@ -155,6 +187,8 @@ export function ListingInitiationFlow({
   }
 
   // ── Step 2: Pricing strategy (AI briefing) ───────────────────────────────────
+  const [lookupLoading, setLookupLoading] = useState(false)
+  const [lookupMessage, setLookupMessage] = useState<string | null>(null)
   const [pricingConfirmed, setPricingConfirmed] = useState(false)
 
   function handleConfirmPricing() {
@@ -314,10 +348,29 @@ export function ListingInitiationFlow({
           {/* Property */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Home className="h-4 w-4 text-primary" />
-                Property
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Home className="h-4 w-4 text-primary" />
+                  Property
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5"
+                  onClick={handleAutoFill}
+                  disabled={lookupLoading || !form.address.trim() || !form.city.trim() || !form.state}
+                >
+                  {lookupLoading ? (
+                    <><Loader2 className="h-3 w-3 animate-spin" />Looking up…</>
+                  ) : (
+                    <><Sparkles className="h-3 w-3" />Auto-fill from Address</>
+                  )}
+                </Button>
+              </div>
+              {lookupMessage && (
+                <p className="text-xs text-muted-foreground mt-1">{lookupMessage}</p>
+              )}
             </CardHeader>
             <CardContent className="space-y-3">
               <div>
