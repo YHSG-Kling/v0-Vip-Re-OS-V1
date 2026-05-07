@@ -15,7 +15,8 @@ import { FinancialVerificationPanel } from "@/app/crm/components/financial-verif
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
+import { ContactHeaderCard } from "@/app/crm/components/contact-header-card"
+import { getActiveAutoPilotPlans, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
@@ -96,7 +97,6 @@ import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 
 // Import all 10 Contact OS components
 import {
-  ContactCommandStrip,
   ContactPulsePanel,
   CommunicationHealthPanel,
   NextBestActionPanel,
@@ -696,23 +696,33 @@ export default function CRMPage() {
 
     const supabase = createClient()
 
-    // For sellers, load their listing
-    if (selectedContact.contact_persona === "Listing Seller") {
+    // Load related listing for any seller-type contact (was previously gated on
+    // exact persona "Listing Seller" which most sellers don't have).
+    // Schema: listings.zip (NOT zipcode) — old query failed silently.
+    const isSellerType =
+      (selectedContact.contact_type ?? "").toLowerCase().includes("seller") ||
+      (selectedContact.contact_persona ?? "").toLowerCase().includes("seller")
+
+    if (isSellerType) {
       supabase
         .from("listings")
-        .select("id, address, city, state, zipcode, status, list_price")
+        .select("id, address, city, state, zip, status, list_price")
         .eq("seller_contact_id", selectedContactId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
         .then(({ data }: { data: any | null }) => setRelatedListing(data ?? null))
         .catch(() => setRelatedListing(null))
+    } else {
+      setRelatedListing(null)
     }
 
-    // For all contacts, check for transactions
+    // Related transaction — buyer or seller side.
+    // Schema: transactions.purchase_price + close_date (NOT total_value /
+    // expected_close_date — old query failed silently and always set null).
     supabase
       .from("transactions")
-      .select("id, property_address, stage, total_value, expected_close_date")
+      .select("id, property_address, stage, status, purchase_price, close_date")
       .or(`buyer_contact_id.eq.${selectedContactId},seller_contact_id.eq.${selectedContactId}`)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -804,48 +814,13 @@ export default function CRMPage() {
     }
   }
 
-  // Handlers for OS components
-  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive"): Promise<void> => {
-    if (!selectedContactId || !agentId) return
-    const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-    if (result?.success) {
-      toast.success(result.message ?? "AI Autopilot enabled")
-      const [plans] = await Promise.all([
-        getActiveAutoPilotPlans(agentId).catch(() => []),
-      ])
-      setAutopilotPlans(Array.isArray(plans) ? plans : [])
-      const supabase = createClient()
-      const { data: updatedPlan } = await supabase
-        .from("copilot_plans")
-        .select("id, plan_name, status, next_action, next_action_date, updated_at")
-        .eq("contact_id", selectedContactId)
-        .eq("status", "active")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      setCopilotPlan(updatedPlan ?? null)
-    } else {
-      toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
-    }
-  }
+  // Note: legacy handleEnableAutopilot / handleToggleAutopilot were removed.
+  // AI engagement is now controlled exclusively through AIPilotControl ->
+  // setContactAIPilot(), which writes contacts.ai_autopilot_level (single
+  // source of truth). The old enableAIPilot() action wrote to a separate
+  // ai_autopilot_plans table that never synced and always returned
+  // Unauthorized due to a user.id vs agents.id comparison mismatch.
 
-  const handleToggleAutopilot = async (planId: string, pause: boolean) => {
-    startTransition(async () => {
-      const result = await toggleAutoPilot(planId, pause)
-      if (!(result as any).success) {
-        toast.error((result as any).error ?? "Failed to update autopilot")
-        return
-      }
-      if (pause) {
-        setAutopilotPlans(prev => prev.filter(p => p.id !== planId))
-      }
-      if (agentId) {
-        const plans = await getActiveAutoPilotPlans(agentId)
-        setAutopilotPlans(Array.isArray(plans) ? plans : [])
-      }
-      toast.success(pause ? "AI Autopilot paused" : "AI Autopilot resumed")
-    })
-  }
 
   const handleShareSocialPost = async () => {
     if (!selectedContactId) return
@@ -1064,137 +1039,66 @@ export default function CRMPage() {
           </div>
         ) : (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            {/* Contact Command Strip — full width */}
+            {/* Consolidated Contact Header — replaces the old gradient
+                ContactCommandStrip and absorbs the redundant sidebar identity
+                area. Single home for: identity, contact info, source/last touch,
+                action buttons (Call/SMS/Email/Portal/Note), AI Pilot dropdown,
+                channel suppression toggles. */}
             <div className="shrink-0 px-4 pt-3">
-              <ContactCommandStrip
+              <ContactHeaderCard
                 contact={selectedContact}
-                churnRisk={churnRisk}
-                autopilotPlans={autopilotPlans}
                 agentId={agentId || ""}
                 brokerageId={brokerageId || ""}
-                onEnableAutopilot={handleEnableAutopilot}
-                onToggleAutopilot={handleToggleAutopilot}
-                onShareSocialPost={handleShareSocialPost}
-                onChannelToggled={() => { if (selectedContactId) loadContactDetail(selectedContactId) }}
+                daysSinceContact={daysSinceContact}
+                churnRisk={churnRisk}
+                aiPilotLevel={
+                  ((contactIntelligence as any)?.ai_autopilot_level ?? null) ||
+                  (contactIntelligence?.ai_isa_enabled ? "moderate" : "off")
+                }
+                onAIPilotChange={(level) => {
+                  setContactIntelligence((prev: any) =>
+                    prev
+                      ? { ...prev, ai_autopilot_level: level, ai_isa_enabled: level !== "off" }
+                      : prev
+                  )
+                }}
                 onAddNote={() => setActiveTab("comms")}
-                loading={isPending}
+                onSendSMS={() => { setSmsText(""); setSmsDialogOpen(true) }}
+                onSendEmail={() => setActiveTab("comms")}
+                onShareSocialPost={handleShareSocialPost}
+                onChannelToggle={async (channel, optOut) => {
+                  const supabase = createClient()
+                  const col =
+                    channel === "email"       ? "email_opt_out" :
+                    channel === "sms"         ? "sms_opt_out" :
+                    channel === "phone"       ? "phone_opt_out" :
+                                                "direct_mail_opt_out"
+                  await supabase.from("contacts").update({ [col]: optOut }).eq("id", selectedContactId)
+                  if (selectedContactId) loadContactDetail(selectedContactId)
+                }}
               />
             </div>
 
             {/* Two-panel body: sticky sidebar + scrollable tab area */}
             <div className="flex flex-1 min-h-0 overflow-hidden mt-4">
 
-              {/* ── LEFT SIDEBAR — sticky identity panel ── */}
+              {/* ── LEFT SIDEBAR — slim deep-link rail.
+                   Identity, contact info, portal link, AI Pilot, channel toggles,
+                   and the Call/SMS/Email/Note buttons all live in the
+                   ContactHeaderCard above. This sidebar only holds:
+                     - Active Deal (related listing/transaction)
+                     - Quick deep-links that open dialogs or other routes
+                ── */}
               <aside className="w-64 shrink-0 border-r bg-muted/20 flex flex-col overflow-y-auto px-4 py-4 gap-4">
-                {/* Avatar + name */}
-                <div className="flex flex-col items-center text-center gap-2">
-                  <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary">
-                    {selectedContact.first_name?.[0]?.toUpperCase()}
-                    {selectedContact.last_name?.[0]?.toUpperCase()}
+                {/* Portal invite status — small banner at top */}
+                {portalInviteData?.status && (
+                  <div className="rounded-md border bg-background px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Portal</p>
+                    <p className="text-xs font-medium capitalize text-foreground">
+                      {portalInviteData.status === "not_invited" ? "Not invited yet" : portalInviteData.status}
+                    </p>
                   </div>
-                  <div>
-                    <p className="font-semibold text-sm leading-tight">
-                      {selectedContact.first_name} {selectedContact.last_name}
-                    </p>
-                    {selectedContact.contact_persona && (
-                      <p className="text-xs text-muted-foreground capitalize mt-0.5">
-                        {selectedContact.contact_persona.replace(/_/g, " ")}
-                      </p>
-                    )}
-                  </div>
-                  {/* Status + type badges */}
-                  <div className="flex flex-wrap justify-center gap-1">
-                    {selectedContact.contact_type && (
-                      <Badge className={cn("text-xs border-0", TYPE_COLORS[selectedContact.contact_type] ?? TYPE_COLORS.other)}>
-                        {selectedContact.contact_type}
-                      </Badge>
-                    )}
-                    {selectedContact.status && (
-                      <Badge className={cn("text-xs border-0", STATUS_COLORS[selectedContact.status] ?? "bg-gray-100 text-gray-700")}>
-                        {selectedContact.status.replace(/_/g, " ")}
-                      </Badge>
-                    )}
-                  </div>
-
-                  {/* Unified AI Pilot — single source of truth replacing the
-                      old sidebar Switch + strip Autopilot dropdown. */}
-                  {contactIntelligence && (
-                    <div className="pt-1">
-                      <AIPilotControl
-                        contactId={selectedContactId}
-                        initialLevel={
-                          (contactIntelligence as any).ai_autopilot_level ??
-                          (contactIntelligence.ai_isa_enabled ? "moderate" : "off")
-                        }
-                        onChange={(level) => {
-                          setContactIntelligence((prev: any) =>
-                            prev
-                              ? {
-                                  ...prev,
-                                  ai_autopilot_level: level,
-                                  ai_isa_enabled: level !== "off",
-                                }
-                              : prev
-                          )
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <Separator />
-
-                {/* Contact details */}
-                <div className="space-y-2 text-xs">
-                  {selectedContact.email && (
-                    <a href={`mailto:${selectedContact.email}`} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors truncate">
-                      <Mail className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{selectedContact.email}</span>
-                    </a>
-                  )}
-                  {selectedContact.phone && (
-                    <a href={`tel:${selectedContact.phone}`} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
-                      <Phone className="h-3.5 w-3.5 shrink-0" />
-                      <span>{selectedContact.phone}</span>
-                    </a>
-                  )}
-                  {(selectedContact.city || selectedContact.state) && (
-                    <p className="flex items-center gap-2 text-muted-foreground">
-                      <MapPin className="h-3.5 w-3.5 shrink-0" />
-                      <span>{[selectedContact.city, selectedContact.state].filter(Boolean).join(", ")}</span>
-                    </p>
-                  )}
-                  {daysSinceContact !== null && (
-                    <p className={cn("text-xs mt-1 font-medium",
-                      daysSinceContact > 30 ? "text-red-600" :
-                      daysSinceContact > 14 ? "text-amber-600" :
-                      "text-muted-foreground"
-                    )}>
-                      {daysSinceContact === 0 ? "Touched today" :
-                       daysSinceContact === 1 ? "Last touch: yesterday" :
-                       `Last touch: ${daysSinceContact}d ago`}
-                    </p>
-                  )}
-                </div>
-
-                <Separator />
-
-                {/* Portal shortcut — always visible */}
-                <div className="space-y-1.5">
-                  <Link href={`/portal/${selectedContactId}`} target="_blank">
-                    <Button size="sm" variant="default" className="w-full gap-1.5 text-xs">
-                      <Globe className="h-3.5 w-3.5" />
-                      Open Client Portal
-                    </Button>
-                  </Link>
-                  {portalInviteData?.status && (
-                    <p className="text-xs text-center text-muted-foreground capitalize">
-                      Portal: {portalInviteData.status}
-                    </p>
-                  )}
-                </div>
-
-                <Separator />
+                )}
 
                 {/* Quick Actions */}
                 <div className="space-y-1.5">
@@ -1234,7 +1138,7 @@ export default function CRMPage() {
                   <Link href={`/dashboard/inbox?contact=${selectedContactId}`}>
                     <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
                       <MessageSquare className="h-3.5 w-3.5" />
-                      Open Inbox
+                      Full Inbox
                     </Button>
                   </Link>
                   <Button
@@ -1297,15 +1201,6 @@ export default function CRMPage() {
                       Send Portal Invite
                     </Button>
                   )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full gap-1.5 text-xs justify-start"
-                    onClick={() => { setSmsText(""); setSmsDialogOpen(true) }}
-                  >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    Send SMS
-                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
