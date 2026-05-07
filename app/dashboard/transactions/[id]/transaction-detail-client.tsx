@@ -142,7 +142,7 @@ interface TransactionDetailClientProps {
   milestones: Array<{
     id: string
     milestone_name: string
-    milestone_date: string | null
+    target_date: string | null
     status: string
     completed_at: string | null
     notes: string | null
@@ -1082,7 +1082,7 @@ export function TransactionDetailClient({
             d.deadline_type?.toLowerCase().includes(label.toLowerCase())
           )
           const date = found
-            ? new Date((found as any).milestone_date ?? (found as any).deadline_date ?? "")
+            ? new Date((found as any).target_date ?? (found as any).deadline_date ?? "")
             : null
           const completed = (found as any)?.status === "completed" || (found as any)?.status === "done"
           const overdue = !!(date && date < now && !completed)
@@ -1970,8 +1970,8 @@ export function TransactionDetailClient({
                   </div>
                   <div className="space-y-2">
                     {localMilestones.map((m) => {
-                      const isOverdue = m.status !== "completed" && m.milestone_date
-                        ? new Date(m.milestone_date) < new Date()
+                      const isOverdue = m.status !== "completed" && m.target_date
+                        ? new Date(m.target_date) < new Date()
                         : false
                       return (
                       <div key={m.id} className="flex items-center justify-between py-2 border-b last:border-0">
@@ -1995,8 +1995,8 @@ export function TransactionDetailClient({
                           )}>
                             {m.completed_at
                               ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
-                              : m.milestone_date
-                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.milestone_date), "MMM d, yyyy")}`
+                              : m.target_date
+                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.target_date), "MMM d, yyyy")}`
                               : "No date set"}
                           </span>
 

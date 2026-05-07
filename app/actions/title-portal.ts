@@ -155,10 +155,10 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
   // Fetch milestones (filtered to title-visible ones)
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+    .select("id, milestone_name, milestone_type, target_date, completed_date, status")
     .eq("transaction_id", transactionId)
     .in("milestone_name", [...TITLE_VISIBLE_MILESTONES])
-    .order("milestone_date", { ascending: true, nullsFirst: false })
+    .order("target_date", { ascending: true, nullsFirst: false })
 
   // Fetch documents uploaded by title
   const { data: documents } = await supabase

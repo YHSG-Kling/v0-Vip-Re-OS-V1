@@ -102,10 +102,10 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     context.transactionId
       ? supabase
           .from("transaction_milestones")
-          .select("milestone_name, milestone_date, status")
+          .select("milestone_name, target_date, status")
           .eq("transaction_id", context.transactionId)
           .neq("status", "completed")
-          .order("milestone_date", { ascending: true })
+          .order("target_date", { ascending: true })
           .limit(1)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -245,7 +245,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           listingStatus={listing.status}
           hasOffers={offerSummary.total > 0}
           isUnderContract={isUnderContract}
-          nextMilestone={nextMilestone ? { name: nextMilestone.milestone_name, date: nextMilestone.milestone_date, status: nextMilestone.status } : null}
+          nextMilestone={nextMilestone ? { name: nextMilestone.milestone_name, date: nextMilestone.target_date, status: nextMilestone.status } : null}
           closeDate={transaction?.close_date}
         />
 

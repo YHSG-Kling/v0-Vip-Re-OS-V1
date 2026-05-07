@@ -62,7 +62,6 @@ function defaultForm(
     property_address:            propertyAddress,
     offer_price:                 rec?.recommended_price ?? 0,
     earnest_money:               rec?.recommended_earnest ?? 0,
-    earnest_money_amount:        rec?.recommended_earnest ?? 0,
     financing_type:              "conventional",
     financing_contingency:       c?.financing ?? true,
     financing_contingency_days:  c?.financing_days ?? 21,
@@ -388,10 +387,10 @@ export function OfferFormWizard({
         return (
           <div className="space-y-4">
             <Field label="Earnest Money Amount" required>
-              <Input type="number" value={form.earnest_money_amount || ""} onChange={v => {
+              <Input type="number" value={form.earnest_money || ""} onChange={v => {
                 const n = Number(v)
                 set("earnest_money", n)
-                set("earnest_money_amount", n)
+                set("earnest_money", n)
               }} placeholder="0" />
             </Field>
             <div className="rounded-md bg-muted/40 border border-border p-3 text-xs text-muted-foreground">
@@ -541,7 +540,7 @@ export function OfferFormWizard({
                     )}
                   </div>
                   <div><p className="text-xs text-muted-foreground">Price</p><p className="font-medium">${form.offer_price.toLocaleString()}</p></div>
-                  <div><p className="text-xs text-muted-foreground">Earnest</p><p className="font-medium">${form.earnest_money_amount.toLocaleString()}</p></div>
+                  <div><p className="text-xs text-muted-foreground">Earnest</p><p className="font-medium">${form.earnest_money.toLocaleString()}</p></div>
                   <div><p className="text-xs text-muted-foreground">Closing</p><p className="font-medium">{form.closing_date || "TBD"}</p></div>
                 </div>
               </div>
@@ -586,7 +585,7 @@ export function OfferFormWizard({
               <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
                 <div><p className="text-xs text-muted-foreground">Property</p><p className="font-medium">{form.property_address}</p></div>
                 <div><p className="text-xs text-muted-foreground">Offer Price</p><p className="font-medium">${form.offer_price.toLocaleString()}</p></div>
-                <div><p className="text-xs text-muted-foreground">Earnest Money</p><p className="font-medium">${form.earnest_money_amount.toLocaleString()}</p></div>
+                <div><p className="text-xs text-muted-foreground">Earnest Money</p><p className="font-medium">${form.earnest_money.toLocaleString()}</p></div>
                 <div><p className="text-xs text-muted-foreground">Financing</p><p className="font-medium uppercase">{form.financing_type}</p></div>
                 <div><p className="text-xs text-muted-foreground">Financing Contingency</p><p className="font-medium">{form.financing_contingency ? `${form.financing_contingency_days}d` : "Waived"}</p></div>
                 <div><p className="text-xs text-muted-foreground">Inspection</p><p className="font-medium">{form.inspection_contingency ? `${form.inspection_period_days}d` : "Waived"}</p></div>

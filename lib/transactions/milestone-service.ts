@@ -69,7 +69,9 @@ export async function ensureRequiredMilestones(
       transaction_id: transactionId,
       brokerage_id: brokerageId,
       milestone_name: name,
-      milestone_date: contractTerms[name] ? new Date(contractTerms[name] as string).toISOString() : null,
+      target_date: contractTerms[name]
+        ? new Date(contractTerms[name] as string).toISOString().slice(0, 10)
+        : null,
       status: "pending" as const,
       created_at: new Date().toISOString()
     }))
@@ -313,7 +315,7 @@ export async function setMilestoneDate(
   // Get current milestone
   const { data: milestone } = await supabase
     .from("transaction_milestones")
-    .select("milestone_date")
+    .select("target_date")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
     .eq("milestone_name", milestoneName)
@@ -327,7 +329,7 @@ export async function setMilestoneDate(
   const { error: updateError } = await supabase
     .from("transaction_milestones")
     .update({
-      milestone_date: milestoneDate,
+      target_date: milestoneDate,
       updated_at: new Date().toISOString()
     })
     .eq("transaction_id", transactionId)
@@ -344,11 +346,11 @@ export async function setMilestoneDate(
     entityType:  "transaction",
     entityId:    transactionId,
     fromState:   "milestone_pending",
-    toState:     "milestone_date_changed",
+    toState:     "target_date_changed",
     actorUserId: updatedBy,
     actorRole:   "tc",
     eventType:   "milestone.date_changed",
-    metadata:    { milestone_name: milestoneName, previous_date: milestone.milestone_date, new_date: milestoneDate, reason: reason ?? null },
+    metadata:    { milestone_name: milestoneName, previous_date: milestone.target_date, new_date: milestoneDate, reason: reason ?? null },
   })
 }
 
@@ -366,7 +368,7 @@ export async function getMilestones(
     .select("*")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
-    .order("milestone_date", { ascending: true })
+    .order("target_date", { ascending: true })
   
   if (error) {
     throw new Error(`[milestone-service] Failed to get milestones: ${error.message}`)

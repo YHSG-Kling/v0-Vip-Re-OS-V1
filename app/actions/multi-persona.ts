@@ -128,7 +128,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", ["pending", "in_progress"])
-    .order("milestone_date")
+    .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }
 }
@@ -1468,7 +1468,7 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", ["pending", "in_progress"])
-    .order("milestone_date")
+    .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }
 }

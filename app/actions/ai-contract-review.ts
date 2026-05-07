@@ -425,11 +425,15 @@ export async function applyContractExtraction(params: {
     const transactionUpdates: Record<string, unknown> = {}
 
     if (params.extracted.purchasePrice !== null) {
-      transactionUpdates.contract_price = params.extracted.purchasePrice
+      // Schema: transactions.purchase_price (NOT contract_price — that column
+      // doesn't exist on transactions; previous code silently failed the
+      // entire update).
+      transactionUpdates.purchase_price = params.extracted.purchasePrice
     }
-    if (params.extracted.earnestMoneyAmount !== null) {
-      transactionUpdates.earnest_money_amount = params.extracted.earnestMoneyAmount
-    }
+    // earnest_money_amount lives on offers (extracted at offer time) and on
+    // transaction_title_escrow (deposit-tracking). It is NOT a column on
+    // transactions, so we don't try to write it here. Earnest money was
+    // captured when the offer was created.
     if (params.extracted.closingDate !== null) {
       transactionUpdates.close_date = params.extracted.closingDate
     }

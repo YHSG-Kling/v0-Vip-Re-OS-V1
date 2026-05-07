@@ -9,7 +9,7 @@
  *
  * Sources (all confirmed in DB):
  *   1. transaction_tasks (due_date < now, status != completed)
- *   2. transaction_milestones (milestone_date/target_date < now, status != completed)
+ *   2. transaction_milestones (target_date/target_date < now, status != completed)
  *   3. transaction_deadlines (deadline_date < now, status != completed)
  *   4. agents.license_expiry (< now + 60 days)
  *   5. client_gifts (status='pending' and scheduled_delivery < now)
@@ -159,7 +159,7 @@ async function fetchOverdueMilestones(svc: ReturnType<typeof createServiceClient
   if (!scope.elevated && !scope.agentTransactionIds?.length) return []
   let q = svc
     .from("transaction_milestones")
-    .select("id, transaction_id, milestone_name, title, milestone_date, target_date, status")
+    .select("id, transaction_id, milestone_name, title, target_date, target_date, status")
     .neq("status", "completed")
     .limit(100)
 
@@ -168,7 +168,7 @@ async function fetchOverdueMilestones(svc: ReturnType<typeof createServiceClient
   const { data } = await q
   const out: OverdueItem[] = []
   for (const m of data ?? []) {
-    const date = m.target_date ?? m.milestone_date
+    const date = m.target_date ?? m.target_date
     if (!date || date >= scope.today!) continue
     out.push({
       id: `milestone-${m.id}`,

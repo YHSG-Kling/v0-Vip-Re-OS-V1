@@ -19,7 +19,7 @@ interface Transaction {
     id: string
     milestone_name: string
     status: string
-    milestone_date: string | null
+    target_date: string | null
     completed_at: string | null
   }>
 }
@@ -49,7 +49,7 @@ export function TransactionPipelineView({ transactions, userRole }: Props) {
   const getOverdueMilestones = (transaction: Transaction) => {
     return transaction.milestones.filter(m => 
       m.status === 'overdue' || 
-      (m.status === 'pending' && m.milestone_date && new Date(m.milestone_date) < new Date())
+      (m.status === 'pending' && m.target_date && new Date(m.target_date) < new Date())
     )
   }
 

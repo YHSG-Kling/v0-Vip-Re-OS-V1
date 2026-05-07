@@ -101,9 +101,9 @@ export default async function PortalHomePage({
     activeTransaction
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_date, status")
           .eq("transaction_id", activeTransaction.id)
-          .order("milestone_date", { ascending: true, nullsFirst: false })
+          .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Deal team members
     activeTransaction

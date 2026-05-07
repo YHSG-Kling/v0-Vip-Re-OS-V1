@@ -194,7 +194,6 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         listing_id: state.listingId ?? null,
         offer_price: 0,
         earnest_money: 0,
-        earnest_money_amount: 0,
         financing_type: "conventional",
         financing_contingency: true,
         financing_contingency_days: 21,

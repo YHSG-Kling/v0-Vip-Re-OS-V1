@@ -563,7 +563,7 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
         .select("milestone_name")
         .eq("transaction_id", tx.id)
         .eq("status", "pending")
-        .order("milestone_date", { ascending: true })
+        .order("target_date", { ascending: true })
         .limit(1)
         .maybeSingle()
 

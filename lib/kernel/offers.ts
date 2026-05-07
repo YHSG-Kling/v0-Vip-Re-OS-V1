@@ -40,7 +40,6 @@ export interface OfferRow {
   offer_number:                string | null
   offer_price:                 number
   earnest_money:               number | null
-  earnest_money_amount:        number | null
   down_payment_percent:        number | null
   down_payment_amount:         number | null
   financing_type:              string | null
@@ -53,7 +52,6 @@ export interface OfferRow {
   parent_offer_id:             string | null
   current_round:               number | null
   is_winning_offer:            boolean | null
-  winning_offer:               boolean | null
   submitted_at:                string | null
   responded_at:                string | null
   response_deadline:           string | null

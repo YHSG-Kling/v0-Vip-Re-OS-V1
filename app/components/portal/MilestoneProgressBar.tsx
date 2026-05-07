@@ -14,7 +14,7 @@ export interface TransactionMilestone {
   id: string
   milestone_name: string
   milestone_type?: string | null
-  milestone_date: string | null
+  target_date: string | null
   completed_date: string | null
   status: string
 }
@@ -66,8 +66,8 @@ function getMilestoneStatus(milestone: TransactionMilestone): "completed" | "cur
     return "completed"
   }
   // Check if overdue
-  if (milestone.milestone_date) {
-    const dueDate = new Date(milestone.milestone_date)
+  if (milestone.target_date) {
+    const dueDate = new Date(milestone.target_date)
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     if (dueDate < today) {
@@ -87,9 +87,9 @@ export function MilestoneProgressBar({
 }: MilestoneProgressBarProps) {
   // Sort milestones by date
   const sortedMilestones = [...milestones].sort((a, b) => {
-    if (!a.milestone_date) return 1
-    if (!b.milestone_date) return -1
-    return new Date(a.milestone_date).getTime() - new Date(b.milestone_date).getTime()
+    if (!a.target_date) return 1
+    if (!b.target_date) return -1
+    return new Date(a.target_date).getTime() - new Date(b.target_date).getTime()
   })
 
   // Calculate progress
@@ -217,7 +217,7 @@ export function MilestoneProgressBar({
                 >
                   {status === "completed" && milestone.completed_date
                     ? formatDate(milestone.completed_date)
-                    : formatDate(milestone.milestone_date)}
+                    : formatDate(milestone.target_date)}
                 </span>
               </div>
             )

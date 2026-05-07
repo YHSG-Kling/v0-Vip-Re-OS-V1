@@ -242,7 +242,7 @@ export function OfferWorkspace({
               <dl className="space-y-2">
                 {[
                   ["Offer Price",        fmt(offer.offer_price)],
-                  ["Earnest Money",      fmt(offer.earnest_money ?? offer.earnest_money_amount)],
+                  ["Earnest Money",      fmt(offer.earnest_money)],
                   ["Down Payment",       offer.down_payment_percent != null ? `${offer.down_payment_percent}%` : "—"],
                   ["Financing",          offer.financing_type ?? "—"],
                   ["Closing Date",       fmtDate(offer.closing_date)],
@@ -369,7 +369,7 @@ export function OfferWorkspace({
               offerPrice={offer.offer_price}
               listPrice={listing?.list_price ?? null}
               closingCostContribution={offer.closing_cost_contribution ?? null}
-              earnestMoney={offer.earnest_money ?? offer.earnest_money_amount ?? null}
+              earnestMoney={offer.earnest_money ?? null}
               sellerNetEstimate={offer.seller_net_estimate ?? null}
             />
           </div>

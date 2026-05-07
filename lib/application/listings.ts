@@ -24,7 +24,7 @@ export async function getListingsService(params?: {
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.status) query = query.eq("status", params.status)
-    if (params?.stage) query = query.eq("current_stage", params.stage)
+    if (params?.stage) query = query.eq("lifecycle_stage", params.stage)
     if (params?.limit) query = query.limit(params.limit)
 
     const { data, error } = await query

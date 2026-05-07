@@ -198,7 +198,7 @@ export function OfferComparisonView({
             <tr>
               <td className="border border-border px-4 py-3 text-xs font-medium text-muted-foreground bg-muted/10">Earnest Money</td>
               {offers.map((o) => (
-                <Cell key={o.id} value={fmt(o.earnest_money ?? o.earnest_money_amount)} />
+                <Cell key={o.id} value={fmt(o.earnest_money)} />
               ))}
             </tr>
             {/* Down payment */}

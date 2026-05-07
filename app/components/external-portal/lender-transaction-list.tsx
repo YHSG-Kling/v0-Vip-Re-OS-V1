@@ -17,7 +17,7 @@ interface Transaction {
     id: string
     milestone_name: string
     status: string
-    milestone_date: string | null
+    target_date: string | null
     completed_at: string | null
   }>
 }
@@ -84,9 +84,9 @@ export function LenderTransactionList({ transactions, lenderId }: Props) {
                           <Badge variant="secondary" className="text-xs">
                             {milestone.milestone_name.replace(/_/g, ' ')}
                           </Badge>
-                          {milestone.milestone_date && (
+                          {milestone.target_date && (
                             <span className="text-muted-foreground">
-                              Due {new Date(milestone.milestone_date).toLocaleDateString()}
+                              Due {new Date(milestone.target_date).toLocaleDateString()}
                             </span>
                           )}
                         </li>

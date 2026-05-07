@@ -82,7 +82,7 @@ export async function createTransaction(params: CreateTransactionParams) {
     await supabase.from("transaction_milestones").insert({
       transaction_id: data.id,
       milestone_type: "created",
-      milestone_date: new Date().toISOString(),
+      target_date: new Date().toISOString(),
       status: "completed",
       notes: "Transaction created",
     })
@@ -146,7 +146,7 @@ export async function updateTransaction(params: UpdateTransactionParams) {
       await supabase.from("transaction_milestones").insert({
         transaction_id: params.transactionId,
         milestone_type: "status_change",
-        milestone_date: new Date().toISOString(),
+        target_date: new Date().toISOString(),
         status: "completed",
         notes: `Status changed to ${params.updates.status}`,
       })

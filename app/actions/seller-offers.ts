@@ -23,7 +23,6 @@ export async function getOffersForListing(listingId: string) {
       offer_number,
       offer_price,
       earnest_money,
-      earnest_money_amount,
       closing_date,
       financing_type,
       down_payment_amount,
@@ -51,7 +50,6 @@ export async function getOffersForListing(listingId: string) {
       parent_offer_id,
       current_round,
       is_winning_offer,
-      winning_offer,
       submitted_at,
       response_deadline,
       seller_viewed_at,
@@ -97,7 +95,6 @@ export async function acceptOffer(params: {
     .from("offers")
     .update({
       is_winning_offer: true,
-      winning_offer:    true,
       status:           "accepted",
       responded_at:     new Date().toISOString(),
       updated_at:       new Date().toISOString(),
@@ -149,7 +146,7 @@ export async function acceptOffer(params: {
   // happened, so we also revert it before returning).
   const { data: acceptedOffer } = await supabase
     .from("offers")
-    .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount, contact_id")
+    .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, contact_id")
     .eq("id", offerId)
     .single()
 
@@ -157,7 +154,7 @@ export async function acceptOffer(params: {
     // Revert: clear winning status so offer is not stranded
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
       .eq("id", offerId)
     return { success: false, error: "[acceptOffer] Could not load offer data — acceptance rolled back." }
   }
@@ -192,12 +189,12 @@ export async function acceptOffer(params: {
     console.error("[acceptOffer] createTransactionFromOffer HARD FAIL — reverting offer:", err)
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
       .eq("id", offerId)
     // Also clear winning_offer flag on sibling offers we may have cleared
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
       .eq("listing_id", listingId)
     return {
       success: false,
@@ -416,7 +413,7 @@ export async function triggerOfferComparison(params: {
   const { data: offersRaw } = await supabase
     .from("offers")
     .select(`
-      id, offer_number, offer_price, earnest_money, earnest_money_amount,
+      id, offer_number, offer_price, earnest_money,
       closing_date, financing_type, down_payment_amount, down_payment_percent,
       appraisal_contingency_days, financing_contingency_days, inspection_period_days,
       escalation_clause, escalation_cap, appraisal_gap, closing_cost_contribution,

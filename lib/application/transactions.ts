@@ -1897,9 +1897,9 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     // Client-visible milestones
     supabase
       .from("transaction_milestones")
-      .select("id, milestone_name, milestone_date, status, completed_at, notes")
+      .select("id, milestone_name, target_date, status, completed_at, notes")
       .eq("transaction_id", transactionId)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
       .then(r => r.data || []),
     // Client-friendly updates
     supabase
@@ -2034,7 +2034,7 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     timeline: milestones.map((m: any) => ({
       id: m.id,
       name: m.milestone_name,
-      date: m.milestone_date,
+      date: m.target_date,
       status: m.status,
       icon: getMilestoneIcon(m.milestone_name),
       description: m.notes || getDefaultMilestoneDescription(m.milestone_name),

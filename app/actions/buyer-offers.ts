@@ -65,7 +65,6 @@ export interface OfferFormData {
   property_address_ai_filled?: boolean
   offer_price:                 number
   earnest_money:               number
-  earnest_money_amount:        number
   down_payment_amount?:        number
   down_payment_percent?:       number
   financing_type:              string
@@ -419,7 +418,6 @@ export async function createOffer(
       property_address_ai_filled:  form.property_address_ai_filled ?? false,
       offer_price:                 form.offer_price,
       earnest_money:               form.earnest_money,
-      earnest_money_amount:        form.earnest_money_amount,
       down_payment_amount:         form.down_payment_amount ?? null,
       down_payment_percent:        form.down_payment_percent ?? null,
       financing_type:              form.financing_type,

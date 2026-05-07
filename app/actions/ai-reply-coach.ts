@@ -97,7 +97,7 @@ export async function generateAIReplyDraft(
       params.listingId
         ? supabase
             .from("listings")
-            .select("id, address, list_price, current_stage")
+            .select("id, address, list_price, lifecycle_stage")
             .eq("id", params.listingId)
             .maybeSingle()
         : Promise.resolve({ data: null }),
@@ -155,7 +155,7 @@ CONTACT:
 ${listing ? `LISTING CONTEXT:
 - Address: ${listing.address}
 - List Price: $${listing.list_price?.toLocaleString() ?? "TBD"}
-- Stage: ${listing.current_stage ?? "unknown"}
+- Stage: ${listing.lifecycle_stage ?? "unknown"}
 ` : ""}
 
 RECENT THREAD (newest last):

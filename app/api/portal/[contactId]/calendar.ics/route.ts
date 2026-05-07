@@ -32,10 +32,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ cont
         description: `Status: ${s.status || "pending"}`,
       })),
     ...milestones
-      .filter((m: any) => m.milestone_date)
+      .filter((m: any) => m.target_date)
       .map((m: any) => ({
         uid: `milestone-${m.id}@realestate-portal`,
-        dtstart: formatDate(new Date(m.milestone_date)),
+        dtstart: formatDate(new Date(m.target_date)),
         summary: m.milestone_name || m.name || "Transaction Milestone",
         description: `Status: ${m.status || "pending"}`,
       })),

@@ -183,7 +183,7 @@ export async function resolveEducationContext(
       .eq("transaction_id", txId)
       .eq("status", "pending")
       .eq("is_client_visible", true)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
       .maybeSingle()
 
     if (milestone) {

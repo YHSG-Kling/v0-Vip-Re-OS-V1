@@ -271,7 +271,6 @@ export async function acceptOfferConditionally(
       status:           "accepted",
       responded_at:     new Date().toISOString(),
       is_winning_offer: true,
-      winning_offer:    true,
       updated_at:       new Date().toISOString(),
     })
     .eq("id", offerId)
@@ -283,7 +282,6 @@ export async function acceptOfferConditionally(
     .from("offers")
     .update({
       is_winning_offer: false,
-      winning_offer:    false,
       updated_at:       new Date().toISOString(),
     })
     .eq("listing_id", listingId)
@@ -292,7 +290,7 @@ export async function acceptOfferConditionally(
   // Step 3: Create transaction
   const { data: offerRow } = await supabase
     .from("offers")
-    .select("contact_id, offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount")
+    .select("contact_id, offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money")
     .eq("id", offerId)
     .maybeSingle()
 
@@ -312,14 +310,14 @@ export async function acceptOfferConditionally(
     inspectionPeriodDays:    (offerRow as any).inspection_period_days ?? undefined,
     financingContingencyDays: (offerRow as any).financing_contingency_days ?? undefined,
     appraisalContingencyDays: (offerRow as any).appraisal_contingency_days ?? undefined,
-    earnestMoney:       (offerRow as any).earnest_money ?? (offerRow as any).earnest_money_amount ?? undefined,
+    earnestMoney:       (offerRow as any).earnest_money ?? undefined,
   })
 
   if (!txResult.success) {
     // Hard rollback — revert offer status so it is not stranded
     await supabase
       .from("offers")
-      .update({ status: "submitted", responded_at: null, is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+      .update({ status: "submitted", responded_at: null, is_winning_offer: false, updated_at: new Date().toISOString() })
       .eq("id", offerId)
     return { success: false, error: `Transaction creation failed — acceptance rolled back: ${txResult.error}` }
   }
@@ -721,7 +719,7 @@ export async function loadTransactionWorkspace(transactionId: string): Promise<K
     const supabase = await createServiceClient()
     const [txResult, msResult, docResult, ptResult, clResult, commResult] = await Promise.all([
       supabase.from("transactions").select("*").eq("id", transactionId).maybeSingle(),
-      supabase.from("transaction_milestones").select("*").eq("transaction_id", transactionId).order("milestone_date", { ascending: true, nullsFirst: false }),
+      supabase.from("transaction_milestones").select("*").eq("transaction_id", transactionId).order("target_date", { ascending: true, nullsFirst: false }),
       supabase.from("transaction_documents").select("*").eq("transaction_id", transactionId),
       supabase.from("transaction_participants").select("*").eq("transaction_id", transactionId),
       supabase.from("transaction_compliance_log").select("*").eq("transaction_id", transactionId).order("created_at", { ascending: false }),

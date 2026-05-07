@@ -187,7 +187,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .from("transaction_milestones")
       .select("*")
       .eq("transaction_id", id)
-      .order("milestone_date", { ascending: true, nullsFirst: false }),
+      .order("target_date", { ascending: true, nullsFirst: false }),
 
     // transaction_deadlines
     supabase

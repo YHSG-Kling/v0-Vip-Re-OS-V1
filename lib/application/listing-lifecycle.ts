@@ -183,19 +183,21 @@ export async function advanceListingStageService(
     return { success: false, error: "Listing not found" }
   }
 
-  if (listing.current_stage) {
+  if (listing.lifecycle_stage) {
     await supabase
       .from("listing_stage_history")
       .update({
         exited_at: new Date().toISOString(),
         duration_days: Math.floor(
-          (new Date().getTime() - new Date(listing.entered_at || new Date()).getTime()) / (1000 * 60 * 60 * 24),
+          (new Date().getTime() - new Date(listing.stage_entered_at || new Date()).getTime()) / (1000 * 60 * 60 * 24),
         ),
       })
       .eq("listing_id", listingId)
       .is("exited_at", null)
   }
 
+  // listing_stage_history is a separate table — its own entered_at/exited_at
+  // columns are NOT the listings.* columns being deprecated; keep these.
   await supabase.from("listing_stage_history").insert({
     listing_id: listingId,
     stage_name: toStage,
@@ -207,8 +209,9 @@ export async function advanceListingStageService(
   await supabase
     .from("listings")
     .update({
-      current_stage: toStage,
-      updated_at: new Date().toISOString(),
+      lifecycle_stage:   toStage,
+      stage_entered_at:  new Date().toISOString(),
+      updated_at:        new Date().toISOString(),
     })
     .eq("id", listingId)
 

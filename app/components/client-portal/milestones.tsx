@@ -8,7 +8,7 @@ interface Milestone {
   id: string
   milestone_name: string
   status: string
-  milestone_date: string | null
+  target_date: string | null
   completed_at: string | null
 }
 
@@ -63,7 +63,7 @@ export function ClientMilestones({ milestones }: { milestones: Milestone[] }) {
                 {getStatusBadge(earnestMoney.status)}
               </div>
               <p className="text-sm text-muted-foreground mt-1">
-                Due: {formatDate(earnestMoney.milestone_date)}
+                Due: {formatDate(earnestMoney.target_date)}
               </p>
             </div>
           </div>
@@ -87,8 +87,8 @@ export function ClientMilestones({ milestones }: { milestones: Milestone[] }) {
                   <p className="text-sm text-muted-foreground mt-1">
                     {milestone.completed_at 
                       ? `Completed ${formatDate(milestone.completed_at)}`
-                      : milestone.milestone_date 
-                        ? `Due ${formatDate(milestone.milestone_date)}`
+                      : milestone.target_date 
+                        ? `Due ${formatDate(milestone.target_date)}`
                         : 'Date TBD'
                     }
                   </p>

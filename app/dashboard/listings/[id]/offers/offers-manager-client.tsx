@@ -72,7 +72,6 @@ type Offer = {
   parent_offer_id: string | null
   current_round: number | null
   is_winning_offer: boolean | null
-  winning_offer: boolean | null
   submitted_at: string | null
   response_deadline: string | null
   seller_viewed_at: string | null

@@ -17,7 +17,7 @@ export interface TransactionMilestone {
   transaction_id: string
   milestone_name: string
   milestone_type?: string
-  milestone_date: string | null
+  target_date: string | null
   completed_date: string | null
   status: string
   assigned_to: string | null
@@ -77,10 +77,10 @@ export default async function PortalJourneyPage({
     transaction
       ? supabase
           .from("transaction_milestones")
-          .select("id, transaction_id, milestone_name, milestone_type, milestone_date, completed_date, status, assigned_to, notes, is_client_visible")
+          .select("id, transaction_id, milestone_name, milestone_type, target_date, completed_date, status, assigned_to, notes, is_client_visible")
           .eq("transaction_id", transaction.id)
           .eq("is_client_visible", true)
-          .order("milestone_date", { ascending: true, nullsFirst: false })
+          .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: null }),
     supabase
       .from("contact_portal_preferences")

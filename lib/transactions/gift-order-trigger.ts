@@ -50,7 +50,7 @@ export async function checkAndTriggerGiftOrder(params: {
         brokerage_id: params.brokerageId,
         milestone_name: 'gift_ordered',
         status: 'pending',
-        milestone_date: null
+        target_date: null
       })
   }
 

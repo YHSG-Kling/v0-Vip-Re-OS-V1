@@ -275,9 +275,9 @@ export default async function TitleTransactionDetailPage({
                             <p className="font-medium capitalize">
                               {milestone.milestone_name.replace(/_/g, " ")}
                             </p>
-                            {milestone.milestone_date && (
+                            {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.milestone_date)}
+                                {formatDate(milestone.target_date)}
                               </p>
                             )}
                           </div>

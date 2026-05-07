@@ -181,13 +181,13 @@ export default async function CoordinatorDashboard({
         .select("*, transactions(property_address)")
         .in("transaction_id", transactionIds)
         .in("status", ["pending", "in_progress"])
-        .order("milestone_date")
+        .order("target_date")
     : { data: [] }
 
   // Calculate overdue milestones
   const overdueMilestones = incompleteMilestones?.filter((m) => {
-    if (!m.milestone_date) return false
-    return new Date(m.milestone_date) < new Date()
+    if (!m.target_date) return false
+    return new Date(m.target_date) < new Date()
   })
 
   // Enrich transactions with health scores
