@@ -36,11 +36,6 @@ export default async function SystemProvidersPage() {
     housecanary: !!(
       process.env.HOUSECANARY_API_KEY || process.env.HOUSECANARY_API_SECRET
     ),
-    livekit: !!(
-      process.env.LIVEKIT_API_KEY &&
-      process.env.LIVEKIT_API_SECRET &&
-      process.env.LIVEKIT_URL
-    ),
   }
 
   return <ProvidersClient configured={configured} />

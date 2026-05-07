@@ -18,7 +18,7 @@ interface ProviderRow {
   name: string
   description: string
   envVar: string
-  category: "scraping" | "ai_media" | "property_data" | "realtime_voice"
+  category: "scraping" | "ai_media" | "property_data"
 }
 
 const PROVIDERS: ProviderRow[] = [
@@ -71,21 +71,12 @@ const PROVIDERS: ProviderRow[] = [
     envVar: "HOUSECANARY_API_KEY",
     category: "property_data",
   },
-  {
-    key: "livekit",
-    name: "LiveKit",
-    description:
-      "Realtime WebRTC transport for the on-the-go AI talking assistant. Runs in parallel with VAPI ISA calling — does not replace it.",
-    envVar: "LIVEKIT_API_KEY / LIVEKIT_API_SECRET / LIVEKIT_URL",
-    category: "realtime_voice",
-  },
 ]
 
 const CATEGORY_LABELS: Record<ProviderRow["category"], string> = {
   scraping: "Scraping & Lead Data",
   ai_media: "AI Media (voice + video + avatar)",
   property_data: "Property & Market Data",
-  realtime_voice: "Realtime Voice Transport",
 }
 
 interface TestResult {

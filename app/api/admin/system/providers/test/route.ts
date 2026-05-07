@@ -112,36 +112,6 @@ async function testHousecanary(): Promise<TestResponse> {
   return { ok: true, message: "OK" }
 }
 
-async function testLivekit(): Promise<TestResponse> {
-  const key = process.env.LIVEKIT_API_KEY
-  const secret = process.env.LIVEKIT_API_SECRET
-  const url = process.env.LIVEKIT_URL
-  if (!key || !secret || !url) {
-    return { ok: false, message: "LIVEKIT_API_KEY / LIVEKIT_API_SECRET / LIVEKIT_URL not set" }
-  }
-  // Verify credentials by issuing a throwaway access token. The SDK will
-  // throw on invalid key/secret format; the URL is verified via a HEAD against
-  // the corresponding HTTPS endpoint (LIVEKIT_URL is wss:// — derive the
-  // https endpoint by swapping the scheme).
-  try {
-    const { AccessToken } = await import("livekit-server-sdk")
-    const token = new AccessToken(key, secret, { identity: "healthcheck", ttl: 30 })
-    token.addGrant({ roomJoin: false })
-    await token.toJwt() // throws if key/secret mismatched
-  } catch (err: any) {
-    return { ok: false, message: `Token sign failed: ${err?.message ?? "unknown"}` }
-  }
-  // Reachability check on the LiveKit project endpoint.
-  const httpsUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://")
-  try {
-    const res = await fetch(`${httpsUrl.replace(/\/$/, "")}/`, { method: "HEAD" })
-    if (res.status >= 500) return { ok: false, message: `Edge unreachable (HTTP ${res.status})` }
-  } catch (err: any) {
-    return { ok: false, message: `Edge unreachable: ${err?.message ?? "network"}` }
-  }
-  return { ok: true, message: "OK" }
-}
-
 const TESTERS: Record<string, () => Promise<TestResponse>> = {
   zenrows: testZenrows,
   batchdata: testBatchdata,
@@ -150,7 +120,6 @@ const TESTERS: Record<string, () => Promise<TestResponse>> = {
   elevenlabs: testElevenlabs,
   heygen: testHeygen,
   housecanary: testHousecanary,
-  livekit: testLivekit,
 }
 
 export async function POST(req: NextRequest) {

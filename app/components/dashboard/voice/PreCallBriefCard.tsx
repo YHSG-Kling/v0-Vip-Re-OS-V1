@@ -3,7 +3,7 @@
 /**
  * PreCallBriefCard — surfaces the 10-second contact intel that an agent needs
  * before any logged call. Mounted inside VapiCallPanel + standalone on the
- * LiveKit assistant page when a contact context is selected.
+ * D-ID streaming-avatar assistant page when a contact context is selected.
  */
 
 import { useEffect, useState } from "react"

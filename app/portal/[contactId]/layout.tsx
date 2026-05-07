@@ -173,18 +173,22 @@ export default async function PortalLayout({
   // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
   // migrations). Previously this select silently returned null and the DID
   // chat widget never lit up.
+  // Prefer the trained did_avatar_id (presenter id from D-ID — reusable) when
+  // set; the photo/video URLs are the source assets used by talks/clips fallback.
   let agentHasDIDAvatar = false
   let agentDIDPhotoUrl: string | null = null
   let agentDIDVideoUrl: string | null = null
+  let agentDIDAvatarId: string | null = null
   if (contact?.agent_id) {
     const { data: voiceProfile } = await supabase
       .from("agent_voice_profiles")
-      .select("did_photo_url, did_video_url")
+      .select("did_photo_url, did_video_url, did_avatar_id")
       .eq("agent_id", contact.agent_id)
       .maybeSingle()
     agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
     agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
-    agentHasDIDAvatar = !!(agentDIDPhotoUrl || agentDIDVideoUrl)
+    agentDIDAvatarId = voiceProfile?.did_avatar_id ?? null
+    agentHasDIDAvatar = !!(agentDIDAvatarId || agentDIDPhotoUrl || agentDIDVideoUrl)
   }
 
   // Unread notification count for bell badge
@@ -258,6 +262,7 @@ export default async function PortalLayout({
         agentName={agentName}
         agentFirstName={agentData?.full_name?.split(" ")[0] ?? agentName}
         agentHasDIDAvatar={agentHasDIDAvatar}
+        agentDIDAvatarId={agentDIDAvatarId}
         agentDIDPhotoUrl={agentDIDPhotoUrl}
         agentDIDVideoUrl={agentDIDVideoUrl}
       />

@@ -63,7 +63,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
       .maybeSingle(),
     input.agentUserId
       ? supabase.from("users")
-          .select("id, first_name, last_name, email, phone")
+          .select("id, first_name, last_name, email, phone, team_id")
           .eq("id", input.agentUserId)
           .maybeSingle().then(r => r.data)
       : Promise.resolve(null),
@@ -99,8 +99,10 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   const body    = interpolate(input.step.body ?? "", tokens, replaced)
 
   // ── Brand-voice check (advisory + hard-block on violations) ──────────────
+  // Resolution order: brokerage → team → agent (most-specific wins).
   const voice = await applyBrandVoice({
     brokerageId:  input.brokerageId,
+    teamId:       (agentInfo as any)?.team_id ?? undefined,
     actorUserId:  input.agentUserId ?? undefined,
     actorRole:    "agent",
     journeyType:  contact?.contact_type === "seller" ? "seller" : "buyer",

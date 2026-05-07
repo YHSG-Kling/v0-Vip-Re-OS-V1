@@ -11,7 +11,7 @@
  *
  * Used by:
  *   • VapiCallPanel  — shown when a contact is selected
- *   • LiveKitAssistantWidget — passed via room context
+ *   • D-ID streaming avatar widget — passed via session context
  *   • Quick-actions on contact cards
  */
 

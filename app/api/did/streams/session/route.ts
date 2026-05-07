@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
   const didApiKey = process.env.DID_API_KEY
   if (!didApiKey) return NextResponse.json({ error: "DID_API_KEY not configured" }, { status: 503 })
 
-  const { source_type, source_url, sdpAnswer, sessionId: patchSessionId } = await request.json()
+  const { source_type, source_url, presenter_id, sdpAnswer, sessionId: patchSessionId } = await request.json()
 
   // PATCH path: relay SDP answer back to D-ID
   if (patchSessionId && sdpAnswer) {
@@ -28,12 +28,21 @@ export async function POST(request: NextRequest) {
     return res.ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: "SDP relay failed" }, { status: 500 })
   }
 
-  if (!source_url) return NextResponse.json({ error: "source_url required" }, { status: 400 })
+  if (!source_url && !presenter_id) {
+    return NextResponse.json({ error: "presenter_id or source_url required" }, { status: 400 })
+  }
 
-  // source_type: "video" → /clips/streams, "photo" → /talks/streams
-  const endpoint = source_type === "video"
-    ? `${DID_API_BASE}/clips/streams`
+  // Three source modes:
+  //   presenter — the agent has a trained D-ID avatar (preferred)
+  //   video     — start clips/streams from a source video URL
+  //   photo     — start talks/streams from a source photo URL
+  const endpoint = (source_type === "video" || source_type === "presenter")
+    ? `${DID_API_BASE}/clips/streams`   // clips/streams supports both presenter + video source
     : `${DID_API_BASE}/talks/streams`
+
+  const body: Record<string, unknown> = {}
+  if (presenter_id) body.presenter_id = presenter_id
+  else if (source_url) body.source_url = source_url
 
   const res = await fetch(endpoint, {
     method: "POST",
@@ -42,7 +51,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ source_url }),
+    body: JSON.stringify(body),
   })
 
   const data = await res.json()

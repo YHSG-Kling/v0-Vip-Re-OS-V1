@@ -26,6 +26,8 @@ interface PortalChatLauncherProps {
   agentName: string
   agentFirstName: string
   agentHasDIDAvatar: boolean
+  /** Trained D-ID presenter id — preferred over photo/video URL when set */
+  agentDIDAvatarId?: string | null
   agentDIDPhotoUrl?: string | null
   agentDIDVideoUrl?: string | null
 }
@@ -39,6 +41,7 @@ export default function PortalChatLauncher({
   agentName,
   agentFirstName,
   agentHasDIDAvatar,
+  agentDIDAvatarId,
   agentDIDPhotoUrl,
   agentDIDVideoUrl,
 }: PortalChatLauncherProps) {
@@ -123,6 +126,7 @@ export default function PortalChatLauncher({
                 contactId={contactId}
                 agentName={agentName}
                 agentFirstName={agentFirstName}
+                didAvatarId={agentDIDAvatarId ?? null}
                 didPhotoUrl={agentDIDPhotoUrl ?? null}
                 didVideoUrl={agentDIDVideoUrl ?? null}
                 onFallbackToText={() => setLiveAgentOpen(false)}

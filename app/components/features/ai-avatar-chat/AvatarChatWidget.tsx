@@ -10,6 +10,8 @@ interface AvatarChatWidgetProps {
   contactId: string
   agentName: string
   agentFirstName: string
+  /** Trained D-ID presenter id (preferred when set — reusable, faster to start). */
+  didAvatarId?: string | null
   didPhotoUrl: string | null
   didVideoUrl: string | null
   onFallbackToText: () => void
@@ -19,6 +21,7 @@ export function AvatarChatWidget({
   contactId,
   agentName,
   agentFirstName,
+  didAvatarId,
   didPhotoUrl,
   didVideoUrl,
   onFallbackToText,
@@ -32,12 +35,17 @@ export function AvatarChatWidget({
   const [listening, setListening] = useState(false)
   const [messages, setMessages] = useState<{ role: "user" | "agent"; text: string }[]>([])
 
-  // Determine source type: video clip > photo
-  const sourceType: "photo" | "video" = didVideoUrl ? "video" : "photo"
+  // Source preference for D-ID streams:
+  //   1. Trained presenter (did_avatar_id) — faster boot + reusable, no
+  //      re-upload of source URL on every session.
+  //   2. Video clip (didVideoUrl) — used as source_url fallback.
+  //   3. Photo (didPhotoUrl) — final fallback.
+  const sourceType: "presenter" | "video" | "photo" =
+    didAvatarId ? "presenter" : didVideoUrl ? "video" : "photo"
   const sourceUrl = didVideoUrl ?? didPhotoUrl
 
   const initSession = useCallback(async () => {
-    if (!sourceUrl) {
+    if (!didAvatarId && !sourceUrl) {
       fallback("No avatar configured for this agent.")
       return
     }
@@ -45,7 +53,11 @@ export function AvatarChatWidget({
       const res = await fetch("/api/did/streams/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_type: sourceType, source_url: sourceUrl }),
+        body: JSON.stringify(
+          didAvatarId
+            ? { source_type: "presenter", presenter_id: didAvatarId }
+            : { source_type: sourceType, source_url: sourceUrl }
+        ),
       })
       if (!res.ok) {
         fallback("Live Agent video unavailable — switching to chat")
