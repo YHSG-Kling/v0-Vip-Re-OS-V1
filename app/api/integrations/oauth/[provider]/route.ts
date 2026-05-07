@@ -35,9 +35,16 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
     authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
+    // Calendar + Gmail send/read for agent personal mailbox integration.
+    // openid/email/profile let us identify the connecting account address.
     scopes: [
+      "openid",
+      "email",
+      "profile",
       "https://www.googleapis.com/auth/calendar",
       "https://www.googleapis.com/auth/calendar.events",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.readonly",
     ],
     additionalParams: {
       access_type: "offline",
@@ -51,8 +58,10 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     scopes: [
       "offline_access",
-      "Calendars.ReadWrite",
       "User.Read",
+      "Calendars.ReadWrite",
+      "Mail.Send",
+      "Mail.ReadWrite",
     ],
   },
   docusign: {
@@ -253,6 +262,65 @@ export async function GET(
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)
         return redirectWithResult(baseUrl, false, provider, "Failed to store credentials")
+      }
+
+      // For Google + Microsoft: ALSO persist agent-scoped tokens to
+      // agent_api_credentials so the personal-email adapter can send
+      // mail through this agent's actual mailbox. Each agent connects
+      // their own account, so this is per-agent (not per-brokerage).
+      const oauthProvKey = String(provider)
+      if (oauthProvKey === "google" || oauthProvKey === "microsoft") {
+        try {
+          const { data: agentRow } = await supabase
+            .from("agents")
+            .select("id")
+            .eq("user_id", stateData.userId)
+            .maybeSingle()
+
+          // Resolve the email address from a userinfo lookup so the agent
+          // sees which mailbox is connected
+          let connectedEmail: string | null = null
+          try {
+            if (oauthProvKey === "google") {
+              const ui = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+                headers: { Authorization: `Bearer ${tokens.access_token}` },
+              })
+              if (ui.ok) connectedEmail = (await ui.json())?.email ?? null
+            } else {
+              const ui = await fetch("https://graph.microsoft.com/v1.0/me", {
+                headers: { Authorization: `Bearer ${tokens.access_token}` },
+              })
+              if (ui.ok) {
+                const me = await ui.json()
+                connectedEmail = me?.mail ?? me?.userPrincipalName ?? null
+              }
+            }
+          } catch {}
+
+          if (agentRow?.id) {
+            const serviceName = oauthProvKey === "google" ? "gmail" : "outlook"
+            await supabase
+              .from("agent_api_credentials")
+              .upsert(
+                {
+                  agent_id: agentRow.id,
+                  brokerage_id: stateData.brokerageId,
+                  service_name: serviceName,
+                  service_type: "personal_email",
+                  access_token: tokens.access_token,
+                  refresh_token: tokens.refresh_token,
+                  token_expires_at: expiresAt,
+                  config: { email: connectedEmail, scope: tokens.scope },
+                  is_active: true,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "agent_id,service_name" }
+              )
+          }
+        } catch (agentCredErr) {
+          console.error("[OAuth] Failed to mirror agent-scoped credential:", agentCredErr)
+          // Non-fatal — brokerage-level token is still saved
+        }
       }
 
       // Update brokerage_integrations

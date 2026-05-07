@@ -188,6 +188,12 @@ export interface SendEmailParams {
   text?: string
   from?: string
   contactId?: string
+  /**
+   * When set, attempt to send through THIS agent's personal Gmail/Outlook
+   * mailbox via their OAuth token. Falls back to SendGrid if no personal
+   * account is connected (or refresh fails).
+   */
+  agentUserId?: string
 }
 
 export interface SendEmailResult {
@@ -195,9 +201,38 @@ export interface SendEmailResult {
   status?: string
   error?: string
   mock?: boolean
+  /** Which provider actually sent the message */
+  provider?: "gmail" | "outlook" | "sendgrid"
 }
 
 export async function sendEmail(params: SendEmailParams): Promise<SendEmailResult> {
+  // Tier 1: when agentUserId is provided, try the agent's personal mailbox.
+  // This makes agent→contact email come from sarah@kw.com instead of platform
+  // noreply, so contacts can reply naturally and threads stay in agent's inbox.
+  if (params.agentUserId) {
+    try {
+      const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
+      const result = await sendPersonalEmail({
+        agentUserId: params.agentUserId,
+        to: params.to,
+        subject: params.subject,
+        htmlBody: params.html,
+        textBody: params.text,
+      })
+      if (result.success) {
+        return { success: true, status: "sent", provider: result.provider }
+      }
+      // Only fall through on no_personal_account — other failures should bubble up
+      if (result.reason !== "no_personal_account") {
+        return { success: false, error: result.error ?? "Personal email send failed" }
+      }
+    } catch (err: any) {
+      // If the personal adapter itself crashes, fall back to SendGrid quietly
+      console.error("[sendEmail] Personal-email path errored, falling back:", err?.message ?? err)
+    }
+  }
+
+  // Tier 2: SendGrid (transactional / no personal account configured)
   const apiKey = process.env.SENDGRID_API_KEY
   const defaultFrom = process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
 
@@ -231,5 +266,5 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     throw new Error(error || "SendGrid API error")
   }
 
-  return { success: true, status: "sent" }
+  return { success: true, status: "sent", provider: "sendgrid" }
 }

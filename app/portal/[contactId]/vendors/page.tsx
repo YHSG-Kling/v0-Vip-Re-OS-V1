@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { ArrowLeft, Phone, Mail, MapPin, Building2, Briefcase, MessageSquare } from "lucide-react"
+import { RequestBookingButton } from "./request-booking-button"
 
 export default async function ClientVendorsPage({
   params,
@@ -282,9 +283,17 @@ export default async function ClientVendorsPage({
                     )}
                   </div>
 
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground mb-3">
                     Recommended by {agent?.first_name || "your agent"}
                   </p>
+
+                  {/* Contact-initiated booking request */}
+                  <RequestBookingButton
+                    contactId={contactId}
+                    vendorId={dirEntry.vendor_id ?? dirEntry.id}
+                    vendorName={dirEntry.name ?? "this vendor"}
+                    defaultServiceType={dirEntry.category ?? "consultation"}
+                  />
                 </div>
               ))}
             </div>
