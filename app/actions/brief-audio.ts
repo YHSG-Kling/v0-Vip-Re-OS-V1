@@ -11,18 +11,17 @@
  */
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
-import { createServiceClient } from "@/lib/supabase/service"
 import {
   synthesizeSpeech,
   audioBufferToDataUrl,
-  FALLBACK_VOICE_ID,
 } from "@/lib/voice/elevenlabs-tts"
+import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
 import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 
 export interface BriefAudioResult {
   success: boolean
   audioDataUrl?: string
-  voiceUsed?: "agent_clone" | "fallback"
+  voiceUsed?: "agent_clone" | "agent_generic_choice" | "platform_fallback"
   error?: string
 }
 
@@ -44,21 +43,16 @@ export async function generateBriefAudio(params: {
     return { success: false, error: "Nothing to read in brief" }
   }
 
-  // Resolve voice — prefer the agent's cloned voice if set
-  let voiceId: string | null = null
-  if (ctx.userId) {
-    const svc = createServiceClient()
-    const { data: agent } = await svc
-      .from("agents")
-      .select("voice_id")
-      .eq("user_id", ctx.userId)
-      .maybeSingle()
-    voiceId = agent?.voice_id ?? null
+  // Resolve voice via the kernel resolver — honors agent's voice_preference
+  // (clone vs generic) so they hear what they chose in settings.
+  if (!ctx.userId) {
+    return { success: false, error: "No user context" }
   }
+  const resolved = await resolveSelfVoice(ctx.userId)
 
   const result = await synthesizeSpeech({
     text: script,
-    voiceId: voiceId || FALLBACK_VOICE_ID,
+    voiceId: resolved.voiceId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
   })
 
@@ -72,7 +66,7 @@ export async function generateBriefAudio(params: {
   return {
     success: true,
     audioDataUrl: audioBufferToDataUrl(result.audioBuffer),
-    voiceUsed: voiceId ? "agent_clone" : "fallback",
+    voiceUsed: resolved.source,
   }
 }
 

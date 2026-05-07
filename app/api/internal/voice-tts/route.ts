@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
-import { synthesizeSpeechStream, FALLBACK_VOICE_ID } from "@/lib/voice/elevenlabs-tts"
+import { synthesizeSpeechStream } from "@/lib/voice/elevenlabs-tts"
+import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
 
 /**
  * Voice TTS endpoint — streams ElevenLabs mp3 in the agent's cloned voice.
@@ -37,19 +37,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Text too long (max 2000 chars)" }, { status: 400 })
   }
 
-  // Resolve voice — prefer the agent's cloned voice
-  const svc = createServiceClient()
-  const { data: agent } = await svc
-    .from("agents")
-    .select("voice_id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  const voiceId = agent?.voice_id || FALLBACK_VOICE_ID
+  // Resolve self-voice (honors voice_preference: clone vs generic choice)
+  const resolved = await resolveSelfVoice(user.id)
 
   const result = await synthesizeSpeechStream({
     text,
-    voiceId,
+    voiceId: resolved.voiceId,
     voiceSettings: { stability: 0.5, similarity_boost: 0.78, style: 0.1 },
   })
 
@@ -66,7 +59,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": "audio/mpeg",
       "Cache-Control": "no-store",
-      "X-Voice-Source": agent?.voice_id ? "agent_clone" : "fallback",
+      "X-Voice-Source": resolved.source,
     },
   })
 }

@@ -8,6 +8,9 @@ import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { VoiceCloneClient } from "@/app/dashboard/videos/voice/voice-client"
 import { getVoiceProfiles } from "@/app/actions/video-voice"
+import { getMyVoiceAvatarPrefs } from "@/app/actions/voice-avatar-settings"
+import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
+import { ListeningPreferencesPanel } from "./listening-preferences-panel"
 
 export const metadata = {
   title: "Voice & Avatar Setup | Settings",
@@ -42,15 +45,27 @@ async function VoiceAvatarContent() {
 
   const voiceProfiles = await getVoiceProfiles(agentData.id)
   const heygenConfigured = !!process.env.HEYGEN_API_KEY
+  const prefs = await getMyVoiceAvatarPrefs()
 
   return (
-    <VoiceCloneClient
-      agentId={agentData.id}
-      brokerageId={agentData.brokerage_id}
-      userId={user.id}
-      initialProfiles={voiceProfiles}
-      heygenConfigured={heygenConfigured}
-    />
+    <div className="space-y-6">
+      {/* What YOU hear in your own assistant + brief */}
+      {prefs && (
+        <ListeningPreferencesPanel
+          initialPrefs={prefs}
+          genericVoices={GENERIC_VOICES}
+        />
+      )}
+
+      {/* Your cloned voice + avatar (what CONTACTS experience) */}
+      <VoiceCloneClient
+        agentId={agentData.id}
+        brokerageId={agentData.brokerage_id}
+        userId={user.id}
+        initialProfiles={voiceProfiles}
+        heygenConfigured={heygenConfigured}
+      />
+    </div>
   )
 }
 

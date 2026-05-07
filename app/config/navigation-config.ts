@@ -426,6 +426,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'jobs', label: 'Jobs', href: '/vendor/jobs', icon: 'Briefcase', badgeKey: 'vendor_pending_jobs' },
       { id: 'portfolio', label: 'Portfolio', href: '/vendor/portfolio', icon: 'Image' },
       { id: 'earnings', label: 'Earnings', href: '/vendor/earnings', icon: 'DollarSign' },
+      { id: 'documents', label: 'Documents', href: '/vendor/documents', icon: 'FolderOpen' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
     ],
     topNavItems: [
