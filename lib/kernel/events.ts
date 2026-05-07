@@ -181,6 +181,7 @@ export enum KernelEvent {
 
   // ── TRANSACTION ORCHESTRATION (Layer 6) ──────────────────────────────────
   TRANSACTION_STAGE_CHANGED           = 'transaction_stage_changed',
+  TRANSACTION_CLOSED                  = 'transaction_closed',
   INSPECTION_ORDERED                  = 'inspection_ordered',
   INSPECTION_QUOTE_REQUESTED          = 'inspection_quote_requested',
   INSPECTION_QUOTE_APPROVED           = 'inspection_quote_approved',

@@ -226,6 +226,27 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     plainLanguageSummary: "Your listing moved to a new stage of the marketing-to-close timeline.",
     responsibleParty: "agent",
   },
+  [KernelEvent.TRANSACTION_CLOSED]: {
+    title: "Closed — congratulations!",
+    plainLanguageSummary:
+      "The transaction is officially closed. Your portal will now show your lifetime customer view with home value, equity, and ongoing market updates.",
+    responsibleParty: "agent",
+    chatBody: "Closed! Welcome to your lifetime portal — I'm here for the long haul.",
+    perRole: {
+      seller: {
+        title: "Sold — congratulations!",
+        plainLanguageSummary:
+          "Your home is officially sold and the transaction has closed. You're now a lifetime customer; your portal will switch to track future home value + market activity.",
+        chatBody: "Sold and closed — congratulations! Your portal now shows your lifetime view.",
+      },
+      buyer: {
+        title: "You're a homeowner!",
+        plainLanguageSummary:
+          "Congratulations — closing is complete. Your portal now switches to homeowner mode with home value tracking and market updates.",
+        chatBody: "Welcome home! Your portal is now your lifetime homeowner dashboard.",
+      },
+    },
+  },
   [KernelEvent.OPEN_HOUSE_SCHEDULED]: {
     title: "Open house scheduled",
     plainLanguageSummary: "An open house has been scheduled. We'll share attendee count + feedback after.",

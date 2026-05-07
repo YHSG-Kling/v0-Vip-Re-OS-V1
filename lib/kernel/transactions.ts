@@ -1111,15 +1111,39 @@ export async function closeTransactionCommand(params: {
         created_at:     nowIso,
       }),
       supabase.from("lifecycle_events").insert({
-        brokerage_id: params.brokerageId,
-        entity_type:  "transaction",
-        entity_id:    params.transactionId,
-        event_type:   "TRANSACTION_CLOSED",
+        brokerage_id:  params.brokerageId,
+        entity_type:   "transaction",
+        entity_id:     params.transactionId,
+        event_type:    KernelEvent.TRANSACTION_CLOSED,
         actor_user_id: params.agentId,
-        created_at:   nowIso,
+        created_at:    nowIso,
       }),
       ...activityWrites,
     ])
+
+    // Kernel fan-out — fires staff notifications, auto-enrolls both
+    // contacts (buyer + seller) into any campaign_sequence with
+    // trigger_event='transaction_closed' (e.g. the seeded "Lifetime
+    // onboard" drip), and writes transparency_updates per contact so
+    // the seller AND buyer portals show "Closed!" + "Welcome to your
+    // lifetime portal" cards immediately.
+    try {
+      const { fanOutKernelEvent } = await import("./event-fanout")
+      await fanOutKernelEvent({
+        event:           KernelEvent.TRANSACTION_CLOSED,
+        brokerageId:     params.brokerageId,
+        entityType:      "transaction",
+        entityId:        params.transactionId,
+        transactionId:   params.transactionId,
+        listingId:       txBefore?.listing_id ?? undefined,
+        buyerContactId:  txBefore?.buyer_contact_id ?? undefined,
+        sellerContactId: txBefore?.seller_contact_id ?? undefined,
+        agentUserId:     params.agentId,
+        metadata:        { reason: params.reason ?? null, close_date: today },
+      })
+    } catch (e) {
+      console.error("[closeTransactionCommand] fanOutKernelEvent failed", e)
+    }
 
     // ── Propagate close to related entities ────────────────────────────────
     // 1. Listing → CLOSED on its lifecycle stage machine + status='closed'

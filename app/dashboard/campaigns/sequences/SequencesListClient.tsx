@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useMemo } from "react"
+import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/select"
 import {
   Plus,
+  Sparkles,
   Mail,
   MessageSquare,
   Phone,
@@ -99,6 +101,7 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
   const [showCreate, setShowCreate] = useState(openCreate)
   const [deleting, setDeleting]     = useState<string | null>(null)
   const [busy, setBusy]             = useState(false)
+  const [seedingDefaults, setSeedingDefaults] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // New sequence form state
@@ -298,17 +301,52 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
 
       {/* Sequence cards */}
       {sequences.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border py-20 text-center space-y-2">
+        <div className="rounded-lg border border-dashed border-border py-12 px-6 text-center space-y-3">
           <p className="text-sm font-medium text-foreground">No sequences yet</p>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             {pageType === "marketing"
               ? "Create event-triggered automations that fire when listings go live, prices drop, or deals close."
               : "Build multi-touch nurture sequences for buyers, sellers, and leads — email, SMS, voice drop, and AI calls."}
           </p>
-          <Button size="sm" className="gap-1.5 mt-2" onClick={() => setShowCreate(true)}>
-            <Plus className="h-4 w-4" />
-            New Sequence
-          </Button>
+          <div className="flex flex-wrap gap-2 justify-center pt-2">
+            <Button size="sm" className="gap-1.5" onClick={() => setShowCreate(true)}>
+              <Plus className="h-4 w-4" />
+              New Sequence
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              disabled={seedingDefaults}
+              onClick={async () => {
+                setSeedingDefaults(true)
+                try {
+                  const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
+                  const res = await seedDefaultSequences(brokerageId)
+                  if (res.success) {
+                    toast.success(
+                      `Installed ${res.created} default sequences`,
+                      { description: res.skipped ? `${res.skipped} were already present.` : undefined },
+                    )
+                    // Reload to show the seeded sequences
+                    if (typeof window !== "undefined") window.location.reload()
+                  } else {
+                    toast.error(res.error ?? "Seeding failed")
+                  }
+                } finally {
+                  setSeedingDefaults(false)
+                }
+              }}
+            >
+              <Sparkles className="h-4 w-4" />
+              {seedingDefaults ? "Installing…" : "Install canonical defaults"}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/70 max-w-md mx-auto pt-1">
+            The defaults are five canonical nurture flows (buyer welcome, under-contract,
+            listing-live, seller under-contract, lifetime onboard) that fire automatically
+            on the matching kernel events. You can edit, disable, or delete any of them.
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
