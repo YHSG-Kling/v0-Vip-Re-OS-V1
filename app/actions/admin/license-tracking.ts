@@ -22,6 +22,7 @@ export async function getBrokerageAgentLicenseStatuses(
 ): Promise<{ agents: AgentLicenseStatus[]; error?: string }> {
   const service = createServiceClient()
 
+  // Pull users + their agent row (which holds ethics + CE columns from migration 1009)
   const { data: agents, error } = await service
     .from("users")
     .select(`
@@ -34,6 +35,14 @@ export async function getBrokerageAgentLicenseStatuses(
         license_state,
         expiry_date,
         verification_status
+      ),
+      agents (
+        id,
+        ethics_completed_at,
+        ethics_due_date,
+        ce_hours_required,
+        ce_hours_completed,
+        ce_cycle_end_date
       )
     `)
     .eq("brokerage_id", brokerageId)
@@ -46,9 +55,16 @@ export async function getBrokerageAgentLicenseStatuses(
 
   const statuses: AgentLicenseStatus[] = (agents ?? []).map((a: any) => {
     const license = Array.isArray(a.agent_licenses) ? a.agent_licenses[0] : a.agent_licenses
+    const agentRow = Array.isArray(a.agents) ? a.agents[0] : a.agents
+
     const expiryRaw = license?.expiry_date ?? a.license_expiry ?? null
     const daysUntilExpiry = expiryRaw
       ? Math.ceil((new Date(expiryRaw).getTime() - now) / 86_400_000)
+      : null
+
+    const ethicsDue = agentRow?.ethics_due_date ?? null
+    const daysUntilEthicsExpiry = ethicsDue
+      ? Math.ceil((new Date(ethicsDue).getTime() - now) / 86_400_000)
       : null
 
     return {
@@ -59,15 +75,120 @@ export async function getBrokerageAgentLicenseStatuses(
       licenseState: license?.license_state ?? null,
       expiryDate: expiryRaw,
       daysUntilExpiry,
-      ethicsCompletedAt: null,
-      daysUntilEthicsExpiry: null,
-      ceHoursCompleted: 0,
-      ceHoursRequired: 45,
+      ethicsCompletedAt: agentRow?.ethics_completed_at ?? null,
+      daysUntilEthicsExpiry,
+      ceHoursCompleted: Number(agentRow?.ce_hours_completed ?? 0),
+      ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
       verificationStatus: license?.verification_status ?? null,
     }
   })
 
   return { agents: statuses }
+}
+
+// ─── CE log entries ──────────────────────────────────────────────────────────
+
+export interface CECompletionInput {
+  agentId: string
+  courseName: string
+  provider?: string
+  category: "ethics" | "core" | "elective" | "fair_housing" | "other"
+  hours: number
+  completedOn: string  // YYYY-MM-DD
+  certificateUrl?: string
+  notes?: string
+}
+
+/**
+ * Log a CE completion + auto-update agents row totals (and ethics_completed_at
+ * when category=ethics).
+ */
+export async function logCeCompletion(input: CECompletionInput): Promise<{
+  success: boolean
+  completionId?: string
+  error?: string
+}> {
+  const service = createServiceClient()
+
+  // Resolve brokerage from the agent row
+  const { data: agent } = await service
+    .from("agents")
+    .select("id, brokerage_id, ce_hours_completed")
+    .eq("id", input.agentId)
+    .maybeSingle()
+
+  if (!agent) return { success: false, error: "Agent not found" }
+
+  const { data: completion, error } = await service
+    .from("agent_ce_completions")
+    .insert({
+      agent_id: input.agentId,
+      brokerage_id: agent.brokerage_id,
+      course_name: input.courseName,
+      provider: input.provider ?? null,
+      category: input.category,
+      hours: input.hours,
+      completed_on: input.completedOn,
+      certificate_url: input.certificateUrl ?? null,
+      notes: input.notes ?? null,
+    })
+    .select("id")
+    .single()
+
+  if (error || !completion) return { success: false, error: error?.message ?? "Insert failed" }
+
+  // Update the agent's running totals (idempotent — recompute from log)
+  const { data: completions } = await service
+    .from("agent_ce_completions")
+    .select("hours, category, completed_on")
+    .eq("agent_id", input.agentId)
+
+  const totalHours = (completions ?? []).reduce((s, c: any) => s + Number(c.hours ?? 0), 0)
+  const latestEthics = (completions ?? [])
+    .filter((c: any) => c.category === "ethics")
+    .map((c: any) => c.completed_on)
+    .sort()
+    .pop()
+
+  const updates: Record<string, any> = { ce_hours_completed: totalHours }
+  if (input.category === "ethics" && latestEthics) {
+    updates.ethics_completed_at = new Date(latestEthics).toISOString()
+    // NAR ethics: every 3 years
+    const due = new Date(latestEthics)
+    due.setFullYear(due.getFullYear() + 3)
+    updates.ethics_due_date = due.toISOString().slice(0, 10)
+  }
+
+  await service.from("agents").update(updates).eq("id", input.agentId)
+
+  return { success: true, completionId: completion.id }
+}
+
+export async function listCeCompletions(agentId: string): Promise<Array<{
+  id: string
+  courseName: string
+  provider: string | null
+  category: string
+  hours: number
+  completedOn: string
+  certificateUrl: string | null
+}>> {
+  const service = createServiceClient()
+  const { data } = await service
+    .from("agent_ce_completions")
+    .select("id, course_name, provider, category, hours, completed_on, certificate_url")
+    .eq("agent_id", agentId)
+    .order("completed_on", { ascending: false })
+
+  return (data ?? []).map((c: any) => ({
+    id: c.id,
+    courseName: c.course_name,
+    provider: c.provider,
+    category: c.category,
+    hours: Number(c.hours ?? 0),
+    completedOn: c.completed_on,
+    certificateUrl: c.certificate_url,
+  }))
 }
 
 export interface EducationModule {
