@@ -14,8 +14,35 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 
 const RENTCAST_BASE = "https://api.rentcast.io/v1"
+
+// Approximate per-call costs at Rentcast's standard tier ($49/mo / 250 calls = $0.196).
+// Used for usage telemetry — actual billing happens via Rentcast directly.
+const COST_PER_LISTING_SEARCH = 0.20
+const COST_PER_AVM_LOOKUP = 0.15
+
+/**
+ * Fire-and-forget usage logger; never blocks the caller's request.
+ */
+function meterCall(params: {
+  brokerageId: string
+  usageType: string
+  cost: number
+  endpoint: string
+  metadata?: Record<string, any>
+}) {
+  void logVendorUsage({
+    vendorName: "rentcast",
+    usageType: params.usageType,
+    unitCount: 1,
+    estimatedCost: params.cost,
+    systemSource: "buyer_search",
+    brokerageId: params.brokerageId,
+    metadata: { endpoint: params.endpoint, ...(params.metadata ?? {}) },
+  }).catch(() => null)
+}
 
 export interface RentcastSearchFilters {
   city?: string
@@ -99,6 +126,13 @@ export async function searchRentcastSaleListings(params: {
       // No Next.js cache — listing freshness matters
       cache: "no-store",
     })
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "api_call",
+      cost: COST_PER_LISTING_SEARCH,
+      endpoint: "/listings/sale",
+      metadata: { ok: res.ok, status: res.status },
+    })
     if (!res.ok) {
       return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
     }
@@ -165,6 +199,13 @@ export async function searchRentcastRentalListings(params: {
       headers: { "X-Api-Key": apiKey, Accept: "application/json" },
       cache: "no-store",
     })
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "api_call",
+      cost: COST_PER_LISTING_SEARCH,
+      endpoint: "/listings/rental",
+      metadata: { ok: res.ok, status: res.status },
+    })
     if (!res.ok) {
       return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
     }
@@ -209,6 +250,13 @@ export async function getRentcastAVM(params: {
     const res = await fetch(`${RENTCAST_BASE}/avm/value?${qs.toString()}`, {
       headers: { "X-Api-Key": apiKey, Accept: "application/json" },
       cache: "no-store",
+    })
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "avm_lookup",
+      cost: COST_PER_AVM_LOOKUP,
+      endpoint: "/avm/value",
+      metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) return { value: null, rangeLow: null, rangeHigh: null }
     const data = await res.json()

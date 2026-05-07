@@ -15,6 +15,7 @@
  */
 
 import { createContext, useContext, useEffect, useState, useCallback } from "react"
+import { useRouter } from "next/navigation"
 
 interface ShellContextValue {
   inboxOpen: boolean
@@ -45,28 +46,59 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
   const toggleAiAssistant = useCallback(() => setAiAssistantOpen((prev) => !prev), [])
   const toggleMobileSidebar = useCallback(() => setMobileSidebarOpen((prev) => !prev), [])
 
-  // Register global keyboard shortcuts
+  const router = useRouter()
+
+  // Register global keyboard shortcuts. Bare-key shortcuts (no modifier) are
+  // ignored when typing in an input/textarea/contenteditable.
+  //
+  // Shortcuts:
+  //   U → toggle unified inbox
+  //   N → new contact (CRM with create dialog)
+  //   F → find — open command palette focused on search
+  //   G → gameplan — agent dashboard with brief in focus
+  //   C → call queue — AI ISA console
+  //   ? → keyboard help (future)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Skip if typing in an input/textarea/contenteditable
       const target = e.target as HTMLElement
       const isTyping =
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.isContentEditable
       if (isTyping) return
-
-      // Skip if a modifier is pressed (let Cmd+K, etc. flow through)
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
-      if (e.key === "u" || e.key === "U") {
-        e.preventDefault()
-        toggleInbox()
+      const key = e.key.toLowerCase()
+      switch (key) {
+        case "u":
+          e.preventDefault()
+          toggleInbox()
+          break
+        case "n":
+          e.preventDefault()
+          router.push("/crm?action=new_contact")
+          break
+        case "f":
+          e.preventDefault()
+          // Trigger Cmd+K palette via synthetic keydown so the existing
+          // CommandPalette listener picks it up
+          window.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true })
+          )
+          break
+        case "g":
+          e.preventDefault()
+          router.push("/dashboard/agent")
+          break
+        case "c":
+          e.preventDefault()
+          router.push("/dashboard/isa")
+          break
       }
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [toggleInbox])
+  }, [toggleInbox, router])
 
   return (
     <ShellContext.Provider
