@@ -61,11 +61,12 @@ export async function generateUserTypeBrief(input: GenerateBriefInput): Promise<
           body: p.context,
           severity:
             p.priority === "high" ? "high" : p.priority === "medium" ? "medium" : "low",
+          ctas: buildAgentPriorityCtas(p),
         })),
         metrics: [
-          { label: "Hot leads", value: agent.hot_leads?.length ?? 0 },
-          { label: "Deals at risk", value: agent.deals_at_risk?.length ?? 0 },
-          { label: "Tasks overdue", value: agent.tasks_overdue ?? 0 },
+          { label: "Hot leads", value: agent.hot_leads?.length ?? 0, href: "/crm?filter=hot" },
+          { label: "Deals at risk", value: agent.deals_at_risk?.length ?? 0, href: "/dashboard/transactions?risk=high" },
+          { label: "Tasks overdue", value: agent.tasks_overdue ?? 0, href: "/dashboard/overdue" },
         ],
         generatedAt: agent.generated_at,
       }
@@ -118,5 +119,48 @@ function emptyBrief(userId: string, userType: string, brokerageId: string | null
     priorities: [],
     metrics: [],
     generatedAt: new Date().toISOString(),
+  }
+}
+
+/**
+ * Translate AI-emitted priority entity refs into CTAs the agent can click.
+ * Each CTA carries either an `href` (Link navigation) or a deep-link with
+ * `?action=…` query so the destination page knows which sheet to open.
+ */
+function buildAgentPriorityCtas(p: {
+  entity_type?: string | null
+  entity_id?: string | null
+  action_type?: string | null
+}) {
+  if (!p.entity_id || !p.entity_type) return []
+
+  const id = p.entity_id
+  switch (p.action_type) {
+    case "draft_followup":
+      return [
+        { label: "Draft message", href: `/crm?contact=${id}&action=draft_followup` },
+        { label: "Open contact", href: `/crm?contact=${id}` },
+      ]
+    case "schedule_appointment":
+      return [
+        { label: "Schedule", href: `/crm?contact=${id}&action=schedule_appointment` },
+        { label: "Open contact", href: `/crm?contact=${id}` },
+      ]
+    case "open_contact":
+      return [{ label: "Open contact", href: `/crm?contact=${id}` }]
+    case "view_lead":
+      return [{ label: "View lead", href: `/leads/${id}` }]
+    case "view_transaction":
+      return [{ label: "Open transaction", href: `/dashboard/transactions/${id}` }]
+    case "view_listing":
+      return [{ label: "Open listing", href: `/dashboard/listings/${id}` }]
+    case "complete_task":
+      return [{ label: "Complete task", href: `/dashboard/tasks/${id}` }]
+    default:
+      // Fallback by entity type when AI didn't pick action_type
+      if (p.entity_type === "contact") return [{ label: "Open contact", href: `/crm?contact=${id}` }]
+      if (p.entity_type === "transaction") return [{ label: "Open transaction", href: `/dashboard/transactions/${id}` }]
+      if (p.entity_type === "listing") return [{ label: "Open listing", href: `/dashboard/listings/${id}` }]
+      return []
   }
 }

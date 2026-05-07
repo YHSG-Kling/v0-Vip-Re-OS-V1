@@ -24,6 +24,19 @@ export interface PriorityAction {
   priority: "high" | "medium" | "low"
   action: string
   context: string
+  /** Optional entity reference so the UI can build a deep link. */
+  entity_type?: "contact" | "transaction" | "listing" | "task" | null
+  entity_id?: string | null
+  /** Optional action verb so the UI knows which sheet/modal to open. */
+  action_type?:
+    | "open_contact"
+    | "draft_followup"
+    | "schedule_appointment"
+    | "view_transaction"
+    | "view_listing"
+    | "complete_task"
+    | "view_lead"
+    | null
 }
 
 export interface HotLead {
@@ -212,7 +225,14 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
 {
   "summary": "2-3 sentence overview of the day",
   "top_priority_actions": [
-    {"priority": "high" | "medium" | "low", "action": "specific action to take", "context": "why this matters"}
+    {
+      "priority": "high" | "medium" | "low",
+      "action": "specific action to take",
+      "context": "why this matters",
+      "entity_type": "contact" | "transaction" | "listing" | "task" | null,
+      "entity_id": "<uuid from the data snapshot when known, otherwise null>",
+      "action_type": "open_contact" | "draft_followup" | "schedule_appointment" | "view_transaction" | "view_listing" | "complete_task" | "view_lead" | null
+    }
   ],
   "market_pulse": "1 sentence market observation based on the data",
   "hot_leads": [
@@ -225,6 +245,13 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
 
 Rules:
 - top_priority_actions: max 5 items, ordered by urgency
+- For EVERY priority action, populate entity_type + entity_id by looking up
+  the corresponding row in the data snapshot. If the action is about a
+  contact, use that contact's id; if about a deal, the transaction id; etc.
+  Use null only when no specific entity applies.
+- Pick action_type based on what the agent should DO: 'draft_followup' if
+  they should reply to a contact; 'view_transaction' if they should review
+  a deal; 'complete_task' if they should mark a task done; etc.
 - hot_leads: max 3 items
 - deals_at_risk: only include transactions with health issues
 - Be specific and actionable

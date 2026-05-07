@@ -7,15 +7,23 @@
  * Home dashboards mount this at the top with the user's brief data.
  *
  * Pattern: AI summary → top 3 priorities (severity-color-coded) → KPI metric strip.
+ *
+ * Vision moment: tap the play button to hear the brief read aloud in the
+ * agent's cloned voice (ElevenLabs). Falls back to a professional voice if
+ * no clone is set up.
  */
 
 import Link from "next/link"
-import { useTransition } from "react"
-import { Sparkles, RefreshCw, AlertCircle, AlertTriangle, ShieldAlert, ArrowRight } from "lucide-react"
+import { useRef, useState, useTransition } from "react"
+import {
+  Sparkles, RefreshCw, AlertCircle, AlertTriangle, ShieldAlert,
+  ArrowRight, Play, Pause, Loader2, Volume2,
+} from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { UserTypeBrief, Severity } from "@/lib/intelligence/user-type-briefs"
+import { generateBriefAudio } from "@/app/actions/brief-audio"
 
 interface Props {
   brief: UserTypeBrief
@@ -54,6 +62,51 @@ export function TodaysFocusCard({ brief, onRefresh, refreshing }: Props) {
   const [isPending, startTransition] = useTransition()
   const busy = refreshing || isPending
 
+  // Audio state — generate on first play, cache in component for re-plays
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [audioLoading, setAudioLoading] = useState(false)
+  const [audioPlaying, setAudioPlaying] = useState(false)
+  const [audioError, setAudioError] = useState<string | null>(null)
+
+  async function handlePlayPause() {
+    setAudioError(null)
+
+    // If already playing, pause
+    if (audioPlaying && audioRef.current) {
+      audioRef.current.pause()
+      setAudioPlaying(false)
+      return
+    }
+
+    // If audio already generated, just play
+    if (audioUrl && audioRef.current) {
+      audioRef.current.play().catch(() => setAudioError("Playback blocked"))
+      setAudioPlaying(true)
+      return
+    }
+
+    // First play: generate audio
+    setAudioLoading(true)
+    try {
+      const result = await generateBriefAudio({ brief })
+      if (result.success && result.audioDataUrl) {
+        setAudioUrl(result.audioDataUrl)
+        // play after audio element rerenders
+        setTimeout(() => {
+          audioRef.current?.play().catch(() => setAudioError("Playback blocked"))
+          setAudioPlaying(true)
+        }, 50)
+      } else {
+        setAudioError(result.error ?? "Voice unavailable")
+      }
+    } catch {
+      setAudioError("Voice unavailable")
+    } finally {
+      setAudioLoading(false)
+    }
+  }
+
   if (!brief.summary && brief.priorities.length === 0 && brief.metrics.length === 0) {
     return null
   }
@@ -73,19 +126,53 @@ export function TodaysFocusCard({ brief, onRefresh, refreshing }: Props) {
               )}
             </div>
           </div>
-          {onRefresh && (
+          <div className="flex items-center gap-1 shrink-0">
             <Button
               size="icon"
               variant="ghost"
-              className="h-7 w-7 shrink-0"
-              onClick={() => startTransition(() => onRefresh())}
-              disabled={busy}
-              title="Regenerate brief"
+              className="h-7 w-7"
+              onClick={handlePlayPause}
+              disabled={audioLoading}
+              title={audioPlaying ? "Pause" : "Read brief aloud"}
+              aria-label={audioPlaying ? "Pause brief audio" : "Play brief audio"}
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+              {audioLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : audioPlaying ? (
+                <Pause className="h-3.5 w-3.5" />
+              ) : (
+                <Volume2 className="h-3.5 w-3.5" />
+              )}
             </Button>
+            {onRefresh && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={() => startTransition(() => onRefresh())}
+                disabled={busy}
+                title="Regenerate brief"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+              </Button>
+            )}
+          </div>
+          {/* Hidden audio element rendered when audio is generated */}
+          {audioUrl && (
+            <audio
+              ref={audioRef}
+              src={audioUrl}
+              onEnded={() => setAudioPlaying(false)}
+              onPause={() => setAudioPlaying(false)}
+              onPlay={() => setAudioPlaying(true)}
+            />
           )}
         </div>
+        {audioError && (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1.5 ml-10">
+            {audioError}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Priorities */}

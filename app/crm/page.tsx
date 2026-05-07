@@ -275,6 +275,12 @@ export default function CRMPage() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
+  // Brief-driven action: when the morning brief deep-links here with
+  // ?action=draft_followup or ?action=schedule_appointment, auto-open the
+  // matching sheet so the agent can act in one click.
+  const briefAction = searchParams.get("action")
+  const [pendingBriefAction, setPendingBriefAction] = useState<string | null>(briefAction)
+
   // Agent context (resolved from agents table, not users table)
   // contacts.agent_id = agents.id — must resolve via agents.user_id = auth user.id
   const [agentId, setAgentId] = useState<string | null>(null)
@@ -564,6 +570,22 @@ export default function CRMPage() {
   useEffect(() => {
     if (selectedContactId) {
       loadContactDetail(selectedContactId)
+      // Brief-driven action handling: when the morning brief deep-linked the
+      // agent here with ?action=draft_followup or ?action=schedule_appointment,
+      // jump to the right tab + surface a guiding toast so the agent acts
+      // in one click.
+      if (pendingBriefAction) {
+        const actionMap: Record<string, { tab: string; message: string }> = {
+          draft_followup: { tab: "comms", message: "Morning brief: draft a follow-up message" },
+          schedule_appointment: { tab: "comms", message: "Morning brief: schedule an appointment" },
+        }
+        const handler = actionMap[pendingBriefAction]
+        if (handler) {
+          setActiveTab(handler.tab)
+          toast.info(handler.message, { duration: 4000 })
+        }
+        setPendingBriefAction(null)
+      }
     }
   }, [selectedContactId, loadContactDetail])
 

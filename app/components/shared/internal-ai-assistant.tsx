@@ -569,22 +569,54 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Keep transport headers in sync with sessionId
   useEffect(() => { setSessionIdForTransport(sessionId) }, [sessionId])
 
-  // Speak text via SpeechSynthesis
+  // Speak text — prefer agent's cloned voice via ElevenLabs, fall back to
+  // browser SpeechSynthesis if the cloned voice isn't available or fails.
+  // The audio element is created lazily so we don't pollute SSR.
+  const cloneAudioRef = useRef<HTMLAudioElement | null>(null)
   const speakText = useCallback((text: string) => {
-    if (typeof window === "undefined") return
-    const synth = window.speechSynthesis
-    if (!synth) return
-    synthRef.current = synth
-    synth.cancel() // stop any current speech
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1.05
-    utterance.pitch = 1.0
-    utterance.volume = 1.0
-    // Prefer a natural-sounding voice
-    const voices = synth.getVoices()
-    const preferred = voices.find((v) => /samantha|google us|zira|natural/i.test(v.name))
-    if (preferred) utterance.voice = preferred
-    synth.speak(utterance)
+    if (typeof window === "undefined" || !text.trim()) return
+
+    // Cancel any in-flight speech (browser or audio element)
+    try { window.speechSynthesis?.cancel() } catch {}
+    if (cloneAudioRef.current) {
+      cloneAudioRef.current.pause()
+      cloneAudioRef.current = null
+    }
+
+    // Browser-TTS fallback closure
+    const speakViaBrowser = () => {
+      const synth = window.speechSynthesis
+      if (!synth) return
+      synthRef.current = synth
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 1.05
+      utterance.pitch = 1.0
+      utterance.volume = 1.0
+      const voices = synth.getVoices()
+      const preferred = voices.find((v) => /samantha|google us|zira|natural/i.test(v.name))
+      if (preferred) utterance.voice = preferred
+      synth.speak(utterance)
+    }
+
+    // Try ElevenLabs first — fire and forget; on any failure, fall back
+    fetch("/api/internal/voice-tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.slice(0, 2000) }),
+    })
+      .then(async (res) => {
+        if (!res.ok || !res.body) {
+          speakViaBrowser()
+          return
+        }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        cloneAudioRef.current = audio
+        audio.onended = () => URL.revokeObjectURL(url)
+        audio.play().catch(() => speakViaBrowser())
+      })
+      .catch(() => speakViaBrowser())
   }, [])
 
   // Process a voice command transcript
