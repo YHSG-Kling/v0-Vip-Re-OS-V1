@@ -147,24 +147,84 @@ async function emitTransactionEvent(params: {
   entityId:    string
   actorUserId: string
   metadata?:   Record<string, unknown>
+  /** Optional override — defaults to 'transaction'. Pass 'offer' for events
+   *  where entityId is an offer id (so we resolve buyer/seller contacts
+   *  from the offer + listing rather than the transaction). */
+  entityType?: "transaction" | "offer" | "listing"
 }): Promise<void> {
   const supabase = createServiceClient()
   const { event, brokerageId, entityId, actorUserId, metadata } = params
+  const entityType = params.entityType ?? "transaction"
 
   await supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
-    entity_type:   "transaction",
+    entity_type:   entityType,
     entity_id:     entityId,
     event_type:    event,
     actor_user_id: actorUserId,
     metadata:      metadata ?? {},
   })
 
-  await processKernelEvent({
+  // ── Enrich the event with contact + transaction + listing context so
+  //    fanOutKernelEvent can fire portal updates and sequence enrollment
+  //    for both buyer and seller without each call site re-resolving.
+  let contactId: string | undefined
+  let buyerContactId: string | undefined
+  let sellerContactId: string | undefined
+  let transactionId: string | undefined
+  let listingId: string | undefined
+
+  try {
+    if (entityType === "transaction") {
+      transactionId = entityId
+      const { data: tx } = await supabase
+        .from("transactions")
+        .select("buyer_contact_id, seller_contact_id, contact_id, listing_id")
+        .eq("id", entityId)
+        .maybeSingle()
+      buyerContactId  = tx?.buyer_contact_id  ?? undefined
+      sellerContactId = tx?.seller_contact_id ?? undefined
+      contactId       = tx?.contact_id        ?? undefined
+      listingId       = tx?.listing_id        ?? undefined
+    } else if (entityType === "offer") {
+      const { data: o } = await supabase
+        .from("offers")
+        .select("contact_id, listing_id, transaction_id")
+        .eq("id", entityId)
+        .maybeSingle()
+      buyerContactId = o?.contact_id ?? undefined
+      contactId      = o?.contact_id ?? undefined
+      listingId      = o?.listing_id ?? undefined
+      transactionId  = o?.transaction_id ?? undefined
+      if (listingId) {
+        const { data: l } = await supabase
+          .from("listings").select("seller_contact_id").eq("id", listingId).maybeSingle()
+        sellerContactId = l?.seller_contact_id ?? undefined
+      }
+    } else if (entityType === "listing") {
+      listingId = entityId
+      const { data: l } = await supabase
+        .from("listings").select("seller_contact_id").eq("id", entityId).maybeSingle()
+      sellerContactId = l?.seller_contact_id ?? undefined
+      contactId       = l?.seller_contact_id ?? undefined
+    }
+  } catch { /* enrichment is best-effort */ }
+
+  // Single canonical fan-out (replaces direct processKernelEvent call) —
+  // notifications + sequence auto-enroll + portal update happen here.
+  const { fanOutKernelEvent } = await import("./event-fanout")
+  await fanOutKernelEvent({
     event,
     brokerageId,
-    entityType: "transaction",
+    entityType,
     entityId,
+    contactId,
+    buyerContactId,
+    sellerContactId,
+    transactionId,
+    listingId,
+    agentUserId: actorUserId,
+    metadata,
   })
 }
 
@@ -519,6 +579,7 @@ export async function emitOfferAcceptedEvent(params: {
   try {
     await emitTransactionEvent({
       event:       KernelEvent.OFFER_ACCEPTED,
+      entityType:  "offer",
       brokerageId,
       entityId:    offerId,
       actorUserId: agentId,

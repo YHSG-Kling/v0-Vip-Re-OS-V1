@@ -62,14 +62,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .update({ scan_count: (qr.scan_count ?? 0) + 1 })
       .eq('id', qr.id)
 
-    // ── Step 4: Emit lifecycle event ──────────────────────────────────────────
+    // ── Step 4: Emit lifecycle event + fan out ────────────────────────────────
+    // fanOutKernelEvent fires processKernelEvent (staff alerts) + auto-enrolls
+    // any campaign_sequence that listens on qr_scan_received. Scan is still
+    // anonymous (no contact_id) so portal-update fan-out is a no-op here —
+    // when the agent connects the scan to a contact via landing-page intake,
+    // the contact-creation event will auto-enroll the right sequence.
     await supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'qr_scan',
       entity_id: qr.id,
       event_type: KernelEvent.QR_SCAN_RECEIVED,
-      metadata: { slug },
+      metadata: { slug, campaign_id: campaignId },
     })
+    try {
+      const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
+      await fanOutKernelEvent({
+        event:       KernelEvent.QR_SCAN_RECEIVED,
+        brokerageId: qr.brokerage_id,
+        entityType:  'qr_scan',
+        entityId:    qr.id,
+        metadata:    { slug, campaign_id: campaignId },
+      })
+    } catch { /* non-blocking */ }
 
     // ── Step 5: Redirect to landing page ─────────────────────────────────────
     // No contact created. No consent. Scan is audit trail only.
