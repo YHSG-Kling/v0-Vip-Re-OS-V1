@@ -178,13 +178,22 @@ export async function executeSequenceStep(
 
   // ── Step 5: Fetch contact for dispatch ──────────────────────────────────────
   let contact: Record<string, any> | null = null
+  let agentUserId: string | null = null
   if (contactId) {
     const { data } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, email, phone, mailing_address, city, state, zip")
+      .select("id, first_name, last_name, email, phone, mailing_address, city, state, zip, agent_id")
       .eq("id", contactId)
       .single()
     contact = data
+
+    // Resolve assigned agent's auth user id (contacts.agent_id is agents.id;
+    // need the users.id for personal-email OAuth + signature lookup).
+    if (data?.agent_id) {
+      const { data: a } = await supabase
+        .from("agents").select("user_id").eq("id", data.agent_id).maybeSingle()
+      agentUserId = a?.user_id ?? null
+    }
   }
 
   // ── Step 5: Dispatch via channel ────────────────────────────────────────────
@@ -199,13 +208,62 @@ export async function executeSequenceStep(
     case "email": {
       if (!contact?.email) {
         dispatchResult = { success: false, providerKey: "email", error: "No email on contact" }
-      } else {
+        break
+      }
+      if (!contactId) {
+        dispatchResult = { success: false, providerKey: "email", error: "No contact id" }
+        break
+      }
+      // ── Pre-send pipeline: interpolate tokens, run brand-voice check,
+      //    append agent signature + unsubscribe + legal disclosures.
+      const { renderSequenceStep } = await import("./render-step")
+      const rendered = await renderSequenceStep({
+        brokerageId,
+        contactId,
+        agentUserId,
+        step:           { channel: "email", subject: step.subject, body: step.body },
+        channelPurpose: "campaign",
+      })
+      if (rendered.brandVoiceViolations.length > 0) {
+        dispatchResult = {
+          success:     false,
+          providerKey: "email",
+          error:       `Brand voice violation: ${rendered.brandVoiceViolations.join("; ")}`,
+        }
+        break
+      }
+      // Try the agent's connected Gmail/Outlook OAuth first — sends from
+      // the agent's actual address; replies route to their inbox naturally.
+      // Falls back to SendGrid (via dispatchEmail) when no personal account.
+      let sentViaPersonal = false
+      if (agentUserId) {
+        try {
+          const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
+          const personal = await sendPersonalEmail({
+            agentUserId,
+            to:       contact.email,
+            subject:  rendered.subject ?? "(No Subject)",
+            htmlBody: rendered.htmlBody,
+            textBody: rendered.textBody,
+          })
+          if (personal.success) {
+            dispatchResult = {
+              success:     true,
+              providerKey: personal.provider ?? "personal",
+              messageId:   personal.messageId,
+            }
+            sentViaPersonal = true
+          }
+        } catch { /* fall through to SendGrid */ }
+      }
+      if (!sentViaPersonal) {
+        // SendGrid fallback — from the brokerage send-domain or noreply
         dispatchResult = await dispatchEmail({
           ...baseCtx,
-          from: "noreply@platform.com",
-          to: contact.email,
-          subject: step.subject ?? "(No Subject)",
-          html: `<p>${step.body ?? ""}</p>`,
+          from:     "noreply@platform.com",
+          to:       contact.email,
+          subject:  rendered.subject ?? "(No Subject)",
+          html:     rendered.htmlBody,
         })
       }
       break
@@ -213,13 +271,35 @@ export async function executeSequenceStep(
     case "sms": {
       if (!contact?.phone) {
         dispatchResult = { success: false, providerKey: "sms", error: "No phone on contact" }
-      } else {
-        dispatchResult = await dispatchSms({
-          ...baseCtx,
-          to: contact.phone,
-          message: step.body ?? "",
-        })
+        break
       }
+      if (!contactId) {
+        dispatchResult = { success: false, providerKey: "sms", error: "No contact id" }
+        break
+      }
+      // Token interpolation + brand-voice check for SMS too. SMS doesn't
+      // get the assembleEmail signature/disclosure block — channelPurpose
+      // is irrelevant for the SMS path.
+      const { renderSequenceStep } = await import("./render-step")
+      const rendered = await renderSequenceStep({
+        brokerageId,
+        contactId,
+        agentUserId,
+        step:           { channel: "sms", subject: null, body: step.body },
+      })
+      if (rendered.brandVoiceViolations.length > 0) {
+        dispatchResult = {
+          success:     false,
+          providerKey: "sms",
+          error:       `Brand voice violation: ${rendered.brandVoiceViolations.join("; ")}`,
+        }
+        break
+      }
+      dispatchResult = await dispatchSms({
+        ...baseCtx,
+        to:      contact.phone,
+        message: rendered.textBody,
+      })
       break
     }
     case "voice": {
