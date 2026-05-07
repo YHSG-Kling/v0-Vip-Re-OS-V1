@@ -39,6 +39,9 @@ import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/de
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
+import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance-card"
+import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
+import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -418,6 +421,15 @@ export default function AgentDashboard() {
 
         {/* Smarter-this-week digest — surfaces the AI improvement loop */}
         <SmarterWidget />
+
+        {/* Predictive surfaces — Sphere Resonance + Wealth Advisor */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <SphereResonanceCard />
+          <WealthAdvisorCard />
+        </div>
+
+        {/* Smart Queue — single segmented list, replaces 5 contact-urgency widgets */}
+        <SmartQueue />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">

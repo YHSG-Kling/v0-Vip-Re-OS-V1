@@ -13,6 +13,7 @@ import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assista
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
+import { FloatingVoiceFAB } from './floating-voice-fab'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
 import type { UserContext } from '@/app/types/roles'
@@ -185,6 +186,9 @@ export function AppShell({ children }: AppShellProps) {
 
         {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
         <ShellInboxOutlet />
+
+        {/* Floating voice mic on every staff page */}
+        {showAIAssistant && <FloatingVoiceFAB />}
       </div>
     </ShellProvider>
   )
