@@ -1003,7 +1003,45 @@ export async function closeTransactionCommand(params: {
 
     if (error) return { success: false, error: error.message }
 
-    // Timeline + lifecycle_event
+    // Timeline + lifecycle_event + per-contact activity rows
+    // (activity rows are what the CRM contact Activity tab reads — the
+    // transaction_timeline rows alone never surface there.)
+    const activityWrites: any[] = []
+    if (txBefore?.buyer_contact_id) {
+      activityWrites.push(
+        supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     txBefore.buyer_contact_id,
+          transaction_id: params.transactionId,
+          activity_type:  "transaction_closed",
+          title:          "Transaction Closed",
+          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+          status:         "completed",
+          priority:       "high",
+          entity_type:    "transaction",
+          created_at:     nowIso,
+        })
+      )
+    }
+    if (txBefore?.seller_contact_id && txBefore.seller_contact_id !== txBefore.buyer_contact_id) {
+      activityWrites.push(
+        supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     txBefore.seller_contact_id,
+          transaction_id: params.transactionId,
+          activity_type:  "transaction_closed",
+          title:          "Transaction Closed",
+          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+          status:         "completed",
+          priority:       "high",
+          entity_type:    "transaction",
+          created_at:     nowIso,
+        })
+      )
+    }
+
     await Promise.all([
       supabase.from("transaction_timeline").insert({
         transaction_id: params.transactionId,
@@ -1021,6 +1059,7 @@ export async function closeTransactionCommand(params: {
         actor_user_id: params.agentId,
         created_at:   nowIso,
       }),
+      ...activityWrites,
     ])
 
     // ── Propagate close to related entities ────────────────────────────────
