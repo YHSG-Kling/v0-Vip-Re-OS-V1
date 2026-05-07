@@ -393,11 +393,15 @@ export default function PersonaPropertiesDashboard({
       try {
         const result = await requestShowing({
           contactId,
-          propertyId: selectedProperty.mlsNumber,
+          mlsNumber:       selectedProperty.mlsNumber,
           propertyAddress: selectedProperty.address,
-          propertyData: selectedProperty,
-          preferredDates: [{ date: showingDate, time: showingTime }],
-          clientNotes: showingNotes,
+          propertyCity:    (selectedProperty as any).city,
+          propertyState:   (selectedProperty as any).state,
+          listPrice:       (selectedProperty as any).list_price ?? (selectedProperty as any).price,
+          primaryPhotoUrl: (selectedProperty as any).primary_photo_url ?? (selectedProperty as any).photo_url,
+          source:          'buyer_portal',
+          preferredDates:  [{ date: showingDate, time: showingTime }],
+          clientNotes:     showingNotes,
         })
         
         if (result.success) {
@@ -720,11 +724,13 @@ export default function PersonaPropertiesDashboard({
                       startTransition(async () => {
                         try {
                           await requestShowing({
-                            propertyId: listing.id,
+                            listingId:        listing.id,
                             contactId,
-                            propertyAddress: `${listing.address}, ${listing.city}`,
-                            preferredDates: [{ date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10), time: "10:00" }],
-                            clientNotes: "Coming soon interest — requesting early showing access.",
+                            propertyAddress:  `${listing.address}, ${listing.city}`,
+                            propertyCity:     listing.city,
+                            source:           'buyer_portal',
+                            preferredDates:   [{ date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10), time: "10:00" }],
+                            clientNotes:      "Coming soon interest — requesting early showing access.",
                           })
                           toast({ title: "Showing requested!", description: "Your agent will confirm timing." })
                         } catch {

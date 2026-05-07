@@ -386,13 +386,25 @@ export function SearchClient({
     const preferredDates: { date: string; time: string }[] = [{ date: showingDate1, time: showingTime1 }]
     if (showingDate2 && showingTime2) preferredDates.push({ date: showingDate2, time: showingTime2 })
 
+    // showingProperty.id is the listings UUID when this is a brokerage
+    // listing; for external (Rentcast/IDX) results only mls_number is present.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const propId = showingProperty.id ?? showingProperty.mls_number ?? ""
+    const isUuid = typeof propId === "string" && uuidRe.test(propId)
+
     const result = await requestShowing({
-      contactId:       buyerId,
-      propertyId:      showingProperty.mls_number ?? showingProperty.id ?? "",
-      propertyAddress: showingProperty.address ?? "",
-      propertyData:    showingProperty,
+      contactId:        buyerId,
+      listingId:        isUuid ? propId : undefined,
+      mlsNumber:        showingProperty.mls_number ?? undefined,
+      propertyAddress:  showingProperty.address ?? "",
+      propertyCity:     (showingProperty as any).city,
+      propertyState:    (showingProperty as any).state,
+      propertyZip:      (showingProperty as any).zip ?? (showingProperty as any).zip_code,
+      listPrice:        (showingProperty as any).list_price ?? (showingProperty as any).price,
+      primaryPhotoUrl:  (showingProperty as any).primary_photo_url ?? (showingProperty as any).photo_url,
+      source:           'agent_input',
       preferredDates,
-      clientNotes:     showingNotes || undefined,
+      clientNotes:      showingNotes || undefined,
     })
     setShowingSubmitting(false)
     if (result.success) {

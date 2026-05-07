@@ -5,11 +5,30 @@ import { revalidatePath } from "next/cache"
 
 export async function requestShowing(data: {
   contactId: string
-  // For agent-created seller listings this is a UUID; for MLS buyer properties it is an MLS number string.
-  // We store it as listing_id when it is a valid UUID, otherwise it goes in the message field only.
-  propertyId: string
+  /** UUID when the property is an in-house listing; otherwise pass undefined
+   *  and supply the external property fields below. */
+  listingId?: string
+  /** Required regardless of whether the property is in-house or external. */
   propertyAddress: string
-  propertyData?: any
+  /** External property details (Rentcast / IDX / MLS lookup). Supply these
+   *  when listingId is undefined so the listing agent can be contacted and
+   *  the request shows up in the buyer agent's queue with full context. */
+  propertyCity?: string
+  propertyState?: string
+  propertyZip?: string
+  mlsNumber?: string
+  listPrice?: number
+  primaryPhotoUrl?: string
+  /** When the listing is external, the listing-agent contact info the buyer
+   *  agent will use to schedule (ShowingTime fallback / direct text / email). */
+  listingAgentName?: string
+  listingAgentPhone?: string
+  listingAgentEmail?: string
+  listingAgentCompany?: string
+  /** Where this request originated. */
+  source?: 'buyer_portal' | 'agent_input' | 'tour_planner' | 'message' | 'external_agent'
+  /** Optional link back to the saved_properties row this request came from. */
+  savedPropertyId?: string
   preferredDates: { date: string; time: string }[]
   clientNotes?: string
 }) {
@@ -28,10 +47,6 @@ export async function requestShowing(data: {
     const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
     const { data: { user } } = await supabase.auth.getUser()
 
-    // Determine if propertyId is a valid UUID (agent listing) vs MLS string (buyer MLS search)
-    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-    const isUuid = uuidRe.test(data.propertyId)
-
     // Build a readable message from preferred dates and notes
     const datesText = data.preferredDates
       .map((d, i) => `Option ${i + 1}: ${d.date} at ${d.time}`)
@@ -45,16 +60,44 @@ export async function requestShowing(data: {
     // Use first preferred date/time for the structured date fields
     const firstDate = data.preferredDates[0]
 
+    // Compute requested_end_time (default 30 minute slot) — required by NOT NULL
+    const startHHMM = firstDate?.time
+    const endHHMM = startHHMM
+      ? (() => {
+          const [h, m] = startHHMM.split(":").map(Number)
+          const total = h * 60 + m + 30
+          const eh = Math.floor(total / 60) % 24
+          const em = total % 60
+          return `${String(eh).padStart(2,"0")}:${String(em).padStart(2,"0")}:00`
+        })()
+      : null
+
     const { data: showing, error } = await supabase
       .from("showing_requests")
       .insert({
-        listing_id:           isUuid ? data.propertyId : null,
-        contact_id:           data.contactId,
-        brokerage_id:         brokerageId,
-        requested_date:       firstDate?.date ?? null,
-        requested_start_time: firstDate?.time ? `${firstDate.time}:00` : null,
-        message:              msgParts,
-        status:               "pending",
+        listing_id:            data.listingId ?? null,
+        contact_id:            data.contactId,
+        brokerage_id:          brokerageId,
+        // External property fields — populated when listingId is null so the
+        // request still has enough context for the buyer agent to act on it.
+        property_address:      data.propertyAddress,
+        property_city:         data.propertyCity ?? null,
+        property_state:        data.propertyState ?? null,
+        property_zip:          data.propertyZip ?? null,
+        mls_number:            data.mlsNumber ?? null,
+        list_price:            data.listPrice ?? null,
+        primary_photo_url:     data.primaryPhotoUrl ?? null,
+        listing_agent_name:    data.listingAgentName ?? null,
+        listing_agent_phone:   data.listingAgentPhone ?? null,
+        listing_agent_email:   data.listingAgentEmail ?? null,
+        listing_agent_company: data.listingAgentCompany ?? null,
+        source:                data.source ?? 'buyer_portal',
+        saved_property_id:     data.savedPropertyId ?? null,
+        requested_date:        firstDate?.date ?? null,
+        requested_start_time:  startHHMM ? `${startHHMM}:00` : null,
+        requested_end_time:    endHHMM,
+        message:               msgParts,
+        status:                "pending",
       })
       .select()
       .single()
@@ -99,10 +142,11 @@ export async function requestShowing(data: {
         contact_id:    data.contactId,
         activity_type: "request_showing",
         activity_data: {
-          property_address: data.propertyAddress,
-          mls_number:       !isUuid ? data.propertyId : undefined,
-          listing_id:       isUuid  ? data.propertyId : undefined,
+          property_address:   data.propertyAddress,
+          mls_number:         data.mlsNumber ?? null,
+          listing_id:         data.listingId ?? null,
           showing_request_id: showing.id,
+          source:             data.source ?? 'buyer_portal',
         },
       })
     } catch { /* non-critical */ }
