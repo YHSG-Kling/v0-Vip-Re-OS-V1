@@ -88,7 +88,7 @@ import {
   CheckSquare,
 } from "lucide-react"
 import Link from "next/link"
-import { format } from "date-fns"
+import { format, formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
@@ -154,7 +154,16 @@ const TYPE_COLORS: Record<string, string> = {
   buyer: "bg-blue-50 text-blue-700",
   seller: "bg-green-50 text-green-700",
   investor: "bg-purple-50 text-purple-700",
+  lifetime_customer: "bg-emerald-50 text-emerald-700",
   other: "bg-gray-50 text-gray-600",
+}
+
+const TYPE_AVATAR_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  buyer:             { bg: "bg-blue-100",    text: "text-blue-700",    border: "border-l-blue-400" },
+  seller:            { bg: "bg-green-100",   text: "text-green-700",   border: "border-l-green-400" },
+  investor:          { bg: "bg-purple-100",  text: "text-purple-700",  border: "border-l-purple-400" },
+  lifetime_customer: { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-l-emerald-400" },
+  other:             { bg: "bg-gray-100",    text: "text-gray-600",    border: "border-l-gray-300" },
 }
 
 function ContactOSSummary({
@@ -3042,98 +3051,183 @@ export default function CRMPage() {
 
       {/* Contact list */}
       {!loading && displayedContacts.length > 0 && (
-        <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
-          {displayedContacts.map((contact) => (
-            <Card
-              key={contact.id}
-              className={cn("hover:shadow-md transition-shadow cursor-pointer", selectedContactIds.has(contact.id) && "border-primary ring-1 ring-primary")}
-              onClick={() => handleSelectContact(contact.id)}
-            >
-              <CardContent className="p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-2 flex-1 min-w-0">
-                    <Checkbox
-                      checked={selectedContactIds.has(contact.id)}
-                      onCheckedChange={(checked) => {
-                        const next = new Set(selectedContactIds)
-                        if (checked) next.add(contact.id)
-                        else next.delete(contact.id)
-                        setSelectedContactIds(next)
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="mt-1 shrink-0"
-                    />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <h3 className="font-semibold text-gray-900 truncate">
-                        {contact.first_name} {contact.last_name}
-                      </h3>
-                      {contact.contact_type && (
-                        <Badge
-                          className={`text-xs ${
-                            TYPE_COLORS[contact.contact_type] ?? TYPE_COLORS.other
-                          }`}
-                        >
-                          {contact.contact_type}
-                        </Badge>
-                      )}
-                      {contact.status && (
-                        <Badge
-                          className={`text-xs ${
-                            STATUS_COLORS[contact.status] ??
-                            "bg-gray-100 text-gray-600"
-                          }`}
-                        >
-                          {contact.status.replace(/_/g, " ")}
-                        </Badge>
-                      )}
-                      {leadScores[contact.id] && (
-                        <Badge
-                          className={`text-xs ${
-                            leadScores[contact.id].label === "High"
-                              ? "bg-green-100 text-green-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
-                          title={`Conversion probability: ${leadScores[contact.id].score}%`}
-                        >
-                          <TrendingUp className="h-3 w-3 mr-1" />
-                          {leadScores[contact.id].label} Conversion
-                        </Badge>
-                      )}
-                      {(contact as any).ai_isa_enabled && (
-                        <Badge className="text-xs bg-emerald-100 text-emerald-700">
-                          AI Follow-up
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
-                      {contact.email && (
-                        <span className="flex items-center gap-1">
-                          <Mail className="h-3.5 w-3.5" />
-                          {contact.email}
-                        </span>
-                      )}
-                      {contact.phone && (
-                        <span className="flex items-center gap-1">
-                          <Phone className="h-3.5 w-3.5" />
-                          {contact.phone}
-                        </span>
-                      )}
-                      {(contact.city || contact.state) && (
-                        <span className="flex items-center gap-1">
-                          <MapPin className="h-3.5 w-3.5" />
-                          {[contact.city, contact.state]
-                            .filter(Boolean)
-                            .join(", ")}
-                        </span>
-                      )}
-                    </div>
+        <div className={cn("space-y-2", searchLoading && "opacity-60 pointer-events-none")}>
+          {displayedContacts.map((contact) => {
+            const score = leadScores[contact.id]
+            const initials = [contact.first_name?.[0], contact.last_name?.[0]]
+              .filter(Boolean).join("").toUpperCase() || "?"
+            const typeKey = (contact.contact_type ?? "other").toLowerCase()
+            const avatarColors = TYPE_AVATAR_COLORS[typeKey] ?? TYPE_AVATAR_COLORS.other
+            const isSelected = selectedContactIds.has(contact.id)
+
+            let lastActivityLabel: string | null = null
+            if (contact.last_contacted_at) {
+              try {
+                lastActivityLabel = "Last contact: " + formatDistanceToNow(
+                  new Date(contact.last_contacted_at), { addSuffix: true }
+                )
+              } catch {}
+            } else if (contact.created_at) {
+              try {
+                lastActivityLabel = "Added " + formatDistanceToNow(
+                  new Date(contact.created_at), { addSuffix: true }
+                )
+              } catch {}
+            }
+
+            const scoreValue = score?.score
+            const scoreLabel = score?.label
+            const engScore = contact.engagement_score
+
+            return (
+              <div
+                key={contact.id}
+                className={cn(
+                  "group relative flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 cursor-pointer",
+                  "border-l-4 hover:shadow-md hover:border-primary/30 transition-all duration-150",
+                  avatarColors.border,
+                  isSelected && "border-primary ring-1 ring-primary bg-primary/5"
+                )}
+                onClick={() => handleSelectContact(contact.id)}
+              >
+                {/* Checkbox */}
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={(checked) => {
+                    const next = new Set(selectedContactIds)
+                    if (checked) next.add(contact.id)
+                    else next.delete(contact.id)
+                    setSelectedContactIds(next)
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0"
+                />
+
+                {/* Avatar */}
+                <div
+                  className={cn(
+                    "shrink-0 h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold select-none",
+                    avatarColors.bg, avatarColors.text
+                  )}
+                >
+                  {initials}
+                </div>
+
+                {/* Main info */}
+                <div className="flex-1 min-w-0">
+                  {/* Name + badges */}
+                  <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                    <span className="font-semibold text-sm truncate max-w-[170px]">
+                      {contact.first_name} {contact.last_name}
+                    </span>
+                    {contact.contact_type && (
+                      <Badge className={cn("text-[10px] px-1.5 py-0 h-[18px] leading-none", TYPE_COLORS[typeKey] ?? TYPE_COLORS.other)}>
+                        {contact.contact_type === "lifetime_customer" ? "Lifetime" : contact.contact_type}
+                      </Badge>
+                    )}
+                    {contact.status && (
+                      <Badge className={cn("text-[10px] px-1.5 py-0 h-[18px] leading-none", STATUS_COLORS[contact.status] ?? "bg-gray-100 text-gray-600")}>
+                        {contact.status.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                    {(contact as any).ai_isa_enabled && (
+                      <Badge className="text-[10px] px-1.5 py-0 h-[18px] leading-none bg-emerald-100 text-emerald-700">
+                        AI
+                      </Badge>
+                    )}
+                    {contact.dnc_status && (
+                      <Badge className="text-[10px] px-1.5 py-0 h-[18px] leading-none bg-red-100 text-red-700">DNC</Badge>
+                    )}
                   </div>
+
+                  {/* Contact details */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0 text-xs text-muted-foreground">
+                    {contact.email && (
+                      <span className="flex items-center gap-0.5 truncate max-w-[150px]">
+                        <Mail className="h-3 w-3 shrink-0" />
+                        {contact.email}
+                      </span>
+                    )}
+                    {contact.phone && (
+                      <span className="flex items-center gap-0.5">
+                        <Phone className="h-3 w-3 shrink-0" />
+                        {contact.phone}
+                      </span>
+                    )}
+                    {(contact.city || contact.state) && (
+                      <span className="flex items-center gap-0.5">
+                        <MapPin className="h-3 w-3 shrink-0" />
+                        {[contact.city, contact.state].filter(Boolean).join(", ")}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Last activity */}
+                  {lastActivityLabel && (
+                    <p className="mt-0.5 text-[10px] text-muted-foreground/70">{lastActivityLabel}</p>
+                  )}
+                </div>
+
+                {/* Right rail: score + quick actions */}
+                <div className="shrink-0 flex flex-col items-end gap-1.5">
+                  {/* Score circle — AI lead score takes priority over engagement */}
+                  {(scoreValue != null || engScore != null) && (
+                    <div
+                      className={cn(
+                        "h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 shrink-0",
+                        scoreLabel === "High" || (engScore ?? 0) >= 70
+                          ? "border-green-500 text-green-700 bg-green-50"
+                          : scoreLabel === "Medium" || (engScore ?? 0) >= 40
+                          ? "border-amber-400 text-amber-700 bg-amber-50"
+                          : "border-gray-300 text-gray-500 bg-gray-50"
+                      )}
+                      title={
+                        scoreValue != null
+                          ? `Lead score: ${scoreValue}% conversion probability`
+                          : `Engagement: ${engScore}`
+                      }
+                    >
+                      {scoreValue ?? engScore}
+                    </div>
+                  )}
+
+                  {/* Quick actions — fade in on hover */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {contact.phone && !contact.phone_opt_out && (
+                      <button
+                        type="button"
+                        title="Call"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-green-600 hover:border-green-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); window.location.href = `tel:${contact.phone}` }}
+                      >
+                        <Phone className="h-3 w-3" />
+                      </button>
+                    )}
+                    {contact.email && !contact.email_opt_out && (
+                      <button
+                        type="button"
+                        title="Email"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-blue-600 hover:border-blue-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleSelectContact(contact.id) }}
+                      >
+                        <Mail className="h-3 w-3" />
+                      </button>
+                    )}
+                    {contact.phone && !contact.sms_opt_out && (
+                      <button
+                        type="button"
+                        title="SMS"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-purple-600 hover:border-purple-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleSelectContact(contact.id) }}
+                      >
+                        <MessageCircle className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
+              </div>
+            )
+          })}
         </div>
       )}
 

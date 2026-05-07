@@ -5,11 +5,15 @@
  *
  * Flow:
  *   1. Resolve agent + brokerage context
- *   2. Load brand hints (brokerage name + primary_color, agent's brand voice)
- *   3. Call generateImage()
+ *   2. Load brand hints — brokerage (name, color, logo) + agent's brand voice
+ *      Team logo takes precedence over brokerage logo when agent belongs to a team
+ *   3. Call generateImage() — logo is composited server-side by Sharp
  *   4. Persist to marketing_assets so the image lives in the asset library
- *      and can be re-used across surfaces
- *   5. Return URL + asset_id to the caller (drop-in component or other surface)
+ *   5. Return URL + asset_id to the caller
+ *
+ * Logo behaviour:
+ *   - Default: brokerage/team logo is composited onto the bottom-right corner
+ *   - noLogo=true: skip compositing, use brokerage name text in the prompt instead
  */
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
@@ -36,6 +40,11 @@ export interface GenerateMarketingImageInput {
   listingId?: string
   /** Free-form tags */
   tags?: string[]
+  /**
+   * When true: skip logo overlay and inject brokerage name text into the prompt
+   * instead. Use when the agent explicitly wants text branding over a logo badge.
+   */
+  noLogo?: boolean
 }
 
 export interface GenerateMarketingImageResult {
@@ -62,11 +71,11 @@ export async function generateMarketingImage(
 
   const svc = createServiceClient()
 
-  // Load brand hints in parallel — brokerage + listing context (if linked)
+  // Load brokerage brand + listing context in parallel
   const [{ data: brokerage }, listingResult] = await Promise.all([
     svc
       .from("brokerages")
-      .select("name, primary_color")
+      .select("name, primary_color, logo_url")
       .eq("id", ctx.brokerageId)
       .maybeSingle(),
     input.listingId
@@ -79,6 +88,9 @@ export async function generateMarketingImage(
   ])
 
   let agentName: string | null = null
+  // Team logo takes precedence over brokerage logo (more specific branding)
+  let logoUrl: string | null = brokerage?.logo_url ?? null
+
   if (ctx.userId) {
     const { data: u } = await svc
       .from("users")
@@ -86,9 +98,19 @@ export async function generateMarketingImage(
       .eq("id", ctx.userId)
       .maybeSingle()
     agentName = [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null
+
+    // Check if agent belongs to a team with its own logo
+    const { data: teamMembership } = await svc
+      .from("agent_teams")
+      .select("team_id, teams(logo_url)")
+      .eq("agent_id", ctx.userId)
+      .limit(1)
+      .maybeSingle()
+    const teamLogo = (teamMembership?.teams as any)?.logo_url
+    if (teamLogo) logoUrl = teamLogo
   }
 
-  // Best-effort brand voice tone (optional)
+  // Best-effort brand voice tone
   let brandVoiceTone: string | null = null
   try {
     const { data: bvp } = await svc
@@ -112,6 +134,8 @@ export async function generateMarketingImage(
       primaryColor: brokerage?.primary_color ?? null,
       agentName,
       brandVoiceTone,
+      logoUrl: input.noLogo ? null : logoUrl,
+      noLogo: input.noLogo ?? false,
     },
     listingContext: (listingResult as any).data
       ? {
@@ -162,13 +186,14 @@ export async function generateMarketingImage(
         cost_usd: genResult.cost,
         listing_id: input.listingId ?? null,
         provider: "dall-e-3",
+        logo_composited: !input.noLogo && !!logoUrl,
       },
     })
     .select("id")
     .single()
 
   if (insertErr || !asset) {
-    // Image was generated, but library insert failed — return image anyway
+    // Image was generated but library insert failed — return image anyway
     return {
       success: true,
       imageUrl: genResult.imageUrl,

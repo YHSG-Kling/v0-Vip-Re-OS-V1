@@ -27,7 +27,8 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { Sparkles, Loader2, AlertCircle, RefreshCw } from "lucide-react"
+import { Sparkles, Loader2, AlertCircle, RefreshCw, ImageOff } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import {
   generateMarketingImage,
 } from "@/app/actions/generate-marketing-image"
@@ -58,6 +59,11 @@ interface Props {
   defaultSize?: Size
   /** Optional tooltip on disabled state */
   disabled?: boolean
+  /**
+   * When true, the "Use name instead of logo" toggle is pre-checked.
+   * Useful for surfaces that want text branding by default.
+   */
+  defaultNoLogo?: boolean
 }
 
 const SIZE_LABELS: Record<Size, string> = {
@@ -87,6 +93,7 @@ export function GenerateImageButton(props: Props) {
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null)
   const [generatedAssetId, setGeneratedAssetId] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
+  const [noLogo, setNoLogo] = useState(props.defaultNoLogo ?? false)
   const [isPending, startTransition] = useTransition()
 
   function reset() {
@@ -113,6 +120,7 @@ export function GenerateImageButton(props: Props) {
         listingId: props.listingId,
         campaignId: props.campaignId,
         tags: props.tags,
+        noLogo,
       })
       if (result.success && result.imageUrl) {
         setGeneratedUrl(result.imageUrl)
@@ -208,6 +216,19 @@ export function GenerateImageButton(props: Props) {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            {/* Logo / name toggle */}
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+              <div className="flex items-center gap-2">
+                <ImageOff className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-muted-foreground">Use name text instead of logo</span>
+              </div>
+              <Switch
+                checked={noLogo}
+                onCheckedChange={setNoLogo}
+                disabled={isPending}
+              />
             </div>
 
             {/* Result preview */}

@@ -10,16 +10,19 @@
  *   1. Build the brand-aware prompt
  *   2. Call DALL-E 3 (returns a 1-hour signed URL)
  *   3. Download the image bytes
- *   4. Re-upload to Vercel Blob (permanent URL)
- *   5. Caller persists to marketing_assets
+ *   4. If a logo URL is provided, composite it onto the image using Sharp
+ *   5. Re-upload to Vercel Blob (permanent URL)
+ *   6. Caller persists to marketing_assets
  *
- * Why re-upload: DALL-E URLs expire in 1 hour. The platform needs the image
- * to live in our blob storage so we control retention + can attach to any
- * surface long-term.
+ * Logo overlay: brokerage/team logo is composited server-side (Sharp) into the
+ * bottom-right corner after DALL-E generates the image. This is more reliable
+ * than instructing DALL-E to render a logo. Pass noLogo=true to skip compositing
+ * and use brokerageName text in the prompt instead.
  */
 
 import "server-only"
 import { put } from "@vercel/blob"
+import sharp from "sharp"
 
 export type ImageSize = "1024x1024" | "1792x1024" | "1024x1792"
 export type ImageQuality = "standard" | "hd"
@@ -42,6 +45,10 @@ export interface BrandHints {
   primaryColor?: string | null
   agentName?: string | null
   brandVoiceTone?: string | null
+  /** Brokerage or team logo URL — composited onto the finished image via Sharp */
+  logoUrl?: string | null
+  /** When true, skip logo overlay and use brokerageName text in the prompt instead */
+  noLogo?: boolean
 }
 
 export interface GenerateImageInput {
@@ -167,18 +174,29 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
   }
 
   // 2. Download the image bytes
-  let imageBytes: ArrayBuffer
+  let imageBytes: Buffer
   try {
     const dl = await fetch(dalleResp.url)
     if (!dl.ok) {
       return { success: false, errorCode: "unknown", error: `Image download failed: ${dl.status}` }
     }
-    imageBytes = await dl.arrayBuffer()
+    imageBytes = Buffer.from(await dl.arrayBuffer())
   } catch (err: any) {
     return { success: false, errorCode: "unknown", error: err?.message ?? "Download failed" }
   }
 
-  // 3. Upload to Vercel Blob — public URL won't expire
+  // 3. Composite brokerage/team logo if provided (and not opted out)
+  const logoUrl = input.brand?.logoUrl
+  const skipLogo = input.brand?.noLogo === true
+  if (logoUrl && !skipLogo) {
+    try {
+      imageBytes = await compositeLogoOntoImage(imageBytes, logoUrl)
+    } catch {
+      // Logo compositing is best-effort — don't fail the whole generation
+    }
+  }
+
+  // 4. Upload to Vercel Blob — public URL won't expire
   let permanentUrl: string
   try {
     const filename = `ai-images/${input.purpose}/${Date.now()}-${randomSlug()}.png`
@@ -199,6 +217,67 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     size,
     cost: COST_PER_IMAGE[`${quality}:${size}`] ?? 0.04,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Logo compositing via Sharp
+// ---------------------------------------------------------------------------
+
+async function compositeLogoOntoImage(imageBytes: Buffer, logoUrl: string): Promise<Buffer> {
+  // Fetch the logo
+  const logoRes = await fetch(logoUrl)
+  if (!logoRes.ok) return imageBytes
+  const logoBytes = Buffer.from(await logoRes.arrayBuffer())
+
+  // Get the base image metadata to know its dimensions
+  const baseMeta = await sharp(imageBytes).metadata()
+  const baseWidth = baseMeta.width ?? 1024
+  const baseHeight = baseMeta.height ?? 1024
+
+  // Target logo size: at most 15% of image width, max 180px, min 60px
+  const targetLogoWidth = Math.max(60, Math.min(180, Math.round(baseWidth * 0.15)))
+
+  // Resize logo, preserving aspect ratio — convert to PNG for compositing
+  const resizedLogo = await sharp(logoBytes)
+    .resize({ width: targetLogoWidth, fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer()
+
+  // Get resized logo dimensions
+  const logoMeta = await sharp(resizedLogo).metadata()
+  const logoW = logoMeta.width ?? targetLogoWidth
+  const logoH = logoMeta.height ?? 40
+
+  // Padding from the corner
+  const padding = Math.round(baseWidth * 0.025)
+
+  // Add a semi-transparent white pill background behind the logo for readability
+  const pillW = logoW + padding
+  const pillH = logoH + Math.round(padding * 0.6)
+  const pillSvg = Buffer.from(
+    `<svg width="${pillW}" height="${pillH}">
+      <rect x="0" y="0" width="${pillW}" height="${pillH}" rx="${Math.round(pillH / 2)}"
+            fill="white" fill-opacity="0.85"/>
+    </svg>`
+  )
+
+  const logoPill = await sharp(pillSvg)
+    .composite([{
+      input: resizedLogo,
+      top: Math.round((pillH - logoH) / 2),
+      left: Math.round((pillW - logoW) / 2),
+    }])
+    .png()
+    .toBuffer()
+
+  // Position: bottom-right corner
+  const left = baseWidth - pillW - padding
+  const top = baseHeight - pillH - padding
+
+  return sharp(imageBytes)
+    .composite([{ input: logoPill, left, top }])
+    .png()
+    .toBuffer()
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +308,7 @@ function buildBrandAwarePrompt(input: GenerateImageInput): string {
 
   const lines: string[] = []
   lines.push(input.prompt)
-  lines.push("") // blank line
+  lines.push("")
   lines.push(purposeBoilerplate[input.purpose])
 
   if (input.listingContext) {
@@ -244,7 +323,9 @@ function buildBrandAwarePrompt(input: GenerateImageInput): string {
     }
   }
 
-  if (input.brand?.brokerageName) {
+  // Brand name only used in prompt when logo overlay is opted out or no logo is available
+  const hasLogo = !!(input.brand?.logoUrl && !input.brand?.noLogo)
+  if (!hasLogo && input.brand?.brokerageName) {
     lines.push(`Brand: ${input.brand.brokerageName}.`)
   }
   if (input.brand?.primaryColor) {
