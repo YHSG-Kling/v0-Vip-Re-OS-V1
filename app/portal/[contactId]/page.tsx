@@ -128,10 +128,10 @@ export default async function PortalHomePage({
       .eq("contact_id", contactId)
       .order("scheduled_at", { ascending: true })
       .limit(5),
-    // Property preferences
+    // Property preferences — schema uses inferred_* (AI-derived from buyer signals)
     supabase
       .from("property_preferences")
-      .select("id, min_price, max_price, min_beds, min_baths, zip_codes")
+      .select("id, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_zip_codes")
       .eq("contact_id", contactId)
       .maybeSingle(),
     // Property alerts
@@ -140,12 +140,13 @@ export default async function PortalHomePage({
       .select("id, alert_name, is_active")
       .eq("contact_id", contactId)
       .eq("is_active", true),
-    // Saved properties
+    // Saved properties — canonical table is `saved_properties` (NOT
+    // `property_interests`, which holds search criteria not saved listings).
     supabase
-      .from("property_interests")
-      .select("id, listing_id, interest_level, saved_at, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .from("saved_properties")
+      .select("id, listing_id, saved_at, notes, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
       .eq("contact_id", contactId)
-      .in("interest_level", ["saved", "favorited"])
+      .eq("dismissed", false)
       .order("saved_at", { ascending: false })
       .limit(4),
     // Messages
@@ -486,16 +487,16 @@ export default async function PortalHomePage({
                 <Link key={p.id} href={`/portal/${contactId}/properties/${p.listing_id}`}>
                   <Card className="hover:shadow-md transition-all cursor-pointer">
                     <CardContent className="p-3 flex items-center gap-3">
-                      {p.listing?.primary_photo_url ? (
-                        <img src={p.listing.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
+                      {p.primary_photo_url ? (
+                        <img src={p.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
                       ) : (
                         <div className="w-12 h-12 rounded bg-muted flex items-center justify-center shrink-0">
                           <Home className="h-5 w-5 text-muted-foreground" />
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{p.listing?.address || p.listing?.property_address}</p>
-                        {p.listing?.list_price && <p className="text-xs text-muted-foreground">${(p.listing.list_price/1000).toFixed(0)}K{p.listing?.bedrooms ? ` - ${p.listing.bedrooms} bed` : ''}</p>}
+                        <p className="text-sm font-medium truncate">{p.property_address}</p>
+                        {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}</p>}
                       </div>
                       <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
                     </CardContent>

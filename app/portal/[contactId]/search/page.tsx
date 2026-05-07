@@ -44,35 +44,36 @@ export default async function SearchPage({
   }
 
   // Parallel data fetches
-  const [preferencesResult, alertsResult, interestsResult] = await Promise.all([
-    // Property preferences
+  const [preferencesResult, alertsResult, savedResult] = await Promise.all([
+    // Property preferences — schema uses inferred_* (AI-derived)
     supabase
       .from("property_preferences")
-      .select("id, min_price, max_price, min_beds, min_baths, max_beds, max_baths, zip_codes, property_types, must_haves, nice_to_haves")
+      .select("id, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_zip_codes, inferred_property_types, inferred_must_have_features, inferred_deal_breakers")
       .eq("contact_id", contactId)
       .maybeSingle(),
-    // Property alerts
+    // Property alerts — schema stores filters as individual columns (not a
+    // criteria_json blob). select the actual columns the UI renders.
     supabase
       .from("property_alerts")
-      .select("id, alert_name, criteria_json, is_active, created_at")
+      .select("id, alert_name, is_active, created_at, min_price, max_price, bedrooms_min, bathrooms_min, cities, zip_codes, property_types, frequency, delivery_channels")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false }),
-    // Property interests
+    // Saved + dismissed properties live on `saved_properties` (NOT
+    // `property_interests` which holds search criteria).
     supabase
-      .from("property_interests")
-      .select("id, listing_id, interest_level, saved_at, notes, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .from("saved_properties")
+      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
-      .limit(20),
+      .limit(40),
   ])
 
   const preferences = preferencesResult.data
   const alerts = alertsResult.data ?? []
-  const interests = interestsResult.data ?? []
+  const savedRows = savedResult.data ?? []
 
-  // Group interests by level
-  const savedProperties = interests.filter((i: any) => i.interest_level === "saved" || i.interest_level === "favorited")
-  const dismissedProperties = interests.filter((i: any) => i.interest_level === "dismissed" || i.interest_level === "not_interested")
+  const savedProperties     = savedRows.filter((s: any) => !s.dismissed)
+  const dismissedProperties = savedRows.filter((s: any) => s.dismissed)
 
   const persona = contact.contact_persona || "first_time_buyer"
   const showCollaborativeSearch = FAMILY_SEARCH_PERSONAS.includes(persona)
@@ -122,9 +123,9 @@ export default async function SearchPage({
                   Price Range
                 </div>
                 <p className="font-medium">
-                  {preferences.min_price || preferences.max_price ? (
+                  {preferences.inferred_min_price || preferences.inferred_max_price ? (
                     <>
-                      ${(preferences.min_price || 0).toLocaleString()} - ${(preferences.max_price || 0).toLocaleString() || "Any"}
+                      ${(preferences.inferred_min_price || 0).toLocaleString()} - ${(preferences.inferred_max_price || 0).toLocaleString() || "Any"}
                     </>
                   ) : (
                     "Not set"
@@ -139,8 +140,7 @@ export default async function SearchPage({
                   Bedrooms
                 </div>
                 <p className="font-medium">
-                  {preferences.min_beds ? `${preferences.min_beds}+` : "Any"}
-                  {preferences.max_beds ? ` (max ${preferences.max_beds})` : ""}
+                  {preferences.inferred_beds_min ? `${preferences.inferred_beds_min}+` : "Any"}
                 </p>
               </div>
 
@@ -151,8 +151,7 @@ export default async function SearchPage({
                   Bathrooms
                 </div>
                 <p className="font-medium">
-                  {preferences.min_baths ? `${preferences.min_baths}+` : "Any"}
-                  {preferences.max_baths ? ` (max ${preferences.max_baths})` : ""}
+                  {preferences.inferred_baths_min ? `${preferences.inferred_baths_min}+` : "Any"}
                 </p>
               </div>
 
@@ -163,30 +162,30 @@ export default async function SearchPage({
                   Locations
                 </div>
                 <p className="font-medium">
-                  {preferences.zip_codes && preferences.zip_codes.length > 0
-                    ? preferences.zip_codes.slice(0, 3).join(", ") + (preferences.zip_codes.length > 3 ? ` +${preferences.zip_codes.length - 3} more` : "")
+                  {preferences.inferred_zip_codes && preferences.inferred_zip_codes.length > 0
+                    ? preferences.inferred_zip_codes.slice(0, 3).join(", ") + (preferences.inferred_zip_codes.length > 3 ? ` +${preferences.inferred_zip_codes.length - 3} more` : "")
                     : "Not set"}
                 </p>
               </div>
 
               {/* Must Haves */}
-              {preferences.must_haves && preferences.must_haves.length > 0 && (
+              {preferences.inferred_must_have_features && preferences.inferred_must_have_features.length > 0 && (
                 <div className="sm:col-span-2 space-y-2">
                   <p className="text-sm text-muted-foreground">Must Haves</p>
                   <div className="flex flex-wrap gap-2">
-                    {preferences.must_haves.map((item: string, i: number) => (
+                    {preferences.inferred_must_have_features.map((item: string, i: number) => (
                       <Badge key={i} variant="secondary">{item}</Badge>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* Nice to Haves */}
-              {preferences.nice_to_haves && preferences.nice_to_haves.length > 0 && (
+              {/* Deal Breakers */}
+              {preferences.inferred_deal_breakers && preferences.inferred_deal_breakers.length > 0 && (
                 <div className="sm:col-span-2 space-y-2">
-                  <p className="text-sm text-muted-foreground">Nice to Haves</p>
+                  <p className="text-sm text-muted-foreground">Avoid</p>
                   <div className="flex flex-wrap gap-2">
-                    {preferences.nice_to_haves.map((item: string, i: number) => (
+                    {preferences.inferred_deal_breakers.map((item: string, i: number) => (
                       <Badge key={i} variant="outline">{item}</Badge>
                     ))}
                   </div>
@@ -242,13 +241,18 @@ export default async function SearchPage({
                 >
                   <div className="space-y-1">
                     <p className="font-medium">{alert.alert_name}</p>
-                    {alert.criteria_json && (
-                      <p className="text-xs text-muted-foreground">
-                        {typeof alert.criteria_json === "string"
-                          ? JSON.parse(alert.criteria_json)?.summary || "Custom criteria"
-                          : alert.criteria_json?.summary || "Custom criteria"}
-                      </p>
-                    )}
+                    {/* property_alerts stores criteria as individual columns
+                        (not a single criteria_json blob); summarize them. */}
+                    <p className="text-xs text-muted-foreground">
+                      {[
+                        (alert.min_price || alert.max_price)
+                          ? `$${(alert.min_price ?? 0).toLocaleString()}–$${(alert.max_price ?? 0).toLocaleString()}`
+                          : null,
+                        alert.bedrooms_min ? `${alert.bedrooms_min}+ bed` : null,
+                        alert.bathrooms_min ? `${alert.bathrooms_min}+ bath` : null,
+                        alert.cities?.length ? alert.cities.slice(0, 2).join(", ") : null,
+                      ].filter(Boolean).join(" · ") || "Custom criteria"}
+                    </p>
                   </div>
                   <Badge variant={alert.is_active ? "default" : "secondary"}>
                     {alert.is_active ? "Active" : "Paused"}
@@ -290,9 +294,9 @@ export default async function SearchPage({
                     className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors"
                   >
                     <div className="h-10 w-10 rounded bg-muted flex items-center justify-center shrink-0">
-                      {item.listing?.primary_photo_url ? (
+                      {item.primary_photo_url ? (
                         <img
-                          src={item.listing.primary_photo_url}
+                          src={item.primary_photo_url}
                           alt=""
                           className="h-full w-full object-cover rounded"
                         />
@@ -302,10 +306,10 @@ export default async function SearchPage({
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium truncate">
-                        {item.listing?.address || item.listing?.property_address || "Property"}
+                        {item.property_address || "Property"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        ${item.listing?.list_price?.toLocaleString() || "N/A"}
+                        ${item.list_price?.toLocaleString() || "N/A"}
                       </p>
                     </div>
                   </Link>

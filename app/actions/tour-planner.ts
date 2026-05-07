@@ -186,6 +186,21 @@ export async function createTourPlan(params: CreateTourParams) {
 
   const supabase = createServiceClient()
 
+  // ── Financial verification gate (System J3.1) — buyer must be verified
+  //    before tours can be created. Previously this gate was UI-only.
+  const { data: finProfile } = await supabase
+    .from('buyer_financial_profiles')
+    .select('verified')
+    .eq('contact_id', contactId)
+    .eq('brokerage_id', brokerageId)
+    .maybeSingle()
+  if (!finProfile?.verified) {
+    return {
+      success: false,
+      error: 'Buyer is not financially verified. Complete the verification gate (proof of funds for cash, or pre-approval for financed) before scheduling tours.',
+    }
+  }
+
   // Insert tour
   const { data: tour, error: tourError } = await supabase
     .from('tours')

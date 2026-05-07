@@ -381,6 +381,25 @@ export async function createOffer(
 
   const supabase = createServiceClient()
 
+  // ── Financial verification gate (System J3.1 — buyer cannot make offers
+  //    until verified or explicitly bypassed by the agent). Previously this
+  //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
+  //    but no backend caller ever checked it, so any client could POST and
+  //    create an offer for an unverified buyer. Enforce here at the API
+  //    boundary.
+  const { data: finProfile } = await supabase
+    .from("buyer_financial_profiles")
+    .select("verified")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!finProfile?.verified) {
+    return {
+      success: false,
+      error: "Buyer is not financially verified. Complete the verification gate (proof of funds for cash, or pre-approval for financed) before submitting an offer.",
+    }
+  }
+
   // Resolve listing_id — required by NOT NULL constraint on offers.listing_id
   let resolvedListingId = form.listing_id
   if (!resolvedListingId) {

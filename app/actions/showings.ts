@@ -16,13 +16,17 @@ export async function requestShowing(data: {
   try {
     const supabase = await createClient()
 
-    // Resolve the agent's brokerage_id (for portal calls the user is the buyer contact, so we skip this gracefully)
+    // Resolve brokerage_id from the contact (NOT from the auth user — when
+    // requestShowing fires from the buyer portal, the auth user is the
+    // contact, not a brokerage staff user, so users.brokerage_id resolves
+    // to null and downstream notifications/activities lose tenancy).
+    const { data: contactBrokerage } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", data.contactId)
+      .maybeSingle()
+    const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
     const { data: { user } } = await supabase.auth.getUser()
-    let brokerageId: string | null = null
-    if (user) {
-      const { data: u } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-      brokerageId = u?.brokerage_id ?? null
-    }
 
     // Determine if propertyId is a valid UUID (agent listing) vs MLS string (buyer MLS search)
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -103,7 +107,11 @@ export async function requestShowing(data: {
       })
     } catch { /* non-critical */ }
 
-    // Notify the assigned agent in-app
+    // Notify the assigned agent in-app.
+    // contacts.agent_id stores agents.id (NOT users.id), but
+    // notifications.user_id is the auth.users id. Resolve via the agents
+    // table — without this, the notification was inserted with user_id =
+    // agents.id and silently never appeared in any user's bell.
     try {
       const { data: contact } = await supabase
         .from("contacts")
@@ -111,17 +119,24 @@ export async function requestShowing(data: {
         .eq("id", data.contactId)
         .maybeSingle()
       if (contact?.agent_id) {
-        await supabase.from("notifications").insert({
-          user_id:      contact.agent_id,
-          brokerage_id: brokerageId,
-          type:         "showing.request",
-          title:        "New showing request",
-          body:         `${contact.first_name} ${contact.last_name} wants to see ${data.propertyAddress}. Confirm or reschedule.`,
-          entity_type:  "showing_request",
-          entity_id:    showing.id,
-          priority:     "high",
-          channel:      "in_app",
-        })
+        const { data: agentRow } = await supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", contact.agent_id)
+          .maybeSingle()
+        if (agentRow?.user_id) {
+          await supabase.from("notifications").insert({
+            user_id:      agentRow.user_id,
+            brokerage_id: brokerageId,
+            type:         "showing.request",
+            title:        "New showing request",
+            body:         `${contact.first_name} ${contact.last_name} wants to see ${data.propertyAddress}. Confirm or reschedule.`,
+            entity_type:  "showing_request",
+            entity_id:    showing.id,
+            priority:     "high",
+            channel:      "in_app",
+          })
+        }
       }
     } catch { /* non-critical */ }
 
