@@ -11,6 +11,7 @@ import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/Refinan
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import {
   Bell,
   BookOpen,
@@ -89,9 +90,22 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
         )}
       </div>
 
-      {/* 0. WHAT'S NEW — kernel fan-out feeds (anniversary, equity changes,
-           agent market updates). Hidden when nothing client-visible. */}
+      {/* 0a. WHAT'S NEW — kernel fan-out feeds (anniversary, equity changes,
+            agent market updates). Hidden when nothing client-visible. */}
       <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
+
+      {/* 0b. Lifetime milestone line — gives the homeowner the same "where am
+            I" signal that buyer/seller portals have. Driven by close-date
+            deltas (settling-in / anniversary / multi-year). Surfaces a
+            refinance lane when an opportunity is flagged on the equity card. */}
+      {transaction?.close_date && (
+        <LifetimeMilestoneLine
+          contactId={contactId}
+          closeDate={transaction.close_date}
+          currentEstimate={homeValueEstimate?.estimated_value_mid}
+          purchasePrice={transaction?.sale_price ?? null}
+        />
+      )}
 
       {/* 1. Congrats Card (dismissible) */}
       {transaction && (

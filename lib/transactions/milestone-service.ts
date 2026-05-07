@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { CRITICAL_MILESTONES } from "./transaction-stages"
+import { CRITICAL_MILESTONES, CLIENT_VISIBLE_MILESTONES } from "./transaction-stages"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface CreateMilestoneParams {
@@ -62,7 +62,11 @@ export async function ensureRequiredMilestones(
 
   const existingNames = new Set(existing?.map(m => m.milestone_name) || [])
 
-  // Create missing milestones
+  // Create missing milestones. is_client_visible is set per-milestone based
+  // on the canonical CLIENT_VISIBLE_MILESTONES list — the seller/buyer
+  // portals filter milestones by this flag, so internal-only items
+  // (cda_delivered, cd_uploaded, etc.) don't leak into the client view.
+  const clientVisibleSet = new Set(CLIENT_VISIBLE_MILESTONES as string[])
   const missingMilestones = requiredMilestones
     .filter(name => !existingNames.has(name))
     .map(name => ({
@@ -73,6 +77,7 @@ export async function ensureRequiredMilestones(
         ? new Date(contractTerms[name] as string).toISOString().slice(0, 10)
         : null,
       status: "pending" as const,
+      is_client_visible: clientVisibleSet.has(name),
       created_at: new Date().toISOString()
     }))
 

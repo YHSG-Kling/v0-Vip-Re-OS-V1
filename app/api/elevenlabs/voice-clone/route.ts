@@ -66,11 +66,30 @@ export async function POST(request: NextRequest) {
 
     const elevenlabs_voice_id: string = elData.voice_id
 
-    // Store in agent_voice_profiles
+    // Store the new clone id on the rich training profile.
     await supabase
       .from("agent_voice_profiles")
       .update({ elevenlabs_voice_id })
       .eq("id", profile_id)
+
+    // Promote to the canonical agents.voice_id slot — the AI ISA call
+    // resolver reads from there. Without this sync the agent could
+    // complete a voice clone here and ISA calls would still fall back
+    // to the brokerage default. Look up agent_id from the profile, then
+    // delegate to syncAgentVoiceId.
+    try {
+      const { data: profile } = await supabase
+        .from("agent_voice_profiles")
+        .select("agent_id")
+        .eq("id", profile_id)
+        .maybeSingle()
+      if (profile?.agent_id) {
+        const { syncAgentVoiceId } = await import("@/lib/voice/sync-voice-id")
+        await syncAgentVoiceId({ agentId: profile.agent_id, elevenlabsVoiceId: elevenlabs_voice_id })
+      }
+    } catch (err) {
+      console.warn("[elevenlabs/voice-clone] sync to agents.voice_id failed:", err)
+    }
 
     return NextResponse.json({ success: true, elevenlabs_voice_id })
   } catch (error: any) {
