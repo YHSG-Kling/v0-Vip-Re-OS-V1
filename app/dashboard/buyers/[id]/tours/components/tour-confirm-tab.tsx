@@ -28,6 +28,7 @@ interface TourStop {
   listing_id: string | null
   listing_agent_name: string | null
   listing_agent_phone: string | null
+  listing_agent_email: string | null
   listing_agent_company: string | null
   access_method: string | null
   access_code: string | null
@@ -268,19 +269,37 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
       }
       if (res.sent) {
         toast({
-          title: `Sent via ${channel.toUpperCase()}`,
+          title: `Sent via ${(res.via ?? channel).toUpperCase()}`,
           description: res.draft.to ? `to ${res.draft.to}` : undefined,
         })
+      } else if ((res as any).deepLink) {
+        // No automated provider — open the agent's native app so the message
+        // sends from THEIR phone (sms:) or THEIR mail client (mailto:).
+        // Listing-agent replies route directly back to them, not through us.
+        try { window.location.href = (res as any).deepLink as string } catch {}
+        // Also copy the body to clipboard as a safety net
+        const txt = res.draft.subject
+          ? `${res.draft.subject}\n\n${res.draft.body}`
+          : res.draft.body
+        try { await navigator.clipboard.writeText(txt) } catch {}
+        toast({
+          title: channel === "sms"
+            ? "Opening your Messages app"
+            : channel === "email"
+              ? "Opening your mail app"
+              : "Draft ready",
+          description: "Sends from your real phone/email so replies route back to you.",
+        })
       } else {
-        // No provider credentials — copy the draft to clipboard so the
-        // agent can paste it into their preferred channel.
+        // ShowingTime path with no API — copy draft for the agent to paste
+        // into ShowingTime's web UI manually.
         const txt = res.draft.subject
           ? `${res.draft.subject}\n\n${res.draft.body}`
           : res.draft.body
         try { await navigator.clipboard.writeText(txt) } catch {}
         toast({
           title: "Draft copied to clipboard",
-          description: `Paste into ${channel === "sms" ? "your text app" : channel === "email" ? "your email" : "ShowingTime"} and send to ${res.draft.to || "the listing agent"}.`,
+          description: `Paste into ShowingTime and send to ${res.draft.to || "the listing agent"}.`,
         })
       }
       onRefresh()
@@ -516,14 +535,14 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
                                   </DropdownMenuItem>
                                   <DropdownMenuItem
                                     onClick={() => handleDispatchStop(stop, 'email')}
-                                    disabled={!stop.listing_agent_phone && !stop.listing_agent_company}
+                                    disabled={!stop.listing_agent_email}
                                     className="gap-2 text-sm"
                                   >
                                     <Mail className="h-4 w-4" />
                                     <div className="flex-1">
                                       <p className="font-medium">Email</p>
                                       <p className="text-[11px] text-muted-foreground">
-                                        Send via brokerage email or copy draft
+                                        {stop.listing_agent_email || "No listing-agent email on file"}
                                       </p>
                                     </div>
                                   </DropdownMenuItem>

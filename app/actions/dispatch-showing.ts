@@ -145,7 +145,10 @@ export async function dispatchStopScheduling(
     result = await dispatchViaSms(dispatchCtx, twilio)
   } else {
     const sendgridKey = await loadBrokerageCredential(supabase, ctx.brokerageId, "sendgrid", "api_key") ?? process.env.SENDGRID_API_KEY ?? null
-    result = await dispatchViaEmail(dispatchCtx, sendgridKey)
+    // Pass agentUserId so the email dispatcher tries the agent's connected
+    // Gmail/Outlook OAuth account first (sends from their real address +
+    // replies threads in their inbox).
+    result = await dispatchViaEmail(dispatchCtx, ctx.userId ?? null, sendgridKey)
   }
 
   // Record the dispatch attempt — agent UI reads this to show history.

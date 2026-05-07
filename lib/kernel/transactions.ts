@@ -1112,6 +1112,72 @@ export async function closeTransactionCommand(params: {
       })
     } catch {}
 
+    // 4. Lifetime-customer touchpoint schedule — both buyer and seller now
+    //    enter the post-close nurture sequence (3-day, 30-day, 6-month,
+    //    1-year anniversary, 18-month referral ask). Previously this
+    //    function was defined but never called from anywhere — orphaned.
+    //    Resolve agents.id from agent user once so we can attribute the
+    //    touchpoints correctly.
+    try {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", params.agentId)
+        .maybeSingle()
+      const agentId = agentRow?.id ?? null
+      if (agentId && lifetimeContactIds.length > 0) {
+        const closeDate = new Date(today)
+        const schedule = [
+          { type: "post_close_3_day",     daysAfter: 3,        channel: "video" },
+          { type: "post_close_30_day",    daysAfter: 30,       channel: "sms"   },
+          { type: "post_close_6_month",   daysAfter: 180,      channel: "email" },
+          { type: "home_anniversary",     daysAfter: 365,      channel: "video" },
+          { type: "referral_request",     daysAfter: 18 * 30,  channel: "sms"   },
+        ]
+        const rows = lifetimeContactIds.flatMap(contactId =>
+          schedule.map(s => {
+            const d = new Date(closeDate)
+            d.setDate(d.getDate() + s.daysAfter)
+            return {
+              brokerage_id:           params.brokerageId,
+              contact_id:             contactId,
+              agent_id:               agentId,
+              touchpoint_type:        s.type,
+              channel:                s.channel,
+              scheduled_date:         d.toISOString().split("T")[0],
+              status:                 "scheduled",
+              related_transaction_id: params.transactionId,
+            }
+          })
+        )
+        await supabase.from("lifetime_customer_touchpoints").insert(rows)
+          .then(() => null, () => null)
+      }
+    } catch {}
+
+    // 5. Closing-gift task for the agent — surfaces in their inbox as a
+    //    high-priority next-action so they don't forget to send a gift.
+    //    Recommendation engine (aiRecommendGift) runs when the agent opens
+    //    the task; we just need to plant the prompt here.
+    try {
+      for (const contactId of lifetimeContactIds) {
+        await supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     contactId,
+          transaction_id: params.transactionId,
+          activity_type:  "closing_gift_due",
+          title:          "Send closing gift",
+          description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
+          status:         "pending",
+          priority:       "high",
+          entity_type:    "contact",
+          scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          created_at:     nowIso,
+        }).then(() => null, () => null)
+      }
+    } catch {}
+
     // Schedule review request 5 days post-close (J8.1)
     try {
       const sendAfter = new Date()

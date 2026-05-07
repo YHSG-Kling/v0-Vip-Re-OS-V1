@@ -21,6 +21,17 @@
 
 import "server-only"
 
+/**
+ * Channels:
+ *   showingtime — POST to ShowingTime API
+ *   sms         — Twilio when configured; otherwise return an `sms:` deep
+ *                 link the agent opens on their phone (sends from agent's
+ *                 actual cell so listing-agent replies go directly to them)
+ *   email       — Send via the agent's connected Gmail/Outlook OAuth first
+ *                 (so it lands in the listing-agent's inbox from the
+ *                 buyer-agent's real address); fallback SendGrid; final
+ *                 fallback `mailto:` deep link.
+ */
 export type DispatchChannel = "showingtime" | "sms" | "email"
 
 export interface DispatchContext {
@@ -72,6 +83,15 @@ export interface DispatchResult {
   }
   /** Whether the dispatcher actually transmitted, vs. handed back a draft. */
   sent: boolean
+  /** Optional native deep link for the agent to tap on their phone:
+   *    sms:+15551234567?body=...   for SMS (sends from their cell)
+   *    mailto:agent@x.com?subject=...&body=...   for email (uses default mail app)
+   *  Populated when no provider credentials are present so the UI can show
+   *  a one-tap "Open Messages" / "Open Mail" button alongside the draft. */
+  deepLink?: string
+  /** Provider that actually sent (or would have): 'gmail' | 'outlook' |
+   *  'sendgrid' | 'twilio' | 'showingtime' | null when only a draft. */
+  via?: string | null
 }
 
 // ─── ShowingTime ─────────────────────────────────────────────────────────────
@@ -166,21 +186,41 @@ export function buildSmsTemplate(ctx: DispatchContext): string {
 }
 
 /**
- * SMS dispatcher. Uses brokerage Twilio credentials when present; otherwise
- * returns the draft for manual send.
+ * SMS dispatcher. Default behaviour is to return an `sms:` deep link the
+ * agent taps on their phone — that way the message goes from the agent's
+ * REAL cell number and replies route directly back to them, not to a
+ * Twilio number that has to forward.
+ *
+ * If the brokerage has Twilio credentials AND wants centralized sending,
+ * we fall back to Twilio and use the agent's profile phone as caller-ID
+ * display when the from-number is set up for verified caller-ID.
  */
 export async function dispatchViaSms(
   ctx: DispatchContext,
   twilio: { accountSid: string | null; authToken: string | null; fromNumber: string | null } | null,
 ): Promise<DispatchResult> {
-  const body = buildSmsTemplate(ctx)
-  const draft = { to: ctx.stop.listing_agent_phone ?? "", body }
-
+  const body  = buildSmsTemplate(ctx)
   const phone = ctx.stop.listing_agent_phone
-  if (!phone || !twilio?.accountSid || !twilio.authToken || !twilio.fromNumber) {
-    return { providerRef: null, draft, sent: false }
+  const draft = { to: phone ?? "", body }
+
+  // Always build the `sms:` deep link — the UI can offer it as a one-tap
+  // "Open Messages" button regardless of whether Twilio is configured.
+  const deepLink = phone
+    ? `sms:${phone}${typeof navigator !== "undefined" && /iPhone|iPad/.test(navigator.userAgent) ? "&" : "?"}body=${encodeURIComponent(body)}`
+    : undefined
+
+  if (!phone) {
+    return { providerRef: null, draft, sent: false, deepLink, via: null }
   }
 
+  // If Twilio not configured, return draft + deep link — agent sends from phone.
+  if (!twilio?.accountSid || !twilio.authToken || !twilio.fromNumber) {
+    return { providerRef: null, draft, sent: false, deepLink, via: null }
+  }
+
+  // Twilio path — automated send. Recipient still gets it from the
+  // brokerage's Twilio number; replies route to the agent via Twilio's
+  // forwarding rules (configured per brokerage).
   try {
     const res = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${twilio.accountSid}/Messages.json`,
@@ -197,11 +237,17 @@ export async function dispatchViaSms(
         }).toString(),
       },
     )
-    if (!res.ok) return { providerRef: null, draft, sent: false }
+    if (!res.ok) return { providerRef: null, draft, sent: false, deepLink, via: null }
     const data = await res.json().catch(() => null) as { sid?: string } | null
-    return { providerRef: data?.sid ?? null, draft, sent: !!data?.sid }
+    return {
+      providerRef: data?.sid ?? null,
+      draft,
+      sent:        !!data?.sid,
+      deepLink,    // still expose the deep-link in case agent prefers
+      via:         data?.sid ? "twilio" : null,
+    }
   } catch {
-    return { providerRef: null, draft, sent: false }
+    return { providerRef: null, draft, sent: false, deepLink, via: null }
   }
 }
 
@@ -233,45 +279,106 @@ export function buildEmailTemplate(ctx: DispatchContext): { subject: string; bod
   return { subject, body }
 }
 
-/** Email dispatcher. Uses SendGrid when configured; otherwise returns draft. */
+/**
+ * Email dispatcher. Priority order:
+ *   1. Agent's connected Gmail/Outlook (via OAuth) — sends FROM the
+ *      agent's actual address, replies route to their inbox naturally.
+ *   2. SendGrid — sends from the agent's address as a regular email.
+ *   3. `mailto:` deep link — agent's default mail client opens with
+ *      subject + body pre-filled. Final fallback.
+ *
+ * Personal-OAuth email is the strongly preferred path because it builds
+ * the agent's real-relationship history with the listing agent — the
+ * thread lives in their actual mail account and replies thread cleanly.
+ */
 export async function dispatchViaEmail(
   ctx: DispatchContext,
+  agentUserId: string | null,
   sendgridApiKey: string | null,
 ): Promise<DispatchResult> {
   const tpl = buildEmailTemplate(ctx)
-  const draft = {
-    to:      ctx.stop.listing_agent_email ?? "",
-    subject: tpl.subject,
-    body:    tpl.body,
+  const to = ctx.stop.listing_agent_email ?? ""
+  const draft = { to, subject: tpl.subject, body: tpl.body }
+
+  const deepLink = to
+    ? `mailto:${to}?subject=${encodeURIComponent(tpl.subject)}&body=${encodeURIComponent(tpl.body)}`
+    : undefined
+
+  if (!to) {
+    return { providerRef: null, draft, sent: false, deepLink, via: null }
   }
 
-  if (!ctx.stop.listing_agent_email || !sendgridApiKey || !ctx.buyerAgent.email) {
-    return { providerRef: null, draft, sent: false }
-  }
-
-  try {
-    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${sendgridApiKey}`,
-        "Content-Type":  "application/json",
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: ctx.stop.listing_agent_email }] }],
-        from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
-        reply_to:         { email: ctx.buyerAgent.email },
-        subject:          tpl.subject,
-        content:          [{ type: "text/plain", value: tpl.body }],
-      }),
-    })
-    return {
-      providerRef: res.headers.get("x-message-id"),
-      draft,
-      sent:        res.ok,
+  // 1. Try the agent's connected Gmail/Outlook OAuth account first.
+  if (agentUserId) {
+    try {
+      const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
+      const personal = await sendPersonalEmail({
+        agentUserId,
+        to,
+        subject:  tpl.subject,
+        htmlBody: bodyToHtml(tpl.body),
+        textBody: tpl.body,
+      })
+      if (personal.success) {
+        return {
+          providerRef: personal.messageId ?? null,
+          draft,
+          sent:        true,
+          via:         personal.provider ?? "personal",
+          deepLink,
+        }
+      }
+      // If reason is 'no_personal_account' or 'token_refresh_failed',
+      // fall through to SendGrid.
+    } catch {
+      // Continue to SendGrid fallback
     }
-  } catch {
-    return { providerRef: null, draft, sent: false }
   }
+
+  // 2. SendGrid fallback.
+  if (sendgridApiKey && ctx.buyerAgent.email) {
+    try {
+      const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${sendgridApiKey}`,
+          "Content-Type":  "application/json",
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
+          reply_to:         { email: ctx.buyerAgent.email },
+          subject:          tpl.subject,
+          content:          [{ type: "text/plain", value: tpl.body }],
+        }),
+      })
+      if (res.ok) {
+        return {
+          providerRef: res.headers.get("x-message-id"),
+          draft,
+          sent:        true,
+          via:         "sendgrid",
+          deepLink,
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 3. mailto: deep link — agent uses their default mail client.
+  return { providerRef: null, draft, sent: false, deepLink, via: null }
+}
+
+function bodyToHtml(text: string): string {
+  // Convert a plain-text body to a minimal HTML representation that
+  // preserves line breaks. Gmail/Outlook adapters expect htmlBody.
+  return `<div>${text.split("\n").map(l => l.length === 0 ? "<br>" : escapeHtml(l)).join("<br>")}</div>`
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
