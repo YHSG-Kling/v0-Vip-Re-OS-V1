@@ -980,6 +980,15 @@ export async function closeTransactionCommand(params: {
   try {
     const supabase = await createServiceClient()
     const today = new Date().toISOString().slice(0, 10)
+    const nowIso = new Date().toISOString()
+
+    // Capture related entities BEFORE the close so we can propagate state
+    const { data: txBefore } = await supabase
+      .from("transactions")
+      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id")
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
 
     const { error } = await supabase
       .from("transactions")
@@ -987,7 +996,7 @@ export async function closeTransactionCommand(params: {
         status:     "closed",
         stage:      "CLOSED",
         close_date: today,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       })
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
@@ -1002,7 +1011,7 @@ export async function closeTransactionCommand(params: {
         activity_type:  "transaction_closed",
         description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed",
         performed_by:   params.agentId,
-        created_at:     new Date().toISOString(),
+        created_at:     nowIso,
       }),
       supabase.from("lifecycle_events").insert({
         brokerage_id: params.brokerageId,
@@ -1010,13 +1019,63 @@ export async function closeTransactionCommand(params: {
         entity_id:    params.transactionId,
         event_type:   "TRANSACTION_CLOSED",
         actor_user_id: params.agentId,
-        created_at:   new Date().toISOString(),
+        created_at:   nowIso,
       }),
     ])
 
+    // ── Propagate close to related entities ────────────────────────────────
+    // 1. Listing → CLOSED on its lifecycle stage machine + status='closed'
+    //    (closes the loop: prior to this fix the listing stayed UNDER_CONTRACT
+    //     forever even after the transaction closed)
+    if (txBefore?.listing_id) {
+      try {
+        const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+        await transitionLifecycle({
+          brokerageId: params.brokerageId,
+          entityType:  "listing_stage_machine",
+          entityId:    txBefore.listing_id,
+          fromState:   "UNDER_CONTRACT",
+          toState:     "CLOSED",
+          actorUserId: params.agentId,
+          eventType:   "TRANSACTION_CLOSED",
+          metadata:    { transaction_id: params.transactionId },
+        })
+      } catch {}
+      await supabase
+        .from("listings")
+        .update({ status: "closed", updated_at: nowIso })
+        .eq("id", txBefore.listing_id)
+        .then(() => null, () => null)
+    }
+
+    // 2. Buyer + seller contacts → lifetime_customer
+    //    (Lifetime Customers retention surface depends on this conversion;
+    //     prior to this fix only the listing-close path converted the seller,
+    //     and the transaction-close path converted neither party.)
+    const lifetimeContactIds: string[] = []
+    if (txBefore?.buyer_contact_id)  lifetimeContactIds.push(txBefore.buyer_contact_id)
+    if (txBefore?.seller_contact_id) lifetimeContactIds.push(txBefore.seller_contact_id)
+    if (lifetimeContactIds.length > 0) {
+      await supabase
+        .from("contacts")
+        .update({ contact_type: "lifetime_customer", updated_at: nowIso })
+        .in("id", lifetimeContactIds)
+        .eq("brokerage_id", params.brokerageId)
+        .then(() => null, () => null)
+    }
+
+    // 3. Commission records — recalculate + upsert transaction_commissions rows.
+    //    Prior to this fix, a transaction could close with zero commission
+    //    records, which meant the agent had no payable to track.
+    try {
+      await recalculateCommissionStateCommand({
+        transactionId: params.transactionId,
+        brokerageId:   params.brokerageId,
+        agentId:       params.agentId,
+      })
+    } catch {}
+
     // Schedule review request 5 days post-close (J8.1)
-    // Schedule by inserting a pending review_request row with send_after set to T+5 days.
-    // The cron job / webhook consumer picks this up and sends it.
     try {
       const sendAfter = new Date()
       sendAfter.setDate(sendAfter.getDate() + 5)
@@ -1026,10 +1085,10 @@ export async function closeTransactionCommand(params: {
         transaction_id: params.transactionId,
         status:         "scheduled",
         send_after:     sendAfter.toISOString(),
-        created_at:     new Date().toISOString(),
-      }).then(() => null, () => null) // best-effort, non-blocking
+        created_at:     nowIso,
+      }).then(() => null, () => null)
     } catch {
-      // Non-critical — close transaction success is not dependent on review scheduling
+      // Non-critical — close success is not dependent on review scheduling
     }
 
     return { success: true }

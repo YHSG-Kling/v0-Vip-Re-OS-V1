@@ -44,16 +44,20 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Offer not found: ${params.offerId}`)
   }
 
-  // Resolve property address from listing if not on the offer directly
+  // Resolve property address + seller_contact_id from listing if available
   let resolvedAddress = (offer as any).property_address ?? null
-  if (!resolvedAddress && (offer as any).listing_id) {
+  let sellerContactId: string | null = null
+  if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, city, state")
+      .select("address, city, state, seller_contact_id")
       .eq("id", (offer as any).listing_id)
       .maybeSingle()
     if (listing) {
-      resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+      if (!resolvedAddress) {
+        resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+      }
+      sellerContactId = (listing as any).seller_contact_id ?? null
     }
   }
 
@@ -65,6 +69,7 @@ export async function createTransactionFromOffer(params: {
       agent_id:             (offer as any).agent_id,
       contact_id:           (offer as any).contact_id,   // live FK (not buyer_id)
       buyer_contact_id:     (offer as any).contact_id,
+      seller_contact_id:    sellerContactId,             // resolved from listing → enables seller-side close logic
       listing_id:           (offer as any).listing_id ?? null,
       offer_id:             params.offerId,
       property_address:     resolvedAddress,

@@ -435,6 +435,20 @@ export async function counterOffer(
 
 // ─── ACCEPT OFFER ─────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated DO NOT USE. Use acceptOffer() from `@/app/actions/seller-offers`
+ * (object signature) which is the canonical path:
+ *   - Runs the compliance gate (System 7.1B — required by spec)
+ *   - Calls createTransactionFromOffer() to populate seller_contact_id +
+ *     buyer_contact_id + listing_id + offer_id linkage
+ *   - Uses transitionLifecycle() to atomically update listings.lifecycle_stage
+ *   - Hard-rolls back the offer status if any step fails
+ *
+ * This legacy version skips the compliance gate, only updates the transaction
+ * if one is already linked (it does NOT create one), and was the source of
+ * silent state drift between the offer / listing / transaction / contact
+ * tables. No call sites use it (verified via grep).
+ */
 export async function acceptOffer(offerId: string, agentId: string) {
   const supabase = await createClient()
 
