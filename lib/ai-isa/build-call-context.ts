@@ -87,7 +87,7 @@ export async function buildCallContext(params: {
   const supabase = createServiceClient()
 
   // ── Parallel fetches ───────────────────────────────────────────────────────
-  const [personRow, agentRow, identityRows, brandVoice] = await Promise.all([
+  const [personRow, agentRow, identityRows, brandVoice, brokerageRow] = await Promise.all([
     // Prefer contact over lead — contact record has richer opt-out state
     params.contactId
       ? supabase
@@ -112,7 +112,7 @@ export async function buildCallContext(params: {
     params.agentId
       ? supabase
           .from('agents')
-          .select('first_name, last_name')
+          .select('first_name, last_name, voice_id')
           .eq('id', params.agentId)
           .maybeSingle()
           .then((r) => r.data)
@@ -135,6 +135,14 @@ export async function buildCallContext(params: {
       agentId: params.agentId ?? null,
       teamId: params.teamId ?? null,
     }),
+
+    // Brokerage row — name (display) + default_isa_voice_id (voice fallback)
+    supabase
+      .from('brokerages')
+      .select('name, default_isa_voice_id')
+      .eq('id', params.brokerageId)
+      .maybeSingle()
+      .then((r) => r.data),
   ])
 
   // ── Hard blocks ────────────────────────────────────────────────────────────
@@ -187,13 +195,8 @@ export async function buildCallContext(params: {
   const agentFullName = [agentRow?.first_name, agentRow?.last_name].filter(Boolean).join(' ')
   const contactFirstName = (personRow as any).first_name ?? 'there'
 
-  // Brokerage display name for pre-assignment intros
-  const { data: brokerageRow } = await supabase
-    .from('brokerages')
-    .select('name')
-    .eq('id', params.brokerageId)
-    .maybeSingle()
-  const brokerageName = brokerageRow?.name ?? 'our brokerage'
+  // Brokerage display name for pre-assignment intros (already loaded in parallel above)
+  const brokerageName = (brokerageRow as any)?.name ?? 'our brokerage'
   // contacts use contact_persona; leads use persona
   const persona =
     (personRow as any).contact_persona ?? (personRow as any).persona ?? ''
@@ -281,12 +284,34 @@ export async function buildCallContext(params: {
       contact_first_name: contactFirstName,
       contact_persona: persona,
     },
+    // Voice resolution priority:
+    //   1. Identity profile elevenlabs_voice_id (set via Voice & Avatar Setup) —
+    //      most specific (agent → team → brokerage scope, picked above)
+    //   2. agents.voice_id — the agent's own voice clone (post-assignment only;
+    //      pre-assignment must NOT project a specific agent's identity)
+    //   3. brokerages.default_isa_voice_id — brokerage's chosen ISA voice
+    //      (covers pre-assignment and any case where neither above is set)
+    //   4. undefined → VAPI uses its default voice (last resort)
     voiceConfig: identity?.elevenlabs_voice_id
       ? {
           provider: identity.voice_provider ?? 'elevenlabs',
           voiceId: identity.elevenlabs_voice_id,
           stability: identity.voice_stability ?? 0.7,
           similarityBoost: identity.voice_similarity_boost ?? 0.8,
+        }
+      : !isPreAssignment && (agentRow as any)?.voice_id
+      ? {
+          provider: 'elevenlabs' as const,
+          voiceId: (agentRow as any).voice_id as string,
+          stability: 0.7,
+          similarityBoost: 0.8,
+        }
+      : (brokerageRow as any)?.default_isa_voice_id
+      ? {
+          provider: 'elevenlabs' as const,
+          voiceId: (brokerageRow as any).default_isa_voice_id as string,
+          stability: 0.7,
+          similarityBoost: 0.8,
         }
       : undefined,
     escalationRules: {
