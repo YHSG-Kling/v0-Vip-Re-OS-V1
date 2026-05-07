@@ -38,6 +38,7 @@ import { DealRiskWidget } from "./components/deal-risk-widget"
 import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
+import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -414,6 +415,9 @@ export default function AgentDashboard() {
         {agentId && brokerageId && (
           <NewlyConvertedContactsPanel agentId={agentId} brokerageId={brokerageId} />
         )}
+
+        {/* Smarter-this-week digest — surfaces the AI improvement loop */}
+        <SmarterWidget />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
