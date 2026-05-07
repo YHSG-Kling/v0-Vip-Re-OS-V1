@@ -88,7 +88,12 @@ export async function PATCH(request: NextRequest) {
   return res.ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: "SDP relay failed" }, { status: 500 })
 }
 
-/** DELETE: destroy a D-ID streaming session */
+/** DELETE: destroy a D-ID streaming session.
+ *
+ * Caller passes ?sessionId=...&sourceType=presenter|video|photo so we hit the
+ * matching destroy endpoint (clips/streams vs talks/streams). When sourceType
+ * is missing we try clips/streams first then talks/streams — D-ID 404s the
+ * wrong path, both are no-ops if the session is already gone. */
 export async function DELETE(request: NextRequest) {
   const didApiKey = process.env.DID_API_KEY
   if (!didApiKey) return NextResponse.json({ ok: true })
@@ -96,10 +101,21 @@ export async function DELETE(request: NextRequest) {
   const sessionId = request.nextUrl.searchParams.get("sessionId")
   if (!sessionId) return NextResponse.json({ ok: true })
 
-  await fetch(`${DID_API_BASE}/talks/streams/${sessionId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}` },
-  }).catch(() => {})
+  const sourceType = request.nextUrl.searchParams.get("sourceType")
+  const paths = sourceType === "presenter" || sourceType === "video"
+    ? ["clips/streams"]
+    : sourceType === "photo"
+      ? ["talks/streams"]
+      : ["clips/streams", "talks/streams"]
+
+  await Promise.all(
+    paths.map((p) =>
+      fetch(`${DID_API_BASE}/${p}/${sessionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}` },
+      }).catch(() => {})
+    )
+  )
 
   return NextResponse.json({ ok: true })
 }

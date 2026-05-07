@@ -101,9 +101,13 @@ export function AvatarChatWidget({
   useEffect(() => {
     initSession()
     return () => {
-      // Cleanup WebRTC session on unmount
+      // Cleanup WebRTC session on unmount — pass sourceType so the route
+      // hits the matching destroy endpoint (clips/streams vs talks/streams).
       if (sessionIdRef.current) {
-        fetch(`/api/did/streams/session?sessionId=${sessionIdRef.current}`, { method: "DELETE" }).catch(() => {})
+        fetch(
+          `/api/did/streams/session?sessionId=${sessionIdRef.current}&sourceType=${sourceType}`,
+          { method: "DELETE" }
+        ).catch(() => {})
       }
       pcRef.current?.close()
     }
@@ -132,11 +136,19 @@ export function AvatarChatWidget({
       const agentReply = aiData?.reply ?? "Let me get back to you on that."
       setMessages(prev => [...prev, { role: "agent", text: agentReply }])
 
-      // Send to D-ID avatar
+      // Send to D-ID avatar — pass contactId so the route resolves the
+      // agent's cloned voice (agents.voice_id), and sourceType so it picks
+      // the correct streaming endpoint (clips/streams for presenter+video,
+      // talks/streams for photo).
       await fetch("/api/did/streams/talk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, text: agentReply }),
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          text: agentReply,
+          contactId,
+          sourceType,
+        }),
       })
     } catch {
       toast.error("Couldn't reach the agent avatar")
