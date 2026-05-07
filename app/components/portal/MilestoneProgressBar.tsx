@@ -15,7 +15,7 @@ export interface TransactionMilestone {
   milestone_name: string
   milestone_type?: string | null
   target_date: string | null
-  completed_date: string | null
+  completed_at: string | null
   status: string
 }
 
@@ -62,7 +62,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 function getMilestoneStatus(milestone: TransactionMilestone): "completed" | "current" | "upcoming" {
-  if (milestone.status === "completed" || milestone.completed_date) {
+  if (milestone.status === "completed" || milestone.completed_at) {
     return "completed"
   }
   // Check if overdue
@@ -94,14 +94,14 @@ export function MilestoneProgressBar({
 
   // Calculate progress
   const completedCount = sortedMilestones.filter(
-    (m) => m.status === "completed" || m.completed_date
+    (m) => m.status === "completed" || m.completed_at
   ).length
   const totalCount = sortedMilestones.length
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
 
   // Find current milestone (first non-completed)
   const currentIndex = sortedMilestones.findIndex(
-    (m) => m.status !== "completed" && !m.completed_date
+    (m) => m.status !== "completed" && !m.completed_at
   )
   const currentMilestone = currentIndex >= 0 ? sortedMilestones[currentIndex] : null
 
@@ -215,8 +215,8 @@ export function MilestoneProgressBar({
                       : "text-muted-foreground"
                   )}
                 >
-                  {status === "completed" && milestone.completed_date
-                    ? formatDate(milestone.completed_date)
+                  {status === "completed" && milestone.completed_at
+                    ? formatDate(milestone.completed_at)
                     : formatDate(milestone.target_date)}
                 </span>
               </div>

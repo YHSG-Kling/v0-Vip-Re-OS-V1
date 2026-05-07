@@ -142,7 +142,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     context.transactionId
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, target_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
           .eq("transaction_id", context.transactionId)
           .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),

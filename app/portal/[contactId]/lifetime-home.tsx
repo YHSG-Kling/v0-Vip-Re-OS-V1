@@ -58,9 +58,12 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     )
   }
 
-  const { contact, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
+  const { contact, agent, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
   const firstName = contact.first_name || contact.name?.split(" ")[0] || "Homeowner"
-  const agentName = (contact as any).agents?.name
+  // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
+  // Previous code read (contact as any).agents?.name which doesn't exist on the
+  // contact row — agentName was always undefined.
+  const agentName = agent?.full_name ?? null
 
   // Get last market update touchpoint
   const lastMarketUpdate = touchpoints.find(
@@ -111,7 +114,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
             closeDate={transaction.close_date}
             closePrice={transaction.sale_price}
             currentEstimate={homeValueEstimate?.estimated_value_mid}
-            agentName={agentName}
+            agentName={agentName ?? undefined}
           />
         )}
 

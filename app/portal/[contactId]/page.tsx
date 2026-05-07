@@ -72,10 +72,12 @@ export default async function PortalHomePage({
     ? getPersonaMessagingGuidelines(contact.contact_persona as any)
     : getPersonaMessagingGuidelines('first_time_buyer')
 
-  // Get active transaction for this buyer
+  // Get active transaction for this buyer.
+  // Schema: transactions has `contract_date` (not under_contract_date) and
+  // `purchase_price` (list_price lives on listings, not on transactions).
   const { data: transactions } = await supabase
     .from("transactions")
-    .select("id, property_address, status, close_date, under_contract_date, list_price, purchase_price")
+    .select("id, property_address, status, stage, close_date, contract_date, purchase_price")
     .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
@@ -99,11 +101,13 @@ export default async function PortalHomePage({
     financialProfileResult,
     recentUpdatesResult,
   ] = await Promise.all([
-    // Milestones from transaction
+    // Milestones from transaction. Schema column is completed_at (NOT
+    // completed_date — that variant doesn't exist; previous query silently
+    // returned undefined for every milestone's completion date).
     activeTransaction
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, target_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
           .eq("transaction_id", activeTransaction.id)
           .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
@@ -116,10 +120,13 @@ export default async function PortalHomePage({
       : Promise.resolve({ data: [] }),
     // Primary agent - resolved outside Promise.all via kernel identity function
     Promise.resolve({ data: null }),
-    // Offers
+    // Offers. Schema: offers.offer_price (NOT offer_amount — that variant
+    // doesn't exist; previous query silently returned undefined for every
+    // offer's price). listings.property_address also doesn't exist; the
+    // canonical address column is `address`.
     supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_amount, status, created_at, listing:listings(address, property_address)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, listing:listings(address)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(10),
@@ -229,8 +236,8 @@ export default async function PortalHomePage({
 
   // Calculate days under contract if applicable
   let daysUnderContract: number | null = null
-  if (activeTransaction?.under_contract_date) {
-    const contractDate = new Date(activeTransaction.under_contract_date)
+  if (activeTransaction?.contract_date) {
+    const contractDate = new Date(activeTransaction.contract_date)
     const today = new Date()
     daysUnderContract = Math.floor((today.getTime() - contractDate.getTime()) / (1000 * 60 * 60 * 24))
   }

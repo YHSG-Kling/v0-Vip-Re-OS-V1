@@ -169,7 +169,10 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode
+  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode.
+  // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
+  // migrations). Previously this select silently returned null and the DID
+  // chat widget never lit up.
   let agentHasDIDAvatar = false
   let agentDIDPhotoUrl: string | null = null
   let agentDIDVideoUrl: string | null = null
@@ -177,7 +180,7 @@ export default async function PortalLayout({
     const { data: voiceProfile } = await supabase
       .from("agent_voice_profiles")
       .select("did_photo_url, did_video_url")
-      .eq("user_id", contact.agent_id)
+      .eq("agent_id", contact.agent_id)
       .maybeSingle()
     agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
     agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
