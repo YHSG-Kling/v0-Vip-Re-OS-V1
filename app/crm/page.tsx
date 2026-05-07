@@ -96,11 +96,10 @@ import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 // Import all 10 Contact OS components
 import {
   ContactCommandStrip,
-  RelationshipRadar,
+  ContactPulsePanel,
   CommunicationHealthPanel,
   NextBestActionPanel,
   ValueDeliveredPanel,
-  ReferralLikelihoodPanel,
   TimelineContextPanel,
   RelationshipAiChatPanel,
   SmartNoteComposer,
@@ -164,98 +163,6 @@ const TYPE_AVATAR_COLORS: Record<string, { bg: string; text: string; border: str
   investor:          { bg: "bg-purple-100",  text: "text-purple-700",  border: "border-l-purple-400" },
   lifetime_customer: { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-l-emerald-400" },
   other:             { bg: "bg-gray-100",    text: "text-gray-600",    border: "border-l-gray-300" },
-}
-
-function ContactOSSummary({
-  contact,
-  copilotPlan,
-  portalStatus,
-  lastTouch,
-  onMessageClick,
-}: {
-  contact: Contact
-  copilotPlan: any
-  portalStatus?: string | null
-  lastTouch?: string | null
-  onMessageClick: () => void
-}) {
-  const daysSince =
-    lastTouch != null
-      ? Math.floor((Date.now() - new Date(lastTouch).getTime()) / 86400000)
-      : null
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b bg-muted/30 rounded-t-md">
-      {contact.contact_persona && (
-        <Badge variant="outline" className="capitalize text-xs">
-          {contact.contact_persona.replace(/_/g, " ")}
-        </Badge>
-      )}
-
-      {contact.status && (
-        <Badge
-          className={cn(
-            "text-xs border-0",
-            contact.status === "active" || contact.status === "lifetime_customer"
-              ? "bg-green-100 text-green-800"
-              : contact.status === "nurture" || contact.status === "contacted"
-              ? "bg-blue-100 text-blue-800"
-              : "bg-gray-100 text-gray-700"
-          )}
-        >
-          {contact.status.replace(/_/g, " ")}
-        </Badge>
-      )}
-
-      {portalStatus && (
-        <Badge variant="outline" className="text-xs">
-          Portal: {portalStatus}
-        </Badge>
-      )}
-
-      {daysSince !== null && (
-        <span
-          className={cn(
-            "text-xs",
-            daysSince > 30
-              ? "text-red-600 font-medium"
-              : daysSince > 14
-              ? "text-amber-600"
-              : "text-muted-foreground"
-          )}
-        >
-          {daysSince === 0
-            ? "Touched today"
-            : daysSince === 1
-            ? "Last touch: yesterday"
-            : `Last touch: ${daysSince}d ago`}
-        </span>
-      )}
-
-      {copilotPlan?.next_action && (
-        <span className="text-xs text-indigo-700 truncate max-w-[220px]">
-          AI Plan: {copilotPlan.next_action.slice(0, 60)}
-          {copilotPlan.next_action.length > 60 ? "…" : ""}
-        </span>
-      )}
-
-      <div className="ml-auto flex gap-1.5 shrink-0">
-        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" asChild>
-          <Link href={`/portal/${contact.id}`} target="_blank">
-            Portal
-          </Link>
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs"
-          onClick={onMessageClick}
-        >
-          Message
-        </Button>
-      </div>
-    </div>
-  )
 }
 
 export default function CRMPage() {
@@ -1666,18 +1573,22 @@ export default function CRMPage() {
 
                   {/* ── OVERVIEW TAB ── */}
                   <TabsContent value="overview" className="space-y-4 mt-0">
-                    {/* ContactOSSummary strip */}
-                    <ContactOSSummary
-                      contact={selectedContact}
-                      copilotPlan={copilotPlan}
-                      portalStatus={portalInviteStatus}
-                      lastTouch={selectedContact.last_contacted_at ?? null}
-                      onMessageClick={() =>
+                    {/* Pulse — single consolidated relationship-health card */}
+                    <ContactPulsePanel
+                      engagementScore={selectedContact.engagement_score}
+                      daysSinceContact={daysSinceContact}
+                      messageTemperature={messageTemperature}
+                      referralPotential={selectedContact.referral_potential}
+                      openThreadCount={conversations.length}
+                      lastContactedAt={selectedContact.last_contacted_at ?? null}
+                      onGenerateReferralAsk={handleGenerateReferralAsk}
+                      generatingReferralAsk={referralGenerating}
+                      onOpenInbox={() =>
                         router.push(`/dashboard/inbox?contact=${selectedContactId}`)
                       }
                     />
 
-                    {/* Quick contact-card actions */}
+                    {/* Listing consultation CTA when applicable */}
                     {isListingCandidate && agentId && brokerageId && (
                       <div className="flex flex-wrap gap-2">
                         <ListingConsultationScheduler
@@ -1689,47 +1600,7 @@ export default function CRMPage() {
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <RelationshipRadar
-                        contactId={selectedContactId}
-                        engagementScore={selectedContact.engagement_score}
-                        daysSinceContact={daysSinceContact}
-                        messageTemperature={messageTemperature}
-                        referralPotential={selectedContact.referral_potential}
-                        openThreadCount={conversations.length}
-                      />
-                      <NextBestActionPanel
-                        suggestedActions={suggestedActions}
-                        contactId={selectedContactId}
-                        contactPhone={selectedContact.phone}
-                        contactEmail={selectedContact.email}
-                        onSendMessage={(channel) =>
-                          router.push(`/dashboard/inbox?contact=${selectedContactId}&channel=${channel}`)
-                        }
-                        onLogActivity={() =>
-                          router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
-                        }
-                        onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
-                        onCreateOffer={() => setOfferWizardOpen(true)}
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <ValueDeliveredPanel
-                        contactId={selectedContactId}
-                        agentId={agentId || ""}
-                        valueMetrics={valueMetrics}
-                      />
-                      <ReferralLikelihoodPanel
-                        contactId={selectedContactId}
-                        agentId={agentId || ""}
-                        referralPotential={selectedContact.referral_potential}
-                        onGenerateAsk={handleGenerateReferralAsk}
-                        generating={referralGenerating}
-                      />
-                    </div>
-
-                    {/* Buyer readiness signals — shown inline when data is available */}
+                    {/* Buyer readiness signals — only when relevant */}
                     {isBuyerContact && (buyerInsights || fatigueData) && (
                       <div className="rounded-lg border bg-blue-50/50 px-3 py-2 space-y-1">
                         {fatigueData && (
@@ -1742,9 +1613,9 @@ export default function CRMPage() {
                             <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
                             <p className="mt-0.5">
                               Score: {fatigueData.fatigue_score}/100 &middot; {fatigueData.days_searching}d searching &middot; {fatigueData.total_showings} showings
-                              </p>
-                            </div>
-                          )}
+                            </p>
+                          </div>
+                        )}
                         {buyerInsights?.prediction && (
                           <div className="space-y-0.5 text-xs">
                             {buyerInsights.prediction.predicted_ready_to_offer && (
@@ -1761,12 +1632,36 @@ export default function CRMPage() {
                       </div>
                     )}
 
-                    <TimelineContextPanel
+                    {/* Next Best Actions — sole authority for suggested actions */}
+                    <NextBestActionPanel
+                      suggestedActions={suggestedActions}
                       contactId={selectedContactId}
-                      originalLeadSource={selectedContact.lead_source}
-                      createdAt={selectedContact.created_at}
-                      isaHandoffContext={isaHandoffContext}
+                      contactPhone={selectedContact.phone}
+                      contactEmail={selectedContact.email}
+                      onSendMessage={(channel) =>
+                        router.push(`/dashboard/inbox?contact=${selectedContactId}&channel=${channel}`)
+                      }
+                      onLogActivity={() =>
+                        router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
+                      }
+                      onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
+                      onCreateOffer={() => setOfferWizardOpen(true)}
                     />
+
+                    {/* Value delivered + Timeline context — combined into a single grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <ValueDeliveredPanel
+                        contactId={selectedContactId}
+                        agentId={agentId || ""}
+                        valueMetrics={valueMetrics}
+                      />
+                      <TimelineContextPanel
+                        contactId={selectedContactId}
+                        originalLeadSource={selectedContact.lead_source}
+                        createdAt={selectedContact.created_at}
+                        isaHandoffContext={isaHandoffContext}
+                      />
+                    </div>
                   </TabsContent>
 
                   {/* ── JOURNEY & TEAM TAB ── */}

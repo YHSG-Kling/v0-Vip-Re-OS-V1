@@ -10,16 +10,9 @@ import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecy
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import {
-  LaunchStateStrip,
-  MediaReadinessCard,
-  PublishReadinessCard,
-  MarketingTierReadinessCard,
-  SellerUpdateReadinessCard,
-  OpenHouseReadinessCard,
-  NeighborhoodStoryCard,
+  LaunchReadinessChecklist,
   LaunchActionsPanel,
 } from "../components/launch"
-import { ListingAgreementStatusCard } from "@/app/components/dashboard/listings/lifecycle/listing-agreement-status-card"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
@@ -294,63 +287,33 @@ const { data: listingVendorBookings } = await supabase
           </div>
         )}
 
-        {/* Launch State Strip */}
+        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
         <div className="mb-6">
-          <LaunchStateStrip
+          <LaunchReadinessChecklist
             listingId={listingId}
             currentStage={currentStage}
-            mediaReady={mediaReady}
-            publishReady={publishReady}
-            marketingReady={marketingReady}
-            blockers={blockers}
-          />
-        </div>
-
-        {/* Readiness Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-          <MediaReadinessCard
-            listingId={listingId}
             photoCount={photoCount}
             videoCount={videoCount}
             hasBranded={media.some((m: any) => m.is_branded)}
             hasUnbranded={media.some((m: any) => !m.is_branded)}
-          />
-          <PublishReadinessCard
-            listingId={listingId}
             requiredFields={requiredFields}
             complianceBlockers={[]}
             packetReady={packetReady}
-          />
-          <MarketingTierReadinessCard
-            listingId={listingId}
             currentTier={currentTier}
-            campaignReady={!!currentTier}
-            assetsCreated={media.length}
-            assetsRequired={10}
             isSuperAdmin={isSuperAdmin}
-          />
-          <SellerUpdateReadinessCard
-            listingId={listingId}
-            agentId={user.id}
-            hasPendingDraft={false}
-          />
-          <OpenHouseReadinessCard
-            listingId={listingId}
-            scheduledEvent={scheduledEvent}
-            promotionStatus={openHousePromotionStatus}
-            rsvpCount={rsvpCount}
-          />
-          <NeighborhoodStoryCard
-            listingId={listingId}
-            hasReport={hasNeighborhoodReport}
+            sellerUpdateHasPendingDraft={false}
+            openHouseEvent={scheduledEvent}
+            openHousePromotionStatus={openHousePromotionStatus}
+            openHouseRsvpCount={rsvpCount}
+            hasNeighborhoodReport={hasNeighborhoodReport}
             neighborhoodName={neighborhoodReport?.neighborhood_name}
             pricingNarrativeReady={pricingNarrativeReady}
-            marketTrend={neighborhoodReport?.market_trend}
-            medianPrice={neighborhoodReport?.median_home_price}
-          />
-          <ListingAgreementStatusCard
-            listingId={listingId}
-            agreement={listingAgreement ?? null}
+            hasListingAgreement={!!listingAgreement}
+            agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
+            mediaReady={mediaReady}
+            publishReady={publishReady}
+            marketingReady={marketingReady}
+            blockers={blockers}
           />
         </div>
 

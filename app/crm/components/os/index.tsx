@@ -7,6 +7,7 @@
  */
 
 export { ContactCommandStrip } from "./contact-command-strip"
+export { ContactPulsePanel } from "./contact-pulse-panel"
 export { RelationshipRadar } from "./relationship-radar"
 export { CommunicationHealthPanel } from "./communication-health-panel"
 export { NextBestActionPanel } from "./next-best-action-panel"

@@ -1818,80 +1818,137 @@ export function TransactionDetailClient({
           </div>
         </div>
 
-        {/* Tabs Section */}
+        {/* Tabs Section — 5 grouped outer tabs with sub-tabs.
+            Inner TabsContent values unchanged so existing content blocks
+            keep rendering as-is. */}
         <div className="mt-6">
+          {(() => {
+            // Map any existing tab value → outer group
+            const TIMELINE_SUBS = ["milestones", "deadlines", "deposits", "inspection", "repairs"] as const
+            const TEAM_SUBS     = ["participants", "lender", "title", "partners"] as const
+            const DOCS_SUBS     = ["documents", "forms", "compliance"] as const
+            const outerTab =
+              TIMELINE_SUBS.includes(activeTab as any) ? "timeline" :
+              TEAM_SUBS.includes(activeTab as any)     ? "team" :
+              DOCS_SUBS.includes(activeTab as any)     ? "docs" :
+              activeTab === "commissions"              ? "money" :
+              activeTab === "vendors"                  ? "vendors" :
+              "timeline"
+
+            const overdueComplianceCount = complianceTasks.filter(
+              t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+            ).length
+
+            return null
+          })()}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="flex-wrap h-auto gap-1">
-              <TabsTrigger value="milestones" className="text-xs">
-                <Calendar className="h-3 w-3 mr-1" />
-                Milestones
-              </TabsTrigger>
-              <TabsTrigger value="deadlines" className="text-xs">
-                <Clock className="h-3 w-3 mr-1" />
-                Deadlines
-              </TabsTrigger>
-              <TabsTrigger value="participants" className="text-xs">
-                <Users className="h-3 w-3 mr-1" />
-                Participants
-              </TabsTrigger>
-              <TabsTrigger value="lender" className="text-xs">
-                <Building2 className="h-3 w-3 mr-1" />
-                Lender
-              </TabsTrigger>
-              <TabsTrigger value="title" className="text-xs">
-                <Home className="h-3 w-3 mr-1" />
-                Title & Escrow
-              </TabsTrigger>
-              <TabsTrigger value="deposits" className="text-xs">
-                <Landmark className="h-3 w-3 mr-1" />
-                Deposits &amp; Compliance
-                {(() => {
-                  const overdueCount = complianceTasks.filter(
-                    t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
-                  ).length
-                  return overdueCount > 0 ? (
-                    <Badge variant="destructive" className="ml-1 h-4 px-1 text-xs">
-                      {overdueCount}
-                    </Badge>
-                  ) : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) ? (
-                    <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
-                  ) : null
-                })()}
-              </TabsTrigger>
-              <TabsTrigger value="inspection" className="text-xs">
-                <Shield className="h-3 w-3 mr-1" />
-                Inspection
-              </TabsTrigger>
-              <TabsTrigger value="vendors" className="text-xs">
-                <Wrench className="h-3 w-3 mr-1" />
-                Vendors
-              </TabsTrigger>
-              <TabsTrigger value="documents" className="text-xs">
-                <FileText className="h-3 w-3 mr-1" />
-                Documents
-              </TabsTrigger>
-              <TabsTrigger value="repairs" className="text-xs">
-                Repairs
-              </TabsTrigger>
-              <TabsTrigger value="compliance" className="text-xs">
-                Compliance
-              </TabsTrigger>
-              <TabsTrigger value="commissions" className="text-xs">
-                <DollarSign className="h-3 w-3 mr-1" />
-                Commissions
-              </TabsTrigger>
-              <TabsTrigger value="partners" className="text-xs">
-                <Landmark className="h-3 w-3 mr-1" />
-                Partners
-              </TabsTrigger>
-              <TabsTrigger value="forms" className="text-xs">
-                <ClipboardList className="h-3 w-3 mr-1" />
-                Forms
-                {formsProvider?.is_configured && (
-                  <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
-                )}
-              </TabsTrigger>
-            </TabsList>
+            {/* OUTER tab navigation — 5 groups */}
+            {(() => {
+              const TIMELINE_SUBS = ["milestones", "deadlines", "deposits", "inspection", "repairs"] as const
+              const TEAM_SUBS     = ["participants", "lender", "title", "partners"] as const
+              const DOCS_SUBS     = ["documents", "forms", "compliance"] as const
+              const outerTab =
+                TIMELINE_SUBS.includes(activeTab as any) ? "timeline" :
+                TEAM_SUBS.includes(activeTab as any)     ? "team" :
+                DOCS_SUBS.includes(activeTab as any)     ? "docs" :
+                activeTab === "commissions"              ? "money" :
+                activeTab === "vendors"                  ? "vendors" :
+                "timeline"
+
+              const overdueComplianceCount = complianceTasks.filter(
+                t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+              ).length
+
+              const outerTabs: Array<{ key: string; label: string; icon: any; defaultSub: string; badge?: React.ReactNode }> = [
+                { key: "timeline", label: "Timeline",  icon: Calendar,      defaultSub: "milestones",
+                  badge: overdueComplianceCount > 0
+                    ? <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">{overdueComplianceCount}</Badge>
+                    : null },
+                { key: "team",     label: "Team",      icon: Users,         defaultSub: "participants" },
+                { key: "docs",     label: "Documents", icon: FileText,      defaultSub: "documents",
+                  badge: formsProvider?.is_configured
+                    ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                    : null },
+                { key: "vendors",  label: "Vendors",   icon: Wrench,        defaultSub: "vendors" },
+                { key: "money",    label: "Money",     icon: DollarSign,    defaultSub: "commissions" },
+              ]
+
+              const subTabsByOuter: Record<string, Array<{ value: string; label: string; icon?: any; badge?: React.ReactNode }>> = {
+                timeline: [
+                  { value: "milestones", label: "Milestones",  icon: Calendar },
+                  { value: "deadlines",  label: "Deadlines",   icon: Clock },
+                  { value: "deposits",   label: "Deposits",    icon: Landmark,
+                    badge: overdueComplianceCount > 0
+                      ? <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">{overdueComplianceCount}</Badge>
+                      : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date())
+                      ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                      : null },
+                  { value: "inspection", label: "Inspection",  icon: Shield },
+                  { value: "repairs",    label: "Repairs" },
+                ],
+                team: [
+                  { value: "participants", label: "Participants", icon: Users },
+                  { value: "lender",       label: "Lender",       icon: Building2 },
+                  { value: "title",        label: "Title & Escrow", icon: Home },
+                  { value: "partners",     label: "Partners",     icon: Landmark },
+                ],
+                docs: [
+                  { value: "documents",  label: "Documents",  icon: FileText },
+                  { value: "forms",      label: "Forms",      icon: ClipboardList,
+                    badge: formsProvider?.is_configured
+                      ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                      : null },
+                  { value: "compliance", label: "Compliance" },
+                ],
+              }
+
+              const activeSubs = subTabsByOuter[outerTab]
+
+              return (
+                <>
+                  {/* OUTER tabs — switch active tab to that group's default sub when clicked */}
+                  <div className="flex items-center gap-1 border-b mb-2 overflow-x-auto pb-px">
+                    {outerTabs.map(t => {
+                      const Icon = t.icon
+                      const isActive = outerTab === t.key
+                      return (
+                        <button
+                          key={t.key}
+                          type="button"
+                          onClick={() => setActiveTab(t.defaultSub)}
+                          className={
+                            "px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap -mb-px flex items-center " +
+                            (isActive
+                              ? "border-primary text-primary"
+                              : "border-transparent text-muted-foreground hover:text-foreground")
+                          }
+                        >
+                          <Icon className="h-3.5 w-3.5 mr-1.5" />
+                          {t.label}
+                          {t.badge}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* SUB tabs — only when group has multiple */}
+                  {activeSubs && activeSubs.length > 1 && (
+                    <TabsList className="flex-wrap h-auto gap-1 mb-2">
+                      {activeSubs.map(s => {
+                        const Icon = s.icon
+                        return (
+                          <TabsTrigger key={s.value} value={s.value} className="text-xs">
+                            {Icon && <Icon className="h-3 w-3 mr-1" />}
+                            {s.label}
+                            {s.badge}
+                          </TabsTrigger>
+                        )
+                      })}
+                    </TabsList>
+                  )}
+                </>
+              )
+            })()}
 
             {/* Milestones Tab */}
             <TabsContent value="milestones" className="mt-4">
