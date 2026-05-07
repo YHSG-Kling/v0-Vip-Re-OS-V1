@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Bed, Bath, Square, Calendar, MapPin, Phone, Mail } from "lucide-react"
 import { PublicShowingForm } from "./public-showing-form"
+import { OutsideAgentShowingForm } from "./outside-agent-showing-form"
 import { PublicInfoForm } from "./public-info-form"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -410,6 +411,12 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
               <PublicShowingForm listingId={listingId} />
             </CardContent>
           </Card>
+
+          {/* Outside-agent path — buyer agents at other brokerages can submit
+              an agent-to-agent showing request without portal access. */}
+          <div>
+            <OutsideAgentShowingForm listingId={listingId} />
+          </div>
         </div>
       </div>
 

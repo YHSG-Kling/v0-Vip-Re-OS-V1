@@ -63,9 +63,10 @@ export default async function ShowingsPage({
 
   // Fetch tours with tour_stops, showings, and showing_requests in parallel
   const [toursResult, showingsResult, requestsResult] = await Promise.all([
-    // Tours with stops — include the canonical-flow fields so the buyer
-    // sees the full itinerary (start address/time, totals, approval/report
-    // timestamps, per-stop confirmed time, listing-agent contact info).
+    // Tours with stops — buyer-facing fetch. Intentionally OMITS
+    // listing_agent_* fields: the buyer is represented by their agent
+    // and must not see other-brokerage contact info. The agent-side view
+    // (tour-confirm-tab) is the only place that surfaces those fields.
     supabase
       .from("tours")
       .select(`id, tour_date, start_time, start_address, status, all_confirmed,
@@ -74,7 +75,6 @@ export default async function ShowingsPage({
                ai_plan_narrative, notes,
                tour_stops(id, property_address, city, state, zip,
                           list_price, primary_photo_url,
-                          listing_agent_name, listing_agent_phone, listing_agent_company,
                           suggested_time, suggested_duration_minutes,
                           drive_time_from_prev_minutes,
                           confirmed_time, is_confirmed,

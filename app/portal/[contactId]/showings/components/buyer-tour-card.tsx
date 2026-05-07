@@ -3,12 +3,21 @@
 /**
  * BuyerTourCard — surfaces an approved/upcoming tour itinerary in the
  * buyer's portal. Shows: tour date + start time + start address, total
- * duration / drive time, ordered stop list with photo + price + listing-
- * agent contact, plus a Google Maps directions link.
+ * duration / drive time, ordered stop list with photo + price + per-stop
+ * confirmed/pending status, plus a Google Maps directions link.
+ *
+ * IMPORTANT — privacy rule:
+ *   The buyer is represented by their agent and must NEVER see the
+ *   listing agent's contact info in the portal. The buyer agent is the
+ *   sole point of contact with listing agents; surfacing listing-agent
+ *   names/phones to the buyer would let them go around their own agent
+ *   (and would expose other-brokerage contact info that doesn't belong
+ *   in the portal). Listing-agent contact lives in the AGENT-side tour
+ *   confirm tab only.
  *
  * Renders ONLY when:
- *   - status is 'confirmed' or 'scheduling' (so the buyer doesn't see
- *     in-progress AI drafts), OR
+ *   - status is 'confirmed' or 'scheduling' (buyer never sees in-progress
+ *     AI drafts), AND
  *   - report_sent_at is set (the agent has explicitly sent it to the buyer)
  */
 
@@ -17,8 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import {
-  Calendar, Clock, MapPin, Route, Phone, Building, Home,
-  ArrowRight, CheckCircle2,
+  Calendar, Clock, MapPin, Route, Home, CheckCircle2,
 } from "lucide-react"
 
 interface TourStop {
@@ -30,9 +38,6 @@ interface TourStop {
   zip: string | null
   list_price: number | null
   primary_photo_url: string | null
-  listing_agent_name: string | null
-  listing_agent_phone: string | null
-  listing_agent_company: string | null
   suggested_time: string | null
   suggested_duration_minutes: number | null
   drive_time_from_prev_minutes: number | null
@@ -228,26 +233,10 @@ export function BuyerTourCard({ tour }: Props) {
                     </span>
                   )}
                 </div>
-                {(stop.listing_agent_name || stop.listing_agent_phone) && (
-                  <div className="flex flex-wrap gap-x-3 gap-y-0 text-[11px] text-muted-foreground pt-0.5">
-                    {stop.listing_agent_name && (
-                      <span className="flex items-center gap-1">
-                        <Building className="h-3 w-3" />
-                        {stop.listing_agent_name}
-                        {stop.listing_agent_company ? ` · ${stop.listing_agent_company}` : ""}
-                      </span>
-                    )}
-                    {stop.listing_agent_phone && (
-                      <a
-                        href={`tel:${stop.listing_agent_phone}`}
-                        className="flex items-center gap-1 hover:text-foreground"
-                      >
-                        <Phone className="h-3 w-3" />
-                        {stop.listing_agent_phone}
-                      </a>
-                    )}
-                  </div>
-                )}
+                {/* Listing-agent contact intentionally NOT shown to the buyer.
+                    Buyer's own agent owns the relationship with listing agents;
+                    surfacing other-brokerage contact info here would let the
+                    buyer bypass their representative. */}
               </div>
             </div>
           ))}

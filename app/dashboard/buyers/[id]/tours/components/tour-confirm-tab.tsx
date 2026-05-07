@@ -12,6 +12,9 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 import { confirmTourStop, confirmTour, scheduleTourStops, finalizeTour } from '@/app/actions/tour-planner'
 import { optimizeTourRoute, aiScheduleShowing } from '@/app/actions/ai-showing-management'
+import { dispatchStopScheduling } from '@/app/actions/dispatch-showing'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Send, MessageCircle, Mail, Sparkles } from 'lucide-react'
 
 interface TourStop {
   id: string
@@ -248,6 +251,44 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
     }
   }
 
+  // Sends the stop's scheduling request to the listing agent via the
+  // chosen channel. If the brokerage has provider credentials configured,
+  // the request is fired automatically; otherwise the dispatcher returns a
+  // ready-to-send draft (subject + body) the agent can copy/paste.
+  async function handleDispatchStop(
+    stop: TourStop,
+    channel: "showingtime" | "sms" | "email",
+  ) {
+    setSchedulingStopId(stop.id)
+    try {
+      const res = await dispatchStopScheduling({ tourStopId: stop.id, channel })
+      if (!res.success) {
+        toast({ title: res.error ?? "Dispatch failed", variant: "destructive" })
+        return
+      }
+      if (res.sent) {
+        toast({
+          title: `Sent via ${channel.toUpperCase()}`,
+          description: res.draft.to ? `to ${res.draft.to}` : undefined,
+        })
+      } else {
+        // No provider credentials — copy the draft to clipboard so the
+        // agent can paste it into their preferred channel.
+        const txt = res.draft.subject
+          ? `${res.draft.subject}\n\n${res.draft.body}`
+          : res.draft.body
+        try { await navigator.clipboard.writeText(txt) } catch {}
+        toast({
+          title: "Draft copied to clipboard",
+          description: `Paste into ${channel === "sms" ? "your text app" : channel === "email" ? "your email" : "ShowingTime"} and send to ${res.draft.to || "the listing agent"}.`,
+        })
+      }
+      onRefresh()
+    } finally {
+      setSchedulingStopId(null)
+    }
+  }
+
   async function handleAIScheduleStop(stop: TourStop, tourDate: string) {
     // For agent seller listings, listing_id is a UUID.
     // For MLS buyer properties, listing_id is null — use mls_number or property_address as the identifier.
@@ -428,9 +469,66 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
 
                       {isExpanded && (
                         <div className="px-4 pb-4 border-t space-y-3">
-                          {/* AI Schedule Showing — works for both agent listings (listing_id) and MLS properties (mls_number/address) */}
+                          {/* Per-stop dispatch — actually sends the showing
+                              request to the listing agent through the agent's
+                              chosen channel. Drops to draft-mode when the
+                              brokerage hasn't connected provider credentials. */}
                           {!stop.is_confirmed && (
-                            <div className="pt-3 flex items-center gap-2">
+                            <div className="pt-3 flex items-center gap-2 flex-wrap">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    className="text-xs gap-1.5"
+                                    disabled={schedulingStopId === stop.id}
+                                  >
+                                    {schedulingStopId === stop.id
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <Send className="h-3.5 w-3.5" />}
+                                    Send to Listing Agent
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-60">
+                                  <DropdownMenuItem
+                                    onClick={() => handleDispatchStop(stop, 'showingtime')}
+                                    className="gap-2 text-sm"
+                                  >
+                                    <CalendarPlus className="h-4 w-4" />
+                                    <div className="flex-1">
+                                      <p className="font-medium">ShowingTime</p>
+                                      <p className="text-[11px] text-muted-foreground">
+                                        Auto-create request via API
+                                      </p>
+                                    </div>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => handleDispatchStop(stop, 'sms')}
+                                    disabled={!stop.listing_agent_phone}
+                                    className="gap-2 text-sm"
+                                  >
+                                    <MessageCircle className="h-4 w-4" />
+                                    <div className="flex-1">
+                                      <p className="font-medium">Text message</p>
+                                      <p className="text-[11px] text-muted-foreground">
+                                        {stop.listing_agent_phone || "No listing-agent phone on file"}
+                                      </p>
+                                    </div>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => handleDispatchStop(stop, 'email')}
+                                    disabled={!stop.listing_agent_phone && !stop.listing_agent_company}
+                                    className="gap-2 text-sm"
+                                  >
+                                    <Mail className="h-4 w-4" />
+                                    <div className="flex-1">
+                                      <p className="font-medium">Email</p>
+                                      <p className="text-[11px] text-muted-foreground">
+                                        Send via brokerage email or copy draft
+                                      </p>
+                                    </div>
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -438,12 +536,8 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
                                 onClick={() => handleAIScheduleStop(stop, tour.tour_date)}
                                 disabled={schedulingStopId === stop.id}
                               >
-                                {schedulingStopId === stop.id ? (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                  <CalendarPlus className="h-3.5 w-3.5" />
-                                )}
-                                AI Schedule Showing
+                                <Sparkles className="h-3.5 w-3.5" />
+                                AI Schedule
                               </Button>
                               {scheduleResults[stop.id] && (
                                 <span className="text-xs text-emerald-600 flex items-center gap-1">
