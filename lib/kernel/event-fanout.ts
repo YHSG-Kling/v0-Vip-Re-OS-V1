@@ -193,6 +193,39 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     responsibleParty: "agent",
     chatBody: "Coming Soon marketing is live — I'll let you know as buyer interest comes in.",
   },
+  [KernelEvent.LISTING_PUBLISHED]: {
+    title: "Your home is live on the MLS!",
+    plainLanguageSummary:
+      "Your listing is now active. Buyers and their agents can see it and request showings.",
+    responsibleParty: "agent",
+    nextStep: "Showings + offers begin coming in.",
+    chatBody: "We're live! Your home is on the MLS and showings can be booked. I'll keep you posted on activity.",
+  },
+  [KernelEvent.LISTING_UNDER_CONTRACT]: {
+    title: "Your home is under contract!",
+    plainLanguageSummary:
+      "An offer is accepted and the deal is in due diligence. Inspection, appraisal, and financing are next.",
+    responsibleParty: "agent",
+    nextStep: "Buyer's inspection + appraisal.",
+    chatBody: "Under contract! I'll walk you through the inspection + appraisal phase.",
+  },
+  [KernelEvent.LISTING_EXPIRED]: {
+    title: "Your listing expired",
+    plainLanguageSummary:
+      "The listing reached its expiration date without selling. Let's regroup on next steps.",
+    responsibleParty: "agent",
+    chatBody: "The listing reached its expiration. Let's talk about whether to relist with a refreshed strategy.",
+  },
+  [KernelEvent.LISTING_CANCELLED]: {
+    title: "Listing withdrawn",
+    plainLanguageSummary: "Your listing was withdrawn. The property is no longer marketed.",
+    responsibleParty: "agent",
+  },
+  [KernelEvent.LISTING_STAGE_CHANGED]: {
+    title: "Listing update",
+    plainLanguageSummary: "Your listing moved to a new stage of the marketing-to-close timeline.",
+    responsibleParty: "agent",
+  },
   [KernelEvent.OPEN_HOUSE_SCHEDULED]: {
     title: "Open house scheduled",
     plainLanguageSummary: "An open house has been scheduled. We'll share attendee count + feedback after.",

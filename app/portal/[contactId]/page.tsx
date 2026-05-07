@@ -31,6 +31,7 @@ import {
 } from "lucide-react"
 import SellerHome from "./seller-home"
 import LifetimeHome from "./lifetime-home"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 
 export default async function PortalHomePage({
   params,
@@ -96,6 +97,7 @@ export default async function PortalHomePage({
     educationResult,
     vendorAssignmentsResult,
     financialProfileResult,
+    recentUpdatesResult,
   ] = await Promise.all([
     // Milestones from transaction
     activeTransaction
@@ -172,6 +174,15 @@ export default async function PortalHomePage({
       .select("pre_approval_amount, down_payment_percent, finance_type, is_cash_buyer")
       .eq("contact_id", contactId)
       .maybeSingle(),
+    // Recent transparency updates — kernel fan-out writes here when
+    // milestones fire (LISTING_UNDER_CONTRACT, OFFER_ACCEPTED, etc.)
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .eq("contact_id", contactId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ])
 
   // Resolve agent via kernel identity function (fixes broken contact.agent_id → agents.id lookup)
@@ -209,6 +220,7 @@ export default async function PortalHomePage({
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorAssignmentsResult.data ?? []
   const financialProfile = financialProfileResult.data ?? null
+  const recentUpdates = (recentUpdatesResult as any).data ?? []
 
   // Computed values
   const contactName = contact.first_name || contact.name || "there"
@@ -310,6 +322,16 @@ export default async function PortalHomePage({
       </div>
 
       <div className="max-w-2xl mx-auto px-4 -mt-4 pb-12 space-y-5">
+
+        {/* Recent updates feed — populated by kernel event fan-out (offer
+            accepted, listing under contract, milestone completed, etc.).
+            Hidden when there's nothing client-visible yet so the home
+            doesn't show an empty state on day one. */}
+        <RecentUpdatesFeed
+          contactId={contactId}
+          updates={recentUpdates}
+          hideWhenEmpty
+        />
 
         {/* What's Next For You — prominent action panel */}
         <div className="rounded-xl border bg-slate-50 p-5">

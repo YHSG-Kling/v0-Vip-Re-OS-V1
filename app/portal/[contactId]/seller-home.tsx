@@ -17,6 +17,7 @@ import {
   getShowingInsights,
 } from "@/app/actions/portal-seller"
 import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
@@ -119,6 +120,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     agentResult,
     messagesResult,
     educationResult,
+    recentUpdatesResult,
   ] = await Promise.all([
     // Showing stats
     context.listing
@@ -171,6 +173,15 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .from("contact_education_progress")
       .select("lesson_key, completed_at")
       .eq("contact_id", contactId),
+    // Recent transparency updates — kernel fan-out writes here when
+    // listing milestones fire (LISTING_PUBLISHED, OFFER_ACCEPTED, etc.)
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .eq("contact_id", contactId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ])
 
   // Filter milestones to client-visible only
@@ -182,6 +193,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const primaryAgent = agentResult.data
   const messages = messagesResult.data ?? []
   const completedLessonKeys = educationResult.data?.map((p: any) => p.lesson_key) ?? []
+  const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
 
@@ -218,6 +230,11 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     <div className="space-y-6">
       {/* Analytics: fires once on the client after mount — never during SSR/prefetch */}
       <SellerPortalViewTracker contactId={contactId} page="seller_home" />
+
+      {/* 0. WHAT'S NEW — kernel fan-out feeds milestones from listing
+           transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).
+           Hidden when nothing client-visible yet. */}
+      <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
 
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard

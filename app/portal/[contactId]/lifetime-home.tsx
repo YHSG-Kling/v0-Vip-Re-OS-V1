@@ -9,6 +9,8 @@ import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCar
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
+import { createClient } from "@/lib/supabase/server"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import {
   Bell,
   BookOpen,
@@ -23,8 +25,26 @@ interface LifetimeHomeProps {
   contactId: string
 }
 
+// Lifetime customers receive ongoing transparency_updates on home value
+// changes, anniversaries, market events. Loaded here so the feed surfaces
+// at the top of the page.
+async function loadRecentUpdates(contactId: string) {
+  const supabase = await createClient()
+  const { data } = await supabase
+    .from("transparency_updates")
+    .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+    .eq("contact_id", contactId)
+    .eq("is_visible_to_client", true)
+    .order("created_at", { ascending: false })
+    .limit(20)
+  return data ?? []
+}
+
 export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
-  const context = await getLifetimeContext(contactId)
+  const [context, recentUpdates] = await Promise.all([
+    getLifetimeContext(contactId),
+    loadRecentUpdates(contactId),
+  ])
 
   if (!context) {
     return (
@@ -65,6 +85,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           </div>
         )}
       </div>
+
+      {/* 0. WHAT'S NEW — kernel fan-out feeds (anniversary, equity changes,
+           agent market updates). Hidden when nothing client-visible. */}
+      <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
 
       {/* 1. Congrats Card (dismissible) */}
       {transaction && (

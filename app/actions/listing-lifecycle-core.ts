@@ -323,6 +323,58 @@ export async function executeListingTransition(params: {
     await handleSellerToLifetimeTransition(supabase, params.listingId, listing.agent_id, listing.brokerage_id)
   }
 
+  // ── Fan out the lifecycle event ───────────────────────────────────────────
+  // Maps stage → kernel event so brokerages can wire campaign_sequences AND
+  // the seller portal gets a transparency_update card automatically. Every
+  // transition also fires a generic LISTING_STAGE_CHANGED so brokerages can
+  // listen on the catch-all if they want.
+  try {
+    const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+
+    const STAGE_TO_EVENT: Record<string, string | undefined> = {
+      COMING_SOON_PREP:   KernelEvent.COMING_SOON_SENT,
+      COMING_SOON_ACTIVE: KernelEvent.COMING_SOON_SENT,
+      ACTIVE:             KernelEvent.LISTING_PUBLISHED,
+      UNDER_CONTRACT:     KernelEvent.LISTING_UNDER_CONTRACT,
+      WITHDRAWN:          KernelEvent.LISTING_CANCELLED,
+      EXPIRED:            KernelEvent.LISTING_EXPIRED,
+      CANCELLED:          KernelEvent.LISTING_CANCELLED,
+    }
+
+    const stageEvent = STAGE_TO_EVENT[params.targetStage as string]
+    const sharedCtx = {
+      brokerageId:  listing.brokerage_id,
+      entityType:   "listing" as const,
+      entityId:     params.listingId,
+      listingId:    params.listingId,
+      agentUserId:  user.id,
+      metadata: {
+        from_stage: currentStage,
+        to_stage:   params.targetStage,
+        notes:      params.notes ?? null,
+      },
+    }
+
+    // Fire the specific stage event (auto-enrolls + portal update with the
+    // event-specific template).
+    if (stageEvent) {
+      await fanOutKernelEvent({ event: stageEvent as any, ...sharedCtx })
+    }
+
+    // Always fire the generic LISTING_STAGE_CHANGED for catch-all sequences
+    // and audit. Skipped when the specific event already fired AND duplicates
+    // the audit — but it's fine to fire both; idempotency in the fanout
+    // dedupes sequence enrollment.
+    await fanOutKernelEvent({
+      event: KernelEvent.LISTING_STAGE_CHANGED,
+      ...sharedCtx,
+      metadata: { ...sharedCtx.metadata, mapped_event: stageEvent ?? null },
+    })
+  } catch (err) {
+    console.error("[executeListingTransition] fanOutKernelEvent failed", err)
+  }
+
   return {
     success: true,
     transition: {
