@@ -31,6 +31,7 @@ export interface ContactIntelligence {
   tcpa_consent_source: string | null
   ai_isa_enabled: boolean | null
   ai_outreach_paused: boolean | null
+  ai_autopilot_level: "off" | "conservative" | "moderate" | "aggressive" | null
 }
 
 export async function getContactIntelligence(contactId: string): Promise<{
@@ -48,7 +49,7 @@ export async function getContactIntelligence(contactId: string): Promise<{
   // Pull intelligence-shaped fields directly from contacts.
   const { data: contactRaw, error: contactErr } = await service
     .from("contacts")
-    .select("id, brokerage_id, confidence_score, intent_score, engagement_score, source, source_channel, source_family, source_subtype, data_source, enrichment_source, enrichment_confidence, enriched_at, last_enriched_at, last_scored_at, email_verified, email_unsubscribed, email_opt_out, direct_mail_opt_out, tcpa_consent_source, ai_isa_enabled, ai_outreach_paused")
+    .select("id, brokerage_id, confidence_score, intent_score, engagement_score, source, source_channel, source_family, source_subtype, data_source, enrichment_source, enrichment_confidence, enriched_at, last_enriched_at, last_scored_at, email_verified, email_unsubscribed, email_opt_out, direct_mail_opt_out, tcpa_consent_source, ai_isa_enabled, ai_outreach_paused, ai_autopilot_level")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -79,6 +80,7 @@ export async function getContactIntelligence(contactId: string): Promise<{
     tcpa_consent_source: string | null
     ai_isa_enabled: boolean | null
     ai_outreach_paused: boolean | null
+    ai_autopilot_level: "off" | "conservative" | "moderate" | "aggressive" | null
   }
 
   if (contact.brokerage_id !== ctx.brokerageId) {
@@ -120,21 +122,64 @@ export async function getContactIntelligence(contactId: string): Promise<{
       tcpa_consent_source: contact.tcpa_consent_source ?? null,
       ai_isa_enabled: contact.ai_isa_enabled ?? null,
       ai_outreach_paused: contact.ai_outreach_paused ?? null,
+      ai_autopilot_level: contact.ai_autopilot_level ?? null,
     },
   }
 }
 
-export async function toggleAIISA(contactId: string, enabled: boolean) {
+export type AIPilotLevel = "off" | "conservative" | "moderate" | "aggressive"
+
+/**
+ * Unified AI Pilot control for a contact. Single source of truth replacing
+ * the old split between `contacts.ai_isa_enabled` (boolean) and the
+ * `ai_autopilot_plans` table.
+ *
+ * Levels:
+ *   - off          — no AI activity
+ *   - conservative — light cadence; agent approves every send
+ *   - moderate     — standard nurture + AI reply drafts (DEFAULT for legacy on)
+ *   - aggressive   — full autopilot incl. AI ISA outbound calls/SMS where consented
+ *
+ * Writes `contacts.ai_autopilot_level` and keeps `ai_isa_enabled` in sync
+ * for any legacy reader still consuming the boolean.
+ */
+export async function setContactAIPilot(params: {
+  contactId: string
+  level: AIPilotLevel
+}): Promise<{ success: boolean; error?: string; level?: AIPilotLevel }> {
   const { agentId, brokerageId } = await getAgentContext()
   if (!brokerageId) return { success: false, error: "No brokerage context" }
 
+  const enabled = params.level !== "off"
   const supabase = createServiceClient()
   const { error } = await supabase
     .from("contacts")
-    .update({ ai_isa_enabled: enabled })
-    .eq("id", contactId)
+    .update({
+      ai_autopilot_level: params.level,
+      ai_isa_enabled: enabled,
+    })
+    .eq("id", params.contactId)
     .eq("brokerage_id", brokerageId)
 
   if (error) return { success: false, error: error.message }
-  return { success: true }
+
+  // Activity log for audit trail
+  await supabase.from("activities").insert({
+    brokerage_id: brokerageId,
+    agent_id: agentId,
+    contact_id: params.contactId,
+    activity_type: "ai_pilot_changed",
+    title: `AI Pilot set to ${params.level}`,
+    metadata: { level: params.level, enabled },
+  }).then(() => {}, () => {})
+
+  return { success: true, level: params.level }
+}
+
+/** Legacy entry — routes to the unified pilot setter. */
+export async function toggleAIISA(contactId: string, enabled: boolean) {
+  return setContactAIPilot({
+    contactId,
+    level: enabled ? "moderate" : "off",
+  })
 }

@@ -14,6 +14,7 @@ import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
+import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -29,7 +30,7 @@ import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
-import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
+import { sendSMS, scheduleAppointment } from "@/app/actions/communications"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
@@ -246,7 +247,6 @@ export default function CRMPage() {
   const [apptSending, setApptSending] = useState(false)
   const [autoDialogOpen, setAutoDialogOpen] = useState(false)
   const [autoWorkflowId, setAutoWorkflowId] = useState("")
-  const [autoEventName, setAutoEventName] = useState("")
   const [autoSending, setAutoSending] = useState(false)
 
   // Suggested follow-up actions for the selected contact
@@ -1116,26 +1116,28 @@ export default function CRMPage() {
                     )}
                   </div>
 
-                  {/* AI Follow-up toggle — always visible in sidebar */}
+                  {/* Unified AI Pilot — single source of truth replacing the
+                      old sidebar Switch + strip Autopilot dropdown. */}
                   {contactIntelligence && (
-                    <div className="flex items-center gap-2 pt-1">
-                      <Switch
-                        checked={contactIntelligence.ai_isa_enabled === true}
-                        onCheckedChange={async (checked) => {
-                          const res = await toggleAIISA(selectedContactId, checked)
-                          if (res.success) {
-                            setContactIntelligence((prev: any) =>
-                              prev ? { ...prev, ai_isa_enabled: checked } : prev
-                            )
-                            toast.success(checked ? "AI follow-up enabled" : "AI follow-up disabled")
-                          } else {
-                            toast.error("Failed to update AI follow-up")
-                          }
+                    <div className="pt-1">
+                      <AIPilotControl
+                        contactId={selectedContactId}
+                        initialLevel={
+                          (contactIntelligence as any).ai_autopilot_level ??
+                          (contactIntelligence.ai_isa_enabled ? "moderate" : "off")
+                        }
+                        onChange={(level) => {
+                          setContactIntelligence((prev: any) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  ai_autopilot_level: level,
+                                  ai_isa_enabled: level !== "off",
+                                }
+                              : prev
+                          )
                         }}
                       />
-                      <span className={cn("text-xs font-medium", contactIntelligence.ai_isa_enabled ? "text-emerald-600" : "text-muted-foreground")}>
-                        {contactIntelligence.ai_isa_enabled ? "AI Follow-up On" : "AI Follow-up Off"}
-                      </span>
                     </div>
                   )}
                 </div>
@@ -1317,10 +1319,23 @@ export default function CRMPage() {
                     size="sm"
                     variant="outline"
                     className="w-full gap-1.5 text-xs justify-start"
-                    onClick={() => { setAutoWorkflowId(""); setAutoEventName(""); setAutoDialogOpen(true) }}
+                    onClick={async () => {
+                      // Lazy-load sequences only when the agent opens the dialog
+                      if (availableSequences.length === 0 && brokerageId) {
+                        const res = await listCampaignSequences(brokerageId)
+                        if (res.sequences) {
+                          setAvailableSequences(res.sequences.map((s: any) => ({
+                            id: s.id,
+                            name: s.name,
+                            sequence_type: s.sequence_type,
+                          })))
+                        }
+                      }
+                      setAutoDialogOpen(true)
+                    }}
                   >
                     <Workflow className="h-3.5 w-3.5" />
-                    Trigger Automation
+                    Enroll in Workflow
                   </Button>
                 </div>
 
@@ -1409,41 +1424,79 @@ export default function CRMPage() {
                   </DialogContent>
                 </Dialog>
 
-                {/* Trigger Automation Dialog */}
+                {/* Enroll in Workflow Dialog — picks an existing campaign sequence
+                    built in the Workflow Builder and enrolls THIS contact. Replaces
+                    the old free-text "GHL Workflow ID" dialog (legacy code; we no
+                    longer trigger GHL workflows from the contact card). */}
                 <Dialog open={autoDialogOpen} onOpenChange={setAutoDialogOpen}>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Trigger Automation</DialogTitle>
+                      <DialogTitle>Enroll in Workflow</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-3">
-                      <div>
-                        <Label className="text-xs">GHL Workflow ID</Label>
-                        <Input value={autoWorkflowId} onChange={e => setAutoWorkflowId(e.target.value)} placeholder="workflow_abc123" className="mt-1" />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Event Name (optional)</Label>
-                        <Input value={autoEventName} onChange={e => setAutoEventName(e.target.value)} placeholder="nurture_sequence" className="mt-1" />
-                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Pick a workflow built in the Workflow Builder. The contact will be
+                        enrolled and start receiving its first step.
+                      </p>
+                      {availableSequences.length === 0 ? (
+                        <div className="rounded-lg border bg-muted/30 px-3 py-4 text-center space-y-2">
+                          <p className="text-sm text-muted-foreground">
+                            No workflows built yet for this brokerage.
+                          </p>
+                          <Link href="/dashboard/campaigns/workflows" target="_blank">
+                            <Button size="sm" variant="outline" className="gap-1.5">
+                              <Workflow className="h-3.5 w-3.5" />
+                              Open Workflow Builder
+                            </Button>
+                          </Link>
+                        </div>
+                      ) : (
+                        <Select value={autoWorkflowId} onValueChange={setAutoWorkflowId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose a workflow" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableSequences.map((s: any) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}
+                                {s.sequence_type ? ` · ${s.sequence_type}` : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                     </div>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>Cancel</Button>
+                    <DialogFooter className="gap-2 flex-wrap">
+                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Link href="/dashboard/campaigns/workflows" target="_blank">
+                        <Button variant="ghost" size="sm" className="gap-1.5">
+                          <Workflow className="h-3.5 w-3.5" />
+                          Build new workflow
+                        </Button>
+                      </Link>
                       <Button
-                        disabled={!autoWorkflowId.trim() || autoSending}
+                        disabled={!autoWorkflowId || autoSending || availableSequences.length === 0}
                         onClick={async () => {
-                          if (!selectedContactId) return
+                          if (!selectedContactId || !autoWorkflowId) return
                           setAutoSending(true)
-                          const result = await triggerAutomation({
+                          const result = await enrollContactInSequence({
                             contactId: selectedContactId,
-                            workflowId: autoWorkflowId,
-                            eventName: autoEventName || undefined,
+                            sequenceId: autoWorkflowId,
                           })
                           setAutoSending(false)
-                          if (result.success) { toast.success("Automation triggered"); setAutoDialogOpen(false) }
-                          else toast.error((result as any).error ?? "Failed")
+                          if (result.enrollment) {
+                            toast.success("Contact enrolled in workflow")
+                            setAutoDialogOpen(false)
+                            setAutoWorkflowId("")
+                          } else {
+                            toast.error((result as any).error ?? "Enrollment failed")
+                          }
                         }}
                       >
                         {autoSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-                        Trigger
+                        Enroll
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -2003,13 +2056,15 @@ export default function CRMPage() {
                       </CardContent>
                     </Card>
 
-                    {/* AI-ISA stale contact takeover */}
+                    {/* AI-ISA stale contact takeover — uses unified pilot control */}
                     {(() => {
                       const daysSince = selectedContact.last_contacted_at
                         ? Math.floor((Date.now() - new Date(selectedContact.last_contacted_at).getTime()) / (1000 * 60 * 60 * 24))
                         : null
                       if (daysSince == null || daysSince <= 14) return null
-                      const currentPlan = copilotPlan ?? autopilotPlans.find((p: any) => p.contact_id === selectedContactId)
+                      const currentLevel: any =
+                        (contactIntelligence as any)?.ai_autopilot_level ??
+                        (contactIntelligence?.ai_isa_enabled ? "moderate" : "off")
                       return (
                         <Card className="border-orange-200 bg-orange-50">
                           <CardHeader className="pb-2">
@@ -2023,17 +2078,21 @@ export default function CRMPage() {
                               This contact has not been touched in {daysSince} day{daysSince !== 1 ? "s" : ""}.
                             </p>
                             <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-orange-800">Enable AI-ISA Follow-up</span>
-                              <Switch
-                                checked={!!currentPlan}
-                                disabled={isPending}
-                                onCheckedChange={(checked) => {
-                                  if (checked) { handleEnableAutopilot("moderate") }
-                                  else if (currentPlan) { handleToggleAutopilot(currentPlan.id, true) }
+                              <span className="text-sm font-medium text-orange-800">Enable AI follow-up</span>
+                              <AIPilotControl
+                                contactId={selectedContactId}
+                                initialLevel={currentLevel}
+                                compact
+                                onChange={(level) => {
+                                  setContactIntelligence((prev: any) =>
+                                    prev
+                                      ? { ...prev, ai_autopilot_level: level, ai_isa_enabled: level !== "off" }
+                                      : prev
+                                  )
                                 }}
                               />
                             </div>
-                            {currentPlan && <p className="text-xs text-orange-600">AI-ISA is active on this contact</p>}
+                            {currentLevel !== "off" && <p className="text-xs text-orange-600">AI follow-up is active on this contact</p>}
                           </CardContent>
                         </Card>
                       )

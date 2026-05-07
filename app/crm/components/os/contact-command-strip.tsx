@@ -235,56 +235,11 @@ export function ContactCommandStrip({
           )}
         </div>
 
-        {/* RIGHT: Autopilot section */}
-        <div className="flex items-center gap-2">
-          {!activePlan ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  className="bg-white/20 hover:bg-white/30 text-white"
-                  disabled={autopilotLoading}
-                >
-                  {autopilotLoading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4 mr-2" />
-                  )}
-                  Enable AI Autopilot
-                  <ChevronDown className="h-4 w-4 ml-2" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("conservative")}>
-                  Conservative - Light touches only
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("moderate")}>
-                  Moderate - Regular nurturing
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("aggressive")}>
-                  Aggressive - Full engagement
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <>
-              <Badge className="bg-emerald-500 text-white flex items-center gap-1">
-                <Zap className="h-3 w-3" />
-                AI Autopilot Active - {activePlan.autopilot_level}
-              </Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white hover:bg-white/20"
-                onClick={() => handleToggleAutopilot(activePlan.id, true)}
-                disabled={autopilotLoading}
-              >
-                {autopilotLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
-                Pause
-              </Button>
-            </>
-          )}
-        </div>
+        {/* AI Pilot is now controlled from the sidebar's unified AIPilotControl
+            (single source of truth: contacts.ai_autopilot_level). The old
+            split between this strip's "AI Autopilot" dropdown and the
+            sidebar's "AI Follow-up" Switch was removed because they wrote to
+            different tables and never stayed in sync. */}
       </div>
 
       {/* BOTTOM ticker */}

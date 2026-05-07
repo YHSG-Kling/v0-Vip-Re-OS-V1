@@ -66,7 +66,7 @@ export default async function PortalLayout({
     redirect("/portal?error=contact_not_found")
   }
 
-  // ── Access gate: 4 rules ─────────────────────────────────────────
+  // ── Access gate: 5 rules ─────────────────────────────────────────
   let accessGranted = false
 
   if (user) {
@@ -75,7 +75,7 @@ export default async function PortalLayout({
       accessGranted = true
     }
 
-    // Rule 2: Assigned agent
+    // Rule 2: Assigned agent — match on agents.id (canonical FK)
     if (!accessGranted && contact.agent_id) {
       const { data: ag } = await supabase
         .from("agents")
@@ -86,20 +86,27 @@ export default async function PortalLayout({
       if (ag) accessGranted = true
     }
 
-    // Rule 3: Admin/broker of same brokerage
+    // Rule 2b: Same-brokerage staff fallback — many agent users live only in
+    // `users` (no `agents` row), so Rule 2 misses them. Allow any agent /
+    // team_lead / TC / admin / broker / superadmin in the same brokerage to
+    // preview their org's contact portal. This is the canonical preview path.
     if (!accessGranted) {
       const { data: ur } = await supabase
         .from("users")
         .select("user_type, brokerage_id")
         .eq("id", user.id)
         .maybeSingle()
+      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
       if (
         ur?.brokerage_id === contact.brokerage_id &&
-        ["admin", "broker", "superadmin"].includes(ur?.user_type ?? "")
+        STAFF_TYPES.includes(ur?.user_type ?? "")
       ) {
         accessGranted = true
       }
     }
+
+    // Rule 3 (legacy): kept for compatibility — same logic as 2b for non-agent staff
+    // if it didn't match above (e.g. cross-brokerage admin). No-op when 2b passes.
 
     // Rule 4: Accepted portal invite for this contact
     if (!accessGranted) {
