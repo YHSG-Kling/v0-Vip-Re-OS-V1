@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
-import { confirmTourStop, confirmTour } from '@/app/actions/tour-planner'
+import { confirmTourStop, confirmTour, scheduleTourStops, finalizeTour } from '@/app/actions/tour-planner'
 import { optimizeTourRoute, aiScheduleShowing } from '@/app/actions/ai-showing-management'
 
 interface TourStop {
@@ -282,12 +282,36 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
   function handleConfirmTour(tourId: string) {
     setConfirmingTourId(tourId)
     startTransition(async () => {
-      const res = await confirmTour({ tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes })
+      // confirmTour now routes to finalizeTour — sends report + per-stop
+      // calendar events. Channels default to portal; agent picks email/SMS
+      // via reportChannels in the future-state UI.
+      const res = await confirmTour({ tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes, reportChannels: ['portal','email'] })
       if (res.success) {
-        toast({ title: 'Tour confirmed!' })
+        toast({ title: 'Tour confirmed — report sent to buyer' })
         onRefresh()
       } else {
         toast({ title: res.error ?? 'Failed to confirm tour', variant: 'destructive' })
+      }
+      setConfirmingTourId(null)
+    })
+  }
+
+  // Step 1 (after AI draft): dispatch scheduling outreach to listing agents.
+  // Flips tour status from 'planned' → 'scheduling'. Each stop's outreach
+  // (ShowingTime API call OR direct text/email) is queued; per-stop
+  // is_confirmed flips to true via confirmTourStop as listing agents reply.
+  function handleScheduleStops(tourId: string) {
+    setConfirmingTourId(tourId)
+    startTransition(async () => {
+      const res = await scheduleTourStops({ tourId, agentUserId, brokerageId })
+      if (res.success) {
+        toast({
+          title: `Scheduling started — ${res.dispatched ?? 0} listing agents contacted`,
+          description: 'Confirm each stop as listing agents reply, then finalize the tour.',
+        })
+        onRefresh()
+      } else {
+        toast({ title: res.error ?? 'Failed to start scheduling', variant: 'destructive' })
       }
       setConfirmingTourId(null)
     })
@@ -469,26 +493,47 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
               </div>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex gap-3">
+            {/* Action buttons — three-step flow:
+                  planned    → "Schedule Showings" (dispatches outreach)
+                  scheduling → "Finalize Tour" (locks tour, sends report)
+                  confirmed  → already done, button disabled */}
+            <div className="flex gap-3 flex-wrap">
               {onBackToPlan && (
                 <Button variant="outline" size="sm" onClick={onBackToPlan} className="gap-1.5">
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back to Plan
                 </Button>
               )}
-              <Button
-                className="flex-1"
-                disabled={isPending || tour.status === 'confirmed'}
-                onClick={() => handleConfirmTour(tour.id)}
-              >
-                {isPending && confirmingTourId === tour.id
-                  ? 'Confirming...'
-                  : tour.status === 'confirmed'
-                    ? 'Tour Confirmed'
-                    : 'Confirm Tour'}
-              </Button>
+              {tour.status === 'planned' && (
+                <Button
+                  className="flex-1"
+                  disabled={isPending}
+                  onClick={() => handleScheduleStops(tour.id)}
+                >
+                  {isPending && confirmingTourId === tour.id
+                    ? 'Dispatching...'
+                    : `Schedule Showings (${sortedStops.length})`}
+                </Button>
+              )}
+              {(tour.status === 'scheduling' || tour.status === 'confirmed') && (
+                <Button
+                  className="flex-1"
+                  disabled={isPending || tour.status === 'confirmed'}
+                  onClick={() => handleConfirmTour(tour.id)}
+                >
+                  {isPending && confirmingTourId === tour.id
+                    ? 'Finalizing...'
+                    : tour.status === 'confirmed'
+                      ? 'Tour Confirmed'
+                      : `Finalize Tour (${confirmedCount}/${sortedStops.length} confirmed)`}
+                </Button>
+              )}
             </div>
+            {tour.status === 'scheduling' && confirmedCount < sortedStops.length && (
+              <p className="text-xs text-muted-foreground -mt-1">
+                Confirm each stop above as listing agents reply. You can still finalize with unconfirmed stops — they will go out as suggested times.
+              </p>
+            )}
           </div>
         )
       })}

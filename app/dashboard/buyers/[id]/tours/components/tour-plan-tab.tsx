@@ -70,6 +70,7 @@ export function TourPlanTab({
   const [durations, setDurations]       = useState<Record<string, number>>({})
   const [tourDate, setTourDate]         = useState('')
   const [startTime, setStartTime]       = useState('10:00')
+  const [startAddress, setStartAddress] = useState('')
   const [manualAddress, setManualAddress] = useState('')
   const [narrative, setNarrative]             = useState<string | null>(null)
   const [narrativeLoading, setNarrativeLoading] = useState(false)
@@ -184,12 +185,18 @@ export function TourPlanTab({
       toast({ title: 'Select a date and at least one property', variant: 'destructive' })
       return
     }
+    const totalDriveMins = orderedStops.reduce((a, s) => a + (s.driveTimeFromPrevMinutes ?? 0), 0)
+    const totalStopMins  = orderedStops.reduce((a, s) => a + (s.suggestedDurationMinutes ?? 30), 0)
+
     startTransition(async () => {
       const res = await createTourPlan({
         contactId, agentUserId, brokerageId,
         tourDate, startTime,
+        startAddress: startAddress.trim() || undefined,
         stops: orderedStops,
         aiPlanNarrative: narrative ?? undefined,
+        totalDurationMinutes:  totalStopMins + totalDriveMins,
+        totalDriveTimeMinutes: totalDriveMins,
       })
       if (res.success) {
         if (res.tourId) setCreatedTourId(res.tourId)
@@ -355,6 +362,16 @@ export function TourPlanTab({
             <Label className="text-xs">Start time</Label>
             <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-8 text-xs mt-1" />
           </div>
+        </div>
+        <div className="mt-3">
+          <Label className="text-xs">Starting address (used by AI for first-leg drive time)</Label>
+          <Input
+            type="text"
+            value={startAddress}
+            onChange={e => setStartAddress(e.target.value)}
+            placeholder="e.g. 123 Main St, Tucson AZ"
+            className="h-8 text-xs mt-1"
+          />
         </div>
       </div>
 

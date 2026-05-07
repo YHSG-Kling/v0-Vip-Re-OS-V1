@@ -14,6 +14,7 @@ import {
 } from "@/app/components/ui/collapsible"
 import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, MapPin, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { BuyerTourCard } from "./components/buyer-tour-card"
 
 // Status config
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
@@ -62,13 +63,23 @@ export default async function ShowingsPage({
 
   // Fetch tours with tour_stops, showings, and showing_requests in parallel
   const [toursResult, showingsResult, requestsResult] = await Promise.all([
-    // Tours with stops
+    // Tours with stops — include the canonical-flow fields so the buyer
+    // sees the full itinerary (start address/time, totals, approval/report
+    // timestamps, per-stop confirmed time, listing-agent contact info).
     supabase
       .from("tours")
-      .select(`id, tour_date, status, all_confirmed, ai_plan_narrative, notes,
-               tour_stops(id, property_address, list_price, primary_photo_url,
-                          suggested_time, is_confirmed, buyer_interest_level,
-                          buyer_note, feedback, rating, order_index)`)
+      .select(`id, tour_date, start_time, start_address, status, all_confirmed,
+               total_duration_minutes, total_drive_time_minutes,
+               agent_approved_at, report_sent_at, report_url,
+               ai_plan_narrative, notes,
+               tour_stops(id, property_address, city, state, zip,
+                          list_price, primary_photo_url,
+                          listing_agent_name, listing_agent_phone, listing_agent_company,
+                          suggested_time, suggested_duration_minutes,
+                          drive_time_from_prev_minutes,
+                          confirmed_time, is_confirmed,
+                          buyer_interest_level, buyer_note, feedback, rating,
+                          order_index)`)
       .eq("contact_id", contactId)
       .order("tour_date", { ascending: false }),
     // Showings - use scheduled_at column
@@ -136,6 +147,21 @@ export default async function ShowingsPage({
           </Link>
         </Button>
       </div>
+
+      {/* Upcoming approved/scheduling tour — surfaced prominently. Only shown
+          when the agent has either confirmed the tour OR explicitly sent the
+          report (report_sent_at). Drafts in 'planned' state are hidden so the
+          buyer doesn't see incomplete plans. */}
+      {(() => {
+        const today = new Date(); today.setHours(0,0,0,0)
+        const upcoming = (tours as any[]).find(t =>
+          t.tour_date &&
+          new Date(t.tour_date) >= today &&
+          (t.status === 'confirmed' || t.status === 'scheduling') &&
+          (t.report_sent_at || t.status === 'confirmed')
+        )
+        return upcoming ? <BuyerTourCard tour={upcoming as any} /> : null
+      })()}
 
       {/* Planned Tours Section */}
       {tours.length > 0 && (

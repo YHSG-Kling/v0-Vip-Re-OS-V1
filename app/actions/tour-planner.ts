@@ -101,7 +101,25 @@ export interface CompleteTourParams {
   }>
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Lifecycle states ─────────────────────────────────────────────────────────
+//
+// Canonical tour state machine:
+//
+//   planned           AI built first draft. Buyer agent reviews. Nothing has
+//                     gone out to listing agents yet.
+//   scheduling        Agent has dispatched scheduling requests for each stop
+//                     (ShowingTime API call OR direct text/email to listing
+//                     agent). Awaiting confirmations. Per-stop is_confirmed
+//                     flips to true as listing agents reply.
+//   confirmed         All stops confirmed (or agent finalized with manual
+//                     overrides). Final report sent to buyer + listing
+//                     agents. Calendar events written. Tour is locked.
+//   in_progress       Tour day — buyer is touring. Per-stop arrived/left
+//                     timestamps + ratings flow in.
+//   completed         All stops visited. Feedback collected; lifecycle
+//                     transition fires for buyer (TOURING → tour reflection).
+//   cancelled         Agent or buyer cancelled before in_progress.
+
 
 function addMinutes(timeStr: string, minutes: number): string {
   const [h, m] = timeStr.split(':').map(Number)
@@ -370,107 +388,175 @@ export async function createTourPlan(params: CreateTourParams) {
   return { success: true, tourId, stopCount: stops.length, stopIds }
 }
 
-// ─── 4a. Approve tour plan (buyer agent reviews then approves) ───────────────
+// ─── 4a. Schedule tour stops (dispatch to listing agents) ────────────────────
 //
-// Per the canonical flow: buyer agent reviews the AI-built plan, optionally
-// edits stop order/times/notes, then approves. Approval is the gate before
-// report is sent to the buyer + listing agents are contacted.
-export async function approveTourPlan(params: {
-  tourId:       string
-  agentUserId:  string
-  brokerageId:  string
-  /** Optional edits the agent made before approving */
-  editedNotes?: string
-  editedNarrative?: string
-}): Promise<{ success: boolean; error?: string }> {
-  const { tourId, agentUserId, brokerageId, editedNotes, editedNarrative } = params
+// After AI builds the first draft and the buyer agent reviews it, this is
+// the action that goes out to listing agents:
+//   - schedulingMethod='showingtime' → ShowingTime API call (deferred — for
+//     now we record intent and mark the stop as scheduling-pending)
+//   - schedulingMethod='call_agent'  → text message draft to listing_agent_phone
+//   - schedulingMethod='other'       → email draft to listing_agent_email
+//
+// Flips tour status: planned → scheduling. Each stop now has a record of
+// outreach so the agent can track who they've contacted vs who still needs
+// to be reached. Listing agents reply via:
+//   - ShowingTime push back into our system
+//   - Direct reply that the agent records via confirmTourStop()
+export async function scheduleTourStops(params: {
+  tourId:      string
+  agentUserId: string
+  brokerageId: string
+}): Promise<{ success: boolean; error?: string; dispatched?: number }> {
+  const { tourId, agentUserId, brokerageId } = params
   if (!isValidUUID(tourId) || !isValidUUID(agentUserId)) {
     return { success: false, error: 'Invalid ID' }
   }
 
   const supabase = createServiceClient()
-  const updates: Record<string, unknown> = {
-    agent_approved_at: new Date().toISOString(),
-    agent_approved_by: agentUserId,
-    status:            'awaiting_confirmation',
+
+  // Load tour + stops
+  const [{ data: tour }, { data: stops }] = await Promise.all([
+    supabase.from('tours').select('id, contact_id, agent_id, status, tour_date, start_time')
+      .eq('id', tourId).eq('brokerage_id', brokerageId).maybeSingle(),
+    supabase.from('tour_stops')
+      .select('id, listing_id, property_address, listing_agent_name, listing_agent_phone, listing_agent_email, scheduling_method, suggested_time, suggested_duration_minutes')
+      .eq('tour_id', tourId)
+      .order('order_index', { ascending: true }),
+  ])
+
+  if (!tour) return { success: false, error: 'Tour not found' }
+  if (tour.status === 'confirmed' || tour.status === 'completed' || tour.status === 'cancelled') {
+    return { success: false, error: `Tour is ${tour.status} — cannot reschedule` }
   }
-  if (editedNotes !== undefined)     updates.notes = editedNotes
-  if (editedNarrative !== undefined) updates.ai_plan_narrative = editedNarrative
 
-  const { error } = await supabase
-    .from('tours')
-    .update(updates)
-    .eq('id', tourId)
-    .eq('brokerage_id', brokerageId)
+  // Flip status to scheduling
+  await supabase.from('tours').update({ status: 'scheduling' }).eq('id', tourId)
 
-  if (error) return { success: false, error: error.message }
+  // For each stop, queue the appropriate outbound dispatch. The actual
+  // ShowingTime/SMS/email delivery happens in `lib/showings/dispatcher.ts`
+  // which reads from showing_dispatches. For now we emit lifecycle events
+  // so the UI can show per-stop "scheduling pending" status.
+  for (const stop of stops ?? []) {
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id:  brokerageId,
+      entity_type:   'tour_stop',
+      entity_id:     stop.id,
+      event_type:    'tour_stop.schedule_dispatched',
+      actor_user_id: agentUserId,
+      metadata: {
+        scheduling_method:   stop.scheduling_method ?? 'call_agent',
+        listing_agent_phone: stop.listing_agent_phone,
+        listing_agent_email: stop.listing_agent_email,
+        suggested_time:      stop.suggested_time,
+        suggested_duration:  stop.suggested_duration_minutes,
+      },
+    }).then(() => null, () => null)
+  }
 
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  brokerageId,
-    entity_type:   'tour',
-    entity_id:     tourId,
-    event_type:    'tour.approved',
-    actor_user_id: agentUserId,
-  }).then(() => null, () => null)
-
-  return { success: true }
+  return { success: true, dispatched: (stops ?? []).length }
 }
 
-// ─── 4b. Send tour report to buyer + listing agents ──────────────────────────
+// ─── 4b. Finalize tour (after agent has heard back from listing agents) ──────
 //
-// After approval, the buyer agent sends the finalized report to:
-//   - The buyer (portal + email)
-//   - Each stop's listing agent (per stop's scheduling_method:
-//       showingtime → ShowingTime API call
-//       call_agent  → text message draft to listing_agent_phone
-//       other       → email draft to listing_agent_email)
-//
-// This action records that the report was sent. Actual delivery channels
-// (email + ShowingTime + SMS) are dispatched by the spine; this writes the
-// timestamp + channels list so the UI can show "Report sent" status.
-export async function sendTourReport(params: {
-  tourId:        string
-  agentUserId:   string
-  brokerageId:   string
-  channels:      Array<'portal' | 'email' | 'sms'>
+// After listing agents reply (some via ShowingTime push, some by phone/text
+// the agent confirmed manually), the buyer agent finalizes the tour. This
+// is the canonical APPROVED state. On finalize:
+//   - Status → confirmed
+//   - agent_approved_at + agent_approved_by recorded
+//   - Tour-level all_confirmed flag set if every stop is confirmed
+//   - Calendar events created for each confirmed stop
+//   - Final report sent to buyer (portal + optionally email/SMS)
+export async function finalizeTour(params: {
+  tourId:       string
+  agentUserId:  string
+  brokerageId:  string
+  /** Channels to send the final report through */
+  reportChannels: Array<'portal' | 'email' | 'sms'>
   /** Optional URL to a generated report PDF */
-  reportUrl?:    string
-}): Promise<{ success: boolean; error?: string }> {
-  const { tourId, agentUserId, brokerageId, channels, reportUrl } = params
-  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+  reportUrl?:   string
+  /** Optional final edits the agent made before finalizing */
+  editedNotes?: string
+  editedNarrative?: string
+}): Promise<{ success: boolean; error?: string; calendarEventCount?: number }> {
+  const { tourId, agentUserId, brokerageId, reportChannels, reportUrl, editedNotes, editedNarrative } = params
+  if (!isValidUUID(tourId) || !isValidUUID(agentUserId)) {
+    return { success: false, error: 'Invalid ID' }
+  }
 
   const supabase = createServiceClient()
 
-  const { data: tour, error: fetchErr } = await supabase
-    .from('tours')
-    .select('id, contact_id, agent_approved_at')
-    .eq('id', tourId)
-    .eq('brokerage_id', brokerageId)
-    .maybeSingle()
+  // Load tour + stops
+  const [{ data: tour }, { data: stops }] = await Promise.all([
+    supabase.from('tours')
+      .select('id, contact_id, agent_id, tour_date, start_time')
+      .eq('id', tourId).eq('brokerage_id', brokerageId).maybeSingle(),
+    supabase.from('tour_stops')
+      .select('id, property_address, suggested_time, suggested_duration_minutes, confirmed_time, is_confirmed, listing_id')
+      .eq('tour_id', tourId)
+      .order('order_index', { ascending: true }),
+  ])
 
-  if (fetchErr || !tour) return { success: false, error: 'Tour not found' }
-  if (!tour.agent_approved_at) {
-    return { success: false, error: 'Tour must be approved before sending the report' }
+  if (!tour) return { success: false, error: 'Tour not found' }
+
+  const allConfirmed = (stops ?? []).every(s => s.is_confirmed)
+  const nowIso = new Date().toISOString()
+
+  // Tour update
+  const tourUpdates: Record<string, unknown> = {
+    status:            'confirmed',
+    agent_approved_at: nowIso,
+    agent_approved_by: agentUserId,
+    all_confirmed:     allConfirmed,
+    report_sent_at:    nowIso,
+    report_sent_via:   reportChannels,
+    report_url:        reportUrl ?? null,
+  }
+  if (editedNotes !== undefined)     tourUpdates.notes = editedNotes
+  if (editedNarrative !== undefined) tourUpdates.ai_plan_narrative = editedNarrative
+
+  const { error: tourErr } = await supabase
+    .from('tours').update(tourUpdates).eq('id', tourId)
+  if (tourErr) return { success: false, error: tourErr.message }
+
+  // Calendar events for each stop with a confirmed (or suggested) time
+  let calendarEventCount = 0
+  for (const stop of stops ?? []) {
+    const startBase = stop.confirmed_time
+      ? new Date(stop.confirmed_time)
+      : tour.tour_date && stop.suggested_time
+        ? new Date(`${tour.tour_date}T${stop.suggested_time}`)
+        : null
+    if (!startBase) continue
+    const durationMin = stop.suggested_duration_minutes ?? 30
+    const endIso = new Date(startBase.getTime() + durationMin * 60_000).toISOString()
+    const { error } = await supabase.from('calendar_events').insert({
+      brokerage_id:        brokerageId,
+      entity_type:         'tour_stop',
+      entity_id:           stop.id,
+      event_type:          'showing',
+      start_at:            startBase.toISOString(),
+      end_at:              endIso,
+      timezone_name:       'America/New_York',
+      is_system_generated: true,
+      deadline_notified:   false,
+      metadata: {
+        tour_id:          tourId,
+        contact_id:       tour.contact_id,
+        agent_id:         tour.agent_id,
+        listing_id:       stop.listing_id,
+        property_address: stop.property_address,
+      },
+    })
+    if (!error) calendarEventCount++
   }
 
-  const { error } = await supabase
-    .from('tours')
-    .update({
-      report_sent_at:  new Date().toISOString(),
-      report_sent_via: channels,
-      report_url:      reportUrl ?? null,
-    })
-    .eq('id', tourId)
-
-  if (error) return { success: false, error: error.message }
-
-  // Notify the contact in their portal that a tour report has arrived
-  if (channels.includes('portal') && tour.contact_id) {
+  // Buyer-portal message + lifecycle event
+  if (reportChannels.includes('portal') && tour.contact_id) {
     await supabase.from('client_portal_messages').insert({
       contact_id: tour.contact_id,
       direction:  'outbound',
-      body:       'Your tour itinerary is ready. Tap to view the route, times, and properties.',
-      sent_at:    new Date().toISOString(),
+      body:       'Your tour is confirmed. Tap to view the itinerary, route, and per-property details.',
+      sent_at:    nowIso,
     }).then(() => null, () => null)
   }
 
@@ -478,12 +564,52 @@ export async function sendTourReport(params: {
     brokerage_id:  brokerageId,
     entity_type:   'tour',
     entity_id:     tourId,
-    event_type:    'tour.report_sent',
+    event_type:    'tour.confirmed',
     actor_user_id: agentUserId,
-    metadata:      { channels, report_url: reportUrl ?? null },
+    metadata: {
+      report_channels:  reportChannels,
+      stop_count:       (stops ?? []).length,
+      all_confirmed:    allConfirmed,
+      calendar_events:  calendarEventCount,
+    },
   }).then(() => null, () => null)
 
-  return { success: true }
+  return { success: true, calendarEventCount }
+}
+
+// ─── DEPRECATED — old approval action retained for backwards compatibility ───
+/** @deprecated Use finalizeTour() instead. The two-step approve-then-send
+ *  flow was wrong: the agent approves AFTER hearing back from listing agents,
+ *  which is exactly what finalizeTour does in a single step.
+ */
+export async function approveTourPlan(params: {
+  tourId:       string
+  agentUserId:  string
+  brokerageId:  string
+  editedNotes?: string
+  editedNarrative?: string
+}) {
+  return finalizeTour({
+    ...params,
+    reportChannels: ['portal'],
+  })
+}
+
+/** @deprecated Inlined into finalizeTour(). */
+export async function sendTourReport(params: {
+  tourId:        string
+  agentUserId:   string
+  brokerageId:   string
+  channels:      Array<'portal' | 'email' | 'sms'>
+  reportUrl?:    string
+}): Promise<{ success: boolean; error?: string }> {
+  return finalizeTour({
+    tourId:         params.tourId,
+    agentUserId:    params.agentUserId,
+    brokerageId:    params.brokerageId,
+    reportChannels: params.channels,
+    reportUrl:      params.reportUrl,
+  })
 }
 
 // ─── 5. Confirm a single stop ─────────────────────────────────────────────────
@@ -578,7 +704,12 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   return { success: true, allConfirmed }
 }
 
-// ─── 4b. Confirm Tour (tour-level confirm — sets status='confirmed') ──────────
+// ─── 4c. Confirm Tour (legacy entry — routes to finalizeTour) ────────────────
+//
+// The pre-canonical tour-confirm UI calls confirmTour() with departureTime +
+// agentNotes. We now route it through finalizeTour() so the canonical
+// per-stop calendar events + buyer-portal message + report-sent timestamps
+// happen on every path.
 
 export async function confirmTour(params: {
   tourId: string
@@ -587,82 +718,42 @@ export async function confirmTour(params: {
   agentUserId: string
   departureTime?: string
   agentNotes?: string
+  reportChannels?: Array<'portal' | 'email' | 'sms'>
 }) {
-  const { tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes } = params
+  const result = await finalizeTour({
+    tourId:         params.tourId,
+    agentUserId:    params.agentUserId,
+    brokerageId:    params.brokerageId,
+    reportChannels: params.reportChannels ?? ['portal'],
+    editedNotes:    params.agentNotes,
+  })
+  if (!result.success) return result
+
+  // Maintain pre-canonical behaviour: agent notification of "tour confirmed"
+  // (resolved via agents.id → users.id since agentUserId is auth uid here).
   const supabase = createServiceClient()
-
-  // Load the tour date and stops so we can create accurate calendar events
-  const { data: tour } = await supabase
-    .from('tours')
-    .select('tour_date, tour_stops(id, confirmed_time, suggested_time, order_index)')
-    .eq('id', tourId)
-    .single()
-
-  const { error } = await supabase
-    .from('tours')
-    .update({
-      status:       'confirmed',
-      confirmed_at: new Date().toISOString(),
-      notes:        agentNotes ?? null,
-    })
-    .eq('id', tourId)
-
-  if (error) return { success: false, error: error.message }
-
-  // Write a tour-level calendar_event for the agent — the full tour day is now confirmed.
-  // Write a separate calendar_event for the contact so it appears on their calendar too.
-  // Both are written only now (on confirmation), not when the plan is first created.
-  if (tour?.tour_date) {
-    const tourStartAt = `${tour.tour_date}T${departureTime ?? '09:00'}:00`
-
-    const agentEvent = {
-      brokerage_id:        brokerageId,
-      entity_type:         'tour',
-      entity_id:           tourId,
-      event_type:          'tour',
-      start_at:            tourStartAt,
-      is_system_generated: true,
-    }
-
-    // Contact calendar event — same tour, tagged so the contact's portal can surface it
-    const contactEvent = {
-      brokerage_id:        brokerageId,
-      entity_type:         'tour_contact',
-      entity_id:           contactId,
-      event_type:          'tour',
-      start_at:            tourStartAt,
-      metadata:            { tour_id: tourId, contact_id: contactId },
-      is_system_generated: true,
-    }
-
-    try {
-      await supabase.from('calendar_events').insert([agentEvent, contactEvent])
-    } catch { /* non-critical */ }
-  }
-
-  // Notify the contact that their tour plan is confirmed
   try {
     await supabase.from('notifications').insert({
-      user_id:      agentUserId,
-      brokerage_id: brokerageId,
+      user_id:      params.agentUserId,
+      brokerage_id: params.brokerageId,
       type:         'tour.confirmed',
       title:        'Tour confirmed',
-      body:         `The tour plan for ${tour?.tour_date ?? 'your buyer'} is confirmed and calendar events have been created.`,
+      body:         'Your tour is confirmed and calendar events have been created.',
       entity_type:  'tour',
-      entity_id:    tourId,
+      entity_id:    params.tourId,
       priority:     'high',
       channel:      'in_app',
     })
   } catch { /* non-critical */ }
 
   await supabase.from('lifecycle_events').insert({
-    brokerage_id:  brokerageId,
+    brokerage_id:  params.brokerageId,
     entity_type:   'buyer_lifecycle',
-    entity_id:     contactId,
+    entity_id:     params.contactId,
     event_type:    'tour.confirmed',
-    actor_user_id: agentUserId,
-    metadata:      { tour_id: tourId, departure_time: departureTime },
-  })
+    actor_user_id: params.agentUserId,
+    metadata:      { tour_id: params.tourId, departure_time: params.departureTime },
+  }).then(() => null, () => null)
 
   return { success: true }
 }

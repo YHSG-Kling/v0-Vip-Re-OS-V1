@@ -151,7 +151,7 @@ export async function requestShowing(data: {
       })
     } catch { /* non-critical */ }
 
-    // Notify the assigned agent in-app.
+    // Notify the assigned (buyer) agent in-app.
     // contacts.agent_id stores agents.id (NOT users.id), but
     // notifications.user_id is the auth.users id. Resolve via the agents
     // table — without this, the notification was inserted with user_id =
@@ -183,6 +183,59 @@ export async function requestShowing(data: {
         }
       }
     } catch { /* non-critical */ }
+
+    // For IN-HOUSE listings: also notify the listing agent + the seller
+    // contact in their portal. The buyer agent above is one path; the
+    // listing-side path is what makes the request actionable on the seller
+    // side.
+    if (data.listingId) {
+      try {
+        const { data: listing } = await supabase
+          .from("listings")
+          .select("agent_id, seller_contact_id, address")
+          .eq("id", data.listingId)
+          .maybeSingle()
+
+        // 1. Listing agent in-app notification
+        if (listing?.agent_id) {
+          const { data: listingAgentRow } = await supabase
+            .from("agents")
+            .select("user_id")
+            .eq("id", listing.agent_id)
+            .maybeSingle()
+          if (listingAgentRow?.user_id) {
+            await supabase.from("notifications").insert({
+              user_id:      listingAgentRow.user_id,
+              brokerage_id: brokerageId,
+              type:         "showing.request.listing",
+              title:        "New showing request on your listing",
+              body:         `${data.propertyAddress} — buyer wants to see it. Confirm a time or send alternatives.`,
+              entity_type:  "showing_request",
+              entity_id:    showing.id,
+              priority:     "high",
+              channel:      "in_app",
+            })
+          }
+        }
+
+        // 2. Seller contact portal notification — surfaces in their
+        //    PortalNotificationBell so they see incoming showing requests
+        //    on their listing, not just their agent.
+        if (listing?.seller_contact_id) {
+          await supabase.from("notifications").insert({
+            contact_id:   listing.seller_contact_id,
+            brokerage_id: brokerageId,
+            type:         "showing.request.seller",
+            title:        "Showing request on your home",
+            body:         `A buyer wants to see ${data.propertyAddress}. Your agent will follow up to confirm a time.`,
+            entity_type:  "showing_request",
+            entity_id:    showing.id,
+            priority:     "high",
+            channel:      "in_app",
+          })
+        }
+      } catch { /* non-critical */ }
+    }
 
     revalidatePath(`/portal/${data.contactId}/properties`)
     revalidatePath(`/portal/${data.contactId}/showings`)
