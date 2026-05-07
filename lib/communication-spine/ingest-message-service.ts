@@ -186,6 +186,17 @@ export async function ingestMessageService(
       }
     }
 
+    // Pause-on-reply: when a contact (authorType='contact') sends an
+    // inbound message, the agent has the conversation now — the kernel
+    // shouldn't keep firing automated sequence steps over the top of a
+    // live human exchange. Pause every active enrollment for this
+    // contact; the agent re-activates manually when ready.
+    if (authorType === 'contact' && params.contactId && !persistResult.isDuplicate) {
+      void pauseActiveSequenceEnrollmentsOnReply(params.contactId).catch((e) => {
+        console.error('[communication-spine] pause-on-reply failed:', e)
+      })
+    }
+
     return {
       success: true,
       conversationId: convResult.conversationId,
@@ -195,5 +206,49 @@ export async function ingestMessageService(
   } catch (error: any) {
     console.error('[communication-spine] Unexpected error in ingestMessageService:', error)
     return { success: false, error: error.message }
+  }
+}
+
+/**
+ * Pause every active sequence_enrollments row for this contact when they
+ * reply. The kernel's job is to amplify the agent — once the contact is in
+ * a live conversation, automated steps over the top would fight the agent.
+ *
+ * Pauses (status='paused') rather than cancels — agent can re-activate
+ * the enrollment from the contact detail when ready, e.g. after the
+ * conversation winds down.
+ *
+ * Inserts a lifecycle_event so the contact's activity feed shows why the
+ * sequences paused (the agent can see "Sequence paused — contact replied").
+ */
+async function pauseActiveSequenceEnrollmentsOnReply(contactId: string): Promise<void> {
+  const supabase = createServiceClient()
+
+  const { data: active } = await supabase
+    .from('sequence_enrollments')
+    .select('id, sequence_id, brokerage_id')
+    .eq('contact_id', contactId)
+    .eq('status', 'active')
+
+  if (!active || active.length === 0) return
+
+  const ids = active.map(e => e.id)
+  await supabase
+    .from('sequence_enrollments')
+    .update({
+      status:        'paused',
+      next_step_at:  null,  // step worker will skip until manually resumed
+    })
+    .in('id', ids)
+
+  // One lifecycle event per paused enrollment for audit trail.
+  for (const e of active) {
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id:  e.brokerage_id,
+      entity_type:   'sequence_enrollment',
+      entity_id:     e.id,
+      event_type:    'sequence.paused_on_reply',
+      metadata:      { reason: 'contact_replied', sequence_id: e.sequence_id },
+    }).then(() => null, () => null)
   }
 }
