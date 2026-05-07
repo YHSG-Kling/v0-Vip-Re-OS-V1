@@ -50,7 +50,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     .from("contacts")
     .insert({
       brokerage_id: input.brokerageId,
-      assigned_agent_id: input.agentId,
+      agent_id: input.agentId,
       first_name: firstName,
       last_name: lastName,
       email: input.email || null,

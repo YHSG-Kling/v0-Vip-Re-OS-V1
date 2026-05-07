@@ -93,7 +93,7 @@ export async function getDocumentCenterData(): Promise<{
     const { data: ownedContacts } = await supabase
       .from("contacts")
       .select("id")
-      .eq("assigned_agent_id", ctx.agentId)
+      .eq("agent_id", ctx.agentId)
     const contactIds = (ownedContacts ?? []).map((c) => c.id)
     if (contactIds.length === 0) {
       return { success: true, folders: [], totalCount: 0, pendingReviewCount: 0, blockingIssuesCount: 0 }
