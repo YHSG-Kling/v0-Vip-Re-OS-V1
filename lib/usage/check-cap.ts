@@ -148,6 +148,10 @@ function friendlyHardCapMessage(metric: CapMetric): string {
       return "You've reached your monthly AI request limit."
     case "video_minutes":
       return "You've reached your monthly video generation limit."
+    case "live_assistant_minutes":
+      return "You've reached your monthly on-the-go assistant limit. Upgrade to keep using it."
+    case "live_assistant_sessions":
+      return "You've reached your monthly assistant session limit. Upgrade for more."
     default:
       return "You've reached this month's plan limit."
   }
@@ -167,6 +171,8 @@ function metricLabel(metric: CapMetric): string {
     case "vapi_minutes": return "AI calling"
     case "llm_calls": return "AI requests"
     case "video_minutes": return "video generation"
+    case "live_assistant_minutes": return "on-the-go assistant"
+    case "live_assistant_sessions": return "assistant sessions"
     default: return metric
   }
 }

@@ -25,6 +25,8 @@ export type MediaMetric =
   | "avatars_created"
   | "vapi_minutes"
   | "video_minutes"
+  | "live_assistant_minutes"
+  | "live_assistant_sessions"
 
 export interface LogMediaUsageParams {
   brokerageId: string
