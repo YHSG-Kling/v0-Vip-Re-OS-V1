@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Plus, Globe, Copy, Trash2, Settings, Power, ExternalLink, Check } from "lucide-react"
+import { Plus, Globe, Copy, Trash2, Settings, Power, ExternalLink, Check, BarChart2 } from "lucide-react"
 import { Card } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -97,6 +97,7 @@ function EmbedRow({
   onEdit: () => void
   onToggle: () => void
   onDelete: () => void
+  // analytics link rendered via <a> to avoid adding a router dependency here
 }) {
   const [copied, setCopied] = useState(false)
   const appUrl = typeof window !== "undefined" ? window.location.origin : ""
@@ -146,6 +147,12 @@ function EmbedRow({
           <Button size="sm" variant="ghost" onClick={onEdit} className="gap-1">
             <Settings className="h-3.5 w-3.5" /> Edit
           </Button>
+          <a
+            href={`/dashboard/settings/embeds/${widget.id}/analytics`}
+            className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            <BarChart2 className="h-3.5 w-3.5" /> Analytics
+          </a>
           <Button size="sm" variant="ghost" onClick={onToggle} disabled={pending} className="gap-1">
             <Power className="h-3.5 w-3.5" /> {widget.isActive ? "Disable" : "Enable"}
           </Button>

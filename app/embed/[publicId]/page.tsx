@@ -17,12 +17,12 @@ export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ publicId: string }>
-  searchParams: Promise<{ v?: string; origin?: string; ref?: string }>
+  searchParams: Promise<{ v?: string; origin?: string; ref?: string; page?: string }>
 }
 
 export default async function EmbedPage({ params, searchParams }: PageProps) {
   const { publicId } = await params
-  const { v: visitorId, origin, ref: referrer } = await searchParams
+  const { v: visitorId, origin, ref: referrer, page: pageUrl } = await searchParams
 
   if (!publicId || !visitorId) notFound()
 
@@ -60,6 +60,7 @@ export default async function EmbedPage({ params, searchParams }: PageProps) {
             visitorId={visitorId}
             origin={origin ?? null}
             referrer={referrer ?? null}
+            pageUrl={pageUrl ?? null}
             welcomeMessage={widget.welcome_message ?? null}
             enabledModes={widget.enabled_modes as ("text" | "live")[]}
             leadCaptureMode={widget.lead_capture_mode as "immediate" | "after_first_message" | "optional"}

@@ -123,12 +123,13 @@ export async function GET(request: NextRequest) {
     "background:#fff;display:none;";
   iframe.allow = "microphone; camera";
 
-  // Pass visitor + origin to the iframe via query string. The iframe doesn't
-  // trust them blindly — its server route validates and creates the session.
+  // Pass visitor + origin + full page URL to the iframe via query string.
+  // The iframe's server route validates and creates the session row.
   var iframeUrl = iframeSrc +
     "?v=" + encodeURIComponent(visitorId) +
     "&origin=" + encodeURIComponent(window.location.origin) +
-    "&ref=" + encodeURIComponent(document.referrer || "");
+    "&ref=" + encodeURIComponent(document.referrer || "") +
+    "&page=" + encodeURIComponent(window.location.href);
   iframe.src = iframeUrl;
 
   bubble.onclick = function(){

@@ -26,6 +26,7 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
   const [defaultTwinId, setDefaultTwinId] = useState<string | null>(widget.defaultTwinId)
   const [enabledModes, setEnabledModes] = useState<("text" | "live")[]>(widget.enabledModes)
   const [leadCaptureMode, setLeadCaptureMode] = useState(widget.leadCaptureMode)
+  const [routingMode, setRoutingMode] = useState(widget.routingMode)
   const [allowedDomains, setAllowedDomains] = useState<string[]>(widget.allowedDomains)
   const [domainInput, setDomainInput] = useState("")
   const [bubbleColor, setBubbleColor] = useState((widget.style?.bubble_color ?? "#0066ff") as string)
@@ -64,6 +65,7 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
         defaultTwinId,
         enabledModes: enabledModes.length === 0 ? ["text"] : enabledModes,
         leadCaptureMode,
+        routingMode: widget.agentId === null ? routingMode : undefined,
         allowedDomains,
         style: {
           ...widget.style,
@@ -161,6 +163,33 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
               ))}
             </div>
           </div>
+
+          {/* Routing — only visible for brokerage-wide embeds */}
+          {widget.agentId === null && (
+            <div>
+              <Label>Lead routing</Label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Controls which agent receives captured leads from this brokerage-wide embed.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { value: "primary", label: "Primary agent", desc: "Always routes to the first active agent" },
+                  { value: "round_robin", label: "Round-robin", desc: "Distributes evenly across all active agents" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value} type="button"
+                    onClick={() => setRoutingMode(opt.value)}
+                    className={`text-left rounded-md border p-2 text-xs hover:bg-muted/50 ${
+                      routingMode === opt.value ? "border-primary bg-primary/5" : ""
+                    }`}
+                  >
+                    <div className="font-medium">{opt.label}</div>
+                    <div className="text-muted-foreground">{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div>
             <Label>Allowed domains</Label>

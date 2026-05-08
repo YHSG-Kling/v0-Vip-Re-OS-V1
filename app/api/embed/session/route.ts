@@ -26,6 +26,7 @@ interface Body {
   visitorId: string
   origin?: string | null
   referrer?: string | null
+  pageUrl?: string | null
 }
 
 export async function POST(request: NextRequest) {
@@ -166,6 +167,7 @@ export async function POST(request: NextRequest) {
       visitor_id: body.visitorId,
       origin: body.origin ?? null,
       referrer: body.referrer ?? null,
+      page_url: body.pageUrl ?? null,
       user_agent: request.headers.get("user-agent") ?? null,
       did_session_ref: ensured.didAgentId,
     })

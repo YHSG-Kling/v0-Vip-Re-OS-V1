@@ -22,6 +22,7 @@ interface Props {
   visitorId: string
   origin: string | null
   referrer: string | null
+  pageUrl: string | null
   welcomeMessage: string | null
   enabledModes: ("text" | "live")[]
   leadCaptureMode: "immediate" | "after_first_message" | "optional"
@@ -39,7 +40,7 @@ const CTX_PREFIX_RE = /\[\[CTX:contactId=[0-9a-f-]{36}\]\]\s*/i
 
 export function EmbedWidget(props: Props) {
   const {
-    publicId, visitorId, origin, referrer, welcomeMessage,
+    publicId, visitorId, origin, referrer, pageUrl, welcomeMessage,
     enabledModes, leadCaptureMode, leadCaptureFields, label,
   } = props
 
@@ -68,7 +69,7 @@ export function EmbedWidget(props: Props) {
         const res = await fetch("/api/embed/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ publicId, visitorId, origin, referrer }),
+          body: JSON.stringify({ publicId, visitorId, origin, referrer, pageUrl }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
@@ -134,7 +135,7 @@ export function EmbedWidget(props: Props) {
       managerRef.current?.disconnect().catch(() => {})
       managerRef.current = null
     }
-  }, [publicId, visitorId, origin, referrer, welcomeMessage, leadCaptureMode])
+  }, [publicId, visitorId, origin, referrer, pageUrl, welcomeMessage, leadCaptureMode])
 
   // ── Toggle modes ─────────────────────────────────────────────────────────
   const toggleMode = useCallback(() => {

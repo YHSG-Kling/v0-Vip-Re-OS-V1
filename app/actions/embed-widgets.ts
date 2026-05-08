@@ -21,6 +21,7 @@ export interface EmbedWidget {
   leadCaptureMode: "immediate" | "after_first_message" | "optional"
   leadCaptureFields: string[]
   allowedDomains: string[]
+  routingMode: "primary" | "round_robin"
   style: Record<string, any>
   isActive: boolean
   createdAt: string
@@ -40,6 +41,7 @@ function rowToWidget(r: any): EmbedWidget {
     leadCaptureMode: r.lead_capture_mode,
     leadCaptureFields: r.lead_capture_fields ?? [],
     allowedDomains: r.allowed_domains ?? [],
+    routingMode: (r.routing_mode ?? "primary") as "primary" | "round_robin",
     style: r.style ?? {},
     isActive: !!r.is_active,
     createdAt: r.created_at,
@@ -118,6 +120,7 @@ export async function updateEmbed(params: {
   leadCaptureMode?: "immediate" | "after_first_message" | "optional"
   leadCaptureFields?: string[]
   allowedDomains?: string[]
+  routingMode?: "primary" | "round_robin"
   style?: Record<string, any>
   isActive?: boolean
 }): Promise<{ ok: boolean; error?: string }> {
@@ -151,6 +154,7 @@ export async function updateEmbed(params: {
   if (params.leadCaptureMode !== undefined) update.lead_capture_mode = params.leadCaptureMode
   if (params.leadCaptureFields !== undefined) update.lead_capture_fields = params.leadCaptureFields
   if (params.allowedDomains !== undefined) update.allowed_domains = sanitizeDomains(params.allowedDomains)
+  if (params.routingMode !== undefined) update.routing_mode = params.routingMode
   if (params.style !== undefined) update.style = params.style
   if (params.isActive !== undefined) update.is_active = params.isActive
 
@@ -211,6 +215,108 @@ export async function listTwinsForEmbed(scope: "personal" | "brokerage"):
       agentName: t.agents?.full_name ?? null,
     })),
   }
+}
+
+// ─── Analytics ───────────────────────────────────────────────────────────
+
+export interface EmbedAnalytics {
+  widgetId: string
+  totalSessions: number
+  totalLeads: number
+  conversionRate: number
+  topPages: { pageUrl: string; sessions: number; leads: number }[]
+  byDay: { date: string; sessions: number; leads: number }[]
+}
+
+/**
+ * Returns analytics for a single embed widget (or a summary across all of the
+ * caller's widgets when widgetId is omitted). Only accessible by the widget
+ * owner or admin roles.
+ */
+export async function getEmbedAnalytics(params: {
+  widgetId?: string
+  days?: number
+}): Promise<{ ok: boolean; analytics?: EmbedAnalytics[]; error?: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+
+  const supabase = createServiceClient()
+  const days = params.days ?? 30
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+  const isAdmin = ADMIN_ROLES.includes(ctx.userType)
+
+  // Determine which widget ids to query
+  let widgetIds: string[]
+  if (params.widgetId) {
+    // Verify access
+    const { data: w } = await supabase
+      .from("embed_widgets")
+      .select("id, brokerage_id, agent_id")
+      .eq("id", params.widgetId)
+      .maybeSingle()
+    if (!w || w.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Not found" }
+    if (!isAdmin && w.agent_id !== ctx.agentId) return { ok: false, error: "Forbidden" }
+    widgetIds = [params.widgetId]
+  } else {
+    const q = supabase.from("embed_widgets").select("id").eq("brokerage_id", ctx.brokerageId)
+    if (!isAdmin && ctx.agentId) q.eq("agent_id", ctx.agentId)
+    const { data: ws } = await q
+    widgetIds = (ws ?? []).map((w: any) => w.id)
+  }
+
+  if (widgetIds.length === 0) return { ok: true, analytics: [] }
+
+  // Pull sessions in the window
+  const { data: sessions } = await supabase
+    .from("embed_sessions")
+    .select("id, embed_widget_id, contact_id, page_url, started_at")
+    .in("embed_widget_id", widgetIds)
+    .gte("started_at", since)
+    .order("started_at", { ascending: false })
+
+  const rows = sessions ?? []
+
+  const analytics: EmbedAnalytics[] = widgetIds.map((wid) => {
+    const wRows = rows.filter((r: any) => r.embed_widget_id === wid)
+    const total = wRows.length
+    const leads = wRows.filter((r: any) => !!r.contact_id).length
+
+    // Top pages (by session count, top 10)
+    const pageMap: Record<string, { sessions: number; leads: number }> = {}
+    for (const r of wRows) {
+      const key = r.page_url ?? "(unknown)"
+      if (!pageMap[key]) pageMap[key] = { sessions: 0, leads: 0 }
+      pageMap[key].sessions++
+      if (r.contact_id) pageMap[key].leads++
+    }
+    const topPages = Object.entries(pageMap)
+      .sort((a, b) => b[1].sessions - a[1].sessions)
+      .slice(0, 10)
+      .map(([pageUrl, stats]) => ({ pageUrl, ...stats }))
+
+    // By day (last N days)
+    const dayMap: Record<string, { sessions: number; leads: number }> = {}
+    for (const r of wRows) {
+      const date = (r.started_at as string).slice(0, 10)
+      if (!dayMap[date]) dayMap[date] = { sessions: 0, leads: 0 }
+      dayMap[date].sessions++
+      if (r.contact_id) dayMap[date].leads++
+    }
+    const byDay = Object.entries(dayMap)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, stats]) => ({ date, ...stats }))
+
+    return {
+      widgetId: wid,
+      totalSessions: total,
+      totalLeads: leads,
+      conversionRate: total > 0 ? Math.round((leads / total) * 1000) / 10 : 0,
+      topPages,
+      byDay,
+    }
+  })
+
+  return { ok: true, analytics }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────

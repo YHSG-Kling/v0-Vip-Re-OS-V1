@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
   // ── Resolve embed config for the owner brokerage + agent ────────────────
   const { data: widget } = await supabase
     .from("embed_widgets")
-    .select("id, brokerage_id, agent_id, is_active")
+    .select("id, brokerage_id, agent_id, is_active, routing_mode, last_routed_agent_id")
     .eq("public_id", body.publicId)
     .maybeSingle()
 
@@ -59,12 +59,41 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Resolve the assigned agent's user_id (captureContact takes users.id) ──
+  // For brokerage-wide embeds (agent_id IS NULL), apply the configured routing
+  // strategy. 'primary' = first active agent (original behaviour). 'round_robin'
+  // = advances through active agents in created_at order, wrapping around.
+  let resolvedAgentId: string | null = widget.agent_id
+
+  if (!resolvedAgentId) {
+    const { data: activeAgents } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("brokerage_id", widget.brokerage_id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+    const pool = (activeAgents ?? []).map((a: any) => a.id)
+
+    if (pool.length > 0) {
+      if (widget.routing_mode === "round_robin" && widget.last_routed_agent_id) {
+        const lastIdx = pool.indexOf(widget.last_routed_agent_id)
+        resolvedAgentId = pool[(lastIdx + 1) % pool.length]
+      } else {
+        resolvedAgentId = pool[0]
+      }
+      // Advance the cursor so the next capture gets a different agent.
+      await supabase
+        .from("embed_widgets")
+        .update({ last_routed_agent_id: resolvedAgentId })
+        .eq("id", widget.id)
+    }
+  }
+
   let agentUserId: string | null = null
-  if (widget.agent_id) {
+  if (resolvedAgentId) {
     const { data: agent } = await supabase
       .from("agents")
       .select("user_id")
-      .eq("id", widget.agent_id)
+      .eq("id", resolvedAgentId)
       .maybeSingle()
     agentUserId = agent?.user_id ?? null
   }
