@@ -150,17 +150,18 @@ ALTER TABLE public.plan_limits
     'live_assistant_sessions'
   ));
 
--- Seed default caps for the new metrics across all tiers. Values mirror the
--- generosity curve from script 1018 (solo < team < brokerage < enterprise);
--- enterprise gets unlimited (-1).
-INSERT INTO public.plan_limits (plan_tier, metric, limit_value, period)
+-- Seed default caps for the new metrics across all tiers. Tier names align
+-- with the live plan_limits.plan_tier check constraint:
+--   starter | professional | team | enterprise
+-- Enterprise gets unlimited (-1).
+INSERT INTO public.plan_limits (plan_tier, metric, limit_value)
 VALUES
-  ('solo',       'live_assistant_minutes',   60,   'monthly'),
-  ('team',       'live_assistant_minutes',  300,   'monthly'),
-  ('brokerage',  'live_assistant_minutes', 1500,   'monthly'),
-  ('enterprise', 'live_assistant_minutes',   -1,   'monthly'),
-  ('solo',       'live_assistant_sessions',  60,   'monthly'),
-  ('team',       'live_assistant_sessions', 300,   'monthly'),
-  ('brokerage',  'live_assistant_sessions',1500,   'monthly'),
-  ('enterprise', 'live_assistant_sessions',  -1,   'monthly')
-ON CONFLICT (plan_tier, metric, period) DO NOTHING;
+  ('starter',      'live_assistant_minutes',   60),
+  ('professional', 'live_assistant_minutes',  300),
+  ('team',         'live_assistant_minutes', 1500),
+  ('enterprise',   'live_assistant_minutes',   -1),
+  ('starter',      'live_assistant_sessions',  60),
+  ('professional', 'live_assistant_sessions', 300),
+  ('team',         'live_assistant_sessions',1500),
+  ('enterprise',   'live_assistant_sessions',  -1)
+ON CONFLICT (plan_tier, metric) DO NOTHING;

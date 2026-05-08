@@ -173,7 +173,8 @@ function buildSystemPrompt(params: EnsureAssistantAgentParams): string {
 You help them get things done in the field — between showings, after a call, on the way to a closing. \
 Keep responses short and spoken-style; the user is listening, not reading.
 
-You can take actions on their CRM via tools (look up contacts, log activity, schedule appointments, send portal messages). \
+You can take actions on their CRM via tools — look up contacts, get today's schedule, list active listings or open transactions, \
+review pending offers, catch up on recent messages, log activity, schedule appointments, update contact status, and send portal messages. \
 Always confirm a destructive or outbound action ("I'm about to send X to Sarah, sound good?") before invoking the tool.
 
 Never invent contact data — if you don't know something, use lookup_contact first. If a tool fails, say so plainly and suggest the next step.${brand}`
@@ -272,6 +273,61 @@ function buildToolsConfig() {
         body: { type: "string", description: "Message body — kernel will apply brand voice + compliance before sending" },
       },
       required: ["contact_id", "body"],
+    },
+    {
+      type: "webhook",
+      name: "get_active_listings",
+      description: "List the agent's active listings (status='active' or 'coming_soon'). Returns up to 10 with address, price, beds/baths, sqft, and lifecycle stage.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {},
+      required: [],
+    },
+    {
+      type: "webhook",
+      name: "get_pending_offers",
+      description: "List offers awaiting response — pending or countered. Includes price, contact, listing address, and response deadline.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {},
+      required: [],
+    },
+    {
+      type: "webhook",
+      name: "get_transactions_in_progress",
+      description: "List the agent's open transactions — anything under contract through closing prep. Returns deal name, status, close date, and the contact.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {},
+      required: [],
+    },
+    {
+      type: "webhook",
+      name: "get_recent_messages",
+      description: "Recent portal messages — last 10 if no contact_id, or last 10 with a specific contact. Use to catch up before reaching out.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        contact_id: { type: "string", description: "Optional contact UUID to scope the messages" },
+      },
+      required: [],
+    },
+    {
+      type: "webhook",
+      name: "update_contact_status",
+      description: "Change a contact's status field (e.g., 'active', 'cold', 'closed', 'unsubscribed'). Confirm with the user before invoking.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        contact_id: { type: "string", description: "Contact UUID" },
+        status: { type: "string", description: "New status value" },
+      },
+      required: ["contact_id", "status"],
     },
   ]
 }

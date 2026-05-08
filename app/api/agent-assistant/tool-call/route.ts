@@ -201,6 +201,30 @@ async function runTool(
         supabase,
       )
 
+    case "get_active_listings":
+      return getActiveListings(session, supabase)
+
+    case "get_pending_offers":
+      return getPendingOffers(session, supabase)
+
+    case "get_transactions_in_progress":
+      return getTransactionsInProgress(session, supabase)
+
+    case "get_recent_messages":
+      return getRecentMessages(
+        params.contact_id ? String(params.contact_id) : null,
+        session,
+        supabase,
+      )
+
+    case "update_contact_status":
+      return updateContactStatus(
+        String(params.contact_id ?? ""),
+        String(params.status ?? ""),
+        session,
+        supabase,
+      )
+
     default:
       throw new Error(`Unknown tool: ${toolName}`)
   }
@@ -455,6 +479,116 @@ async function sendPortalMessage(
 
   if (error || !data) return { error: error?.message ?? "Failed to send message" }
   return { success: true, message_id: data.id, preview: bodyText.slice(0, 80) }
+}
+
+// ─── get_active_listings ──────────────────────────────────────────────────────
+
+async function getActiveListings(
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!session.agent_id) return { listings: [] }
+  const { data } = await supabase
+    .from("listings")
+    .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, lifecycle_stage")
+    .eq("agent_id", session.agent_id)
+    .in("status", ["active", "coming_soon"])
+    .is("deleted_at", null)
+    .order("listing_date", { ascending: false })
+    .limit(10)
+  return { listings: data ?? [], count: data?.length ?? 0 }
+}
+
+// ─── get_pending_offers ───────────────────────────────────────────────────────
+
+async function getPendingOffers(
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!session.agent_id) return { offers: [] }
+  const { data } = await supabase
+    .from("offers")
+    .select(
+      "id, offer_number, offer_price, status, response_deadline, financing_type, contact_id, listing_id, property_address",
+    )
+    .eq("agent_id", session.agent_id)
+    .in("status", ["pending", "countered", "submitted"])
+    .order("submitted_at", { ascending: false })
+    .limit(10)
+  return { offers: data ?? [], count: data?.length ?? 0 }
+}
+
+// ─── get_transactions_in_progress ─────────────────────────────────────────────
+
+async function getTransactionsInProgress(
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!session.agent_id) return { transactions: [] }
+  const { data } = await supabase
+    .from("transactions")
+    .select("id, deal_name, status, stage, property_address, close_date, contact_id, purchase_price")
+    .eq("agent_id", session.agent_id)
+    .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing_prep"])
+    .is("deleted_at", null)
+    .order("close_date", { ascending: true })
+    .limit(10)
+  return { transactions: data ?? [], count: data?.length ?? 0 }
+}
+
+// ─── get_recent_messages ──────────────────────────────────────────────────────
+
+async function getRecentMessages(
+  contactId: string | null,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  let q = supabase
+    .from("client_portal_messages")
+    .select("id, contact_id, direction, body, channel, read, created_at")
+    .eq("brokerage_id", session.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(10)
+  if (contactId) q = q.eq("contact_id", contactId)
+  if (session.agent_id) q = q.eq("agent_id", session.agent_id)
+  const { data } = await q
+  return {
+    messages: (data ?? []).map((m: any) => ({
+      contact_id: m.contact_id,
+      from: m.direction === "agent_to_client" ? "you" : "client",
+      preview: (m.body as string).slice(0, 120),
+      channel: m.channel,
+      read: m.read,
+      ts: m.created_at,
+    })),
+  }
+}
+
+// ─── update_contact_status ────────────────────────────────────────────────────
+
+async function updateContactStatus(
+  contactId: string,
+  status: string,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!contactId || !status) return { error: "contact_id + status required" }
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", contactId)
+    .eq("brokerage_id", session.brokerage_id)
+    .select("id, first_name, last_name, status")
+    .maybeSingle()
+
+  if (error || !data) return { error: error?.message ?? "Update failed — contact not in your brokerage" }
+  return {
+    success: true,
+    contact_id: data.id,
+    name: `${data.first_name ?? ""} ${data.last_name ?? ""}`.trim(),
+    new_status: data.status,
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
