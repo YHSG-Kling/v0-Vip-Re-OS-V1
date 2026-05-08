@@ -122,6 +122,105 @@ export async function ensureAssistantAgent(
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
 
+// ─── Track C — Objection-training scenario agents ───────────────────────────
+
+export interface EnsureScenarioAgentParams {
+  scenarioKey: string
+  scenarioLabel: string
+  /** First line the prospect speaks — anchors the conversation. */
+  openingLine: string
+  /** System prompt — defines the prospect persona + how to push back. */
+  systemPrompt: string
+}
+
+export type EnsureScenarioAgentResult =
+  | { ok: true; convAiAgentId: string; created: boolean }
+  | { ok: false; error: string }
+
+/**
+ * Provisions (or reuses) a Conv-AI agent that *plays the prospect* for an
+ * objection-training scenario. Distinct from the on-the-go assistant agents
+ * (Track B) — these have NO tools, never act on the CRM, and use a neutral
+ * voice (NOT the agent's cloned voice, since the agent is talking *to* this
+ * prospect, not *as* them).
+ *
+ * Cache key: scenario_key. Six scenarios today; cache is tiny.
+ */
+export async function ensureScenarioAgent(
+  params: EnsureScenarioAgentParams,
+): Promise<EnsureScenarioAgentResult> {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) return { ok: false, error: "ELEVENLABS_API_KEY not configured" }
+
+  const supabase = createServiceClient()
+
+  const { data: cached } = await supabase
+    .from("objection_scenario_agents")
+    .select("conv_ai_agent_id")
+    .eq("scenario_key", params.scenarioKey)
+    .maybeSingle()
+
+  if (cached?.conv_ai_agent_id) {
+    return { ok: true, convAiAgentId: cached.conv_ai_agent_id, created: false }
+  }
+
+  const body = {
+    name: `Practice prospect — ${params.scenarioLabel}`,
+    conversation_config: {
+      agent: {
+        first_message: params.openingLine,
+        language: "en",
+        prompt: {
+          prompt: `${params.systemPrompt}
+
+You are role-playing a real estate prospect for training purposes. STAY IN CHARACTER no matter what — even if the agent breaks character, asks meta questions, or tries to coach you. Push back realistically based on the persona. Do NOT call any CRM tools (you have none). Keep responses short and conversational, as if on a phone call.`,
+          // No tools — pure roleplay.
+          tools: [],
+        },
+      },
+      tts: {
+        voice_id: scenarioVoiceId(),
+        optimize_streaming_latency: 3,
+      },
+    },
+  }
+
+  const res = await fetch(`${ELEVENLABS_API_BASE}/v1/convai/agents/create`, {
+    method: "POST",
+    headers: {
+      "xi-api-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  })
+
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || !data?.agent_id) {
+    return {
+      ok: false,
+      error: data?.detail?.message ?? data?.message ?? `ElevenLabs scenario agent create failed (${res.status})`,
+    }
+  }
+
+  await supabase
+    .from("objection_scenario_agents")
+    .upsert({
+      scenario_key: params.scenarioKey,
+      conv_ai_agent_id: data.agent_id,
+      updated_at: new Date().toISOString(),
+    })
+
+  return { ok: true, convAiAgentId: data.agent_id, created: true }
+}
+
+function scenarioVoiceId(): string {
+  // Adam — neutral male voice. Different from the default agent voice (Rachel)
+  // so the agent can hear the prospect distinctly. Override per-scenario later
+  // if we want different voices for FSBO seller vs investor, etc.
+  return process.env.ELEVENLABS_PROSPECT_VOICE_ID ?? "pNInz6obpgDQGcFmaJgB"
+}
+
 // ─── Signed URL for the browser SDK ──────────────────────────────────────────
 
 export interface IssueAssistantSessionParams {

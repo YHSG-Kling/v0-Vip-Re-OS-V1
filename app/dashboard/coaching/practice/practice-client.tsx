@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import {
   Sparkles, MessageSquare, Loader2, Trophy, CheckCircle2, AlertCircle,
-  ArrowRight, Volume2, RotateCcw,
+  ArrowRight, Volume2, RotateCcw, Mic,
 } from "lucide-react"
 import {
   startObjectionPracticeSession,
@@ -16,6 +16,7 @@ import {
   type ObjectionScenario,
   type PracticeSession,
 } from "@/app/actions/objection-training"
+import { VoicePracticeOverlay } from "./voice-practice-overlay"
 
 interface Props {
   scenarios: ObjectionScenario[]
@@ -43,6 +44,8 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
   const [agentInput, setAgentInput] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [starting, setStarting] = useState(false)
+  // Track C — live voice practice (separate from typed flow)
+  const [voiceScenario, setVoiceScenario] = useState<ObjectionScenario | null>(null)
   const [finishedSummary, setFinishedSummary] = useState<{
     totalScore: number
     summary: string
@@ -163,10 +166,19 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
         <SelectStage
           scenarios={scenarios}
           onStart={startSession}
+          onStartVoice={(s) => setVoiceScenario(s)}
           starting={starting}
           pastSessions={pastSessions}
         />
       )}
+
+      {/* Track C — live voice practice overlay */}
+      <VoicePracticeOverlay
+        open={!!voiceScenario}
+        scenarioKey={voiceScenario?.key ?? ""}
+        scenarioLabel={voiceScenario?.label ?? ""}
+        onClose={() => setVoiceScenario(null)}
+      />
 
       {stage === "active" && activeScenario && (
         <ActiveStage
@@ -198,10 +210,11 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
 // ---------------------------------------------------------------------------
 
 function SelectStage({
-  scenarios, onStart, starting, pastSessions,
+  scenarios, onStart, onStartVoice, starting, pastSessions,
 }: {
   scenarios: ObjectionScenario[]
   onStart: (s: ObjectionScenario) => void
+  onStartVoice: (s: ObjectionScenario) => void
   starting: boolean
   pastSessions: PracticeSession[]
 }) {
@@ -225,15 +238,26 @@ function SelectStage({
                 <p className="text-xs text-muted-foreground italic mb-3 line-clamp-2">
                   "{s.openingLine}"
                 </p>
-                <Button
-                  size="sm"
-                  className="w-full gap-1"
-                  onClick={() => onStart(s)}
-                  disabled={starting}
-                >
-                  {starting ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3" />}
-                  Start Practice
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 gap-1"
+                    onClick={() => onStart(s)}
+                    disabled={starting}
+                  >
+                    {starting ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+                    Type
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="flex-1 gap-1 bg-purple-600 hover:bg-purple-700"
+                    onClick={() => onStartVoice(s)}
+                  >
+                    <Mic className="h-3 w-3" />
+                    Live Voice
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
