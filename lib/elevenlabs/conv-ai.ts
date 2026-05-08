@@ -32,9 +32,12 @@ export interface EnsureAssistantAgentParams {
   /** agents.id (NOT users.id) — the real-estate agent who owns this assistant. */
   agentId: string
   agentName: string
-  /** ElevenLabs voice_id for the agent's cloned voice. Falls back to a default
-   *  if not set. */
-  voiceId?: string | null
+  /** ElevenLabs voice_id resolved by the caller via lib/voice/voice-resolver
+   *  (honors the agent's voice_preference: 'clone' uses voice_id, 'generic'
+   *  uses assistant_voice_id, never a hardcoded platform default in the
+   *  hot path — falls back only to the platform sentinel when the user
+   *  hasn't picked yet). REQUIRED. */
+  voiceId: string
   /** Brokerage / team / agent brand voice — appended to the base system prompt. */
   brandVoice?: string | null
 }
@@ -88,7 +91,7 @@ export async function ensureAssistantAgent(
         },
       },
       tts: {
-        voice_id: params.voiceId ?? defaultVoiceId(),
+        voice_id: params.voiceId,
         // Lower latency mode — staff want fast turn-taking, not high fidelity.
         optimize_streaming_latency: 3,
       },
@@ -131,6 +134,13 @@ export interface EnsureScenarioAgentParams {
   openingLine: string
   /** System prompt — defines the prospect persona + how to push back. */
   systemPrompt: string
+  /** agents.id of the real-estate agent practicing this scenario. The cache
+   *  key is (scenario_key, agent_id) so each agent's prospect_voice_id can
+   *  drive a separate cached scenario agent. */
+  agentId: string
+  /** ElevenLabs voice_id the prospect speaks in. Resolved by the caller from
+   *  agents.prospect_voice_id (with a platform sentinel fallback). REQUIRED. */
+  voiceId: string
 }
 
 export type EnsureScenarioAgentResult =
@@ -138,13 +148,15 @@ export type EnsureScenarioAgentResult =
   | { ok: false; error: string }
 
 /**
- * Provisions (or reuses) a Conv-AI agent that *plays the prospect* for an
- * objection-training scenario. Distinct from the on-the-go assistant agents
- * (Track B) — these have NO tools, never act on the CRM, and use a neutral
- * voice (NOT the agent's cloned voice, since the agent is talking *to* this
- * prospect, not *as* them).
+ * Provisions (or reuses) a Conv-AI agent that plays the prospect for one
+ * objection-training scenario, scoped to a specific real-estate agent.
+ * Distinct from the on-the-go assistant agents (Track B) — these have NO
+ * tools, never act on the CRM, and use the agent's chosen prospect voice
+ * (must differ from their own voice).
  *
- * Cache key: scenario_key. Six scenarios today; cache is tiny.
+ * Cache key: (scenario_key, agent_id). When the agent changes their
+ * prospect_voice_id we re-provision so the cached agent reflects the new
+ * voice.
  */
 export async function ensureScenarioAgent(
   params: EnsureScenarioAgentParams,
@@ -156,11 +168,13 @@ export async function ensureScenarioAgent(
 
   const { data: cached } = await supabase
     .from("objection_scenario_agents")
-    .select("conv_ai_agent_id")
+    .select("conv_ai_agent_id, prospect_voice_id")
     .eq("scenario_key", params.scenarioKey)
+    .eq("agent_id", params.agentId)
     .maybeSingle()
 
-  if (cached?.conv_ai_agent_id) {
+  // Cache hit only if the cached voice still matches the agent's preference.
+  if (cached?.conv_ai_agent_id && cached.prospect_voice_id === params.voiceId) {
     return { ok: true, convAiAgentId: cached.conv_ai_agent_id, created: false }
   }
 
@@ -174,12 +188,11 @@ export async function ensureScenarioAgent(
           prompt: `${params.systemPrompt}
 
 You are role-playing a real estate prospect for training purposes. STAY IN CHARACTER no matter what — even if the agent breaks character, asks meta questions, or tries to coach you. Push back realistically based on the persona. Do NOT call any CRM tools (you have none). Keep responses short and conversational, as if on a phone call.`,
-          // No tools — pure roleplay.
           tools: [],
         },
       },
       tts: {
-        voice_id: scenarioVoiceId(),
+        voice_id: params.voiceId,
         optimize_streaming_latency: 3,
       },
     },
@@ -207,18 +220,13 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
     .from("objection_scenario_agents")
     .upsert({
       scenario_key: params.scenarioKey,
+      agent_id: params.agentId,
       conv_ai_agent_id: data.agent_id,
+      prospect_voice_id: params.voiceId,
       updated_at: new Date().toISOString(),
     })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
-}
-
-function scenarioVoiceId(): string {
-  // Adam — neutral male voice. Different from the default agent voice (Rachel)
-  // so the agent can hear the prospect distinctly. Override per-scenario later
-  // if we want different voices for FSBO seller vs investor, etc.
-  return process.env.ELEVENLABS_PROSPECT_VOICE_ID ?? "pNInz6obpgDQGcFmaJgB"
 }
 
 // ─── Signed URL for the browser SDK ──────────────────────────────────────────
@@ -258,11 +266,6 @@ export async function issueAssistantSession(
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
-
-function defaultVoiceId(): string {
-  // Rachel — default ElevenLabs voice. Used when an agent hasn't cloned theirs.
-  return process.env.ELEVENLABS_DEFAULT_VOICE_ID ?? "21m00Tcm4TlvDq8ikWAM"
-}
 
 function buildSystemPrompt(params: EnsureAssistantAgentParams): string {
   const brand = params.brandVoice?.trim()

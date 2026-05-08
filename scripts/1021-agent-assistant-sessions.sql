@@ -151,17 +151,20 @@ ALTER TABLE public.plan_limits
   ));
 
 -- Seed default caps for the new metrics across all tiers. Tier names align
--- with the live plan_limits.plan_tier check constraint:
---   starter | professional | team | enterprise
--- Enterprise gets unlimited (-1).
+-- with the canonical subscription_tiers.tier_name vocabulary:
+--   solo_agent | team | brokerage | multi_location
+-- multi_location gets unlimited (-1). Note: when this migration ran originally
+-- the live DB still used the legacy starter/professional/team/enterprise vocab;
+-- script 1023 renames those rows. Anyone re-applying this script in order on
+-- a fresh DB should pre-apply 1023's tier-vocab migration first.
 INSERT INTO public.plan_limits (plan_tier, metric, limit_value)
 VALUES
-  ('starter',      'live_assistant_minutes',   60),
-  ('professional', 'live_assistant_minutes',  300),
-  ('team',         'live_assistant_minutes', 1500),
-  ('enterprise',   'live_assistant_minutes',   -1),
-  ('starter',      'live_assistant_sessions',  60),
-  ('professional', 'live_assistant_sessions', 300),
-  ('team',         'live_assistant_sessions',1500),
-  ('enterprise',   'live_assistant_sessions',  -1)
+  ('solo_agent',     'live_assistant_minutes',   60),
+  ('team',           'live_assistant_minutes',  300),
+  ('brokerage',      'live_assistant_minutes', 1500),
+  ('multi_location', 'live_assistant_minutes',   -1),
+  ('solo_agent',     'live_assistant_sessions',  60),
+  ('team',           'live_assistant_sessions', 300),
+  ('brokerage',      'live_assistant_sessions',1500),
+  ('multi_location', 'live_assistant_sessions',  -1)
 ON CONFLICT (plan_tier, metric) DO NOTHING;

@@ -23,6 +23,7 @@ import { ensureScenarioAgent, issueAssistantSession } from "@/lib/elevenlabs/con
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { getScenarioByKey } from "@/lib/training/objection-scenarios"
+import { FALLBACK_VOICE_ID } from "@/lib/voice/elevenlabs-tts"
 
 export const runtime = "nodejs"
 
@@ -52,19 +53,46 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Provision (or reuse) the scenario's roleplay agent.
+  // Track C requires an agents row — the scenario agent is cached per
+  // (scenario, agent) so each agent's prospect_voice_id drives a separate
+  // ElevenLabs agent.
+  if (!ctx.agentId) {
+    return NextResponse.json(
+      { error: "Practice is currently agent-only — no agent profile found." },
+      { status: 409 },
+    )
+  }
+
+  // Resolve the agent's chosen prospect voice. If they haven't picked yet we
+  // fall back to FALLBACK_VOICE_ID — same sentinel the voice-resolver uses
+  // for the assistant — and surface a soft hint in the response so the UI
+  // can prompt them to set it in Settings → Assistant.
+  const supabase = createServiceClient()
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("prospect_voice_id, voice_id")
+    .eq("id", ctx.agentId)
+    .maybeSingle()
+
+  const prospectVoiceId = agentRow?.prospect_voice_id ?? FALLBACK_VOICE_ID
+  // Defensive: the prospect voice MUST differ from the agent's own clone so
+  // the practice feels like a real call. If they collide, fall back.
+  const safeProspectVoice =
+    prospectVoiceId === agentRow?.voice_id ? FALLBACK_VOICE_ID : prospectVoiceId
+
+  // Provision (or reuse) the scenario's roleplay agent for THIS agent.
   const ensured = await ensureScenarioAgent({
     scenarioKey: scenario.key,
     scenarioLabel: scenario.label,
     openingLine: scenario.openingLine,
     systemPrompt: scenario.systemPrompt,
+    agentId: ctx.agentId,
+    voiceId: safeProspectVoice,
   })
   if (!ensured.ok) return NextResponse.json({ error: ensured.error }, { status: 502 })
 
   const session = await issueAssistantSession({ convAiAgentId: ensured.convAiAgentId })
   if (!session.ok) return NextResponse.json({ error: session.error }, { status: 502 })
-
-  const supabase = createServiceClient()
 
   // Create the practice session row + insert the opening prospect line.
   const { data: sessionRow, error: insertErr } = await supabase

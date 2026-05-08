@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Loader2, CheckCircle2, AlertCircle, Volume2, User, Sparkles } from "lucide-react"
 import {
   updateMyVoicePreference,
+  updateMyProspectVoice,
   type AgentVoiceAvatarPrefs,
 } from "@/app/actions/voice-avatar-settings"
 import type { GenericVoiceOption } from "@/lib/voice/voice-resolver"
@@ -37,6 +38,27 @@ export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props
           voicePreference: pref,
           assistantVoiceId: pref === "generic" ? voiceId ?? prefs.assistantVoiceId : null,
         })
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2500)
+      } else {
+        setSaveError(result.error ?? "Save failed")
+      }
+    })
+  }
+
+  function handleChooseProspectVoice(voiceId: string) {
+    setSaveError(null)
+    setSaved(false)
+    // The prospect voice MUST differ from the agent's own clone so practice
+    // feels like a real call.
+    if (prefs.voiceId && voiceId === prefs.voiceId) {
+      setSaveError("Pick a different voice from your own clone — practice prospects shouldn't sound like you.")
+      return
+    }
+    startTransition(async () => {
+      const result = await updateMyProspectVoice({ prospectVoiceId: voiceId })
+      if (result.success) {
+        setPrefs({ ...prefs, prospectVoiceId: voiceId })
         setSaved(true)
         setTimeout(() => setSaved(false), 2500)
       } else {
@@ -193,6 +215,68 @@ export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props
           with you through the portal AI chat or AI ISA — that's how they recognize you. This
           setting only affects what YOU hear when YOU talk to your assistant or play your brief.
         </p>
+
+        {/* Practice prospect voice — Track C */}
+        <div className="border-t pt-4 mt-4 space-y-2">
+          <div className="flex items-start gap-2">
+            <Sparkles className="h-4 w-4 text-purple-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">Practice prospect voice</p>
+              <p className="text-xs text-muted-foreground">
+                The voice the AI uses when role-playing a prospect during objection training.
+                Pick something different from your own voice so practice feels real.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 ml-6">
+            {genericVoices.map((v) => {
+              const isSelected = prefs.prospectVoiceId === v.id
+              const isOwnClone = prefs.voiceId === v.id
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => handleChooseProspectVoice(v.id)}
+                  disabled={isPending || isOwnClone}
+                  className={`text-left p-2 rounded border text-xs transition-colors ${
+                    isSelected
+                      ? "border-purple-400 bg-purple-50"
+                      : "border-border hover:bg-muted"
+                  } ${isOwnClone ? "opacity-40 cursor-not-allowed" : ""}`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-medium">{v.name}</span>
+                    <span className="text-[10px] text-muted-foreground capitalize">{v.gender}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
+                    {isOwnClone ? "Your own voice — pick another" : v.description}
+                  </p>
+                </button>
+              )
+            })}
+          </div>
+          {prefs.prospectVoiceId && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-6 mt-2 h-7 text-xs gap-1.5"
+              onClick={() => previewVoice(prefs.prospectVoiceId!)}
+              disabled={previewLoading !== null}
+            >
+              {previewLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Volume2 className="h-3 w-3" />
+              )}
+              Preview
+            </Button>
+          )}
+          {!prefs.prospectVoiceId && (
+            <p className="text-[11px] text-muted-foreground ml-6 italic">
+              Not picked yet — practice falls back to a platform default until you choose.
+            </p>
+          )}
+        </div>
       </CardContent>
     </Card>
   )

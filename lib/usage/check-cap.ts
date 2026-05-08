@@ -67,7 +67,7 @@ export async function checkUsageCap(params: {
     return { ...UNLIMITED, error: brokerageError?.message ?? "brokerage not found" }
   }
 
-  const planTier = brokerage.plan_tier ?? "starter"
+  const planTier = brokerage.plan_tier ?? "solo_agent"
 
   // 2. Limit for (tier, metric)
   const { data: limitRow } = await supabase

@@ -22,6 +22,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureAssistantAgent, issueAssistantSession } from "@/lib/elevenlabs/conv-ai"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
 
 export const runtime = "nodejs"
 
@@ -67,10 +68,14 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // ── Resolve agent identity for the Conv-AI agent's display name + voice ──
+  // ── Resolve agent identity + the agent's chosen assistant voice ──────────
+  // Voice is sourced from the user's settings (Settings → Assistant). The
+  // resolver honors voice_preference: 'clone' uses agent.voice_id, 'generic'
+  // uses agent.assistant_voice_id, and only falls back to FALLBACK_VOICE_ID
+  // when the user hasn't picked yet — never a hardcoded platform default.
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id, full_name, voice_id, conv_ai_agent_id")
+    .select("id, full_name, conv_ai_agent_id")
     .eq("id", ctx.agentId)
     .maybeSingle()
 
@@ -79,12 +84,13 @@ export async function POST(request: NextRequest) {
   }
 
   const agentName = (agentRow.full_name as string | null)?.trim() || "Agent"
+  const resolved = await resolveSelfVoice(ctx.userId)
 
   // ── Provision (or reuse) the ElevenLabs Conv-AI agent ────────────────────
   const ensured = await ensureAssistantAgent({
     agentId: agentRow.id,
     agentName,
-    voiceId: agentRow.voice_id,
+    voiceId: resolved.voiceId,
   })
   if (!ensured.ok) {
     return NextResponse.json({ error: ensured.error }, { status: 502 })
