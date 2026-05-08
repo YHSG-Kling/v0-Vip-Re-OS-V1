@@ -209,7 +209,7 @@ export function MyShowTab({ channels, hasVoiceClone }: Props) {
               </p>
               {!hasVoiceClone && (
                 <Link
-                  href="/dashboard/videos/voice"
+                  href="/dashboard/settings/twin-studio"
                   className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium mt-1.5 hover:underline"
                 >
                   <ExternalLink className="h-3 w-3" />

@@ -398,7 +398,7 @@ export function CreateEpisodeDialog({
               <p className="font-medium text-amber-800">Set up your voice clone first</p>
               <p className="text-amber-700">
                 Audio generation requires an ElevenLabs voice clone.{" "}
-                <Link href="/dashboard/videos/voice" className="underline font-medium">
+                <Link href="/dashboard/settings/twin-studio" className="underline font-medium">
                   Open Voice Setup
                   <ExternalLink className="inline h-3 w-3 ml-0.5" />
                 </Link>
