@@ -28,10 +28,25 @@
  */
 
 import "server-only"
-import OpenAI from "openai"
+import { streamText } from "ai"
+import { createGateway } from "@ai-sdk/gateway"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { selectModelForTask } from "@/lib/ai/models"
+import { resolveModel } from "@/lib/ai/resolve-model"
+
+// Map AIModel union → "provider/modelId" string the Vercel Gateway accepts.
+// Mirrors MODEL_CONFIG in lib/ai/models.ts but kept inline so this route
+// never reaches into a private map.
+const GATEWAY_MODEL_FOR: Record<string, string> = {
+  "claude-sonnet": "anthropic/claude-sonnet-4-20250514",
+  "claude-opus":   "anthropic/claude-opus-4-20250514",
+  "claude-haiku":  "anthropic/claude-haiku-4-20250514",
+  "gpt-4o":        "openai/gpt-4o",
+  "gpt-4-turbo":   "openai/gpt-4-turbo",
+  "gpt-4o-mini":   "openai/gpt-4o-mini",
+}
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -246,8 +261,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) return NextResponse.json({ error: "OPENAI_API_KEY not configured" }, { status: 503 })
+  const gatewayKey = process.env.AI_GATEWAY_API_KEY
+  if (!gatewayKey) return NextResponse.json({ error: "AI_GATEWAY_API_KEY not configured" }, { status: 503 })
 
   const body = await request.json().catch(() => null) as
     | { model?: string; messages?: any[]; stream?: boolean }
@@ -289,27 +304,71 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ── Forward to OpenAI as a streaming chat completion ──────────────────────
-  const openai = new OpenAI({ apiKey })
+  // ── Resolve model via the platform routing table ────────────────────────
+  // Live conversational turns are latency-critical → gpt-4o-mini by default,
+  // claude-haiku as fallback. Both routed through the Vercel AI Gateway so
+  // costs roll up into the same per-brokerage usage meter as every other AI
+  // call on the platform.
+  const { model: routedModel, fallback } = selectModelForTask("live_avatar_conversation")
+  const gateway = createGateway({ apiKey: gatewayKey })
+  const primaryModelStr =
+    GATEWAY_MODEL_FOR[routedModel] ?? GATEWAY_MODEL_FOR["gpt-4o-mini"]
+  const fallbackModelStr =
+    GATEWAY_MODEL_FOR[fallback] ?? GATEWAY_MODEL_FOR["claude-haiku"]
+  const primaryModel = gateway(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+  const fallbackModel = gateway(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
 
-  const stream = await openai.chat.completions.create({
-    model: body.model ?? "gpt-4o-mini",
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...cleaned.filter((m) => m.role !== "system"), // dedupe; we own system
-    ],
-    stream: true,
-    temperature: 0.7,
-  })
+  // ── Stream — try primary, fall back on error ────────────────────────────
+  let result: ReturnType<typeof streamText>
+  try {
+    result = streamText({
+      model: primaryModel,
+      system: systemPrompt,
+      messages: cleaned
+        .filter((m) => m.role !== "system")
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
+      temperature: 0.7,
+    })
+  } catch {
+    result = streamText({
+      model: fallbackModel,
+      system: systemPrompt,
+      messages: cleaned
+        .filter((m) => m.role !== "system")
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
+      temperature: 0.7,
+    })
+  }
 
-  // ── Pipe OpenAI SSE chunks straight back to D-ID ──────────────────────────
+  // ── Wrap AI SDK text deltas in OpenAI chat-completion SSE format ────────
+  // D-ID expects byte-compatible OpenAI chunks: each delta wrapped in a
+  // `chat.completion.chunk` envelope, terminated by `data: [DONE]`.
   const encoder = new TextEncoder()
+  const chunkId = `chatcmpl-${Date.now().toString(36)}`
+  const created = Math.floor(Date.now() / 1000)
+  const modelLabel = body.model ?? routedModel
+
   const out = new ReadableStream({
     async start(controller) {
       try {
-        for await (const chunk of stream) {
+        for await (const delta of result.textStream) {
+          const chunk = {
+            id: chunkId,
+            object: "chat.completion.chunk",
+            created,
+            model: modelLabel,
+            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+          }
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
         }
+        const finalChunk = {
+          id: chunkId,
+          object: "chat.completion.chunk",
+          created,
+          model: modelLabel,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
         controller.enqueue(encoder.encode("data: [DONE]\n\n"))
       } catch (e) {
         controller.enqueue(

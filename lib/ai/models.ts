@@ -91,6 +91,7 @@ export const AI_TASK_ROUTING: Record<string, {
   portal_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client portal messages — relationship-critical, client-facing" },
   ai_isa_response:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "ISA conversation replies — empathy + conversion critical" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
+  live_avatar_conversation:  { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "D-ID Agents real-time conversational turns — latency-critical, short replies" },
 
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
   market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
