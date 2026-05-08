@@ -27,6 +27,8 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { ensureDIDAgent, issueClientKey } from "@/lib/did/agents"
+import { checkUsageCap } from "@/lib/usage/check-cap"
+import { logMediaUsage } from "@/lib/usage/log-media-usage"
 
 export const runtime = "nodejs"
 
@@ -149,6 +151,22 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  // ── Usage cap — hard-block live avatar sessions when brokerage is over ───
+  // Sessions are the cheap pre-flight check; minute consumption is metered as
+  // the conversation actually happens (not implemented yet — needs a D-ID
+  // session-end webhook). Sessions cap is the safety net until then.
+  const cap = await checkUsageCap({
+    brokerageId: contact.brokerage_id!,
+    metric: "live_avatar_sessions",
+    addQuantity: 1,
+  })
+  if (!cap.allowed) {
+    return NextResponse.json(
+      { error: cap.message ?? "Usage limit reached", capExceeded: true },
+      { status: 429 },
+    )
+  }
+
   // ── Ensure D-ID Agent exists for this twin ───────────────────────────────
   const ensured = await ensureDIDAgent({
     agentId: agentRow.id,
@@ -189,8 +207,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: keyResult.error }, { status: 502 })
   }
 
+  // ── Log the session start ────────────────────────────────────────────────
+  // Minute-level consumption needs a D-ID session-end webhook (TODO); this
+  // session counter is what hard-caps abusive use until that's wired.
+  logMediaUsage({
+    brokerageId: contact.brokerage_id!,
+    metric: "live_avatar_sessions",
+    quantity: 1,
+    agentId: agentRow.id,
+    contactId,
+    sessionRef: ensured.didAgentId,
+    feature: "portal_widget",
+  }).catch(() => {})
+
   return NextResponse.json({
     didAgentId: ensured.didAgentId,
     clientKey: keyResult.clientKey,
+    softWarning: cap.soft_warning ? cap.message : undefined,
   })
 }

@@ -18,6 +18,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { checkUsageCap } from "@/lib/usage/check-cap"
+import { logMediaUsage } from "@/lib/usage/log-media-usage"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -67,6 +69,18 @@ export async function POST(request: NextRequest) {
 
     if (!agentRow) {
       return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
+    }
+
+    // ─── Usage cap on twin creations (skip when updating an existing twin) ──
+    if (!twin_id) {
+      const cap = await checkUsageCap({
+        brokerageId: agentRow.brokerage_id ?? auth.brokerageId,
+        metric: "avatars_created",
+        addQuantity: 1,
+      })
+      if (!cap.allowed) {
+        return NextResponse.json({ error: cap.message, capExceeded: true }, { status: 429 })
+      }
     }
 
     // ─── Submit to D-ID /avatars ──────────────────────────────────────────────
@@ -152,6 +166,19 @@ export async function POST(request: NextRequest) {
           .eq("agent_id", agentRow.id)
           .neq("id", asset.id)
       }
+    }
+
+    // ─── Log the usage event (skip when updating an existing twin) ──────────
+    if (!twin_id) {
+      logMediaUsage({
+        brokerageId: agentRow.brokerage_id ?? auth.brokerageId,
+        metric: "avatars_created",
+        quantity: 1,
+        agentId: agentRow.id,
+        userId: auth.userId,
+        sessionRef: did_avatar_id,
+        feature: "twin_studio",
+      }).catch(() => {})
     }
 
     return NextResponse.json({

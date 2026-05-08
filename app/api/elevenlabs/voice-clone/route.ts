@@ -10,6 +10,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { checkUsageCap } from "@/lib/usage/check-cap"
+import { logMediaUsage } from "@/lib/usage/log-media-usage"
 
 const EL_API_BASE = "https://api.elevenlabs.io/v1"
 
@@ -45,6 +47,16 @@ export async function POST(request: NextRequest) {
         { error: "Either profile_id (legacy) or twin_id (Twin Studio) is required" },
         { status: 400 }
       )
+    }
+
+    // ─── Usage cap on voice clone creation ──────────────────────────────────
+    const cap = await checkUsageCap({
+      brokerageId: auth.brokerageId,
+      metric: "voice_clones_created",
+      addQuantity: 1,
+    })
+    if (!cap.allowed) {
+      return NextResponse.json({ error: cap.message, capExceeded: true }, { status: 429 })
     }
 
     // Download and attach audio samples as multipart/form-data
@@ -100,6 +112,18 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", twin_id)
+
+      logMediaUsage({
+        brokerageId: auth.brokerageId,
+        metric: "voice_clones_created",
+        quantity: 1,
+        agentId: auth.agentId,
+        userId: auth.userId,
+        sessionRef: elevenlabs_voice_id,
+        feature: "twin_studio",
+        metadata: { twin_id },
+      }).catch(() => {})
+
       return NextResponse.json({ success: true, elevenlabs_voice_id })
     }
 
@@ -122,6 +146,17 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       console.warn("[elevenlabs/voice-clone] sync to agents.voice_id failed:", err)
     }
+
+    logMediaUsage({
+      brokerageId: auth.brokerageId,
+      metric: "voice_clones_created",
+      quantity: 1,
+      agentId: auth.agentId,
+      userId: auth.userId,
+      sessionRef: elevenlabs_voice_id,
+      feature: "voice_avatar_legacy",
+      metadata: { profile_id },
+    }).catch(() => {})
 
     return NextResponse.json({ success: true, elevenlabs_voice_id })
   } catch (error: any) {
