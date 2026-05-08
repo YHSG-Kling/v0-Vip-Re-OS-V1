@@ -259,12 +259,8 @@ export default async function PortalLayout({
         isBuyer={isBuyer}
         isSeller={isSeller}
         persona={persona}
-        agentName={agentName}
         agentFirstName={agentData?.full_name?.split(" ")[0] ?? agentName}
         agentHasDIDAvatar={agentHasDIDAvatar}
-        agentDIDAvatarId={agentDIDAvatarId}
-        agentDIDPhotoUrl={agentDIDPhotoUrl}
-        agentDIDVideoUrl={agentDIDVideoUrl}
       />
     </div>
   )
