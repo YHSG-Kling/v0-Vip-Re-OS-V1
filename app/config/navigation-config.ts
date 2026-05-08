@@ -27,7 +27,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Video',
         children: [
           { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
-          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/settings/voice-avatar' },
+          { id: 'twin-studio', label: 'Twin Studio', href: '/dashboard/settings/twin-studio' },
           { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
           { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
@@ -204,7 +204,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Video',
         children: [
           { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
-          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/settings/voice-avatar' },
+          { id: 'twin-studio', label: 'Twin Studio', href: '/dashboard/settings/twin-studio' },
           { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
           { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
@@ -326,7 +326,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Video',
         children: [
           { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
-          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/settings/voice-avatar' },
+          { id: 'twin-studio', label: 'Twin Studio', href: '/dashboard/settings/twin-studio' },
           { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
         ],
       },
@@ -646,7 +646,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Video',
         children: [
           { id: 'create-video', label: 'Create Video', href: '/dashboard/videos/create' },
-          { id: 'avatar-voice', label: 'Avatar & Voice Setup', href: '/dashboard/settings/voice-avatar' },
+          { id: 'twin-studio', label: 'Twin Studio', href: '/dashboard/settings/twin-studio' },
           { id: 'my-videos', label: 'My Videos', href: '/dashboard/videos/library' },
           { id: 'education', label: 'Education', href: '/dashboard/videos/education' },
         ],
