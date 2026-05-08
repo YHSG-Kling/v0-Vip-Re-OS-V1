@@ -136,6 +136,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'settings-integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
           { id: 'settings-isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
           { id: 'settings-notification-rules', label: 'Notification Rules', href: '/dashboard/settings/notification-rules' },
+          { id: 'settings-usage', label: 'Usage', href: '/dashboard/settings/usage' },
           { id: 'settings-license-ce', label: 'License & CE', href: '/dashboard/settings/license-ce' },
           { id: 'widget-settings', label: 'Widget & AI Setup', href: '/dashboard/settings/widget' },
           { id: 'podcast-channels', label: 'Podcast Channels', href: '/dashboard/settings/podcast-channels' },
