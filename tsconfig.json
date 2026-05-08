@@ -61,7 +61,6 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules",
-    "agent-worker"
+    "node_modules"
   ]
 }

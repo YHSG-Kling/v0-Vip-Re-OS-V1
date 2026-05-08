@@ -6,9 +6,9 @@
  * extracted (note + tasks). Designed to drop into a contact card or detail
  * header without re-rendering anything around it.
  *
- * Uses the browser's SpeechRecognition API (same approach as the existing
- * AvatarChatWidget) so it works on iOS Safari, Chrome desktop, and Edge.
- * Falls back to a textarea prompt when the API is missing.
+ * Uses the browser's SpeechRecognition API so it works on iOS Safari,
+ * Chrome desktop, and Edge. Falls back to a textarea prompt when the API
+ * is missing.
  */
 
 import { useCallback, useRef, useState } from "react"
