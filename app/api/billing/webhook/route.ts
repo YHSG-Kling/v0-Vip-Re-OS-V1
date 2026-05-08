@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/stripe"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import Stripe from "stripe"
 
 // Stripe webhook handler
@@ -159,6 +160,11 @@ export async function POST(request: NextRequest) {
         if (error) {
           console.error("[Billing Webhook] Failed to update subscription:", error)
         }
+
+        // Keep brokerages.plan_tier in sync with the active subscription so
+        // cap-enforcement reflects upgrades/downgrades immediately. Failure
+        // here is logged but doesn't fail the webhook.
+        await syncBrokeragePlanTier(brokerageId)
         break
       }
 
@@ -185,6 +191,11 @@ export async function POST(request: NextRequest) {
         if (error) {
           console.error("[Billing Webhook] Failed to cancel subscription:", error)
         }
+
+        // Cap-enforcement: with no active subscription the brokerage falls
+        // back to the entry-level tier. Caps tighten immediately so we can't
+        // burn paid features on a cancelled account.
+        await syncBrokeragePlanTier(brokerageId)
 
         // Notify brokerage
         await supabase.from("notifications").insert({

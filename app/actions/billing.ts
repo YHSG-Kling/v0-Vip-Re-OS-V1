@@ -273,6 +273,13 @@ export async function manualTierOverride(
     throw new Error("Unauthorized: superadmin only")
   }
 
+  // Look up the brokerage_id BEFORE updating so we can sync plan_tier after.
+  const { data: subRow } = await supabase
+    .from("subscriptions")
+    .select("brokerage_id")
+    .eq("id", subscriptionId)
+    .maybeSingle()
+
   // Update subscription tier
   const { error } = await supabase
     .from("subscriptions")
@@ -283,6 +290,14 @@ export async function manualTierOverride(
     .eq("id", subscriptionId)
 
   if (error) throw error
+
+  // Sync brokerages.plan_tier so cap-enforcement reflects the new tier
+  // immediately. Without this, checkUsageCap would still gate on the old
+  // tier's limits until the next Stripe webhook fires.
+  if (subRow?.brokerage_id) {
+    const { syncBrokeragePlanTier } = await import("@/lib/billing/sync-plan-tier")
+    await syncBrokeragePlanTier(subRow.brokerage_id)
+  }
 
   // Log the override in audit_log
   await supabase.from("audit_log").insert({
