@@ -40,10 +40,22 @@ export async function POST(request: NextRequest) {
       source_url,
       label = "My Avatar",
       set_as_default = true,
-    }: { source_url: string; label?: string; set_as_default?: boolean } = body
+      source_type = "video",
+      twin_id,
+    }: {
+      source_url: string
+      label?: string
+      set_as_default?: boolean
+      source_type?: "photo" | "video"
+      /** When provided, updates an existing twin row (created via createTwinDraft) instead of inserting a new asset row. */
+      twin_id?: string
+    } = body
 
     if (!source_url) {
       return NextResponse.json({ error: "source_url is required" }, { status: 400 })
+    }
+    if (source_type !== "photo" && source_type !== "video") {
+      return NextResponse.json({ error: "source_type must be 'photo' or 'video'" }, { status: 400 })
     }
 
     // Resolve agents.id for the current user
@@ -85,43 +97,69 @@ export async function POST(request: NextRequest) {
 
     const did_avatar_id: string = didData.id
 
-    // ─── Persist asset record ────────────────────────────────────────────────
-    const { data: asset, error: insertError } = await supabase
-      .from("agent_avatar_assets")
-      .insert({
-        agent_id: agentRow.id,
-        brokerage_id: agentRow.brokerage_id ?? auth.brokerageId,
-        label,
-        source_type: "video",
-        source_url,
-        did_avatar_id,
-        status: "pending",
-        is_default: set_as_default,
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (insertError) {
-      console.error("[create-avatar] DB insert error:", insertError)
-      return NextResponse.json({ error: insertError.message }, { status: 500 })
-    }
-
-    // If other avatars exist, clear their is_default flag when this one is set as default
-    if (set_as_default) {
+    // ─── Persist on existing twin row OR create new asset ────────────────────
+    let assetId: string
+    if (twin_id) {
+      // Update path — wizard already created the row via createTwinDraft.
+      // Verify the row belongs to this agent before mutating.
+      const { data: existing } = await supabase
+        .from("agent_avatar_assets")
+        .select("id, agent_id")
+        .eq("id", twin_id)
+        .maybeSingle()
+      if (!existing || existing.agent_id !== agentRow.id) {
+        return NextResponse.json({ error: "Twin not found" }, { status: 404 })
+      }
       await supabase
         .from("agent_avatar_assets")
-        .update({ is_default: false })
-        .eq("agent_id", agentRow.id)
-        .neq("id", asset.id)
+        .update({
+          did_avatar_id,
+          status: "pending",
+          source_type,
+          source_url,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", twin_id)
+      assetId = twin_id
+    } else {
+      const { data: asset, error: insertError } = await supabase
+        .from("agent_avatar_assets")
+        .insert({
+          agent_id: agentRow.id,
+          brokerage_id: agentRow.brokerage_id ?? auth.brokerageId,
+          label,
+          source_type,
+          source_url,
+          did_avatar_id,
+          status: "pending",
+          is_default: set_as_default,
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single()
+
+      if (insertError || !asset) {
+        console.error("[create-avatar] DB insert error:", insertError)
+        return NextResponse.json({ error: insertError?.message ?? "Insert failed" }, { status: 500 })
+      }
+      assetId = asset.id
+
+      // If other avatars exist, clear their is_default flag when this one is set as default
+      if (set_as_default) {
+        await supabase
+          .from("agent_avatar_assets")
+          .update({ is_default: false })
+          .eq("agent_id", agentRow.id)
+          .neq("id", asset.id)
+      }
     }
 
     return NextResponse.json({
       success: true,
-      asset_id: asset.id,
+      asset_id: assetId,
       did_avatar_id,
       status: "pending",
-      message: "Avatar is being processed by D-ID. This usually takes 1–3 minutes.",
+      message: "Twin is being processed. This usually takes 1–3 minutes.",
     })
   } catch (error: any) {
     console.error("[create-avatar] Error:", error)

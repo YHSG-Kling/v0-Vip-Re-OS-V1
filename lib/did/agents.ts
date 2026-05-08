@@ -26,10 +26,17 @@ const DID_API_BASE = "https://api.d-id.com"
 
 export interface EnsureDIDAgentParams {
   agentId: string         // agents.id (NOT users.id)
-  presenterId: string     // agent's trained D-ID presenter (did_avatar_id)
+  presenterId: string     // trained D-ID presenter (did_avatar_id) for this twin
   elevenLabsVoiceId?: string | null
   /** Display name shown in the D-ID dashboard. */
   agentName: string
+  /** When set, the D-ID Agent id is cached on this twin row instead of
+   *  the per-agent agent_voice_profiles fallback. Each twin gets its own
+   *  D-ID Agent so personality + voice + presenter stay locked together. */
+  twinId?: string
+  /** Free-text personality / tone — appended to the base instructions so
+   *  the bundled LLM (or our custom-LLM endpoint) sees it. */
+  personality?: string | null
 }
 
 export interface EnsureDIDAgentResult {
@@ -63,15 +70,25 @@ export async function ensureDIDAgent(
 
   const supabase = createServiceClient()
 
-  // ── 1. Cache hit — return immediately ──────────────────────────────────
-  const { data: profile } = await supabase
-    .from("agent_voice_profiles")
-    .select("did_agent_id")
-    .eq("agent_id", params.agentId)
-    .maybeSingle()
-
-  if (profile?.did_agent_id) {
-    return { ok: true, didAgentId: profile.did_agent_id, created: false }
+  // ── 1. Cache hit — per twin first, then per agent ─────────────────────
+  if (params.twinId) {
+    const { data: twin } = await supabase
+      .from("agent_avatar_assets")
+      .select("did_agent_id")
+      .eq("id", params.twinId)
+      .maybeSingle()
+    if (twin?.did_agent_id) {
+      return { ok: true, didAgentId: twin.did_agent_id, created: false }
+    }
+  } else {
+    const { data: profile } = await supabase
+      .from("agent_voice_profiles")
+      .select("did_agent_id")
+      .eq("agent_id", params.agentId)
+      .maybeSingle()
+    if (profile?.did_agent_id) {
+      return { ok: true, didAgentId: profile.did_agent_id, created: false }
+    }
   }
 
   // ── 2. Cache miss — create the D-ID Agent ──────────────────────────────
@@ -106,11 +123,12 @@ export async function ensureDIDAgent(
       // Instructions are intentionally minimal here — the *real* persona,
       // brand voice, and contact context are injected by /api/did/custom-llm
       // on every request. See lib/kernel/brand-voice.ts + the route handler.
-      instructions:
-        "You are the real-estate-agent's AI assistant speaking with one of their clients. " +
-        "Defer to the system context provided on each message — it carries the contact's " +
-        "name, journey stage, and the agent's brand voice. Keep replies short, warm, and " +
-        "natural for a face-to-face conversation.",
+      instructions: [
+        "You are the real-estate-agent's AI assistant speaking with one of their clients.",
+        "Defer to the system context provided on each message — it carries the contact's name, journey stage, and the agent's brand voice.",
+        "Keep replies short, warm, and natural for a face-to-face conversation.",
+        params.personality ? `Personality: ${params.personality}` : null,
+      ].filter(Boolean).join(" "),
     },
   }
 
@@ -133,14 +151,21 @@ export async function ensureDIDAgent(
   }
 
   // ── 3. Cache the id ────────────────────────────────────────────────────
-  // upsert because the row may not exist yet for agents whose voice/avatar
-  // setup hasn't been touched.
-  await supabase
-    .from("agent_voice_profiles")
-    .upsert(
-      { agent_id: params.agentId, did_agent_id: data.id },
-      { onConflict: "agent_id" },
-    )
+  // Twin Studio: cache on the twin row so each twin has its own D-ID Agent.
+  // Legacy: cache on agent_voice_profiles for callers without a twinId.
+  if (params.twinId) {
+    await supabase
+      .from("agent_avatar_assets")
+      .update({ did_agent_id: data.id, updated_at: new Date().toISOString() })
+      .eq("id", params.twinId)
+  } else {
+    await supabase
+      .from("agent_voice_profiles")
+      .upsert(
+        { agent_id: params.agentId, did_agent_id: data.id },
+        { onConflict: "agent_id" },
+      )
+  }
 
   return { ok: true, didAgentId: data.id, created: true }
 }

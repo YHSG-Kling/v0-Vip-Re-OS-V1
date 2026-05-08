@@ -100,25 +100,62 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Assigned agent not found" }, { status: 404 })
   }
 
-  const { data: voiceProfile } = await supabase
-    .from("agent_voice_profiles")
-    .select("did_avatar_id, elevenlabs_voice_id")
+  // Twin Studio: prefer the agent's default twin (look + voice + personality
+  // bundled). Fall back to agent_voice_profiles for agents who haven't migrated
+  // to the per-twin model yet.
+  const { data: defaultTwin } = await supabase
+    .from("agent_avatar_assets")
+    .select("id, did_avatar_id, voice_id, personality, status, approval_status")
     .eq("agent_id", agentRow.id)
+    .eq("is_default", true)
     .maybeSingle()
 
-  const presenterId = voiceProfile?.did_avatar_id
+  let twinId: string | undefined
+  let presenterId: string | null = null
+  let voiceId: string | null = null
+  let personality: string | null = null
+
+  if (defaultTwin) {
+    if (defaultTwin.status !== "ready") {
+      return NextResponse.json(
+        { error: "Your agent's twin is still processing — try again in a minute" },
+        { status: 409 },
+      )
+    }
+    if (defaultTwin.approval_status !== "approved") {
+      return NextResponse.json(
+        { error: "Your agent's twin is awaiting brokerage approval" },
+        { status: 409 },
+      )
+    }
+    twinId = defaultTwin.id
+    presenterId = defaultTwin.did_avatar_id
+    voiceId = defaultTwin.voice_id
+    personality = defaultTwin.personality
+  } else {
+    const { data: voiceProfile } = await supabase
+      .from("agent_voice_profiles")
+      .select("did_avatar_id, elevenlabs_voice_id")
+      .eq("agent_id", agentRow.id)
+      .maybeSingle()
+    presenterId = voiceProfile?.did_avatar_id ?? null
+    voiceId = voiceProfile?.elevenlabs_voice_id ?? agentRow.voice_id ?? null
+  }
+
   if (!presenterId) {
     return NextResponse.json(
-      { error: "Agent has no D-ID avatar configured" },
+      { error: "Agent has no twin configured yet" },
       { status: 409 },
     )
   }
 
-  // ── Ensure D-ID Agent exists ─────────────────────────────────────────────
+  // ── Ensure D-ID Agent exists for this twin ───────────────────────────────
   const ensured = await ensureDIDAgent({
     agentId: agentRow.id,
+    twinId,
     presenterId,
-    elevenLabsVoiceId: voiceProfile?.elevenlabs_voice_id ?? agentRow.voice_id ?? null,
+    elevenLabsVoiceId: voiceId,
+    personality,
     agentName: agentRow.full_name ?? "Agent",
   })
 

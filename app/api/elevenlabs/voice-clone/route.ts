@@ -25,11 +25,24 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, sample_audio_urls, profile_id } = body
+    const { name, sample_audio_urls, profile_id, twin_id } = body as {
+      name: string
+      sample_audio_urls: string[]
+      /** Legacy: writes the clone to agent_voice_profiles (per-agent default). */
+      profile_id?: string
+      /** Twin Studio: writes the clone to a specific agent_avatar_assets row. */
+      twin_id?: string
+    }
 
-    if (!name || !Array.isArray(sample_audio_urls) || sample_audio_urls.length < 1 || !profile_id) {
+    if (!name || !Array.isArray(sample_audio_urls) || sample_audio_urls.length < 1) {
       return NextResponse.json(
-        { error: "Missing required fields: name, sample_audio_urls (min 1), profile_id" },
+        { error: "Missing required fields: name, sample_audio_urls (min 1)" },
+        { status: 400 }
+      )
+    }
+    if (!profile_id && !twin_id) {
+      return NextResponse.json(
+        { error: "Either profile_id (legacy) or twin_id (Twin Studio) is required" },
         { status: 400 }
       )
     }
@@ -65,23 +78,42 @@ export async function POST(request: NextRequest) {
     }
 
     const elevenlabs_voice_id: string = elData.voice_id
+    const sample_url = sample_audio_urls[0] ?? null
 
-    // Store the new clone id on the rich training profile.
+    // Twin Studio path: bind the clone to a specific twin row.
+    // The twin's voice is promoted to agents.voice_id only when the user
+    // sets the twin as default (handled in app/actions/twin-studio.ts).
+    if (twin_id) {
+      const { data: twin } = await supabase
+        .from("agent_avatar_assets")
+        .select("id, agent_id")
+        .eq("id", twin_id)
+        .maybeSingle()
+      if (!twin) {
+        return NextResponse.json({ error: "Twin not found" }, { status: 404 })
+      }
+      await supabase
+        .from("agent_avatar_assets")
+        .update({
+          voice_id: elevenlabs_voice_id,
+          voice_sample_url: sample_url,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", twin_id)
+      return NextResponse.json({ success: true, elevenlabs_voice_id })
+    }
+
+    // Legacy path: per-agent default profile (kept for callers not yet on Twin Studio).
     await supabase
       .from("agent_voice_profiles")
       .update({ elevenlabs_voice_id })
-      .eq("id", profile_id)
+      .eq("id", profile_id!)
 
-    // Promote to the canonical agents.voice_id slot — the AI ISA call
-    // resolver reads from there. Without this sync the agent could
-    // complete a voice clone here and ISA calls would still fall back
-    // to the brokerage default. Look up agent_id from the profile, then
-    // delegate to syncAgentVoiceId.
     try {
       const { data: profile } = await supabase
         .from("agent_voice_profiles")
         .select("agent_id")
-        .eq("id", profile_id)
+        .eq("id", profile_id!)
         .maybeSingle()
       if (profile?.agent_id) {
         const { syncAgentVoiceId } = await import("@/lib/voice/sync-voice-id")
