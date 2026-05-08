@@ -1,4 +1,4 @@
-import { generateText, Output } from "ai"
+import { generateText, Output, stepCountIs } from "ai"
 import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -536,6 +536,12 @@ export interface RoutedTextRequest {
   userId?: string
   brokerageId?: string | null
   agentId?: string
+  /** Tools the model can invoke — same shape as AI SDK's tool() helper.
+   *  When omitted, behaves as a plain text-generation call (current default). */
+  tools?: Record<string, unknown>
+  /** Multi-step tool calling: stop after N steps. Defaults to 1 (text only)
+   *  in the SDK; set higher for tool-using flows (typical: 5). */
+  maxSteps?: number
 }
 
 /**
@@ -596,6 +602,10 @@ export async function generateTextRouted(
   const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
   const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
 
+  // When tools are present we need multi-step support; default to 5 steps so
+  // the model can call a tool, see the result, and produce a final reply.
+  const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
+
   try {
     const result = await generateText({
       model: primaryInstance,
@@ -604,6 +614,8 @@ export async function generateTextRouted(
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
+      tools: request.tools as any,
+      stopWhen,
     })
     return { text: result.text }
   } catch {
@@ -618,6 +630,8 @@ export async function generateTextRouted(
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
+      tools: request.tools as any,
+      stopWhen,
     })
     return { text: result.text }
   }

@@ -22,6 +22,7 @@ import { dispatchEmail } from '@/lib/providers/dispatch'
 import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { buildISATools } from '@/lib/ai-isa/tools'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
 export async function processInboundEmail(params: {
@@ -160,16 +161,35 @@ export async function processInboundEmail(params: {
     'If the lead seems highly motivated or mentions a specific timeline, reflect urgency back.',
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
-  ].join(' ')
+    '',
+    'You can take real CRM actions via tools:',
+    '- escalate_to_agent: when the lead asks for a human or needs urgent attention',
+    '- mark_qualification: when the lead reveals stronger or weaker buying signals',
+    '- request_appointment: when the lead asks to meet, call, or tour',
+    '- mark_do_not_contact: when the lead clearly opts out (TCPA — irreversible)',
+    'Call tools BEFORE generating your reply text. The reply should reflect any actions you took (e.g., "I just looped in your agent — they\'ll reach out shortly").',
+  ].join('\n')
 
   const systemPrompt = brandVoice.systemBlock
-    ? `${baseSystem} Brand voice guidance: ${brandVoice.systemBlock}`
+    ? `${baseSystem}\n\nBrand voice guidance: ${brandVoice.systemBlock}`
     : baseSystem
 
-  // ── Generate AI reply via AI SDK ──────────────────────────────────────────
+  // ── Generate AI reply via AI SDK with kernel-validated tools ──────────────
+  // Tools share a single context bound to (lead, brokerage, agent). Each
+  // tool re-checks brokerage_id; mark_do_not_contact reuses the existing
+  // TCPA halt path so the same notifications + sequence stops fire.
+  const isaTools = buildISATools({
+    leadId: lead.id,
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    inboundExcerpt: params.body.slice(0, 280),
+  })
+
   const { text: replyBody } = await generateText({
-    model: resolveModel('openai/gpt-4o-mini'),
+    feature: 'ai_isa_response',
     system: systemPrompt,
+    tools: isaTools,
+    maxSteps: 5,
     messages: [
       {
         role: 'user',
