@@ -526,20 +526,19 @@ export function IsaCallingClient(props: Props) {
             <CardHeader>
               <CardTitle>Voice Provider</CardTitle>
               <CardDescription>
-                The AI ISA can speak using either ElevenLabs (your voice clone)
-                or VAPI's built-in voices. Voice clones are configured on the
-                Voice & Avatar page.
+                The AI ISA speaks with your default twin's voice clone. Set up
+                or switch your default twin in Twin Studio.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <a
-                href="/dashboard/settings/voice-avatar"
+                href="/dashboard/settings/twin-studio"
                 className="block p-3 border rounded-lg hover:bg-muted/40 transition"
               >
-                <p className="font-medium text-sm">Voice & Avatar Setup →</p>
+                <p className="font-medium text-sm">Twin Studio →</p>
                 <p className="text-xs text-muted-foreground">
-                  Record your voice clone, link your D-ID avatar, and choose
-                  voice mode (clone / front office / assistant).
+                  Manage your AI digital twins — look, voice, personality.
+                  Pick which one represents you on calls.
                 </p>
               </a>
             </CardContent>
