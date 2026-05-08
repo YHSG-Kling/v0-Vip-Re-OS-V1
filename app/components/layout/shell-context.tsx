@@ -29,6 +29,11 @@ interface ShellContextValue {
   voiceListening: boolean
   setVoiceListening: (listening: boolean) => void
 
+  // Track B — on-the-go ElevenLabs Conversational AI overlay (separate from
+  // the typed-chat AI panel above). Opens when the FAB is short-tapped.
+  voiceOverlayOpen: boolean
+  setVoiceOverlayOpen: (open: boolean) => void
+
   mobileSidebarOpen: boolean
   setMobileSidebarOpen: (open: boolean) => void
   toggleMobileSidebar: () => void
@@ -40,6 +45,7 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
   const [inboxOpen, setInboxOpen] = useState(false)
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [voiceListening, setVoiceListening] = useState(false)
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   const toggleInbox = useCallback(() => setInboxOpen((prev) => !prev), [])
@@ -111,6 +117,8 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
         toggleAiAssistant,
         voiceListening,
         setVoiceListening,
+        voiceOverlayOpen,
+        setVoiceOverlayOpen,
         mobileSidebarOpen,
         setMobileSidebarOpen,
         toggleMobileSidebar,
