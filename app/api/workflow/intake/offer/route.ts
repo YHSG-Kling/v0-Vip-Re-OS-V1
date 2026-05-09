@@ -129,7 +129,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (!intake) return NextResponse.json({ error: "intake or sessionId required" }, { status: 400 })
 
-    // 1. Run the AI form-fill engine
+    // 1. Run proactive intelligence checks BEFORE filling (so blockers stop the
+    //    flow and the agent fixes the issue first — saves a wasted pass).
+    let proactiveResult: Awaited<ReturnType<typeof import("@/lib/workflow/intelligence/proactive-checks").runAllOfferChecks>> | null = null
+    try {
+      const { runAllOfferChecks } = await import("@/lib/workflow/intelligence/proactive-checks")
+      proactiveResult = await runAllOfferChecks({
+        intake,
+        contactId:  body.contactId ?? null,
+        agentUserId: user.id,
+        brokerageId,
+        listingId:  intake.listingId.value,
+      })
+
+      if (!proactiveResult.passed) {
+        // Hard blockers — return them; agent must resolve before drafting.
+        return NextResponse.json({
+          error:    "Proactive checks blocked the offer",
+          findings: proactiveResult.findings,
+          blockers: proactiveResult.blockers,
+          addenda:  proactiveResult.addenda,
+        }, { status: 422 })
+      }
+    } catch { /* checks are best-effort — proceed if they crash */ }
+
+    // 2. AI form-fill engine
     let filledPacket
     try {
       filledPacket = await fillOfferPacket({ intake, brokerageId })
@@ -186,6 +210,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ? `/dashboard/buyers/${body.contactId}/offers/new?documentId=${doc.id}`
         : `/dashboard/documents/${doc.id}`,
       filledPacket,
+      // Surface non-blocking findings (warnings + info) so the FormWizard can
+      // show a "review these" panel alongside the prefilled fields.
+      findings: proactiveResult?.findings ?? [],
+      addenda:  proactiveResult?.addenda  ?? [],
     })
   }
 
