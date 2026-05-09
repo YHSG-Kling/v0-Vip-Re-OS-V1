@@ -114,83 +114,154 @@ const COST_PER_IMAGE: Record<string, number> = {
 
 // ---------------------------------------------------------------------------
 
-export async function generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) {
-    return { success: false, errorCode: "no_api_key", error: "OPENAI_API_KEY not configured" }
-  }
+// ---------------------------------------------------------------------------
+// gpt-image-1 via Vercel AI Gateway (Flex mode)
+// ---------------------------------------------------------------------------
 
+/**
+ * Maps image quality to gpt-image-1 quality levels.
+ * gpt-image-1 uses "low" | "medium" | "high" | "auto".
+ */
+function toGptImage1Quality(q: ImageQuality): string {
+  return q === "hd" ? "high" : "medium"
+}
+
+async function callGptImage1Gateway(
+  prompt: string,
+  size: ImageSize,
+  quality: ImageQuality
+): Promise<{ imageBytes: Buffer; revisedPrompt: string } | null> {
+  const gatewayKey = process.env.AI_GATEWAY_API_KEY
+  if (!gatewayKey) return null
+
+  // Vercel AI Gateway endpoint (OpenAI-compatible image generation API)
+  const base = "https://ai-gateway.vercel.sh/v1"
+  const res = await fetch(`${base}/images/generations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${gatewayKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-image-1",
+      prompt,
+      size,
+      quality: toGptImage1Quality(quality),
+      n: 1,
+      // gpt-image-1 returns base64 by default; request b64_json explicitly
+      response_format: "b64_json",
+      // Flex routing lets the gateway pick the fastest available capacity
+      routing: "flex",
+    }),
+  })
+
+  if (!res.ok) return null // let caller fall back to DALL-E 3
+
+  const data = await res.json()
+  const b64 = data?.data?.[0]?.b64_json as string | undefined
+  if (!b64) return null
+
+  return {
+    imageBytes: Buffer.from(b64, "base64"),
+    revisedPrompt: data?.data?.[0]?.revised_prompt ?? prompt,
+  }
+}
+
+export async function generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
   const size = input.size ?? DEFAULT_SIZES[input.purpose]
   const quality = input.quality ?? "standard"
   const style = input.style ?? "natural"
 
   const fullPrompt = buildBrandAwarePrompt(input)
 
-  // 1. Call DALL-E 3
-  let dalleResp: { url: string; revisedPrompt: string } | null = null
-  try {
-    const base = input.endpointBase ?? "https://api.openai.com/v1"
-    const res = await fetch(`${base}/images/generations`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "dall-e-3",
-        prompt: fullPrompt,
-        size,
-        quality,
-        style,
-        n: 1,
-      }),
-    })
+  // 1. Try gpt-image-1 via Vercel AI Gateway (Flex mode) when key is available
+  let imageBytes: Buffer | null = null
+  let revisedPrompt = fullPrompt
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "")
-      const code: GenerateImageResult["errorCode"] =
-        res.status === 401 || res.status === 403
-          ? "auth"
-          : res.status === 429
-          ? "rate_limit"
-          : /content_policy|safety/i.test(body)
-          ? "content_policy"
-          : "unknown"
-      return {
-        success: false,
-        errorCode: code,
-        error: `DALL-E (${res.status}): ${body || res.statusText}`,
+  try {
+    const gatewayResult = await callGptImage1Gateway(fullPrompt, size, quality)
+    if (gatewayResult) {
+      imageBytes = gatewayResult.imageBytes
+      revisedPrompt = gatewayResult.revisedPrompt
+    }
+  } catch { /* gateway unavailable — fall through to DALL-E 3 */ }
+
+  // 2. Fall back to DALL-E 3 via direct OpenAI if gateway path didn't produce bytes
+  if (!imageBytes) {
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) {
+      return { success: false, errorCode: "no_api_key", error: "Neither AI_GATEWAY_API_KEY nor OPENAI_API_KEY is configured" }
+    }
+
+    let dalleResp: { url: string; revisedPrompt: string } | null = null
+    try {
+      const base = input.endpointBase ?? "https://api.openai.com/v1"
+      const res = await fetch(`${base}/images/generations`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "dall-e-3",
+          prompt: fullPrompt,
+          size,
+          quality,
+          style,
+          n: 1,
+        }),
+      })
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "")
+        const code: GenerateImageResult["errorCode"] =
+          res.status === 401 || res.status === 403
+            ? "auth"
+            : res.status === 429
+            ? "rate_limit"
+            : /content_policy|safety/i.test(body)
+            ? "content_policy"
+            : "unknown"
+        return {
+          success: false,
+          errorCode: code,
+          error: `DALL-E (${res.status}): ${body || res.statusText}`,
+        }
       }
+
+      const data = await res.json()
+      const item = data?.data?.[0]
+      if (!item?.url) {
+        return { success: false, errorCode: "unknown", error: "DALL-E returned no image" }
+      }
+      dalleResp = { url: item.url, revisedPrompt: item.revised_prompt ?? fullPrompt }
+    } catch (err: any) {
+      return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
     }
 
-    const data = await res.json()
-    const item = data?.data?.[0]
-    if (!item?.url) {
-      return { success: false, errorCode: "unknown", error: "DALL-E returned no image" }
+    // Download DALL-E image bytes (returns a signed 1-hour URL)
+    try {
+      const dl = await fetch(dalleResp.url)
+      if (!dl.ok) {
+        return { success: false, errorCode: "unknown", error: `Image download failed: ${dl.status}` }
+      }
+      imageBytes = Buffer.from(await dl.arrayBuffer())
+      revisedPrompt = dalleResp.revisedPrompt
+    } catch (err: any) {
+      return { success: false, errorCode: "unknown", error: err?.message ?? "Download failed" }
     }
-    dalleResp = { url: item.url, revisedPrompt: item.revised_prompt ?? fullPrompt }
-  } catch (err: any) {
-    return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
   }
 
-  // 2. Download the image bytes
-  let imageBytes: Buffer
-  try {
-    const dl = await fetch(dalleResp.url)
-    if (!dl.ok) {
-      return { success: false, errorCode: "unknown", error: `Image download failed: ${dl.status}` }
-    }
-    imageBytes = Buffer.from(await dl.arrayBuffer())
-  } catch (err: any) {
-    return { success: false, errorCode: "unknown", error: err?.message ?? "Download failed" }
-  }
+  // imageBytes is now populated (either from gateway or DALL-E fallback)
+  // The null check is enforced by early returns in both paths above.
+  let finalImageBytes: Buffer = imageBytes as Buffer
 
   // 3. Composite brokerage/team logo if provided (and not opted out)
   const logoUrl = input.brand?.logoUrl
   const skipLogo = input.brand?.noLogo === true
   if (logoUrl && !skipLogo) {
     try {
-      imageBytes = await compositeLogoOntoImage(imageBytes, logoUrl)
+      finalImageBytes = await compositeLogoOntoImage(finalImageBytes, logoUrl)
     } catch {
       // Logo compositing is best-effort — don't fail the whole generation
     }
@@ -200,7 +271,7 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
   let permanentUrl: string
   try {
     const filename = `ai-images/${input.purpose}/${Date.now()}-${randomSlug()}.png`
-    const blob = await put(filename, imageBytes, {
+    const blob = await put(filename, finalImageBytes, {
       access: "public",
       contentType: "image/png",
     })
@@ -213,7 +284,7 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     success: true,
     imageUrl: permanentUrl,
     thumbnailUrl: permanentUrl,
-    revisedPrompt: dalleResp.revisedPrompt,
+    revisedPrompt,
     size,
     cost: COST_PER_IMAGE[`${quality}:${size}`] ?? 0.04,
   }

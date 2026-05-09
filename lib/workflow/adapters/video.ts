@@ -27,29 +27,39 @@ export const videoAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "d-id", error: "No video script configured" }
     }
 
-    // Resolve agent voice via voice-resolver
+    // Resolve agent voice + avatar via voice-resolver
     let voiceId: string | undefined
+    let avatarImageUrl: string | null = null
+    let avatarActorId: string | null = null
     if (agentUserId) {
       try {
-        const { resolveSelfVoice } = await import("@/lib/voice/voice-resolver")
-        const resolved = await resolveSelfVoice(agentUserId)
-        voiceId = resolved.voiceId ?? undefined
-      } catch { /* voice resolution is best-effort */ }
+        const { resolveSelfVoice, resolveSelfAvatar } = await import("@/lib/voice/voice-resolver")
+        const [resolvedVoice, resolvedAvatar] = await Promise.all([
+          resolveSelfVoice(agentUserId),
+          resolveSelfAvatar(agentUserId),
+        ])
+        voiceId = resolvedVoice.voiceId ?? undefined
+        // avatarId from resolver is a D-ID actor ID or avatar photo URL
+        avatarActorId = resolvedAvatar.avatarId ?? null
+      } catch { /* voice/avatar resolution is best-effort */ }
     }
 
     // Try D-ID video generation
     let videoUrl: string | undefined
     let videoId: string | undefined
+    let result: unknown
 
     try {
       // D-ID SDK integration lives in lib/did — use string path so TypeScript
       // doesn't fail to resolve this optional module.
       const didPath = "@/lib/did"
       const did = await import(/* webpackIgnore: true */ didPath as string)
-      const result = await (did as any).generateVideo({
+      result = await (did as any).generateVideo({
         script,
         voiceId,
         voiceOnly: step.video_voice_only,
+        actorId: avatarActorId ?? undefined,
+        avatarImageUrl: avatarImageUrl ?? undefined,
         backgroundUrl: step.video_background_url ?? undefined,
         brollUrls: step.video_broll_urls ?? [],
         introUrl: step.video_intro_url ?? undefined,
@@ -60,12 +70,28 @@ export const videoAdapter: ChannelAdapter = {
       videoUrl = (result as any).videoUrl
       videoId = (result as any).videoId
     } catch {
-      // D-ID not configured or module not found — log intent, return success so sequence
-      // doesn't block on a missing integration. video_url output will be empty.
+      // D-ID not configured or module not found — return success so sequence
+      // doesn't block on a missing integration.
       return {
         status: "sent",
         providerKey: "d-id",
         output: { video_url: null, video_id: null, note: "D-ID integration not yet configured" },
+      }
+    }
+
+    // D-ID job still processing (timed out polling) — record as sent with pending output
+    const didResult = result as { videoUrl: string | null; videoId: string; status: string; note?: string }
+    if (!videoUrl && didResult?.status === "processing") {
+      return {
+        status: "sent",
+        providerKey: "d-id",
+        messageId: videoId,
+        output: {
+          video_url: null,
+          video_id: videoId,
+          status: "processing",
+          note: didResult.note ?? "D-ID job queued — poll for completion",
+        },
       }
     }
 
