@@ -43,6 +43,7 @@ import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance
 import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
 import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
 import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
+import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -431,6 +432,9 @@ export default function AgentDashboard() {
 
         {/* Smart Queue — single segmented list, replaces 5 contact-urgency widgets */}
         <SmartQueue />
+
+        {/* Listing presentations prepared by the daily cron — auto-hides when none */}
+        <PresentationReadyBanner />
 
         {/* AI Coaching Insights — auto-hides when agent has fewer than 5 deals */}
         <AgentInsightsWidget />
