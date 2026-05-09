@@ -182,6 +182,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (docErr || !doc) return NextResponse.json({ error: docErr?.message ?? "Could not create document" }, { status: 500 })
 
+    // Record the AI-fill audit trail (every prefilled field gets a row in
+    // document_field_audit). FormWizard later flips agent_overrode=true when
+    // the agent edits a field. Provenance for E&O / litigation discovery.
+    try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch { /* audit is best-effort, never blocks the flow */ }
+
     // 3. Stage the packet via generateOfferDraft (sets needs_agent_input + notifies agent)
     try {
       const draftMod = await import("@/app/actions/ai-offer-creation")

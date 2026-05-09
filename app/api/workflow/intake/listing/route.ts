@@ -134,6 +134,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (docErr || !doc) return NextResponse.json({ error: docErr?.message ?? "Could not create document" }, { status: 500 })
 
     try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch { /* audit is best-effort */ }
+
+    try {
       const intakeMod = await import("@/app/actions/ai-listing-intake")
       const draftParams = intakeToListingDraftParams({
         intake,
