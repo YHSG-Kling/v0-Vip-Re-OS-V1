@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, lazy, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,12 +9,15 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles, Wand2, AlertTriangle } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles, Wand2, AlertTriangle, List, Network } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import Link from "next/link"
 import { saveSequenceSteps, type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/app/actions/campaign-sequences"
 import { composeSequenceStepCopy } from "@/app/actions/sequence-step-ai"
 import { useToast } from "@/hooks/use-toast"
+
+// React Flow canvas — lazy-loaded so @xyflow/react bundle doesn't bloat the initial page
+const WorkflowCanvas = lazy(() => import("./workflow-canvas"))
 
 interface Props {
   sequence: CampaignSequence
@@ -53,6 +56,7 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
   const [steps, setSteps] = useState<SequenceStep[]>(initialSteps.length > 0 ? initialSteps : [])
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [canvasView, setCanvasView] = useState(false)
   const { toast } = useToast()
   const router = useRouter()
 
@@ -164,10 +168,29 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
             <p className="text-xs text-muted-foreground">{steps.length} steps · {Math.ceil(totalDuration)} day sequence</p>
           </div>
         </div>
-        <Button onClick={handleSave} disabled={isPending} className="gap-2">
-          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Sequence
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* View toggle: List vs Canvas */}
+          <div className="flex rounded-lg border overflow-hidden">
+            <button
+              onClick={() => setCanvasView(false)}
+              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${!canvasView ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+            >
+              <List className="h-3 w-3" />
+              List
+            </button>
+            <button
+              onClick={() => setCanvasView(true)}
+              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${canvasView ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+            >
+              <Network className="h-3 w-3" />
+              Canvas
+            </button>
+          </div>
+          <Button onClick={handleSave} disabled={isPending} className="gap-2">
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save Sequence
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-12 gap-0 h-[calc(100vh-73px)]">
@@ -186,7 +209,23 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
           ))}
         </div>
 
-        {/* Center: Timeline */}
+        {/* Center: Timeline (List) or Canvas (React Flow) */}
+        {canvasView ? (
+          <div className="col-span-5 border-r flex flex-col h-full">
+            <div className="px-6 py-3 border-b bg-background">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Workflow Canvas</p>
+            </div>
+            <div className="flex-1 relative">
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
+                <WorkflowCanvas
+                  steps={steps}
+                  selectedIdx={selectedIdx}
+                  onSelectStep={setSelectedIdx}
+                />
+              </Suspense>
+            </div>
+          </div>
+        ) : (
         <div className="col-span-5 border-r bg-muted/10 p-6 overflow-y-auto">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">Sequence Timeline</p>
           {steps.length === 0 && (
@@ -248,6 +287,7 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
             })}
           </div>
         </div>
+        )}
 
         {/* Right: Step Editor */}
         <div className="col-span-5 p-6 overflow-y-auto">
