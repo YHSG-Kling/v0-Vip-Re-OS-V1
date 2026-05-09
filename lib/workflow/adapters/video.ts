@@ -47,14 +47,12 @@ export const videoAdapter: ChannelAdapter = {
     // Try D-ID video generation
     let videoUrl: string | undefined
     let videoId: string | undefined
-    let result: unknown
+    let result: import("@/lib/did").GenerateVideoResult | undefined
 
     try {
-      // D-ID SDK integration lives in lib/did — use string path so TypeScript
-      // doesn't fail to resolve this optional module.
-      const didPath = "@/lib/did"
-      const did = await import(/* webpackIgnore: true */ didPath as string)
-      result = await (did as any).generateVideo({
+      // lib/did exists and exports generateVideo() — typed dynamic import
+      const did = await import("@/lib/did")
+      result = await did.generateVideo({
         script,
         voiceId,
         voiceOnly: step.video_voice_only,
@@ -67,8 +65,8 @@ export const videoAdapter: ChannelAdapter = {
         logoUrl: step.video_logo_url ?? undefined,
         brokerageId,
       })
-      videoUrl = (result as any).videoUrl
-      videoId = (result as any).videoId
+      videoUrl = result.videoUrl ?? undefined
+      videoId = result.videoId
     } catch {
       // D-ID not configured or module not found — return success so sequence
       // doesn't block on a missing integration.
@@ -80,8 +78,7 @@ export const videoAdapter: ChannelAdapter = {
     }
 
     // D-ID job still processing (timed out polling) — record as sent with pending output
-    const didResult = result as { videoUrl: string | null; videoId: string; status: string; note?: string }
-    if (!videoUrl && didResult?.status === "processing") {
+    if (!videoUrl && result?.status === "processing") {
       return {
         status: "sent",
         providerKey: "d-id",
@@ -90,7 +87,7 @@ export const videoAdapter: ChannelAdapter = {
           video_url: null,
           video_id: videoId,
           status: "processing",
-          note: didResult.note ?? "D-ID job queued — poll for completion",
+          note: result.note ?? "D-ID job queued — poll for completion",
         },
       }
     }

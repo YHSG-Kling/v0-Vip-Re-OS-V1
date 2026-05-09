@@ -76,8 +76,48 @@ export const assignTaskAdapter: ChannelAdapter = {
           break
         }
 
+        case "vendor": {
+          // Find a vendor assigned to the contact's most recent transaction (e.g. inspector,
+          // photographer, stager). vendor_assignments links vendors to listings/transactions.
+          if (contact?.id) {
+            const { data: tx } = await supabase
+              .from("transactions")
+              .select("id")
+              .eq("brokerage_id", brokerageId)
+              .or(`buyer_contact_id.eq.${contact.id},seller_contact_id.eq.${contact.id},contact_id.eq.${contact.id}`)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle()
+            if (tx?.id) {
+              const { data: va } = await supabase
+                .from("vendor_assignments")
+                .select("vendor_user_id")
+                .eq("transaction_id", tx.id)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle()
+              assigneeUserId = (va as any)?.vendor_user_id ?? null
+            }
+          }
+          break
+        }
+
+        case "staff":
+        case "any_brokerage_member": {
+          // First available active staff member at the brokerage (excluding agent role)
+          const { data: u } = await supabase
+            .from("users")
+            .select("id")
+            .eq("brokerage_id", brokerageId)
+            .in("role", ["broker", "team_lead", "tc", "compliance_officer", "admin"])
+            .limit(1)
+            .maybeSingle()
+          assigneeUserId = u?.id ?? ctx.agentUserId
+          break
+        }
+
         default:
-          // Fall back to agent
+          // Fall back to agent (the contact's assigned agent or the workflow runner)
           assigneeUserId = ctx.agentUserId
       }
     }
