@@ -215,7 +215,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({
       documentId: doc.id,
       formwizardUrl: body.contactId
-        ? `/dashboard/buyers/${body.contactId}/offers/new?documentId=${doc.id}`
+        ? `/crm?contact=${body.contactId}&action=new_offer&documentId=${doc.id}`
         : `/dashboard/documents/${doc.id}`,
       filledPacket,
       // Surface non-blocking findings (warnings + info) so the FormWizard can

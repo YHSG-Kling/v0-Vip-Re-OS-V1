@@ -1,7 +1,9 @@
+import Link from "next/link"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listNotifications, countUnreadNotifications } from "@/lib/kernel"
 import { markOneRead, markAllRead } from "@/app/actions/notification-actions"
+import { resolveNotificationHref } from "@/lib/notifications/route-resolver"
 
 const PAGE_SIZE = 20
 
@@ -102,14 +104,25 @@ export default async function NotificationsPage({ searchParams }: PageProps) {
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {rows.map((n) => (
+          {rows.map((n) => {
+            const href = resolveNotificationHref({
+              entityType: n.entity_type ?? null,
+              entityId:   n.entity_id   ?? null,
+              type:       n.type,
+            })
+            const TitleEl = ({ children }: { children: React.ReactNode }) => href ? (
+              <Link href={href} className="hover:underline underline-offset-2">{children}</Link>
+            ) : (
+              <>{children}</>
+            )
+            return (
             <li
               key={n.id}
               className={`flex items-start justify-between gap-4 rounded-lg border px-4 py-3 transition-colors ${
                 n.is_read
                   ? "border-border bg-background"
                   : "border-border bg-muted/40"
-              }`}
+              } ${href ? "cursor-pointer hover:border-primary/40" : ""}`}
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
@@ -117,7 +130,7 @@ export default async function NotificationsPage({ searchParams }: PageProps) {
                     <span className="shrink-0 w-2 h-2 rounded-full bg-primary" aria-label="Unread" />
                   )}
                   <span className="text-sm font-medium text-foreground leading-snug">
-                    {n.title}
+                    <TitleEl>{n.title}</TitleEl>
                   </span>
                 </div>
                 {n.body && (
@@ -147,7 +160,8 @@ export default async function NotificationsPage({ searchParams }: PageProps) {
                 </form>
               )}
             </li>
-          ))}
+            )
+          })}
         </ul>
       )}
 

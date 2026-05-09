@@ -294,7 +294,7 @@ export async function buyerFinancingPreflight(input: {
           title: "No proof of funds on file",
           detail: "Cash offers require a current POF letter before submission.",
           recommendation: "Upload buyer's POF letter to their contact record.",
-          action: { label: "Upload POF", href: `/dashboard/buyers/${input.contactId}#documents` },
+          action: { label: "Upload POF", href: `/crm?contact=${input.contactId}&tab=documents` },
         })
       } else {
         // Optional: check POF date freshness (typically < 30 days old)
@@ -333,7 +333,7 @@ export async function buyerFinancingPreflight(input: {
         title: "No pre-approval on file",
         detail: "Financed offers require a pre-approval letter from a lender.",
         recommendation: "Upload buyer's pre-approval letter to their contact record.",
-        action: { label: "Upload pre-approval", href: `/dashboard/buyers/${input.contactId}#documents` },
+        action: { label: "Upload pre-approval", href: `/crm?contact=${input.contactId}&tab=documents` },
       })
     } else {
       const meta = (preApproval.metadata as { approved_amount?: number; expires_at?: string; lender?: string }) ?? {}
@@ -345,7 +345,7 @@ export async function buyerFinancingPreflight(input: {
           title: "Pre-approval amount is below offer price",
           detail: `Pre-approval is for $${meta.approved_amount.toLocaleString()} but offer is $${offerPrice.toLocaleString()}.`,
           recommendation: "Get an updated pre-approval letter for the higher amount before submitting.",
-          action: { label: "Request new pre-approval", href: `/dashboard/buyers/${input.contactId}#documents` },
+          action: { label: "Request new pre-approval", href: `/crm?contact=${input.contactId}&tab=documents` },
         })
       }
       if (meta.expires_at && new Date(meta.expires_at) < new Date()) {
@@ -483,7 +483,7 @@ export async function completenessGate(input: {
           title: "No buyer-agency agreement on file",
           detail: "Most states require a signed buyer-agency agreement before submitting offers.",
           recommendation: "Send the brokerage representation form (it covers buyer agency) before this offer leaves the office.",
-          action: { label: "Send brokerage representation", href: `/dashboard/buyers/${input.contactId}#documents` },
+          action: { label: "Send brokerage representation", href: `/crm?contact=${input.contactId}&tab=documents` },
         })
       }
     } catch { /* best-effort */ }
@@ -497,7 +497,7 @@ export async function completenessGate(input: {
       title: "Buyer legal name not verified",
       detail: "Offers require the buyer's exact legal name as it appears on their driver's license.",
       recommendation: "Send the buyer self-service intake link to capture their legal name + DL upload.",
-      action: { label: "Send buyer intake link", href: input.contactId ? `/dashboard/buyers/${input.contactId}/intake` : "/dashboard/buyers" },
+      action: { label: "Send buyer intake link", href: input.contactId ? `/crm?contact=${input.contactId}&action=send_intake_link` : "/crm" },
     })
   }
 

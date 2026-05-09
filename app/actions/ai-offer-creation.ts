@@ -859,8 +859,8 @@ export async function generateOfferDraft(params: {
         { field: "additional_addenda",         reason: `Available for ${state}: ${forms.addenda.slice(0,3).join(", ")}…` },
       ],
       formwizard_url: params.contactId
-        ? `/dashboard/buyers/${params.contactId}/offers/new`
-        : "/dashboard/buyers",
+        ? `/crm?contact=${params.contactId}&action=new_offer`
+        : "/crm",
     }
 
     // ── Persist packet on documents row ──────────────────────────────────

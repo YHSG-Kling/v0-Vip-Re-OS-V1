@@ -55,6 +55,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
+import SendBuyerIntakeButton from "@/app/crm/components/workflow-actions/send-buyer-intake-button"
 import {
   Users,
   Search,
@@ -1521,6 +1522,15 @@ export default function CRMPage() {
 
                   {/* ── OVERVIEW TAB ── */}
                   <TabsContent value="overview" className="space-y-4 mt-0">
+                    {/* Workflow OS quick actions — buyer intake link, etc.
+                        Renders as a compact row above existing pulse panel. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <SendBuyerIntakeButton
+                        contactId={selectedContact.id}
+                        contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || null}
+                        contactEmail={selectedContact.email ?? null}
+                      />
+                    </div>
                     {/* Pulse — single consolidated relationship-health card */}
                     <ContactPulsePanel
                       engagementScore={selectedContact.engagement_score}
