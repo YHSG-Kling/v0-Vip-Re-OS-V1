@@ -729,3 +729,59 @@ export async function runCompleteOfferWorkflow(params: {
     return handleError(error, "runCompleteOfferWorkflow")
   }
 }
+
+// ============================================
+// WORKFLOW OS — generate offer draft document
+// ============================================
+/**
+ * Generates an AI-drafted purchase offer for a contact/listing combination.
+ * Called by the draft_document workflow adapter when document_type = "offer".
+ *
+ * Retrieves the contact's most relevant active search + the brokerage's state
+ * to select the correct state-specific forms, then produces a draft summary
+ * and stores it on the documents record.
+ */
+export async function generateOfferDraft(params: {
+  brokerageId: string
+  contactId?: string | null
+  agentUserId?: string | null
+  state?: string
+  documentId?: string | null
+}): Promise<{ success: boolean; documentId?: string; error?: string }> {
+  try {
+    const supabase = await createClient()
+
+    const state = (params.state ?? "CA").toUpperCase()
+    const forms = STATE_OFFER_FORMS[state] ?? STATE_OFFER_FORMS.DEFAULT
+
+    // Build offer draft outline via AI
+    const prompt = `You are a real estate transaction coordinator. Generate a concise purchase offer
+outline for a buyer in ${state}. Required forms: ${forms.required.join(", ")}.
+Available addenda: ${forms.addenda.join(", ")}.
+Output a structured summary of key terms, contingencies, and timeline recommendations.
+Use professional language. Keep it under 400 words. Format with clear sections.`
+
+    const { text } = await generateText({
+      feature: "offer_draft",
+      messages: [{ role: "user", content: prompt }],
+    })
+
+    // Update the documents record with the draft content
+    if (params.documentId) {
+      await supabase
+        .from("documents")
+        .update({
+          content: text,
+          status: "draft_ready",
+          metadata: { state, required_forms: forms.required, available_addenda: forms.addenda },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", params.documentId)
+    }
+
+    return { success: true, documentId: params.documentId ?? undefined }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
+  }
+}

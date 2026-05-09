@@ -58,8 +58,14 @@ export const draftDocumentAdapter: ChannelAdapter = {
             state: step.document_state ?? "CA", documentId: docId,
           })
         }
+      } else if (docType === "invoice") {
+        const m = await import("@/app/actions/ai-financial-management")
+        const fn = (m as any).generateInvoice ?? (m as any).createExpense ?? null
+        if (typeof fn === "function") {
+          await fn({ brokerageId, contactId: contact?.id, agentUserId, documentId: docId })
+        }
       } else if (docType === "market_report") {
-        const m = await import("@/app/actions/home-value")
+        const m = await import("@/app/actions/ai-market-intelligence")
         if (typeof (m as any).generateMarketReport === "function") {
           await (m as any).generateMarketReport({
             brokerageId, contactId: contact?.id, agentUserId, documentId: docId,

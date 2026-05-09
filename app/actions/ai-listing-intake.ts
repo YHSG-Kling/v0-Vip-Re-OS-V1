@@ -871,3 +871,147 @@ export async function runCompleteListingIntake(params: {
     return handleError(error, "runCompleteListingIntake")
   }
 }
+
+// ============================================
+// WORKFLOW OS — generate listing agreement draft
+// ============================================
+/**
+ * Generates an AI-drafted listing agreement for a seller contact.
+ * Called by the draft_document workflow adapter when document_type = "listing_agreement".
+ */
+export async function generateListingAgreement(params: {
+  brokerageId: string
+  contactId?: string | null
+  agentUserId?: string | null
+  state?: string
+  documentId?: string | null
+}): Promise<{ success: boolean; documentId?: string; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const state = (params.state ?? "CA").toUpperCase()
+
+    // State-specific listing agreement forms
+    const LISTING_FORMS: Record<string, string[]> = {
+      CA: ["CAR RLA - Residential Listing Agreement", "CAR SS - Seller's Property Questionnaire", "CAR AD - Agency Disclosure"],
+      TX: ["TAR 1101 - Residential Real Estate Listing Agreement", "TAR 2501 - Seller's Disclosure Notice", "TAR 2301 - Information About Brokerage Services"],
+      FL: ["FAR Exclusive Right of Sale Listing Agreement", "Property Disclosure", "Seller's Net Sheet"],
+      DEFAULT: ["Exclusive Right to Sell Listing Agreement", "Property Disclosure Statement", "Agency Disclosure Form"],
+    }
+    const forms = LISTING_FORMS[state] ?? LISTING_FORMS.DEFAULT
+
+    const prompt = `You are a real estate broker. Generate a concise listing agreement outline for a 
+seller in ${state}. Required forms: ${forms.join(", ")}.
+Include: listing price strategy, commission structure, marketing obligations, 
+seller responsibilities, timeline, and key terms.
+Professional tone. Under 400 words. Clear sections.`
+
+    const { text } = await generateText({
+      feature: "listing_agreement_draft",
+      messages: [{ role: "user", content: prompt }],
+    })
+
+    if (params.documentId) {
+      await supabase
+        .from("documents")
+        .update({
+          content: text,
+          status: "draft_ready",
+          metadata: { state, required_forms: forms },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", params.documentId)
+    }
+
+    return { success: true, documentId: params.documentId ?? undefined }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
+  }
+}
+
+// ============================================
+// WORKFLOW OS — generate listing landing page
+// ============================================
+/**
+ * Creates or updates a listing micro-site / landing page.
+ * Called by the listing_landing_page workflow adapter.
+ */
+export async function generateListingLandingPage(params: {
+  brokerageId: string
+  agentUserId: string
+  templateId?: string
+  slug?: string
+  contactId?: string | null
+  listingId?: string | null
+}): Promise<{
+  success: boolean
+  pageId?: string
+  pageUrl?: string
+  slug?: string
+  error?: string
+}> {
+  try {
+    const supabase = await createClient()
+
+    const pageSlug = params.slug ?? `listing-${Math.random().toString(36).slice(2, 9)}`
+
+    // Fetch listing data if linked
+    let listingData: Record<string, unknown> = {}
+    if (params.listingId) {
+      const { data: listing } = await supabase
+        .from("listings")
+        .select("address, city, state, price, bedrooms, bathrooms, sqft, description, photos")
+        .eq("id", params.listingId)
+        .maybeSingle()
+      if (listing) listingData = listing as Record<string, unknown>
+    }
+
+    // Generate AI description for the landing page
+    const prompt = `Write a compelling property landing page headline and description.
+Property: ${JSON.stringify(listingData)}.
+Output a JSON object with: headline (string, max 80 chars), subheadline (string, max 120 chars), body (string, max 300 chars).
+Them-first: focus on what the buyer gains, not agent promotion.`
+
+    let pageContent: Record<string, string> = {
+      headline: `Beautiful Home — ${listingData.address ?? "Available Now"}`,
+      subheadline: "Contact us to schedule a showing",
+      body: "",
+    }
+
+    try {
+      const { generateTextRouted } = await import("@/lib/ai/models")
+      const { text } = await generateTextRouted({
+        feature: "listing_landing_page",
+        messages: [{ role: "user", content: prompt }],
+      })
+      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim())
+      if (parsed?.headline) pageContent = parsed
+    } catch { /* use defaults */ }
+
+    const { data: page, error } = await supabase
+      .from("listing_landing_pages")
+      .upsert({
+        brokerage_id: params.brokerageId,
+        contact_id: params.contactId ?? null,
+        template_id: params.templateId ?? null,
+        listing_id: params.listingId ?? null,
+        slug: pageSlug,
+        content: pageContent,
+        status: "published",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "slug" })
+      .select("id")
+      .maybeSingle()
+
+    if (error) throw error
+
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.platform.com"
+    const pageUrl = `${baseUrl}/p/${pageSlug}`
+
+    return { success: true, pageId: page?.id, pageUrl, slug: pageSlug }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
+  }
+}
