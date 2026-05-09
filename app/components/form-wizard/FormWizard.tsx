@@ -27,7 +27,7 @@
  * parent_offer_id in offer detail, not a wizard.
  */
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -36,7 +36,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink } from "lucide-react"
+import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck } from "lucide-react"
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
@@ -92,6 +92,34 @@ export interface FormWizardProps {
   agentEmail?: string
   open: boolean
   onClose: () => void
+  /**
+   * Optional — when present, FormWizard preloads a packet that the workflow
+   * intake pipeline already staged (status='needs_agent_input') and surfaces
+   * a "review prefilled fields" banner. Agent edits flow through the field
+   * audit trail; the wizard's "Approve Packet" action flips status to
+   * draft_ready so a downstream send_for_esign workflow step can dispatch.
+   *
+   * When omitted, the wizard works exactly as before (manual creation).
+   */
+  documentId?: string
+}
+
+interface StagedPacket {
+  documentId: string
+  packetType: "offer" | "listing"
+  state: string | null
+  filledFieldsCount: number
+  agentMustComplete: string[]
+  highConfidenceCount: number
+  mediumConfidenceCount: number
+  lowConfidenceCount: number
+  findings: Array<{
+    severity: "info" | "warning" | "blocker"
+    title: string
+    detail: string
+    recommendation?: string
+  }>
+  prefilled: Record<string, unknown>      // contact + property + agent prefills the agent should verify
 }
 
 const STEP_LABELS_OFFER = ["Context", "Forms", "Fill", "Signers", "E-Sign", "Monitor"]
@@ -101,7 +129,7 @@ function stepLabels(mode: "offer" | "listing") {
   return mode === "offer" ? STEP_LABELS_OFFER : STEP_LABELS_LISTING
 }
 
-export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, agentName, agentEmail, open, onClose }: FormWizardProps) {
+export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, agentName, agentEmail, open, onClose, documentId }: FormWizardProps) {
   const [step, setStep] = useState(1)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -109,6 +137,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const [formsLoaded, setFormsLoaded] = useState(false)
   const [providerInfo, setProviderInfo] = useState<{ provider: TransactionProvider; embedUrl: string | null } | null | "loading">("loading")
   const [esignProvider, setEsignProvider] = useState<string | null>(null)
+  // ── Packet preload (optional) — only active when documentId prop is set ──
+  const [stagedPacket, setStagedPacket] = useState<StagedPacket | null>(null)
+  const [packetLoading, setPacketLoading] = useState(false)
+  const [editedFields, setEditedFields] = useState<Map<string, { newValue: unknown; reason?: string }>>(new Map())
+  const [approving, setApproving] = useState(false)
 
   const [state, setState] = useState<WizardState>(() => ({
     propertyAddress: "",
@@ -125,6 +158,106 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const update = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
     setState(prev => ({ ...prev, [key]: value }))
   }, [])
+
+  // ── Packet preload — runs once when wizard opens with a documentId ──────
+  // Pulls the staged packet from documents.metadata + filledPacket content,
+  // prefills the wizard state with property/contact info, and surfaces the
+  // proactive findings + addenda + agent-must-complete list as a banner.
+  // PURELY ADDITIVE — when documentId is omitted, this effect is a no-op.
+  useEffect(() => {
+    if (!open || !documentId || stagedPacket || packetLoading) return
+    setPacketLoading(true)
+    ;(async () => {
+      try {
+        const supabase = createClient()
+        const { data: doc } = await supabase
+          .from("documents")
+          .select("id, document_type, status, state_code, content, metadata")
+          .eq("id", documentId)
+          .maybeSingle()
+        if (!doc) {
+          setPacketLoading(false)
+          return
+        }
+
+        // Extract filledPacket from content (JSON-stringified payload from intake)
+        let filledPacket: { agentMustComplete?: string[]; audit?: { high_confidence_count?: number; medium_confidence_count?: number; low_confidence_count?: number } } = {}
+        let prefilled: Record<string, unknown> = {}
+        try {
+          const parsed = JSON.parse(doc.content ?? "{}")
+          filledPacket = parsed?.filledPacket ?? {}
+          prefilled    = parsed?.intake ?? {}
+        } catch { /* content may not be JSON for older docs */ }
+
+        const meta = (doc.metadata as { findings?: StagedPacket["findings"]; agent_must_complete?: string[]; prefilled?: Record<string, unknown> }) ?? {}
+
+        setStagedPacket({
+          documentId: doc.id,
+          packetType: (doc.document_type === "listing_agreement" ? "listing" : "offer"),
+          state: doc.state_code ?? null,
+          filledFieldsCount:    (filledPacket.audit?.high_confidence_count ?? 0)
+                              + (filledPacket.audit?.medium_confidence_count ?? 0)
+                              + (filledPacket.audit?.low_confidence_count ?? 0),
+          agentMustComplete:    meta.agent_must_complete ?? filledPacket.agentMustComplete ?? [],
+          highConfidenceCount:  filledPacket.audit?.high_confidence_count ?? 0,
+          mediumConfidenceCount: filledPacket.audit?.medium_confidence_count ?? 0,
+          lowConfidenceCount:   filledPacket.audit?.low_confidence_count ?? 0,
+          findings:             meta.findings ?? [],
+          prefilled:            meta.prefilled ?? prefilled,
+        })
+
+        // Prefill wizard state from intake — but only fields that are still empty.
+        // Existing user input wins over packet prefill.
+        const intakeAddress = (prefilled.propertyAddress as { value?: string })?.value
+        const intakeCity    = (prefilled.propertyCity as { value?: string })?.value
+        const intakeState   = (prefilled.propertyState as { value?: string })?.value ?? doc.state_code ?? undefined
+        const intakeZip     = (prefilled.propertyZip as { value?: string })?.value
+        setState(prev => ({
+          ...prev,
+          propertyAddress: prev.propertyAddress || intakeAddress || "",
+          propertyCity:    prev.propertyCity    || intakeCity    || "",
+          propertyState:   prev.propertyState   || intakeState   || "",
+          propertyZip:     prev.propertyZip     || intakeZip     || "",
+        }))
+      } finally {
+        setPacketLoading(false)
+      }
+    })()
+  }, [open, documentId, stagedPacket, packetLoading])
+
+  // Track an agent override on a packet field (best-effort persistence)
+  const recordOverride = useCallback((fieldName: string, newValue: unknown, reason?: string) => {
+    setEditedFields(prev => {
+      const next = new Map(prev)
+      next.set(fieldName, { newValue, reason })
+      return next
+    })
+  }, [])
+
+  // Approve the packet → flip status to draft_ready (and persist edits)
+  const approvePacket = useCallback(async () => {
+    if (!documentId) return
+    setApproving(true)
+    try {
+      const overrides = Array.from(editedFields.entries()).map(([fieldName, { newValue, reason }]) => ({
+        fieldName, newValue, reason,
+      }))
+      const res = await fetch("/api/workflow/intake/approve-packet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId, overrides }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setError((err as { error?: string }).error ?? "Could not approve packet")
+        return
+      }
+      // Surface as a step-5 jump so the agent can send for eSign next
+      setStep(5)
+    } finally {
+      setApproving(false)
+    }
+  }, [documentId, editedFields])
 
   // Load forms + provider info when step 2 is reached
   const loadStep2 = useCallback(async () => {
@@ -244,6 +377,9 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
             </Alert>
           )}
 
+          {/* AI-staged packet banner — only renders when documentId prop is set */}
+          {stagedPacket && <PacketBanner packet={stagedPacket} />}
+
           {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
           {step === 2 && <Step2Forms mode={mode} state={state} update={update} myForms={myForms} providerInfo={providerInfo} />}
           {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} />}
@@ -271,6 +407,18 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
             <ChevronLeft className="h-4 w-4 mr-1" />
             {step === 1 ? "Cancel" : "Back"}
           </Button>
+          {step < 5 && stagedPacket && step >= 1 && (
+            <Button
+              variant="default"
+              onClick={approvePacket}
+              disabled={approving || busy}
+              className="gap-1.5 mr-2 bg-emerald-600 hover:bg-emerald-700"
+              title="Mark this AI-staged packet as agent-approved and ready for eSign"
+            >
+              {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              Approve Packet
+            </Button>
+          )}
           {step < 5 && (
             <Button onClick={() => goToStep(step + 1)} disabled={busy || !canAdvance(step, state, mode)}>
               Next
@@ -682,6 +830,82 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
           </Alert>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── PacketBanner — renders only when an AI-staged packet was preloaded ──────
+// Shows: prefilled count, fields needing agent input, blocker/warning/info
+// findings, addendum suggestions. PURELY ADDITIVE — does not affect any other
+// step or interaction when documentId prop is omitted.
+
+function PacketBanner({ packet }: { packet: StagedPacket }) {
+  const blockerCount = packet.findings.filter(f => f.severity === "blocker").length
+  const warningCount = packet.findings.filter(f => f.severity === "warning").length
+  const infoCount    = packet.findings.filter(f => f.severity === "info").length
+
+  return (
+    <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/50 dark:bg-violet-950/20 p-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <Sparkles className="h-4 w-4 text-violet-600 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-violet-900 dark:text-violet-100">
+            AI-staged {packet.packetType} packet for {packet.state ?? "this state"}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {packet.filledFieldsCount} fields prefilled
+            {packet.highConfidenceCount > 0 && ` · ${packet.highConfidenceCount} high confidence`}
+            {packet.mediumConfidenceCount > 0 && ` · ${packet.mediumConfidenceCount} need verification`}
+            {packet.lowConfidenceCount > 0 && ` · ${packet.lowConfidenceCount} low confidence`}
+          </p>
+        </div>
+      </div>
+
+      {packet.agentMustComplete.length > 0 && (
+        <div className="rounded border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 px-3 py-2">
+          <p className="text-xs font-medium text-amber-900 dark:text-amber-100">
+            You must complete:
+          </p>
+          <p className="text-xs text-amber-800 dark:text-amber-200 mt-0.5">
+            {packet.agentMustComplete.slice(0, 6).join(", ")}
+            {packet.agentMustComplete.length > 6 && ` +${packet.agentMustComplete.length - 6} more`}
+          </p>
+        </div>
+      )}
+
+      {packet.findings.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium">
+            Findings: {blockerCount > 0 && <span className="text-red-600">{blockerCount} blocker{blockerCount !== 1 ? "s" : ""}</span>}
+            {blockerCount > 0 && (warningCount > 0 || infoCount > 0) && " · "}
+            {warningCount > 0 && <span className="text-amber-600">{warningCount} warning{warningCount !== 1 ? "s" : ""}</span>}
+            {warningCount > 0 && infoCount > 0 && " · "}
+            {infoCount > 0 && <span className="text-blue-600">{infoCount} info</span>}
+          </p>
+          <ul className="space-y-1">
+            {packet.findings.slice(0, 4).map((f, i) => (
+              <li key={i} className="text-xs">
+                <span className={
+                  f.severity === "blocker" ? "text-red-600 font-medium"
+                  : f.severity === "warning" ? "text-amber-700"
+                  : "text-blue-700"
+                }>
+                  {f.severity === "blocker" ? "■" : f.severity === "warning" ? "▲" : "●"} {f.title}:
+                </span>{" "}
+                <span className="text-muted-foreground">{f.detail}</span>
+                {f.recommendation && (
+                  <span className="block ml-3 mt-0.5 text-muted-foreground italic">→ {f.recommendation}</span>
+                )}
+              </li>
+            ))}
+            {packet.findings.length > 4 && (
+              <li className="text-xs text-muted-foreground italic ml-3">
+                +{packet.findings.length - 4} more findings — review before approving
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
