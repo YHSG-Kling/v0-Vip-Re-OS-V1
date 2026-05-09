@@ -879,51 +879,137 @@ export async function runCompleteListingIntake(params: {
  * Generates an AI-drafted listing agreement for a seller contact.
  * Called by the draft_document workflow adapter when document_type = "listing_agreement".
  */
+/**
+ * Stage a LISTING AGREEMENT PACKET for the agent to complete in FormWizard.
+ *
+ * Same pattern as generateOfferDraft — a workflow can't fully fill a listing
+ * agreement (it needs seller's legal name, listing price strategy, commission,
+ * dates, marketing terms). This action prepares the packet:
+ *   - Required forms for the property state
+ *   - AI-prefilled known fields (seller, property, agent)
+ *   - Flagged unknown fields the agent must finalize
+ *   - status = needs_agent_input
+ *   - Notification linking to the listing FormWizard
+ *
+ * Not marketing content — no brand-voice / them-first checks apply.
+ */
 export async function generateListingAgreement(params: {
   brokerageId: string
   contactId?: string | null
   agentUserId?: string | null
-  /** 2-letter US state code from the PROPERTY ADDRESS — required, no default. */
+  /** 2-letter US state code from the PROPERTY ADDRESS — required. */
   state: string
   documentId?: string | null
   propertyAddress?: string
+  listingId?: string | null
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
     const supabase = await createClient()
 
-    // Canonical 50-state forms registry — every state explicit, no DEFAULT.
     const { getStateForms } = await import("@/lib/state-forms/registry")
     const forms = getStateForms(params.state, "listing")
     const state = params.state.trim().toUpperCase()
 
-    const prompt = `You are a real estate broker. Generate a concise listing agreement outline for a
-seller in ${state}${params.propertyAddress ? ` (property at ${params.propertyAddress})` : ""}.
-Required forms: ${forms.required.join(", ")}.
-Brokerage representation form: ${forms.brokerageRepresentation}.
-Include: listing price strategy, commission structure, marketing obligations,
-seller responsibilities, timeline, and key terms.
-Professional tone. Under 400 words. Clear sections.`
+    // Prefill known fields
+    let sellerName: string | null = null
+    let sellerEmail: string | null = null
+    if (params.contactId) {
+      const { data: c } = await supabase
+        .from("contacts").select("first_name, last_name, email")
+        .eq("id", params.contactId).maybeSingle()
+      if (c) {
+        sellerName  = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || null
+        sellerEmail = c.email ?? null
+      }
+    }
 
-    const { text } = await generateText({
-      feature: "listing_agreement_draft",
-      messages: [{ role: "user", content: prompt }],
-    })
+    let propertyAddress = params.propertyAddress ?? null
+    let listPrice: number | null = null
+    if (params.listingId) {
+      const { data: l } = await supabase
+        .from("listings").select("address, list_price").eq("id", params.listingId).maybeSingle()
+      if (l) {
+        propertyAddress = l.address ?? propertyAddress
+        listPrice = l.list_price ?? null
+      }
+    }
+
+    let agentName: string | null = null
+    let brokerageName: string | null = null
+    if (params.agentUserId) {
+      const { data: u } = await supabase
+        .from("users").select("first_name, last_name").eq("id", params.agentUserId).maybeSingle()
+      if (u) agentName = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || null
+    }
+    const { data: brokerage } = await supabase
+      .from("brokerages").select("name").eq("id", params.brokerageId).maybeSingle()
+    if (brokerage) brokerageName = brokerage.name ?? null
+
+    const packet = {
+      packet_type: "listing_agreement",
+      state,
+      created_at: new Date().toISOString(),
+      forms: {
+        required: forms.required,
+        addenda:  forms.addenda,
+        brokerage_representation: forms.brokerageRepresentation,
+      },
+      prefilled: {
+        seller_legal_name: sellerName,
+        seller_email:      sellerEmail,
+        property_address:  propertyAddress,
+        suggested_list_price: listPrice,
+        agent_name:        agentName,
+        brokerage_name:    brokerageName,
+      },
+      needs_agent_input: [
+        { field: "seller_legal_name_verified", reason: "Must match deed / driver's license", suggested: sellerName },
+        { field: "list_price",                  reason: "Strategy decision with seller (CMA-driven)" },
+        { field: "commission_structure",        reason: "Listing-side commission + offered to buyer agent" },
+        { field: "listing_term_days",           reason: "Typical 90 / 180 days" },
+        { field: "marketing_obligations",       reason: "Photography, video, MLS, open house plan" },
+        { field: "seller_responsibilities",     reason: "Disclosures, repairs, showing access" },
+        { field: "go_live_date",                reason: "MLS active date" },
+      ],
+      formwizard_url: params.listingId
+        ? `/dashboard/listings/${params.listingId}/edit`
+        : "/dashboard/listings/new",
+    }
 
     if (params.documentId) {
       await supabase
         .from("documents")
         .update({
-          content: text,
-          status: "draft_ready",
+          content: JSON.stringify(packet, null, 2),
+          status: "needs_agent_input",
           metadata: {
             state,
+            packet_type: "listing_agreement",
             required_forms: forms.required,
             available_addenda: forms.addenda,
             brokerage_representation_form: forms.brokerageRepresentation,
+            prefilled: packet.prefilled,
+            unknown_fields: packet.needs_agent_input.map(f => f.field),
+            formwizard_url: packet.formwizard_url,
           },
           updated_at: new Date().toISOString(),
         })
         .eq("id", params.documentId)
+    }
+
+    // Notify the agent — the packet awaits their review/finalization
+    if (params.agentUserId) {
+      void Promise.resolve(supabase.from("notifications").insert({
+        user_id: params.agentUserId,
+        brokerage_id: params.brokerageId,
+        type: "listing_agreement_packet_ready",
+        title: `Listing agreement packet ready for ${sellerName ?? "seller"}`,
+        body: `Required ${state} forms staged with prefilled fields. Open the listing FormWizard to set price, commission, and term before sending for signature.`,
+        priority: "high",
+        entity_type: "document",
+        entity_id: params.documentId ?? null,
+        channel: "in_app",
+      })).catch(() => {})
     }
 
     return { success: true, documentId: params.documentId ?? undefined }
