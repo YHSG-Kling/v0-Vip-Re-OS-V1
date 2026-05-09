@@ -4,9 +4,10 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Mic, Loader2, Volume2, Copy, FileText, ExternalLink, ShieldCheck } from "lucide-react"
+import { Mic, Loader2, Volume2, Copy, FileText, ExternalLink, ShieldCheck, Home } from "lucide-react"
 import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-command"
 import { voiceDraftOffer, type VoiceDraftOfferResponse } from "@/app/actions/voice-assistant/draft-offer-from-voice"
+import { voiceDraftListing, type VoiceDraftListingResponse } from "@/app/actions/voice-assistant/draft-listing-from-voice"
 import { searchPropertiesWithNaturalLanguage, previewSearchIntent } from "@/app/actions/buyer-property-search"
 import { toast } from "sonner"
 
@@ -46,12 +47,12 @@ export function VoiceAssistantPanel({
   const [clarificationOptions, setClarificationOptions] = useState<string[]>([])
 
   // ── Draft-offer mode (additive — parallel flow to handleVoiceCommand) ──
-  // When draftOfferMode is true, transcripts are routed to voiceDraftOffer
-  // instead of handleVoiceCommand. Allows multi-turn conversational packet
-  // staging without changing the existing voice command flow.
   const [draftOfferMode, setDraftOfferMode] = useState(false)
   const [intakeSessionId, setIntakeSessionId] = useState<string | null>(null)
   const [draftResponse, setDraftResponse] = useState<VoiceDraftOfferResponse | null>(null)
+  // ── Draft-listing mode (additive — same pattern as draft-offer) ────────
+  const [draftListingMode, setDraftListingMode] = useState(false)
+  const [draftListingResponse, setDraftListingResponse] = useState<VoiceDraftListingResponse | null>(null)
 
   const VOICE_SHORTCUTS = [
     "Get Today's Briefing",
@@ -133,6 +134,50 @@ export function VoiceAssistantPanel({
     setTranscript("")
   }
 
+  // ── Draft-listing mode handler (mirror of draft-offer) ────────────────
+  const handleDraftListingSubmit = async (force = false) => {
+    if (!transcript.trim() && !force) return
+    setIsProcessing(true)
+    try {
+      const result = await voiceDraftListing({
+        voiceInput:    transcript,
+        sessionId:     intakeSessionId ?? undefined,
+        contactId:     currentBuyerId,                  // reuse contact context (sellers may be in same field)
+        forceFinalize: force,
+      })
+      setDraftListingResponse(result)
+      if (result.kind !== "error" && "sessionId" in result) {
+        setIntakeSessionId(result.sessionId)
+      }
+      if (result.kind === "finalized") {
+        toast.success("Listing-agreement packet staged — opening FormWizard")
+      }
+      setTranscript("")
+    } catch (err) {
+      console.error("Draft listing error:", err)
+      toast.error("Could not process voice listing draft")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const exitDraftListingMode = () => {
+    setDraftListingMode(false)
+    setIntakeSessionId(null)
+    setDraftListingResponse(null)
+    setTranscript("")
+  }
+
+  // Mutual exclusion — entering one draft mode exits the other automatically
+  const enterOfferMode = () => {
+    if (draftListingMode) exitDraftListingMode()
+    setDraftOfferMode(true)
+  }
+  const enterListingMode = () => {
+    if (draftOfferMode) exitDraftOfferMode()
+    setDraftListingMode(true)
+  }
+
   if (!expanded) {
     return (
       <button
@@ -173,24 +218,34 @@ export function VoiceAssistantPanel({
           )}
         </div>
 
-        {/* Mode toggle — Draft Offer vs Standard voice commands */}
-        <div className="flex items-center gap-2">
+        {/* Mode toggles — Draft Offer / Draft Listing / standard commands.
+            Mutually exclusive: entering one exits the other. */}
+        <div className="flex items-center gap-2 flex-wrap">
           <Button
             size="sm"
             variant={draftOfferMode ? "default" : "outline"}
-            onClick={() => draftOfferMode ? exitDraftOfferMode() : setDraftOfferMode(true)}
+            onClick={() => draftOfferMode ? exitDraftOfferMode() : enterOfferMode()}
             className="gap-1.5"
           >
             <FileText className="h-3.5 w-3.5" />
             {draftOfferMode ? "Exit Draft Offer" : "Draft Offer"}
           </Button>
-          {draftOfferMode && intakeSessionId && (
+          <Button
+            size="sm"
+            variant={draftListingMode ? "default" : "outline"}
+            onClick={() => draftListingMode ? exitDraftListingMode() : enterListingMode()}
+            className="gap-1.5"
+          >
+            <Home className="h-3.5 w-3.5" />
+            {draftListingMode ? "Exit Draft Listing" : "Draft Listing"}
+          </Button>
+          {(draftOfferMode || draftListingMode) && intakeSessionId && (
             <Badge variant="outline" className="text-[10px]">Session active</Badge>
           )}
         </div>
 
-        {/* Voice Shortcuts — hide while in Draft Offer mode */}
-        {!draftOfferMode && (
+        {/* Voice Shortcuts — hide while in any draft mode */}
+        {!draftOfferMode && !draftListingMode && (
           <div className="flex flex-wrap gap-2">
             {VOICE_SHORTCUTS.map((shortcut) => (
               <button
@@ -204,9 +259,13 @@ export function VoiceAssistantPanel({
           </div>
         )}
 
-        {/* Submit Button — routes to draft-offer flow when in that mode */}
+        {/* Submit Button — routes to whichever drafter is active */}
         <Button
-          onClick={() => draftOfferMode ? handleDraftOfferSubmit(false) : handleVoiceSubmit()}
+          onClick={() => {
+            if (draftOfferMode)   return handleDraftOfferSubmit(false)
+            if (draftListingMode) return handleDraftListingSubmit(false)
+            return handleVoiceSubmit()
+          }}
           disabled={isProcessing || !transcript.trim()}
           className="w-full"
         >
@@ -215,7 +274,7 @@ export function VoiceAssistantPanel({
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
               Processing
             </>
-          ) : draftOfferMode ? (
+          ) : draftOfferMode || draftListingMode ? (
             "Send to Drafter"
           ) : (
             "Submit"
@@ -283,8 +342,69 @@ export function VoiceAssistantPanel({
           </div>
         )}
 
-        {/* Response Display — hidden in draft-offer mode (its own panel above) */}
-        {response && !draftOfferMode && (
+        {/* Draft-listing response panel ───────────────────────────────── */}
+        {draftListingMode && draftListingResponse && (
+          <div className="space-y-3 border-t pt-4">
+            {draftListingResponse.kind === "needs_more_info" && (
+              <>
+                <div className="flex items-start gap-2">
+                  <Volume2 className="h-4 w-4 text-blue-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-blue-700">{draftListingResponse.spokenResponse}</p>
+                </div>
+                {draftListingResponse.questions.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-muted-foreground">Still need:</p>
+                    <ul className="text-xs space-y-0.5 text-muted-foreground">
+                      {draftListingResponse.questions.slice(0, 5).map((q, i) => (
+                        <li key={i}>· {q.question}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {draftListingResponse.kind === "ready_to_finalize" && (
+              <>
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-emerald-700">{draftListingResponse.spokenResponse}</p>
+                </div>
+                <Button
+                  onClick={() => handleDraftListingSubmit(true)}
+                  disabled={isProcessing}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700"
+                >
+                  Finalize & Stage Listing Packet
+                </Button>
+              </>
+            )}
+
+            {draftListingResponse.kind === "finalized" && (
+              <div className="space-y-2">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-emerald-700">{draftListingResponse.spokenResponse}</p>
+                </div>
+                <Button asChild className="w-full gap-1">
+                  <a href={draftListingResponse.formwizardUrl}>
+                    Open Listing Packet in FormWizard <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" onClick={exitDraftListingMode} className="w-full">
+                  Start a New Draft
+                </Button>
+              </div>
+            )}
+
+            {draftListingResponse.kind === "error" && (
+              <p className="text-sm text-destructive">{draftListingResponse.error}</p>
+            )}
+          </div>
+        )}
+
+        {/* Response Display — hidden in any draft mode (their own panels above) */}
+        {response && !draftOfferMode && !draftListingMode && (
           <div className="space-y-3 border-t pt-4">
             <div>
               <p className="text-sm font-semibold text-blue-600">
