@@ -19,7 +19,9 @@ import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -49,6 +51,7 @@ import {
 } from "@/app/actions/campaign-sequences"
 import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
 import { AlertTriangle, ShieldCheck } from "lucide-react"
+import { WORKFLOW_TRIGGERS, groupedTriggers } from "@/lib/workflow/triggers"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,19 +65,9 @@ interface Props {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TRIGGER_EVENTS = [
-  { value: "contact_created",        label: "Contact Created" },
-  { value: "lead_captured",          label: "Lead Captured" },
-  { value: "lead_scored",            label: "Lead Scored" },
-  { value: "ghost_lead_detected",    label: "Ghost Lead Detected" },
-  { value: "reengagement_started",   label: "Re-engagement Started" },
-  { value: "deal_closed",            label: "Deal Closed" },
-  { value: "lifetime_customer",      label: "Lifetime Customer" },
-  { value: "tour_scheduled",         label: "Tour Scheduled" },
-  { value: "offer_submitted",        label: "Offer Submitted" },
-  { value: "contract_signed",        label: "Contract Signed" },
-  { value: "isa_qualified_lead",     label: "ISA Qualified Lead" },
-]
+// Keep flat list for backward-compat exports; the grouped version is used in the UI
+const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
+const GROUPED_TRIGGERS = groupedTriggers()
 
 const SEQUENCE_TYPES = [
   { value: "drip",           label: "Drip" },
@@ -401,9 +394,16 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                 <SelectTrigger id="seq-trigger">
                   <SelectValue placeholder="Select a trigger (optional)" />
                 </SelectTrigger>
-                <SelectContent>
-                  {TRIGGER_EVENTS.map(t => (
-                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                <SelectContent className="max-h-80">
+                  {Object.entries(GROUPED_TRIGGERS).map(([category, triggers]) => (
+                    <SelectGroup key={category}>
+                      <SelectLabel className="text-xs text-muted-foreground px-2 py-1">{category}</SelectLabel>
+                      {triggers.map(t => (
+                        <SelectItem key={t.value || "__manual__"} value={t.value || "__manual__"}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   ))}
                 </SelectContent>
               </Select>

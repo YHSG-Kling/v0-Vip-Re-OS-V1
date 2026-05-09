@@ -102,17 +102,28 @@ export const assignTaskAdapter: ChannelAdapter = {
       Date.now() + (step.task_due_offset_days ?? 0) * 86_400_000
     ).toISOString()
 
+    // Resolve assignee USER id → AGENTS row id (tasks.assigned_to_agent_id is FK to agents.id)
+    let assignedToAgentId: string | null = null
+    if (assigneeUserId) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", assigneeUserId)
+        .maybeSingle()
+      assignedToAgentId = agentRow?.id ?? null
+    }
+
     const { data: task, error } = await supabase.from("tasks").insert({
       brokerage_id: brokerageId,
       contact_id: contact?.id ?? null,
-      assigned_to: assigneeUserId,
+      assigned_to_agent_id: assignedToAgentId,
       title,
-      notes,
-      due_at: dueAt,
-      assignee_type: assigneeType,
-      source: "workflow_sequence",
-      source_enrollment_id: ctx.enrollmentId,
+      description: notes,                         // tasks.description (not "notes")
+      due_date: dueAt,                            // tasks.due_date (not "due_at")
       status: "pending",
+      assignee_type: assigneeType,                // added by migration 1027
+      source: "workflow_sequence",                // added by migration 1027
+      source_enrollment_id: ctx.enrollmentId,     // added by migration 1027
       created_at: new Date().toISOString(),
     }).select("id").single()
 

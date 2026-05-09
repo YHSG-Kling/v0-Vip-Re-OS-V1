@@ -32,21 +32,24 @@ export const scheduleShowingAdapter: ChannelAdapter = {
     ).toISOString()
 
     // Check for ShowingTime integration
+    // brokerage_integrations columns: provider_type, status, metadata (jsonb)
     const { data: integration } = await supabase
       .from("brokerage_integrations")
-      .select("config")
+      .select("metadata, status")
       .eq("brokerage_id", brokerageId)
-      .eq("provider", "showingtime")
-      .eq("is_active", true)
+      .eq("provider_type", "showingtime")
+      .eq("status", "active")
       .maybeSingle()
 
-    if (integration?.config?.api_key) {
+    const integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key
+
+    if (integrationApiKey) {
       try {
         // ShowingTime API via fetch (no separate client module needed)
         const stRes = await fetch("https://api.showingtime.com/v1/showings", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${integration.config.api_key}`,
+            Authorization: `Bearer ${integrationApiKey}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
@@ -72,17 +75,17 @@ export const scheduleShowingAdapter: ChannelAdapter = {
       } catch { /* fall through to manual */ }
     }
 
-    // Manual showing record
+    // Manual showing record — column names match showings table
     const { data: showing, error } = await supabase.from("showings").insert({
       brokerage_id: brokerageId,
       contact_id: contact?.id ?? null,
       agent_id: agentId,
-      property_id: propertyId,
+      listing_id: propertyId,                               // showings.listing_id (not "property_id")
       status: "requested",
-      requested_at: requestedDate,
+      scheduled_at: requestedDate,                          // showings.scheduled_at (not "requested_at")
       duration_minutes: step.showing_duration_minutes,
       notes: step.showing_notes ?? null,
-      source: "workflow_sequence",
+      sync_source: "workflow_sequence",                     // existing column for provenance
       created_at: new Date().toISOString(),
     }).select("id").single()
 

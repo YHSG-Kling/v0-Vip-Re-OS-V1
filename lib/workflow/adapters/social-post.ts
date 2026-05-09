@@ -68,15 +68,20 @@ export const socialPostAdapter: ChannelAdapter = {
     }
 
     // Queue to omnipresence via repurposed_content_log
+    // Schema: source_type, source_id, brokerage_id, output_type, output_ref_table,
+    //         output_ref_id, platform_target, status, approval_status, notes, created_by
     const { error } = await supabase.from("repurposed_content_log").insert({
       brokerage_id: brokerageId,
-      platform,
-      caption,
-      media_url: imageUrl ?? null,
-      status: "queued",
-      scheduled_at: new Date().toISOString(),
       source_type: "sequence",
       source_id: ctx.enrollmentId,
+      output_type: "social_post",
+      output_ref_table: "campaign_sequence_steps",
+      output_ref_id: step.id,
+      platform_target: platform,
+      status: "queued",
+      approval_status: "pending",
+      notes: JSON.stringify({ caption, media_url: imageUrl ?? null }),
+      created_by: agentUserId ?? null,
       created_at: new Date().toISOString(),
     })
 
