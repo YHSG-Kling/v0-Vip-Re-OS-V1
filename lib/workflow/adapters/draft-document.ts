@@ -131,6 +131,27 @@ export const draftDocumentAdapter: ChannelAdapter = {
       // agent can complete it manually from the Documents section in CRM.
     }
 
+    // ── Final status reconciliation ─────────────────────────────────────
+    // Document state machine:
+    //   draft               → just created, no generator run yet
+    //   needs_agent_input   → packet staged for offer/listing — agent must finalize in FormWizard
+    //   draft_ready         → ready for send_for_esign step
+    //   review              → already in signing flow (set by send_for_esign)
+    //   complete            → fully signed/finished
+    //
+    // If a docType-specific generator fired, it already set the correct status
+    // (needs_agent_input for offer/listing, draft_ready for invoice/brokerage_rep).
+    // For custom / market_report / fallback, flip to draft_ready so eSign can see it.
+    if (docId) {
+      const { data: current } = await supabase
+        .from("documents").select("status").eq("id", docId).maybeSingle()
+      if (current?.status === "draft") {
+        await supabase.from("documents")
+          .update({ status: "draft_ready" })
+          .eq("id", docId)
+      }
+    }
+
     // Notify agent that a document draft was created and may need review
     if (agentUserId) {
       void Promise.resolve(

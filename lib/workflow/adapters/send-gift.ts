@@ -61,31 +61,60 @@ export const sendGiftAdapter: ChannelAdapter = {
       return createPickProviderTask(ctx, occasion, "No mailing address on contact — agent must collect address before gift can be sent")
     }
 
+    if (!agentId) {
+      return { status: "error", providerKey: "gift", error: "Gift channel requires an agent (agents.id) — context did not resolve one" }
+    }
+
     try {
       const giftMod = await import("@/app/actions/ai-client-gifting")
 
-      // ── AI-recommend a gift if no vendor was specified ─────────────────
-      let vendorId = explicitVendorId
-      let recommendedGift: { name?: string; price_cents?: number; vendor_id?: string } | null = null
+      // ── AI-recommend a gift (gives us name, description, cost, vendor) ──
+      // ai-client-gifting expects: { agentId, contactId, occasion, budget?: { min, max } }
+      let recommendedGift: {
+        name: string
+        description: string
+        cost: number
+        vendor: string
+      } | null = null
 
-      if (!vendorId && typeof (giftMod as any).aiRecommendGift === "function") {
+      const validOccasion = (
+        ["closing", "anniversary", "birthday", "referral_thank_you", "holiday", "apology", "congratulations"]
+          .includes(occasion) ? occasion : "closing"
+      ) as "closing" | "anniversary" | "birthday" | "referral_thank_you" | "holiday" | "apology" | "congratulations"
+
+      if (typeof (giftMod as any).aiRecommendGift === "function") {
+        const budget = amountCents != null
+          ? { min: Math.round(amountCents * 0.7 / 100), max: Math.round(amountCents / 100) }
+          : undefined
+
         const rec = await (giftMod as any).aiRecommendGift({
-          brokerageId,
+          agentId,
           contactId: contact.id,
-          occasion,
-          budgetCents: amountCents,
+          occasion: validOccasion,
+          budget,
         })
-        if (rec?.success && rec.recommendation) {
-          recommendedGift = rec.recommendation
-          vendorId = rec.recommendation?.vendor_id ?? null
+
+        if (rec?.success) {
+          // ai-client-gifting returns { recommendations: [{ name, description, estimatedCost, vendor, ... }] }
+          // Use the first recommendation, or honor explicit vendor selection.
+          const top = (rec.recommendations?.[0] ?? rec.recommendation) as {
+            name?: string; description?: string; estimatedCost?: number; cost?: number; vendor?: string
+          } | undefined
+          if (top?.name) {
+            recommendedGift = {
+              name:        top.name,
+              description: top.description ?? `${validOccasion} gift for ${contact.first_name ?? "client"}`,
+              cost:        top.cost ?? top.estimatedCost ?? (amountCents ? amountCents / 100 : 100),
+              vendor:      explicitVendorId ?? top.vendor ?? "tbd",
+            }
+          }
         }
       }
 
-      // ── If no vendor available, create a task for the agent ────────────
-      if (!vendorId) {
+      if (!recommendedGift) {
         return createPickProviderTask(
-          ctx, occasion,
-          `Vendor marketplace returned no recommendation for ${occasion} gift on ${contact.first_name ?? "contact"} — agent must select manually`
+          ctx, validOccasion,
+          `No gift recommendation available for ${validOccasion} on ${contact.first_name ?? "contact"} — agent must select manually`
         )
       }
 
@@ -94,38 +123,43 @@ export const sendGiftAdapter: ChannelAdapter = {
       if (!noteText && typeof (giftMod as any).aiGenerateThankYouNote === "function") {
         try {
           const noteResult = await (giftMod as any).aiGenerateThankYouNote({
-            brokerageId,
+            agentId,
             contactId: contact.id,
-            occasion,
-            agentUserId,
+            occasion: validOccasion,
+            giftDescription: recommendedGift.description,
+            handwritten: false,
           })
-          noteText = noteResult?.note ?? null
+          noteText = noteResult?.note ?? noteResult?.text ?? null
         } catch { /* note is optional */ }
       }
 
       // ── Place the gift order ───────────────────────────────────────────
       if (typeof (giftMod as any).createGiftOrder === "function") {
         const orderResult = await (giftMod as any).createGiftOrder({
-          brokerageId,
           agentId,
-          agentUserId,
           contactId: contact.id,
-          vendorId,
-          occasion,
-          amountCents: amountCents ?? recommendedGift?.price_cents ?? null,
-          customNote: noteText,
-          shippingAddress: recipientAddress,
-          autoPay,
+          giftDetails: {
+            name:         recommendedGift.name,
+            description:  recommendedGift.description,
+            cost:         recommendedGift.cost,
+            vendor:       recommendedGift.vendor,
+            occasion:     validOccasion,
+            personalNote: noteText ?? undefined,
+          },
+          deliveryAddress: recipientAddress,
         })
 
         // If autoPay was false (or payment requires agent action), create a "pay" task
-        if (!autoPay || !orderResult?.paid) {
+        const orderId = orderResult?.orderId ?? orderResult?.giftOrder?.id ?? orderResult?.id
+        const paid = autoPay && (orderResult?.paid || orderResult?.success)
+
+        if (!paid) {
           void Promise.resolve(supabase.from("tasks").insert({
             brokerage_id: brokerageId,
             contact_id:   contact.id,
             assigned_to_agent_id: agentId,
-            title: `Pay for ${occasion} gift to ${contact.first_name ?? "contact"}`,
-            description: `Gift order ${orderResult?.orderId ?? "(pending)"} from ${recommendedGift?.name ?? "vendor"} — ${(amountCents ?? 0) / 100} USD. Click through to confirm payment.`,
+            title: `Pay for ${validOccasion} gift to ${contact.first_name ?? "contact"}`,
+            description: `Gift order ${orderId ?? "(pending)"} from ${recommendedGift.vendor} — $${recommendedGift.cost}. Click through to confirm payment.`,
             due_date: new Date(Date.now() + 2 * 86_400_000).toISOString(),
             assignee_type: "agent",
             source: "workflow_sequence",
@@ -138,21 +172,20 @@ export const sendGiftAdapter: ChannelAdapter = {
         return {
           status: orderResult?.success ? "sent" : "error",
           providerKey: "gift",
-          messageId: orderResult?.orderId,
+          messageId: orderId,
           error: orderResult?.error,
           output: {
-            gift_order_id: orderResult?.orderId,
-            vendor_id: vendorId,
-            occasion,
-            amount_cents: amountCents ?? recommendedGift?.price_cents ?? null,
-            note: noteText,
-            auto_paid: autoPay && orderResult?.paid,
+            gift_order_id: orderId,
+            vendor:        recommendedGift.vendor,
+            occasion:      validOccasion,
+            cost:          recommendedGift.cost,
+            note:          noteText,
+            auto_paid:     paid,
           },
         }
       }
 
-      // createGiftOrder not yet exported — record intent + task agent
-      return createPickProviderTask(ctx, occasion, "Gift order creation function not yet exported — agent must place manually")
+      return createPickProviderTask(ctx, validOccasion, "Gift order creation function not yet exported — agent must place manually")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       return { status: "error", providerKey: "gift", error: msg }

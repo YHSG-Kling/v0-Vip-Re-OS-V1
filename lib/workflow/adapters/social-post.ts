@@ -88,7 +88,7 @@ export const socialPostAdapter: ChannelAdapter = {
       output_ref_table: "campaign_sequence_steps",
       output_ref_id: step.id,
       platform_target: platform,
-      status: "queued",
+      status: "pending",                       // repurposed_content_log valid: created|pending|processing|completed|failed
       approval_status: "pending",
       notes: JSON.stringify({ caption, media_url: imageUrl ?? null }),
       created_by: agentUserId ?? null,

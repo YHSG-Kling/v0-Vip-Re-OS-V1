@@ -104,7 +104,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // Fetch the document
     const { data: document } = await supabase
       .from("documents")
-      .select("id, document_type, content, state_code, transaction_id, listing_id, status, metadata")
+      .select("id, document_type, content, state_code, transaction_id, listing_id, status, storage_url, metadata")
       .eq("id", documentId)
       .maybeSingle()
 
@@ -193,52 +193,94 @@ export const sendForEsignAdapter: ChannelAdapter = {
           }
         }
 
-        // Generic Dotloop path for brokerage representation, invoice, custom docs.
-        // Falls through to provider's queueDocumentForSignature() if available.
-        const dotloopMod = await import("@/lib/integrations/providers/dotloop-provider")
-        const dotloopInstance = new (dotloopMod as any).DotloopProvider(providerCredentials)
-        if (typeof dotloopInstance.queueDocumentForSignature === "function") {
-          const result = await dotloopInstance.queueDocumentForSignature({
-            brokerageId,
-            documentId,
-            documentContent: document.content,
-            documentType: document.document_type,
-            stateCode: document.state_code,
-            recipientContactId: contact?.id,
-          })
-          await supabase.from("documents")
-            .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
-            .eq("id", documentId)
-          return {
-            status: "sent",
-            providerKey: "dotloop",
-            messageId: result?.loopId,
-            output: {
-              document_id: documentId,
-              loop_id: result?.loopId,
-              signing_url: result?.signingUrl ?? null,
-              status: "sent_for_signature",
-            },
-          }
+        // Generic Dotloop path for brokerage representation / invoice / custom doc.
+        // Uses the canonical createTransaction → attachForms → sendForSignature flow
+        // that DotloopProvider already implements.
+        const { DotloopProvider } = await import("@/lib/integrations/providers/dotloop-provider")
+        const dotloopProv = new DotloopProvider(
+          providerCredentials?.access_token && providerCredentials?.account_id
+            ? { apiKey: providerCredentials.access_token, profileId: providerCredentials.account_id }
+            : undefined
+        )
+
+        // Resolve property address (best-effort)
+        let propertyAddress = "Document"
+        if ((document as any).listing_id) {
+          const { data: l } = await supabase
+            .from("listings").select("address").eq("id", (document as any).listing_id).maybeSingle()
+          if (l?.address) propertyAddress = l.address
+        }
+        if (propertyAddress === "Document" && (document as any).transaction_id) {
+          const { data: t } = await supabase
+            .from("transactions").select("property_address").eq("id", (document as any).transaction_id).maybeSingle()
+          if (t?.property_address) propertyAddress = t.property_address
         }
 
-        // No specific path matched — record as pending and notify agent
-        if (agentUserId) {
-          void Promise.resolve(supabase.from("notifications").insert({
-            brokerage_id: brokerageId,
-            type: "esign_required_manual",
-            title: "Manual eSign needed",
-            body: `${document.document_type} for ${contact?.first_name ?? "contact"} is ready — Dotloop integration could not auto-send. Open the document and send manually.`,
-            priority: "high",
-          })).catch(() => {})
+        // 1. Create transaction loop in Dotloop
+        const txResult = await dotloopProv.createTransaction({
+          propertyAddress,
+          transactionType: document.document_type === "listing_agreement" ? "listing" : "purchase",
+          agentId: agentUserId ?? "",
+          contactId: contact?.id,
+          listingId: (document as any).listing_id ?? undefined,
+          transactionId: (document as any).transaction_id ?? undefined,
+        })
+        if (!txResult.success || !txResult.externalTransactionId) {
+          return { status: "error", providerKey: "dotloop", error: txResult.error ?? "Dotloop createTransaction failed" }
         }
+
+        // 2. Attach the document
+        const attachResult = await dotloopProv.attachForms({
+          externalTransactionId: txResult.externalTransactionId,
+          forms: [{
+            formName: `${document.document_type} — ${propertyAddress}`,
+            formUrl:  document.storage_url ?? undefined,
+            formData: { content: document.content ?? "", state: document.state_code ?? null },
+          }],
+        })
+        if (!attachResult.success) {
+          return { status: "error", providerKey: "dotloop", error: attachResult.error ?? "Dotloop attachForms failed" }
+        }
+
+        // 3. Send for signature
+        const signers: Array<{ email: string; name: string; role: string }> = []
+        if (contact?.email) {
+          signers.push({
+            email: contact.email,
+            name:  `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || contact.email,
+            role:  recipient,
+          })
+        }
+        if (signers.length > 0) {
+          await dotloopProv.sendForSignature({
+            externalTransactionId: txResult.externalTransactionId,
+            documentId,
+            signers,
+            message: (step as any).esign_message ?? undefined,
+          })
+        }
+
+        await supabase.from("documents")
+          .update({
+            status: "review",
+            metadata: {
+              ...(document.metadata as Record<string, unknown>),
+              esign_loop_id: txResult.externalTransactionId,
+              esign_provider: "dotloop",
+            },
+          })
+          .eq("id", documentId)
+
         return {
           status: "sent",
           providerKey: "dotloop",
+          messageId: txResult.externalTransactionId,
           output: {
             document_id: documentId,
-            status: "manual_send_required",
-            note: "Dotloop generic queue not implemented; document flagged for manual send.",
+            loop_id: txResult.externalTransactionId,
+            signing_url: null,
+            status: "sent_for_signature",
+            signers_count: signers.length,
           },
         }
       } catch (err: unknown) {
