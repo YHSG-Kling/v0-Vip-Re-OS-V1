@@ -306,6 +306,20 @@ export async function generateVideo(
   const note = notes.length > 0 ? notes.join("; ") : undefined
 
   if (videoUrl) {
+    // D-ID returns a signed URL (~24h expiry). Download + re-upload to Vercel Blob
+    // so the video URL stays valid for downstream {{step_N.video_url}} references
+    // weeks or months later.
+    try {
+      const dl = await fetch(videoUrl)
+      if (dl.ok) {
+        const bytes = Buffer.from(await dl.arrayBuffer())
+        const blob = await put(`workflow-video/${talkId}.mp4`, bytes, {
+          access: "public",
+          contentType: "video/mp4",
+        })
+        return { videoId: talkId, videoUrl: blob.url, status: "done", note }
+      }
+    } catch { /* fall through with D-ID URL — better than nothing */ }
     return { videoId: talkId, videoUrl, status: "done", note }
   }
 

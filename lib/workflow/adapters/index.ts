@@ -24,6 +24,7 @@ import { scheduleTourAdapter }      from "./schedule-tour"
 import { avmCmaAdapter }            from "./avm-cma"
 import { adCampaignAdapter }        from "./ad-campaign"
 import { listingLandingPageAdapter } from "./listing-landing-page"
+import { sendForEsignAdapter }       from "./send-for-esign"
 import { addToSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
 
 // In-app message adapter (inline — simple enough to not need its own file)
@@ -111,6 +112,7 @@ registry.register(scheduleTourAdapter)
 registry.register(avmCmaAdapter)
 registry.register(adCampaignAdapter)
 registry.register(listingLandingPageAdapter)
+registry.register(sendForEsignAdapter)
 registry.register(addToSegmentAdapter)
 registry.register(removeFromCampaignAdapter)
 registry.register(inAppAdapter)

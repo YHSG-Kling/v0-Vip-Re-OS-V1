@@ -745,19 +745,29 @@ export async function generateOfferDraft(params: {
   brokerageId: string
   contactId?: string | null
   agentUserId?: string | null
-  state?: string
+  /**
+   * 2-letter US state code from the PROPERTY ADDRESS (not the agent's office).
+   * Forms vary by where the property sits, not where the agent works.
+   * No default — caller must supply.
+   */
+  state: string
   documentId?: string | null
+  propertyAddress?: string
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
     const supabase = await createClient()
 
-    const state = (params.state ?? "CA").toUpperCase()
-    const forms = STATE_OFFER_FORMS[state] ?? STATE_OFFER_FORMS.DEFAULT
+    // Use the canonical 50-state form registry — no DEFAULT fallback.
+    const { getStateForms } = await import("@/lib/state-forms/registry")
+    const forms = getStateForms(params.state, "offer")
+    const state = params.state.trim().toUpperCase()
 
     // Build offer draft outline via AI
     const prompt = `You are a real estate transaction coordinator. Generate a concise purchase offer
-outline for a buyer in ${state}. Required forms: ${forms.required.join(", ")}.
+outline for a buyer in ${state}${params.propertyAddress ? ` (property at ${params.propertyAddress})` : ""}.
+Required forms: ${forms.required.join(", ")}.
 Available addenda: ${forms.addenda.join(", ")}.
+Brokerage representation form: ${forms.brokerageRepresentation}.
 Output a structured summary of key terms, contingencies, and timeline recommendations.
 Use professional language. Keep it under 400 words. Format with clear sections.`
 
@@ -773,7 +783,12 @@ Use professional language. Keep it under 400 words. Format with clear sections.`
         .update({
           content: text,
           status: "draft_ready",
-          metadata: { state, required_forms: forms.required, available_addenda: forms.addenda },
+          metadata: {
+            state,
+            required_forms: forms.required,
+            available_addenda: forms.addenda,
+            brokerage_representation_form: forms.brokerageRepresentation,
+          },
           updated_at: new Date().toISOString(),
         })
         .eq("id", params.documentId)

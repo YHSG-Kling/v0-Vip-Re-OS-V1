@@ -18,6 +18,37 @@ export const draftDocumentAdapter: ChannelAdapter = {
 
     const docType = step.document_type ?? "custom"
 
+    // State for state-specific forms — comes from the PROPERTY ADDRESS, not the
+    // agent's office. Resolution order:
+    //   1. step.document_state (explicit override on the workflow step)
+    //   2. listing.state for offers/listing agreements (from the active transaction or contact's listing)
+    //   3. contact.state (fallback)
+    let resolvedState = step.document_state ?? null
+    let propertyAddress: string | undefined
+    if (!resolvedState && contact?.id) {
+      // Try active listing for the contact (seller listing OR buyer's offer target)
+      const { data: listing } = await supabase
+        .from("listings")
+        .select("state, address")
+        .or(`contact_id.eq.${contact.id},seller_contact_id.eq.${contact.id}`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (listing) {
+        resolvedState = (listing as any).state ?? null
+        propertyAddress = (listing as any).address ?? undefined
+      }
+    }
+    if (!resolvedState && contact?.id) {
+      // Fall back to contact's saved state
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("state")
+        .eq("id", contact.id)
+        .maybeSingle()
+      resolvedState = (c as any)?.state ?? null
+    }
+
     // Create a document record — baseline for all types
     const { data: doc, error: docErr } = await supabase
       .from("documents")
@@ -40,6 +71,18 @@ export const draftDocumentAdapter: ChannelAdapter = {
 
     const docId = doc?.id
 
+    // For offer / listing_agreement / brokerage_rep types, the property state is required
+    // (not a default — different state = different forms). Block if state can't be resolved.
+    if ((docType === "offer" || docType === "listing_agreement" || docType === "brokerage_representation") && !resolvedState) {
+      if (docId) {
+        await supabase.from("documents").update({
+          status: "review",
+          metadata: { error: "Property state could not be resolved — state-specific forms unavailable." },
+        }).eq("id", docId)
+      }
+      return { status: "error", providerKey: "document", error: "Property state required to select correct forms" }
+    }
+
     // Route to type-specific generation (graceful fallback if action not yet exported)
     try {
       if (docType === "offer") {
@@ -47,7 +90,7 @@ export const draftDocumentAdapter: ChannelAdapter = {
         if (typeof (m as any).generateOfferDraft === "function") {
           await (m as any).generateOfferDraft({
             brokerageId, contactId: contact?.id, agentUserId,
-            state: step.document_state ?? "CA", documentId: docId,
+            state: resolvedState!, propertyAddress, documentId: docId,
           })
         }
       } else if (docType === "listing_agreement") {
@@ -55,8 +98,19 @@ export const draftDocumentAdapter: ChannelAdapter = {
         if (typeof (m as any).generateListingAgreement === "function") {
           await (m as any).generateListingAgreement({
             brokerageId, contactId: contact?.id, agentUserId,
-            state: step.document_state ?? "CA", documentId: docId,
+            state: resolvedState!, propertyAddress, documentId: docId,
           })
+        }
+      } else if (docType === "brokerage_representation") {
+        // Pull the state-specific brokerage representation form name and queue for signature
+        const { getBrokerageRepresentationForm } = await import("@/lib/state-forms/registry")
+        const formName = getBrokerageRepresentationForm(resolvedState!)
+        if (docId) {
+          await supabase.from("documents").update({
+            content: `Brokerage representation form for ${resolvedState}: ${formName}.\n\nThis disclosure must be signed at engagement.`,
+            status: "draft_ready",
+            metadata: { state: resolvedState, form_name: formName },
+          }).eq("id", docId)
         }
       } else if (docType === "invoice") {
         const m = await import("@/app/actions/ai-financial-management")

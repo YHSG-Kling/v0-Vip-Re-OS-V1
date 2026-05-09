@@ -40,7 +40,22 @@ export const newsletterAdapter: ChannelAdapter = {
       }
     } catch { /* action not yet exported — fall through */ }
 
-    // Fallback: dispatch as email
+    // Fallback: dispatch as email — append a QR if step.qr_attached
+    const { resolveQrCode } = await import("@/lib/workflow/qr-modifier")
+    const qr = await resolveQrCode(step, ctx, {
+      defaultLabel: "Newsletter QR",
+      defaultPurpose: "newsletter",
+    })
+
+    const baseHtml = step.body ?? ""
+    const html = qr
+      ? `${baseHtml}<hr style="margin-top:32px;border:none;border-top:1px solid #e5e7eb"/>
+         <p style="text-align:center;font-size:12px;color:#6b7280">${qr.label}</p>
+         <p style="text-align:center"><a href="${qr.scanUrl}">${qr.imageUrl
+           ? `<img src="${qr.imageUrl}" alt="QR" style="width:128px;height:128px"/>`
+           : qr.scanUrl}</a></p>`
+      : baseHtml
+
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const result = await dispatchEmail({
       brokerageId,
@@ -49,7 +64,7 @@ export const newsletterAdapter: ChannelAdapter = {
       from: "newsletter@platform.com",
       to: contact.email,
       subject: step.subject ?? "Your Newsletter",
-      html: step.body ?? "",
+      html,
     })
 
     return {

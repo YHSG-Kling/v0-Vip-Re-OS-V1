@@ -883,25 +883,24 @@ export async function generateListingAgreement(params: {
   brokerageId: string
   contactId?: string | null
   agentUserId?: string | null
-  state?: string
+  /** 2-letter US state code from the PROPERTY ADDRESS — required, no default. */
+  state: string
   documentId?: string | null
+  propertyAddress?: string
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const state = (params.state ?? "CA").toUpperCase()
 
-    // State-specific listing agreement forms
-    const LISTING_FORMS: Record<string, string[]> = {
-      CA: ["CAR RLA - Residential Listing Agreement", "CAR SS - Seller's Property Questionnaire", "CAR AD - Agency Disclosure"],
-      TX: ["TAR 1101 - Residential Real Estate Listing Agreement", "TAR 2501 - Seller's Disclosure Notice", "TAR 2301 - Information About Brokerage Services"],
-      FL: ["FAR Exclusive Right of Sale Listing Agreement", "Property Disclosure", "Seller's Net Sheet"],
-      DEFAULT: ["Exclusive Right to Sell Listing Agreement", "Property Disclosure Statement", "Agency Disclosure Form"],
-    }
-    const forms = LISTING_FORMS[state] ?? LISTING_FORMS.DEFAULT
+    // Canonical 50-state forms registry — every state explicit, no DEFAULT.
+    const { getStateForms } = await import("@/lib/state-forms/registry")
+    const forms = getStateForms(params.state, "listing")
+    const state = params.state.trim().toUpperCase()
 
-    const prompt = `You are a real estate broker. Generate a concise listing agreement outline for a 
-seller in ${state}. Required forms: ${forms.join(", ")}.
-Include: listing price strategy, commission structure, marketing obligations, 
+    const prompt = `You are a real estate broker. Generate a concise listing agreement outline for a
+seller in ${state}${params.propertyAddress ? ` (property at ${params.propertyAddress})` : ""}.
+Required forms: ${forms.required.join(", ")}.
+Brokerage representation form: ${forms.brokerageRepresentation}.
+Include: listing price strategy, commission structure, marketing obligations,
 seller responsibilities, timeline, and key terms.
 Professional tone. Under 400 words. Clear sections.`
 
@@ -916,7 +915,12 @@ Professional tone. Under 400 words. Clear sections.`
         .update({
           content: text,
           status: "draft_ready",
-          metadata: { state, required_forms: forms },
+          metadata: {
+            state,
+            required_forms: forms.required,
+            available_addenda: forms.addenda,
+            brokerage_representation_form: forms.brokerageRepresentation,
+          },
           updated_at: new Date().toISOString(),
         })
         .eq("id", params.documentId)

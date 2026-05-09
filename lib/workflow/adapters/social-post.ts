@@ -67,6 +67,16 @@ export const socialPostAdapter: ChannelAdapter = {
       } catch { /* use empty caption */ }
     }
 
+    // Universal QR modifier — append the trackable scan URL to the caption
+    const { resolveQrCode } = await import("@/lib/workflow/qr-modifier")
+    const qr = await resolveQrCode(step, ctx, {
+      defaultLabel: `${platform} post QR`,
+      defaultPurpose: "social",
+    })
+    if (qr) {
+      caption = caption + (caption ? "\n\n" : "") + qr.scanUrl
+    }
+
     // Queue to omnipresence via repurposed_content_log
     // Schema: source_type, source_id, brokerage_id, output_type, output_ref_table,
     //         output_ref_id, platform_target, status, approval_status, notes, created_by
