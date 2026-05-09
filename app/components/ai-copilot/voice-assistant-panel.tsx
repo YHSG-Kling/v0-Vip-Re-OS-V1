@@ -4,8 +4,9 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Mic, Loader2, Volume2, Copy } from "lucide-react"
+import { Mic, Loader2, Volume2, Copy, FileText, ExternalLink, ShieldCheck } from "lucide-react"
 import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-command"
+import { voiceDraftOffer, type VoiceDraftOfferResponse } from "@/app/actions/voice-assistant/draft-offer-from-voice"
 import { searchPropertiesWithNaturalLanguage, previewSearchIntent } from "@/app/actions/buyer-property-search"
 import { toast } from "sonner"
 
@@ -43,6 +44,14 @@ export function VoiceAssistantPanel({
   const [isProcessing, setIsProcessing] = useState(false)
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([])
   const [clarificationOptions, setClarificationOptions] = useState<string[]>([])
+
+  // ── Draft-offer mode (additive — parallel flow to handleVoiceCommand) ──
+  // When draftOfferMode is true, transcripts are routed to voiceDraftOffer
+  // instead of handleVoiceCommand. Allows multi-turn conversational packet
+  // staging without changing the existing voice command flow.
+  const [draftOfferMode, setDraftOfferMode] = useState(false)
+  const [intakeSessionId, setIntakeSessionId] = useState<string | null>(null)
+  const [draftResponse, setDraftResponse] = useState<VoiceDraftOfferResponse | null>(null)
 
   const VOICE_SHORTCUTS = [
     "Get Today's Briefing",
@@ -89,6 +98,41 @@ export function VoiceAssistantPanel({
     }
   }
 
+  // ── Draft-offer mode handler ──────────────────────────────────────────
+  const handleDraftOfferSubmit = async (force = false) => {
+    if (!transcript.trim() && !force) return
+    setIsProcessing(true)
+    try {
+      const result = await voiceDraftOffer({
+        voiceInput:    transcript,
+        sessionId:     intakeSessionId ?? undefined,
+        contactId:     currentBuyerId,
+        forceFinalize: force,
+      })
+      setDraftResponse(result)
+      if (result.kind !== "error" && "sessionId" in result) {
+        setIntakeSessionId(result.sessionId)
+      }
+      if (result.kind === "finalized") {
+        toast.success("Offer packet staged — opening FormWizard")
+      }
+      // Clear transcript box for the next utterance, keep the response visible
+      setTranscript("")
+    } catch (err) {
+      console.error("Draft offer error:", err)
+      toast.error("Could not process voice draft")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const exitDraftOfferMode = () => {
+    setDraftOfferMode(false)
+    setIntakeSessionId(null)
+    setDraftResponse(null)
+    setTranscript("")
+  }
+
   if (!expanded) {
     return (
       <button
@@ -129,22 +173,40 @@ export function VoiceAssistantPanel({
           )}
         </div>
 
-        {/* Voice Shortcuts */}
-        <div className="flex flex-wrap gap-2">
-          {VOICE_SHORTCUTS.map((shortcut) => (
-            <button
-              key={shortcut}
-              onClick={() => setTranscript(shortcut)}
-              className="text-xs px-2 py-1 bg-accent rounded hover:bg-accent/80 transition-colors"
-            >
-              {shortcut}
-            </button>
-          ))}
+        {/* Mode toggle — Draft Offer vs Standard voice commands */}
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={draftOfferMode ? "default" : "outline"}
+            onClick={() => draftOfferMode ? exitDraftOfferMode() : setDraftOfferMode(true)}
+            className="gap-1.5"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            {draftOfferMode ? "Exit Draft Offer" : "Draft Offer"}
+          </Button>
+          {draftOfferMode && intakeSessionId && (
+            <Badge variant="outline" className="text-[10px]">Session active</Badge>
+          )}
         </div>
 
-        {/* Submit Button */}
+        {/* Voice Shortcuts — hide while in Draft Offer mode */}
+        {!draftOfferMode && (
+          <div className="flex flex-wrap gap-2">
+            {VOICE_SHORTCUTS.map((shortcut) => (
+              <button
+                key={shortcut}
+                onClick={() => setTranscript(shortcut)}
+                className="text-xs px-2 py-1 bg-accent rounded hover:bg-accent/80 transition-colors"
+              >
+                {shortcut}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Submit Button — routes to draft-offer flow when in that mode */}
         <Button
-          onClick={handleVoiceSubmit}
+          onClick={() => draftOfferMode ? handleDraftOfferSubmit(false) : handleVoiceSubmit()}
           disabled={isProcessing || !transcript.trim()}
           className="w-full"
         >
@@ -153,13 +215,76 @@ export function VoiceAssistantPanel({
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
               Processing
             </>
+          ) : draftOfferMode ? (
+            "Send to Drafter"
           ) : (
             "Submit"
           )}
         </Button>
 
-        {/* Response Display */}
-        {response && (
+        {/* Draft-offer response panel ──────────────────────────────── */}
+        {draftOfferMode && draftResponse && (
+          <div className="space-y-3 border-t pt-4">
+            {draftResponse.kind === "needs_more_info" && (
+              <>
+                <div className="flex items-start gap-2">
+                  <Volume2 className="h-4 w-4 text-blue-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-blue-700">{draftResponse.spokenResponse}</p>
+                </div>
+                {draftResponse.questions.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-muted-foreground">Still need:</p>
+                    <ul className="text-xs space-y-0.5 text-muted-foreground">
+                      {draftResponse.questions.slice(0, 5).map((q, i) => (
+                        <li key={i}>· {q.question}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {draftResponse.kind === "ready_to_finalize" && (
+              <>
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-emerald-700">{draftResponse.spokenResponse}</p>
+                </div>
+                <Button
+                  onClick={() => handleDraftOfferSubmit(true)}
+                  disabled={isProcessing}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700"
+                >
+                  Finalize & Stage Packet
+                </Button>
+              </>
+            )}
+
+            {draftResponse.kind === "finalized" && (
+              <div className="space-y-2">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <p className="text-sm text-emerald-700">{draftResponse.spokenResponse}</p>
+                </div>
+                <Button asChild className="w-full gap-1">
+                  <a href={draftResponse.formwizardUrl}>
+                    Open Packet in FormWizard <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" onClick={exitDraftOfferMode} className="w-full">
+                  Start a New Draft
+                </Button>
+              </div>
+            )}
+
+            {draftResponse.kind === "error" && (
+              <p className="text-sm text-destructive">{draftResponse.error}</p>
+            )}
+          </div>
+        )}
+
+        {/* Response Display — hidden in draft-offer mode (its own panel above) */}
+        {response && !draftOfferMode && (
           <div className="space-y-3 border-t pt-4">
             <div>
               <p className="text-sm font-semibold text-blue-600">
