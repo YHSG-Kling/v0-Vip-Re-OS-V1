@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { OffersManagerClient } from "./offers-manager-client"
+import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
 
 export default async function OffersPage({
   params,
@@ -62,13 +63,24 @@ export default async function OffersPage({
 
   if (!listing) redirect("/dashboard/listings")
 
+  // Active offers (pending|submitted|countered) drive the multi-offer matrix
+  const activeOfferCount = offersWithAgentNames.filter(o =>
+    ["pending", "submitted", "countered"].includes(o.status)
+  ).length
+
   return (
-    <OffersManagerClient
-      listing={listing}
-      initialOffers={offersWithAgentNames}
-      currentUserId={user.id}
-      brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
-      userRole={agentRow?.role ?? agentRow?.platform_role ?? "agent"}
-    />
+    <>
+      {/* Multi-offer matrix card — renders only when 2+ active offers exist.
+          Server component; runs in parallel with the existing client tree below. */}
+      <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} />
+
+      <OffersManagerClient
+        listing={listing}
+        initialOffers={offersWithAgentNames}
+        currentUserId={user.id}
+        brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
+        userRole={agentRow?.role ?? agentRow?.platform_role ?? "agent"}
+      />
+    </>
   )
 }

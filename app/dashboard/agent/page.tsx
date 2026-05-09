@@ -42,6 +42,7 @@ import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter
 import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance-card"
 import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
 import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
+import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -430,6 +431,9 @@ export default function AgentDashboard() {
 
         {/* Smart Queue — single segmented list, replaces 5 contact-urgency widgets */}
         <SmartQueue />
+
+        {/* AI Coaching Insights — auto-hides when agent has fewer than 5 deals */}
+        <AgentInsightsWidget />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
