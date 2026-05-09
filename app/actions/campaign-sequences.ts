@@ -69,9 +69,38 @@ export interface SequenceEnrollment {
   contact?: { first_name: string | null; last_name: string | null; email: string | null }
 }
 
-// ─── Valid step types ─────────────────────────────────────────────────────────
+// ─── Valid step types (all 20+ channels registered in the workflow registry) ──
 
-export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail", "assign_task", "add_to_segment", "remove_from_campaign", "condition"] as const)
+export const VALID_STEP_TYPES = new Set([
+  // Core communication
+  "email",
+  "sms",
+  "voice_drop",
+  "in_app",
+  "ai_call",
+  // Flow control
+  "wait",
+  "condition",
+  "add_to_segment",
+  "remove_from_campaign",
+  // Rich media
+  "ai_image",
+  "video",
+  // Marketing channels
+  "direct_mail",
+  "newsletter",
+  "social_post",
+  "ad_campaign",
+  "listing_landing_page",
+  // Documents & actions
+  "avm_cma",
+  "draft_document",
+  "assign_task",
+  "schedule_showing",
+  "schedule_tour",
+] as const)
+
+export type ChannelType = typeof VALID_STEP_TYPES extends Set<infer T> ? T : never
 
 // ─── Sequence type categories ─────────────────────────────────────────────────
 
@@ -588,12 +617,38 @@ export interface SequenceBuilderStep {
   id?: string
   step_number: number
   step_name: string
-  step_type: "email" | "sms" | "voice_drop" | "wait" | "ai_call" | "direct_mail"
+  step_type: ChannelType
   delay_days: number
   delay_hours: number
   subject?: string | null
   body: string
   is_active: boolean
+  // Variable graph
+  output_variable_name?: string | null
+  // Channel-specific config (subset kept here for the builder UI)
+  image_prompt?: string | null
+  image_style?: string | null
+  image_aspect_ratio?: string | null
+  video_script?: string | null
+  video_voice_only?: boolean
+  video_background_url?: string | null
+  voice_drop_script?: string | null
+  voice_drop_voice_id?: string | null
+  social_platform?: string | null
+  social_caption_prompt?: string | null
+  task_assignee_type?: string | null
+  task_title?: string | null
+  task_due_offset_days?: number
+  document_type?: string | null
+  document_state?: string | null
+  avm_data_source?: string | null
+  avm_report_type?: string | null
+  avm_include_investor_adj?: boolean
+  ad_platform?: string | null
+  ad_objective?: string | null
+  direct_mail_piece_type?: string | null
+  qr_attached?: boolean
+  qr_target_url_pattern?: string | null
 }
 
 export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
@@ -633,6 +688,30 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       subject: row.subject ?? null,
       body: row.body ?? "",
       is_active: row.is_active ?? true,
+      output_variable_name: row.output_variable_name ?? null,
+      qr_attached: row.qr_attached ?? false,
+      qr_target_url_pattern: row.qr_target_url_pattern ?? null,
+      image_prompt: row.image_prompt ?? null,
+      image_style: row.image_style ?? null,
+      image_aspect_ratio: row.image_aspect_ratio ?? null,
+      video_script: row.video_script ?? null,
+      video_voice_only: row.video_voice_only ?? false,
+      video_background_url: row.video_background_url ?? null,
+      voice_drop_script: row.voice_drop_script ?? null,
+      voice_drop_voice_id: row.voice_drop_voice_id ?? null,
+      social_platform: row.social_platform ?? null,
+      social_caption_prompt: row.social_caption_prompt ?? null,
+      task_assignee_type: row.task_assignee_type ?? null,
+      task_title: row.task_title ?? null,
+      task_due_offset_days: row.task_due_offset_days ?? 0,
+      document_type: row.document_type ?? null,
+      document_state: row.document_state ?? null,
+      avm_data_source: row.avm_data_source ?? null,
+      avm_report_type: row.avm_report_type ?? null,
+      avm_include_investor_adj: row.avm_include_investor_adj ?? false,
+      ad_platform: row.ad_platform ?? null,
+      ad_objective: row.ad_objective ?? null,
+      direct_mail_piece_type: row.direct_mail_piece_type ?? null,
     }))
     return { steps }
   } catch (e: any) {
@@ -683,19 +762,55 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
       const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
 
+      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => ({
+        sequence_id: sequenceId,
+        step_number: overrideIdx ?? steps.indexOf(s) + 1,
+        step_name: s.step_name || s.step_type,
+        channel: s.step_type,
+        delay_days: s.delay_days ?? 0,
+        delay_hours: s.delay_hours ?? 0,
+        subject: s.subject ?? null,
+        body: s.body || "",
+        is_active: s.is_active ?? true,
+        // Variable graph
+        output_variable_name: s.output_variable_name ?? null,
+        // QR modifier
+        qr_attached: s.qr_attached ?? false,
+        qr_target_url_pattern: s.qr_target_url_pattern ?? null,
+        // AI Image
+        image_prompt: s.image_prompt ?? null,
+        image_style: s.image_style ?? null,
+        image_aspect_ratio: s.image_aspect_ratio ?? null,
+        // Video
+        video_script: s.video_script ?? null,
+        video_voice_only: s.video_voice_only ?? false,
+        video_background_url: s.video_background_url ?? null,
+        // Voice Drop
+        voice_drop_script: s.voice_drop_script ?? null,
+        voice_drop_voice_id: s.voice_drop_voice_id ?? null,
+        // Social
+        social_platform: s.social_platform ?? null,
+        social_caption_prompt: s.social_caption_prompt ?? null,
+        // Task
+        task_assignee_type: s.task_assignee_type ?? null,
+        task_title: s.task_title ?? null,
+        task_due_offset_days: s.task_due_offset_days ?? 0,
+        // Document
+        document_type: s.document_type ?? null,
+        document_state: s.document_state ?? null,
+        // AVM/CMA
+        avm_data_source: s.avm_data_source ?? null,
+        avm_report_type: s.avm_report_type ?? null,
+        avm_include_investor_adj: s.avm_include_investor_adj ?? false,
+        // Ad
+        ad_platform: s.ad_platform ?? null,
+        ad_objective: s.ad_objective ?? null,
+        // Direct mail
+        direct_mail_piece_type: s.direct_mail_piece_type ?? null,
+      })
+
       if (toUpdate.length > 0) {
-        const updateRows = toUpdate.map((s, i) => ({
-          id: s.id,
-          sequence_id: sequenceId,
-          step_number: steps.indexOf(s) + 1,
-          step_name: s.step_name || s.step_type,
-          channel: s.step_type,
-          delay_days: s.delay_days ?? 0,
-          delay_hours: s.delay_hours ?? 0,
-          subject: s.subject ?? null,
-          body: s.body || "",
-          is_active: s.is_active ?? true,
-        }))
+        const updateRows = toUpdate.map((s) => ({ id: s.id, ...buildRow(s) }))
         const { error: upsertError } = await service
           .from("campaign_sequence_steps")
           .upsert(updateRows, { onConflict: "id" })
@@ -703,18 +818,7 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       }
 
       if (toInsert.length > 0) {
-        const insertRows = toInsert.map((s) => ({
-          // No id — DB generates a fresh UUID; prevents cross-sequence ID overwrite
-          sequence_id: sequenceId,
-          step_number: steps.indexOf(s) + 1,
-          step_name: s.step_name || s.step_type,
-          channel: s.step_type,
-          delay_days: s.delay_days ?? 0,
-          delay_hours: s.delay_hours ?? 0,
-          subject: s.subject ?? null,
-          body: s.body || "",
-          is_active: s.is_active ?? true,
-        }))
+        const insertRows = toInsert.map((s) => buildRow(s))
         const { error: insertError } = await service
           .from("campaign_sequence_steps")
           .insert(insertRows)

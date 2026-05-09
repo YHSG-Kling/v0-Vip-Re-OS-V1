@@ -24,14 +24,26 @@ interface Props {
   role: string | null
 }
 
-const STEP_TYPES = [
-  { value: "email", label: "Email", icon: Mail, color: "bg-blue-100 text-blue-700 border-blue-200" },
-  { value: "sms", label: "SMS", icon: MessageSquare, color: "bg-green-100 text-green-700 border-green-200" },
-  { value: "voice_drop", label: "Voice Drop", icon: Phone, color: "bg-purple-100 text-purple-700 border-purple-200" },
-  { value: "ai_call", label: "AI Call", icon: Sparkles, color: "bg-amber-100 text-amber-700 border-amber-200" },
-  { value: "wait", label: "Wait", icon: Clock, color: "bg-slate-100 text-slate-600 border-slate-200" },
-  { value: "direct_mail", label: "Direct Mail", icon: Mail, color: "bg-orange-100 text-orange-700 border-orange-200" },
-] as const
+const STEP_TYPES: Array<{ value: string; label: string; icon: any; color: string }> = [
+  { value: "email",               label: "Email",               icon: Mail,         color: "bg-blue-100 text-blue-700 border-blue-200" },
+  { value: "sms",                 label: "SMS",                 icon: MessageSquare,color: "bg-green-100 text-green-700 border-green-200" },
+  { value: "voice_drop",          label: "Voice Drop",          icon: Phone,        color: "bg-purple-100 text-purple-700 border-purple-200" },
+  { value: "ai_call",             label: "AI Call",             icon: Sparkles,     color: "bg-amber-100 text-amber-700 border-amber-200" },
+  { value: "wait",                label: "Wait",                icon: Clock,        color: "bg-slate-100 text-slate-600 border-slate-200" },
+  { value: "direct_mail",         label: "Direct Mail",         icon: Mail,         color: "bg-orange-100 text-orange-700 border-orange-200" },
+  { value: "ai_image",            label: "AI Image",            icon: Wand2,        color: "bg-pink-100 text-pink-700 border-pink-200" },
+  { value: "video",               label: "Video",               icon: Sparkles,     color: "bg-violet-100 text-violet-700 border-violet-200" },
+  { value: "newsletter",          label: "Newsletter",          icon: Mail,         color: "bg-teal-100 text-teal-700 border-teal-200" },
+  { value: "social_post",         label: "Social Post",         icon: Sparkles,     color: "bg-sky-100 text-sky-700 border-sky-200" },
+  { value: "assign_task",         label: "Assign Task",         icon: Sparkles,     color: "bg-yellow-100 text-yellow-700 border-yellow-200" },
+  { value: "draft_document",      label: "Draft Document",      icon: Sparkles,     color: "bg-stone-100 text-stone-700 border-stone-200" },
+  { value: "schedule_showing",    label: "Schedule Showing",    icon: Sparkles,     color: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  { value: "schedule_tour",       label: "Schedule Tour",       icon: Sparkles,     color: "bg-cyan-100 text-cyan-700 border-cyan-200" },
+  { value: "avm_cma",             label: "AVM / CMA Report",    icon: Sparkles,     color: "bg-indigo-100 text-indigo-700 border-indigo-200" },
+  { value: "ad_campaign",         label: "Ad Campaign",         icon: Sparkles,     color: "bg-rose-100 text-rose-700 border-rose-200" },
+  { value: "in_app",              label: "In-App Message",      icon: MessageSquare,color: "bg-lime-100 text-lime-700 border-lime-200" },
+  { value: "condition",           label: "Condition",           icon: Sparkles,     color: "bg-neutral-100 text-neutral-600 border-neutral-200" },
+]
 
 function newStep(type: SequenceStep["step_type"], index: number): SequenceStep {
   return { id: crypto.randomUUID(), step_number: index + 1, step_name: type, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: "", subject: type === "email" ? "" : null, is_active: true }
