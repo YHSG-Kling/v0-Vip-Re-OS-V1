@@ -15,6 +15,8 @@ import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { FloatingVoiceFAB } from './floating-voice-fab'
+import { FloatingChatFAB } from './floating-chat-fab'
+import { AgentAvatarChatOverlay } from './agent-avatar-chat-overlay'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
@@ -196,6 +198,15 @@ export function AppShell({ children }: AppShellProps) {
 
         {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
         {showAIAssistant && <VoiceAssistantOverlay />}
+
+        {/* D-ID avatar chat — visual mode (Track C) */}
+        {showAIAssistant && <FloatingChatFAB />}
+        {showAIAssistant && (
+          <AgentAvatarChatOverlay
+            agentUserId={safeUserContext.id}
+            agentFirstName={safeUserContext.firstName ?? primaryRole}
+          />
+        )}
       </div>
     </ShellProvider>
   )

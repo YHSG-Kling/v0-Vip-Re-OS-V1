@@ -34,6 +34,12 @@ interface ShellContextValue {
   voiceOverlayOpen: boolean
   setVoiceOverlayOpen: (open: boolean) => void
 
+  // Track C — D-ID avatar chat overlay (visual mode).
+  // Opens when the chat FAB is tapped. Agent's cloned voice + D-ID actor.
+  // Distinct from the voice overlay (audio-only) and the typed-chat panel.
+  avatarChatOpen: boolean
+  setAvatarChatOpen: (open: boolean) => void
+
   mobileSidebarOpen: boolean
   setMobileSidebarOpen: (open: boolean) => void
   toggleMobileSidebar: () => void
@@ -46,6 +52,7 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [voiceListening, setVoiceListening] = useState(false)
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false)
+  const [avatarChatOpen, setAvatarChatOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   const toggleInbox = useCallback(() => setInboxOpen((prev) => !prev), [])
@@ -119,6 +126,8 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
         setVoiceListening,
         voiceOverlayOpen,
         setVoiceOverlayOpen,
+        avatarChatOpen,
+        setAvatarChatOpen,
         mobileSidebarOpen,
         setMobileSidebarOpen,
         toggleMobileSidebar,

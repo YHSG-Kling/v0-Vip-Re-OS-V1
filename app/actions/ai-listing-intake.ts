@@ -83,66 +83,59 @@ export async function aiEnrichPropertyData(address: string, agentId: string) {
 
     const supabase = await createClient()
 
-    // Call external data enrichment APIs (tax records, MLS history, etc.)
-    // This would integrate with BatchData, CoreLogic, or similar
-    const enrichmentPrompt = `You are a real estate data analyst. Based on this address, estimate property details.
-Address: ${address}
+    // Real data chain: OSINT (free, scrapes public listing data) → BatchData
+    // (paid, public records) → AI estimate (clearly labeled, last resort).
+    // Replaces the previous GPT-only fabrication path.
+    const { enrichPropertyChain, getStreetViewImageUrl, getStaticMapImageUrl } =
+      await import("@/lib/property/enrichment-chain")
+    const enriched = await enrichPropertyChain(address)
 
-Provide realistic estimates in JSON format:
-{
-  "beds": number,
-  "baths": number,
-  "sqft": number,
-  "yearBuilt": number,
-  "lotSize": number,
-  "stories": number,
-  "garage": number,
-  "pool": boolean,
-  "propertyType": "single_family" | "condo" | "townhouse",
-  "style": "modern" | "traditional" | "craftsman" | "mediterranean" | "contemporary",
-  "roofType": string,
-  "hvac": string,
-  "estimatedValue": number,
-  "estimatedRent": number,
-  "schoolDistrict": string,
-  "walkScore": number,
-  "floodZone": string
-}`
-
-    const { object: propertyData } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
-        beds: z.number(),
-        baths: z.number(),
-        sqft: z.number(),
-        yearBuilt: z.number(),
-        lotSize: z.number(),
-        stories: z.number(),
-        garage: z.number(),
-        pool: z.boolean(),
-        propertyType: z.enum(["single_family", "condo", "townhouse"]),
-        style: z.string(),
-        roofType: z.string(),
-        hvac: z.string(),
-        estimatedValue: z.number(),
-        estimatedRent: z.number(),
-        schoolDistrict: z.string(),
-        walkScore: z.number(),
-        floodZone: z.string(),
-      }),
-      prompt: enrichmentPrompt,
+    // Best-effort cover photo from Google Street View, with satellite fallback
+    let coverPhoto = getStreetViewImageUrl({
+      address,
+      lat: enriched.lat ?? undefined,
+      lon: enriched.lon ?? undefined,
     })
+    if (!coverPhoto && enriched.lat != null && enriched.lon != null) {
+      coverPhoto = getStaticMapImageUrl({ lat: enriched.lat, lon: enriched.lon })
+    }
 
-    // Log the enrichment
+    // Log the enrichment + which source provided it (real audit trail)
     await supabase.from("ai_usage_log").insert({
-      agent_id: agentId,
+      agent_id:    agentId,
       action_type: "property_enrichment",
-      input_data: { address },
-      output_data: propertyData,
-      tokens_used: 500,
+      input_data:  { address },
+      output_data: { ...enriched, coverPhoto },
+      tokens_used: enriched.source === "ai_estimate" ? 500 : 0,
     })
 
-    return { success: true, data: propertyData }
+    return {
+      success: true,
+      data: {
+        // Original shape kept so existing callers (createListing, etc.) keep working
+        beds:           enriched.beds          ?? null,
+        baths:          enriched.baths         ?? null,
+        sqft:           enriched.sqft          ?? null,
+        yearBuilt:      enriched.yearBuilt     ?? null,
+        lotSize:        enriched.lotSize       ?? null,
+        stories:        enriched.stories       ?? null,
+        garage:         enriched.garage        ?? null,
+        pool:           enriched.pool          ?? null,
+        propertyType:   enriched.propertyType  ?? "single_family",
+        estimatedValue: enriched.estimatedValue ?? null,
+        estimatedRent:  enriched.estimatedRent ?? null,
+        schoolDistrict: enriched.schoolDistrict ?? null,
+        walkScore:      enriched.walkScore     ?? null,
+        floodZone:      enriched.floodZone     ?? null,
+        // New fields the UI can use to badge confidence + show cover
+        source:         enriched.source,
+        isEstimate:     enriched.isEstimate,
+        sourceNote:     enriched.sourceNote,
+        lat:            enriched.lat ?? null,
+        lon:            enriched.lon ?? null,
+        coverPhoto,
+      },
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Enrichment error:", error)
     return handleError(error, "aiEnrichPropertyData")
@@ -817,7 +810,7 @@ export async function runCompleteListingIntake(params: {
       hasHoa: params.hasHoa || false,
       hasPool: params.hasPool || false,
       isHistoric: false,
-      leadPaintYear: enrichResult.data?.yearBuilt,
+      leadPaintYear: enrichResult.data?.yearBuilt ?? undefined,
     })
 
     // Step 3: Generate listing description
