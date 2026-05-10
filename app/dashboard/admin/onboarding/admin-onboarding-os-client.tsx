@@ -17,6 +17,7 @@ import {
   OnboardingBatchActionsPanel,
 } from './components/os'
 import { getBrokerageAgentLicenseStatuses, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
+import { CdaSetupPanel } from './components/os/cda-setup-panel'
 
 interface AdoptionMetrics {
   avgCompletion: number
@@ -177,6 +178,9 @@ export function AdminOnboardingOsClient({
               brokerageId={brokerageId}
             />
           </div>
+          {/* CDA setup — does the brokerage offer Commission Disbursement
+              Authorizations? If yes, broker uploads template PDFs here. */}
+          <CdaSetupPanel />
         </TabsContent>
 
         <TabsContent value="training" className="space-y-4">

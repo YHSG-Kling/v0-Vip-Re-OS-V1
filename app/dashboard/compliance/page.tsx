@@ -27,6 +27,7 @@ import {
   AuditFeedPanel,
   AIComplianceReviewPanel,
   PolicyReportingPanel,
+  CdaReviewPanel,
 } from "./components/os"
 
 export default async function ComplianceDashboardPage() {
@@ -218,10 +219,11 @@ export default async function ComplianceDashboardPage() {
           <FlaggedFilesPanel flaggedFiles={flaggedFiles} />
         </div>
 
-        {/* Center Column: Missing Disclosures + Exception Review */}
+        {/* Center Column: Missing Disclosures + Exception Review + CDA Approval Queue */}
         <div className="space-y-6">
           <MissingDisclosuresPanel missingDisclosures={missingDisclosures} />
           <ExceptionReviewPanelWrapper exceptions={exceptions} />
+          <CdaReviewPanel />
         </div>
 
         {/* Right Column: Audit Feed + AI Review + Reporting */}

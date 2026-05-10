@@ -10,6 +10,7 @@ import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2, X } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
+import { PageContextAssistant } from '@/app/components/shared/page-context-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
@@ -174,9 +175,11 @@ export function AppShell({ children }: AppShellProps) {
           badgeCounts={badgeCounts}
         />
 
-        {/* Internal AI Assistant — staff roles only */}
+        {/* Internal AI Assistant — staff roles only.
+            PageContextAssistant derives { contactId, listingId, transactionId, offerId }
+            from the URL so the copilot is always context-aware. */}
         {showAIAssistant && (
-          <InternalAIAssistant
+          <PageContextAssistant
             role={primaryRole}
             userId={safeUserContext.id}
           />
