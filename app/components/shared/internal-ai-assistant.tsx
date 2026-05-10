@@ -527,6 +527,26 @@ interface InternalAIAssistantProps {
 export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: InternalAIAssistantProps) {
   const [open, setOpen] = useState(false)
   const [minimized, setMinimized] = useState(false)
+
+  // Allow FloatingChatFAB / ⌘K verbs / any descendant to open the panel
+  // by dispatching `vip:toggle-ai-assistant` on the window. Avoids forcing
+  // a controlled `open` prop through every layout caller.
+  useEffect(() => {
+    const onToggle = () => {
+      setOpen(prev => !prev)
+      setMinimized(false)
+    }
+    const onOpen = () => {
+      setOpen(true)
+      setMinimized(false)
+    }
+    window.addEventListener("vip:toggle-ai-assistant", onToggle)
+    window.addEventListener("vip:open-ai-assistant", onOpen)
+    return () => {
+      window.removeEventListener("vip:toggle-ai-assistant", onToggle)
+      window.removeEventListener("vip:open-ai-assistant", onOpen)
+    }
+  }, [])
   const [input, setInput] = useState("")
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<NoteDraft[]>([])

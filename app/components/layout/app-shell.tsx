@@ -16,7 +16,6 @@ import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { FloatingVoiceFAB } from './floating-voice-fab'
 import { FloatingChatFAB } from './floating-chat-fab'
-import { AgentAvatarChatOverlay } from './agent-avatar-chat-overlay'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
@@ -199,14 +198,13 @@ export function AppShell({ children }: AppShellProps) {
         {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
         {showAIAssistant && <VoiceAssistantOverlay />}
 
-        {/* D-ID avatar chat — visual mode (Track C) */}
+        {/* Text-only AI chat FAB (Track C).
+            The visual D-ID avatar widget intentionally does NOT mount here —
+            the agent doesn't want to see/hear their own clone (uncanny valley).
+            Customers see the avatar in their portal via PortalChatLauncher.
+            The agent-side FAB toggles the existing typed InternalAIAssistant
+            panel via a window event. */}
         {showAIAssistant && <FloatingChatFAB />}
-        {showAIAssistant && (
-          <AgentAvatarChatOverlay
-            agentUserId={safeUserContext.id}
-            agentFirstName={safeUserContext.firstName ?? primaryRole}
-          />
-        )}
       </div>
     </ShellProvider>
   )
