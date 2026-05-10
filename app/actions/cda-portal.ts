@@ -196,6 +196,71 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId }),
   })
 
+  // ── Cross-party notifications + task (additive) ───────────────────────
+  // Existing code above notified the AGENT. Spec calls for cross-portal
+  // fan-out so TC + buyer/seller portals also see the CD landed.
+
+  // Resolve TC for this transaction (if assigned) and notify them too.
+  const { data: txnFull } = await supabase
+    .from("transactions")
+    .select("coordinator_id, buyer_contact_id, seller_contact_id, contact_id")
+    .eq("id", input.transactionId)
+    .maybeSingle()
+  const tcUserId = (txnFull as any)?.coordinator_id ?? null
+  if (tcUserId) {
+    await supabase.from("notifications").insert({
+      user_id:      tcUserId,
+      brokerage_id: txn.brokerage_id,
+      type:         "preliminary_cd_received",
+      title:        "Preliminary CD ready for CDA",
+      body:         `Preliminary CD uploaded${txn.property_address ? ` for ${txn.property_address}` : ""}. Coordinate with the agent on the CDA.`,
+      entity_type:  "transaction",
+      entity_id:    input.transactionId,
+      priority:     "high",
+      channel:      "in_app",
+    })
+  }
+
+  // Create a "Draft and submit CDA" task for the agent so it shows up in
+  // their tasks queue alongside the notification. Resolve agents.id as
+  // assigned_to_agent_id (FK target).
+  await supabase.from("tasks").insert({
+    brokerage_id:         txn.brokerage_id,
+    contact_id:           (txnFull as any)?.buyer_contact_id
+                          ?? (txnFull as any)?.contact_id
+                          ?? null,
+    transaction_id:       input.transactionId,
+    assigned_to_agent_id: txn.agent_id,
+    title:                "Draft and submit CDA",
+    description:          `Preliminary CD landed. Open the transaction to draft your commission disbursement, sign off, and submit to compliance for approval.`,
+    due_date:             new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    assignee_type:        "agent",
+    source:               "cda_workflow",
+    status:               "pending",
+    priority:             "high",
+  })
+
+  // Fan out via the canonical kernel event router so any sequences listening
+  // for CD_RECEIVED auto-enroll, buyer/seller portals get a transparency
+  // update (when a template exists for the event), and downstream listeners
+  // pick it up uniformly.
+  try {
+    const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+    const { KernelEvent }       = await import("@/lib/kernel/events")
+    await fanOutKernelEvent({
+      event:           KernelEvent.CD_RECEIVED,
+      brokerageId:     txn.brokerage_id,
+      entityType:      "transaction",
+      entityId:        input.transactionId,
+      transactionId:   input.transactionId,
+      buyerContactId:  (txnFull as any)?.buyer_contact_id  ?? undefined,
+      sellerContactId: (txnFull as any)?.seller_contact_id ?? undefined,
+      contactId:       (txnFull as any)?.contact_id        ?? undefined,
+      agentUserId:     auth.userId,
+      metadata:        { cdaId, documentId: input.documentId },
+    })
+  } catch { /* fan-out is best-effort; agent + TC already notified above */ }
+
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
   return { success: true as const, cdaId }
 }

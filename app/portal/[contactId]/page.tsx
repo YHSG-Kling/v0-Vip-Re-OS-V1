@@ -10,6 +10,7 @@ import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
+import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -444,6 +445,10 @@ export default async function PortalHomePage({
             teamHref={`/portal/${contactId}/team`}
           />
         )}
+
+        {/* Buyer self-serve financial upload — pre-approval / POF / lender connect.
+            Auto-renders for buyer view; auth-gated to the contact's own portal user. */}
+        <BuyerFinancialUploadCard contactId={contactId} />
 
         {/* Immediate needs */}
         {(upcomingShowings.length > 0 || offers.filter((o:any) => ['pending','countered'].includes(o.status)).length > 0) && (
