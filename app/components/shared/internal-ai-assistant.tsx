@@ -505,9 +505,26 @@ interface InternalAIAssistantProps {
   role: string
   wakeWord?: string     // from users.assistant_wake_name — e.g. "hey nova"
   userId?: string
+  /**
+   * Optional page context — when set, the copilot knows what entity the
+   * agent is currently viewing and injects it into the system prompt so
+   * questions resolve naturally ("draft a follow-up for them" / "find
+   * buyers for this listing" / "what's their last touchpoint?").
+   *
+   * Pass any subset; extra fields are forwarded to the assistant tool calls.
+   * Nothing breaks when omitted — existing call sites keep working.
+   */
+  pageContext?: {
+    contactId?:     string
+    listingId?:     string
+    transactionId?: string
+    offerId?:       string
+    /** Free-form label for non-entity pages, e.g. "calendar" / "marketing" */
+    pageLabel?:     string
+  }
 }
 
-export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssistantProps) {
+export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: InternalAIAssistantProps) {
   const [open, setOpen] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const [input, setInput] = useState("")

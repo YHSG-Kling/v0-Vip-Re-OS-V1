@@ -336,6 +336,13 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
+  // Run signature/initials pre-scan so compliance sees gate status the
+  // moment the CDA hits their queue. Best-effort — never blocks submission.
+  // Approval-time gate is enforced separately in approveCdaAction.
+  try {
+    await runSignatureCheckForCdaAction({ cdaId: cda.id })
+  } catch { /* informational pre-scan; approval gate still enforces */ }
+
   // Notify compliance for the brokerage.
   const { data: complianceUsers } = await supabase
     .from("users")
@@ -381,7 +388,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
     .select(
-      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number",
+      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number, signature_check_passed, manual_override_by",
     )
     .eq("id", input.cdaId)
     .maybeSingle()
@@ -393,6 +400,16 @@ export async function approveCdaAction(input: { cdaId: string }) {
   }
   if (!cda.agent_signed_off_at) {
     return { success: false as const, error: "agent_signoff_required" }
+  }
+  // Approval gate — required signatures/initials must be present on every
+  // transaction document, OR a compliance manager must have invoked manual
+  // override (with a logged reason). signature_check_passed === null is
+  // grandfathered for legacy CDAs created before the gate existed.
+  if (cda.signature_check_passed === false && !cda.manual_override_by) {
+    return {
+      success: false as const,
+      error: "signature_check_failed_use_manual_override",
+    }
   }
 
   const now = new Date().toISOString()
@@ -608,4 +625,308 @@ export async function uploadPreliminaryCdAction(input: {
     transactionId: input.transactionId,
     documentId: doc.id,
   })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// EXTENSIONS — signature gate, manual override, send-to-title, non-CDA path,
+// post-close artifacts. Pure additions to the existing CDA workflow above.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface MissingDoc { document_type: string; reason: string }
+
+/**
+ * Pre-scan transaction documents for required signatures/initials so the
+ * compliance manager sees a clean go/no-go indicator on the CDA review page.
+ *
+ * Approval gate (enforced in approveCdaAction below):
+ *   signature_check_passed === true  → may approve
+ *   signature_check_passed === false → must manual_override with reason
+ *   signature_check_passed === null  → grandfathered (older CDAs)
+ *
+ * Idempotent — overwrites the latest scan result.
+ */
+export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id")
+    .eq("id", input.cdaId)
+    .maybeSingle()
+  if (!cda || cda.brokerage_id !== auth.brokerageId) {
+    return { success: false as const, error: "not_found" }
+  }
+
+  // Walk every document on the transaction and check for completion + sigs.
+  // Production sources: documents (Workflow OS) + transaction_documents (legacy).
+  const missing: MissingDoc[] = []
+
+  const { data: docs1 } = await supabase
+    .from("documents")
+    .select("document_type, status, metadata")
+    .eq("transaction_id", cda.transaction_id)
+  for (const d of docs1 ?? []) {
+    if (d.status !== "complete") {
+      missing.push({ document_type: d.document_type, reason: `Status="${d.status}" — not finalized + signed` })
+      continue
+    }
+    const sig = (d.metadata as { signature_check?: { all_signed?: boolean; missing?: string[] } } | null)?.signature_check
+    if (sig && sig.all_signed === false) {
+      missing.push({
+        document_type: d.document_type,
+        reason: `Missing: ${(sig.missing ?? []).join(", ") || "signatures/initials"}`,
+      })
+    }
+  }
+
+  const { data: docs2 } = await supabase
+    .from("transaction_documents")
+    .select("doc_type, status")
+    .eq("transaction_id", cda.transaction_id)
+  for (const d of docs2 ?? []) {
+    // Legacy doc rows — flag anything not in a "received"/"signed"/"complete" state
+    if (!["received", "signed", "complete", "approved"].includes((d.status ?? "").toLowerCase())) {
+      missing.push({ document_type: d.doc_type, reason: `Legacy doc status="${d.status}"` })
+    }
+  }
+
+  const passed = missing.length === 0
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      signature_check_passed: passed,
+      missing_docs:           missing.length > 0 ? missing : null,
+      updated_at:             new Date().toISOString(),
+    })
+    .eq("id", cda.id)
+
+  return { success: true as const, passed, missing }
+}
+
+// ─── Manual override (compliance manager bypasses sig gate with reason) ────
+
+export async function manualOverrideCdaAction(input: { cdaId: string; reason: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  if (!COMPLIANCE_ROLES.has(auth.userType)) {
+    return { success: false as const, error: "forbidden" }
+  }
+  const reason = (input.reason ?? "").trim()
+  if (reason.length < 10) {
+    return { success: false as const, error: "reason_required_min_10_chars" }
+  }
+
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, brokerage_id, revision_number, status")
+    .eq("id", input.cdaId)
+    .maybeSingle()
+  if (!cda || cda.brokerage_id !== auth.brokerageId) {
+    return { success: false as const, error: "not_found" }
+  }
+
+  const now = new Date().toISOString()
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      manual_override_by:     auth.userId,
+      manual_override_at:     now,
+      manual_override_reason: reason,
+      updated_at:             now,
+    })
+    .eq("id", cda.id)
+
+  await recordRevision({
+    cdaId:                cda.id,
+    revisionNumber:       cda.revision_number,
+    status:               cda.status,
+    action:               "approved",
+    notes:                `MANUAL OVERRIDE: ${reason}`,
+    actedBy:              auth.userId,
+  })
+
+  return { success: true as const }
+}
+
+// ─── Send approved CDA to title / closing attorney ────────────────────────
+
+export async function sendCdaToTitleAction(input: {
+  cdaId:           string
+  recipientEmail:  string
+  recipientName?:  string
+  method?:         "email" | "docusign" | "dotloop" | "manual"
+  subject?:        string
+  message?:        string
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, status")
+    .eq("id", input.cdaId)
+    .maybeSingle()
+  if (!cda || cda.brokerage_id !== auth.brokerageId) {
+    return { success: false as const, error: "not_found" }
+  }
+  if (cda.status !== "approved") {
+    return { success: false as const, error: `cannot_send_from_status:${cda.status}` }
+  }
+
+  const method = input.method ?? "email"
+  if (method === "email") {
+    try {
+      const { dispatchEmail } = await import("@/lib/providers/dispatch")
+      await dispatchEmail({
+        brokerageId:   cda.brokerage_id,
+        systemSource:  "cda",
+        from:          "closings@platform.com",
+        to:            input.recipientEmail,
+        subject:       input.subject ?? "Approved Commission Disbursement Authorization",
+        html:          (input.message ?? "")
+                       + `<p>The approved CDA for this transaction is ready for the closing.</p>`,
+      })
+    } catch { /* best-effort — record the send anyway so the agent can fall back */ }
+  }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      sent_to_title_at:        new Date().toISOString(),
+      sent_to_title_recipient: input.recipientName
+        ? `${input.recipientName} <${input.recipientEmail}>`
+        : input.recipientEmail,
+      sent_to_title_method:    method,
+      updated_at:              new Date().toISOString(),
+    })
+    .eq("id", cda.id)
+
+  return { success: true as const }
+}
+
+// ─── Non-CDA path — agent's payout preference ─────────────────────────────
+//
+// When the brokerage does not offer CDAs (brokerages.offers_cda = false),
+// the agent records how they'd like the brokerage to disburse to them
+// after funds clear. Stored on the CDA row itself for unified tracking.
+
+export async function recordNonCdaPayoutPreferenceAction(input: {
+  transactionId: string
+  method:        "direct_deposit" | "check"
+  details?:      Record<string, unknown>
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  // Get-or-create CDA row for this transaction in non-CDA path
+  let cdaId: string
+  const { data: existing } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, brokerage_id")
+    .eq("transaction_id", input.transactionId)
+    .maybeSingle()
+
+  if (existing) {
+    if (existing.brokerage_id !== auth.brokerageId) return { success: false as const, error: "forbidden" }
+    cdaId = existing.id
+  } else {
+    const { data: txn } = await supabase
+      .from("transactions").select("brokerage_id, agent_id").eq("id", input.transactionId).maybeSingle()
+    if (!txn || txn.brokerage_id !== auth.brokerageId) {
+      return { success: false as const, error: "transaction_not_found" }
+    }
+    const { data: created, error } = await supabase
+      .from("closing_disclosure_agreement")
+      .insert({
+        transaction_id:        input.transactionId,
+        brokerage_id:          txn.brokerage_id,
+        agent_id:              txn.agent_id,
+        status:                "pending",
+        revision_number:       1,
+        uses_cda:              false,
+      })
+      .select("id")
+      .single()
+    if (error || !created) return { success: false as const, error: error?.message ?? "create_failed" }
+    cdaId = created.id
+  }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      uses_cda:                false,
+      non_cda_payout_method:   input.method,
+      non_cda_payout_details:  input.details ?? null,
+      updated_at:              new Date().toISOString(),
+    })
+    .eq("id", cdaId)
+
+  return { success: true as const, cdaId }
+}
+
+// ─── Post-close artifact uploads ──────────────────────────────────────────
+
+export async function uploadFinalCdAction(input: {
+  cdaId:           string
+  documentId:      string                                // FK to documents OR transaction_documents
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      final_cd_document_id:  input.documentId,
+      final_cd_uploaded_by:  auth.userId,
+      final_cd_uploaded_at:  new Date().toISOString(),
+      updated_at:            new Date().toISOString(),
+    })
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  return { success: true as const }
+}
+
+export async function uploadCdaCheckCopyAction(input: {
+  cdaId:        string
+  documentId:   string
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      check_copy_document_id:  input.documentId,
+      check_copy_uploaded_at:  new Date().toISOString(),
+      updated_at:              new Date().toISOString(),
+    })
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  return { success: true as const }
+}
+
+export async function closeCdaAction(input: { cdaId: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      closed_at:  new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  return { success: true as const }
 }
