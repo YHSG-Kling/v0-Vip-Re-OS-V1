@@ -16,6 +16,7 @@ import {
   CloudSun,
   AlertTriangle,
   CheckCircle2,
+  Sparkles,
 } from "lucide-react"
 import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee, convertAttendeeToContact } from "@/app/actions/seller-open-house"
 import {
@@ -543,6 +544,20 @@ function AttendeeRow({
                 hour: "numeric",
                 minute: "2-digit",
               })}
+            </span>
+          )}
+          {/* Open House Concierge auto-greeting status — stamped by
+              sendInstantOpenHouseGreeting() at /api/open-house/attend. */}
+          {attendee.instant_greeting_sent_at && (
+            <span className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+              <Sparkles className="h-3 w-3" />
+              Auto-{attendee.instant_greeting_channel === "sms" ? "text" : "email"} sent{" "}
+              {(() => {
+                const ms = Date.now() - new Date(attendee.instant_greeting_sent_at).getTime()
+                if (ms < 90_000) return "just now"
+                const min = Math.floor(ms / 60_000)
+                return `${min}m ago`
+              })()}
             </span>
           )}
         </div>
