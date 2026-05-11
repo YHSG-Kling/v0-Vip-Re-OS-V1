@@ -83,6 +83,11 @@ interface EpisodesTabProps {
   loading: boolean
   onRefresh: () => void
   channels: DistributionChannel[]
+  /** When set, the tab opens the matching episode's details sheet on mount.
+   *  Wired by the parent dashboard from `?episode=<uuid>` URL param so the
+   *  voice/Copilot stage_podcast_episode flow lands the agent directly on
+   *  their staged draft instead of in the list. */
+  initialEpisodeId?: string | null
 }
 
 const CATEGORY_OPTIONS = [
@@ -104,7 +109,7 @@ const STATUS_OPTIONS = [
   { value: "failed", label: "Failed" },
 ]
 
-export function EpisodesTab({ episodes, loading, onRefresh, channels }: EpisodesTabProps) {
+export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpisodeId }: EpisodesTabProps) {
   const [selectedEpisode, setSelectedEpisode] = useState<Episode | null>(null)
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
@@ -192,6 +197,19 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels }: Episodes
       setDetailsLoading(false)
     }
   }
+
+  // When the page lands with `?episode=<uuid>` (from voice/Copilot
+  // stage_podcast_episode tool), open that episode's details sheet on
+  // mount once the episodes list is loaded.
+  useEffect(() => {
+    if (!initialEpisodeId || loading) return
+    const match = episodes.find((e) => e.id === initialEpisodeId)
+    if (match) {
+      openDetails(match)
+    }
+    // Only auto-open once per mount — don't keep re-opening if user closes it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialEpisodeId, loading, episodes.length])
 
   function formatDuration(seconds: number | null): string {
     if (!seconds) return "--:--"

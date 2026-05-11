@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
@@ -82,6 +83,21 @@ export function PodcastDashboard({
   const [newTemplateDesc, setNewTemplateDesc] = useState("")
   const [creatingTemplate, setCreatingTemplate] = useState(false)
   const [activeTab, setActiveTab] = useState("my-show")
+
+  // Wire `?episode=<uuid>` from voice/Copilot stage_podcast_episode tool.
+  // EpisodesTab opens that episode's details sheet on mount; we just need
+  // to switch the active tab so the user lands on it.
+  const searchParams = useSearchParams()
+  const episodeFromUrl = searchParams?.get("episode") ?? null
+  const validEpisodeId =
+    episodeFromUrl &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(episodeFromUrl)
+      ? episodeFromUrl
+      : null
+
+  useEffect(() => {
+    if (validEpisodeId) setActiveTab("episodes")
+  }, [validEpisodeId])
 
   useEffect(() => {
     loadData()
@@ -284,6 +300,7 @@ export function PodcastDashboard({
                 loading={loading}
                 onRefresh={loadData}
                 channels={channels}
+                initialEpisodeId={validEpisodeId}
               />
             </TabsContent>
 

@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
+import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import {
   DndContext,
   closestCenter,
@@ -1256,6 +1257,13 @@ export function NewslettersClient({
 
   return (
     <div className="container mx-auto py-6 px-4 max-w-7xl">
+      {/* Banner — surfaces a fresh draft staged via voice/Copilot
+          stage_newsletter_draft tool. Reads `?draft=<uuid>`. */}
+      <StagedDraftBanner
+        paramKey="draft"
+        label="Newsletter draft"
+        hint="Find your new draft in the Drafts list below — open it to add sections, optimize the subject, and schedule the send."
+      />
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react"
 import { useToast } from "@/hooks/use-toast"
+import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -858,6 +859,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   return (
     <div className="min-h-screen bg-background">
       <div className="p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
+        {/* Banner — surfaces a fresh email campaign staged via voice/Copilot
+            stage_email_campaign tool. Reads `?email_draft=<uuid>`. */}
+        <StagedDraftBanner
+          paramKey="email_draft"
+          label="Email campaign draft"
+          hint="Find your new draft in the Campaigns tab — refine the body, run brand-voice + compliance checks, then send."
+        />
         {/* Header */}
         <Card className="border-2 shadow-lg bg-gradient-to-r from-violet-50 to-fuchsia-50 dark:from-violet-950/20 dark:to-fuchsia-950/20">
           <CardHeader>

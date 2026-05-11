@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
+import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -838,6 +839,13 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto py-8 px-4 max-w-4xl">
+        {/* Banner — surfaces a fresh video project staged via voice/Copilot
+            stage_video_project tool. Reads `?project=<uuid>`. */}
+        <StagedDraftBanner
+          paramKey="project"
+          label="Video project draft"
+          hint="Find your new project in the videos list — refine the script and generate the video."
+        />
         {/* Header */}
         <div className="mb-8">
           <Button variant="outline" onClick={() => router.back()} className="mb-4">

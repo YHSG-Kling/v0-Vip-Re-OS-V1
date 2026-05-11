@@ -3,8 +3,8 @@
 // app/dashboard/campaigns/ads/ads-dashboard-client.tsx
 // Layer 9.5 — Full Ads Dashboard with Campaigns, Audiences, and Performance Tabs
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -189,10 +189,25 @@ export function AdsDashboardClient({
   audiences: initialAudiences,
 }: AdsDashboardClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [mainTab, setMainTab] = useState("campaigns")
   const [statusFilter, setStatusFilter] = useState("all")
   const [platformFilter, setPlatformFilter] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
+  // Highlights the matching ad campaign row when arriving via the
+  // voice/Copilot stage_ad_campaign tool's open_url (`?campaign=<uuid>`).
+  // The dashboard is a list view; we light up the matching row + ensure
+  // the Campaigns tab is active so the agent's new draft is impossible
+  // to miss.
+  const [highlightCampaignId, setHighlightCampaignId] = useState<string | null>(null)
+  useEffect(() => {
+    const id = searchParams?.get("campaign") ?? null
+    if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      setHighlightCampaignId(id)
+      setMainTab("campaigns")
+      setStatusFilter("all")
+    }
+  }, [searchParams])
 
   // Campaign state
   const [campaigns, setCampaigns] = useState(initialCampaigns)
@@ -638,6 +653,7 @@ export function AdsDashboardClient({
                   </Card>
                 ) : (
                   filteredCampaigns.map((campaign) => {
+                    const isHighlighted = highlightCampaignId === campaign.id
                     const perf = getCampaignPerformance(campaign.id)
                     const campaignSpend = perf.reduce((sum, p) => sum + (p.spend || 0), 0)
                     const campaignClicks = perf.reduce((sum, p) => sum + (p.clicks || 0), 0)
@@ -649,7 +665,11 @@ export function AdsDashboardClient({
                     )
 
                     return (
-                      <Card key={campaign.id}>
+                      <Card
+                        key={campaign.id}
+                        ref={isHighlighted ? (el) => el?.scrollIntoView({ behavior: "smooth", block: "center" }) : undefined}
+                        className={isHighlighted ? "ring-2 ring-emerald-500 shadow-lg" : undefined}
+                      >
                         <CardHeader className="pb-2">
                           <div className="flex items-start justify-between">
                             <div>
