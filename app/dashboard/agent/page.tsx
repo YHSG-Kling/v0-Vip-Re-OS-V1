@@ -30,7 +30,6 @@ import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
 import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
-import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
@@ -439,6 +438,17 @@ export default function AgentDashboard() {
 
         {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
 
+        {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
+            💎 Likely seller). Aggregates lead_score_history +
+            sphere_engagement_scores + contacts.last_contacted_at +
+            predictive_listing_scores. Promoted to top of contact area so
+            agents see one consolidated view first. */}
+        <SmartQueue />
+
+        {/* Hot Leads quick-call panel — kept alongside SmartQueue because it
+            has unique whisper-bridge + VAPI bot actions (one-tap call) that
+            SmartQueue's draft_followup doesn't. Future: fold these actions
+            into SmartQueue rows and retire this panel. */}
         {(hotLeads.length > 0 || loading) && (
           <AgentHotLeadsPanel
             hotLeads={hotLeads}
@@ -450,7 +460,10 @@ export default function AgentDashboard() {
           />
         )}
 
-        {/* Conversion Workspace - Qualified Handoffs */}
+        {/* Conversion Workspace — Qualified Handoffs.
+            Distinct concept from SmartQueue's "new" segment: this surfaces
+            lead→contact CONVERSION coaching (urgency_level, qualification
+            reason, next_action, ai_summary) — not just "created recently". */}
         {agentId && brokerageId && (
           <NewlyConvertedContactsPanel agentId={agentId} brokerageId={brokerageId} />
         )}
@@ -463,9 +476,6 @@ export default function AgentDashboard() {
           <SphereResonanceCard />
           <WealthAdvisorCard />
         </div>
-
-        {/* Smart Queue — single segmented list, replaces 5 contact-urgency widgets */}
-        <SmartQueue />
 
         {/* Listing presentations prepared by the daily cron — auto-hides when none */}
         <PresentationReadyBanner />
@@ -545,10 +555,11 @@ export default function AgentDashboard() {
             )}
             <AgentSystemReadiness />
 
-            {/* Contacts Needing Touch */}
-            {agentId && brokerageId && (
-              <AgentStaleContactsPanel agentId={agentId} brokerageId={brokerageId} />
-            )}
+            {/* AgentStaleContactsPanel removed — superseded by SmartQueue's
+                at_risk segment which now includes the same
+                contacts.last_contacted_at >= 21d signal as a fallback when
+                sphere_engagement_scores is sparse. Component file kept for
+                back-compat in case any other surface mounts it. */}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

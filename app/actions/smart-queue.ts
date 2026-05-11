@@ -41,10 +41,14 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
   }
   const svc = createServiceClient()
 
-  // Get THIS agent's contacts only (one base set, then segment them)
+  // Get THIS agent's contacts only (one base set, then segment them).
+  // last_contacted_at drives the stale fallback for at_risk so the segment
+  // works even when sphere_engagement_scores hasn't yet scored a contact.
   const { data: contactRows } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, contact_type, lifecycle_state, engagement_score, created_at")
+    .select(
+      "id, first_name, last_name, contact_type, lifecycle_state, engagement_score, created_at, last_contacted_at",
+    )
     .eq("agent_id", ctx.agentId)
     .limit(500)
 
@@ -54,7 +58,7 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
 
   // Pull supporting signals in parallel
   const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
-  const sixtyDaysAgo = new Date(Date.now() - 60 * 86_400_000).toISOString()
+  const twentyOneDaysAgo = new Date(Date.now() - 21 * 86_400_000).toISOString()
 
   const [hotResult, sphereResult, plsResult] = await Promise.all([
     // Hot: contacts with intent_score from lead_score_history in past 7 days
@@ -75,12 +79,15 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
       .order("score", { ascending: true })
       .limit(PER_SEGMENT_LIMIT),
 
-    // Likely seller: top predictive listing scores
+    // Likely seller — schema-verified live: pls_score (NOT
+    // listing_likelihood_score) and top_signals jsonb (NOT top_signal).
+    // The previous query silently returned empty; this is the bug-fix.
     svc
       .from("predictive_listing_scores")
-      .select("contact_id, listing_likelihood_score, top_signal")
+      .select("contact_id, pls_score, top_signals, scored_at")
       .eq("agent_id", ctx.agentId)
-      .order("listing_likelihood_score", { ascending: false })
+      .gte("scored_at", twentyOneDaysAgo)
+      .order("pls_score", { ascending: false })
       .limit(PER_SEGMENT_LIMIT),
   ])
 
@@ -110,7 +117,7 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
     seen.add(r.contact_id)
   }
 
-  // ⚠ At-risk
+  // ⚠ At-risk — first pass: contacts with low sphere-engagement score
   for (const r of sphereResult.data ?? []) {
     if (seen.has(r.contact_id)) continue
     if (!nameById.has(r.contact_id)) continue
@@ -126,6 +133,30 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
       suggestedAction: "draft_followup",
     })
     seen.add(r.contact_id)
+  }
+
+  // ⚠ At-risk — second pass: contacts not contacted in 21+ days. This
+  // replaces the standalone AgentStaleContactsPanel which queried
+  // contacts.last_contacted_at directly. Combined here so SmartQueue
+  // truly is the single mental model for "needs re-engagement".
+  for (const c of contacts as any[]) {
+    if (seen.has(c.id)) continue
+    if (rows.filter((row) => row.segment === "at_risk").length >= PER_SEGMENT_LIMIT) break
+    const lastContact = c.last_contacted_at
+    if (!lastContact) continue
+    const lastTs = new Date(lastContact).getTime()
+    if (Number.isNaN(lastTs)) continue
+    const days = Math.floor((Date.now() - lastTs) / 86_400_000)
+    if (days < 21) continue
+    rows.push({
+      contactId: c.id,
+      fullName: nameById.get(c.id)!,
+      segment: "at_risk",
+      signal: `${days}d since last contact`,
+      signalDetail: "No touch in 3+ weeks",
+      suggestedAction: "draft_followup",
+    })
+    seen.add(c.id)
   }
 
   // 🆕 New (created in last 7 days, no high score yet)
@@ -144,18 +175,27 @@ export async function getSmartQueue(): Promise<SmartQueueData> {
     seen.add(c.id)
   }
 
-  // 💎 Likely seller
+  // 💎 Likely seller — pls_score and top_signals[0] (jsonb) per live schema
   for (const r of plsResult.data ?? []) {
     if (seen.has(r.contact_id)) continue
     if (!nameById.has(r.contact_id)) continue
-    const score = Number(r.listing_likelihood_score ?? 0)
+    const score = Number(r.pls_score ?? 0)
     if (score < 60) continue
+    const signals = Array.isArray(r.top_signals) ? r.top_signals : null
+    const topSignal =
+      signals && signals.length > 0
+        ? typeof signals[0] === "string"
+          ? signals[0]
+          : (signals[0] as { label?: string; signal?: string }).label ??
+            (signals[0] as { signal?: string }).signal ??
+            null
+        : null
     rows.push({
       contactId: r.contact_id,
       fullName: nameById.get(r.contact_id)!,
       segment: "likely_seller",
       signal: `${Math.round(score)}% likely to list`,
-      signalDetail: r.top_signal ?? undefined,
+      signalDetail: topSignal ?? undefined,
       suggestedAction: "schedule_appointment",
     })
     seen.add(r.contact_id)
