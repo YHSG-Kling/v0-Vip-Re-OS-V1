@@ -256,6 +256,27 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
     eventType:   "milestone.completed",
     metadata:    { milestone_name: milestoneName },
   })
+
+  // Fan-out to buyer / seller / lender / title portals + auto-enroll any
+  // sequences that trigger on MILESTONE_COMPLETED. transitionLifecycle above
+  // covers staff notifications (processKernelEvent only); this layer adds
+  // the contact-facing channels (transparency_updates, client_portal_messages,
+  // contact notifications) so every milestone completion — appraisal,
+  // walkthrough, financing, repair, earnest money, closing — propagates
+  // across the deal.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.MILESTONE_COMPLETED,
+      brokerageId: brokerageId,
+      entityId:    transactionId,
+      actorUserId: completedBy,
+      metadata:    { milestone_name: milestoneName },
+    })
+  } catch (err) {
+    console.error("[completeMilestone] fan-out failed (non-blocking)", err)
+  }
 }
 
 /**

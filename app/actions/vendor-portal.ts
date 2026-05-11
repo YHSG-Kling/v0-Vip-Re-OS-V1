@@ -1,5 +1,139 @@
+"use server"
+
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VENDOR BOOKING ACCEPT / DECLINE (Vendor Portal)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Accept a vendor booking — vendor confirms they'll take the job. Fires the
+ * canonical VENDOR_BOOKING_CREATED kernel event with accept_or_decline
+ * metadata so the agent, buyer, seller, and TC portals all see the status
+ * update without polling.
+ */
+export async function acceptVendorBookingAction(params: {
+  bookingId: string
+  vendorId:  string
+  scheduledDate?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: booking } = await supabase
+    .from("vendor_bookings")
+    .select("id, transaction_id, brokerage_id, vendor_id, status")
+    .eq("id", params.bookingId)
+    .maybeSingle()
+  if (!booking) return { success: false, error: "Booking not found" }
+  if (booking.vendor_id !== params.vendorId) {
+    return { success: false, error: "Not authorized for this booking" }
+  }
+  if (booking.status !== "pending") {
+    return { success: false, error: `Cannot accept — status is ${booking.status}` }
+  }
+
+  const updatePayload: Record<string, unknown> = { status: "scheduled" }
+  if (params.scheduledDate) updatePayload.scheduled_date = params.scheduledDate
+
+  const { error } = await supabase
+    .from("vendor_bookings")
+    .update(updatePayload)
+    .eq("id", params.bookingId)
+    .eq("vendor_id", params.vendorId)
+
+  if (error) return { success: false, error: error.message }
+
+  if (booking.transaction_id) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      await emitTransactionEvent({
+        event:       KernelEvent.VENDOR_BOOKING_CREATED,
+        brokerageId: booking.brokerage_id,
+        entityId:    booking.transaction_id,
+        actorUserId: user.id,
+        metadata: {
+          booking_id:        params.bookingId,
+          vendor_id:         params.vendorId,
+          scheduled_date:    params.scheduledDate ?? null,
+          accept_or_decline: "accepted",
+        },
+      })
+    } catch (err) {
+      console.error("[acceptVendorBookingAction] fan-out failed (non-blocking)", err)
+    }
+  }
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/vendor/jobs")
+  revalidatePath("/vendor/dashboard")
+  return { success: true }
+}
+
+/**
+ * Decline a vendor booking — vendor passes on the job. Brokerage gets
+ * notified so they can route to another vendor.
+ */
+export async function declineVendorBookingAction(params: {
+  bookingId: string
+  vendorId:  string
+  reason?:   string
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: booking } = await supabase
+    .from("vendor_bookings")
+    .select("id, transaction_id, brokerage_id, vendor_id, status")
+    .eq("id", params.bookingId)
+    .maybeSingle()
+  if (!booking) return { success: false, error: "Booking not found" }
+  if (booking.vendor_id !== params.vendorId) {
+    return { success: false, error: "Not authorized for this booking" }
+  }
+  if (booking.status !== "pending") {
+    return { success: false, error: `Cannot decline — status is ${booking.status}` }
+  }
+
+  const { error } = await supabase
+    .from("vendor_bookings")
+    .update({
+      status: "cancelled",
+      notes:  params.reason ? `Declined: ${params.reason}` : "Declined by vendor",
+    })
+    .eq("id", params.bookingId)
+    .eq("vendor_id", params.vendorId)
+
+  if (error) return { success: false, error: error.message }
+
+  if (booking.transaction_id) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      await emitTransactionEvent({
+        event:       KernelEvent.VENDOR_BOOKING_CREATED,
+        brokerageId: booking.brokerage_id,
+        entityId:    booking.transaction_id,
+        actorUserId: user.id,
+        metadata: {
+          booking_id:        params.bookingId,
+          vendor_id:         params.vendorId,
+          accept_or_decline: "declined",
+          decline_reason:    params.reason ?? null,
+        },
+      })
+    } catch (err) {
+      console.error("[declineVendorBookingAction] fan-out failed (non-blocking)", err)
+    }
+  }
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/vendor/jobs")
+  revalidatePath("/vendor/dashboard")
+  return { success: true }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VENDOR JOB MANAGEMENT (Vendor Portal)

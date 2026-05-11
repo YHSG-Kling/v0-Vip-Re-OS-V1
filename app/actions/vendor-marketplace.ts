@@ -261,10 +261,34 @@ export async function markBookingComplete(bookingId: string) {
   if (error) throw error
   if (!booking) throw new Error("Booking not found")
 
+  // Fan-out via the transaction kernel so the agent, buyer + seller portals
+  // and any post-vendor-completion sequences fire. Previously only revalidate
+  // ran — the other deal parties had no signal.
+  if (booking.transaction_id) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      await emitTransactionEvent({
+        event:       KernelEvent.VENDOR_BOOKING_COMPLETED,
+        brokerageId: booking.brokerage_id,
+        entityId:    booking.transaction_id,
+        actorUserId: user.id,
+        metadata: {
+          booking_id:    bookingId,
+          vendor_id:     booking.vendor_id,
+          service_type:  booking.service_type,
+        },
+      })
+    } catch (err) {
+      console.error("[markBookingComplete] fan-out failed (non-blocking)", err)
+    }
+  }
+
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")
   revalidatePath(`/dashboard/transactions/${booking.transactions.id}`)
+  revalidatePath("/vendor/jobs")
   return booking
 }
 

@@ -20,8 +20,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Receipt, Loader2, CheckCircle2 } from "lucide-react"
+import { Receipt, Loader2, CheckCircle2, X } from "lucide-react"
 import { createVendorInvoice } from "@/app/actions/vendor-payments"
+import {
+  acceptVendorBookingAction,
+  declineVendorBookingAction,
+} from "@/app/actions/vendor-portal"
+import { markBookingComplete } from "@/app/actions/vendor-marketplace"
 
 interface Booking {
   id: string
@@ -50,9 +55,64 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 export function JobsClient({ bookings: initial }: Props) {
-  const [bookings] = useState(initial)
+  const [bookings, setBookings] = useState(initial)
   const [invoiceFor, setInvoiceFor] = useState<Booking | null>(null)
   const [invoiced, setInvoiced] = useState<Set<string>>(new Set())
+  const [actionPending, startAction] = useTransition()
+  const [actingOn, setActingOn] = useState<string | null>(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  async function handleAccept(b: Booking) {
+    if (!b.vendor_id) return
+    setActingOn(b.id)
+    setErrorMsg(null)
+    startAction(async () => {
+      const res = await acceptVendorBookingAction({
+        bookingId: b.id,
+        vendorId:  b.vendor_id!,
+      })
+      if (res.success) {
+        setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "scheduled" } : x)))
+      } else {
+        setErrorMsg(res.error ?? "Failed to accept")
+      }
+      setActingOn(null)
+    })
+  }
+
+  async function handleDecline(b: Booking) {
+    if (!b.vendor_id) return
+    if (!confirm("Decline this job? The brokerage will be notified to route to another vendor.")) return
+    setActingOn(b.id)
+    setErrorMsg(null)
+    startAction(async () => {
+      const res = await declineVendorBookingAction({
+        bookingId: b.id,
+        vendorId:  b.vendor_id!,
+      })
+      if (res.success) {
+        setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "cancelled" } : x)))
+      } else {
+        setErrorMsg(res.error ?? "Failed to decline")
+      }
+      setActingOn(null)
+    })
+  }
+
+  async function handleComplete(b: Booking) {
+    if (!confirm("Mark this job complete? The agent and clients will be notified.")) return
+    setActingOn(b.id)
+    setErrorMsg(null)
+    startAction(async () => {
+      try {
+        await markBookingComplete(b.id)
+        setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "completed" } : x)))
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : "Failed to complete")
+      }
+      setActingOn(null)
+    })
+  }
 
   if (bookings.length === 0) {
     return (
@@ -66,6 +126,11 @@ export function JobsClient({ bookings: initial }: Props) {
 
   return (
     <>
+      {errorMsg && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3">
+          {errorMsg}
+        </div>
+      )}
       <div className="space-y-3">
         {bookings.map((b) => (
           <Card key={b.id}>
@@ -86,11 +151,45 @@ export function JobsClient({ bookings: initial }: Props) {
                   {b.status}
                 </Badge>
                 {b.status === "pending" && (
+                  <>
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700 text-white text-xs"
+                      onClick={() => handleAccept(b)}
+                      disabled={actionPending && actingOn === b.id}
+                    >
+                      {actionPending && actingOn === b.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        "Accept"
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs text-red-600 border-red-200 hover:bg-red-50"
+                      onClick={() => handleDecline(b)}
+                      disabled={actionPending && actingOn === b.id}
+                    >
+                      <X className="h-3 w-3 mr-1" />
+                      Decline
+                    </Button>
+                  </>
+                )}
+                {(b.status === "scheduled" || b.status === "active") && (
                   <Button
                     size="sm"
-                    className="bg-green-600 hover:bg-green-700 text-white text-xs"
+                    variant="outline"
+                    className="text-xs gap-1 text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+                    onClick={() => handleComplete(b)}
+                    disabled={actionPending && actingOn === b.id}
                   >
-                    Accept
+                    {actionPending && actingOn === b.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-3 w-3" />
+                    )}
+                    Complete
                   </Button>
                 )}
                 {(b.status === "completed" || b.status === "active") && (
