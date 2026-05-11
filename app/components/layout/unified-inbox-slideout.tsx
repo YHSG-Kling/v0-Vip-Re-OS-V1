@@ -50,7 +50,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { createClient } from "@/lib/supabase/client"
-import { sendInboxMessage } from "@/app/actions/inbox"
+import { sendInboxMessage, forceComplianceOverrideAndSend } from "@/app/actions/inbox"
 import { quickDraftForConversation } from "@/app/actions/inbox-quick-draft"
 import { createTask } from "@/app/actions/tasks"
 
@@ -98,6 +98,31 @@ function toSendChannel(raw: string | null | undefined): SendChannel | null {
   return null
 }
 
+// UI gate mirrors lib/kernel/portal-auth requireOverrideActor. Server is the
+// real boundary — hiding the override panel from a regular agent is UX only.
+const COMPLIANCE_OVERRIDE_USER_TYPES = new Set([
+  "broker", "broker_admin", "admin", "superadmin",
+  "compliance_officer", "compliance_manager",
+])
+
+// Heuristic — server returns "Message blocked by compliance gate" / "Brand
+// voice violation" / "Fair housing" etc. when evaluateOutbound denies. The
+// override panel only surfaces when these phrases appear so we don't show
+// the override prompt for ordinary errors (network, DNC, TCPA).
+function isComplianceBlockedError(msg: string | null | undefined): boolean {
+  if (!msg) return false
+  const m = msg.toLowerCase()
+  if (m.includes("dnc") || m.includes("tcpa") || m.includes("opt") || m.includes("consent"))
+    return false  // legal stops — NOT overridable
+  return (
+    m.includes("compliance") ||
+    m.includes("brand voice") ||
+    m.includes("them-first") ||
+    m.includes("fair housing") ||
+    m.includes("blocked")
+  )
+}
+
 export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
   const [conversations, setConversations] = useState<Conversation[] | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -110,6 +135,32 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
   const [composerError, setComposerError] = useState<string | null>(null)
   const [composerSending, setComposerSending] = useState(false)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // Compliance override state
+  const [userType, setUserType] = useState<string | null>(null)
+  const [showOverridePanel, setShowOverridePanel] = useState(false)
+  const [overrideReason, setOverrideReason] = useState("")
+  const canOverrideCompliance = COMPLIANCE_OVERRIDE_USER_TYPES.has(
+    (userType ?? "").toLowerCase(),
+  )
+
+  // Fetch user_type once when slide-out opens — used only to decide whether
+  // to surface the override prompt when a send is blocked by compliance.
+  // Server-side requireOverrideActor enforces the same set on submit.
+  useEffect(() => {
+    if (!open || userType !== null) return
+    const supabase = createClient()
+    supabase.auth.getUser().then(async (res: { data: { user: { id: string } | null } }) => {
+      const user = res.data.user
+      if (!user) return
+      const { data } = await supabase
+        .from("users")
+        .select("user_type")
+        .eq("id", user.id)
+        .maybeSingle()
+      setUserType((data?.user_type ?? "").toLowerCase())
+    })
+  }, [open, userType])
 
   // Transient confirmations
   const [flash, setFlash] = useState<string | null>(null)
@@ -235,6 +286,7 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
 
     setComposerSending(true)
     setComposerError(null)
+    setShowOverridePanel(false)
     try {
       const res = await sendInboxMessage({
         contactId: selected.contact.id,
@@ -256,6 +308,49 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
       setComposerSending(false)
     }
   }, [selected, composerBody, selectedChannelKey, loadInbox, showFlash])
+
+  // Force-send with compliance override. Available when the prior send
+  // failed with a compliance-style error AND user is elevated. Server-side
+  // requireOverrideActor enforces the same user_type + min-10-char reason.
+  const handleForceSend = useCallback(async () => {
+    if (!selected?.contact?.id) {
+      setComposerError("No contact for this thread")
+      return
+    }
+    const channel = toSendChannel(selectedChannelKey)
+    if (!channel) {
+      setComposerError(`Cannot send to ${selectedChannelKey}`)
+      return
+    }
+    if (overrideReason.trim().length < 10) {
+      setComposerError("Override reason must be at least 10 characters")
+      return
+    }
+    setComposerSending(true)
+    setComposerError(null)
+    try {
+      const res = await forceComplianceOverrideAndSend({
+        contactId:      selected.contact.id,
+        body:           composerBody.trim(),
+        channel,
+        overrideReason: overrideReason.trim(),
+      })
+      if (res.success) {
+        showFlash("Sent with override (audit logged)")
+        setComposerBody("")
+        setComposerOpen(false)
+        setShowOverridePanel(false)
+        setOverrideReason("")
+        loadInbox()
+      } else {
+        setComposerError(res.error ?? "Override send failed")
+      }
+    } catch (err) {
+      setComposerError(err instanceof Error ? err.message : "Override send failed")
+    } finally {
+      setComposerSending(false)
+    }
+  }, [selected, composerBody, selectedChannelKey, overrideReason, loadInbox, showFlash])
 
   const handleCreateTask = useCallback(async () => {
     if (!selected?.contact) return
@@ -493,6 +588,69 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
                         />
                         {composerError && (
                           <p className="text-[11px] text-red-600 dark:text-red-400">{composerError}</p>
+                        )}
+
+                        {/* Compliance override prompt — surfaces only when:
+                            (a) the prior send returned a compliance-style block
+                            (b) user is elevated (broker / admin / compliance)
+                            (c) the error isn't a hard legal stop (DNC / TCPA)
+                            Server-side requireOverrideActor enforces the same
+                            user_type set + min 10-char reason. */}
+                        {canOverrideCompliance && isComplianceBlockedError(composerError) && !showOverridePanel && (
+                          <button
+                            type="button"
+                            onClick={() => setShowOverridePanel(true)}
+                            className="text-[11px] text-amber-700 hover:underline flex items-center gap-1.5"
+                          >
+                            <Sparkles className="h-3 w-3" />
+                            Force send with override
+                          </button>
+                        )}
+
+                        {showOverridePanel && canOverrideCompliance && (
+                          <div className="border-t border-amber-200 dark:border-amber-900 pt-2 mt-1 space-y-1.5">
+                            <label className="text-[11px] font-medium text-amber-700">
+                              Override reason (required, min 10 chars)
+                            </label>
+                            <textarea
+                              value={overrideReason}
+                              onChange={(e) => setOverrideReason(e.target.value)}
+                              placeholder="e.g. Buyer agent specifically requested this exact wording — context discussed verbally"
+                              rows={2}
+                              className="w-full text-xs rounded-md border border-amber-300 bg-amber-50/40 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                            />
+                            <p className="text-[10px] text-muted-foreground">
+                              Bypasses brand voice / them-first / fair-housing wording gates. DNC + TCPA cannot
+                              be overridden. Logged to <code className="text-[9px]">compliance_events</code> as
+                              OVERRIDDEN with your user id + user_type.
+                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <Button
+                                size="sm"
+                                onClick={handleForceSend}
+                                disabled={composerSending || overrideReason.trim().length < 10}
+                                className="h-7 text-xs bg-amber-600 hover:bg-amber-700 text-white"
+                              >
+                                {composerSending ? (
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                ) : (
+                                  <Send className="h-3 w-3 mr-1" />
+                                )}
+                                Force Send
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setShowOverridePanel(false)
+                                  setOverrideReason("")
+                                }}
+                                className="h-7 text-xs"
+                              >
+                                Cancel override
+                              </Button>
+                            </div>
+                          </div>
                         )}
                         <div className="flex items-center gap-1.5">
                           <Button

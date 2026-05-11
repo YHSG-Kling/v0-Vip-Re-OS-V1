@@ -140,6 +140,176 @@ export async function sendInboxMessage(params: SendInboxMessageParams): Promise<
   }
 }
 
+// ─── ACTION: forceComplianceOverrideAndSend ─────────────────────────────────
+//
+// Broker / admin / compliance bypass for the 6-rules compliance gate. When
+// an outbound message is blocked by evaluateOutbound (brand voice, fair
+// housing wording, them-first ratio, etc.), an elevated user_type can
+// force-send with a written reason. Every override writes a
+// compliance_events audit row.
+//
+// Authority: requireOverrideActor restricts to broker / broker_admin /
+// admin / superadmin / compliance_officer / compliance_manager and
+// enforces a minimum 10-character reason.
+//
+// Hard legal stops (CANNOT be overridden):
+//   - dnc_status = true   (contact has explicitly opted out)
+//   - tcpa_consent != true for sms/email channels
+// These remain enforced because they're legal boundaries, not gating
+// suggestions. The override only bypasses brand voice / them-first /
+// fair-housing-wording gates.
+
+export interface ForceComplianceOverrideParams {
+  contactId:      string
+  body:           string
+  channel:        "sms" | "email" | "portal" | "chat"
+  overrideReason: string
+}
+
+export async function forceComplianceOverrideAndSend(
+  params: ForceComplianceOverrideParams,
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  let overrideCtx
+  try {
+    const { requireOverrideActor } = await import("@/lib/kernel/portal-auth")
+    overrideCtx = await requireOverrideActor(params.overrideReason)
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Override authorization failed",
+    }
+  }
+
+  const supabase = await createClient()
+
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, email, phone, brokerage_id, agent_id, dnc_status, tcpa_consent")
+    .eq("id", params.contactId)
+    .eq("brokerage_id", overrideCtx.brokerageId)
+    .maybeSingle()
+
+  if (!contact) {
+    return { success: false, error: "Contact not found in your brokerage" }
+  }
+
+  if (contact.dnc_status === true) {
+    return {
+      success: false,
+      error: "Cannot override DNC — contact has explicitly opted out. This is a legal boundary, not a compliance suggestion.",
+    }
+  }
+  if ((params.channel === "sms" || params.channel === "email") && contact.tcpa_consent !== true) {
+    return {
+      success: false,
+      error: `Cannot override TCPA — contact has not consented to ${params.channel.toUpperCase()} contact.`,
+    }
+  }
+
+  // Capture the original violations for the audit row
+  let originalViolations: string[] = []
+  let originalBlockedReason: string | null = null
+  try {
+    const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const messageType =
+      params.channel === "sms" ? "sms" :
+      params.channel === "email" ? "email" : "in_app"
+    const result = await evaluateOutbound({
+      actorContext: {
+        userId:      overrideCtx.userId,
+        brokerageId: overrideCtx.brokerageId,
+        role:        overrideCtx.userType as never,
+      },
+      journeyType: "buyer",
+      persona:     "other",
+      messageType: messageType as never,
+      content:     params.body,
+      contact:     contact as never,
+    })
+    originalViolations    = result.violations ?? []
+    originalBlockedReason = result.blockedReason ?? null
+  } catch {
+    // non-fatal — write the audit row with what we have
+  }
+
+  // Audit row: allowed=false because the original gate failed, with the
+  // OVERRIDE_REASON appended to violations + OVERRIDDEN prefix on
+  // blocked_reason so compliance reports can filter for these.
+  await supabase
+    .from("compliance_events")
+    .insert({
+      brokerage_id:   overrideCtx.brokerageId,
+      actor_user_id:  overrideCtx.userId,
+      actor_role:     overrideCtx.userType,
+      entity_type:    "contact",
+      entity_id:      params.contactId,
+      message_type:   params.channel,
+      gate_name:      "evaluateOutbound",
+      allowed:        false,
+      violations:     [
+        ...originalViolations,
+        `OVERRIDE_REASON: ${overrideCtx.reason}`,
+      ],
+      blocked_reason: originalBlockedReason
+        ? `OVERRIDDEN: ${originalBlockedReason}`
+        : `OVERRIDDEN by ${overrideCtx.userType}`,
+    })
+    .then(() => null, () => null)
+
+  // Resolve agent_id for the insert (mirrors sendInboxReply)
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", overrideCtx.userId)
+    .eq("brokerage_id", overrideCtx.brokerageId)
+    .maybeSingle()
+  const agentId = agentRow?.id ?? null
+
+  const now = new Date().toISOString()
+  if (params.channel === "portal" || params.channel === "chat") {
+    const { data: msg, error } = await supabase
+      .from("client_portal_messages")
+      .insert({
+        contact_id:   params.contactId,
+        agent_id:     contact.agent_id ?? agentId,
+        brokerage_id: overrideCtx.brokerageId,
+        direction:    "agent_to_client",
+        channel:      "portal",
+        body:         params.body,
+        read:         false,
+        read_at:      null,
+        created_at:   now,
+        metadata:     { compliance_override: true, override_actor: overrideCtx.userId },
+      })
+      .select("id")
+      .maybeSingle()
+    if (error || !msg) {
+      return { success: false, error: error?.message ?? "Failed to insert message" }
+    }
+    return { success: true, messageId: msg.id }
+  }
+
+  // sms / email path — messages table
+  const { data: msg, error } = await supabase
+    .from("messages")
+    .insert({
+      contact_id:      params.contactId,
+      agent_id:        agentId,
+      type:            params.channel,
+      direction:       "outbound",
+      body:            params.body,
+      status:          "sent",
+      created_at:      now,
+      updated_at:      now,
+    })
+    .select("id")
+    .maybeSingle()
+  if (error || !msg) {
+    return { success: false, error: error?.message ?? "Failed to insert message" }
+  }
+  return { success: true, messageId: msg.id }
+}
+
 // ─── ACTION: markInboxRead ────────────────────────────────────────────────────
 
 export async function markInboxRead(params: {
