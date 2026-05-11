@@ -174,7 +174,7 @@ export async function requireVendorActor(claimedVendorId: string): Promise<Vendo
 export interface OverrideContext {
   userId:      string
   brokerageId: string
-  role:        string
+  userType:    string  // canonical — users.user_type
   reason:      string
 }
 
@@ -187,10 +187,10 @@ export interface OverrideContext {
  *
  * Returns the resolved actor context. Throws if:
  *   - not authenticated
- *   - role is not broker / admin / superadmin / compliance_officer
+ *   - user_type is not broker / admin / superadmin / compliance_officer
  *   - reason is shorter than 10 characters (audit trail integrity)
  */
-const OVERRIDE_ROLES = new Set([
+const OVERRIDE_USER_TYPES = new Set([
   "broker", "broker_admin", "admin", "superadmin",
   "compliance_officer", "compliance_manager",
 ])
@@ -210,10 +210,10 @@ export async function requireOverrideActor(reason: string | null | undefined): P
     .eq("id", user.id)
     .maybeSingle()
 
-  const role = (userRow?.user_type ?? "").toLowerCase()
-  if (!OVERRIDE_ROLES.has(role)) {
+  const userType = (userRow?.user_type ?? "").toLowerCase()
+  if (!OVERRIDE_USER_TYPES.has(userType)) {
     throw new PortalAuthError(
-      `Role '${role || "unknown"}' is not authorized to override gates. Required: broker / admin / superadmin / compliance_officer`,
+      `User type '${userType || "unknown"}' is not authorized to override gates. Required: broker / admin / superadmin / compliance_officer`,
     )
   }
   if (!userRow?.brokerage_id) {
@@ -223,7 +223,7 @@ export async function requireOverrideActor(reason: string | null | undefined): P
   return {
     userId:      user.id,
     brokerageId: userRow.brokerage_id,
-    role,
+    userType,
     reason:      reason.trim(),
   }
 }

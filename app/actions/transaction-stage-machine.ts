@@ -113,12 +113,12 @@ export async function advanceTransactionStage(params: {
       event_type:    "transaction.stage_overridden",
       actor_user_id: overrideCtx.userId,
       metadata: {
-        from_stage:      current.stage,
-        to_stage:        params.targetStage,
-        override_reason: overrideCtx.reason,
-        override_actor:  overrideCtx.userId,
-        override_role:   overrideCtx.role,
-        original_reason: params.reason ?? null,
+        from_stage:           current.stage,
+        to_stage:             params.targetStage,
+        override_reason:      overrideCtx.reason,
+        override_actor:       overrideCtx.userId,
+        override_user_type:   overrideCtx.userType,
+        original_reason:      params.reason ?? null,
       },
       created_at: new Date().toISOString(),
     })

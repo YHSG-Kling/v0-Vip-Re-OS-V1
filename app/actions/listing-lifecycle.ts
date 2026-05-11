@@ -153,12 +153,12 @@ export async function advanceListingStage(
       event_type:    "listing.stage_overridden",
       actor_user_id: overrideCtx.userId,
       metadata: {
-        from_stage:      listing.lifecycle_stage,
-        to_stage:        toStage,
-        override_reason: overrideCtx.reason,
-        override_actor:  overrideCtx.userId,
-        override_role:   overrideCtx.role,
-        notes:           notes ?? null,
+        from_stage:           listing.lifecycle_stage,
+        to_stage:             toStage,
+        override_reason:      overrideCtx.reason,
+        override_actor:       overrideCtx.userId,
+        override_user_type:   overrideCtx.userType,
+        notes:                notes ?? null,
       },
       created_at: new Date().toISOString(),
     })
