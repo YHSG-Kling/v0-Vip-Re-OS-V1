@@ -242,18 +242,26 @@ function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?
 Role: ${role} | Tone: ${tone} | Formality: ${formality}
 Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
-You can take real actions on behalf of staff when asked. Available tools:
-- create_task: Create and assign a task
-- schedule_follow_up: Schedule a follow-up activity with a contact
-- send_portal_message: Send a message to a client through the portal
-- update_contact_status: Update a contact's CRM status
-- log_activity: Log a completed call, meeting, or interaction
+TOOLS — use these when staff explicitly asks you to take an action:
+  Read tools (information lookup):
+  - lookup_contact: Search for contacts by name, email, or phone
+  - get_today_schedule: Return today's showings and scheduled activities
 
-When staff asks you to DO something (not just explain), use the appropriate tool. Confirm back with the result. Only call a tool when the instruction is clear — ask for clarification if you need a contact name or date.
+  Write tools (mutating actions — call only when staff explicitly requests):
+  - create_task: Create and assign a task
+  - schedule_follow_up: Schedule a follow-up activity with a contact
+  - send_portal_message: Send a message to a client through the portal
+  - update_contact_status: Update a contact's CRM status
+  - log_activity: Log a completed call, meeting, or interaction
+  - draft_ai_reply: Generate a brand-voice reply DRAFT for review (does NOT auto-send)
+  - advance_listing_stage: Move a listing forward in its lifecycle when prerequisites are met
+  - advance_transaction_stage: Move a transaction forward through inspection / appraisal / financing / closing
+
+Only call a write tool when the instruction is clear and explicit. If you're missing a key parameter (contact name, listing id, date, target stage), ask one clarifying question first.
 
 CAPABILITIES:
+- Use tools above when staff explicitly asks ("create a task for...", "draft a reply to...", "advance the listing to active")
 - Answer questions and summarize entities from the context below
-- Draft messages/emails for review (always label as DRAFT — never auto-send or auto-update records)
 - Explain processes, real estate terms, and platform features
 - Suggest next actions based on context data and upcoming dates
 - Flag urgency from dates and statuses
@@ -261,11 +269,12 @@ CAPABILITIES:
 - Auto-suggest note drafts after high-signal exchanges (see NOTE_AUTO_DRAFT below)
 
 RESTRICTIONS — never do any of these:
-- Take actions (send emails, update records, approve documents)
-- Access data outside the role-scoped context below
-- Give legal, financial, or tax advice
-- Reference other users' private data not in context
-- Save notes silently — always surface as a draft for human approval
+- Never take an action unless explicitly instructed — wait for the staff member to ask
+- Never auto-send a message — always use draft_ai_reply so the agent can review and send
+- Never access data outside the role-scoped context below
+- Never give legal, financial, or tax advice
+- Never reference other users' private data not in context
+- Never save notes silently — always surface as a draft for human approval
 
 NOTE_AUTO_DRAFT:
 After responding to a genuinely high-signal exchange — such as a call outcome being discussed, a decision or agreement reached, an important fact shared (timeline, budget, motivation), or a follow-up promised — you MAY append the following marker ONCE at the very end of your response (after your main answer text).
@@ -561,6 +570,276 @@ export async function POST(req: NextRequest) {
 
         if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
         return { success: true, activity_id: data.id, title: data.title }
+      },
+    }),
+
+    lookup_contact: tool({
+      description: "Search for contacts by name, email, or phone. Returns up to 5 matches scoped to the current brokerage.",
+      inputSchema: z.object({
+        query: z.string().describe("Free-text search — name (full or partial), email, or phone digits"),
+      }),
+      execute: async ({ query }) => {
+        const q = query.trim()
+        if (q.length < 2) return { matches: [] }
+
+        const phoneDigits = q.replace(/\D/g, "")
+        const isPhone = phoneDigits.length >= 7
+
+        let builder = service
+          .from("contacts")
+          .select("id, first_name, last_name, email, phone, contact_type, contact_persona, last_contact_at")
+          .eq("brokerage_id", brokerageId)
+          .limit(5)
+
+        if (isPhone) {
+          builder = builder.ilike("phone", `%${phoneDigits.slice(-7)}%`)
+        } else if (q.includes("@")) {
+          builder = builder.ilike("email", `%${q}%`)
+        } else {
+          builder = builder.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%`)
+        }
+
+        const { data } = await builder
+        return {
+          matches: (data ?? []).map((c) => ({
+            contact_id: c.id,
+            name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "(no name)",
+            email: c.email,
+            phone: c.phone,
+            type: c.contact_type,
+            persona: c.contact_persona,
+            last_contact: c.last_contact_at,
+          })),
+        }
+      },
+    }),
+
+    get_today_schedule: tool({
+      description: "Return today's showings and scheduled activities for the current agent.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const startOfDay = new Date()
+        startOfDay.setHours(0, 0, 0, 0)
+        const endOfDay = new Date(startOfDay)
+        endOfDay.setHours(23, 59, 59, 999)
+        const startIso = startOfDay.toISOString()
+        const endIso = endOfDay.toISOString()
+
+        const [showings, activities] = await Promise.all([
+          service
+            .from("showings")
+            .select("id, scheduled_at, listing_id, contact_id, notes, status")
+            .eq("agent_id", user.id)
+            .gte("scheduled_at", startIso)
+            .lt("scheduled_at", endIso)
+            .order("scheduled_at", { ascending: true }),
+          service
+            .from("activities")
+            .select("id, scheduled_at, activity_type, title, contact_id, transaction_id")
+            .eq("agent_id", user.id)
+            .eq("status", "scheduled")
+            .gte("scheduled_at", startIso)
+            .lt("scheduled_at", endIso)
+            .order("scheduled_at", { ascending: true }),
+        ])
+
+        const appointments = [
+          ...((showings.data ?? []).map((s) => ({
+            time: s.scheduled_at,
+            type: "showing" as const,
+            title: s.notes ?? "Showing",
+            status: s.status,
+            listing_id: s.listing_id,
+            contact_id: s.contact_id,
+          }))),
+          ...((activities.data ?? []).map((a) => ({
+            time: a.scheduled_at,
+            type: a.activity_type ?? "activity",
+            title: a.title,
+            contact_id: a.contact_id,
+            transaction_id: a.transaction_id,
+          }))),
+        ].sort((a, b) => (a.time && b.time ? (a.time < b.time ? -1 : 1) : 0))
+
+        return { count: appointments.length, appointments }
+      },
+    }),
+
+    draft_ai_reply: tool({
+      description:
+        "Generate a brand-voice reply DRAFT for a contact. Looks up the contact's most recent inbound message and produces a draft for agent review. Does NOT auto-send.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the contact"),
+      }),
+      execute: async ({ contact_id }) => {
+        // Verify contact in brokerage
+        const { data: contact } = await service
+          .from("contacts")
+          .select("id, first_name, last_name")
+          .eq("id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!contact) return { success: false, error: "Contact not found in your brokerage" }
+
+        // Find most recent conversation for this contact
+        const { data: convo } = await service
+          .from("conversations")
+          .select("id, type")
+          .eq("contact_id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .order("last_message_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (!convo) {
+          return {
+            success: false,
+            error:
+              "No conversation yet with this contact — start one in the inbox first, then ask me to draft a reply.",
+          }
+        }
+
+        const rawChannel = (convo.type ?? "").toLowerCase()
+        const draftChannel: "email" | "sms" | "in_app" =
+          rawChannel === "email" ? "email" : rawChannel === "sms" ? "sms" : "in_app"
+
+        const { data: lastInbound } = await service
+          .from("messages")
+          .select("id, body")
+          .eq("conversation_id", convo.id)
+          .eq("direction", "inbound")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
+        const result = await generateAIReplyDraft({
+          brokerageId,
+          agentUserId: user.id,
+          conversationId: convo.id,
+          contactId: contact_id,
+          inboundMessageId: lastInbound?.id ?? null,
+          inboundBody: lastInbound?.body ?? "",
+          channel: draftChannel,
+        })
+
+        if (!result.success || !result.draftBody) {
+          return { success: false, error: result.error ?? "Draft generation failed" }
+        }
+        return {
+          success: true,
+          draft_id: result.draftId,
+          channel: draftChannel,
+          conversation_id: convo.id,
+          contact_name: `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim(),
+          draft_body: result.draftBody,
+          subject: result.draftSubject ?? null,
+          tone: result.suggestedTone ?? null,
+          note: "Draft saved for review. Open the inbox and tap Send when ready.",
+        }
+      },
+    }),
+
+    advance_listing_stage: tool({
+      description:
+        "Advance a listing to the next stage in its lifecycle (e.g. coming_soon → active, active → under_contract). Validates prerequisites via the listing-lifecycle kernel.",
+      inputSchema: z.object({
+        listing_id: z.string().describe("UUID of the listing"),
+        target_stage: z.string().describe("The lifecycle stage key to advance to (e.g. 'mls_active', 'under_contract')"),
+        notes: z.string().nullable().describe("Optional notes about the advance"),
+      }),
+      execute: async ({ listing_id, target_stage, notes }) => {
+        // Verify listing belongs to brokerage
+        const { data: listing } = await service
+          .from("listings")
+          .select("id, agent_id, address, lifecycle_stage")
+          .eq("id", listing_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!listing) return { success: false, error: "Listing not found in your brokerage" }
+
+        try {
+          const { advanceListingStage } = await import("@/app/actions/listing-lifecycle")
+          const result = await advanceListingStage(
+            listing_id,
+            target_stage,
+            listing.agent_id ?? user.id,
+            notes ?? undefined,
+          )
+          return {
+            success: true,
+            listing_id,
+            from_stage: listing.lifecycle_stage,
+            to_stage: target_stage,
+            address: listing.address,
+            result,
+          }
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : "Stage advance failed",
+          }
+        }
+      },
+    }),
+
+    advance_transaction_stage: tool({
+      description:
+        "Advance a transaction to the next stage (inspection → appraisal → financing → closing_prep → closed). Runs the transaction orchestrator which validates blockers before moving.",
+      inputSchema: z.object({
+        transaction_id: z.string().describe("UUID of the transaction"),
+        target_stage: z
+          .enum([
+            "under_contract",
+            "inspection",
+            "appraisal",
+            "financing",
+            "closing_prep",
+            "closed",
+            "cancelled",
+          ])
+          .describe("The stage to advance to"),
+        reason: z.string().nullable().describe("Optional reason for the stage change"),
+      }),
+      execute: async ({ transaction_id, target_stage, reason }) => {
+        // Verify transaction belongs to brokerage
+        const { data: txn } = await service
+          .from("transactions")
+          .select("id, stage, status, deal_name, property_address")
+          .eq("id", transaction_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!txn) return { success: false, error: "Transaction not found in your brokerage" }
+
+        try {
+          const { advanceTransactionStage } = await import("@/app/actions/transaction-stage-machine")
+          const result = await advanceTransactionStage({
+            transactionId: transaction_id,
+            brokerageId,
+            targetStage: target_stage as never,
+            reason: reason ?? undefined,
+          })
+          if (!result.success) {
+            return {
+              success: false,
+              error: result.error ?? "Stage advance blocked",
+              blockers: result.blockers ?? [],
+            }
+          }
+          return {
+            success: true,
+            transaction_id,
+            deal_name: txn.deal_name,
+            address: txn.property_address,
+            from_stage: txn.stage,
+            to_stage: result.newStage,
+          }
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : "Stage advance failed",
+          }
+        }
       },
     }),
   }
