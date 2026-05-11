@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useRouter, useParams } from "next/navigation"
+import { useRouter, useParams, useSearchParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 import type { Contact } from "@/lib/domain/types"
@@ -9,8 +9,17 @@ import type { Contact } from "@/lib/domain/types"
 export default function OfferCreatePage() {
   const router = useRouter()
   const params = useParams<{ contactId: string }>()
+  const searchParams = useSearchParams()
   const [contact, setContact] = useState<Contact | null>(null)
   const [ctx, setCtx] = useState<{ brokerageId: string; agentUserId: string; teamId?: string | null } | null>(null)
+
+  // `?packet=<uuid>` is set by stageWizardPacket() — voice / AI Copilot /
+  // ⌘K verbs use it to drop the agent into a prefilled offer wizard.
+  const packetParam = searchParams?.get("packet") ?? null
+  const documentId =
+    packetParam && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(packetParam)
+      ? packetParam
+      : undefined
 
   useEffect(() => {
     async function load() {
@@ -42,6 +51,7 @@ export default function OfferCreatePage() {
       teamId={ctx.teamId}
       open={true}
       onClose={() => router.back()}
+      documentId={documentId}
     />
   )
 }

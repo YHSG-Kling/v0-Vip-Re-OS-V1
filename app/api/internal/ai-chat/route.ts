@@ -256,6 +256,8 @@ TOOLS — use these when staff explicitly asks you to take an action:
   - draft_ai_reply: Generate a brand-voice reply DRAFT for review (does NOT auto-send)
   - advance_listing_stage: Move a listing forward in its lifecycle when prerequisites are met
   - advance_transaction_stage: Move a transaction forward through inspection / appraisal / financing / closing
+  - stage_listing_packet: Pre-stage a new listing wizard with prefilled fields (use when staff says "create a listing at...", "start a new listing for...") — does NOT submit, just opens the wizard prefilled
+  - stage_offer_packet: Pre-stage a new offer wizard for a specific contact (use when staff says "write an offer for [contact] on [property] at $X") — does NOT submit
 
 Only call a write tool when the instruction is clear and explicit. If you're missing a key parameter (contact name, listing id, date, target stage), ask one clarifying question first.
 
@@ -839,6 +841,112 @@ export async function POST(req: NextRequest) {
             success: false,
             error: err instanceof Error ? err.message : "Stage advance failed",
           }
+        }
+      },
+    }),
+
+    stage_listing_packet: tool({
+      description:
+        "Pre-stage a NEW listing wizard packet from what the agent just said or typed (address, price, seller name, property type). Returns an open_url the agent navigates to — the wizard opens with all fields prefilled and a 'review prefilled fields' banner. Use this when the agent says 'create a listing', 'start a new listing at...', or 'list a property at...'. DOES NOT submit the listing — it just stages the wizard for the agent to review.",
+      inputSchema: z.object({
+        address: z.string().describe("Street address (e.g. '1234 Maple St')"),
+        city: z.string().nullable().describe("City"),
+        state: z.string().nullable().describe("Two-letter state code (e.g. 'NJ')"),
+        zip: z.string().nullable().describe("ZIP code"),
+        list_price: z.number().nullable().describe("Asking price in dollars"),
+        seller_name: z.string().nullable().describe("Seller / homeowner name"),
+        property_type: z.string().nullable().describe("Single Family, Condo, Townhome, Multi-Family, Land, etc."),
+        notes: z.string().nullable().describe("Anything else the agent mentioned"),
+      }),
+      execute: async ({ address, city, state, zip, list_price, seller_name, property_type, notes }) => {
+        const { stageWizardPacket } = await import("@/app/actions/wizard-staging")
+        const result = await stageWizardPacket({
+          mode: "listing",
+          intake: {
+            address,
+            city: city ?? undefined,
+            state: state ?? undefined,
+            zip: zip ?? undefined,
+            listPrice: list_price ?? undefined,
+            sellerName: seller_name ?? undefined,
+            propertyType: property_type ?? undefined,
+            notes: notes ?? undefined,
+          },
+        })
+        if (!result.success) {
+          return { success: false, error: result.error ?? "Staging failed" }
+        }
+        return {
+          success: true,
+          document_id: result.documentId,
+          open_url: result.openUrl,
+          note: `Listing packet staged for ${address}. Tell the agent: "I've prefilled the listing wizard — open ${result.openUrl} to review the fields and submit."`,
+        }
+      },
+    }),
+
+    stage_offer_packet: tool({
+      description:
+        "Pre-stage a NEW offer wizard packet for a specific contact (buyer) on a property. Returns an open_url the agent navigates to. Use this when the agent says 'write an offer for [contact] on [property] at [price]' or similar. DOES NOT submit — just stages.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the buyer contact"),
+        address: z.string().describe("Property address"),
+        city: z.string().nullable().describe("City"),
+        state: z.string().nullable().describe("Two-letter state code"),
+        zip: z.string().nullable().describe("ZIP code"),
+        offer_price: z.number().nullable().describe("Offer amount in dollars"),
+        financing_type: z.string().nullable().describe("Cash, Conventional, FHA, VA, USDA, etc."),
+        earnest_money: z.number().nullable().describe("Earnest money in dollars"),
+        closing_date: z.string().nullable().describe("Desired closing date (YYYY-MM-DD)"),
+        notes: z.string().nullable().describe("Contingencies or terms the agent mentioned"),
+      }),
+      execute: async ({
+        contact_id,
+        address,
+        city,
+        state,
+        zip,
+        offer_price,
+        financing_type,
+        earnest_money,
+        closing_date,
+        notes,
+      }) => {
+        // Verify contact in brokerage before staging
+        const { data: contact } = await service
+          .from("contacts")
+          .select("id, first_name, last_name")
+          .eq("id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!contact) return { success: false, error: "Contact not found in your brokerage" }
+
+        const { stageWizardPacket } = await import("@/app/actions/wizard-staging")
+        const result = await stageWizardPacket({
+          mode: "offer",
+          intake: {
+            contactId: contact_id,
+            address,
+            city: city ?? undefined,
+            state: state ?? undefined,
+            zip: zip ?? undefined,
+            offerPrice: offer_price ?? undefined,
+            financingType: financing_type ?? undefined,
+            earnestMoney: earnest_money ?? undefined,
+            closingDate: closing_date ?? undefined,
+            notes: notes ?? undefined,
+          },
+        })
+        if (!result.success) {
+          return { success: false, error: result.error ?? "Staging failed" }
+        }
+        const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+        return {
+          success: true,
+          document_id: result.documentId,
+          open_url: result.openUrl,
+          contact_name: contactName,
+          note: `Offer packet staged for ${contactName} on ${address}. Tell the agent: "I've prefilled the offer wizard — open ${result.openUrl} to review and send for signature."`,
         }
       },
     }),

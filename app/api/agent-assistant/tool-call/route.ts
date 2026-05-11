@@ -225,8 +225,97 @@ async function runTool(
         supabase,
       )
 
+    case "stage_listing_packet":
+      return stageListingPacket(params, session)
+
+    case "stage_offer_packet":
+      return stageOfferPacket(params, session, supabase)
+
     default:
       throw new Error(`Unknown tool: ${toolName}`)
+  }
+}
+
+// ─── stage_listing_packet (voice) ────────────────────────────────────────────
+
+async function stageListingPacket(
+  params: Record<string, unknown>,
+  session: SessionRow,
+) {
+  const address = String(params.address ?? "").trim()
+  if (!address) return { error: "address required" }
+
+  const { stageWizardPacketAsAgent } = await import("@/app/actions/wizard-staging-voice")
+  const result = await stageWizardPacketAsAgent({
+    brokerageId: session.brokerage_id,
+    userId: session.user_id,
+    mode: "listing",
+    intake: {
+      address,
+      city: params.city ? String(params.city) : undefined,
+      state: params.state ? String(params.state) : undefined,
+      zip: params.zip ? String(params.zip) : undefined,
+      listPrice: params.list_price != null ? Number(params.list_price) : undefined,
+      sellerName: params.seller_name ? String(params.seller_name) : undefined,
+      propertyType: params.property_type ? String(params.property_type) : undefined,
+      notes: params.notes ? String(params.notes) : undefined,
+    },
+  })
+  if (!result.success) return { error: result.error ?? "Staging failed" }
+  return {
+    success: true,
+    document_id: result.documentId,
+    open_url: result.openUrl,
+    spoken_summary: `I've prefilled a listing wizard for ${address}. The agent can open it from the listings page to review and submit.`,
+  }
+}
+
+// ─── stage_offer_packet (voice) ──────────────────────────────────────────────
+
+async function stageOfferPacket(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const contactId = String(params.contact_id ?? "").trim()
+  const address = String(params.address ?? "").trim()
+  if (!contactId || !address) return { error: "contact_id and address required" }
+
+  // Brokerage check
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name")
+    .eq("id", contactId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!contact) return { error: "Contact not found in your brokerage" }
+
+  const { stageWizardPacketAsAgent } = await import("@/app/actions/wizard-staging-voice")
+  const result = await stageWizardPacketAsAgent({
+    brokerageId: session.brokerage_id,
+    userId: session.user_id,
+    mode: "offer",
+    intake: {
+      contactId,
+      address,
+      city: params.city ? String(params.city) : undefined,
+      state: params.state ? String(params.state) : undefined,
+      zip: params.zip ? String(params.zip) : undefined,
+      offerPrice: params.offer_price != null ? Number(params.offer_price) : undefined,
+      financingType: params.financing_type ? String(params.financing_type) : undefined,
+      earnestMoney: params.earnest_money != null ? Number(params.earnest_money) : undefined,
+      closingDate: params.closing_date ? String(params.closing_date) : undefined,
+      notes: params.notes ? String(params.notes) : undefined,
+    },
+  })
+  if (!result.success) return { error: result.error ?? "Staging failed" }
+  const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+  return {
+    success: true,
+    document_id: result.documentId,
+    open_url: result.openUrl,
+    contact_name: contactName,
+    spoken_summary: `I've prefilled an offer for ${contactName} on ${address}. The agent can open it to review and send for signature.`,
   }
 }
 
