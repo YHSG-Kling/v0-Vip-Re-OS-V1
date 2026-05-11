@@ -259,7 +259,7 @@ export async function updateTitleStatus(data: {
   // Verify title user access
   const { data: titleUser } = await supabase
     .from("title_company_users")
-    .select("id, email")
+    .select("id, user_id, email")
     .eq("id", data.titleUserId)
     .single()
 
@@ -277,38 +277,72 @@ export async function updateTitleStatus(data: {
 
   if (error) throw error
 
-  // Emit kernel event for milestone sync - get brokerage from transaction
-  const { data: txn } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: txn?.brokerage_id,
-    event_type: KernelEvent.JOURNEY_STAGE_UPDATED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      updated_by: titleUser.email,
-      updated_by_type: "title",
-      new_status: data.newStatus,
-    },
-    created_at: new Date().toISOString(),
-  })
+  // Get brokerage_id for fan-out
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("brokerage_id")
+    .eq("id", data.transactionId)
+    .single()
+  const brokerageId = txn?.brokerage_id
 
-  // If status is closing_ready or closed, update relevant milestone
-  if (data.newStatus === "closing_ready") {
-    await supabase.from("transaction_milestones").upsert({
-      transaction_id: data.transactionId,
-      milestone_name: "closing_scheduled",
-      milestone_type: "title",
-      status: "completed",
-      completed_date: new Date().toISOString(),
-    }, { onConflict: "transaction_id,milestone_name" })
-  } else if (data.newStatus === "closed") {
-    await supabase.from("transaction_milestones").upsert({
-      transaction_id: data.transactionId,
-      milestone_name: "closed",
-      milestone_type: "title",
-      status: "completed",
-      completed_date: new Date().toISOString(),
-    }, { onConflict: "transaction_id,milestone_name" })
+  // Fan-out via the transaction kernel — replaces the bare lifecycle_events
+  // insert. Reaches buyer + seller + lender portals + sequences. Use the
+  // dedicated CLOSING_SCHEDULED event when status flips to closing_ready
+  // so closing-prep sequences trigger.
+  const eventName =
+    data.newStatus === "closing_ready"
+      ? KernelEvent.CLOSING_SCHEDULED
+      : KernelEvent.JOURNEY_STAGE_UPDATED
+
+  if (brokerageId) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      await emitTransactionEvent({
+        event:       eventName,
+        brokerageId,
+        entityId:    data.transactionId,
+        actorUserId: titleUser.user_id,
+        metadata: {
+          actor_role:      "title",
+          updated_by:      titleUser.email,
+          updated_by_type: "title",
+          new_status:      data.newStatus,
+          update_type:     "title_status",
+        },
+      })
+    } catch (err) {
+      console.error("[updateTitleStatus] fan-out failed (non-blocking)", err)
+    }
+  }
+
+  // If status is closing_ready or closed, mark the corresponding milestone
+  // complete via the canonical helper so its fan-out + deadline mirror fires.
+  if (data.newStatus === "closing_ready" && brokerageId) {
+    try {
+      const { completeMilestone } = await import("@/lib/transactions/milestone-service")
+      const { data: { user } } = await supabase.auth.getUser()
+      await completeMilestone({
+        transactionId: data.transactionId,
+        brokerageId,
+        milestoneName: "closing_scheduled",
+        completedBy:   user?.id ?? titleUser.id,
+      })
+    } catch (err) {
+      console.error("[updateTitleStatus] closing_scheduled milestone failed", err)
+    }
+  } else if (data.newStatus === "closed" && brokerageId) {
+    try {
+      const { completeMilestone } = await import("@/lib/transactions/milestone-service")
+      const { data: { user } } = await supabase.auth.getUser()
+      await completeMilestone({
+        transactionId: data.transactionId,
+        brokerageId,
+        milestoneName: "closed",
+        completedBy:   user?.id ?? titleUser.id,
+      })
+    } catch (err) {
+      console.error("[updateTitleStatus] closed milestone failed", err)
+    }
   }
 
   // Revalidate inside function to avoid module-level server dependency
@@ -330,7 +364,7 @@ export async function updateClosingPrepItem(data: {
   // Verify title user access
   const { data: titleUser } = await supabase
     .from("title_company_users")
-    .select("id, email")
+    .select("id, user_id, email")
     .eq("id", data.titleUserId)
     .single()
 
@@ -363,6 +397,37 @@ export async function updateClosingPrepItem(data: {
     }, { onConflict: "transaction_id" })
 
   if (error) throw error
+
+  // Fan-out when an item moves to completed so the agent + buyer + seller +
+  // lender portals see the closing-prep progress in real time.
+  if (data.status === "completed") {
+    try {
+      const { data: txn } = await supabase
+        .from("transactions")
+        .select("brokerage_id")
+        .eq("id", data.transactionId)
+        .single()
+      if (txn?.brokerage_id) {
+        const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+        await emitTransactionEvent({
+          event:       KernelEvent.MILESTONE_COMPLETED,
+          brokerageId: txn.brokerage_id,
+          entityId:    data.transactionId,
+          actorUserId: titleUser.user_id,
+          metadata: {
+            actor_role:      "title",
+            milestone_name:  `closing_prep_${data.itemKey}`,
+            item_key:        data.itemKey,
+            updated_by:      titleUser.email,
+            notes:           data.notes ?? null,
+            update_type:     "closing_prep_item",
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[updateClosingPrepItem] fan-out failed (non-blocking)", err)
+    }
+  }
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")

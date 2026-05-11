@@ -270,18 +270,28 @@ export async function flagLenderIssue(data: {
 
   if (messageError) throw messageError
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: transaction.brokerage_id,
-    event_type: KernelEvent.PORTAL_MODULE_VIEWED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      module: "lender_issue",
-      issued_by_lender_id: lender.id,
-      issue_description: data.issueDescription,
-    },
-    created_at: new Date().toISOString(),
-  })
+  // Fan-out via the transaction kernel so the agent + TC + buyer get
+  // notified across all portals + matching sequences fire. Replaces the
+  // bare lifecycle_events insert which only logged but didn't fan out.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.JOURNEY_STAGE_UPDATED,
+      brokerageId: transaction.brokerage_id,
+      entityId:    data.transactionId,
+      actorUserId: lender.user_id,
+      metadata: {
+        actor_role:           "lender",
+        update_type:          "issue_flagged",
+        lender_company:       lender.lender_company,
+        issued_by_lender_id:  lender.id,
+        issue_description:    data.issueDescription,
+        severity:             "high",
+      },
+    })
+  } catch (err) {
+    console.error("[flagLenderIssue] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
@@ -297,7 +307,7 @@ export async function updateLenderLoanStatus(data: {
 
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, user_id, lender_company")
+    .select("id, user_id, lender_company, brokerage_id")
     .eq("id", data.lenderId)
     .single()
 
@@ -313,6 +323,28 @@ export async function updateLenderLoanStatus(data: {
     .eq("transaction_id", data.transactionId)
 
   if (error) throw error
+
+  // Fan-out via the transaction kernel so the agent dashboard, buyer +
+  // seller portals, and title portal all see the loan-status change.
+  // Previously only revalidated the lender's own portal page.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.JOURNEY_STAGE_UPDATED,
+      brokerageId: lender.brokerage_id,
+      entityId:    data.transactionId,
+      actorUserId: lender.user_id,
+      metadata: {
+        actor_role:       "lender",
+        lender_company:   lender.lender_company,
+        loan_status:      data.newStatus,
+        updated_by_type:  "lender",
+        update_type:      "loan_status",
+      },
+    })
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
