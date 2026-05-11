@@ -3,6 +3,7 @@
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -3633,7 +3634,11 @@ export function TransactionDetailClient({
             </TabsContent>
 
             {/* Repairs Tab */}
-            <TabsContent value="repairs" className="mt-4">
+            <TabsContent value="repairs" className="mt-4 space-y-3">
+              <RepairCoPilotPanel
+                transactionId={transaction.id}
+                side={userRole === "buyer_agent" || userRole === "buyer" ? "buyer" : "seller"}
+              />
               <Card>
                 <CardHeader className="pb-3 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm font-medium">Repair Negotiations</CardTitle>
