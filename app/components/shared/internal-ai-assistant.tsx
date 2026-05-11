@@ -1187,8 +1187,50 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                           send_portal_message: "Message Sent",
                           update_contact_status: "Contact Updated",
                           log_activity: "Activity Logged",
+                          lookup_contact: "Contact Search",
+                          get_today_schedule: "Today's Schedule",
+                          draft_ai_reply: "Reply Drafted",
+                          advance_listing_stage: "Listing Stage Advanced",
+                          advance_transaction_stage: "Transaction Stage Advanced",
+                          stage_listing_packet: "Listing Wizard Staged",
+                          stage_offer_packet: "Offer Wizard Staged",
+                          stage_newsletter_draft: "Newsletter Drafted",
+                          stage_email_campaign: "Email Campaign Drafted",
+                          stage_open_house: "Open House Scheduled",
+                          stage_blog_draft: "Blog Drafted",
+                          stage_podcast_episode: "Podcast Episode Drafted",
+                          stage_video_project: "Video Project Drafted",
+                          stage_direct_mail_campaign: "Direct Mail Drafted",
+                          stage_ad_campaign: "Ad Campaign Drafted",
                         }
                         const label = TOOL_LABELS[inv.toolName] ?? inv.toolName.replace(/_/g, " ")
+
+                        // Stage_* tools return an open_url — surface it as a
+                        // clickable Open button so the agent goes straight to
+                        // the staged draft instead of hunting in a list.
+                        const openUrl =
+                          succeeded && output && typeof (output as { open_url?: unknown; openUrl?: unknown }).open_url === "string"
+                            ? ((output as { open_url: string }).open_url)
+                            : succeeded && output && typeof (output as { openUrl?: unknown }).openUrl === "string"
+                              ? ((output as { openUrl: string }).openUrl)
+                              : null
+
+                        // Multi-turn intake — relay follow-up questions back to agent
+                        const followUpQuestions =
+                          output && Array.isArray((output as { questions?: unknown }).questions)
+                            ? ((output as { questions: Array<{ field?: string; question?: string }> }).questions)
+                            : null
+
+                        const summary =
+                          (output as { summary?: string; spoken_summary?: string; spokenResponse?: string; note?: string } | undefined)
+                            ?.summary ??
+                          (output as { spoken_summary?: string } | undefined)?.spoken_summary ??
+                          (output as { spokenResponse?: string } | undefined)?.spokenResponse ??
+                          (output as { note?: string } | undefined)?.note ??
+                          (output as { title?: string } | undefined)?.title ??
+                          (output as { name?: string } | undefined)?.name ??
+                          (output as { preview?: string } | undefined)?.preview ??
+                          "Done"
 
                         return (
                           <div
@@ -1212,16 +1254,43 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                             ) : (
                               <AlertTriangle style={{ width: "14px", height: "14px", flexShrink: 0 }} />
                             )}
-                            <div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontWeight: 600, marginBottom: "2px" }}>
                                 {isPending ? `Running: ${label}...` : succeeded ? label : `Failed: ${label}`}
                               </div>
                               {!isPending && output && (
                                 <div style={{ opacity: 0.8 }}>
-                                  {succeeded
-                                    ? (output.title as string ?? output.name as string ?? output.preview as string ?? "Done")
-                                    : (output.error as string ?? "Something went wrong")}
+                                  {succeeded ? summary : (output.error as string ?? "Something went wrong")}
                                 </div>
+                              )}
+                              {followUpQuestions && followUpQuestions.length > 0 && (
+                                <ul style={{ marginTop: "6px", paddingLeft: "16px", opacity: 0.85 }}>
+                                  {followUpQuestions.slice(0, 3).map((q, i) => (
+                                    <li key={i} style={{ marginBottom: "2px" }}>
+                                      {q.question ?? q.field ?? ""}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              {openUrl && (
+                                <a
+                                  href={openUrl}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    marginTop: "6px",
+                                    padding: "4px 9px",
+                                    borderRadius: "6px",
+                                    background: "#166534",
+                                    color: "#f0fdf4",
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    textDecoration: "none",
+                                  }}
+                                >
+                                  Open →
+                                </a>
                               )}
                             </div>
                           </div>

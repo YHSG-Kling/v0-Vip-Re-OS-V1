@@ -5,7 +5,9 @@ import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
 import { generateDailyGameplan } from "@/app/actions/copilot"
-import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions } from "@/app/actions/briefing-actions"
+import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
@@ -60,6 +62,8 @@ export default function AgentDashboard() {
     upcomingShowings: 0
   })
   const [briefing, setBriefing] = useState<any>(null)
+  const [userTypeBrief, setUserTypeBrief] = useState<UserTypeBrief | null>(null)
+  const [briefRefreshing, setBriefRefreshing] = useState(false)
   const [showings, setShowings] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [anniversaries, setAnniversaries] = useState<any[]>([])
@@ -175,6 +179,7 @@ export default function AgentDashboard() {
           getHotLeads(10),
           getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
           getMotivatedSellers({ min_score: 60 }).catch(() => null),
+          getUserTypeBrief({ userType: "agent" }),
         ])
 
         // 7. Unpack results
@@ -235,6 +240,13 @@ export default function AgentDashboard() {
           setMotivatedSellers(sellersResult?.sellers ?? [])
         }
 
+        // UserTypeBrief — feeds TodaysFocusCard with the play-aloud button.
+        // Parallel to the legacy DailyBriefing loaded above.
+        if (results[10].status === 'fulfilled' && results[10].value) {
+          const briefResult = results[10].value as { brief?: UserTypeBrief | null }
+          setUserTypeBrief(briefResult.brief ?? null)
+        }
+
       } catch (error) {
         console.error("[v0] Error loading agent dashboard:", error)
       } finally {
@@ -275,6 +287,18 @@ export default function AgentDashboard() {
     setRefreshing(false)
   }, [])
 
+  // Refresh the UserTypeBrief that drives TodaysFocusCard (play-aloud).
+  const handleRefreshUserTypeBrief = useCallback(async () => {
+    setBriefRefreshing(true)
+    try {
+      const result = await getUserTypeBrief({ userType: "agent" })
+      if (result.brief) setUserTypeBrief(result.brief)
+    } catch (error) {
+      console.error("[v0] Error refreshing user-type brief:", error)
+    }
+    setBriefRefreshing(false)
+  }, [])
+
   const handleWhisperBridge = useCallback(async (contactId: string, context: string) => {
     setCallingId(contactId + 'whisper')
     try {
@@ -307,6 +331,16 @@ export default function AgentDashboard() {
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />
+
+        {/* Today's Focus — the "voice-read brief" card. Tap the speaker icon
+            to hear the 3 priorities read aloud in the agent's cloned voice. */}
+        {userTypeBrief && (
+          <TodaysFocusCard
+            brief={userTypeBrief}
+            onRefresh={handleRefreshUserTypeBrief}
+            refreshing={briefRefreshing}
+          />
+        )}
 
         <AgentCommandStrip
           agentName={agentName}
