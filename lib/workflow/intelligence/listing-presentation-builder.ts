@@ -88,6 +88,25 @@ export interface ListingPresentationResult {
   marketingPlan:  MarketingPlan
   slideDeck:      SlideDeckSlide[]
   packetDocumentId: string | null
+  // ── 3 appointment-prep additions ─────────────────────────────────────
+  /** Real property data pulled from OSINT/BatchData (or AI estimate when both miss). */
+  propertyEnrichment?: {
+    source:        "osint" | "batchdata" | "ai_estimate"
+    isEstimate:    boolean
+    sourceNote:    string
+    beds?:         number | null
+    baths?:        number | null
+    sqft?:         number | null
+    yearBuilt?:    number | null
+    lotSize?:      number | null
+    propertyType?: string | null
+    lat?:          number | null
+    lon?:          number | null
+  }
+  /** AI-written property description for the appointment deck. */
+  propertyDescription?: string
+  /** Cover-photo URL — Google Street View by default, satellite fallback. */
+  coverPhotoUrl?: string | null
 }
 
 // ─── Net sheet calculator ──────────────────────────────────────────────────
@@ -249,7 +268,59 @@ export async function buildListingPresentation(
   try {
     const svc = createServiceClient()
 
-    // 1. Run CMA (existing infrastructure)
+    // 0a. APPOINTMENT-PREP ADDITION: property enrichment chain.
+    //     OSINT (free) → BatchData (paid) → AI estimate (last resort).
+    //     Best-effort: if every source misses, we still proceed using
+    //     whatever the agent passed in (bedrooms/bathrooms/sqft/yearBuilt).
+    //     This does NOT replace manual entry at MLS go-live — that path
+    //     remains agent/admin-driven. This is appointment-prep ONLY.
+    let propertyEnrichment: ListingPresentationResult["propertyEnrichment"] | undefined
+    let lat: number | null = null
+    let lon: number | null = null
+    try {
+      const { enrichPropertyChain } = await import("@/lib/property/enrichment-chain")
+      const enriched = await enrichPropertyChain(input.propertyAddress)
+      propertyEnrichment = {
+        source:        enriched.source,
+        isEstimate:    enriched.isEstimate,
+        sourceNote:    enriched.sourceNote,
+        beds:          enriched.beds          ?? input.bedrooms  ?? null,
+        baths:         enriched.baths         ?? input.bathrooms ?? null,
+        sqft:          enriched.sqft          ?? input.sqft      ?? null,
+        yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
+        lotSize:       enriched.lotSize       ?? null,
+        propertyType:  enriched.propertyType  ?? null,
+        lat:           enriched.lat ?? null,
+        lon:           enriched.lon ?? null,
+      }
+      lat = enriched.lat ?? null
+      lon = enriched.lon ?? null
+    } catch { /* enrichment is best-effort */ }
+
+    // 0b. APPOINTMENT-PREP ADDITION: cover photo via Google Street View.
+    //     Falls back to satellite. Null when GOOGLE_MAPS_API_KEY is unset.
+    let coverPhotoUrl: string | null = null
+    try {
+      const { getStreetViewImageUrl, getStaticMapImageUrl } =
+        await import("@/lib/property/enrichment-chain")
+      const street = getStreetViewImageUrl({
+        address: input.propertyAddress,
+        lat:     lat ?? undefined,
+        lon:     lon ?? undefined,
+      })
+      coverPhotoUrl = street?.url
+        ?? (lat != null && lon != null
+            ? getStaticMapImageUrl({ lat, lon })?.url ?? null
+            : null)
+    } catch { /* cover photo is best-effort */ }
+
+    // Effective property fields — input wins, enrichment fills gaps
+    const effectiveBeds      = input.bedrooms  ?? propertyEnrichment?.beds      ?? null
+    const effectiveBaths     = input.bathrooms ?? propertyEnrichment?.baths     ?? null
+    const effectiveSqft      = input.sqft      ?? propertyEnrichment?.sqft      ?? null
+    const effectiveYearBuilt = input.yearBuilt ?? propertyEnrichment?.yearBuilt ?? null
+
+    // 1. Run CMA (existing infrastructure) — now feeds enriched fields when available
     const cma = await runAiCma({
       mode: "standard",
       brokerageId: input.brokerageId,
@@ -260,10 +331,10 @@ export async function buildListingPresentation(
         city:    input.city  ?? null,
         state:   input.state,
         zip:     input.zip   ?? null,
-        bedrooms:  input.bedrooms  ?? null,
-        bathrooms: input.bathrooms ?? null,
-        sqftLiving: input.sqft     ?? null,
-        yearBuilt:  input.yearBuilt ?? null,
+        bedrooms:  effectiveBeds,
+        bathrooms: effectiveBaths,
+        sqftLiving: effectiveSqft,
+        yearBuilt:  effectiveYearBuilt,
         propertyType: "single_family",
       } as any,
     })
@@ -284,6 +355,46 @@ export async function buildListingPresentation(
     // 4. State forms (used in the deck + linked packet)
     const stateForms = getStateForms(input.state, "listing")
 
+    // 4b. APPOINTMENT-PREP ADDITION: AI property description for the deck.
+    //     Calls the existing aiGenerateListingDescription if it's exported;
+    //     graceful fallback to a brief auto-summary on failure.
+    let propertyDescription: string | undefined
+    try {
+      const intakeMod = await import("@/app/actions/ai-listing-intake")
+      const fn = (intakeMod as any).aiGenerateListingDescription
+      if (typeof fn === "function" && input.agentUserId) {
+        const descRes = await fn({
+          agentId:      input.agentUserId,
+          propertyData: {
+            address:  input.propertyAddress,
+            city:     input.city ?? null,
+            state:    input.state,
+            zip:      input.zip ?? null,
+            beds:     effectiveBeds,
+            baths:    effectiveBaths,
+            sqft:     effectiveSqft,
+            yearBuilt: effectiveYearBuilt,
+            estimatedValue: cma.estimatedValueMid,
+          },
+        })
+        if (descRes?.success) {
+          propertyDescription = descRes.description
+                              ?? descRes.descriptions?.long
+                              ?? descRes.descriptions?.standard
+                              ?? undefined
+        }
+      }
+    } catch { /* description is best-effort */ }
+    if (!propertyDescription) {
+      const parts: string[] = []
+      if (effectiveBeds && effectiveBaths) parts.push(`${effectiveBeds}-bed, ${effectiveBaths}-bath`)
+      if (effectiveSqft) parts.push(`${effectiveSqft.toLocaleString()} sqft`)
+      if (effectiveYearBuilt) parts.push(`built ${effectiveYearBuilt}`)
+      propertyDescription = parts.length
+        ? `${input.propertyAddress} — ${parts.join(", ")}. Estimated mid-range value $${cma.estimatedValueMid.toLocaleString()}.`
+        : `${input.propertyAddress} — listing-appointment overview.`
+    }
+
     // 5. Slide deck
     const slideDeck = buildSlideDeck({
       propertyAddress: input.propertyAddress,
@@ -298,6 +409,26 @@ export async function buildListingPresentation(
       state: input.state,
       forms: { required: stateForms.required },
     })
+
+    // 5b. APPOINTMENT-PREP ADDITION: prepend a Cover/Property slide so the
+    //     deck opens with the address + cover photo + description.
+    slideDeck.unshift({
+      title:  input.propertyAddress,
+      layout: "title",
+      content: {
+        coverPhotoUrl,
+        description: propertyDescription,
+        propertyFacts: {
+          beds:      effectiveBeds,
+          baths:     effectiveBaths,
+          sqft:      effectiveSqft,
+          yearBuilt: effectiveYearBuilt,
+        },
+        enrichment: propertyEnrichment
+          ? { source: propertyEnrichment.source, isEstimate: propertyEnrichment.isEstimate, sourceNote: propertyEnrichment.sourceNote }
+          : null,
+      },
+    } as SlideDeckSlide)
 
     // 6. Stage the listing-agreement packet (so the agent can sign at the table)
     let packetDocumentId: string | null = null
@@ -385,6 +516,10 @@ export async function buildListingPresentation(
         marketingPlan,
         slideDeck,
         packetDocumentId,
+        // ── 3 appointment-prep additions ───────────────────────────────
+        propertyEnrichment,
+        propertyDescription,
+        coverPhotoUrl,
       },
     }
   } catch (err: unknown) {
