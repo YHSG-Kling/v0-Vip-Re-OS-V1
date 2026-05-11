@@ -22,12 +22,94 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import {
   completeMilestone,
+  overrideMilestone,
   setMilestoneDate,
 } from "@/lib/transactions/milestone-service"
+import { requireOverrideActor } from "@/lib/kernel/portal-auth"
 
 interface ScopedParams {
   transactionId: string
   brokerageId:   string
+}
+
+// ─── Generic complete + override ─────────────────────────────────────────────
+// Thin agent-facing wrappers used by the milestone row UI. completeMilestone
+// + overrideMilestone in lib/transactions/milestone-service already handle
+// deadline mirror, lifecycle audit log, and fan-out — the wrappers just add
+// brokerage scope verification + revalidation.
+
+export interface CompleteMilestoneActionParams extends ScopedParams {
+  milestoneName: string
+}
+
+export async function completeMilestoneAction(
+  params: CompleteMilestoneActionParams,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+
+  try {
+    await completeMilestone({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+      milestoneName: params.milestoneName,
+      completedBy:   user.id,
+    })
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Milestone complete failed" }
+  }
+
+  revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return { success: true }
+}
+
+export interface OverrideMilestoneActionParams extends ScopedParams {
+  milestoneName:   string
+  overrideReason:  string
+}
+
+/**
+ * Override an overdue / blocked milestone. Requires broker / admin /
+ * superadmin / compliance via requireOverrideActor, plus a written reason
+ * (min 10 chars) for the audit trail. Writes 'milestone.overridden'
+ * lifecycle event.
+ */
+export async function overrideMilestoneAction(
+  params: OverrideMilestoneActionParams,
+): Promise<{ success: boolean; error?: string }> {
+  let overrideCtx
+  try {
+    overrideCtx = await requireOverrideActor(params.overrideReason)
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Override authorization failed" }
+  }
+  if (overrideCtx.brokerageId !== params.brokerageId) {
+    return { success: false, error: "Brokerage mismatch" }
+  }
+
+  try {
+    await overrideMilestone({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+      milestoneName: params.milestoneName,
+      overrideBy:    overrideCtx.userId,
+      overrideReason: overrideCtx.reason,
+    })
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Override failed" }
+  }
+
+  revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return { success: true }
 }
 
 // ─── Appraisal completion ────────────────────────────────────────────────────

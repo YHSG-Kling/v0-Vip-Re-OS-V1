@@ -21,6 +21,10 @@ import {
   markTransactionLost,
 } from "@/app/actions/transaction-stage-machine"
 import {
+  completeMilestoneAction,
+  overrideMilestoneAction,
+} from "@/app/actions/transaction-milestones"
+import {
   scheduleInspectionAction,
   approveInspectionQuoteAction,
   markInspectionCompleteAction,
@@ -147,6 +151,8 @@ interface TransactionDetailClientProps {
     completed_at: string | null
     notes: string | null
     is_client_visible: boolean | null
+    override_at: string | null
+    override_reason: string | null
   }>
   deadlines: Array<{
     id: string
@@ -470,6 +476,46 @@ export function TransactionDetailClient({
   const [showOverridePanel, setShowOverridePanel] = useState(false)
   const [overrideReason, setOverrideReason] = useState("")
   const [overrideError, setOverrideError] = useState<string | null>(null)
+
+  // Milestone override dialog state — separate from stage override so both
+  // can be in flight independently.
+  const [milestoneOverrideName, setMilestoneOverrideName] = useState<string | null>(null)
+  const [milestoneOverrideReason, setMilestoneOverrideReason] = useState("")
+  const [milestoneOverrideError, setMilestoneOverrideError] = useState<string | null>(null)
+
+  async function handleMilestoneOverride() {
+    if (!milestoneOverrideName) return
+    if (milestoneOverrideReason.trim().length < 10) {
+      setMilestoneOverrideError("Override reason must be at least 10 characters for the audit trail.")
+      return
+    }
+    setMilestoneOverrideError(null)
+    startTransition(async () => {
+      const res = await overrideMilestoneAction({
+        transactionId:  transaction.id,
+        brokerageId,
+        milestoneName:  milestoneOverrideName,
+        overrideReason: milestoneOverrideReason.trim(),
+      })
+      if (res.success) {
+        // Local update — show the override visually (kept as pending but
+        // with override_by stamped server-side; UI distinguishes via a chip
+        // on the next render)
+        setLocalMilestones((prev) =>
+          prev.map((row) =>
+            row.milestone_name === milestoneOverrideName
+              ? { ...row, override_at: new Date().toISOString(), override_reason: milestoneOverrideReason.trim() }
+              : row,
+          ),
+        )
+        setMilestoneOverrideName(null)
+        setMilestoneOverrideReason("")
+        toast.success("Milestone overridden — audit row written")
+      } else {
+        setMilestoneOverrideError(res.error ?? "Override failed")
+      }
+    })
+  }
 
   async function handleForceAdvance() {
     if (!targetStage) return
@@ -2039,7 +2085,22 @@ export function TransactionDetailClient({
                               : "No date set"}
                           </span>
 
-                          {/* Mark Complete button — only for non-completed milestones */}
+                          {/* Override badge — written when broker forces past blocker */}
+                          {m.override_at && m.status !== "completed" && (
+                            <Badge
+                              variant="outline"
+                              className="h-6 text-[10px] text-amber-700 border-amber-300 bg-amber-50"
+                              title={m.override_reason ?? "Overridden"}
+                            >
+                              <AlertTriangle className="h-3 w-3 mr-1" />
+                              Overridden
+                            </Badge>
+                          )}
+
+                          {/* Mark Complete — uses canonical completeMilestone
+                              so deadline mirror + fan-out to portals + audit
+                              event all fire (Gap #8 wiring). Previously
+                              raw-insert bypassed all that. */}
                           {m.status !== "completed" && (
                             <Button
                               size="sm"
@@ -2048,35 +2109,49 @@ export function TransactionDetailClient({
                               disabled={isPending}
                               onClick={() => {
                                 startTransition(async () => {
-                                  const supabase = createClient()
-                                  const now = new Date().toISOString()
-                                  const { error } = await supabase
-                                    .from("transaction_milestones")
-                                    .update({ status: "completed", completed_at: now })
-                                    .eq("id", m.id)
-                                  if (!error) {
-                                    // Log timeline activity
-                                    await supabase.from("transaction_timeline").insert({
-                                      transaction_id: transaction.id,
-                                      brokerage_id: brokerageId,
-                                      activity_type: "milestone_completed",
-                                      description: `Milestone completed: ${m.milestone_name.replace(/_/g, " ")}`,
-                                      performed_by: userId,
-                                      created_at: now,
-                                    })
+                                  const res = await completeMilestoneAction({
+                                    transactionId: transaction.id,
+                                    brokerageId,
+                                    milestoneName: m.milestone_name,
+                                  })
+                                  if (res.success) {
+                                    const now = new Date().toISOString()
                                     setLocalMilestones((prev) =>
                                       prev.map((row) =>
-                                        row.id === m.id ? { ...row, status: "completed", completed_at: now } : row
-                                      )
+                                        row.id === m.id
+                                          ? { ...row, status: "completed", completed_at: now }
+                                          : row,
+                                      ),
                                     )
                                     toast.success("Milestone marked complete")
                                   } else {
-                                    toast.error("Failed to update milestone")
+                                    toast.error(res.error ?? "Failed to update milestone")
                                   }
                                 })
                               }}
                             >
                               Complete
+                            </Button>
+                          )}
+
+                          {/* Override — only for elevated user_types and only
+                              for non-completed milestones. Lets broker / admin
+                              / compliance push past an overdue or blocked
+                              milestone with an audit-trail reason. */}
+                          {canOverrideStage && m.status !== "completed" && !m.override_at && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2 text-amber-700 hover:bg-amber-50"
+                              disabled={isPending}
+                              onClick={() => {
+                                setMilestoneOverrideName(m.milestone_name)
+                                setMilestoneOverrideReason("")
+                                setMilestoneOverrideError(null)
+                              }}
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5 mr-1" />
+                              Override
                             </Button>
                           )}
 
@@ -4346,6 +4421,68 @@ export function TransactionDetailClient({
                 {isPending ? "Overriding..." : "Force Advance"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Milestone Override Dialog */}
+      <Dialog
+        open={!!milestoneOverrideName}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMilestoneOverrideName(null)
+            setMilestoneOverrideReason("")
+            setMilestoneOverrideError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-700">
+              <AlertTriangle className="h-5 w-5" />
+              Override Milestone
+            </DialogTitle>
+            <DialogDescription>
+              Override milestone{" "}
+              <strong>{milestoneOverrideName?.replace(/_/g, " ")}</strong>. The action will be logged as{" "}
+              <code className="text-[11px]">milestone.overridden</code> with your user id +
+              user_type and the reason below — for compliance audit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="milestone_override_reason" className="text-xs font-medium text-amber-700">
+              Override reason (required, min 10 characters)
+            </Label>
+            <Textarea
+              id="milestone_override_reason"
+              placeholder="e.g. Inspection performed on-site by buyer's contractor — formal report uploading by 5pm"
+              value={milestoneOverrideReason}
+              onChange={(e) => setMilestoneOverrideReason(e.target.value)}
+              rows={3}
+              className="text-sm"
+            />
+            {milestoneOverrideError && (
+              <p className="text-xs text-red-600">{milestoneOverrideError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMilestoneOverrideName(null)
+                setMilestoneOverrideReason("")
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleMilestoneOverride}
+              disabled={isPending || milestoneOverrideReason.trim().length < 10}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              {isPending ? "Overriding..." : "Override Milestone"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
