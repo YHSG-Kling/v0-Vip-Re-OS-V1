@@ -140,8 +140,14 @@ function mapDbToKernelTransaction(db: DbTransaction): KernelTransaction {
 }
 
 // ─── HELPER: emit lifecycle_events + kernel notification ──────────────────────
+//
+// EXPORTED so action files outside this module (lender-portal-actions,
+// transaction-inspections, multi-persona, etc.) can fire the canonical
+// transaction-stage event without re-implementing contact-context resolution.
+// Same contract as before — inserts lifecycle_events row + calls
+// fanOutKernelEvent with buyer/seller/listing context auto-resolved.
 
-async function emitTransactionEvent(params: {
+export async function emitTransactionEvent(params: {
   event:       KernelEvent
   brokerageId: string
   entityId:    string

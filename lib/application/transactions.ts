@@ -617,6 +617,38 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
 
   if (data?.transactions?.id) {
     await addTimelineEntry(data.transactions.id, "inspection_completed", `${data.inspection_type} inspection completed`)
+
+    // Fan-out to buyer + seller + lender + title portals — the event was
+    // previously only logged to the timeline. Use MILESTONE_COMPLETED with
+    // milestone_name='inspection_completed' since the enum doesn't have a
+    // dedicated INSPECTION_COMPLETED event yet.
+    try {
+      const supabaseSvc = await createClient()
+      const { data: { user } } = await supabaseSvc.auth.getUser()
+      const { data: tx } = await supabaseSvc
+        .from("transactions")
+        .select("brokerage_id")
+        .eq("id", data.transactions.id)
+        .maybeSingle()
+      if (tx?.brokerage_id && user?.id) {
+        const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await emitTransactionEvent({
+          event:        KernelEvent.MILESTONE_COMPLETED,
+          brokerageId:  tx.brokerage_id,
+          entityId:     data.transactions.id,
+          actorUserId:  user.id,
+          metadata: {
+            milestone_name:    "inspection_completed",
+            inspection_type:   data.inspection_type,
+            report_received:   !!reportUrl,
+            issues_found:      issuesFound ?? null,
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[completeInspection] fan-out failed (non-blocking)", err)
+    }
   }
   revalidatePath("/transactions")
   return { success: true, data }

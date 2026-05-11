@@ -199,18 +199,30 @@ export async function issueClearToClose(data: {
     })
   }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: transaction.brokerage_id,
-    event_type: KernelEvent.MILESTONE_COMPLETED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      milestone_name: "clear_to_close_received",
-      issued_by_lender_id: lender.id,
-      issued_by_type: "lender",
-    },
-    created_at: new Date().toISOString(),
-  })
+  // Use emitTransactionEvent so the lifecycle_event insert AND fan-out
+  // (staff notifications + buyer/seller portal updates + sequence auto-enroll)
+  // both happen. Previously only the lifecycle row was written and the seller
+  // portal + title portal + notification engine were left out.
+  try {
+    const supabaseAuth = await createClient()
+    const { data: { user } } = await supabaseAuth.auth.getUser()
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:        KernelEvent.MILESTONE_COMPLETED,
+      brokerageId:  transaction.brokerage_id,
+      entityId:     data.transactionId,
+      actorUserId:  user?.id ?? "",
+      metadata: {
+        milestone_name:      "clear_to_close_received",
+        financing_event:     "clear_to_close",
+        issued_by_lender_id: lender.id,
+        issued_by_type:      "lender",
+        lender_company:      lender.company_name ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[lenderPortal:CTC] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }

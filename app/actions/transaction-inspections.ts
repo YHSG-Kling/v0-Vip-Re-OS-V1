@@ -153,6 +153,26 @@ export async function markInspectionCompleteAction(params: {
     return { success: false, error: result.error }
   }
 
+  // Fan-out to buyer / seller / lender / title portals so each side sees
+  // the inspection completion without polling the inspections table.
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.MILESTONE_COMPLETED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: user?.id ?? "",
+      metadata: {
+        milestone_name: "inspection_completed",
+        inspection_id:  params.inspectionId,
+      },
+    })
+  } catch (err) {
+    console.error("[markInspectionCompleteAction] fan-out failed (non-blocking)", err)
+  }
+
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
 }
