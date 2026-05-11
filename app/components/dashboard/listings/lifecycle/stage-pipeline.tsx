@@ -89,7 +89,16 @@ export function StagePipeline({
     setError(null)
     startTransition(async () => {
       try {
-        await advanceListingStage(listingId, selectedStage.stage, userId, notes || undefined)
+        // When override toggled on, pass the reason through. The server
+        // action validates the user_type via requireOverrideActor and writes
+        // a 'listing.stage_overridden' lifecycle_event audit row.
+        await advanceListingStage(
+          listingId,
+          selectedStage.stage,
+          userId,
+          notes || undefined,
+          isOverride && overrideReason ? overrideReason : undefined,
+        )
         setSelectedStage(null)
         // Page will revalidate via server action
       } catch (e: any) {

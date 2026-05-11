@@ -459,6 +459,45 @@ export function TransactionDetailClient({
   const [targetStage, setTargetStage] = useState<TransactionStage | null>(null)
   const [advanceReason, setAdvanceReason] = useState("")
 
+  // Manual override state — only shown to user_types with override authority.
+  // Server-side requireOverrideActor enforces the same set; UI gate is for UX
+  // only (no security boundary).
+  const OVERRIDE_USER_TYPES = new Set([
+    "broker", "broker_admin", "admin", "superadmin",
+    "compliance_officer", "compliance_manager",
+  ])
+  const canOverrideStage = OVERRIDE_USER_TYPES.has(userRole?.toLowerCase?.() ?? "")
+  const [showOverridePanel, setShowOverridePanel] = useState(false)
+  const [overrideReason, setOverrideReason] = useState("")
+  const [overrideError, setOverrideError] = useState<string | null>(null)
+
+  async function handleForceAdvance() {
+    if (!targetStage) return
+    if (overrideReason.trim().length < 10) {
+      setOverrideError("Override reason must be at least 10 characters for the audit trail.")
+      return
+    }
+    setOverrideError(null)
+    startTransition(async () => {
+      const result = await advanceTransactionStage({
+        transactionId: transaction.id,
+        brokerageId,
+        targetStage,
+        reason: advanceReason || undefined,
+        overrideReason: overrideReason.trim(),
+      })
+      if (result.success) {
+        setShowBlockersModal(false)
+        setShowOverridePanel(false)
+        setOverrideReason("")
+        setAdvanceReason("")
+        router.refresh()
+      } else {
+        setOverrideError(result.error ?? "Override failed")
+      }
+    })
+  }
+
   // Lost modal state
   const [lostReason, setLostReason] = useState("")
   const [lostCategory, setLostCategory] = useState("")
@@ -4220,7 +4259,17 @@ export function TransactionDetailClient({
       )}
 
       {/* Blockers Modal */}
-      <Dialog open={showBlockersModal} onOpenChange={setShowBlockersModal}>
+      <Dialog
+        open={showBlockersModal}
+        onOpenChange={(open) => {
+          setShowBlockersModal(open)
+          if (!open) {
+            setShowOverridePanel(false)
+            setOverrideReason("")
+            setOverrideError(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -4239,10 +4288,64 @@ export function TransactionDetailClient({
               </div>
             ))}
           </div>
+
+          {/* Manual override — visible only to broker / admin / compliance.
+              Server-side requireOverrideActor enforces the same gate; this is
+              just UX. Override writes a full audit row with the reason. */}
+          {canOverrideStage && !showOverridePanel && (
+            <div className="border-t pt-3 mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-amber-700 border-amber-300 hover:bg-amber-50"
+                onClick={() => setShowOverridePanel(true)}
+              >
+                <AlertTriangle className="h-4 w-4 mr-1.5" />
+                Force advance with override
+              </Button>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Requires broker / admin / compliance role. Bypasses the blockers above and
+                writes an audit row with your reason.
+              </p>
+            </div>
+          )}
+
+          {canOverrideStage && showOverridePanel && (
+            <div className="border-t pt-3 mt-2 space-y-2">
+              <Label htmlFor="override_reason" className="text-xs font-medium text-amber-700">
+                Override reason (required, min 10 characters)
+              </Label>
+              <Textarea
+                id="override_reason"
+                placeholder="e.g. Lender confirmed CTC by phone — uploading the doc tomorrow"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+                rows={3}
+                className="text-sm"
+              />
+              {overrideError && (
+                <p className="text-xs text-red-600">{overrideError}</p>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                This action is logged as <code className="text-[10px]">transaction.stage_overridden</code>
+                {" "}with your user id + user_type for compliance audit.
+              </p>
+            </div>
+          )}
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowBlockersModal(false)}>
               Close
             </Button>
+            {canOverrideStage && showOverridePanel && (
+              <Button
+                onClick={handleForceAdvance}
+                disabled={isPending || overrideReason.trim().length < 10}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                {isPending ? "Overriding..." : "Force Advance"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
