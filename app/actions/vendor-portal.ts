@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VENDOR BOOKING ACCEPT / DECLINE (Vendor Portal)
@@ -18,19 +19,26 @@ export async function acceptVendorBookingAction(params: {
   vendorId:  string
   scheduledDate?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  // Auth gate: verifies auth.user maps to user_role_assignments row that
+  // owns the claimed vendorId. Closes the bypass where any vendor user
+  // could pass another vendor's id.
+  let actor
+  try {
+    actor = await requireVendorActor(params.vendorId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
 
+  const supabase = await createClient()
   const { data: booking } = await supabase
     .from("vendor_bookings")
     .select("id, transaction_id, brokerage_id, vendor_id, status")
     .eq("id", params.bookingId)
+    .eq("vendor_id", actor.vendorId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
-  if (!booking) return { success: false, error: "Booking not found" }
-  if (booking.vendor_id !== params.vendorId) {
-    return { success: false, error: "Not authorized for this booking" }
-  }
+  if (!booking) return { success: false, error: "Booking not found in your scope" }
   if (booking.status !== "pending") {
     return { success: false, error: `Cannot accept — status is ${booking.status}` }
   }
@@ -42,7 +50,7 @@ export async function acceptVendorBookingAction(params: {
     .from("vendor_bookings")
     .update(updatePayload)
     .eq("id", params.bookingId)
-    .eq("vendor_id", params.vendorId)
+    .eq("vendor_id", actor.vendorId)
 
   if (error) return { success: false, error: error.message }
 
@@ -51,12 +59,12 @@ export async function acceptVendorBookingAction(params: {
       const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
       await emitTransactionEvent({
         event:       KernelEvent.VENDOR_BOOKING_CREATED,
-        brokerageId: booking.brokerage_id,
+        brokerageId: actor.brokerageId,
         entityId:    booking.transaction_id,
-        actorUserId: user.id,
+        actorUserId: actor.userId,
         metadata: {
           booking_id:        params.bookingId,
-          vendor_id:         params.vendorId,
+          vendor_id:         actor.vendorId,
           scheduled_date:    params.scheduledDate ?? null,
           accept_or_decline: "accepted",
         },
@@ -81,19 +89,23 @@ export async function declineVendorBookingAction(params: {
   vendorId:  string
   reason?:   string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  let actor
+  try {
+    actor = await requireVendorActor(params.vendorId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
 
+  const supabase = await createClient()
   const { data: booking } = await supabase
     .from("vendor_bookings")
     .select("id, transaction_id, brokerage_id, vendor_id, status")
     .eq("id", params.bookingId)
+    .eq("vendor_id", actor.vendorId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
-  if (!booking) return { success: false, error: "Booking not found" }
-  if (booking.vendor_id !== params.vendorId) {
-    return { success: false, error: "Not authorized for this booking" }
-  }
+  if (!booking) return { success: false, error: "Booking not found in your scope" }
   if (booking.status !== "pending") {
     return { success: false, error: `Cannot decline — status is ${booking.status}` }
   }
@@ -105,7 +117,7 @@ export async function declineVendorBookingAction(params: {
       notes:  params.reason ? `Declined: ${params.reason}` : "Declined by vendor",
     })
     .eq("id", params.bookingId)
-    .eq("vendor_id", params.vendorId)
+    .eq("vendor_id", actor.vendorId)
 
   if (error) return { success: false, error: error.message }
 
@@ -114,12 +126,12 @@ export async function declineVendorBookingAction(params: {
       const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
       await emitTransactionEvent({
         event:       KernelEvent.VENDOR_BOOKING_CREATED,
-        brokerageId: booking.brokerage_id,
+        brokerageId: actor.brokerageId,
         entityId:    booking.transaction_id,
-        actorUserId: user.id,
+        actorUserId: actor.userId,
         metadata: {
           booking_id:        params.bookingId,
-          vendor_id:         params.vendorId,
+          vendor_id:         actor.vendorId,
           accept_or_decline: "declined",
           decline_reason:    params.reason ?? null,
         },

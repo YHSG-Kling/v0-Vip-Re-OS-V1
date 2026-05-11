@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
+import { requireLenderActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 
 const LENDER_VISIBLE_MILESTONES = [
   "appraisal_ordered",
@@ -233,58 +234,52 @@ export async function flagLenderIssue(data: {
   transactionId: string
   lenderId: string
   issueDescription: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
   const { data: transaction } = await supabase
     .from("transactions")
     .select("id, property_address, agent_id, brokerage_id")
     .eq("id", data.transactionId)
-    .single()
+    .eq("brokerage_id", actor.brokerageId) // scope to actor brokerage
+    .maybeSingle()
 
-  if (!transaction) throw new Error("Transaction not found")
+  if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
 
   const { error: messageError } = await supabase.from("client_portal_messages").insert({
     contact_id: transaction.agent_id,
     direction: "outbound",
     channel: "portal",
-    body: `[LENDER ISSUE] ${lender.lender_company || "Lender"} has flagged an issue for ${transaction.property_address || "transaction"}:\n\n${data.issueDescription}`,
+    body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
     metadata: {
-      type: "lender_issue",
-      lender_id: data.lenderId,
+      type:           "lender_issue",
+      lender_id:      actor.lenderId,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
   })
 
-  if (messageError) throw messageError
+  if (messageError) return { success: false, error: messageError.message }
 
-  // Fan-out via the transaction kernel so the agent + TC + buyer get
-  // notified across all portals + matching sequences fire. Replaces the
-  // bare lifecycle_events insert which only logged but didn't fan out.
   try {
     const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
     await emitTransactionEvent({
       event:       KernelEvent.JOURNEY_STAGE_UPDATED,
-      brokerageId: transaction.brokerage_id,
+      brokerageId: actor.brokerageId,
       entityId:    data.transactionId,
-      actorUserId: lender.user_id,
+      actorUserId: actor.userId,
       metadata: {
         actor_role:           "lender",
         update_type:          "issue_flagged",
-        lender_company:       lender.lender_company,
-        issued_by_lender_id:  lender.id,
+        lender_company:       actor.lenderCompany,
+        issued_by_lender_id:  actor.lenderId,
         issue_description:    data.issueDescription,
         severity:             "high",
       },
@@ -302,18 +297,20 @@ export async function updateLenderLoanStatus(data: {
   transactionId: string
   lenderId: string
   newStatus: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
 
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
-  // transaction_lenders has no lender_email — update by transaction_id only
+  // transaction_lenders has no lender_email — update by transaction_id only,
+  // but scope to the actor's brokerage so a lender can't mutate another
+  // brokerage's deal via a brokerage_id mismatch.
   const { error } = await supabase
     .from("transaction_lenders")
     .update({
@@ -322,21 +319,20 @@ export async function updateLenderLoanStatus(data: {
     })
     .eq("transaction_id", data.transactionId)
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
 
   // Fan-out via the transaction kernel so the agent dashboard, buyer +
   // seller portals, and title portal all see the loan-status change.
-  // Previously only revalidated the lender's own portal page.
   try {
     const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
     await emitTransactionEvent({
       event:       KernelEvent.JOURNEY_STAGE_UPDATED,
-      brokerageId: lender.brokerage_id,
+      brokerageId: actor.brokerageId,
       entityId:    data.transactionId,
-      actorUserId: lender.user_id,
+      actorUserId: actor.userId,
       metadata: {
         actor_role:       "lender",
-        lender_company:   lender.lender_company,
+        lender_company:   actor.lenderCompany,
         loan_status:      data.newStatus,
         updated_by_type:  "lender",
         update_type:      "loan_status",

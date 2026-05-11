@@ -103,13 +103,68 @@ export async function advanceListingStage(
   listingId: string,
   toStage: string,
   agentId: string,
-  notes?: string
+  notes?: string,
+  /** Manual override — requires broker / admin / superadmin / compliance role
+   *  + min 10-char reason. Bypasses stage prerequisite checks; writes audit
+   *  row with the override reason + actor for compliance. */
+  overrideReason?: string,
 ) {
   if (!listingId || !toStage || !agentId) throw new Error("listingId, toStage, and agentId are required")
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+
+  if (overrideReason) {
+    const { requireOverrideActor, PortalAuthError } = await import("@/lib/kernel/portal-auth")
+    let overrideCtx
+    try {
+      overrideCtx = await requireOverrideActor(overrideReason)
+    } catch (err) {
+      if (err instanceof PortalAuthError) throw err
+      throw err
+    }
+
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    // Verify listing scope
+    const { data: listing } = await svc
+      .from("listings")
+      .select("id, brokerage_id, lifecycle_stage")
+      .eq("id", listingId)
+      .eq("brokerage_id", overrideCtx.brokerageId)
+      .maybeSingle()
+    if (!listing) throw new Error("Listing not found in your brokerage")
+
+    // Force stage transition
+    const { error: updateErr } = await svc
+      .from("listings")
+      .update({ lifecycle_stage: toStage, updated_at: new Date().toISOString() })
+      .eq("id", listingId)
+      .eq("brokerage_id", overrideCtx.brokerageId)
+    if (updateErr) throw updateErr
+
+    // Audit trail
+    await svc.from("lifecycle_events").insert({
+      brokerage_id:  overrideCtx.brokerageId,
+      entity_type:   "listing",
+      entity_id:     listingId,
+      event_type:    "listing.stage_overridden",
+      actor_user_id: overrideCtx.userId,
+      metadata: {
+        from_stage:      listing.lifecycle_stage,
+        to_stage:        toStage,
+        override_reason: overrideCtx.reason,
+        override_actor:  overrideCtx.userId,
+        override_role:   overrideCtx.role,
+        notes:           notes ?? null,
+      },
+      created_at: new Date().toISOString(),
+    })
+
+    return { success: true, listingId, fromStage: listing.lifecycle_stage, toStage }
+  }
 
   return advanceListingStageService(listingId, toStage, agentId, notes)
 }

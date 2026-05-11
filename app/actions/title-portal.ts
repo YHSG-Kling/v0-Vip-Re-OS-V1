@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 
 // ─── TITLE MILESTONES (visible to title portal) ──────────────────────────────
 export const TITLE_VISIBLE_MILESTONES = [
@@ -253,17 +254,18 @@ export async function updateTitleStatus(data: {
   transactionId: string
   titleUserId: string
   newStatus: TitleStatus
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+  const titleUserEmail = actor.email
+
   const supabase = await createClient()
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, user_id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
+  if (!titleUserEmail) return { success: false, error: "Title user has no email on file" }
 
   // Update title escrow status
   const { error } = await supabase
@@ -273,72 +275,57 @@ export async function updateTitleStatus(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
-    .eq("title_company_email", titleUser.email)
+    .eq("title_company_email", titleUserEmail)
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
 
-  // Get brokerage_id for fan-out
-  const { data: txn } = await supabase
-    .from("transactions")
-    .select("brokerage_id")
-    .eq("id", data.transactionId)
-    .single()
-  const brokerageId = txn?.brokerage_id
-
-  // Fan-out via the transaction kernel — replaces the bare lifecycle_events
-  // insert. Reaches buyer + seller + lender portals + sequences. Use the
-  // dedicated CLOSING_SCHEDULED event when status flips to closing_ready
-  // so closing-prep sequences trigger.
+  const brokerageId = actor.brokerageId
   const eventName =
     data.newStatus === "closing_ready"
       ? KernelEvent.CLOSING_SCHEDULED
       : KernelEvent.JOURNEY_STAGE_UPDATED
 
-  if (brokerageId) {
-    try {
-      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
-      await emitTransactionEvent({
-        event:       eventName,
-        brokerageId,
-        entityId:    data.transactionId,
-        actorUserId: titleUser.user_id,
-        metadata: {
-          actor_role:      "title",
-          updated_by:      titleUser.email,
-          updated_by_type: "title",
-          new_status:      data.newStatus,
-          update_type:     "title_status",
-        },
-      })
-    } catch (err) {
-      console.error("[updateTitleStatus] fan-out failed (non-blocking)", err)
-    }
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       eventName,
+      brokerageId,
+      entityId:    data.transactionId,
+      actorUserId: actor.userId,
+      metadata: {
+        actor_role:      "title",
+        updated_by:      titleUserEmail,
+        updated_by_type: "title",
+        new_status:      data.newStatus,
+        update_type:     "title_status",
+      },
+    })
+  } catch (err) {
+    console.error("[updateTitleStatus] fan-out failed (non-blocking)", err)
   }
 
   // If status is closing_ready or closed, mark the corresponding milestone
   // complete via the canonical helper so its fan-out + deadline mirror fires.
-  if (data.newStatus === "closing_ready" && brokerageId) {
+  if (data.newStatus === "closing_ready") {
     try {
       const { completeMilestone } = await import("@/lib/transactions/milestone-service")
-      const { data: { user } } = await supabase.auth.getUser()
       await completeMilestone({
         transactionId: data.transactionId,
         brokerageId,
         milestoneName: "closing_scheduled",
-        completedBy:   user?.id ?? titleUser.id,
+        completedBy:   actor.userId,
       })
     } catch (err) {
       console.error("[updateTitleStatus] closing_scheduled milestone failed", err)
     }
-  } else if (data.newStatus === "closed" && brokerageId) {
+  } else if (data.newStatus === "closed") {
     try {
       const { completeMilestone } = await import("@/lib/transactions/milestone-service")
-      const { data: { user } } = await supabase.auth.getUser()
       await completeMilestone({
         transactionId: data.transactionId,
         brokerageId,
         milestoneName: "closed",
-        completedBy:   user?.id ?? titleUser.id,
+        completedBy:   actor.userId,
       })
     } catch (err) {
       console.error("[updateTitleStatus] closed milestone failed", err)
@@ -358,17 +345,16 @@ export async function updateClosingPrepItem(data: {
   itemKey: string
   status: "pending" | "in_progress" | "completed"
   notes?: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, user_id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
 
   // Get current closing prep
   const { data: currentPrep } = await supabase
@@ -382,7 +368,7 @@ export async function updateClosingPrepItem(data: {
   checklist[data.itemKey] = {
     status: data.status,
     updated_at: new Date().toISOString(),
-    updated_by: titleUser.email,
+    updated_by: actor.email,
     notes: data.notes,
   }
 
@@ -396,40 +382,32 @@ export async function updateClosingPrepItem(data: {
       updated_at: new Date().toISOString(),
     }, { onConflict: "transaction_id" })
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
 
   // Fan-out when an item moves to completed so the agent + buyer + seller +
   // lender portals see the closing-prep progress in real time.
   if (data.status === "completed") {
     try {
-      const { data: txn } = await supabase
-        .from("transactions")
-        .select("brokerage_id")
-        .eq("id", data.transactionId)
-        .single()
-      if (txn?.brokerage_id) {
-        const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
-        await emitTransactionEvent({
-          event:       KernelEvent.MILESTONE_COMPLETED,
-          brokerageId: txn.brokerage_id,
-          entityId:    data.transactionId,
-          actorUserId: titleUser.user_id,
-          metadata: {
-            actor_role:      "title",
-            milestone_name:  `closing_prep_${data.itemKey}`,
-            item_key:        data.itemKey,
-            updated_by:      titleUser.email,
-            notes:           data.notes ?? null,
-            update_type:     "closing_prep_item",
-          },
-        })
-      }
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      await emitTransactionEvent({
+        event:       KernelEvent.MILESTONE_COMPLETED,
+        brokerageId: actor.brokerageId,
+        entityId:    data.transactionId,
+        actorUserId: actor.userId,
+        metadata: {
+          actor_role:      "title",
+          milestone_name:  `closing_prep_${data.itemKey}`,
+          item_key:        data.itemKey,
+          updated_by:      actor.email,
+          notes:           data.notes ?? null,
+          update_type:     "closing_prep_item",
+        },
+      })
     } catch (err) {
       console.error("[updateClosingPrepItem] fan-out failed (non-blocking)", err)
     }
   }
 
-  // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
