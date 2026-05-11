@@ -64,14 +64,20 @@ interface BuyerLifecyclePanelProps {
 interface TransitionSheetProps {
   toState:      BuyerState
   fromState:    BuyerState | null
-  onConfirm:    (notes: string) => Promise<void>
+  canOverride:  boolean
+  onConfirm:    (notes: string, overrideReason?: string) => Promise<void>
   onClose:      () => void
   transitioning: boolean
 }
 
-function TransitionSheet({ toState, fromState, onConfirm, onClose, transitioning }: TransitionSheetProps) {
+function TransitionSheet({ toState, fromState, canOverride, onConfirm, onClose, transitioning }: TransitionSheetProps) {
   const [notes, setNotes] = useState("")
+  const [showOverride, setShowOverride] = useState(false)
+  const [overrideReason, setOverrideReason] = useState("")
   const def = getStateDefinition(toState)
+
+  const overrideArmed = showOverride && overrideReason.trim().length >= 10
+  const overrideTooShort = showOverride && overrideReason.trim().length > 0 && overrideReason.trim().length < 10
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
@@ -95,14 +101,55 @@ function TransitionSheet({ toState, fromState, onConfirm, onClose, transitioning
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
         </div>
+
+        {/* Manual override — only visible to broker / admin / compliance.
+            The server (validateStateTransition) also enforces user_type; this
+            is UX only. Required for moving past gates like financial
+            verification when broker has verbal confirmation. */}
+        {canOverride && (
+          <div className="border-t pt-3 space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowOverride((s) => !s)}
+              className="text-xs text-amber-700 hover:underline flex items-center gap-1.5"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              </svg>
+              {showOverride ? "Cancel override" : "Force advance with override"}
+            </button>
+            {showOverride && (
+              <>
+                <label className="text-xs font-medium text-amber-700">
+                  Override reason (required, min 10 characters)
+                </label>
+                <textarea
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
+                  placeholder="e.g. Buyer financial verification confirmed by phone with lender — documentation in transit"
+                  rows={2}
+                  className="w-full resize-none rounded-md border border-amber-300 bg-amber-50/40 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                />
+                {overrideTooShort && (
+                  <p className="text-[11px] text-red-600">Reason must be at least 10 characters.</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">
+                  Logged as <code className="text-[10px]">buyer.lifecycle_overridden</code> with your
+                  user id + user_type for compliance audit.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-3 pt-1">
           <Button
-            className="flex-1"
-            onClick={() => onConfirm(notes)}
-            disabled={transitioning}
+            className={overrideArmed ? "flex-1 bg-amber-600 hover:bg-amber-700 text-white" : "flex-1"}
+            onClick={() => onConfirm(notes, overrideArmed ? overrideReason.trim() : undefined)}
+            disabled={transitioning || (showOverride && !overrideArmed)}
           >
             {transitioning && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            Confirm
+            {overrideArmed ? "Force Advance" : "Confirm"}
           </Button>
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={transitioning}>
             Cancel
@@ -169,7 +216,7 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
   }
 
   // ── Execute transition ───────────────────────────────────────────────────
-  async function handleTransition(notes: string) {
+  async function handleTransition(notes: string, overrideReason?: string) {
     if (!selectedNext) return
     setTransitioning(true)
     const result = await executeBuyerStateTransition({
@@ -181,18 +228,31 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
       userId:        agentId,
       sourceSystem:  "buyer-lifecycle-panel",
       brokerageId,
+      overrideReason,  // server validates user_type + min length when present
       metadata:      notes.trim() ? { notes } : undefined,
     })
     setTransitioning(false)
     setSelectedNext(null)
     if (result.success) {
       const label = getStateDefinition(selectedNext)?.label ?? selectedNext
-      toast({ title: `Buyer advanced to ${label}` })
+      toast({
+        title: overrideReason
+          ? `Buyer advanced to ${label} (overridden)`
+          : `Buyer advanced to ${label}`,
+      })
       await refresh()
     } else {
       toast({ title: "Transition failed", description: result.error, variant: "destructive" })
     }
   }
+
+  // UI gate mirrors the server-side requireOverrideActor set. Server is the
+  // real boundary — hiding this from a regular agent is UX only.
+  const OVERRIDE_USER_TYPES = new Set([
+    "broker", "broker_admin", "admin", "superadmin",
+    "compliance_officer", "compliance_manager",
+  ])
+  const canOverrideLifecycle = OVERRIDE_USER_TYPES.has(userRole?.toLowerCase?.() ?? "")
 
   // ─── LOADING ────────────────────────────────────────────────────────────
   if (loading) {
@@ -214,6 +274,7 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
         <TransitionSheet
           toState={selectedNext}
           fromState={currentState}
+          canOverride={canOverrideLifecycle}
           onConfirm={handleTransition}
           onClose={() => setSelectedNext(null)}
           transitioning={transitioning}
