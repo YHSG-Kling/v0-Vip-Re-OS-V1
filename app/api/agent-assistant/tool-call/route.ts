@@ -231,9 +231,175 @@ async function runTool(
     case "stage_offer_packet":
       return stageOfferPacket(params, session, supabase)
 
+    case "stage_newsletter_draft":
+      return stageNewsletterDraftVoice(params, session)
+
+    case "stage_email_campaign":
+      return stageEmailCampaignVoice(params, session)
+
+    case "stage_open_house":
+      return stageOpenHouseVoice(params, session)
+
+    case "stage_blog_draft":
+      return stageBlogDraftVoice(params, session)
+
+    case "stage_podcast_episode":
+      return stagePodcastEpisodeVoice(params, session)
+
+    case "stage_video_project":
+      return stageVideoProjectVoice(params, session)
+
+    case "stage_direct_mail_campaign":
+      return stageDirectMailCampaignVoice(params, session)
+
     default:
       throw new Error(`Unknown tool: ${toolName}`)
   }
+}
+
+// ─── stage_* voice handlers — thin wrappers that delegate to content-staging ─
+
+async function stageNewsletterDraftVoice(params: Record<string, unknown>, session: SessionRow) {
+  const title = String(params.title ?? "").trim()
+  if (!title) return { error: "title required" }
+  const { stageNewsletterDraft } = await import("@/lib/wizard-staging/content-staging")
+  return stageNewsletterDraft(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      title,
+      subjectLine: params.subject_line ? String(params.subject_line) : undefined,
+      topic: params.topic ? String(params.topic) : undefined,
+    },
+  )
+}
+
+async function stageEmailCampaignVoice(params: Record<string, unknown>, session: SessionRow) {
+  const campaignName = String(params.campaign_name ?? "").trim()
+  if (!campaignName) return { error: "campaign_name required" }
+  const { stageEmailCampaign } = await import("@/lib/wizard-staging/content-staging")
+  return stageEmailCampaign(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      campaignName,
+      subjectLine: params.subject_line ? String(params.subject_line) : undefined,
+      content: params.content ? String(params.content) : undefined,
+      sendDate: params.send_date ? String(params.send_date) : undefined,
+    },
+  )
+}
+
+async function stageOpenHouseVoice(params: Record<string, unknown>, session: SessionRow) {
+  const listingId = String(params.listing_id ?? "").trim()
+  if (!listingId) return { error: "listing_id required" }
+  const date = String(params.date ?? "").trim()
+  const startTime = String(params.start_time ?? "").trim()
+  const endTime = String(params.end_time ?? "").trim()
+  if (!date || !startTime || !endTime) {
+    return { error: "date + start_time + end_time required" }
+  }
+  const { stageOpenHouse } = await import("@/lib/wizard-staging/content-staging")
+  return stageOpenHouse(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      listingId,
+      date,
+      startTime,
+      endTime,
+      maxAttendees: params.max_attendees != null ? Number(params.max_attendees) : undefined,
+      notes: params.notes ? String(params.notes) : undefined,
+      publicDescription: params.public_description ? String(params.public_description) : undefined,
+    },
+  )
+}
+
+async function stageBlogDraftVoice(params: Record<string, unknown>, session: SessionRow) {
+  const title = String(params.title ?? "").trim()
+  if (!title) return { error: "title required" }
+  const { stageBlogDraft } = await import("@/lib/wizard-staging/content-staging")
+  return stageBlogDraft(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      title,
+      topic: params.topic ? String(params.topic) : undefined,
+      category: params.category ? String(params.category) : undefined,
+    },
+  )
+}
+
+async function stagePodcastEpisodeVoice(params: Record<string, unknown>, session: SessionRow) {
+  const title = String(params.title ?? "").trim()
+  if (!title) return { error: "title required" }
+  const { stagePodcastEpisode } = await import("@/lib/wizard-staging/content-staging")
+  const rawKw = params.keywords
+  const keywords = Array.isArray(rawKw)
+    ? rawKw.map((k) => String(k))
+    : rawKw
+      ? String(rawKw).split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined
+  return stagePodcastEpisode(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      title,
+      description: params.description ? String(params.description) : undefined,
+      script: params.script ? String(params.script) : undefined,
+      category: params.category ? String(params.category) : undefined,
+      keywords,
+    },
+  )
+}
+
+async function stageVideoProjectVoice(params: Record<string, unknown>, session: SessionRow) {
+  const title = String(params.title ?? "").trim()
+  if (!title) return { error: "title required" }
+  const rawFormat = params.format ? String(params.format) : undefined
+  const format: "vertical" | "horizontal" | "square" | undefined =
+    rawFormat === "vertical" || rawFormat === "horizontal" || rawFormat === "square"
+      ? rawFormat
+      : undefined
+  const { stageVideoProject } = await import("@/lib/wizard-staging/content-staging")
+  return stageVideoProject(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      title,
+      script: params.script ? String(params.script) : undefined,
+      videoType: params.video_type ? String(params.video_type) : undefined,
+      format,
+      durationSeconds: params.duration_seconds != null ? Number(params.duration_seconds) : undefined,
+      listingId: params.listing_id ? String(params.listing_id) : undefined,
+    },
+  )
+}
+
+async function stageDirectMailCampaignVoice(params: Record<string, unknown>, session: SessionRow) {
+  const campaignName = String(params.campaign_name ?? "").trim()
+  const targetAudience = String(params.target_audience ?? "").trim()
+  if (!campaignName) return { error: "campaign_name required" }
+  if (!targetAudience) return { error: "target_audience required" }
+  const rawPieceType = params.piece_type ? String(params.piece_type) : undefined
+  const allowedPieceTypes = new Set([
+    "postcard_4x6",
+    "postcard_6x9",
+    "postcard_6x11",
+    "letter",
+    "handwritten",
+    "thank_you_note",
+  ])
+  const pieceType =
+    rawPieceType && allowedPieceTypes.has(rawPieceType)
+      ? (rawPieceType as "postcard_4x6" | "postcard_6x9" | "postcard_6x11" | "letter" | "handwritten" | "thank_you_note")
+      : undefined
+  const { stageDirectMailCampaign } = await import("@/lib/wizard-staging/content-staging")
+  return stageDirectMailCampaign(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      campaignName,
+      targetAudience,
+      pieceType,
+      budget: params.budget != null ? Number(params.budget) : undefined,
+      sendDate: params.send_date ? String(params.send_date) : undefined,
+      copyText: params.copy_text ? String(params.copy_text) : undefined,
+    },
+  )
 }
 
 // ─── stage_listing_packet (voice) ────────────────────────────────────────────
