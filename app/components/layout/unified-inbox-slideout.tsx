@@ -8,13 +8,21 @@
  *   - Inbox button in the header
  *   - `U` keystroke (registered globally in app-shell)
  *
+ * Keyboard verbs (fire when slide-out is open and no input is focused):
+ *   ↑ / ↓   navigate threads
+ *   R       open inline reply composer for the selected thread
+ *   A       AI-draft a reply into the composer in the agent's voice
+ *   T       create a follow-up task for the selected contact
+ *   ⌘↩ / S  send the composer when it has content
+ *   Esc     close the composer (or the slide-out if composer is closed)
+ *
  * Fetches recent conversations from the same data source as the full inbox
  * (`/dashboard/communications/inbox`). Click into a thread to deep-link to
  * the full inbox page; reply inline for quick triage without leaving the
  * current page.
  */
 
-import { useEffect, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import {
   Inbox,
@@ -27,6 +35,10 @@ import {
   ChevronRight,
   Loader2,
   RefreshCw,
+  Reply,
+  Send,
+  CheckCircle2,
+  ListTodo,
 } from "lucide-react"
 import {
   Sheet,
@@ -38,6 +50,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { createClient } from "@/lib/supabase/client"
+import { sendInboxMessage } from "@/app/actions/inbox"
+import { quickDraftForConversation } from "@/app/actions/inbox-quick-draft"
+import { createTask } from "@/app/actions/tasks"
 
 interface Conversation {
   id: string
@@ -69,11 +84,43 @@ const CHANNEL_ICON: Record<string, React.ReactElement> = {
   social_dm: <Sparkles className="h-3.5 w-3.5" />,
 }
 
+// Channels the inline composer can send through. Calls/ISA replays are not
+// re-sent from here — the agent deep-links into the full inbox for those.
+const REPLYABLE = new Set(["email", "sms", "in_app", "portal", "chat"])
+type SendChannel = "sms" | "email" | "portal" | "chat"
+
+function toSendChannel(raw: string | null | undefined): SendChannel | null {
+  const k = (raw ?? "").toLowerCase()
+  if (k === "sms") return "sms"
+  if (k === "email") return "email"
+  if (k === "in_app" || k === "portal") return "portal"
+  if (k === "chat") return "chat"
+  return null
+}
+
 export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
   const [conversations, setConversations] = useState<Conversation[] | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [selectedIndex, setSelectedIndex] = useState(0)
 
-  const loadInbox = () => {
+  // Composer state
+  const [composerOpen, setComposerOpen] = useState(false)
+  const [composerBody, setComposerBody] = useState("")
+  const [composerLoading, setComposerLoading] = useState(false)
+  const [composerError, setComposerError] = useState<string | null>(null)
+  const [composerSending, setComposerSending] = useState(false)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // Transient confirmations
+  const [flash, setFlash] = useState<string | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showFlash = useCallback((text: string) => {
+    setFlash(text)
+    if (flashTimer.current) clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => setFlash(null), 2200)
+  }, [])
+
+  const loadInbox = useCallback(() => {
     startTransition(async () => {
       const supabase = createClient()
       const { data } = await supabase
@@ -112,14 +159,215 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
           contact: row.contacts,
         }))
       )
+      setSelectedIndex(0)
     })
-  }
+  }, [])
 
   useEffect(() => {
     if (open) loadInbox()
-  }, [open])
+    if (!open) {
+      // Reset composer state on close
+      setComposerOpen(false)
+      setComposerBody("")
+      setComposerError(null)
+    }
+  }, [open, loadInbox])
 
-  const totalUnread = (conversations ?? []).reduce((s, c) => s + c.unread_count, 0)
+  const list = conversations ?? []
+  const selected = list[selectedIndex] ?? null
+  const selectedChannelKey = useMemo(
+    () => (selected?.channel ?? selected?.type ?? "in_app").toLowerCase(),
+    [selected],
+  )
+  const canReply = selected && REPLYABLE.has(selectedChannelKey)
+
+  const totalUnread = list.reduce((s, c) => s + c.unread_count, 0)
+
+  // ─── Verb handlers ────────────────────────────────────────────────────────
+
+  const openComposer = useCallback(() => {
+    if (!canReply) {
+      showFlash(`Reply unavailable for ${selectedChannelKey}`)
+      return
+    }
+    setComposerOpen(true)
+    setComposerError(null)
+    // Focus after render
+    setTimeout(() => composerRef.current?.focus(), 30)
+  }, [canReply, selectedChannelKey, showFlash])
+
+  const handleAIDraft = useCallback(async () => {
+    if (!selected) return
+    if (!canReply) {
+      showFlash(`AI draft unavailable for ${selectedChannelKey}`)
+      return
+    }
+    setComposerOpen(true)
+    setComposerLoading(true)
+    setComposerError(null)
+    try {
+      const res = await quickDraftForConversation({ conversationId: selected.id })
+      if (res.success && res.draftBody) {
+        setComposerBody(res.draftBody)
+        setTimeout(() => composerRef.current?.focus(), 30)
+      } else {
+        setComposerError(res.error ?? "Draft unavailable")
+      }
+    } catch (err) {
+      setComposerError(err instanceof Error ? err.message : "Draft failed")
+    } finally {
+      setComposerLoading(false)
+    }
+  }, [selected, canReply, selectedChannelKey, showFlash])
+
+  const handleSend = useCallback(async () => {
+    if (!selected?.contact?.id) {
+      setComposerError("No contact for this thread")
+      return
+    }
+    const channel = toSendChannel(selectedChannelKey)
+    if (!channel) {
+      setComposerError(`Cannot send to ${selectedChannelKey}`)
+      return
+    }
+    const body = composerBody.trim()
+    if (!body) return
+
+    setComposerSending(true)
+    setComposerError(null)
+    try {
+      const res = await sendInboxMessage({
+        contactId: selected.contact.id,
+        body,
+        channel,
+      })
+      if (res.success) {
+        showFlash("Sent")
+        setComposerBody("")
+        setComposerOpen(false)
+        // Refresh list so the thread shows the new outbound preview
+        loadInbox()
+      } else {
+        setComposerError(res.error ?? "Send failed")
+      }
+    } catch (err) {
+      setComposerError(err instanceof Error ? err.message : "Send failed")
+    } finally {
+      setComposerSending(false)
+    }
+  }, [selected, composerBody, selectedChannelKey, loadInbox, showFlash])
+
+  const handleCreateTask = useCallback(async () => {
+    if (!selected?.contact) return
+    const name =
+      `${selected.contact.first_name ?? ""} ${selected.contact.last_name ?? ""}`.trim() ||
+      "this contact"
+    try {
+      const res = await createTask({
+        title: `Follow up with ${name}`,
+        contactId: selected.contact.id,
+        priority: "medium",
+      })
+      if ((res as { success?: boolean }).success !== false) {
+        showFlash(`Task created — Follow up with ${name}`)
+      } else {
+        showFlash("Task creation failed")
+      }
+    } catch {
+      showFlash("Task creation failed")
+    }
+  }, [selected, showFlash])
+
+  // ─── Global keyboard handler while slide-out is open ──────────────────────
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+
+      // Composer-specific shortcuts (active when composer is open)
+      if (composerOpen && isTyping && target === composerRef.current) {
+        // ⌘↩ / Ctrl+↩ to send
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault()
+          handleSend()
+          return
+        }
+        // Esc to close composer
+        if (e.key === "Escape") {
+          e.preventDefault()
+          setComposerOpen(false)
+          return
+        }
+        // Otherwise let the textarea handle keystrokes
+        return
+      }
+
+      if (isTyping) return
+      if (e.altKey) return
+
+      switch (e.key.toLowerCase()) {
+        case "arrowdown":
+        case "j":
+          if (list.length > 0) {
+            e.preventDefault()
+            setSelectedIndex((i) => Math.min(list.length - 1, i + 1))
+          }
+          break
+        case "arrowup":
+        case "k":
+          if (list.length > 0) {
+            e.preventDefault()
+            setSelectedIndex((i) => Math.max(0, i - 1))
+          }
+          break
+        case "r":
+          if (e.metaKey || e.ctrlKey) return
+          e.preventDefault()
+          openComposer()
+          break
+        case "a":
+          if (e.metaKey || e.ctrlKey) return
+          e.preventDefault()
+          handleAIDraft()
+          break
+        case "s":
+          if (e.metaKey || e.ctrlKey) return
+          if (composerOpen && composerBody.trim()) {
+            e.preventDefault()
+            handleSend()
+          }
+          break
+        case "t":
+          if (e.metaKey || e.ctrlKey) return
+          e.preventDefault()
+          handleCreateTask()
+          break
+        case "escape":
+          if (composerOpen) {
+            e.preventDefault()
+            setComposerOpen(false)
+          }
+          break
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [
+    open,
+    list.length,
+    composerOpen,
+    composerBody,
+    openComposer,
+    handleAIDraft,
+    handleSend,
+    handleCreateTask,
+  ])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -156,8 +404,12 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
               </Button>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">
-            All messages — SMS, email, calls, in-app, ISA. Press <kbd className="rounded border bg-muted px-1 text-[10px]">U</kbd> anywhere to open.
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            <kbd className="rounded border bg-muted px-1">↑↓</kbd> nav ·{" "}
+            <kbd className="rounded border bg-muted px-1">R</kbd> reply ·{" "}
+            <kbd className="rounded border bg-muted px-1">A</kbd> AI draft ·{" "}
+            <kbd className="rounded border bg-muted px-1">S</kbd> send ·{" "}
+            <kbd className="rounded border bg-muted px-1">T</kbd> task
           </p>
         </SheetHeader>
 
@@ -166,68 +418,181 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
             <div className="flex items-center justify-center h-32">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          ) : conversations && conversations.length === 0 ? (
+          ) : list.length === 0 ? (
             <div className="text-center text-sm text-muted-foreground py-12">
               No conversations yet
             </div>
           ) : (
             <div className="divide-y">
-              {(conversations ?? []).map((c) => {
+              {list.map((c, idx) => {
                 const name = c.contact
                   ? `${c.contact.first_name ?? ""} ${c.contact.last_name ?? ""}`.trim() || "Unknown"
                   : "Unknown"
                 const channelKey = (c.channel ?? c.type ?? "in_app").toLowerCase()
+                const isSelected = idx === selectedIndex
                 return (
-                  <Link
-                    key={c.id}
-                    href={`/dashboard/communications/inbox?conversation=${c.id}`}
-                    onClick={() => onOpenChange(false)}
-                    className="block px-4 py-3 hover:bg-muted/40 transition"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-2 min-w-0 flex-1">
-                        <span className="mt-0.5 text-muted-foreground shrink-0">
-                          {CHANNEL_ICON[channelKey] ?? CHANNEL_ICON.in_app}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-sm truncate ${c.unread_count > 0 ? "font-semibold" : "font-medium"}`}>
-                              {name}
-                            </span>
-                            {c.urgency_score != null && c.urgency_score >= 0.7 && (
-                              <Badge variant="outline" className="text-[10px] text-red-600">
-                                urgent
-                              </Badge>
+                  <div key={c.id} className={isSelected ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedIndex(idx)}
+                      className="w-full text-left block px-4 py-3 hover:bg-muted/40 transition"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2 min-w-0 flex-1">
+                          <span className="mt-0.5 text-muted-foreground shrink-0">
+                            {CHANNEL_ICON[channelKey] ?? CHANNEL_ICON.in_app}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm truncate ${c.unread_count > 0 ? "font-semibold" : "font-medium"}`}>
+                                {name}
+                              </span>
+                              {c.urgency_score != null && c.urgency_score >= 0.7 && (
+                                <Badge variant="outline" className="text-[10px] text-red-600">
+                                  urgent
+                                </Badge>
+                              )}
+                            </div>
+                            {c.last_message_preview && (
+                              <p className="text-xs text-muted-foreground truncate mt-0.5">
+                                {c.last_message_preview}
+                              </p>
                             )}
-                          </div>
-                          {c.last_message_preview && (
-                            <p className="text-xs text-muted-foreground truncate mt-0.5">
-                              {c.last_message_preview}
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              {formatRelativeTime(c.last_message_at)}
+                              {c.unread_count > 0 && ` · ${c.unread_count} unread`}
                             </p>
-                          )}
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            {formatRelativeTime(c.last_message_at)}
-                            {c.unread_count > 0 && ` · ${c.unread_count} unread`}
-                          </p>
+                          </div>
+                        </div>
+                        <Link
+                          href={`/dashboard/communications/inbox?conversation=${c.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          title="Open full thread"
+                          className="shrink-0 mt-1 text-muted-foreground hover:text-foreground"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Link>
+                      </div>
+                    </button>
+
+                    {/* Inline composer attached to the selected thread */}
+                    {isSelected && composerOpen && (
+                      <div className="px-4 pb-3 -mt-1 space-y-2 bg-amber-50/60 dark:bg-amber-950/20">
+                        <textarea
+                          ref={composerRef}
+                          value={composerBody}
+                          onChange={(e) => setComposerBody(e.target.value)}
+                          placeholder={
+                            composerLoading
+                              ? "AI drafting in your voice…"
+                              : `Reply via ${selectedChannelKey} — ⌘↩ to send, Esc to close`
+                          }
+                          disabled={composerLoading}
+                          rows={4}
+                          className="w-full text-sm rounded-md border border-amber-200 dark:border-amber-900 bg-white dark:bg-slate-950 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                        />
+                        {composerError && (
+                          <p className="text-[11px] text-red-600 dark:text-red-400">{composerError}</p>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            size="sm"
+                            onClick={handleSend}
+                            disabled={composerSending || !composerBody.trim()}
+                            className="h-7 text-xs"
+                          >
+                            {composerSending ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Send className="h-3 w-3 mr-1" />
+                            )}
+                            Send
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleAIDraft}
+                            disabled={composerLoading}
+                            className="h-7 text-xs"
+                          >
+                            {composerLoading ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-3 w-3 mr-1" />
+                            )}
+                            AI draft
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setComposerOpen(false)}
+                            className="h-7 text-xs ml-auto"
+                          >
+                            Cancel
+                          </Button>
                         </div>
                       </div>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
-                    </div>
-                  </Link>
+                    )}
+                  </div>
                 )
               })}
             </div>
           )}
         </ScrollArea>
 
-        <div className="border-t p-3 shrink-0">
-          <Link href="/dashboard/communications/inbox" onClick={() => onOpenChange(false)}>
-            <Button variant="outline" size="sm" className="w-full text-xs">
-              Open full inbox
+        {/* Action bar — visible verbs for mouse users; keyboard verbs work in parallel */}
+        <div className="border-t shrink-0 px-3 py-2 flex items-center gap-1.5 bg-background">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={openComposer}
+            disabled={!selected || !canReply}
+            className="h-7 text-xs"
+            title="Reply (R)"
+          >
+            <Reply className="h-3 w-3 mr-1" />
+            Reply
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleAIDraft}
+            disabled={!selected || !canReply || composerLoading}
+            className="h-7 text-xs"
+            title="AI draft (A)"
+          >
+            <Sparkles className="h-3 w-3 mr-1" />
+            AI draft
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleCreateTask}
+            disabled={!selected?.contact}
+            className="h-7 text-xs"
+            title="Create task (T)"
+          >
+            <ListTodo className="h-3 w-3 mr-1" />
+            Task
+          </Button>
+          <Link
+            href="/dashboard/communications/inbox"
+            onClick={() => onOpenChange(false)}
+            className="ml-auto"
+          >
+            <Button variant="ghost" size="sm" className="h-7 text-xs">
+              Full inbox
               <ChevronRight className="h-3 w-3 ml-1" />
             </Button>
           </Link>
         </div>
+
+        {flash && (
+          <div className="fixed bottom-4 right-4 z-50 bg-foreground text-background text-xs px-3 py-1.5 rounded-md shadow-lg flex items-center gap-1.5">
+            <CheckCircle2 className="h-3 w-3" />
+            {flash}
+          </div>
+        )}
       </SheetContent>
     </Sheet>
   )
