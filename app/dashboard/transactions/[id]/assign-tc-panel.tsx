@@ -36,14 +36,14 @@ interface AssignTCPanelProps {
   transactionId: string
   currentCoordinatorId: string | null
   availableTCs: TC[]
-  userRole: string
+  userType: string
 }
 
 export function AssignTCPanel({
   transactionId,
   currentCoordinatorId,
   availableTCs,
-  userRole,
+  userType,
 }: AssignTCPanelProps) {
   const [open, setOpen] = useState(false)
   const [selectedTC, setSelectedTC] = useState<string>("")
@@ -51,7 +51,7 @@ export function AssignTCPanel({
   const { toast } = useToast()
   const router = useRouter()
 
-  const canAssign = ["broker", "admin", "tc"].includes(userRole)
+  const canAssign = ["broker", "admin", "tc"].includes(userType)
   if (!canAssign) return null
 
   const currentTC = availableTCs.find((tc) => tc.id === currentCoordinatorId)

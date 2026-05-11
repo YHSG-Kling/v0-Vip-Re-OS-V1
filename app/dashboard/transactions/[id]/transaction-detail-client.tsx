@@ -142,7 +142,7 @@ interface TransactionDetailClientProps {
   brokerageId: string
   brokerageName?: string
   brokerageLogoUrl?: string
-  userRole: string
+  userType: string
   userId: string
   milestones: Array<{
     id: string
@@ -418,7 +418,7 @@ export function TransactionDetailClient({
   brokerageId,
   brokerageName,
   brokerageLogoUrl,
-  userRole,
+  userType,
   userId,
   milestones,
   deadlines,
@@ -473,7 +473,7 @@ export function TransactionDetailClient({
     "broker", "broker_admin", "admin", "superadmin",
     "compliance_officer", "compliance_manager",
   ])
-  const canOverrideStage = OVERRIDE_USER_TYPES.has(userRole?.toLowerCase?.() ?? "")
+  const canOverrideStage = OVERRIDE_USER_TYPES.has(userType?.toLowerCase?.() ?? "")
   const [showOverridePanel, setShowOverridePanel] = useState(false)
   const [overrideReason, setOverrideReason] = useState("")
   const [overrideError, setOverrideError] = useState<string | null>(null)
@@ -1115,7 +1115,7 @@ export function TransactionDetailClient({
         <div className="container py-4">
           <div className="flex items-center gap-4 mb-3">
             <Link
-              href={userRole === "tc" ? "/dashboard/coordinator" : "/dashboard/transactions"}
+              href={userType === "tc" ? "/dashboard/coordinator" : "/dashboard/transactions"}
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="h-5 w-5" />
@@ -1661,7 +1661,7 @@ export function TransactionDetailClient({
               transactionId={transaction.id}
               currentCoordinatorId={currentCoordinatorId}
               availableTCs={(availableTCs ?? []) as any[]}
-              userRole={userRole}
+              userType={userType}
             />
 
             {/* Assign Lender Panel */}
@@ -1669,7 +1669,7 @@ export function TransactionDetailClient({
               transactionId={transaction.id}
               currentLenderId={currentLenderId}
               availableLenders={availableLenders}
-              userRole={userRole}
+              userType={userType}
             />
 
             {/* Lending Status Card */}
@@ -3637,7 +3637,7 @@ export function TransactionDetailClient({
             <TabsContent value="repairs" className="mt-4 space-y-3">
               <RepairCoPilotPanel
                 transactionId={transaction.id}
-                side={userRole === "buyer_agent" || userRole === "buyer" ? "buyer" : "seller"}
+                side={transaction.deal_type === "buyer" ? "buyer" : "seller"}
               />
               <Card>
                 <CardHeader className="pb-3 flex flex-row items-center justify-between">

@@ -17,17 +17,18 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get user profile with brokerage
+  // Get user profile with brokerage. Canonical: users.user_type (kernel
+  // identity layer never reads .role outside the kernel).
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
-  const userRole = profile.role ?? "agent"
+  const userType = profile.user_type ?? "agent"
 
   const { data: brokerageInfo } = await supabase
     .from("brokerages")
@@ -72,7 +73,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   // Auth: owning agent OR broker/admin/TC in same brokerage
   const isOwningAgent = transaction.agent_id === user.id
-  const hasAdminAccess = ["broker", "admin", "tc"].includes(userRole)
+  const hasAdminAccess = ["broker", "admin", "tc"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }
@@ -331,7 +332,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       brokerageId={brokerageId}
       brokerageName={brokerageInfo?.name ?? undefined}
       brokerageLogoUrl={brokerageInfo?.logo_url ?? undefined}
-      userRole={userRole}
+      userType={userType}
       userId={user.id}
       milestones={milestones ?? []}
       deadlines={deadlines ?? []}
