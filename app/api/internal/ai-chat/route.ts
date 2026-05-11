@@ -256,17 +256,18 @@ TOOLS — use these when staff explicitly asks you to take an action:
   - draft_ai_reply: Generate a brand-voice reply DRAFT for review (does NOT auto-send)
   - advance_listing_stage: Move a listing forward in its lifecycle when prerequisites are met
   - advance_transaction_stage: Move a transaction forward through inspection / appraisal / financing / closing
-  - stage_listing_packet: Pre-stage a new listing wizard with prefilled fields (use when staff says "create a listing at...", "start a new listing for...") — does NOT submit, just opens the wizard prefilled
-  - stage_offer_packet: Pre-stage a new offer wizard for a specific contact (use when staff says "write an offer for [contact] on [property] at $X") — does NOT submit
-  - stage_newsletter_draft: Stage a newsletter draft ("create a newsletter about X")
-  - stage_email_campaign: Stage an email campaign draft ("send an email blast about X")
-  - stage_open_house: Schedule an open house on a listing ("schedule open house for [listing] on [date]")
-  - stage_blog_draft: Stage a blog post draft ("write a blog post about X")
-  - stage_podcast_episode: Stage a podcast episode draft ("start a podcast on X")
-  - stage_video_project: Stage a video project ("create a video about X", "film a walkthrough for [listing]")
-  - stage_direct_mail_campaign: Stage a direct mail campaign ("send postcards to past clients", "mail thank-you notes")
+  - stage_listing_packet: Runs the canonical voice → listing intake pipeline (multi-turn extract → fill → generate). Pass the agent's full transcript as voice_input. If intake is incomplete the tool returns follow-up questions for the next turn. When complete it returns open_url to the FormWizard.
+  - stage_offer_packet: Same canonical pipeline for offers. Pass full transcript; supports multi-turn.
+  - stage_newsletter_draft: Canonical createNewsletterCampaign (feature gate + brand voice intact)
+  - stage_email_campaign: Canonical createEmailCampaign
+  - stage_open_house: Schedule an open house on a listing (date + start_time + end_time)
+  - stage_blog_draft: Canonical saveBlogPost
+  - stage_podcast_episode: Canonical createPodcastEpisode (provider resolution + feature gate)
+  - stage_video_project: Canonical createVideoProject
+  - stage_direct_mail_campaign: Canonical createDirectMailCampaign (QR tracking + feature gate)
+  - stage_ad_campaign: Canonical createAdCampaign from lib/ads (Facebook / Instagram / Google / LinkedIn / TikTok). Returns open_url to ads dashboard where agent generates AI creative + launches.
 
-For all stage_* tools: speak the open_url back so the agent knows where to navigate. The wizard will open with whatever fields the agent provided — they review and complete the rest.
+For all stage_* tools: when the result has open_url, speak it back so the agent knows where to navigate. If a stage_listing_packet or stage_offer_packet result has needs_more_info=true, relay the questions to the agent and call the same tool again on the next turn with the same session_id.
 
 Only call a write tool when the instruction is clear and explicit. If you're missing a key parameter (contact name, listing id, date, target stage), ask one clarifying question first.
 
@@ -856,135 +857,72 @@ export async function POST(req: NextRequest) {
 
     stage_listing_packet: tool({
       description:
-        "Pre-stage a NEW listing wizard packet from what the agent just said or typed (address, price, seller name, property type). Returns an open_url the agent navigates to — the wizard opens with all fields prefilled and a 'review prefilled fields' banner. Use this when the agent says 'create a listing', 'start a new listing at...', or 'list a property at...'. DOES NOT submit the listing — it just stages the wizard for the agent to review.",
+        "Stage a NEW listing-agreement packet from what the agent just said or typed. Runs the canonical voice → listing intake pipeline (multi-turn extract → fill → generate). On first call the AI passes the whole transcript; if intake is incomplete the tool returns follow-up questions for the agent to answer in the next turn. When complete it returns open_url to the FormWizard. Use when the agent says 'create a listing', 'start a new listing at...', or 'list a property at...'.",
       inputSchema: z.object({
-        address: z.string().describe("Street address (e.g. '1234 Maple St')"),
-        city: z.string().nullable().describe("City"),
-        state: z.string().nullable().describe("Two-letter state code (e.g. 'NJ')"),
-        zip: z.string().nullable().describe("ZIP code"),
-        list_price: z.number().nullable().describe("Asking price in dollars"),
-        seller_name: z.string().nullable().describe("Seller / homeowner name"),
-        property_type: z.string().nullable().describe("Single Family, Condo, Townhome, Multi-Family, Land, etc."),
-        notes: z.string().nullable().describe("Anything else the agent mentioned"),
+        voice_input: z.string().describe("The full transcript / typed text the agent gave — pass it through unchanged. The canonical extractor parses address, price, seller, terms, marketing obligations with per-field confidence."),
+        session_id: z.string().nullable().describe("Continue a prior intake session (multi-turn)"),
+        contact_id: z.string().nullable().describe("Linked seller contact UUID if known"),
       }),
-      execute: async ({ address, city, state, zip, list_price, seller_name, property_type, notes }) => {
-        const { stageWizardPacket } = await import("@/app/actions/wizard-staging")
-        const result = await stageWizardPacket({
-          mode: "listing",
-          intake: {
-            address,
-            city: city ?? undefined,
-            state: state ?? undefined,
-            zip: zip ?? undefined,
-            listPrice: list_price ?? undefined,
-            sellerName: seller_name ?? undefined,
-            propertyType: property_type ?? undefined,
-            notes: notes ?? undefined,
-          },
+      execute: async ({ voice_input, session_id, contact_id }) => {
+        const { stageListingFromVoice } = await import("@/app/actions/wizard-staging")
+        const result = await stageListingFromVoice({
+          voiceInput: voice_input,
+          sessionId: session_id ?? undefined,
+          contactId: contact_id ?? undefined,
         })
-        if (!result.success) {
-          return { success: false, error: result.error ?? "Staging failed" }
-        }
-        return {
-          success: true,
-          document_id: result.documentId,
-          open_url: result.openUrl,
-          note: `Listing packet staged for ${address}. Tell the agent: "I've prefilled the listing wizard — open ${result.openUrl} to review the fields and submit."`,
-        }
+        return result
       },
     }),
 
     stage_offer_packet: tool({
       description:
-        "Pre-stage a NEW offer wizard packet for a specific contact (buyer) on a property. Returns an open_url the agent navigates to. Use this when the agent says 'write an offer for [contact] on [property] at [price]' or similar. DOES NOT submit — just stages.",
+        "Stage a NEW offer packet from what the agent just said. Runs the canonical voice → offer intake pipeline (multi-turn extract → fill → generate). Use when the agent says 'write an offer for [contact] on [property] at [price]'. If intake is incomplete the tool returns follow-up questions; when complete it returns open_url to the FormWizard.",
       inputSchema: z.object({
-        contact_id: z.string().describe("UUID of the buyer contact"),
-        address: z.string().describe("Property address"),
-        city: z.string().nullable().describe("City"),
-        state: z.string().nullable().describe("Two-letter state code"),
-        zip: z.string().nullable().describe("ZIP code"),
-        offer_price: z.number().nullable().describe("Offer amount in dollars"),
-        financing_type: z.string().nullable().describe("Cash, Conventional, FHA, VA, USDA, etc."),
-        earnest_money: z.number().nullable().describe("Earnest money in dollars"),
-        closing_date: z.string().nullable().describe("Desired closing date (YYYY-MM-DD)"),
-        notes: z.string().nullable().describe("Contingencies or terms the agent mentioned"),
+        voice_input: z.string().describe("The full transcript / typed text — pass through unchanged."),
+        session_id: z.string().nullable().describe("Continue a prior intake session"),
+        contact_id: z.string().nullable().describe("Buyer contact UUID — find via lookup_contact first if needed"),
       }),
-      execute: async ({
-        contact_id,
-        address,
-        city,
-        state,
-        zip,
-        offer_price,
-        financing_type,
-        earnest_money,
-        closing_date,
-        notes,
-      }) => {
-        // Verify contact in brokerage before staging
-        const { data: contact } = await service
-          .from("contacts")
-          .select("id, first_name, last_name")
-          .eq("id", contact_id)
-          .eq("brokerage_id", brokerageId)
-          .maybeSingle()
-        if (!contact) return { success: false, error: "Contact not found in your brokerage" }
-
-        const { stageWizardPacket } = await import("@/app/actions/wizard-staging")
-        const result = await stageWizardPacket({
-          mode: "offer",
-          intake: {
-            contactId: contact_id,
-            address,
-            city: city ?? undefined,
-            state: state ?? undefined,
-            zip: zip ?? undefined,
-            offerPrice: offer_price ?? undefined,
-            financingType: financing_type ?? undefined,
-            earnestMoney: earnest_money ?? undefined,
-            closingDate: closing_date ?? undefined,
-            notes: notes ?? undefined,
-          },
+      execute: async ({ voice_input, session_id, contact_id }) => {
+        const { stageOfferFromVoice } = await import("@/app/actions/wizard-staging")
+        const result = await stageOfferFromVoice({
+          voiceInput: voice_input,
+          sessionId: session_id ?? undefined,
+          contactId: contact_id ?? undefined,
         })
-        if (!result.success) {
-          return { success: false, error: result.error ?? "Staging failed" }
-        }
-        const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
-        return {
-          success: true,
-          document_id: result.documentId,
-          open_url: result.openUrl,
-          contact_name: contactName,
-          note: `Offer packet staged for ${contactName} on ${address}. Tell the agent: "I've prefilled the offer wizard — open ${result.openUrl} to review and send for signature."`,
-        }
+        return result
       },
     }),
 
     stage_newsletter_draft: tool({
       description:
-        "Stage a NEW newsletter draft when the agent says 'create a newsletter', 'send a newsletter about X', 'start a newsletter on...'. Creates a newsletter_campaigns draft row and returns open_url to the newsletter editor.",
+        "Stage a NEW newsletter draft via the canonical createNewsletterCampaign pipeline (feature gate + brand voice intact). Use when the agent says 'create a newsletter', 'send a newsletter about X'. Returns open_url to the newsletter editor.",
       inputSchema: z.object({
         title: z.string().describe("Newsletter campaign name (e.g. 'October Market Update')"),
         subject_line: z.string().nullable().describe("Email subject line — defaults to title"),
         topic: z.string().nullable().describe("What the newsletter should be about — used to seed the intro section"),
+        audience: z.string().nullable().describe("all | buyers | sellers | lifetime_customers | sphere"),
       }),
-      execute: async ({ title, subject_line, topic }) => {
+      execute: async ({ title, subject_line, topic, audience }) => {
         const { stageNewsletterDraft } = await import("@/lib/wizard-staging/content-staging")
-        const result = await stageNewsletterDraft(
+        return stageNewsletterDraft(
           { brokerageId, userId: user.id },
-          { title, subjectLine: subject_line ?? undefined, topic: topic ?? undefined },
+          {
+            title,
+            subjectLine: subject_line ?? undefined,
+            topic: topic ?? undefined,
+            audience: audience ?? undefined,
+          },
         )
-        return result
       },
     }),
 
     stage_email_campaign: tool({
       description:
-        "Stage a NEW email campaign draft when the agent says 'send an email blast', 'create an email campaign about...'. Creates an email_campaigns draft row (status='draft', approval_status='pending') and returns open_url.",
+        "Stage a NEW email campaign draft via canonical createEmailCampaign (kernel feature gate + compliance pipeline). Use when the agent says 'send an email blast', 'create an email campaign about X'. Returns open_url.",
       inputSchema: z.object({
         campaign_name: z.string().describe("Internal campaign name"),
         subject_line: z.string().nullable().describe("Email subject line"),
-        content: z.string().nullable().describe("Initial body copy if the agent dictated it"),
+        content: z.string().nullable().describe("Initial body copy if dictated"),
         send_date: z.string().nullable().describe("Scheduled send date/time ISO string"),
       }),
       execute: async ({ campaign_name, subject_line, content, send_date }) => {
@@ -1003,7 +941,7 @@ export async function POST(req: NextRequest) {
 
     stage_open_house: tool({
       description:
-        "Schedule an open house on a specific listing. Use when the agent says 'schedule an open house for [listing] on [date]'. Requires listing_id, date, start_time, end_time.",
+        "Schedule an open house on a specific listing. Use when the agent says 'schedule an open house for [listing] on [date]'. Requires listing_id, date, start_time, end_time. Look up the listing via get_active_listings first if you don't have the listing_id.",
       inputSchema: z.object({
         listing_id: z.string().describe("UUID of the listing"),
         date: z.string().describe("YYYY-MM-DD"),
@@ -1013,15 +951,7 @@ export async function POST(req: NextRequest) {
         notes: z.string().nullable().describe("Agent-internal notes"),
         public_description: z.string().nullable().describe("Public-facing description for invites"),
       }),
-      execute: async ({
-        listing_id,
-        date,
-        start_time,
-        end_time,
-        max_attendees,
-        notes,
-        public_description,
-      }) => {
+      execute: async ({ listing_id, date, start_time, end_time, max_attendees, notes, public_description }) => {
         const { stageOpenHouse } = await import("@/lib/wizard-staging/content-staging")
         return stageOpenHouse(
           { brokerageId, userId: user.id },
@@ -1040,7 +970,7 @@ export async function POST(req: NextRequest) {
 
     stage_blog_draft: tool({
       description:
-        "Stage a NEW blog post draft when the agent says 'write a blog post about...', 'draft a blog on [topic]'. Creates a blog_posts draft (publish_status='draft') and returns open_url to the blog editor.",
+        "Stage a NEW blog post draft via canonical saveBlogPost (feature gate + brand voice). Use when the agent says 'write a blog post about X'. Returns open_url to the blog editor.",
       inputSchema: z.object({
         title: z.string().describe("Blog post title"),
         topic: z.string().nullable().describe("What the post should cover — seeded into the body"),
@@ -1057,11 +987,11 @@ export async function POST(req: NextRequest) {
 
     stage_podcast_episode: tool({
       description:
-        "Stage a NEW podcast episode draft when the agent says 'start a podcast episode on...', 'record a podcast about...'. Creates a podcast_episodes draft and returns open_url to the podcast studio.",
+        "Stage a NEW podcast episode via canonical createPodcastEpisode (feature gate + provider resolution). Use when the agent says 'start a podcast on X'. Returns open_url to the podcast studio.",
       inputSchema: z.object({
         title: z.string().describe("Episode title"),
         description: z.string().nullable().describe("Show notes / episode description"),
-        script: z.string().nullable().describe("Initial script if the agent dictated it"),
+        script: z.string().nullable().describe("Initial script if dictated"),
         category: z.string().nullable().describe("market_update | how_to | interview | story | educational"),
         keywords: z.array(z.string()).nullable().describe("Keywords for SEO + categorization"),
       }),
@@ -1082,13 +1012,13 @@ export async function POST(req: NextRequest) {
 
     stage_video_project: tool({
       description:
-        "Stage a NEW video project when the agent says 'create a video about...', 'make a market update video', 'film a listing walkthrough for [listing]'. Creates an ai_video_projects draft (status='draft') and returns open_url to the video studio.",
+        "Stage a NEW video project via canonical createVideoProject. Use when the agent says 'create a video about X'. Returns open_url to the video studio.",
       inputSchema: z.object({
         title: z.string().describe("Video title"),
         script: z.string().nullable().describe("Initial script if dictated"),
         video_type: z.string().nullable().describe("listing_walkthrough | market_update | testimonial | educational"),
         format: z.enum(["vertical", "horizontal", "square"]).nullable().describe("Aspect ratio"),
-        duration_seconds: z.number().nullable().describe("Target duration in seconds"),
+        duration_seconds: z.number().nullable().describe("Target duration"),
         listing_id: z.string().nullable().describe("Linked listing UUID for walkthroughs"),
       }),
       execute: async ({ title, script, video_type, format, duration_seconds, listing_id }) => {
@@ -1109,10 +1039,10 @@ export async function POST(req: NextRequest) {
 
     stage_direct_mail_campaign: tool({
       description:
-        "Stage a NEW direct mail campaign when the agent says 'send a postcard to...', 'launch a direct mail campaign for [audience]', 'mail a thank-you note to past clients'. Creates a direct_mail_campaigns draft and returns open_url.",
+        "Stage a NEW direct mail campaign via canonical createDirectMailCampaign (feature gate + QR tracking). Use when the agent says 'send postcards to past clients', 'mail thank-you notes'. Returns open_url.",
       inputSchema: z.object({
         campaign_name: z.string().describe("Internal name"),
-        target_audience: z.string().describe("Who to send to — 'past_clients', 'farm_zip_07030', 'sphere', etc."),
+        target_audience: z.string().describe("Who to send to — past_clients, sphere, farm_zip_xxxx, etc."),
         piece_type: z
           .enum(["postcard_4x6", "postcard_6x9", "postcard_6x11", "letter", "handwritten", "thank_you_note"])
           .nullable()
@@ -1132,6 +1062,43 @@ export async function POST(req: NextRequest) {
             budget: budget ?? undefined,
             sendDate: send_date ?? undefined,
             copyText: copy_text ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_ad_campaign: tool({
+      description:
+        "Stage a NEW ad campaign via canonical createAdCampaign from lib/ads (feature gate + lifecycle event). Use when the agent says 'launch a Facebook ad for [listing]', 'run a lead-gen ad on Google'. Returns open_url to the ads dashboard where the agent generates AI creative variations and launches.",
+      inputSchema: z.object({
+        campaign_name: z.string().describe("Internal campaign name"),
+        platform: z.enum(["facebook", "instagram", "google", "linkedin", "tiktok"]).describe("Ad platform"),
+        objective: z.enum(["awareness", "traffic", "leads", "conversions"]).describe("Campaign objective"),
+        daily_budget: z.number().nullable().describe("Daily budget in dollars"),
+        lifetime_budget: z.number().nullable().describe("Lifetime budget cap"),
+        start_date: z.string().nullable().describe("Start date YYYY-MM-DD"),
+        end_date: z.string().nullable().describe("End date YYYY-MM-DD"),
+        city: z.string().nullable().describe("Target city"),
+        state: z.string().nullable().describe("Target state"),
+        age_min: z.number().nullable().describe("Minimum target age"),
+        age_max: z.number().nullable().describe("Maximum target age"),
+      }),
+      execute: async ({ campaign_name, platform, objective, daily_budget, lifetime_budget, start_date, end_date, city, state, age_min, age_max }) => {
+        const { stageAdCampaign } = await import("@/lib/wizard-staging/content-staging")
+        return stageAdCampaign(
+          { brokerageId, userId: user.id },
+          {
+            campaignName: campaign_name,
+            platform,
+            objective,
+            dailyBudget: daily_budget ?? undefined,
+            lifetimeBudget: lifetime_budget ?? undefined,
+            startDate: start_date ?? undefined,
+            endDate: end_date ?? undefined,
+            city: city ?? undefined,
+            state: state ?? undefined,
+            ageMin: age_min ?? undefined,
+            ageMax: age_max ?? undefined,
           },
         )
       },

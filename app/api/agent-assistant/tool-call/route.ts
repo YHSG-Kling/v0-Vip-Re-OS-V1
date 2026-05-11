@@ -252,6 +252,9 @@ async function runTool(
     case "stage_direct_mail_campaign":
       return stageDirectMailCampaignVoice(params, session)
 
+    case "stage_ad_campaign":
+      return stageAdCampaignVoice(params, session)
+
     default:
       throw new Error(`Unknown tool: ${toolName}`)
   }
@@ -370,6 +373,37 @@ async function stageVideoProjectVoice(params: Record<string, unknown>, session: 
   )
 }
 
+async function stageAdCampaignVoice(params: Record<string, unknown>, session: SessionRow) {
+  const campaignName = String(params.campaign_name ?? "").trim()
+  if (!campaignName) return { error: "campaign_name required" }
+  const platform = String(params.platform ?? "").trim() as
+    | "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
+  const objective = String(params.objective ?? "").trim() as
+    | "awareness" | "traffic" | "leads" | "conversions"
+  const allowedPlatforms = new Set(["facebook", "instagram", "google", "linkedin", "tiktok"])
+  const allowedObjectives = new Set(["awareness", "traffic", "leads", "conversions"])
+  if (!allowedPlatforms.has(platform)) return { error: "platform must be facebook/instagram/google/linkedin/tiktok" }
+  if (!allowedObjectives.has(objective)) return { error: "objective must be awareness/traffic/leads/conversions" }
+
+  const { stageAdCampaign } = await import("@/lib/wizard-staging/content-staging")
+  return stageAdCampaign(
+    { brokerageId: session.brokerage_id, userId: session.user_id },
+    {
+      campaignName,
+      platform,
+      objective,
+      dailyBudget: params.daily_budget != null ? Number(params.daily_budget) : undefined,
+      lifetimeBudget: params.lifetime_budget != null ? Number(params.lifetime_budget) : undefined,
+      startDate: params.start_date ? String(params.start_date) : undefined,
+      endDate: params.end_date ? String(params.end_date) : undefined,
+      city: params.city ? String(params.city) : undefined,
+      state: params.state ? String(params.state) : undefined,
+      ageMin: params.age_min != null ? Number(params.age_min) : undefined,
+      ageMax: params.age_max != null ? Number(params.age_max) : undefined,
+    },
+  )
+}
+
 async function stageDirectMailCampaignVoice(params: Record<string, unknown>, session: SessionRow) {
   const campaignName = String(params.campaign_name ?? "").trim()
   const targetAudience = String(params.target_audience ?? "").trim()
@@ -403,40 +437,75 @@ async function stageDirectMailCampaignVoice(params: Record<string, unknown>, ses
 }
 
 // ─── stage_listing_packet (voice) ────────────────────────────────────────────
+// Routes the agent's free-text input through the CANONICAL workflow:
+//   extractListingIntake → fillListingPacket → documents insert
+// Same chain as voiceDraftListing minus the auth-cookie createClient (we use
+// the service client here because the webhook is unauthenticated by design).
 
 async function stageListingPacket(
   params: Record<string, unknown>,
   session: SessionRow,
 ) {
-  const address = String(params.address ?? "").trim()
-  if (!address) return { error: "address required" }
+  const voiceInput = String(params.voice_input ?? params.address ?? "").trim()
+  if (!voiceInput) return { error: "voice_input required" }
 
-  const { stageWizardPacketAsAgent } = await import("@/app/actions/wizard-staging-voice")
-  const result = await stageWizardPacketAsAgent({
-    brokerageId: session.brokerage_id,
-    userId: session.user_id,
-    mode: "listing",
-    intake: {
-      address,
-      city: params.city ? String(params.city) : undefined,
-      state: params.state ? String(params.state) : undefined,
-      zip: params.zip ? String(params.zip) : undefined,
-      listPrice: params.list_price != null ? Number(params.list_price) : undefined,
-      sellerName: params.seller_name ? String(params.seller_name) : undefined,
-      propertyType: params.property_type ? String(params.property_type) : undefined,
-      notes: params.notes ? String(params.notes) : undefined,
-    },
-  })
-  if (!result.success) return { error: result.error ?? "Staging failed" }
-  return {
-    success: true,
-    document_id: result.documentId,
-    open_url: result.openUrl,
-    spoken_summary: `I've prefilled a listing wizard for ${address}. The agent can open it from the listings page to review and submit.`,
+  try {
+    const { extractListingIntake } = await import("@/lib/workflow/intake/voice-to-listing")
+    const { fillListingPacket } = await import("@/lib/workflow/intake/form-fill-engine")
+    const supabase = createServiceClient()
+
+    const extracted = await extractListingIntake({ text: voiceInput })
+    const state = extracted.intake.propertyState.value
+
+    if (!state) {
+      return {
+        error: "Need state for listing forms. Ask the agent which state the property is in.",
+        intake_so_far: extracted.intake,
+      }
+    }
+
+    const filledPacket = await fillListingPacket({
+      intake: extracted.intake,
+      brokerageId: session.brokerage_id,
+    })
+
+    const { data: doc, error } = await supabase
+      .from("documents")
+      .insert({
+        brokerage_id: session.brokerage_id,
+        document_type: "listing_agreement",
+        status: "needs_agent_input",
+        state_code: state,
+        metadata: {
+          packet_type: "listing",
+          state,
+          forms_count: filledPacket.forms.length,
+          brokerage_forms_count: filledPacket.brokerageForms.length,
+          agent_must_complete: filledPacket.agentMustComplete,
+          audit: filledPacket.audit,
+          source: "voice_intake_elevenlabs",
+        },
+        content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
+      })
+      .select("id")
+      .maybeSingle()
+
+    if (error || !doc) return { error: error?.message ?? "Could not create listing document" }
+
+    return {
+      success: true,
+      document_id: doc.id,
+      open_url: `/dashboard/listings/new?documentId=${doc.id}`,
+      spoken_summary: "Listing-agreement packet staged. The agent opens the FormWizard from their listings page to review and submit.",
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Listing staging failed" }
   }
 }
 
 // ─── stage_offer_packet (voice) ──────────────────────────────────────────────
+// Same canonical chain as voiceDraftOffer:
+//   extractOfferIntake → fillOfferPacket → documents insert
 
 async function stageOfferPacket(
   params: Record<string, unknown>,
@@ -444,8 +513,8 @@ async function stageOfferPacket(
   supabase: ReturnType<typeof createServiceClient>,
 ) {
   const contactId = String(params.contact_id ?? "").trim()
-  const address = String(params.address ?? "").trim()
-  if (!contactId || !address) return { error: "contact_id and address required" }
+  const voiceInput = String(params.voice_input ?? params.address ?? "").trim()
+  if (!contactId || !voiceInput) return { error: "contact_id and voice_input required" }
 
   // Brokerage check
   const { data: contact } = await supabase
@@ -456,32 +525,57 @@ async function stageOfferPacket(
     .maybeSingle()
   if (!contact) return { error: "Contact not found in your brokerage" }
 
-  const { stageWizardPacketAsAgent } = await import("@/app/actions/wizard-staging-voice")
-  const result = await stageWizardPacketAsAgent({
-    brokerageId: session.brokerage_id,
-    userId: session.user_id,
-    mode: "offer",
-    intake: {
-      contactId,
-      address,
-      city: params.city ? String(params.city) : undefined,
-      state: params.state ? String(params.state) : undefined,
-      zip: params.zip ? String(params.zip) : undefined,
-      offerPrice: params.offer_price != null ? Number(params.offer_price) : undefined,
-      financingType: params.financing_type ? String(params.financing_type) : undefined,
-      earnestMoney: params.earnest_money != null ? Number(params.earnest_money) : undefined,
-      closingDate: params.closing_date ? String(params.closing_date) : undefined,
-      notes: params.notes ? String(params.notes) : undefined,
-    },
-  })
-  if (!result.success) return { error: result.error ?? "Staging failed" }
-  const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
-  return {
-    success: true,
-    document_id: result.documentId,
-    open_url: result.openUrl,
-    contact_name: contactName,
-    spoken_summary: `I've prefilled an offer for ${contactName} on ${address}. The agent can open it to review and send for signature.`,
+  try {
+    const { extractOfferIntake } = await import("@/lib/workflow/intake/voice-to-offer")
+    const { fillOfferPacket } = await import("@/lib/workflow/intake/form-fill-engine")
+
+    const extracted = await extractOfferIntake({ text: voiceInput })
+    const state = extracted.intake.propertyState.value
+    if (!state) {
+      return {
+        error: "Need state for offer forms. Ask the agent which state the property is in.",
+        intake_so_far: extracted.intake,
+      }
+    }
+
+    const filledPacket = await fillOfferPacket({
+      intake: extracted.intake,
+      brokerageId: session.brokerage_id,
+    })
+
+    const { data: doc, error } = await supabase
+      .from("documents")
+      .insert({
+        brokerage_id: session.brokerage_id,
+        contact_id: contactId,
+        document_type: "offer",
+        status: "needs_agent_input",
+        state_code: state,
+        metadata: {
+          packet_type: "offer",
+          state,
+          forms_count: filledPacket.forms.length,
+          brokerage_forms_count: filledPacket.brokerageForms.length,
+          agent_must_complete: filledPacket.agentMustComplete,
+          audit: filledPacket.audit,
+          source: "voice_intake_elevenlabs",
+        },
+        content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
+      })
+      .select("id")
+      .maybeSingle()
+    if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
+
+    const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+    return {
+      success: true,
+      document_id: doc.id,
+      open_url: `/crm?contact=${contactId}&action=new_offer&documentId=${doc.id}`,
+      contact_name: contactName,
+      spoken_summary: `Offer packet staged for ${contactName}. The agent opens it from the CRM to review and send for signature.`,
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Offer staging failed" }
   }
 }
 

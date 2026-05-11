@@ -13,12 +13,13 @@ export default function OfferCreatePage() {
   const [contact, setContact] = useState<Contact | null>(null)
   const [ctx, setCtx] = useState<{ brokerageId: string; agentUserId: string; teamId?: string | null } | null>(null)
 
-  // `?packet=<uuid>` is set by stageWizardPacket() — voice / AI Copilot /
-  // ⌘K verbs use it to drop the agent into a prefilled offer wizard.
-  const packetParam = searchParams?.get("packet") ?? null
+  // `?documentId=<uuid>` is set by the canonical voiceDraftOffer pipeline
+  // and the AI Copilot stage_offer_packet tool. Matches the URL convention
+  // those helpers return. Legacy `?packet=` still recognized for back-compat.
+  const docParam = searchParams?.get("documentId") ?? searchParams?.get("packet") ?? null
   const documentId =
-    packetParam && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(packetParam)
-      ? packetParam
+    docParam && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(docParam)
+      ? docParam
       : undefined
 
   useEffect(() => {

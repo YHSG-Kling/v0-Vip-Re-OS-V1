@@ -15,15 +15,20 @@ export function ListingsNewButton({ brokerageId, agentUserId }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [open, setOpen] = useState(false)
-  // documentId comes from `?packet=<uuid>` when the AI Copilot, voice agent,
-  // or ⌘K verb has staged a packet via stageWizardPacket(). When present we
-  // auto-open the wizard with the packet preloaded.
+  // documentId comes from `?documentId=<uuid>` when the canonical voice
+  // pipeline (voiceDraftListing) or AI Copilot stage_listing_packet tool has
+  // staged a packet. URL convention matches what those helpers return.
+  // Also accept `?action=new&documentId=<uuid>` from the dashboard "New Listing"
+  // link. Legacy `?packet=` still recognized for backwards compat.
   const [documentId, setDocumentId] = useState<string | undefined>(undefined)
 
   useEffect(() => {
-    const packet = searchParams?.get("packet") ?? null
-    if (packet && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(packet)) {
-      setDocumentId(packet)
+    const docId = searchParams?.get("documentId") ?? searchParams?.get("packet") ?? null
+    const action = searchParams?.get("action") ?? null
+    if (docId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(docId)) {
+      setDocumentId(docId)
+      setOpen(true)
+    } else if (action === "new") {
       setOpen(true)
     }
   }, [searchParams])
@@ -31,7 +36,7 @@ export function ListingsNewButton({ brokerageId, agentUserId }: Props) {
   const handleClose = () => {
     setOpen(false)
     if (documentId) {
-      // Clear the packet query param so refreshing doesn't reopen the wizard.
+      // Clear the URL params so refreshing doesn't reopen the wizard.
       setDocumentId(undefined)
       router.replace("/dashboard/listings")
     }
