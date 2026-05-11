@@ -34,7 +34,7 @@ import {
   getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
-import { aiCounterOfferStrategy } from "@/app/actions/ai-offer-creation"
+import { negotiationCoPilot } from "@/app/actions/negotiation-copilot"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
@@ -287,16 +287,17 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     setCounterAdvisorError(null)
     setCounterAdvisor(null)
     try {
-      const result = await aiCounterOfferStrategy({
-        originalOffer:    offer.offer_price,
-        listPrice:        listing.list_price ?? offer.offer_price,
-        counterAmount:    offer.offer_price * 1.02,
-        counterTerms:     {},
-        buyerMaxBudget:   offer.offer_price * 1.1,
-        negotiationRound: offer.current_round ?? 1,
+      // Comprehensive Negotiation Co-Pilot — aggregates AI strategy +
+      // comparable sales + draft response message in one call. Replaces
+      // the previous bare aiCounterOfferStrategy call which also had an
+      // unwrap bug (UI read .recommendedResponse from the wrapper instead
+      // of the nested .strategy).
+      const result = await negotiationCoPilot({
+        offerId:        offer.id,
+        buyerMaxBudget: offer.offer_price * 1.1,
       })
-      if ((result as any).success === false) {
-        setCounterAdvisorError((result as any).error ?? "Counter strategy failed.")
+      if (!result.success) {
+        setCounterAdvisorError(result.error ?? "Counter strategy failed.")
       } else {
         setCounterAdvisor(result)
       }
@@ -349,16 +350,15 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     setCounterOfferStrategyError(null)
     setCounterOfferStrategy(null)
     try {
-      const result = await aiCounterOfferStrategy({
-        originalOffer: offer.offer_price,
-        listPrice: listing.list_price ?? offer.offer_price,
-        counterAmount: offer.offer_price * 1.02,
-        counterTerms: {},
+      // Also routes through negotiationCoPilot so this secondary panel
+      // gets the same fix as the primary counterAdvisor — same unwrapping +
+      // bonus comparables/draft response.
+      const result = await negotiationCoPilot({
+        offerId:        offer.id,
         buyerMaxBudget: offer.offer_price * 1.1,
-        negotiationRound: offer.current_round ?? 1,
       })
-      if ((result as any).success === false) {
-        setCounterOfferStrategyError((result as any).error ?? "Counter strategy failed.")
+      if (!result.success) {
+        setCounterOfferStrategyError(result.error ?? "Counter strategy failed.")
       } else {
         setCounterOfferStrategy(result)
       }
@@ -761,29 +761,122 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                 </div>
               ))}
 
-              {/* counterAdvisor result — shown below offers list once triggered */}
+              {/* Negotiation Co-Pilot — strategy + comparables + draft response.
+                  counterAdvisor shape: { strategy, comparables, draftResponse,
+                  offerSnapshot } from negotiationCoPilot(). */}
               {counterAdvisor && (
-                <div className="rounded-lg border border-purple-200 bg-purple-50 p-4">
-                  <p className="text-sm font-semibold text-purple-900 mb-2">AI Counter Strategy</p>
-                  {counterAdvisor.recommendedResponse && (
-                    <p className="text-sm font-medium">
-                      Recommendation:{" "}
-                      <span className="capitalize">{counterAdvisor.recommendedResponse}</span>
-                    </p>
+                <div className="rounded-lg border border-purple-200 bg-purple-50 p-4 space-y-3">
+                  <p className="text-sm font-semibold text-purple-900">
+                    🧠 Negotiation Co-Pilot
+                    {counterAdvisor.offerSnapshot && (
+                      <span className="ml-2 text-[11px] font-normal text-purple-700">
+                        offer ${Number(counterAdvisor.offerSnapshot.offerPrice).toLocaleString()} ·{" "}
+                        list ${Number(counterAdvisor.offerSnapshot.listPrice).toLocaleString()} ·{" "}
+                        {Math.round(counterAdvisor.offerSnapshot.gapPct)}% gap
+                      </span>
+                    )}
+                  </p>
+
+                  {/* Strategy */}
+                  {counterAdvisor.strategy && (
+                    <div className="rounded-md bg-white border border-purple-100 p-3 space-y-1">
+                      {counterAdvisor.strategy.recommendedResponse && (
+                        <p className="text-sm font-medium">
+                          Recommendation:{" "}
+                          <span className="capitalize text-purple-900">
+                            {counterAdvisor.strategy.recommendedResponse}
+                          </span>
+                        </p>
+                      )}
+                      {counterAdvisor.strategy.suggestedCounterPrice != null && (
+                        <p className="text-sm">
+                          Suggested counter:{" "}
+                          <strong>${Number(counterAdvisor.strategy.suggestedCounterPrice).toLocaleString()}</strong>
+                          {counterAdvisor.strategy.estimatedFinalPrice != null && (
+                            <span className="text-xs text-muted-foreground ml-2">
+                              (est. final ${Number(counterAdvisor.strategy.estimatedFinalPrice).toLocaleString()})
+                            </span>
+                          )}
+                        </p>
+                      )}
+                      {counterAdvisor.strategy.reasoning && (
+                        <p className="text-xs text-muted-foreground">{counterAdvisor.strategy.reasoning}</p>
+                      )}
+                      {counterAdvisor.strategy.riskOfLosingDeal != null && (
+                        <p className="text-xs">
+                          Risk of losing deal:{" "}
+                          <span className={
+                            counterAdvisor.strategy.riskOfLosingDeal >= 60 ? "text-red-700 font-medium" :
+                            counterAdvisor.strategy.riskOfLosingDeal >= 30 ? "text-amber-700" : "text-emerald-700"
+                          }>
+                            {counterAdvisor.strategy.riskOfLosingDeal}%
+                          </span>
+                        </p>
+                      )}
+                      {Array.isArray(counterAdvisor.strategy.negotiationTactics) && counterAdvisor.strategy.negotiationTactics.length > 0 && (
+                        <ul className="text-xs text-muted-foreground list-disc pl-4 mt-1">
+                          {counterAdvisor.strategy.negotiationTactics.slice(0, 3).map((t: string, i: number) => (
+                            <li key={i}>{t}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   )}
-                  {counterAdvisor.suggestedCounterPrice && (
-                    <p className="text-sm font-medium">
-                      Suggested counter: ${Number(counterAdvisor.suggestedCounterPrice).toLocaleString()}
-                    </p>
+
+                  {/* Comparables */}
+                  {counterAdvisor.comparables && counterAdvisor.comparables.count > 0 && (
+                    <div className="rounded-md bg-white border border-purple-100 p-3">
+                      <p className="text-xs font-semibold text-purple-900 mb-1">
+                        📊 Comparable sales · {counterAdvisor.comparables.count} nearby
+                      </p>
+                      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                        {counterAdvisor.comparables.medianSoldPrice != null && (
+                          <span>Median sold: <strong className="text-foreground">${counterAdvisor.comparables.medianSoldPrice.toLocaleString()}</strong></span>
+                        )}
+                        {counterAdvisor.comparables.avgDom != null && (
+                          <span>Avg DOM: <strong className="text-foreground">{counterAdvisor.comparables.avgDom}</strong></span>
+                        )}
+                        {counterAdvisor.comparables.pricePerSqft != null && (
+                          <span>$/sqft: <strong className="text-foreground">${counterAdvisor.comparables.pricePerSqft}</strong></span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1.5">{counterAdvisor.comparables.insight}</p>
+                    </div>
                   )}
-                  {counterAdvisor.reasoning && (
-                    <p className="text-xs text-muted-foreground mt-1">{counterAdvisor.reasoning}</p>
+
+                  {/* Draft response — pre-written in agent voice */}
+                  {counterAdvisor.draftResponse?.body && (
+                    <div className="rounded-md bg-white border border-purple-100 p-3 space-y-1.5">
+                      <p className="text-xs font-semibold text-purple-900">
+                        ✍️ Draft response to buyer&apos;s agent
+                      </p>
+                      {counterAdvisor.draftResponse.subject && (
+                        <p className="text-xs"><span className="text-muted-foreground">Subject:</span> {counterAdvisor.draftResponse.subject}</p>
+                      )}
+                      <textarea
+                        readOnly
+                        value={counterAdvisor.draftResponse.body}
+                        rows={4}
+                        className="w-full text-xs border border-input rounded-md px-2 py-1.5 bg-muted/30 resize-none"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(counterAdvisor.draftResponse?.body ?? "")
+                        }}
+                      >
+                        Copy
+                      </Button>
+                    </div>
                   )}
+
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => setCounterAdvisor(null)}
-                    className="text-xs text-purple-600 hover:underline mt-2 px-0 h-auto"
+                    className="text-xs text-purple-600 hover:underline px-0 h-auto"
                   >
                     Clear
                   </Button>
