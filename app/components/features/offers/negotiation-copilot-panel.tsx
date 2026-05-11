@@ -17,9 +17,10 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Loader2 } from "lucide-react"
+import { Loader2, Send, AlertTriangle, ShieldAlert } from "lucide-react"
 import {
   negotiationCoPilot,
+  sendDraftAsCounterResponse,
   type NegotiationCoPilotResult,
 } from "@/app/actions/negotiation-copilot"
 
@@ -40,11 +41,19 @@ export function NegotiationCoPilotPanel({
   const [result, setResult] = useState<NegotiationCoPilotResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const [sendStatus, setSendStatus] = useState<
+    | { kind: "sent"; messageId?: string }
+    | { kind: "blocked"; reason: string }
+    | { kind: "error"; message: string }
+    | null
+  >(null)
 
   async function handleAdvise() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setSendStatus(null)
     try {
       const r = await negotiationCoPilot({
         offerId,
@@ -61,6 +70,31 @@ export function NegotiationCoPilotPanel({
       setError(e instanceof Error ? e.message : "Co-pilot failed")
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleSendDraft() {
+    if (!result?.draftResponse?.body) return
+    setSending(true)
+    setSendStatus(null)
+    try {
+      const r = await sendDraftAsCounterResponse({
+        offerId,
+        body:    result.draftResponse.body,
+        subject: result.draftResponse.subject,
+        channel: "email",
+      })
+      if (r.success) {
+        setSendStatus({ kind: "sent", messageId: r.messageId })
+      } else if (r.blocked) {
+        setSendStatus({ kind: "blocked", reason: r.blockedReason ?? r.error ?? "Compliance block" })
+      } else {
+        setSendStatus({ kind: "error", message: r.error ?? "Send failed" })
+      }
+    } catch (e) {
+      setSendStatus({ kind: "error", message: e instanceof Error ? e.message : "Send failed" })
+    } finally {
+      setSending(false)
     }
   }
 
@@ -156,6 +190,113 @@ export function NegotiationCoPilotPanel({
         </div>
       )}
 
+      {/* Escalation Cap Calculator — surfaces on buyer side or when seller side detects competition */}
+      {result?.escalation && (
+        <div className="rounded-md bg-white border border-purple-100 p-3 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-purple-900">
+              🎯 Escalation Cap Calculator
+              {result.escalation.competingOffersDetected > 0 && (
+                <span className="ml-1.5 text-[10px] font-normal text-purple-600">
+                  · {result.escalation.competingOffersDetected} competing offer{result.escalation.competingOffersDetected === 1 ? "" : "s"} detected
+                </span>
+              )}
+            </p>
+            <span className={
+              "text-[10px] px-1.5 py-0.5 rounded-full font-medium " +
+              (result.escalation.competitionLevel === "high"   ? "bg-red-100 text-red-700"
+              : result.escalation.competitionLevel === "medium" ? "bg-amber-100 text-amber-700"
+              : result.escalation.competitionLevel === "low"    ? "bg-blue-100 text-blue-700"
+              :                                                   "bg-gray-100 text-gray-600")
+            }>
+              {result.escalation.competitionLevel} competition
+            </span>
+          </div>
+          {result.escalation.recommended ? (
+            <>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <p className="text-muted-foreground text-[10px]">Starting offer</p>
+                  <p className="font-medium">${Math.round(result.escalation.startingOffer).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-[10px]">Increment</p>
+                  <p className="font-medium">${Math.round(result.escalation.escalationIncrement).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-[10px]">Max cap</p>
+                  <p className="font-medium">${Math.round(result.escalation.maxEscalationPrice).toLocaleString()}</p>
+                </div>
+              </div>
+              {result.escalation.capAtAppraisal && (
+                <p className="text-[10px] text-amber-700">⚠ Cap should be subject to appraisal — buyer needs to know the gap risk.</p>
+              )}
+              <p className="text-[11px] text-muted-foreground">{result.escalation.reasoning}</p>
+              {result.escalation.proofRequired && result.escalation.proofRequired.length > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  <span className="font-medium">Proof to request:</span> {result.escalation.proofRequired.join(", ")}
+                </p>
+              )}
+              {result.escalation.sampleClauseText && (
+                <details className="text-[10px]">
+                  <summary className="cursor-pointer text-purple-700 font-medium">Sample clause text</summary>
+                  <pre className="mt-1 whitespace-pre-wrap font-sans bg-muted/30 rounded p-2 border border-input text-[10px]">{result.escalation.sampleClauseText}</pre>
+                </details>
+              )}
+            </>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              Escalation clause not recommended in this scenario — {result.escalation.reasoning}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Concession Trade-off Matrix */}
+      {result?.concessionMatrix && result.concessionMatrix.scenarios.length > 0 && (
+        <div className="rounded-md bg-white border border-purple-100 p-3 space-y-1.5">
+          <p className="text-xs font-semibold text-purple-900">
+            💱 Concession Trade-off Matrix
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-left text-muted-foreground border-b border-input">
+                  <th className="py-1 pr-2 font-medium">Scenario</th>
+                  <th className="py-1 px-2 font-medium text-right">Δ Seller net</th>
+                  <th className="py-1 px-2 font-medium text-right">Δ Buyer cash</th>
+                  <th className="py-1 pl-2 font-medium">Lean</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.concessionMatrix.scenarios.map((s, i) => (
+                  <tr key={i} className="border-b border-input/40 last:border-0">
+                    <td className="py-1 pr-2">{s.label}</td>
+                    <td className={"py-1 px-2 text-right tabular-nums " + (s.netToSellerDelta > 0 ? "text-emerald-700" : s.netToSellerDelta < 0 ? "text-red-700" : "text-muted-foreground")}>
+                      {s.netToSellerDelta > 0 ? "+" : ""}${Math.abs(s.netToSellerDelta).toLocaleString()}
+                    </td>
+                    <td className={"py-1 px-2 text-right tabular-nums " + (s.netToBuyerDelta > 0 ? "text-emerald-700" : s.netToBuyerDelta < 0 ? "text-red-700" : "text-muted-foreground")}>
+                      {s.netToBuyerDelta > 0 ? "+" : ""}${Math.abs(s.netToBuyerDelta).toLocaleString()}
+                    </td>
+                    <td className="py-1 pl-2">
+                      <span className={
+                        "text-[10px] px-1.5 py-0.5 rounded-full " +
+                        (s.recommendation === "seller_favored" ? "bg-emerald-100 text-emerald-700"
+                        : s.recommendation === "buyer_favored"  ? "bg-blue-100 text-blue-700"
+                        :                                          "bg-gray-100 text-gray-700")
+                      }>
+                        {s.recommendation === "seller_favored" ? "Seller" : s.recommendation === "buyer_favored" ? "Buyer" : "Balanced"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-muted-foreground italic">{result.concessionMatrix.bottomLine}</p>
+        </div>
+      )}
+
       {/* Comparables */}
       {result?.comparables && result.comparables.count > 0 && (
         <div className="rounded-md bg-white border border-purple-100 p-3">
@@ -192,14 +333,49 @@ export function NegotiationCoPilotPanel({
             rows={4}
             className="w-full text-xs border border-input rounded-md px-2 py-1.5 bg-muted/30 resize-none"
           />
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs"
-            onClick={() => navigator.clipboard?.writeText(result.draftResponse?.body ?? "")}
-          >
-            Copy
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => navigator.clipboard?.writeText(result.draftResponse?.body ?? "")}
+            >
+              Copy
+            </Button>
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7 text-xs gap-1.5"
+              onClick={handleSendDraft}
+              disabled={sending || !result.offerSnapshot?.contactId}
+              title={
+                !result.offerSnapshot?.contactId
+                  ? "No contact linked to this offer — can't route a send."
+                  : "Send this draft via the communication spine (runs compliance gate first)"
+              }
+            >
+              {sending
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Send className="h-3 w-3" />
+              }
+              Send as counter response
+            </Button>
+            {sendStatus?.kind === "sent" && (
+              <span className="text-[11px] text-emerald-700">✓ Sent</span>
+            )}
+            {sendStatus?.kind === "blocked" && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-amber-700">
+                <ShieldAlert className="h-3 w-3" />
+                Blocked by compliance: {sendStatus.reason}
+              </span>
+            )}
+            {sendStatus?.kind === "error" && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-red-700">
+                <AlertTriangle className="h-3 w-3" />
+                {sendStatus.message}
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>
