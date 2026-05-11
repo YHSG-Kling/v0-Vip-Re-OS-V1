@@ -4,6 +4,7 @@ import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
+import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -62,6 +63,8 @@ import {
   CheckSquare,
   Brain,
   TrendingDown,
+  TrendingUp,
+  RefreshCw,
   Landmark,
   ExternalLink,
   Plus,
@@ -197,7 +200,19 @@ interface TransactionDetailClientProps {
     score_delta: number | null
     scored_at: string
   } | null
-  unresolvedInterventionsCount: number
+  unresolvedInterventions: Array<{
+    id: string
+    issue_detected: string
+    severity: string
+    ai_recommendation: string | null
+    client_impacted: boolean | null
+    created_at: string
+  }>
+  healthScoreHistory: Array<{
+    overall_score: number
+    risk_level: string
+    scored_at: string
+  }>
   tasks: Array<{
     id: string
     title: string
@@ -427,7 +442,8 @@ export function TransactionDetailClient({
   documents,
   documentCountsByStatus,
   healthScore,
-  unresolvedInterventionsCount,
+  unresolvedInterventions,
+  healthScoreHistory,
   tasks,
   timeline,
   titleEscrow,
@@ -454,6 +470,45 @@ export function TransactionDetailClient({
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // Deal Health interactive state — rescan + intervention resolve
+  const [rescanning, setRescanning] = useState(false)
+  const [resolvingId, setResolvingId] = useState<string | null>(null)
+
+  async function handleRescan() {
+    if (rescanning) return
+    setRescanning(true)
+    try {
+      const r = await rescanDealHealthAction({ transactionId: transaction.id })
+      if (r.success) {
+        toast.success(`Health rescored — ${r.overallScore}/100 (${r.riskLevel})`)
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "Rescan failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Rescan failed")
+    } finally {
+      setRescanning(false)
+    }
+  }
+
+  async function handleResolveIntervention(interventionId: string) {
+    setResolvingId(interventionId)
+    try {
+      const r = await resolveInterventionAction({ interventionId })
+      if (r.success) {
+        toast.success("Intervention marked resolved")
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "Could not resolve")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not resolve")
+    } finally {
+      setResolvingId(null)
+    }
+  }
 
   // Local milestones state — allows optimistic visibility toggle updates
   const [localMilestones, setLocalMilestones] = useState(milestones)
@@ -1543,10 +1598,100 @@ export function TransactionDetailClient({
                 ) : (
                   <p className="text-sm text-muted-foreground">No health score calculated yet.</p>
                 )}
-                {unresolvedInterventionsCount > 0 && (
-                  <p className="text-xs text-amber-600 mt-2">
-                    {unresolvedInterventionsCount} unresolved intervention(s)
-                  </p>
+                {/* Trend + actions row — always rendered when we have a score */}
+                {healthScore && (
+                  <div className="mt-3 pt-3 border-t flex items-center justify-between gap-2 text-[11px]">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      {typeof healthScore.score_delta === "number" && healthScore.score_delta !== 0 ? (
+                        <span className={cn(
+                          "inline-flex items-center gap-0.5 font-medium",
+                          healthScore.score_delta > 0 ? "text-emerald-600" : "text-red-600",
+                        )}>
+                          {healthScore.score_delta > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                          {healthScore.score_delta > 0 ? "+" : ""}{healthScore.score_delta}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-0.5">— flat</span>
+                      )}
+                      {healthScoreHistory && healthScoreHistory.length > 1 && (
+                        <span className="text-[10px]">
+                          ({healthScoreHistory.length} scores · last {new Date(healthScore.scored_at).toLocaleDateString()})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] gap-1"
+                        disabled={rescanning}
+                        onClick={handleRescan}
+                        title="Trigger fresh deal-health score now"
+                      >
+                        <RefreshCw className={cn("h-3 w-3", rescanning && "animate-spin")} />
+                        Refresh
+                      </Button>
+                      <Link
+                        href={`/dashboard/transactions/${transaction.id}/health`}
+                        className="inline-flex items-center gap-1 h-6 px-2 text-[11px] rounded-md hover:bg-accent"
+                      >
+                        Full report
+                        <ChevronRight className="h-3 w-3" />
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
+                {/* Unresolved interventions list — actionable inline */}
+                {unresolvedInterventions && unresolvedInterventions.length > 0 && (
+                  <div className="mt-3 pt-3 border-t space-y-2">
+                    <p className="text-[11px] font-semibold text-foreground">
+                      {unresolvedInterventions.length} open intervention{unresolvedInterventions.length === 1 ? "" : "s"}
+                    </p>
+                    <ul className="space-y-1.5">
+                      {unresolvedInterventions.slice(0, 3).map((iv) => (
+                        <li key={iv.id} className={cn(
+                          "rounded-md border p-2 text-[11px] space-y-0.5",
+                          iv.severity === "critical" ? "border-red-200 bg-red-50" :
+                          iv.severity === "high"     ? "border-amber-200 bg-amber-50" :
+                                                       "border-input bg-muted/20",
+                        )}>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-medium leading-snug">{iv.issue_detected}</p>
+                            <span className={cn(
+                              "text-[9px] uppercase px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap",
+                              iv.severity === "critical" ? "bg-red-200 text-red-800" :
+                              iv.severity === "high"     ? "bg-amber-200 text-amber-800" :
+                                                           "bg-gray-200 text-gray-700",
+                            )}>
+                              {iv.severity}
+                            </span>
+                          </div>
+                          {iv.ai_recommendation && (
+                            <p className="text-muted-foreground leading-snug">{iv.ai_recommendation}</p>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-5 px-1.5 text-[10px] mt-0.5"
+                            disabled={resolvingId === iv.id}
+                            onClick={() => handleResolveIntervention(iv.id)}
+                          >
+                            {resolvingId === iv.id ? <Loader2 className="h-2.5 w-2.5 animate-spin mr-1" /> : null}
+                            Mark resolved
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                    {unresolvedInterventions.length > 3 && (
+                      <Link
+                        href={`/dashboard/transactions/${transaction.id}/health`}
+                        className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                      >
+                        See all {unresolvedInterventions.length} interventions →
+                      </Link>
+                    )}
+                  </div>
                 )}
               </CardContent>
             </Card>

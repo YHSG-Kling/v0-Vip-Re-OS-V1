@@ -220,12 +220,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .limit(1)
       .maybeSingle(),
 
-    // proactive_interventions
+    // proactive_interventions — load full rows so the detail page can
+    // surface the actual recommendations inline (not just the count).
     supabase
       .from("proactive_interventions")
-      .select("id")
+      .select("id, issue_detected, severity, ai_recommendation, client_impacted, created_at")
       .eq("transaction_id", id)
-      .eq("resolved", false),
+      .eq("resolved", false)
+      .order("created_at", { ascending: false })
+      .limit(10),
 
     // transaction_tasks
     supabase
@@ -299,6 +302,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
+  // 7-point score history for the inline trend sparkline. Separate query so
+  // the destructure above stays positional. Cheap (<= 7 rows).
+  const { data: healthScoreHistory } = await supabase
+    .from("deal_health_scores")
+    .select("overall_score, risk_level, scored_at")
+    .eq("transaction_id", id)
+    .order("scored_at", { ascending: false })
+    .limit(7)
+
   // vendor_bookings with joined vendor name — includes contact_id and listing_id
   const { data: vendorBookings } = await supabase
     .from("vendor_bookings")
@@ -341,7 +353,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       documents={documents ?? []}
       documentCountsByStatus={documentCountsByStatus}
       healthScore={healthScore}
-      unresolvedInterventionsCount={(interventions ?? []).length}
+      unresolvedInterventions={interventions ?? []}
+      healthScoreHistory={healthScoreHistory ?? []}
       tasks={tasks ?? []}
       timeline={timeline ?? []}
       titleEscrow={titleEscrow}
