@@ -63,11 +63,23 @@ export interface NegotiationCoPilotResult {
 
 export async function negotiationCoPilot(params: {
   offerId:        string
-  buyerMaxBudget?: number  // optional override; defaults to offer * 1.1
+  /** Which side of the negotiation we're advising:
+   *    "seller" — an offer came IN on our listing, we're deciding the response
+   *    "buyer"  — we submitted an offer + the seller countered, our buyer
+   *               is deciding whether to accept / counter back / walk
+   *  Defaults to "seller" (most common UI entry point at offers-manager). */
+  side?:          "seller" | "buyer"
+  /** Buyer's max budget — used only on the buyer side. Defaults to
+   *  offer * 1.1 if unspecified. */
+  buyerMaxBudget?: number
+  /** Counter amount the seller is proposing — used only on the buyer side
+   *  for the AI to know "what they want from us". Defaults to listPrice. */
+  sellerCounter?: number
 }): Promise<NegotiationCoPilotResult> {
   if (!isValidUUID(params.offerId)) {
     return { success: false, error: "Invalid offer id" }
   }
+  const side: "seller" | "buyer" = params.side ?? "seller"
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -118,12 +130,19 @@ export async function negotiationCoPilot(params: {
     : []
 
   // ─── 1. Counter strategy via existing AI helper ──────────────────────────
+  // Seller side: counterAmount = listPrice (we're advising from the asking
+  // position). Buyer side: counterAmount = sellerCounter ?? listPrice
+  // (the seller's counter is what we're responding to).
   const buyerMaxBudget = params.buyerMaxBudget ?? offerPrice * 1.1
+  const counterAmount =
+    side === "seller"
+      ? listPrice
+      : (params.sellerCounter ?? listPrice)
   const strategyResult = await aiCounterOfferStrategy({
     originalOffer:    offerPrice,
     listPrice,
-    counterAmount:    listPrice,                      // seller-side: starting from list
-    counterTerms:     { contingencies },
+    counterAmount,
+    counterTerms:     { contingencies, side },
     buyerMaxBudget,
     negotiationRound: offer.current_round ?? 1,
   }).catch(() => null)
@@ -153,10 +172,12 @@ export async function negotiationCoPilot(params: {
   const buyerName = buyer ? `${buyer.first_name ?? ""} ${buyer.last_name ?? ""}`.trim() || "the buyer" : "the buyer"
   const draftResponse = strategy
     ? await draftCounterResponse({
+        side,
         recommendedResponse: strategy.recommendedResponse,
         suggestedCounterPrice: strategy.suggestedCounterPrice ?? null,
         listPrice,
         offerPrice,
+        sellerCounter: side === "buyer" ? counterAmount : null,
         propertyAddress: listing?.address ?? "the property",
         buyerName,
         reasoning: strategy.reasoning ?? "",
@@ -248,30 +269,52 @@ async function summarizeComparables(input: {
 }
 
 async function draftCounterResponse(input: {
+  side: "seller" | "buyer"
   recommendedResponse: string
   suggestedCounterPrice: number | null
   listPrice: number
   offerPrice: number
+  sellerCounter: number | null
   propertyAddress: string
   buyerName: string
   reasoning: string
 }): Promise<{ subject?: string; body: string } | undefined> {
+  // Audience + framing flips per side. Seller side: we write TO the buyer's
+  // agent about an offer that came in on our listing. Buyer side: we write
+  // TO the listing agent about a counter the seller sent back to our buyer.
+  const sellerSidePrompt = `Draft a brief professional response to the buyer's agent re: an offer on ${input.propertyAddress}.
+
+Context (we represent the SELLER):
+- Buyer offered:           $${input.offerPrice.toLocaleString()}
+- Our list price:          $${input.listPrice.toLocaleString()}
+- Buyer:                   ${input.buyerName}
+- Our recommendation:      ${input.recommendedResponse}
+${input.suggestedCounterPrice ? `- Suggested counter:       $${input.suggestedCounterPrice.toLocaleString()}` : ""}
+- Reasoning:               ${input.reasoning}
+
+Audience: BUYER's agent. Tone: professional, them-first, no high-pressure language, no investment claims, no fair-housing language. Keep under 120 words.
+
+Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
+
+  const buyerSidePrompt = `Draft a brief professional response to the listing agent re: their counter on our buyer's offer on ${input.propertyAddress}.
+
+Context (we represent the BUYER):
+- Our buyer's offer:       $${input.offerPrice.toLocaleString()}
+- Seller's list price:     $${input.listPrice.toLocaleString()}
+${input.sellerCounter ? `- Seller's counter:        $${input.sellerCounter.toLocaleString()}` : ""}
+- Our buyer:               ${input.buyerName}
+- Our recommendation:      ${input.recommendedResponse}
+${input.suggestedCounterPrice ? `- Suggested counter back:  $${input.suggestedCounterPrice.toLocaleString()}` : ""}
+- Reasoning:               ${input.reasoning}
+
+Audience: LISTING agent. Tone: professional, them-first, collaborative, no high-pressure language, no investment claims. Keep under 120 words.
+
+Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
+
   try {
     const result = await generateText({
       model: resolveModel("openai/gpt-4o-mini"),
-      prompt: `Draft a brief professional response to the buyer's agent re: an offer on ${input.propertyAddress}.
-
-Context:
-- Buyer offered: $${input.offerPrice.toLocaleString()}
-- List price:    $${input.listPrice.toLocaleString()}
-- Buyer:         ${input.buyerName}
-- Our recommendation: ${input.recommendedResponse}
-${input.suggestedCounterPrice ? `- Suggested counter: $${input.suggestedCounterPrice.toLocaleString()}` : ""}
-- Reasoning: ${input.reasoning}
-
-Tone: professional, them-first, no high-pressure language, no investment claims, no fair-housing language. Keep under 120 words.
-
-Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`,
+      prompt: input.side === "buyer" ? buyerSidePrompt : sellerSidePrompt,
       maxOutputTokens: 400,
     })
     const jsonMatch = result.text.match(/\{[\s\S]*\}/)

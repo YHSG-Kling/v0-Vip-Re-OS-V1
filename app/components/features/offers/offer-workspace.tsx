@@ -12,6 +12,7 @@ import { useState, useTransition } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { CounterOfferHistory } from "./counteroffer-history"
+import { NegotiationCoPilotPanel } from "./negotiation-copilot-panel"
 import { NetSheetView }        from "./net-sheet-view"
 import { OfferDocumentPanel }  from "./offer-document-panel"
 import type { OfferRow }       from "@/lib/kernel/offers"
@@ -73,7 +74,7 @@ export function OfferWorkspace({
   brokerageId,
   buyerPath,
 }: OfferWorkspaceProps) {
-  const [activeTab, setActiveTab] = useState<"details" | "net-sheet" | "history" | "documents">("details")
+  const [activeTab, setActiveTab] = useState<"details" | "net-sheet" | "history" | "documents" | "copilot">("details")
   const [isPending, startTrans]   = useTransition()
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
@@ -127,6 +128,7 @@ export function OfferWorkspace({
 
   const tabs = [
     { id: "details",   label: "Details" },
+    { id: "copilot",   label: "🧠 Co-Pilot" },
     { id: "net-sheet", label: "Net Sheet" },
     { id: "history",   label: `History (${history.length})` },
     { id: "documents", label: "Documents" },
@@ -371,6 +373,37 @@ export function OfferWorkspace({
               closingCostContribution={offer.closing_cost_contribution ?? null}
               earnestMoney={offer.earnest_money ?? null}
               sellerNetEstimate={offer.seller_net_estimate ?? null}
+            />
+          </div>
+        )}
+
+        {activeTab === "copilot" && (
+          <div className="px-6 py-5">
+            {/* Buyer-side Negotiation Co-Pilot — we represent the BUYER on
+                this surface. When seller has countered, the panel ingests
+                their counter and recommends accept / counter-back / walk.
+                sellerCounter pulled from the most recent counter row in
+                history if present, otherwise list_price as a sensible
+                starting frame. */}
+            <NegotiationCoPilotPanel
+              offerId={offer.id}
+              side="buyer"
+              sellerCounter={
+                (() => {
+                  // The current counter amount lives on the offer row itself
+                  // when status is 'countered'. Fall back to the most recent
+                  // counter entry in history, then list price.
+                  const offerWithCounter = offer as unknown as {
+                    counter_amount?: number | null
+                    status?: string | null
+                  }
+                  if (offerWithCounter.counter_amount && offerWithCounter.counter_amount > 0) {
+                    return Number(offerWithCounter.counter_amount)
+                  }
+                  return listing?.list_price ?? offer.offer_price
+                })()
+              }
+              buyerMaxBudget={offer.offer_price * 1.1}
             />
           </div>
         )}

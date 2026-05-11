@@ -294,6 +294,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       // of the nested .strategy).
       const result = await negotiationCoPilot({
         offerId:        offer.id,
+        side:           "seller",   // incoming offer on our listing
         buyerMaxBudget: offer.offer_price * 1.1,
       })
       if (!result.success) {
@@ -355,6 +356,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       // bonus comparables/draft response.
       const result = await negotiationCoPilot({
         offerId:        offer.id,
+        side:           "seller",   // incoming offer on our listing
         buyerMaxBudget: offer.offer_price * 1.1,
       })
       if (!result.success) {
