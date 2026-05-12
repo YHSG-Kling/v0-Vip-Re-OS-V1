@@ -25,6 +25,7 @@ import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
 import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -520,13 +521,19 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </CardContent>
         </Card>
 
-        {/* 10. VENDORS PREVIEW */}
+        {/* 10a. PRE-LISTING TOOLKIT — persona+stage-filtered marketplace
+                  preview surfaces stagers, photographers, cleaners, and
+                  prep pros the agent has curated for sellers. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="seller" />
+
+        {/* 10b. ACTIVE VENDOR ASSIGNMENTS — pros already engaged on this
+                  listing/transaction (assignment-status focused). */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <Briefcase className="h-4 w-4" />
-                Vendors
+                Active Vendor Team
               </CardTitle>
               <Button variant="ghost" size="sm" asChild>
                 <Link href={`/portal/${contactId}/vendors`}>

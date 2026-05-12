@@ -10,6 +10,7 @@ import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { Badge } from "@/app/components/ui/badge"
@@ -594,6 +595,11 @@ export default async function PortalHomePage({
             </CardContent>
           </Card>
         )}
+
+        {/* Buyer Toolkit — persona+stage-filtered marketplace preview.
+             Surfaces lender / inspector / home-warranty / movers / etc.
+             tagged for the buyer's persona + current deal stage. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="buyer" />
 
         {/* My Team */}
         <DealTeamCard
