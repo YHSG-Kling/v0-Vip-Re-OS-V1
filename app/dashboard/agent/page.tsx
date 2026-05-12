@@ -43,6 +43,8 @@ import { ListingApptPrepWidget } from "./components/listing-appt-prep-widget"
 import { getAgentUpcomingListingApptPreps, type ListingApptPrepRow } from "@/app/actions/listing-appointment-copilot"
 import { RevenueProtectionHero } from "./components/revenue-protection-hero"
 import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/actions/revenue-protection"
+import { IncomeForecastCard } from "./components/income-forecast-card"
+import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -91,6 +93,7 @@ export default function AgentDashboard() {
   const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
   const [upcomingListingPreps, setUpcomingListingPreps] = useState<ListingApptPrepRow[]>([])
   const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
+  const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -181,6 +184,11 @@ export default function AgentDashboard() {
           getAgentRevenueProtection({ agentId: user.id })
             .then((r) => setRevenueProtection(r.data ?? null))
             .catch(() => setRevenueProtection(null))
+
+          // Income Forecast — latest 30/60/90 projection + sphere referral expected
+          getAgentIncomeForecast({ agentId: user.id })
+            .then((r) => setIncomeForecast(r.data ?? null))
+            .catch(() => setIncomeForecast(null))
         }
 
         // 4. Calculate month start
@@ -472,6 +480,14 @@ export default function AgentDashboard() {
         {brokerageId && userId && (
           <RevenueProtectionHero
             data={revenueProtection}
+            brokerageId={brokerageId}
+            agentUserId={userId}
+          />
+        )}
+
+        {brokerageId && userId && (
+          <IncomeForecastCard
+            data={incomeForecast}
             brokerageId={brokerageId}
             agentUserId={userId}
           />

@@ -73,6 +73,8 @@ import { loadReferralPipelineAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { CampaignsGiftingPanel } from "./components/campaigns-gifting-panel"
+import { LifetimeNpvPanel } from "@/app/components/features/lifetime-customers/lifetime-npv-panel"
+import { getAgentLifetimeNpvRanked, type NpvRow } from "@/app/actions/lifetime-npv"
 
 // Types
 interface PastClient {
@@ -170,6 +172,7 @@ export default function LifetimeCustomersPage() {
   const [currentAgentId, setCurrentAgentId] = useState("")
   const [currentUserId, setCurrentUserId] = useState("")
   const [currentBrokerageId, setCurrentBrokerageId] = useState("")
+  const [npvRows, setNpvRows] = useState<NpvRow[]>([])
 
   // Filter state
   const [search, setSearch] = useState("")
@@ -287,6 +290,11 @@ export default function LifetimeCustomersPage() {
       ])
       setCurrentAgentId(agentRow?.id ?? authUser.id)
       setCurrentBrokerageId(userRow?.brokerage_id ?? "")
+
+      // Pull the NPV-ranked sphere (latest snapshots per contact for this agent).
+      // The NPV scorer uses user_id (not agents.id) for agent_id; pass authUser.id.
+      const npvRes = await getAgentLifetimeNpvRanked({ agentId: authUser.id, limit: 100 })
+      if (npvRes.success && npvRes.rows) setNpvRows(npvRes.rows)
     }
     resolveAgent()
   }, [])
@@ -1242,10 +1250,20 @@ export default function LifetimeCustomersPage() {
 
           {/* TAB: Engagement Scores */}
           <TabsContent value="engagement" className="space-y-4">
-            <div className="flex items-center justify-between">
+            {/* NPV-ranked sphere — the calibrated 5-year referral GCI value
+                per contact. The most actionable view in this tab. */}
+            {currentUserId && currentBrokerageId && (
+              <LifetimeNpvPanel
+                rows={npvRows}
+                agentUserId={currentUserId}
+                brokerageId={currentBrokerageId}
+              />
+            )}
+
+            <div className="flex items-center justify-between pt-4 border-t">
               <div>
-                <h3 className="font-semibold">Engagement Scores</h3>
-                <p className="text-sm text-muted-foreground">Lifetime customers ranked by relationship health</p>
+                <h3 className="font-semibold">Engagement Scores (legacy)</h3>
+                <p className="text-sm text-muted-foreground">Relationship-health view — see NPV panel above for the dollar-ranked sphere.</p>
               </div>
               <Button size="sm" onClick={() => {
                 // Reuse existing sphere scoring logic — trigger from radar tab
