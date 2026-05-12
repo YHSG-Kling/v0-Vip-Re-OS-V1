@@ -778,6 +778,45 @@ export default function BriefingPage() {
             </Card>
           )}
 
+          {/* LISTINGS AT RISK */}
+          {briefing?.listings_at_risk && briefing.listings_at_risk.length > 0 && (
+            <Card className="border-amber-500/60">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-amber-700">
+                  <AlertTriangle className="h-5 w-5" />
+                  Listings at Risk
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {briefing.listings_at_risk.map((listing, idx) => (
+                    <a
+                      key={idx}
+                      href={`/dashboard/listings/${listing.listing_id}/lifecycle`}
+                      className="block p-3 rounded-lg bg-amber-50 border border-amber-200 hover:bg-amber-100 transition"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-sm flex items-center gap-2">
+                          <MapPin className="h-4 w-4" />
+                          {listing.address}
+                        </p>
+                        <span className={
+                          "text-[10px] uppercase px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap " +
+                          (listing.risk_level === "critical"
+                            ? "bg-red-500 text-white"
+                            : "bg-amber-500 text-white")
+                        }>
+                          {listing.risk_level.replace("_", " ")} · {listing.score}/100
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{listing.reason}</p>
+                    </a>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* TOP 3 CONTACTS TO WORK TODAY */}
           {priorityContacts.length > 0 && (
             <Card>

@@ -37,6 +37,8 @@ import { PredictiveListingCard } from "./components/predictive-listing-card"
 import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
 import { DealRiskWidget } from "./components/deal-risk-widget"
 import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
+import { ListingRiskWidget } from "./components/listing-risk-widget"
+import { getAgentAtRiskListings, type AgentListingRisk } from "@/app/actions/listing-risk-agent"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -82,6 +84,7 @@ export default function AgentDashboard() {
   }>>([])
   const [userId, setUserId] = useState("")
   const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
+  const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -148,6 +151,15 @@ export default function AgentDashboard() {
           })
             .then(setAtRiskTxns)
             .catch(() => setAtRiskTxns([]))
+
+          // Listing Risk Radar — at-risk + critical active listings for this agent
+          getAgentAtRiskListings({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskListings)
+            .catch(() => setAtRiskListings([]))
         }
 
         // 4. Calculate month start
@@ -437,6 +449,8 @@ export default function AgentDashboard() {
         )}
 
         {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
+
+        {atRiskListings.length > 0 && <ListingRiskWidget atRisk={atRiskListings} />}
 
         {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
             💎 Likely seller). Aggregates lead_score_history +

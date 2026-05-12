@@ -51,6 +51,14 @@ export interface DealAtRisk {
   reason: string
 }
 
+export interface ListingAtRisk {
+  listing_id: string
+  address: string
+  reason: string
+  risk_level: "watch" | "at_risk" | "critical"
+  score: number
+}
+
 export interface DailyBriefing {
   id: string
   agent_id: string
@@ -63,6 +71,7 @@ export interface DailyBriefing {
   todays_events: any[]
   tasks_overdue: number
   deals_at_risk: DealAtRisk[]
+  listings_at_risk: ListingAtRisk[]
   ai_model_used: string
   generated_at: string
   opened_at: string | null
@@ -207,6 +216,54 @@ export async function generateDailyBriefing(
       }
     })
 
+  // Fetch listing health for the agent's active listings — mirrors the
+  // deal-health block above. Surfaces a "listings at risk" section so
+  // the agent's morning briefing covers both sides of the lifecycle.
+  let listingsAtRisk: ListingAtRisk[] = []
+  try {
+    const { data: agentListings } = await supabase
+      .from("listings")
+      .select("id, address, status")
+      .eq("agent_id", agentId)
+      .in("status", ["active", "coming_soon"])
+
+    const listingIds = (agentListings ?? []).map((l) => l.id)
+    if (listingIds.length > 0) {
+      const { data: lhRows } = await supabase
+        .from("listing_health_scores")
+        .select("listing_id, overall_score, risk_level, ai_narrative, flags, scored_at")
+        .in("listing_id", listingIds)
+        .order("scored_at", { ascending: false })
+        .limit(50)
+
+      const seen = new Set<string>()
+      for (const row of (lhRows ?? []) as Array<{
+        listing_id: string
+        overall_score: number
+        risk_level: string
+        ai_narrative: string | null
+        flags: string[] | null
+      }>) {
+        if (seen.has(row.listing_id)) continue
+        seen.add(row.listing_id)
+        if (row.risk_level !== "at_risk" && row.risk_level !== "critical") continue
+        const listing = agentListings?.find((l) => l.id === row.listing_id)
+        const topFlag = row.flags?.[0] ?? null
+        listingsAtRisk.push({
+          listing_id: row.listing_id,
+          address:    listing?.address ?? "Unknown",
+          reason:     row.ai_narrative ?? topFlag ?? `Health score ${row.overall_score}/100`,
+          risk_level: row.risk_level as "at_risk" | "critical",
+          score:      row.overall_score,
+        })
+      }
+      // Cap at 5 for the briefing
+      listingsAtRisk = listingsAtRisk.slice(0, 5)
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] listing-health fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -319,6 +376,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     todays_events: calendarEvents,
     market_pulse: aiResponse.market_pulse,
     deals_at_risk: finalDealsAtRisk,
+    listings_at_risk: listingsAtRisk,
     tasks_overdue: tasksOverdue,
     ai_model_used: AI_MODEL,
     generated_at: new Date().toISOString(),
@@ -375,6 +433,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
         tasks_count: tasks.length,
         transactions_count: transactions.length,
         deals_at_risk_count: finalDealsAtRisk.length,
+        listings_at_risk_count: listingsAtRisk.length,
       },
     })
 
