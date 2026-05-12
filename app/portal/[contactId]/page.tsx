@@ -9,6 +9,7 @@ import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-infere
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
+import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { Badge } from "@/app/components/ui/badge"
@@ -419,6 +420,10 @@ export default async function PortalHomePage({
               <p className="text-sm text-muted-foreground leading-relaxed">{stageCtx.whatNext}</p>
               <Badge variant="outline" className="text-xs">Responsible: {stageCtx.responsible}</Badge>
             </div>
+            {/* Live event stream — every translated kernel event for this
+                 contact. Surfaces on every persona's portal automatically. */}
+            <PortalLiveFeed contactId={contactId} limit={10} compact />
+
             {activeTransaction && milestones.length > 0 && (
               <div className="border-t pt-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Milestone Progress</p>

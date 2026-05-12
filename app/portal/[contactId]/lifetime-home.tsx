@@ -11,6 +11,7 @@ import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/Refinan
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import {
   Bell,
@@ -93,6 +94,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
       {/* 0a. WHAT'S NEW — kernel fan-out feeds (anniversary, equity changes,
             agent market updates). Hidden when nothing client-visible. */}
       <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
+
+      {/* 0a-bis. Live event stream — every actionable kernel event the
+                  customer is allowed to see, translated to friendly copy. */}
+      <PortalLiveFeed contactId={contactId} limit={15} />
 
       {/* 0b. Lifetime milestone line — gives the homeowner the same "where am
             I" signal that buyer/seller portals have. Driven by close-date

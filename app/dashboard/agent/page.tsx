@@ -45,6 +45,7 @@ import { RevenueProtectionHero } from "./components/revenue-protection-hero"
 import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/actions/revenue-protection"
 import { IncomeForecastCard } from "./components/income-forecast-card"
 import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
+import { OpenActionsCard } from "./components/open-actions-card"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -484,6 +485,8 @@ export default function AgentDashboard() {
             agentUserId={userId}
           />
         )}
+
+        <OpenActionsCard />
 
         {brokerageId && userId && (
           <IncomeForecastCard
