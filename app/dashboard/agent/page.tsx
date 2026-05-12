@@ -41,6 +41,8 @@ import { ListingRiskWidget } from "./components/listing-risk-widget"
 import { getAgentAtRiskListings, type AgentListingRisk } from "@/app/actions/listing-risk-agent"
 import { ListingApptPrepWidget } from "./components/listing-appt-prep-widget"
 import { getAgentUpcomingListingApptPreps, type ListingApptPrepRow } from "@/app/actions/listing-appointment-copilot"
+import { RevenueProtectionHero } from "./components/revenue-protection-hero"
+import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/actions/revenue-protection"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -88,6 +90,7 @@ export default function AgentDashboard() {
   const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
   const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
   const [upcomingListingPreps, setUpcomingListingPreps] = useState<ListingApptPrepRow[]>([])
+  const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -173,6 +176,11 @@ export default function AgentDashboard() {
           })
             .then(setUpcomingListingPreps)
             .catch(() => setUpcomingListingPreps([]))
+
+          // Revenue Protection Score — latest quarterly snapshot for this agent
+          getAgentRevenueProtection({ agentId: user.id })
+            .then((r) => setRevenueProtection(r.data ?? null))
+            .catch(() => setRevenueProtection(null))
         }
 
         // 4. Calculate month start
@@ -458,6 +466,14 @@ export default function AgentDashboard() {
             userId={userId}
             predictedSellers={predictedSellers}
             queuedAutoTouches={queuedAutoTouches}
+          />
+        )}
+
+        {brokerageId && userId && (
+          <RevenueProtectionHero
+            data={revenueProtection}
+            brokerageId={brokerageId}
+            agentUserId={userId}
           />
         )}
 
