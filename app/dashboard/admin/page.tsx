@@ -6,6 +6,7 @@ import { ProvisioningHealthPanel } from './components/provisioning-health-panel'
 import { LicenseExpiryPanel } from './components/os/license-expiry-panel'
 import { TenantSafetyWidget } from './components/tenant-safety-widget'
 import { RevenueProtectionRollupWidget } from './components/revenue-protection-rollup-widget'
+import { BrokerageIntelligenceWidget } from './components/brokerage-intelligence-widget'
 import WorkflowReportsWidget from './components/workflow-reports-widget'
 import { getBrokerageAgentLicenseStatuses } from '@/app/actions/admin/license-tracking'
 
@@ -122,6 +123,7 @@ export default async function AdminPage() {
       />
       <div className="px-6 pb-6 space-y-6">
         <RevenueProtectionRollupWidget brokerageId={brokerageId} />
+        <BrokerageIntelligenceWidget />
         <TenantSafetyWidget />
         <WorkflowReportsWidget brokerageId={brokerageId} />
         <LicenseExpiryPanel agents={licenseAgents} />
