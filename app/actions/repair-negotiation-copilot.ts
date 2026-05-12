@@ -117,7 +117,7 @@ export async function repairNegotiationCoPilot(params: {
       .order("created_at", { ascending: true }),
     supabase
       .from("transaction_inspections")
-      .select("id, inspection_type, status, findings_summary, total_estimated_cost, completed_date")
+      .select("id, inspection_type, status, issues_found, cost, completed_date, notes")
       .eq("transaction_id", params.transactionId)
       .order("created_at", { ascending: true }),
   ])
@@ -161,18 +161,21 @@ export async function repairNegotiationCoPilot(params: {
   const purchasePrice = Number(tx.purchase_price ?? 0)
   const repairAsPctOfPrice = purchasePrice > 0 ? (totalEstimated / purchasePrice) * 100 : 0
 
-  // Inspection findings summary (best-effort context for the AI)
+  // Inspection findings summary (best-effort context for the AI). Live
+  // schema: transaction_inspections.issues_found (text), notes (text), cost
+  // (numeric). There's no findings_summary or total_estimated_cost column.
   const inspections = (inspectionsRes.data ?? []) as Array<{
     id: string
     inspection_type: string | null
     status: string | null
-    findings_summary: string | null
-    total_estimated_cost: number | null
+    issues_found: string | null
+    cost: number | null
+    notes: string | null
   }>
   const inspectionContext = inspections
-    .filter((i) => i.findings_summary)
+    .filter((i) => i.issues_found || i.notes)
     .slice(0, 3)
-    .map((i) => `- ${i.inspection_type ?? "Inspection"}: ${i.findings_summary}`)
+    .map((i) => `- ${i.inspection_type ?? "Inspection"}: ${i.issues_found ?? i.notes}`)
     .join("\n") || "No inspection findings on record."
 
   // ─── AI: overall strategy ────────────────────────────────────────────────

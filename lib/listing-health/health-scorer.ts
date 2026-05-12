@@ -111,19 +111,20 @@ async function scoreShowings(supabase: Supa, listingId: string): Promise<Listing
   const issues: string[] = []
   let score = 100
 
-  // Last 14 days vs prior 14 days for trend
-  const fourteenDaysAgo  = new Date(Date.now() - 14 * 86_400_000).toISOString()
-  const twentyEightDaysAgo = new Date(Date.now() - 28 * 86_400_000).toISOString()
+  // Last 14 days vs prior 14 days for trend. Live schema uses
+  // showings.scheduled_date (date), not showing_date.
+  const fourteenDaysAgo  = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10)
+  const twentyEightDaysAgo = new Date(Date.now() - 28 * 86_400_000).toISOString().slice(0, 10)
 
   const { data: rows } = await supabase
     .from("showings")
-    .select("id, showing_date, status, interest_level")
+    .select("id, scheduled_date, status, buyer_interest_level")
     .eq("listing_id", listingId)
-    .gte("showing_date", twentyEightDaysAgo)
+    .gte("scheduled_date", twentyEightDaysAgo)
 
-  const list = (rows ?? []) as Array<{ id: string; showing_date: string; status: string; interest_level: string | null }>
-  const recent = list.filter((s) => s.showing_date >= fourteenDaysAgo)
-  const prior  = list.filter((s) => s.showing_date <  fourteenDaysAgo)
+  const list = (rows ?? []) as Array<{ id: string; scheduled_date: string; status: string; buyer_interest_level: string | null }>
+  const recent = list.filter((s) => s.scheduled_date >= fourteenDaysAgo)
+  const prior  = list.filter((s) => s.scheduled_date <  fourteenDaysAgo)
 
   if (recent.length === 0) {
     score = 20
@@ -157,14 +158,15 @@ async function scoreFeedback(supabase: Supa, listingId: string): Promise<Listing
   const issues: string[] = []
   let score = 80   // neutral default if we have no feedback
 
+  // Live schema: showings.buyer_interest_level (text), feedback (text), rating (int).
   const { data: rows } = await supabase
     .from("showings")
-    .select("interest_level, rating")
+    .select("buyer_interest_level, rating")
     .eq("listing_id", listingId)
     .eq("status", "completed")
-    .not("interest_level", "is", null)
+    .not("buyer_interest_level", "is", null)
 
-  const list = (rows ?? []) as Array<{ interest_level: string | null; rating: number | null }>
+  const list = (rows ?? []) as Array<{ buyer_interest_level: string | null; rating: number | null }>
   if (list.length === 0) {
     return {
       category: "FEEDBACK",
@@ -175,8 +177,8 @@ async function scoreFeedback(supabase: Supa, listingId: string): Promise<Listing
     }
   }
 
-  const interested  = list.filter((r) => r.interest_level === "interested" || r.interest_level === "very_interested").length
-  const notInterested = list.filter((r) => r.interest_level === "not_interested").length
+  const interested  = list.filter((r) => r.buyer_interest_level === "interested" || r.buyer_interest_level === "very_interested").length
+  const notInterested = list.filter((r) => r.buyer_interest_level === "not_interested").length
 
   // Interest ratio (interested / total)
   const interestRatio = interested / list.length
@@ -204,19 +206,24 @@ async function scoreOpenHouse(supabase: Supa, listingId: string): Promise<Listin
   const issues: string[] = []
   let score = 80   // neutral default if no open house yet
 
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString()
+  // Live schema: open_houses.event_date (date), total_check_ins (int),
+  // total_leads_generated (int), status. There's no completed_at column —
+  // we infer "completed" from event_date < today.
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10)
+  const today = new Date().toISOString().slice(0, 10)
   const { data: openHouses } = await supabase
     .from("open_houses")
-    .select("id, scheduled_date, completed_at, total_attendees, leads_captured")
+    .select("id, event_date, status, total_check_ins, total_leads_generated, total_rsvps")
     .eq("listing_id", listingId)
-    .gte("scheduled_date", ninetyDaysAgo)
+    .gte("event_date", ninetyDaysAgo)
 
   const list = (openHouses ?? []) as Array<{
     id: string
-    scheduled_date: string | null
-    completed_at: string | null
-    total_attendees: number | null
-    leads_captured: number | null
+    event_date: string | null
+    status: string | null
+    total_check_ins: number | null
+    total_leads_generated: number | null
+    total_rsvps: number | null
   }>
 
   if (list.length === 0) {
@@ -229,23 +236,26 @@ async function scoreOpenHouse(supabase: Supa, listingId: string): Promise<Listin
     }
   }
 
-  const completed = list.filter((o) => o.completed_at)
-  const totalAttendees = completed.reduce((s, o) => s + (o.total_attendees ?? 0), 0)
-  const avgAttendees   = completed.length > 0 ? totalAttendees / completed.length : 0
+  // "Completed" = event_date is in the past AND status not cancelled.
+  const completed = list.filter(
+    (o) => o.event_date && o.event_date < today && o.status !== "cancelled",
+  )
+  const totalCheckIns = completed.reduce((s, o) => s + (o.total_check_ins ?? 0), 0)
+  const avgCheckIns   = completed.length > 0 ? totalCheckIns / completed.length : 0
 
-  // Avg-attendees scoring tiers
-  if (avgAttendees >= 15)      score = 95
-  else if (avgAttendees >= 8)  score = 80
-  else if (avgAttendees >= 4)  score = 65
-  else if (avgAttendees >= 1)  { score = 45; issues.push(`Open house avg attendance only ${avgAttendees.toFixed(1)}`) }
-  else if (completed.length > 0) { score = 30; issues.push("Open houses held with zero attendees") }
+  // Avg-check-ins scoring tiers
+  if (avgCheckIns >= 15)       score = 95
+  else if (avgCheckIns >= 8)   score = 80
+  else if (avgCheckIns >= 4)   score = 65
+  else if (avgCheckIns >= 1)   { score = 45; issues.push(`Open house avg check-ins only ${avgCheckIns.toFixed(1)}`) }
+  else if (completed.length > 0) { score = 30; issues.push("Open houses held with zero check-ins") }
 
   return {
     category: "OPEN_HOUSE",
     score,
     weight:   CATEGORY_WEIGHTS.OPEN_HOUSE,
     issues,
-    data:     { count: list.length, completed: completed.length, totalAttendees, avgAttendees },
+    data:     { count: list.length, completed: completed.length, totalCheckIns, avgCheckIns },
   }
 }
 

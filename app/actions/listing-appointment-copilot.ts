@@ -306,46 +306,50 @@ export async function getListingAppointmentPrepDetail(params: {
   // Dereference step outputs to richer data
   const stepOutputs = (run.step_outputs ?? {}) as Record<string, Record<string, unknown> | undefined>
 
-  // CMA
+  // CMA — live cma_reports schema uses FLAT numeric columns (not jsonb).
+  // Fields: recommended_price, price_range_low, price_range_high,
+  // comparable_count, market_conditions, status.
   let cma: ListingApptCmaSummary | null = null
   const cmaId = stepOutputs.generate_cma?.cmaId as string | undefined
   if (cmaId) {
     const { data: cmaRow } = await supabase
       .from("cma_reports")
-      .select("id, ai_valuation, pricing_strategy, comparables, status")
+      .select("id, recommended_price, price_range_low, price_range_high, comparable_count, market_conditions, status")
       .eq("id", cmaId)
       .maybeSingle()
     if (cmaRow) {
-      const valuation = (cmaRow.ai_valuation ?? {}) as Record<string, unknown>
-      const strategy  = (cmaRow.pricing_strategy ?? {}) as Record<string, unknown>
-      const compsArr  = Array.isArray(cmaRow.comparables) ? cmaRow.comparables : []
       cma = {
-        cmaId:               cmaRow.id as string,
-        recommendedPrice:    (valuation.recommendedPrice as number | undefined) ?? (valuation.estimated_value as number | undefined) ?? null,
-        priceRangeLow:       (valuation.priceRangeLow as number | undefined) ?? (valuation.low as number | undefined) ?? null,
-        priceRangeHigh:      (valuation.priceRangeHigh as number | undefined) ?? (valuation.high as number | undefined) ?? null,
-        comparableCount:     compsArr.length,
-        pricingStrategySummary: (strategy.summary as string | undefined) ?? (strategy.strategy as string | undefined) ?? null,
-        status:              (cmaRow.status as string | undefined) ?? null,
+        cmaId:                  cmaRow.id as string,
+        recommendedPrice:       (cmaRow.recommended_price as number | null | undefined) ?? null,
+        priceRangeLow:          (cmaRow.price_range_low as number | null | undefined) ?? null,
+        priceRangeHigh:         (cmaRow.price_range_high as number | null | undefined) ?? null,
+        comparableCount:        (cmaRow.comparable_count as number | null | undefined) ?? null,
+        pricingStrategySummary: (cmaRow.market_conditions as string | null | undefined) ?? null,
+        status:                 (cmaRow.status as string | undefined) ?? null,
       }
     }
   }
 
-  // Presentation
+  // Presentation — live listing_presentations schema has structured columns:
+  // slide_deck (jsonb), marketing_plan (jsonb), cma_low/mid/high_value,
+  // cma_narrative, presentation (text legacy), presentation_type (text),
+  // appointment_at, status. Chapters are stored as items in slide_deck.
   let presentation: ListingApptPresentationSummary | null = null
   const presentationId = stepOutputs.generate_presentation?.presentationId as string | undefined
   if (presentationId) {
     const { data: p } = await supabase
       .from("listing_presentations")
-      .select("id, presentation_type, status, presentation")
+      .select("id, presentation_type, status, slide_deck, marketing_plan")
       .eq("id", presentationId)
       .maybeSingle()
     if (p) {
-      const pres = (p.presentation ?? {}) as { chapters?: unknown[]; sections?: unknown[] }
-      const chapterCount = Array.isArray(pres.chapters)
-        ? pres.chapters.length
-        : Array.isArray(pres.sections)
-        ? pres.sections.length
+      const slideDeck = p.slide_deck as { chapters?: unknown[]; sections?: unknown[]; slides?: unknown[] } | null
+      const chapterCount = Array.isArray(slideDeck?.chapters)
+        ? slideDeck.chapters.length
+        : Array.isArray(slideDeck?.sections)
+        ? slideDeck.sections.length
+        : Array.isArray(slideDeck?.slides)
+        ? slideDeck.slides.length
         : null
       presentation = {
         presentationId:   p.id as string,
