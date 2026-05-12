@@ -39,6 +39,8 @@ import { DealRiskWidget } from "./components/deal-risk-widget"
 import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
 import { ListingRiskWidget } from "./components/listing-risk-widget"
 import { getAgentAtRiskListings, type AgentListingRisk } from "@/app/actions/listing-risk-agent"
+import { ListingApptPrepWidget } from "./components/listing-appt-prep-widget"
+import { getAgentUpcomingListingApptPreps, type ListingApptPrepRow } from "@/app/actions/listing-appointment-copilot"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -85,6 +87,7 @@ export default function AgentDashboard() {
   const [userId, setUserId] = useState("")
   const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
   const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
+  const [upcomingListingPreps, setUpcomingListingPreps] = useState<ListingApptPrepRow[]>([])
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -160,6 +163,16 @@ export default function AgentDashboard() {
           })
             .then(setAtRiskListings)
             .catch(() => setAtRiskListings([]))
+
+          // Listing Appointment Co-Pilot — upcoming preps (running or completed in last 7d)
+          // `agentId` here is the auth user id, since workflow_runs.agent_user_id
+          // is the users(id) reference (not agents.id).
+          getAgentUpcomingListingApptPreps({
+            agentId: user.id,
+            limit: 5,
+          })
+            .then(setUpcomingListingPreps)
+            .catch(() => setUpcomingListingPreps([]))
         }
 
         // 4. Calculate month start
@@ -451,6 +464,8 @@ export default function AgentDashboard() {
         {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
 
         {atRiskListings.length > 0 && <ListingRiskWidget atRisk={atRiskListings} />}
+
+        {upcomingListingPreps.length > 0 && <ListingApptPrepWidget preps={upcomingListingPreps} />}
 
         {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
             💎 Likely seller). Aggregates lead_score_history +
