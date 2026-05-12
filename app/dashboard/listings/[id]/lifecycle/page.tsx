@@ -7,6 +7,7 @@ import { StagePipeline }       from "@/app/components/dashboard/listings/lifecyc
 import { TasksPanel }           from "@/app/components/dashboard/listings/lifecycle/tasks-panel"
 import { StageTimeline }        from "@/app/components/dashboard/listings/lifecycle/stage-timeline"
 import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
+import { ListingHealthRadarPanel } from "@/app/components/features/listings/listing-health-radar-panel"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import {
@@ -111,6 +112,34 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
 
   const mediaApproved = !!mediaApprovedResult.data
   const transactionId = transactionResult.data?.id ?? null
+
+  // Listing Health Radar data — runs in parallel with the launch-readiness
+  // fetches below. All three queries are gated by RLS to this brokerage.
+  const [healthScoreRes, openInterventionsRes, scoreHistoryRes] = await Promise.all([
+    supabase
+      .from("listing_health_scores")
+      .select("id, overall_score, risk_level, flags, ai_narrative, previous_score, score_delta, days_on_market, scored_at, recommended_actions")
+      .eq("listing_id", listingId)
+      .order("scored_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("listing_health_interventions")
+      .select("id, issue_detected, severity, ai_recommendation, category, created_at")
+      .eq("listing_id", listingId)
+      .eq("resolved", false)
+      .order("created_at", { ascending: false })
+      .limit(10),
+    supabase
+      .from("listing_health_scores")
+      .select("overall_score, risk_level, scored_at")
+      .eq("listing_id", listingId)
+      .order("scored_at", { ascending: false })
+      .limit(7),
+  ])
+  const healthScore = healthScoreRes.data ?? null
+  const openInterventions = openInterventionsRes.data ?? []
+  const scoreHistory = scoreHistoryRes.data ?? []
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -286,6 +315,16 @@ const { data: listingVendorBookings } = await supabase
             </div>
           </div>
         )}
+
+        {/* Listing Health Radar — daily-scored health for this active listing */}
+        <div className="mb-4">
+          <ListingHealthRadarPanel
+            listingId={listingId}
+            healthScore={healthScore as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["healthScore"]}
+            openInterventions={openInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["openInterventions"]}
+            scoreHistory={scoreHistory as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["scoreHistory"]}
+          />
+        </div>
 
         {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
         <div className="mb-6">

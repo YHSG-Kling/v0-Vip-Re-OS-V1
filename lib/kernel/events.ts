@@ -336,6 +336,8 @@ export enum KernelEvent {
   DAILY_BRIEFING_GENERATED           = 'daily_briefing_generated',
   DEAL_HEALTH_SCORE_UPDATED          = 'deal_health_score_updated',
   DEAL_AT_RISK_DETECTED              = 'deal_at_risk_detected',
+  LISTING_HEALTH_SCORE_UPDATED       = 'listing_health_score_updated',
+  LISTING_AT_RISK_DETECTED           = 'listing_at_risk_detected',
   INTENT_CLASSIFIED                  = 'intent_classified',
   COACHING_REPORT_GENERATED          = 'coaching_report_generated',
   PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
