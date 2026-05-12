@@ -11,6 +11,31 @@ import type { EducationFormat, JourneyPhase, Persona } from "./types"
 
 export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
 
+// ─── GENERATIONAL COHORT ──────────────────────────────────────────────────────
+// Companion routing axis. Same person can be 50-65 ageSeg + 'boomer' OR
+// 'gen_x' depending on which side of 1965 they were born. Tone differs:
+// boomers respond to "your home" framing; gen_x to "your equity"; millennials
+// to "your stage in life"; gen_z to "starting out". Marketing + education
+// modules tag against the cohort the broker wants to reach.
+
+export type GenerationalCohort =
+  | "gen_z"        // born 1997-2012 (~age 14-29 in 2026)
+  | "millennial"   // born 1981-1996 (~age 30-45)
+  | "gen_x"        // born 1965-1980 (~age 46-61)
+  | "boomer"       // born 1946-1964 (~age 62-80)
+  | "silent"       // pre-1946 (~age 80+)
+  | "unknown"
+
+/** Derive cohort from a numeric age. Pure utility, no DB access. */
+export function generationalCohortFromAge(age: number | null | undefined): GenerationalCohort {
+  if (age == null || age <= 0 || !Number.isFinite(age)) return "unknown"
+  if (age < 30)  return "gen_z"
+  if (age < 46)  return "millennial"
+  if (age < 62)  return "gen_x"
+  if (age < 80)  return "boomer"
+  return "silent"
+}
+
 // ─── DELIVERY CONFIG ──────────────────────────────────────────────────────────
 
 export interface DeliveryConfig {

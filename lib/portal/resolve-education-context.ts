@@ -4,7 +4,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { determinePortalView, type PortalView } from "@/lib/kernel/portal"
-import type { AgeSegment } from "@/lib/kernel/education"
+import {
+  generationalCohortFromAge,
+  type AgeSegment,
+  type GenerationalCohort,
+} from "@/lib/kernel/education"
 
 // ─── MILESTONE LABEL MAPS ─────────────────────────────────────────────────────
 
@@ -123,6 +127,10 @@ export interface EducationContext {
   buyerStage: string | null
   currentMilestone: string | null
   ageSeg: AgeSegment
+  /** Generational cohort derived from date_of_birth alongside ageSeg.
+   *  Education + marketing modules tag against this for tone routing
+   *  (e.g. boomer downsizer vs millennial first-time-buyer). */
+  generationalCohort: GenerationalCohort
   completedLessonKeys: string[]
 }
 
@@ -148,18 +156,25 @@ export async function resolveEducationContext(
 
   const buyerStage = contact?.buyer_stage ?? null
 
-  // Calculate age segment from date_of_birth
-  let ageSeg: AgeSegment = "30-50" // Default
+  // Calculate age segment + generational cohort from date_of_birth
+  let ageSeg: AgeSegment = "30-50"  // Default
+  let computedAge: number | null = null
   if (contact?.date_of_birth) {
     const birthDate = new Date(contact.date_of_birth)
     const today = new Date()
-    const age = today.getFullYear() - birthDate.getFullYear()
-    
-    if (age < 30) ageSeg = "18-30"
-    else if (age < 50) ageSeg = "30-50"
-    else if (age < 65) ageSeg = "50-65"
-    else ageSeg = "65+"
+    computedAge = today.getFullYear() - birthDate.getFullYear()
+    // Adjust if birthday hasn't happened yet this year
+    const beforeBirthday =
+      today.getMonth() < birthDate.getMonth() ||
+      (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())
+    if (beforeBirthday) computedAge -= 1
+
+    if (computedAge < 30)      ageSeg = "18-30"
+    else if (computedAge < 50) ageSeg = "30-50"
+    else if (computedAge < 65) ageSeg = "50-65"
+    else                       ageSeg = "65+"
   }
+  const generationalCohort: GenerationalCohort = generationalCohortFromAge(computedAge)
 
   // Get current milestone from active transaction
   let currentMilestone: string | null = null
@@ -211,6 +226,7 @@ export async function resolveEducationContext(
     buyerStage,
     currentMilestone,
     ageSeg,
+    generationalCohort,
     completedLessonKeys,
   }
 }

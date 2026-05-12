@@ -55,6 +55,7 @@ import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-car
 import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
 import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
 import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -493,6 +494,11 @@ export default function AgentDashboard() {
         <AgentActionQueueCard />
 
         <OpenActionsCard />
+
+        {/* Sprint 7 — Knowledge & Growth Router: surfaces the top
+            learning modules picked by the actor's gap_tags + tenure.
+            Hides on empty. */}
+        {userId && <LearnThisWeekCard actorKind="agent" actorId={userId} />}
 
         {brokerageId && userId && (
           <IncomeForecastCard

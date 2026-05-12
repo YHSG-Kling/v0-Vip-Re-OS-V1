@@ -27,6 +27,7 @@ import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 import { predictDeadlineRisks } from "@/app/actions/multi-persona"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -265,6 +266,10 @@ export default async function CoordinatorDashboard({
 
       {/* Today's Focus — AI Brief */}
       <TodaysFocusCard brief={tcBrief} />
+
+      {/* Sprint 7 — Learning router for TC: tc_workload_spike,
+          tc_closing_backlog, staff_onboarding. Hides when no module qualifies. */}
+      <LearnThisWeekCard actorKind="staff" actorId={user.id} />
 
       {/* Deadline Risk Alert Banner */}
       {atRiskCount > 0 && (

@@ -18,6 +18,7 @@ import { TransactionComplianceTab } from "@/app/components/compliance/transactio
 import { FairHousingScanner } from "@/app/components/compliance/FairHousingScanner"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 import {
   ComplianceCommandStrip,
   ComplianceRiskRadar,
@@ -129,6 +130,11 @@ export default async function ComplianceDashboardPage() {
 
       {/* Today's Focus — AI Brief */}
       {complianceBrief && <TodaysFocusCard brief={complianceBrief} />}
+
+      {/* Sprint 7 — Learning router for compliance_officer:
+          unresolved_compliance_events, open_tenant_safety_findings,
+          staff_onboarding. Hides when no module qualifies. */}
+      {user && <LearnThisWeekCard actorKind="staff" actorId={user.id} />}
 
       {/* OS Command Strip - Priority Action */}
       <ComplianceCommandStrip

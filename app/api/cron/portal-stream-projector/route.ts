@@ -4,6 +4,8 @@ import {
   translateEvent,
   PROJECTABLE_EVENT_TYPES,
 } from "@/lib/portal-stream/event-translator"
+import { eventTypeToStageTags } from "@/lib/portal-stream/event-to-stage-tags"
+import { MILESTONE_LESSON_MAP } from "@/lib/portal/resolve-education-context"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -99,6 +101,21 @@ export async function GET(request: NextRequest) {
         })
         if (!translation) { summary.skipped++; continue }
 
+        // Sprint 7 — Knowledge & Growth Router: attach a lesson the
+        // customer should see alongside this lifecycle event. Two sources:
+        //   1) MILESTONE_LESSON_MAP (curated static portal lesson_key)
+        //   2) learning_modules tagged with the event's stage (channel
+        //      includes 'portal_lesson' and published)
+        const stageTags = eventTypeToStageTags(ev.event_type)
+        const educationLessonKey = staticLessonKeyFor(stageTags)
+        const learningModuleId = await pickPortalLessonModule(
+          svc, ev.brokerage_id, stageTags, persona,
+        )
+
+        const enrichedMetadata: Record<string, unknown> = { ...(ev.metadata ?? {}) }
+        if (educationLessonKey) enrichedMetadata.education_lesson_key = educationLessonKey
+        if (learningModuleId)   enrichedMetadata.learning_module_id   = learningModuleId
+
         await svc.from("portal_event_stream").insert({
           brokerage_id:          ev.brokerage_id,
           contact_id:            resolved.contactId,
@@ -113,7 +130,7 @@ export async function GET(request: NextRequest) {
           agent_action_required: translation.agentActionRequired,
           agent_action_label:    translation.agentActionLabel,
           severity:              translation.severity,
-          metadata:              ev.metadata ?? {},
+          metadata:              enrichedMetadata,
           occurred_at:           ev.created_at,
         })
         summary.inserted++
@@ -233,4 +250,52 @@ async function resolveEntityContext(
   }
 
   return out
+}
+
+// Sprint 7 helpers ───────────────────────────────────────────────────────────
+
+function staticLessonKeyFor(stageTags: string[]): string | null {
+  for (const tag of stageTags) {
+    const key = MILESTONE_LESSON_MAP[tag]
+    if (key) return key
+  }
+  return null
+}
+
+async function pickPortalLessonModule(
+  svc:         ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  stageTags:   string[],
+  persona:     string | null,
+): Promise<string | null> {
+  if (stageTags.length === 0) return null
+
+  // Pull modules published to portal_lesson channel that overlap the stage
+  const { data: pubs } = await svc
+    .from("learning_module_channel_publications")
+    .select("module_id")
+    .eq("brokerage_id", brokerageId)
+    .eq("channel", "portal_lesson")
+    .eq("status", "published")
+  const moduleIds = (pubs ?? []).map((p: Record<string, unknown>) => (p as { module_id: string }).module_id)
+  if (moduleIds.length === 0) return null
+
+  // Intersect against learning_modules stage_tags + audience_personas
+  const { data: mods } = await svc
+    .from("learning_modules")
+    .select("id, stage_tags, audience_personas, display_priority")
+    .in("id", moduleIds)
+    .eq("status", "published")
+    .order("display_priority", { ascending: false })
+
+  for (const m of (mods ?? []) as Array<{ id: string; stage_tags: string[] | null; audience_personas: string[] | null }>) {
+    const stages = m.stage_tags ?? []
+    const overlap = stages.some((s) => stageTags.includes(s))
+    if (!overlap) continue
+    const personaList = m.audience_personas ?? []
+    if (personaList.length === 0 || !persona || personaList.includes(persona)) {
+      return m.id
+    }
+  }
+  return null
 }
