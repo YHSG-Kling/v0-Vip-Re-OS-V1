@@ -106,14 +106,17 @@ export async function getTopContributors(): Promise<
     .not("authored_by", "is", null)
 
   const map = new Map<string, { full_name: string | null; module_count: number; total_views: number }>()
+  // Supabase returns the joined `users:authored_by` as an array even for
+  // a single-FK relationship — read the first element.
   for (const row of (data ?? []) as Array<{
     authored_by: string
     view_count:  number | null
-    users:       { first_name: string | null; last_name: string | null } | null
+    users:       Array<{ first_name: string | null; last_name: string | null }> | null
   }>) {
+    const userRow = row.users?.[0] ?? null
     const existing = map.get(row.authored_by) ?? {
-      full_name:    row.users
-        ? [row.users.first_name, row.users.last_name].filter(Boolean).join(" ") || null
+      full_name:    userRow
+        ? [userRow.first_name, userRow.last_name].filter(Boolean).join(" ") || null
         : null,
       module_count: 0,
       total_views:  0,

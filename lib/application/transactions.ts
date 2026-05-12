@@ -2114,12 +2114,17 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       phone: p.phone,
     })),
     educationalContent: educationalMoments.length > 0
-      ? {
-          title:  educationalMoments[0].module?.title           ?? "",
-          content: educationalMoments[0].module?.body            ?? "",
-          type:   (educationalMoments[0].module?.channels ?? [])[0] ?? "article",
-          isRead: !!educationalMoments[0].viewed_at,
-        }
+      ? (() => {
+          // Supabase join returns module as an array; pick the first row.
+          const first  = educationalMoments[0] as { module?: Array<{ title?: string; body?: string | null; channels?: string[] | null }> | { title?: string; body?: string | null; channels?: string[] | null } | null; viewed_at?: string | null }
+          const mod    = Array.isArray(first.module) ? first.module[0] : first.module
+          return {
+            title:  mod?.title ?? "",
+            content: mod?.body ?? "",
+            type:   (mod?.channels ?? [])[0] ?? "article",
+            isRead: !!first.viewed_at,
+          }
+        })()
       : getPersonaEducation(persona, transaction.stage || transaction.status),
     personaTools: getPersonaSpecificTools(persona),
     contactAgent: {
