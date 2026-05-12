@@ -78,12 +78,24 @@ export async function GET(request: NextRequest) {
         const resolved = await resolveEntityContext(svc, ev.entity_type, ev.entity_id)
         if (!resolved.contactId) { summary.skipped++; continue }
 
+        // Persona-aware copy: pull the contact's persona so the translator
+        // can tune wording (first_time_buyer gets reassurance, investor
+        // gets operational, etc.). Mirrors how lib/kernel/portal.ts
+        // already routes the portal view + education by persona.
+        const { data: contactRow } = await svc
+          .from("contacts")
+          .select("contact_persona")
+          .eq("id", resolved.contactId)
+          .maybeSingle()
+        const persona = (contactRow?.contact_persona as string | null) ?? null
+
         const translation = translateEvent({
           eventType:       ev.event_type,
           metadata:        ev.metadata,
           entityType:      ev.entity_type,
           propertyAddress: resolved.propertyAddress,
           agentFirstName:  resolved.agentFirstName,
+          persona,
         })
         if (!translation) { summary.skipped++; continue }
 
