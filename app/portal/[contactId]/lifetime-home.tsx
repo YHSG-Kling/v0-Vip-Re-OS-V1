@@ -8,6 +8,7 @@ import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstim
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
+import { HomeownerToolkitCard } from "@/app/components/portal/lifetime/HomeownerToolkitCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
@@ -199,6 +200,11 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
         {/* 5. Referral Ask Card */}
         <ReferralAskCard contactId={contactId} />
+
+        {/* 5b. Homeowner Toolkit — persona-filtered vendor marketplace
+                preview. Surfaces top curated forever-stage vendors with
+                team scoping + audience filtering. */}
+        <HomeownerToolkitCard contactId={contactId} />
 
         {/* 6. Preferred Vendors (compact) */}
         <Card>
