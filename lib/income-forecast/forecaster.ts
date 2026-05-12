@@ -12,32 +12,29 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { projectAgentSphereReferralValue } from "@/lib/lifetime-customer-npv/scorer"
 
-// Reuse the stage-probability map by importing the action — but that
-// requires a server context. To keep this lib server-only-pure, we inline
-// the probability map here (same source-of-truth values as
-// app/actions/revenue-pipeline.ts STAGE_PROBABILITY).
+// Live transactions.stage CHECK constraint allows UPPERCASE values only
+// (UNDER_CONTRACT / INSPECTION / APPRAISAL / FINANCING_PENDING /
+// CLOSING_PREP / CLOSED / LOST). Earlier versions of this map used
+// lowercase keys → returned 0 probability for every real transaction,
+// silently zeroing every forecast. Normalize at the lookup site to
+// match the schema while staying tolerant of legacy lowercase callers.
 const STAGE_PROBABILITY: Record<string, number> = {
-  intake:                 0.05,
-  lead_qualified:         0.10,
-  prep:                   0.15,
-  pre_listing:            0.20,
-  launch_ready:           0.25,
-  active:                 0.40,
-  offer_eligible:         0.45,
-  offer_submitted:        0.50,
-  offer_negotiating:      0.55,
-  under_contract:         0.70,
-  inspection:             0.75,
-  appraisal:              0.80,
-  financing:              0.85,
-  closing_prep:           0.90,
-  pending:                0.85,
-  clear_to_close:         0.95,
+  // Schema-canonical UPPERCASE (transactions.stage CHECK)
+  UNDER_CONTRACT:    0.70,
+  INSPECTION:        0.75,
+  APPRAISAL:         0.80,
+  FINANCING_PENDING: 0.85,
+  CLOSING_PREP:      0.92,
+  CLEAR_TO_CLOSE:    0.97,
+  PENDING:           0.85,
+  CLOSED:            1.00,
+  LOST:              0.00,
 }
 
 function probabilityForStage(stage: string | null): number {
   if (!stage) return 0
-  return STAGE_PROBABILITY[stage] ?? 0
+  const key = stage.toUpperCase()
+  return STAGE_PROBABILITY[key] ?? 0
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────

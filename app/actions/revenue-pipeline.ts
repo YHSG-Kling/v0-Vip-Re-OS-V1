@@ -56,6 +56,19 @@ const STAGE_PROBABILITY: Record<string, number> = {
   withdrawn: 0.0,
   expired: 0.0,
   failed: 0.0,
+
+  // Schema-canonical UPPERCASE aliases — transactions.stage CHECK only
+  // permits these values. Sprint 6 e2e audit confirmed real DB stores
+  // UPPERCASE; toMid() also has a case-insensitive fallback for safety.
+  UNDER_CONTRACT:    0.85,
+  INSPECTION:        0.85,
+  APPRAISAL:         0.88,
+  FINANCING_PENDING: 0.90,
+  CLOSING_PREP:      0.97,
+  CLEAR_TO_CLOSE:    0.97,
+  PENDING:           0.85,
+  CLOSED:            1.00,
+  LOST:              0.0,
 }
 
 interface ProjectionWindow {
@@ -84,7 +97,11 @@ export interface RevenuePipelineProjection {
 
 function toMid(stage: string | null): number {
   if (!stage) return 0
-  return STAGE_PROBABILITY[stage] ?? 0
+  // transactions.stage CHECK is UPPERCASE per Sprint 6 e2e audit; normalize
+  // before lookup so we tolerate both the schema-canonical values
+  // (UNDER_CONTRACT, INSPECTION, etc.) and the historic lowercase variants
+  // that some pre-Sprint-6 writers used.
+  return STAGE_PROBABILITY[stage] ?? STAGE_PROBABILITY[stage.toLowerCase()] ?? STAGE_PROBABILITY[stage.toUpperCase()] ?? 0
 }
 
 export async function getRevenuePipelineProjectionAction(input?: {
