@@ -41,6 +41,7 @@ export type ActionSource =
   | "deal_health"
   | "listing_health"
   | "lifetime_npv"
+  | "negotiation_strategy"
 
 export type ActionSeverity = "low" | "medium" | "high" | "critical" | "celebration"
 
@@ -459,6 +460,121 @@ async function hydrateTransactionImpacts(
   return out
 }
 
+// ─── Sprint 8 source: open negotiation strategies ────────────────────────
+
+async function fetchNegotiationStrategyActions(
+  supabase: SupabaseClient,
+  input:    { agentUserId: string; brokerageId: string },
+): Promise<AgentActionItem[]> {
+  const { data } = await supabase
+    .from("negotiation_strategies")
+    .select("id, offer_id, recommended_action, recommended_counter_price, win_probability, confidence, side, contact_id, agent_strategy_md, created_at")
+    .eq("agent_user_id", input.agentUserId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+    .limit(20)
+
+  const rows = (data ?? []) as Array<{
+    id:                        string
+    offer_id:                  string
+    recommended_action:        string
+    recommended_counter_price: number | null
+    win_probability:           number | null
+    confidence:                number | null
+    side:                      "buyer" | "seller"
+    contact_id:                string | null
+    agent_strategy_md:         string
+    created_at:                string
+  }>
+  if (rows.length === 0) return []
+
+  // Hydrate offer → listing → property address for the queue label
+  const offerIds = rows.map(r => r.offer_id)
+  const { data: offers } = await supabase
+    .from("offers")
+    .select("id, listing_id, transaction_id, offer_price, contact_id")
+    .in("id", offerIds)
+  const offerById = new Map<string, { listing_id: string | null; transaction_id: string | null; offer_price: number | null; contact_id: string | null }>()
+  for (const o of (offers ?? []) as Array<Record<string, unknown>>) {
+    offerById.set(o.id as string, {
+      listing_id:     (o.listing_id     as string | null) ?? null,
+      transaction_id: (o.transaction_id as string | null) ?? null,
+      offer_price:    (o.offer_price    as number | null) ?? null,
+      contact_id:     (o.contact_id     as string | null) ?? null,
+    })
+  }
+
+  const contactIds = rows.map(r => r.contact_id).filter((c): c is string => !!c)
+  const contactNameMap = await hydrateContactNames(supabase, contactIds)
+  const txnIds = Array.from(offerById.values()).map(o => o.transaction_id).filter((t): t is string => !!t)
+  const txnImpacts = await hydrateTransactionImpacts(supabase, txnIds)
+
+  return rows.map(r => {
+    const offer        = offerById.get(r.offer_id)
+    const contactId    = r.contact_id ?? offer?.contact_id ?? null
+    const contactName  = contactId ? (contactNameMap.get(contactId) ?? null) : null
+    const txnId        = offer?.transaction_id ?? null
+    const impactDollars = txnId ? (txnImpacts.get(txnId) ?? null) : null
+    const winPct        = r.win_probability != null ? Math.round(r.win_probability * 100) : null
+    const confPct       = r.confidence    != null ? Math.round(r.confidence    * 100) : null
+
+    // Counter / walk / reject are time-sensitive
+    const severity: ActionSeverity =
+      r.recommended_action === "walk"   ? "high"
+    : r.recommended_action === "reject" ? "high"
+    : r.recommended_action === "counter"? "medium"
+    : "medium"
+
+    const titlePrefix =
+      r.recommended_action === "accept"                  ? "Accept the offer"
+    : r.recommended_action === "counter"                 ? "Counter recommended"
+    : r.recommended_action === "walk"                    ? "Walk recommended"
+    : r.recommended_action === "reject"                  ? "Reject recommended"
+    : r.recommended_action === "request_inspection_credit" ? "Request inspection credit"
+    :                                                       "Negotiation strategy ready"
+    const title = contactName ? `${titlePrefix} — ${contactName}` : titlePrefix
+
+    const counterDetail = r.recommended_counter_price != null
+      ? ` @ $${r.recommended_counter_price.toLocaleString()}`
+      : ""
+    const detail = `${r.side}-side${counterDetail}${winPct != null ? ` · ${winPct}% win` : ""}${confPct != null ? ` · ${confPct}% conf` : ""}`
+
+    // Confidence drives confidenceScore directly.
+    const confidenceScore = confPct ?? 60
+    const impactScore = impactDollars != null
+      ? Math.min(100, Math.round(impactDollars / 200))
+      : 50
+    const urgencyScore = SEVERITY_URGENCY[severity]
+    const effortScore  = 70   // generally low effort: the strategy is pre-drafted
+
+    const priority = Math.round(
+      impactScore * 0.4 + urgencyScore * 0.3 + confidenceScore * 0.2 + effortScore * 0.1
+    )
+
+    return {
+      id:                 r.id,
+      source:             "negotiation_strategy",
+      title,
+      detail,
+      contactId,
+      contactName,
+      transactionId:      txnId,
+      listingId:          offer?.listing_id ?? null,
+      impactDollars:      impactDollars != null ? Math.round(impactDollars * severityImpactMultiplier(severity)) : null,
+      severity,
+      urgencyScore,
+      impactScore,
+      confidenceScore,
+      effortScore,
+      priority,
+      surfacedAt:          r.created_at,
+      hasInlineDisposition: false,
+      resolveHref:         `/offers/${r.offer_id}`,
+    } satisfies AgentActionItem
+  })
+}
+
 // ─── Public composer ──────────────────────────────────────────────────────
 
 export interface ComposeInput {
@@ -494,24 +610,30 @@ export async function composeAgentActionQueue(
     agentsId:    input.agentsId,
     brokerageId: input.brokerageId,
   }
-  const [portal, deal, listing, npv] = await Promise.all([
+  const [portal, deal, listing, npv, negotiation] = await Promise.all([
     fetchPortalEventActions(supabase, baseInput),
     fetchDealHealthActions(supabase,   baseInput),
     fetchListingHealthActions(supabase, baseInput),
     fetchNpvDueActions(supabase,       baseInput),
+    // Sprint 8 — open negotiation strategies become action-queue items
+    fetchNegotiationStrategyActions(supabase, {
+      agentUserId: input.agentUserId,
+      brokerageId: input.brokerageId,
+    }),
   ])
 
   // Union + sort by priority desc, cap to limit
-  const allItems = [...portal, ...deal, ...listing, ...npv]
+  const allItems = [...portal, ...deal, ...listing, ...npv, ...negotiation]
   allItems.sort((a, b) => b.priority - a.priority)
   const items = allItems.slice(0, limit)
 
   const totalImpactSum = items.reduce((s, i) => s + (i.impactDollars ?? 0), 0)
   const countBySource: Record<ActionSource, number> = {
-    portal_event:   portal.length,
-    deal_health:    deal.length,
-    listing_health: listing.length,
-    lifetime_npv:   npv.length,
+    portal_event:         portal.length,
+    deal_health:          deal.length,
+    listing_health:       listing.length,
+    lifetime_npv:         npv.length,
+    negotiation_strategy: negotiation.length,
   }
 
   return {

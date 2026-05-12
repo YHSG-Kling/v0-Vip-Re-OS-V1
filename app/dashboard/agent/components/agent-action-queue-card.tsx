@@ -50,10 +50,11 @@ import type {
 import { dispositionPortalEventAction, type DispositionMode } from "@/app/actions/portal-stream"
 
 const SOURCE_META: Record<ActionSource, { label: string; color: string; icon: typeof Activity }> = {
-  portal_event:   { label: "Live event",      color: "bg-blue-100 text-blue-800",     icon: Activity     },
-  deal_health:    { label: "Deal Health",     color: "bg-orange-100 text-orange-800", icon: ShieldAlert  },
-  listing_health: { label: "Listing Health",  color: "bg-amber-100 text-amber-800",   icon: Radio        },
-  lifetime_npv:   { label: "Lifetime NPV",    color: "bg-violet-100 text-violet-800", icon: Crown        },
+  portal_event:         { label: "Live event",      color: "bg-blue-100 text-blue-800",     icon: Activity     },
+  deal_health:          { label: "Deal Health",     color: "bg-orange-100 text-orange-800", icon: ShieldAlert  },
+  listing_health:       { label: "Listing Health",  color: "bg-amber-100 text-amber-800",   icon: Radio        },
+  lifetime_npv:         { label: "Lifetime NPV",    color: "bg-violet-100 text-violet-800", icon: Crown        },
+  negotiation_strategy: { label: "Negotiation",     color: "bg-emerald-100 text-emerald-800", icon: Sparkles   },
 }
 
 const SEVERITY_STRIPE: Record<string, string> = {
