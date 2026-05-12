@@ -17,9 +17,10 @@ export async function GET(request: NextRequest) {
 
   try {
     if (contactId) {
+      // Post-1043: progress lives on learning_assignments for customers.
       const { data: progress } = await supabase
-        .from("contact_education_progress")
-        .select("*")
+        .from("learning_assignments")
+        .select("id, module_id, signal_source, status, viewed_at, completed_at, created_at")
         .eq("contact_id", contactId)
         .eq("brokerage_id", brokerageId)
 

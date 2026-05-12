@@ -168,7 +168,7 @@ export default async function PortalHomePage({
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - resolved outside Promise.all via contact_education_progress
+    // Education - resolved outside Promise.all via learning_assignments
     Promise.resolve({ data: [] }),
     // Vendor assignments
     activeTransaction
@@ -200,16 +200,18 @@ export default async function PortalHomePage({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Resolve education progress via contact_education_progress table
+  // Post-1043: completion is on learning_assignments (status='completed').
+  // The variable name "completedLessonKeys" is kept for downstream stability
+  // but the values are now learning_modules.id (uuids).
   let completedLessonKeys: string[] = []
   try {
-    const { data: completedLessons } = await supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
+    const { data: completedAssignments } = await supabase
+      .from("learning_assignments")
+      .select("module_id")
       .eq("contact_id", contactId)
-      .not("completed_at", "is", null)
+      .eq("status", "completed")
 
-    completedLessonKeys = completedLessons?.map(l => l.lesson_key) ?? []
+    completedLessonKeys = (completedAssignments as Array<{ module_id: string }> | null)?.map(a => a.module_id) ?? []
   } catch {
     completedLessonKeys = []
   }

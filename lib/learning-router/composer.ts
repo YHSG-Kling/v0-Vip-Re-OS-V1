@@ -101,7 +101,16 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
     if (ctx.currentMilestone) stageTags.push(ctx.currentMilestone)
     if (ctx.buyerStage)       stageTags.push(ctx.buyerStage)
     if (ctx.portalView)       stageTags.push(ctx.portalView)
-    completedIds = []  // customers track completion via contact_education_progress, not learning_assignments
+    // Post-1043: customer completion is now also tracked in learning_assignments
+    // (contact_id + status='completed'). Fetch those module ids to exclude.
+    {
+      const { data: completedRows } = await supabase
+        .from("learning_assignments")
+        .select("module_id")
+        .eq("contact_id", actorId)
+        .eq("status", "completed")
+      completedIds = ((completedRows as Array<{ module_id: string }> | null) ?? []).map(r => r.module_id)
+    }
     signalSource = ctx.currentMilestone ? `milestone:${ctx.currentMilestone}` : `persona:${c?.contact_persona ?? "general"}`
     signalMetadata = { ageSeg: ctx.ageSeg, generationalCohort: ctx.generationalCohort, persona: c?.contact_persona, milestone: ctx.currentMilestone }
   }

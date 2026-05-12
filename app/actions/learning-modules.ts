@@ -23,8 +23,11 @@
  *   email           → newsletter_brokers_templates (with 'email' name suffix)
  *   social          → social_posts         (status='draft')
  *   quiz            → onboarding_quizzes   (skipped if no step_id provided)
- *   portal_lesson   → contact_education_progress lesson_key registry
- *                     (no table insert — projector reads module.id slug)
+ *   portal_lesson   → no table insert; the portal-stream-projector reads
+ *                     learning_module_channel_publications (channel=
+ *                     portal_lesson) and injects module_id into
+ *                     portal_event_stream.metadata. Customer completion
+ *                     tracked via learning_assignments (status='completed').
  *
  * Every fan-out writes a `learning_module_channel_publications` row so the
  * router knows what's actually published where.
@@ -418,8 +421,8 @@ async function fanOutToChannel(
       // No table insert. The portal_event_stream projector looks up
       // learning_module_channel_publications by channel='portal_lesson' to
       // know which modules to inject as lesson cards into the live feed.
-      // We register the channel with a stable lesson_key derived from the
-      // module id so contact_education_progress can mark it complete.
+      // Customer completion is recorded against learning_assignments
+      // (contact_id, module_id) by markLessonRead / markResourceCompleted.
       return {
         externalTable: "portal_lesson_registry",
         externalUrl:   `/portal/lessons/${mod.id}`,

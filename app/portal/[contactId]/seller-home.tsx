@@ -169,11 +169,12 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - completed lessons from contact_education_progress
+    // Post-1043: completed customer modules from learning_assignments.
     supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
-      .eq("contact_id", contactId),
+      .from("learning_assignments")
+      .select("module_id, completed_at")
+      .eq("contact_id", contactId)
+      .eq("status", "completed"),
     // Recent transparency updates — kernel fan-out writes here when
     // listing milestones fire (LISTING_PUBLISHED, OFFER_ACCEPTED, etc.)
     supabase
@@ -193,7 +194,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentResult.data
   const messages = messagesResult.data ?? []
-  const completedLessonKeys = educationResult.data?.map((p: any) => p.lesson_key) ?? []
+  const completedLessonKeys = educationResult.data?.map((p: any) => p.module_id) ?? []
   const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []

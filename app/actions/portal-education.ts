@@ -201,11 +201,12 @@ export async function getLessonFeed(contactId: string): Promise<LessonFeedResult
 
 export interface MarkLessonReadParams {
   contactId: string
+  /** learning_modules.id (uuid). Param name kept as lessonKey for caller stability. */
   lessonKey: string
 }
 
 export async function markLessonRead(params: MarkLessonReadParams): Promise<{ success: boolean; error?: string }> {
-  const { contactId, lessonKey } = params
+  const { contactId, lessonKey: moduleId } = params
   const supabase = await createClient()
   const service = createServiceClient()
 
@@ -220,17 +221,20 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
     return { success: false, error: "Contact not found" }
   }
 
-  // Upsert contact_education_progress (correct table for per-contact lesson completion)
+  // Post-1043: completion lives on learning_assignments.
   try {
     const { error: upsertError } = await service
-      .from("contact_education_progress")
+      .from("learning_assignments")
       .upsert({
-        contact_id: contactId,
-        brokerage_id: contact.brokerage_id,
-        lesson_key: lessonKey,
-        completed_at: new Date().toISOString(),
+        brokerage_id:   contact.brokerage_id,
+        module_id:      moduleId,
+        contact_id:     contactId,
+        signal_source:  "self:portal_read",
+        priority_score: 50,
+        status:         "completed",
+        completed_at:   new Date().toISOString(),
       }, {
-        onConflict: "contact_id,lesson_key",
+        onConflict: "contact_id,module_id",
       })
 
     if (upsertError) {

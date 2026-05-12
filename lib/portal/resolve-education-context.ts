@@ -206,18 +206,19 @@ export async function resolveEducationContext(
     }
   }
 
-  // Get completed lesson keys from contact_education_progress (correct table)
+  // Post-1043: completed customer modules come from learning_assignments.
+  // The field name is kept as `completedLessonKeys` for API stability but
+  // now returns module_id values (uuids).
   let completedLessonKeys: string[] = []
   try {
-    const { data: completedProgress } = await supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
+    const { data: completedAssignments } = await supabase
+      .from("learning_assignments")
+      .select("module_id")
       .eq("contact_id", contactId)
-      .not("completed_at", "is", null)
+      .eq("status", "completed")
 
-    completedLessonKeys = completedProgress?.map(p => p.lesson_key) ?? []
+    completedLessonKeys = (completedAssignments as Array<{ module_id: string }> | null)?.map(p => p.module_id) ?? []
   } catch {
-    // Fail safely - return empty array if table/query fails
     completedLessonKeys = []
   }
 
