@@ -215,6 +215,7 @@ export async function logTenantFinding(input: {
     | "table_missing_brokerage_id"
     | "table_missing_rls_policy"
     | "cross_tenant_join_risk"
+    | "listing_missing_agreement"
   tableName: string
   severity?: "low" | "medium" | "high" | "critical"
   details?: Record<string, unknown>

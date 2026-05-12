@@ -29,6 +29,7 @@ const FINDING_TYPE_LABEL: Record<string, string> = {
   table_missing_brokerage_id: "Table missing brokerage_id column",
   table_missing_rls_policy:   "Table missing brokerage RLS policy",
   cross_tenant_join_risk:     "Cross-tenant join risk",
+  listing_missing_agreement:  "Listing without listing agreement",
 }
 
 export function TenantSafetyClient({ unresolved, resolved }: Props) {

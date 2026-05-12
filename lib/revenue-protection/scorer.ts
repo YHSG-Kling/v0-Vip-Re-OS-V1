@@ -28,16 +28,20 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { logTenantFinding } from "@/lib/kernel/tenant-guard"
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
 /** No-AI baseline failure rate for at-risk deals/listings. */
 const FAILURE_BASELINE = 0.25
 
-/** Listing-side commission assumption when listings don't yet have a paired
- *  transaction (so estimated_commission is unknown). 2.5 % of list_price
- *  is the conservative industry default for the listing side. */
-const LISTING_SIDE_RATE = 0.025
+/** Industry-default listing-side commission rate (as a percent — e.g. 2.5
+ *  for 2.5 %). Only used when a listing has no paired listing_agreement
+ *  row. In the canonical flow this should never happen because listings
+ *  are auto-created only after the agreement passes compliance — so any
+ *  use of this fallback indicates a data-integrity issue and is logged
+ *  to tenant_safety_findings as a 'listing_missing_agreement' finding. */
+const FALLBACK_LISTING_RATE_PCT = 2.5
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -114,6 +118,10 @@ export async function calculateRevenueProtection(input: {
   const supabase = createServiceClient()
   const snapshotType: SnapshotType = input.snapshotType ?? "quarterly"
   const { start, end } = periodRange(snapshotType, input.referenceDate ?? new Date())
+  // One scan-run id ties together any tenant_safety_findings logged during
+  // this rollup (e.g. listings without agreements). Lets admins trace
+  // findings back to a specific scoring pass.
+  const scanRunId = crypto.randomUUID()
 
   // ─── Protected GCI: at-risk DEALS ───────────────────────────────────────
   // Pull the most-recent deal_health_scores row per transaction in the
@@ -218,7 +226,7 @@ export async function calculateRevenueProtection(input: {
       savedDealGci.set(r.id, { gci, agent_id: r.agent_id ?? null })
     }
   }
-  // Hydrate saved-listing GCI similarly
+  // Hydrate saved-listing GCI via the same contracted-rate resolver.
   const savedListingIds = Array.from(new Set(((listingSaves ?? []) as Array<{ listing_id: string }>)
     .map((r) => r.listing_id)
     .filter(Boolean)))
@@ -231,9 +239,18 @@ export async function calculateRevenueProtection(input: {
       .eq("brokerage_id", input.brokerageId)
     if (input.agentId) q = q.eq("agent_id", input.agentId)
     const { data: rows } = await q
-    for (const r of (rows ?? []) as Array<{ id: string; agent_id: string | null; list_price: number | null }>) {
-      const gci = Number(r.list_price ?? 0) * LISTING_SIDE_RATE
-      savedListingGci.set(r.id, { gci, agent_id: r.agent_id ?? null })
+    const savedListings = (rows ?? []) as Array<{ id: string; agent_id: string | null; list_price: number | null }>
+    const resolved = await resolveListingGci(
+      supabase,
+      savedListings.map((r) => ({ id: r.id, list_price: r.list_price })),
+      input.brokerageId,
+      scanRunId,
+    )
+    for (const r of savedListings) {
+      savedListingGci.set(r.id, {
+        gci:      resolved.get(r.id) ?? 0,
+        agent_id: r.agent_id ?? null,
+      })
     }
   }
 
@@ -254,9 +271,19 @@ export async function calculateRevenueProtection(input: {
     addCategory(categoryMap, "deal", gci)
   }
 
+  // Resolve listing-side GCI per at-risk listing from listing_agreements
+  // (the contracted rate signed by agent + seller). Logs a finding for any
+  // listing without a matching agreement.
+  const atRiskListingGci = await resolveListingGci(
+    supabase,
+    atRiskListingRows.map((l) => ({ id: l.id, list_price: l.list_price })),
+    input.brokerageId,
+    scanRunId,
+  )
+
   for (const l of atRiskListingRows) {
     const tier = latestByListing.get(l.id)?.risk_level ?? "watch"
-    const gci = Number(l.list_price ?? 0) * LISTING_SIDE_RATE
+    const gci = atRiskListingGci.get(l.id) ?? 0
     protectedGci += gci
     if (tier === "critical") criticalGci += gci
     if (tier === "critical" || tier === "at_risk" || tier === "watch") {
@@ -368,4 +395,91 @@ function addCategory(map: Map<string, { gci: number; count: number }>, key: stri
   existing.gci += gci
   existing.count += 1
   map.set(key, existing)
+}
+
+// ─── Listing GCI resolver ───────────────────────────────────────────────────
+//
+// The canonical flow: a listing is created only after the listing_agreement
+// passes compliance, which means every listing_id has a paired
+// listing_agreements row carrying the seller-contracted rate.
+//
+// resolveListingGci returns the listing-side GCI per listing_id by:
+//   1. preferring listing_agreements.commission_flat_amount when set
+//      (flat-fee listings — the dollar amount IS the GCI)
+//   2. else listing_agreements.listing_commission_rate × list_price / 100
+//      (rates are stored as percent values, e.g. 3 for 3 %, per the
+//      seller-cma.ts default of `?? 3`)
+//   3. fallback: list_price × FALLBACK_LISTING_RATE_PCT / 100 AND log a
+//      tenant_safety_findings row with finding_type='listing_missing_
+//      agreement' so the admin panel surfaces the data-integrity issue
+
+interface ListingForGci { id: string; list_price: number | null }
+
+async function resolveListingGci(
+  supabase: ReturnType<typeof createServiceClient>,
+  listings: ListingForGci[],
+  brokerageId: string,
+  scanRunId: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (listings.length === 0) return out
+
+  const listingIds = listings.map((l) => l.id)
+  const { data: agreements } = await supabase
+    .from("listing_agreements")
+    .select("listing_id, listing_commission_rate, commission_flat_amount, total_commission_rate")
+    .in("listing_id", listingIds)
+    .eq("brokerage_id", brokerageId)
+
+  const byListingId = new Map<string, { rate: number | null; flat: number | null; totalRate: number | null }>()
+  for (const a of (agreements ?? []) as Array<{
+    listing_id: string
+    listing_commission_rate: number | null
+    commission_flat_amount: number | null
+    total_commission_rate: number | null
+  }>) {
+    byListingId.set(a.listing_id, {
+      rate: a.listing_commission_rate,
+      flat: a.commission_flat_amount,
+      totalRate: a.total_commission_rate,
+    })
+  }
+
+  for (const l of listings) {
+    const agreement = byListingId.get(l.id)
+    const listPrice = Number(l.list_price ?? 0)
+
+    if (!agreement) {
+      // Data-integrity violation: a listing exists with no agreement, but
+      // compliance is supposed to gate listing creation on the agreement
+      // being fully executed. Log + fall back.
+      await logTenantFinding({
+        scanRunId,
+        findingType: "listing_missing_agreement",
+        tableName:   "listings",
+        severity:    "critical",
+        details:     { listing_id: l.id, brokerage_id: brokerageId, list_price: listPrice, source: "revenue_protection_scorer" },
+      })
+      out.set(l.id, listPrice * (FALLBACK_LISTING_RATE_PCT / 100))
+      continue
+    }
+
+    // Flat-fee listing — the dollar amount is the listing-side GCI directly.
+    if (agreement.flat != null && agreement.flat > 0) {
+      out.set(l.id, Number(agreement.flat))
+      continue
+    }
+
+    // Standard percent commission. Rates stored as percent values (3 = 3 %).
+    const rate =
+      agreement.rate != null && agreement.rate > 0
+        ? Number(agreement.rate)
+        // Fall through to industry default rather than total_commission_rate;
+        // total includes the buyer side which isn't the listing agent's GCI.
+        : FALLBACK_LISTING_RATE_PCT
+
+    out.set(l.id, listPrice * (rate / 100))
+  }
+
+  return out
 }
