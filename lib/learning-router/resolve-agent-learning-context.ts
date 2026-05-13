@@ -119,10 +119,11 @@ export async function resolveAgentLearningContext(
     if (!supporters.includes(userId)) {
       unadoptedInsightIds.push(ins.id)
       // Map pattern_key → gap_tag so modules tagged with these gaps surface
-      if (ins.pattern_key === "response_time")        gapTags.push("slow_lead_response")
-      if (ins.pattern_key === "touchpoint_cadence")   gapTags.push("no_sphere_touchpoints")
-      if (ins.pattern_key === "ai_isa_lift")          gapTags.push("low_ai_isa_adoption")
-      if (ins.pattern_key === "drip_engagement")      gapTags.push("low_drip_enrollment")
+      if (ins.pattern_key === "response_time")                gapTags.push("slow_lead_response")
+      if (ins.pattern_key === "touchpoint_cadence")           gapTags.push("no_sphere_touchpoints")
+      if (ins.pattern_key === "ai_isa_lift")                  gapTags.push("low_ai_isa_adoption")
+      if (ins.pattern_key === "drip_engagement")              gapTags.push("low_drip_enrollment")
+      if (ins.pattern_key === "negotiation_copilot_adoption") gapTags.push("no_negotiation_copilot_use")
     }
   }
 

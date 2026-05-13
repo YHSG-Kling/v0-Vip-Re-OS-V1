@@ -408,6 +408,39 @@ const TRANSLATIONS: Record<string, Builder> = {
     agentActionLabel:    null,
     severity:            "normal",
   }),
+
+  // ───── Sprint 8 — Negotiation Co-Pilot strategy ready ──────────────────
+  // Surfaces when the AI has finished modeling a counter / response. The
+  // customer-mirror panel renders the full plain-language explanation;
+  // this feed entry is just the heads-up that there's something new to
+  // see. Persona-tuned tone.
+  "negotiation.strategy_ready": ({ metadata, persona }) => {
+    const action = metadata?.recommended_action as string | undefined
+    const win    = metadata?.win_probability    as number | undefined
+    const winPct = typeof win === "number" ? Math.round(win * 100) : null
+    const actionWord =
+      action === "accept"                    ? "to accept"
+    : action === "counter"                   ? "to counter back"
+    : action === "walk"                      ? "to step away"
+    : action === "reject"                    ? "to decline"
+    : action === "request_inspection_credit" ? "to ask for a credit"
+    :                                          "with a thoughtful next step"
+    return {
+      customerCopy: byPersona(persona, {
+        first_time_buyer: `🧠 Your agent prepared a plain-language analysis of where this stands and recommends ${actionWord}${winPct != null ? ` — ${winPct}% likelihood` : ""}. Read it on your portal.`,
+        investor:         `🧠 Negotiation analysis ready — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% confidence` : ""}.`,
+        downsizer:        `🧠 Your agent has prepared a clear summary of the negotiation and a recommendation${winPct != null ? ` (${winPct}% likelihood)` : ""} for you to review.`,
+        luxury_buyer:     `🧠 Strategy analysis ready${winPct != null ? ` (${winPct}% probability)` : ""} — your agent recommends ${actionWord}.`,
+        bargain_hunter:   `🧠 We modeled the trade — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% to close at this position` : ""}.`,
+        relocation:       `🧠 Negotiation plan ready — your agent recommends ${actionWord}, aligned with your timeline.`,
+      }, `🧠 Your agent has prepared a negotiation analysis — read the recommendation on your portal.`),
+      customerIcon:        "🧠",
+      agentCopy:           `Co-Pilot strategy ready: ${action ?? "review"}${winPct != null ? ` (${winPct}% win)` : ""}`,
+      agentActionRequired: true,
+      agentActionLabel:    "Review strategy",
+      severity:            "high",
+    }
+  },
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────

@@ -17,12 +17,13 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Loader2, Send, AlertTriangle, ShieldAlert } from "lucide-react"
+import { Loader2, Send, AlertTriangle, ShieldAlert, Sparkles, Eye } from "lucide-react"
 import {
   negotiationCoPilot,
   sendDraftAsCounterResponse,
   type NegotiationCoPilotResult,
 } from "@/app/actions/negotiation-copilot"
+import { generateAndPersistNegotiationStrategyAction } from "@/app/actions/negotiation-strategy"
 
 interface Props {
   offerId:       string
@@ -48,6 +49,30 @@ export function NegotiationCoPilotPanel({
     | { kind: "error"; message: string }
     | null
   >(null)
+  // Sprint 8 — persisted strategy + customer mirror
+  const [persisting, setPersisting] = useState(false)
+  const [persistStatus, setPersistStatus] = useState<
+    | { kind: "persisted"; strategyId: string }
+    | { kind: "error"; message: string }
+    | null
+  >(null)
+
+  async function handleGeneratePersistedStrategy() {
+    setPersisting(true)
+    setPersistStatus(null)
+    try {
+      const r = await generateAndPersistNegotiationStrategyAction(offerId, side)
+      if (!r.ok) {
+        setPersistStatus({ kind: "error", message: r.error })
+        return
+      }
+      setPersistStatus({ kind: "persisted", strategyId: r.strategyId })
+    } catch (e) {
+      setPersistStatus({ kind: "error", message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPersisting(false)
+    }
+  }
 
   async function handleAdvise() {
     setLoading(true)
@@ -105,31 +130,58 @@ export function NegotiationCoPilotPanel({
 
   return (
     <div className="rounded-lg border border-purple-200 bg-purple-50 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-sm font-semibold text-purple-900">{headerLabel}</p>
-        {!result && (
+        <div className="flex items-center gap-2">
+          {/* Sprint 8 — generate + persist a strategy that the customer
+              also sees on their portal (mirror view). */}
           <Button
             size="sm"
-            variant="outline"
-            onClick={handleAdvise}
-            disabled={loading}
-            className="h-8 text-xs"
+            variant="default"
+            onClick={handleGeneratePersistedStrategy}
+            disabled={persisting}
+            className="h-8 text-xs gap-1"
+            title="Generates the strategy and shows it to your customer in plain language on their portal"
           >
-            {loading ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}
-            Advise
+            {persisting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            {persisting ? "Generating..." : "Generate + share with customer"}
           </Button>
-        )}
-        {result && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setResult(null)}
-            className="h-8 text-xs"
-          >
-            Clear
-          </Button>
-        )}
+          {!result && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleAdvise}
+              disabled={loading}
+              className="h-8 text-xs"
+            >
+              {loading ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}
+              Advise (in-memory)
+            </Button>
+          )}
+          {result && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setResult(null)}
+              className="h-8 text-xs"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
       </div>
+
+      {persistStatus?.kind === "persisted" && (
+        <div className="flex items-center gap-2 text-xs rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 px-2 py-1.5">
+          <Eye className="h-3.5 w-3.5" />
+          Strategy saved &amp; mirrored to the customer&apos;s portal.
+        </div>
+      )}
+      {persistStatus?.kind === "error" && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+          Could not save: {persistStatus.message}
+        </div>
+      )}
 
       {error && (
         <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">{error}</p>

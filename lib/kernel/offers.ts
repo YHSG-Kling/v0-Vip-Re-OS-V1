@@ -22,6 +22,7 @@ import { processKernelEvent }    from "@/lib/kernel/notification-engine"
 import { isValidUUID }           from "@/lib/validations"
 import { calcNetToSeller }       from "@/lib/offers/offer-analyzer"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { recordOutcomeForOfferSafe } from "@/lib/negotiation/auto-trigger"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -465,6 +466,13 @@ export async function respondToCounter(params: {
     metadata:    { response, counter_price: counterPrice },
   }).catch(() => {})
 
+  // Sprint 8 outcome loop:
+  //   accept       → outcome 'accepted'
+  //   reject       → outcome 'rejected'
+  //   counter_back → chain continues, no outcome yet
+  if (response === "accept")      void recordOutcomeForOfferSafe(counterId, "accepted")
+  else if (response === "reject") void recordOutcomeForOfferSafe(counterId, "rejected")
+
   return { success: true, data: { offerId: counterId } }
 }
 
@@ -528,6 +536,10 @@ export async function acceptOffer(params: {
     metadata:    { listing_id: (offer as any).listing_id, contact_id: (offer as any).contact_id },
   }).catch(() => {})
 
+  // Sprint 8 — close the negotiation learning loop. Idempotent and
+  // failure-isolated; never blocks the offer acceptance.
+  void recordOutcomeForOfferSafe(offerId, "accepted")
+
   return { success: true, data: { offerId } }
 }
 
@@ -565,6 +577,8 @@ export async function rejectOffer(params: {
     metadata:    { reason: reason ?? null },
   }).catch(() => {})
 
+  void recordOutcomeForOfferSafe(offerId, "rejected")
+
   return { success: true, data: { offerId } }
 }
 
@@ -599,6 +613,8 @@ export async function withdrawOffer(params: {
     actorUserId: agentId,
     metadata:    { reason: reason ?? null },
   }).catch(() => {})
+
+  void recordOutcomeForOfferSafe(offerId, "withdrawn")
 
   return { success: true, data: { offerId } }
 }

@@ -34,7 +34,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 export interface MinerInsight {
   brokerageId:             string
-  patternKey:              "response_time" | "touchpoint_cadence" | "ai_isa_lift" | "drip_engagement"
+  patternKey:              "response_time" | "touchpoint_cadence" | "ai_isa_lift" | "drip_engagement" | "negotiation_copilot_adoption"
   headline:                string
   metricLabel:             string
   topQuartileValue:        number | null
@@ -442,6 +442,96 @@ export async function mineDripEngagement(input: MinerInput): Promise<MinerInsigh
   }
 }
 
+// ─── Miner 5: Negotiation Co-Pilot adoption (Sprint 8 → Sprint 7 cross-wire)
+//
+// Question: which agents are skipping the persisted Co-Pilot strategy?
+// Method: count strategy outcomes per agent over the last 60 days.
+//   adoption_score = (accepted_by_agent + outcome_recorded) / total
+// Top-quartile agents adopt strategies; bottom-quartile dismiss them.
+// The output drives the `no_negotiation_copilot_use` gap_tag in Sprint 7,
+// which surfaces a learning module to bottom-quartile agents.
+
+export async function mineNegotiationCoPilotAdoption(input: MinerInput): Promise<MinerInsight | null> {
+  const svc = createServiceClient()
+  const lookbackDays = input.lookbackDays ?? 60
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
+
+  const { data: strats } = await svc
+    .from("negotiation_strategies")
+    .select("agent_user_id, status, agent_disposition, outcome, created_at")
+    .eq("brokerage_id", input.brokerageId)
+    .gte("created_at", since)
+    .not("agent_user_id", "is", null)
+
+  const rows = (strats ?? []) as Array<{
+    agent_user_id:     string
+    status:            string
+    agent_disposition: string | null
+    outcome:           string | null
+  }>
+  if (rows.length < 10) return null
+
+  // Per-agent rollup
+  const perAgent = new Map<string, { total: number; adopted: number; dismissed: number; closed_wins: number }>()
+  for (const r of rows) {
+    const s = perAgent.get(r.agent_user_id) ?? { total: 0, adopted: 0, dismissed: 0, closed_wins: 0 }
+    s.total += 1
+    if (r.status === "accepted_by_agent" || r.status === "outcome_recorded") s.adopted += 1
+    if (r.status === "dismissed" || r.agent_disposition === "dismissed")     s.dismissed += 1
+    if (r.outcome === "accepted" || r.outcome === "closed")                  s.closed_wins += 1
+    perAgent.set(r.agent_user_id, s)
+  }
+
+  type AgentStat = { agentId: string; adoptionPct: number; winPct: number; total: number }
+  const agentStats: AgentStat[] = []
+  for (const [agentId, s] of perAgent.entries()) {
+    if (s.total < 2) continue   // need at least 2 strategies to score
+    agentStats.push({
+      agentId,
+      adoptionPct: (s.adopted / s.total) * 100,
+      winPct:      (s.closed_wins / s.total) * 100,
+      total:       s.total,
+    })
+  }
+  if (agentStats.length < 4) return null
+
+  // Sort by adoption (higher is better); split into quartiles
+  agentStats.sort((a, b) => b.adoptionPct - a.adoptionPct)
+  const q = Math.max(1, Math.floor(agentStats.length / 4))
+  const top    = agentStats.slice(0, q)
+  const bottom = agentStats.slice(-q)
+  const topAdoption    = median(top.map((a) => a.adoptionPct))
+  const bottomAdoption = median(bottom.map((a) => a.adoptionPct))
+  const topWins        = median(top.map((a) => a.winPct))
+  const bottomWins     = median(bottom.map((a) => a.winPct))
+  const lift           = liftPct(topWins, bottomWins)
+
+  if (lift < 10) return null   // pattern too weak
+
+  return {
+    brokerageId:           input.brokerageId,
+    patternKey:            "negotiation_copilot_adoption",
+    headline:              `Agents who follow Co-Pilot strategy close ${Math.round(topWins)}% of negotiations — ${lift}% better than agents who dismiss`,
+    metricLabel:           "Strategy adoption rate (%)",
+    topQuartileValue:      topAdoption,
+    medianValue:           median(agentStats.map((a) => a.adoptionPct)),
+    bottomQuartileValue:   bottomAdoption,
+    outcomeLabel:          "Negotiation close rate (%)",
+    topQuartileOutcome:    topWins,
+    medianOutcome:         median(agentStats.map((a) => a.winPct)),
+    bottomQuartileOutcome: bottomWins,
+    liftPct:               lift,
+    sampleSize:            rows.length,
+    supportingAgents:      top.map((a) => a.agentId),
+    playbook:              `Open every Co-Pilot strategy in the action queue. Even when you disagree, the rationale signals (peer concession curves, your prior track record) are calibrated to your brokerage — not generic. Bottom-quartile agents dismiss without opening; top-quartile read first, then decide.`,
+    playbookActions:       [
+      { type: "review_open_strategies_daily" },
+      { type: "set_disposition_within_24h" },
+    ],
+    severity:              severityFromLift(lift),
+  }
+}
+
 // ─── Orchestrator: run all miners for one brokerage ──────────────────────
 
 export async function mineAllPatterns(input: MinerInput): Promise<MinerInsight[]> {
@@ -450,6 +540,7 @@ export async function mineAllPatterns(input: MinerInput): Promise<MinerInsight[]
     mineAiIsaLift(input),
     mineTouchpointCadence(input),
     mineDripEngagement(input),
+    mineNegotiationCoPilotAdoption(input),
   ])
   const out: MinerInsight[] = []
   for (const r of results) {

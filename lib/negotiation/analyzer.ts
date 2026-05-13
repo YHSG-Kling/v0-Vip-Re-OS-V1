@@ -256,14 +256,29 @@ export async function buildNegotiationContext(
     }
   }
 
+  // Resolve agents.id → users.id for the strategy's agent_user_id column.
+  // negotiation_strategies.agent_user_id is a users.id FK, but
+  // offers.agent_id and listings.agent_id both target agents.id. We need
+  // the user_id, so look it up from the agents table.
+  const targetAgentsId = side === "seller"
+    ? (listing.agent_id as string | null) ?? null
+    : (offer.agent_id  as string | null) ?? null
+  let agentUserId: string | null = null
+  if (targetAgentsId) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("user_id")
+      .eq("id", targetAgentsId)
+      .maybeSingle()
+    agentUserId = (agentRow?.user_id as string | null) ?? null
+  }
+
   return {
     offerId:     offer.id as string,
     brokerageId,
     listingId,
     side,
-    agentUserId: side === "seller"
-      ? (listing.agent_id as string | null) ?? null
-      : (offer.agent_id  as string | null) ?? null,
+    agentUserId,
     contactId:   offer.contact_id as string | null,
     listing: {
       listPrice:       Number(listing.list_price ?? 0),

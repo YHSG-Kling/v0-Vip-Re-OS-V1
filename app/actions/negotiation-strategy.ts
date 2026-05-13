@@ -33,8 +33,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { buildNegotiationContext } from "@/lib/negotiation/analyzer"
-import { draftNegotiationStrategy } from "@/lib/negotiation/copilot-ai"
+import { writeNegotiationStrategy } from "@/lib/negotiation/strategy-writer"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -73,73 +72,24 @@ export async function generateAndPersistNegotiationStrategyAction(
   const auth = await requireAgentOrAdmin()
   if (!auth.ok) return auth
 
+  // Tenant check: confirm the offer is in the caller's brokerage before
+  // delegating to the service-role writer.
   const svc = createServiceClient()
-
-  // Build NegotiationContext (peer patterns + agent track record +
-  // inspection findings + prior rounds chain).
-  const ctx = await buildNegotiationContext(svc, offerId)
-  if (!ctx) return { ok: false, error: "Offer not found or not analyzable" }
-  if (ctx.brokerageId !== auth.brokerageId) return { ok: false, error: "Forbidden: offer outside your brokerage" }
-
-  if (side) (ctx as { side: "buyer" | "seller" }).side = side
-
-  // Supersede any pre-existing open strategy for this offer+side.
-  await svc
-    .from("negotiation_strategies")
-    .update({ status: "superseded", updated_at: new Date().toISOString() })
-    .eq("offer_id", offerId)
-    .eq("side", ctx.side)
-    .eq("status", "open")
-
-  let draft
-  try {
-    draft = await draftNegotiationStrategy(ctx)
-  } catch (err) {
-    return { ok: false, error: `AI draft failed: ${err instanceof Error ? err.message : String(err)}` }
+  const { data: offer } = await svc
+    .from("offers")
+    .select("brokerage_id")
+    .eq("id", offerId)
+    .maybeSingle()
+  if (!offer) return { ok: false, error: "Offer not found" }
+  if (offer.brokerage_id !== auth.brokerageId) {
+    return { ok: false, error: "Forbidden: offer outside your brokerage" }
   }
 
-  const { data: inserted, error } = await svc
-    .from("negotiation_strategies")
-    .insert({
-      brokerage_id:              ctx.brokerageId,
-      offer_id:                  ctx.offerId,
-      agent_user_id:             ctx.agentUserId,
-      contact_id:                ctx.contactId,
-      side:                      ctx.side,
-      recommended_action:        draft.recommendedAction,
-      recommended_counter_price: draft.recommendedCounterPrice,
-      win_probability:           draft.winProbability,
-      confidence:                draft.confidence,
-      rationale_signals:         draft.rationaleSignals,
-      agent_strategy_md:         draft.agentStrategyMd,
-      customer_explanation_md:   draft.customerExplanationMd,
-      drafted_counter_language:  draft.draftedCounterLanguage,
-      generated_by:              "ai",
-      status:                    "open",
-    })
-    .select("id")
-    .maybeSingle()
-  if (error || !inserted) return { ok: false, error: error?.message ?? "Insert failed" }
-
-  // Emit a lifecycle_event so the Sprint 5 portal projector can surface
-  // the customer-mirror strategy alongside the offer.countered event.
-  await svc.from("lifecycle_events").insert({
-    event_type:   "negotiation.strategy_ready",
-    entity_type:  "offer",
-    entity_id:    ctx.offerId,
-    brokerage_id: ctx.brokerageId,
-    metadata: {
-      strategy_id:        inserted.id,
-      side:               ctx.side,
-      recommended_action: draft.recommendedAction,
-      win_probability:    draft.winProbability,
-    },
-    created_at: new Date().toISOString(),
-  })
+  const result = await writeNegotiationStrategy(offerId, side)
+  if (!result.ok) return { ok: false, error: result.error ?? "Generation failed" }
 
   revalidatePath("/dashboard/agent")
-  if (ctx.contactId) revalidatePath(`/portal/${ctx.contactId}`)
-  return { ok: true, strategyId: inserted.id as string }
+  return { ok: true, strategyId: result.strategyId! }
 }
 
 // ─── Accept (agent disposition) ─────────────────────────────────────────────

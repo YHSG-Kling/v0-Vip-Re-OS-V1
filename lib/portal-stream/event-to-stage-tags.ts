@@ -30,6 +30,7 @@ export function eventTypeToStageTags(eventType: string): string[] {
     case "lifetime.anniversary":          return ["forever_anniversary"]
     case "portal.message_sent_by_agent":  return []
     case "portal.document_signed":        return ["document_signed"]
+    case "negotiation.strategy_ready":    return ["negotiation_active"]
     default:                              return []
   }
 }
