@@ -524,13 +524,28 @@ export async function getAllVendorBookings(limit: number = 50) {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) return []
 
-  const { data: bookings } = await supabase
+  // Vendor user_type → restrict to bookings for THIS vendor's vendor_id only.
+  // Without this guard, any vendor sees every other vendor's bookings in the brokerage.
+  // For brokerage members (broker/admin/agent/tc/isa) the brokerage-wide read is correct.
+  let vendorIdFilter: string | null = null
+  if (profile.user_type === "vendor") {
+    const { data: roleRow } = await supabase
+      .from("user_role_assignments")
+      .select("vendor_id")
+      .eq("user_id", user.id)
+      .not("vendor_id", "is", null)
+      .maybeSingle()
+    if (!roleRow?.vendor_id) return []
+    vendorIdFilter = roleRow.vendor_id as string
+  }
+
+  let query = supabase
     .from("vendor_bookings")
     .select(`
       *,
@@ -541,6 +556,9 @@ export async function getAllVendorBookings(limit: number = 50) {
     .order("created_at", { ascending: false })
     .limit(limit)
 
+  if (vendorIdFilter) query = query.eq("vendor_id", vendorIdFilter)
+
+  const { data: bookings } = await query
   return bookings || []
 }
 
