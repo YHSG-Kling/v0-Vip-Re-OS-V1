@@ -21,6 +21,7 @@ import {
 import { PLExpenseChart } from "./pl-expense-chart"
 import { PLTrendChart } from "./pl-trend-chart"
 import { ForecastChart } from "./forecast-chart"
+import { AgentPLTable } from "./agent-pl-table"
 import {
   FinancialCommandStrip,
   MarginBreakdownPanel,
@@ -30,6 +31,7 @@ import {
   type FinancialPriority,
   type FinancialAction,
 } from "../components/os"
+import { getAgentPLSummary } from "@/app/actions/pl-truth-engine"
 
 export const dynamic = "force-dynamic"
 
@@ -653,6 +655,20 @@ export default async function BrokeragePLPage() {
 
       {/* ─── SECTION 8: P&L REPORT GENERATOR ──────────────────────────────────── */}
       <ProfitLossReportPanel agentId={profile.id} />
+
+      {/* ─── SECTION 9: AGENT P&L TRUTH ENGINE ────────────────────────────────── */}
+      {/* Per-agent net ROI: GCI – agent_payout – AI costs – fees = true brokerage margin */}
+      <AgentPLTruthSection brokerageId={profile.brokerage_id} />
+    </div>
+  )
+}
+
+async function AgentPLTruthSection({ brokerageId }: { brokerageId: string }) {
+  const result = await getAgentPLSummary()
+  if (!result.ok) return null
+  return (
+    <div className="space-y-2">
+      <AgentPLTable rows={result.rows} monthYear={result.monthYear} />
     </div>
   )
 }
