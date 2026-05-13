@@ -310,7 +310,7 @@ export function BuyerOverviewClient({
               </Button>
             )}
             <Link
-              href={`/dashboard/buyers/${buyerId}/search`}
+              href={`/contacts/${buyerId}/search`}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               Search Properties
@@ -349,7 +349,7 @@ export function BuyerOverviewClient({
           {/* isOfferAllowed is async — used here as a placeholder; server should pre-compute */}
           {(isOfferAllowed as any)(currentStage) ? (
             <Link
-              href={`/dashboard/buyers/${buyerId}/offers`}
+              href={`/contacts/${buyerId}/offers`}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               Open Offer Builder
@@ -406,7 +406,7 @@ export function BuyerOverviewClient({
                   {isLoadingMatch ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Zap className="h-4 w-4 mr-1" />}
                   AI Match
                 </Button>
-                <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                <Link href={`/contacts/${buyerId}/search`}>
                   <Button>Advanced Search</Button>
                 </Link>
               </div>
@@ -459,14 +459,14 @@ export function BuyerOverviewClient({
                     <p className="text-sm">
                       {buyerName} has saved properties matching their criteria.
                     </p>
-                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                    <Link href={`/contacts/${buyerId}/search`}>
                       <Button variant="outline" className="w-full">View All Saved Properties</Button>
                     </Link>
                   </div>
                 ) : (
                   <div className="text-center py-8 space-y-3">
                     <p className="text-sm text-muted-foreground">No saved properties yet</p>
-                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                    <Link href={`/contacts/${buyerId}/search`}>
                       <Button>Start Property Search</Button>
                     </Link>
                   </div>
@@ -485,7 +485,7 @@ export function BuyerOverviewClient({
                     Set up automated property alerts to notify {buyerName} of new listings
                   </p>
                   <div className="flex gap-2">
-                    <Link href={`/dashboard/buyers/${buyerId}/search`} className="flex-1">
+                    <Link href={`/contacts/${buyerId}/search`} className="flex-1">
                       <Button variant="outline" className="w-full">Manage Alerts</Button>
                     </Link>
                     <Button onClick={() => setActiveTab("Alerts")}>Create Alert</Button>
@@ -503,7 +503,7 @@ export function BuyerOverviewClient({
                 <h2 className="text-lg font-semibold">Tour Planning</h2>
                 <p className="text-sm text-muted-foreground">Schedule and manage property tours for {buyerName}</p>
               </div>
-              <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+              <Link href={`/contacts/${buyerId}/tours`}>
                 <Button>Open Tour Planner</Button>
               </Link>
             </div>
@@ -557,7 +557,7 @@ export function BuyerOverviewClient({
                         View full tour details in the Tour Planner
                       </p>
                     </div>
-                    <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                    <Link href={`/contacts/${buyerId}/tours`}>
                       <Button variant="outline">View Details</Button>
                     </Link>
                   </div>
@@ -568,7 +568,7 @@ export function BuyerOverviewClient({
                 <CardContent className="py-8 text-center space-y-3">
                   <Calendar className="h-12 w-12 mx-auto text-muted-foreground" />
                   <p className="text-sm text-muted-foreground">No upcoming tours scheduled</p>
-                  <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                  <Link href={`/contacts/${buyerId}/tours`}>
                     <Button>Schedule a Tour</Button>
                   </Link>
                 </CardContent>
@@ -628,7 +628,7 @@ export function BuyerOverviewClient({
                 </div>
 
                 <div className="pt-4 border-t">
-                  <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                  <Link href={`/contacts/${buyerId}/search`}>
                     <Button className="w-full">Configure Alerts in Search</Button>
                   </Link>
                   <p className="text-xs text-muted-foreground text-center mt-2">
@@ -722,7 +722,7 @@ export function BuyerOverviewClient({
                         {consensus.disagreements[0]}
                       </div>
                     )}
-                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                    <Link href={`/contacts/${buyerId}/search`}>
                       <Button size="sm" variant="outline" className="text-xs w-full">View Full Family Search</Button>
                     </Link>
                   </CardContent>
@@ -748,10 +748,10 @@ export function BuyerOverviewClient({
                     </p>
                   )}
                   <div className="flex gap-2 flex-wrap">
-                    <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                    <Link href={`/contacts/${buyerId}/tours`}>
                       <Button size="sm" className="text-xs">Open Tour Planner</Button>
                     </Link>
-                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                    <Link href={`/contacts/${buyerId}/search`}>
                       <Button size="sm" variant="outline" className="text-xs">Property Search</Button>
                     </Link>
                     <Button

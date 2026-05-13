@@ -7,7 +7,7 @@ import { OfferWorkspace }      from "@/app/components/features/offers/offer-work
 import { ChevronLeft }         from "lucide-react"
 
 /**
- * /dashboard/buyers/[id]/offers/[offerId]
+ * /contacts/[contactId]/offers/[offerId]
  *
  * Offer detail page — RSC shell that loads server data via loadOfferWorkspace()
  * then renders the OfferWorkspace client component.
@@ -51,7 +51,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
   // ── Ownership gate ────────────────────────────────────────────────────────
   // Offer must belong to the contact in the URL param
   if (offer.contact_id !== contactId) {
-    redirect(`/dashboard/buyers/${contactId}/offers`)
+    redirect(`/contacts/${contactId}/offers`)
   }
 
   const isOwner  = offer.agent_id === user.id
@@ -59,7 +59,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
     agentProfile.brokerage_id === offer.brokerage_id
 
   if (!isOwner && !isBroker) {
-    redirect(`/dashboard/buyers/${contactId}/offers`)
+    redirect(`/contacts/${contactId}/offers`)
   }
 
   // ── Back-link breadcrumb ─────────────────────────────────────────────────
@@ -74,7 +74,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 px-6 py-4 border-b border-border bg-background sticky top-0 z-10">
         <Link
-          href={`/dashboard/buyers/${contactId}/offers`}
+          href={`/contacts/${contactId}/offers`}
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ChevronLeft className="h-4 w-4" />
@@ -95,7 +95,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
           history={history}
           agentId={agentProfile.id}
           brokerageId={agentProfile.brokerage_id ?? ""}
-          buyerPath={`/dashboard/buyers/${contactId}/offers`}
+          buyerPath={`/contacts/${contactId}/offers`}
         />
       </div>
     </div>

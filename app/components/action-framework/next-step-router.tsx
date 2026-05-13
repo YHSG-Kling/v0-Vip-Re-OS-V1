@@ -53,14 +53,14 @@ function resolveNextStep(context: NextStepContext): NextStepResult {
         if (stage === "BUYER_TOURING") {
           return {
             label: "Plan Tours",
-            href: id ? `/dashboard/buyers/${id}/tours` : "/dashboard/buyers",
+            href: id ? `/contacts/${id}/tours` : "/dashboard/buyers",
             explanation: "Schedule property tours for this buyer",
           }
         }
         if (stage === "BUYER_OFFER_ELIGIBLE") {
           return {
             label: "Start Offer",
-            href: id ? `/dashboard/buyers/${id}/offers/new` : "/dashboard/buyers",
+            href: id ? `/contacts/${id}/offers/new` : "/dashboard/buyers",
             explanation: "Buyer is ready to make an offer",
           }
         }

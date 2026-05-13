@@ -27,7 +27,7 @@ export function NewOfferPageClient({
   const router = useRouter()
 
   function handleSuccess() {
-    router.push(`/dashboard/buyers/${contactId}/offers`)
+    router.push(`/contacts/${contactId}/offers`)
   }
 
   function handleCancel() {

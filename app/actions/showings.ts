@@ -261,7 +261,7 @@ export async function requestShowing(data: {
 
     revalidatePath(`/portal/${data.contactId}/properties`)
     revalidatePath(`/portal/${data.contactId}/showings`)
-    revalidatePath(`/dashboard/buyers/${data.contactId}`)
+    revalidatePath(`/contacts/${data.contactId}`)
 
     return { success: true, data: showing }
   } catch (error: any) {
@@ -481,7 +481,7 @@ export async function confirmShowing(showingId: string, confirmedDate: string) {
     } catch { /* non-critical */ }
 
     revalidatePath("/dashboard")
-    revalidatePath(`/dashboard/buyers/${data.contact_id}`)
+    revalidatePath(`/contacts/${data.contact_id}`)
 
     return { success: true, showing: data }
   } catch (error: any) {

@@ -393,7 +393,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
                 Your offer is recorded. Open the offer workspace to view details, history, and next steps.
               </p>
               <Button asChild className="mt-2">
-                <Link href={`/dashboard/buyers/${contact?.id ?? ""}/offers/${state.offerId}`}>
+                <Link href={`/contacts/${contact?.id ?? ""}/offers/${state.offerId}`}>
                   Open Offer Workspace
                   <ExternalLink className="h-4 w-4 ml-1" />
                 </Link>

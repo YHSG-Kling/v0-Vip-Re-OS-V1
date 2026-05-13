@@ -17,8 +17,8 @@
  *   /dashboard/transactions/[transactionId]/...      → transactionId
  *   /dashboard/transactions/[txId]/offers/[offerId]  → transactionId + offerId
  *   /dashboard/listings/[id]/offers/[offerId]        → listingId + offerId
- *   /dashboard/buyers/[contactId]/offers/[offerId]   → contactId + offerId
- *   /dashboard/buyers/[contactId]/...                → contactId (legacy)
+ *   /contacts/[contactId]/offers/[offerId]   → contactId + offerId
+ *   /contacts/[contactId]/...                → contactId (legacy)
  *   /dashboard/contacts/[contactId]/...              → contactId
  *   /portal/[contactId]/...                          → contactId
  *
@@ -92,14 +92,14 @@ function resolveContext(pathname: string, searchParams: URLSearchParams): Resolv
     return { ...ctx, pageLabel: "listing" }
   }
 
-  // /dashboard/buyers/[contactId]/offers/[offerId]
+  // /contacts/[contactId]/offers/[offerId]
   m = pathname.match(/^\/dashboard\/buyers\/([^/]+)\/offers\/([^/]+)/)
   if (m) {
     ctx.contactId = m[1]
     ctx.offerId = m[2]
     return { ...ctx, pageLabel: "buyer-offer" }
   }
-  // /dashboard/buyers/[contactId]/...
+  // /contacts/[contactId]/...
   m = pathname.match(/^\/dashboard\/buyers\/([^/]+)/)
   if (m) {
     ctx.contactId = m[1]

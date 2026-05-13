@@ -19,8 +19,8 @@
  *        - Buyer letter generator (`aiGenerateBuyerLetter`)
  *        - Contingency recommender (`aiRecommendContingencies`)
  *      All optional / collapsible — agent can skip if doing a quick capture
- *   2. Update `app/dashboard/buyers/[id]/offers/new/new-offer-page-client.tsx`
- *      and `app/dashboard/buyers/[id]/offers/offers-client.tsx` to launch
+ *   2. Update `app/contacts/[contactId]/offers/new/new-offer-page-client.tsx`
+ *      and `app/contacts/[contactId]/offers/offers-client.tsx` to launch
  *      FormWizard mode="offer" with strategic mode enabled
  *   3. Delete OfferInitiationFlow + OfferFormWizard (~1944 lines retired)
  *
@@ -68,7 +68,7 @@ import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/f
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
-} from "../../../../transactions/[id]/components/transaction-form-esign-flow"
+} from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 

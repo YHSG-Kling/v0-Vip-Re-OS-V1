@@ -39,7 +39,7 @@ export function getOfferContext(
 // ── CANONICAL RULES ──────────────────────────────────────────────────────────
 //
 // contact.contact_type = 'buyer'
-//   → dashboard at /dashboard/buyers/[id]
+//   → dashboard at /contacts/[contactId]
 //   → interested in properties (IDX search + brokerage listings)
 //   → saved_properties.listing_id is only non-null when property is a brokerage listing
 //
