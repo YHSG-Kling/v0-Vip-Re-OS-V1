@@ -15,7 +15,16 @@ import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 const MAX_PENDING_OFFERS = 3 // Configurable limit
 
 export interface CreateOfferParams {
+  /**
+   * CRM contact ID of the buyer (contacts.id).
+   * Buyers in the platform are ALWAYS modelled as CRM contacts — there is no
+   * separate buyer entity. `offers.buyer_id` FKs `contacts.id`. Kept as
+   * `buyerId` here for backwards compatibility with existing callers; treat
+   * it as a contact_id in all downstream logic.
+   */
   buyerId: string
+  /** Alias of buyerId for new callers that want unambiguous naming. */
+  buyerContactId?: string
   propertyAddress: string
   propertyMlsId?: string
   userId: string
@@ -35,11 +44,14 @@ export interface CreateOfferResult {
 export async function createBuyerOffer(
   params: CreateOfferParams
 ): Promise<CreateOfferResult> {
-  const { buyerId, propertyAddress, propertyMlsId, userId, expirationHours = 72 } = params
+  // Accept either buyerId (legacy) or buyerContactId (preferred). Both
+  // resolve to the CRM contact ID — see contacts.id.
+  const buyerContactId = params.buyerContactId ?? params.buyerId
+  const { propertyAddress, propertyMlsId, userId, expirationHours = 72 } = params
 
   // Validate inputs
-  if (!isValidUUID(buyerId)) {
-    return { success: false, error: "Invalid buyer ID", errorCode: "invalid_buyer_id" }
+  if (!isValidUUID(buyerContactId)) {
+    return { success: false, error: "Invalid buyer contact ID", errorCode: "invalid_buyer_id" }
   }
 
   if (!propertyAddress || propertyAddress.trim().length === 0) {
@@ -52,7 +64,7 @@ export async function createBuyerOffer(
   const { data: buyer, error: buyerError } = await supabase
     .from("contacts")
     .select("id, name, status")
-    .eq("id", buyerId)
+    .eq("id", buyerContactId)
     .single()
 
   if (buyerError || !buyer) {
@@ -64,7 +76,7 @@ export async function createBuyerOffer(
   }
 
   // Check financial verification
-  const financialVerification = await checkFinancialVerification({ contactId: buyerId })
+  const financialVerification = await checkFinancialVerification({ contactId: buyerContactId })
   if (!financialVerification.isVerified) {
     return {
       success: false,
@@ -78,11 +90,11 @@ export async function createBuyerOffer(
   const { data: buyerAgentRow } = await supabase
     .from("contacts")
     .select("agent_id")
-    .eq("id", buyerId)
+    .eq("id", buyerContactId)
     .maybeSingle()
   if (buyerAgentRow?.agent_id) {
     const bbaGate = await requireActiveBBA({
-      buyerContactId: buyerId,
+      buyerContactId: buyerContactId,
       agentId:        buyerAgentRow.agent_id,
     })
     if (!bbaGate.allowed) {
@@ -99,7 +111,7 @@ export async function createBuyerOffer(
     .from("activities")
     .select("id")
     .eq("entity_type", "contact")
-    .eq("contact_id", buyerId)
+    .eq("contact_id", buyerContactId)
     .eq("activity_type", "buyer.offer.draft.created")
     .order("created_at", { ascending: false })
 
@@ -124,7 +136,7 @@ export async function createBuyerOffer(
         .from("activities")
         .select("id")
         .eq("entity_type", "contact")
-        .eq("contact_id", buyerId)
+        .eq("contact_id", buyerContactId)
         .in("activity_type", terminatingEvents)
         .limit(1)
         .maybeSingle()
@@ -161,7 +173,7 @@ export async function createBuyerOffer(
   const { error: eventError } = await supabase.from("activities").insert({
     brokerage_id: agentBrokerage?.brokerage_id ?? null,
     agent_id: userId,
-    contact_id: buyerId,
+    contact_id: buyerContactId,
     activity_type: "buyer.offer.draft.created",
     title: `Offer draft created: ${propertyAddress}`,
     description: `Offer draft created for ${propertyAddress}`,
@@ -193,10 +205,11 @@ export async function createBuyerOffer(
 }
 
 /**
- * Get pending offer count for buyer
+ * Get pending offer count for buyer.
+ * @param buyerContactId CRM contact id of the buyer (contacts.id).
  */
-export async function getPendingOfferCount(buyerId: string): Promise<number> {
-  if (!isValidUUID(buyerId)) {
+export async function getPendingOfferCount(buyerContactId: string): Promise<number> {
+  if (!isValidUUID(buyerContactId)) {
     return 0
   }
 
@@ -206,7 +219,7 @@ export async function getPendingOfferCount(buyerId: string): Promise<number> {
     .from("activities")
     .select("id, notes")
     .eq("entity_type", "contact")
-    .eq("contact_id", buyerId)
+    .eq("contact_id", buyerContactId)
     .eq("activity_type", "buyer.offer.draft.created")
     .order("created_at", { ascending: false })
 
@@ -227,7 +240,7 @@ export async function getPendingOfferCount(buyerId: string): Promise<number> {
       .from("activities")
       .select("id")
       .eq("entity_type", "contact")
-      .eq("contact_id", buyerId)
+      .eq("contact_id", buyerContactId)
       .in("activity_type", terminatingEvents)
       .limit(1)
       .maybeSingle()

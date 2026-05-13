@@ -178,6 +178,9 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     phoneNumber:      contact.phone,
     assistantId:      campaign.vapi_assistant_id,
     assistantOverrides,
+    contactId,
+    brokerageId,
+    initiatedBy:      loginId,
   })
 
   // Write voice_calls row first — ai_isa_calls.voice_call_id is an FK to it

@@ -1,10 +1,14 @@
 /**
- * MESSAGING PROVIDER
- * Owns all outbound messaging API calls: Twilio SMS, SendGrid Email.
+ * MESSAGING PROVIDER — per-brokerage adapter routing.
+ *
+ * PROVIDER: each brokerage selects an SMS provider via provider_overrides
+ * (scope='brokerage', provider_type='sms') + platform_credentials. sendSMS
+ * resolves the brokerage's choice at call time and dispatches through the
+ * matching adapter (Twilio / Telnyx / Bandwidth — see sms-adapters.ts).
  *
  * COMPLIANCE: every sendSMS/placeCall passes through enforceTCPACompliance
- * BEFORE hitting Twilio. This is the single chokepoint — callers that go
- * through this module cannot bypass TCPA. Decisions are logged to
+ * BEFORE hitting the provider. This is the single chokepoint — callers that
+ * go through this module cannot bypass TCPA. Decisions are logged to
  * outbound_message_compliance_log for class-action defense + audit.
  *
  * To send a transactional notice (e.g. a "your offer was accepted" SMS to
@@ -13,6 +17,8 @@
  */
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
+import { resolveSMSProviderForBrokerage } from "./resolve-sms-provider"
+import { SMS_ADAPTERS } from "./sms-adapters"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
 
@@ -63,45 +69,27 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
     }
   }
 
-  const accountSid = process.env.TWILIO_ACCOUNT_SID
-  const authToken = process.env.TWILIO_AUTH_TOKEN
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER
-
-  if (!accountSid || !authToken || !fromNumber) {
-    return {
-      success: false,
-      error:
-        "Twilio not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER to environment variables.",
-      mock: true,
-    }
+  // ── Resolve the brokerage's configured SMS provider ─────────────────────
+  let resolved: Awaited<ReturnType<typeof resolveSMSProviderForBrokerage>>
+  try {
+    resolved = await resolveSMSProviderForBrokerage(params.brokerageId ?? null)
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? "No SMS provider configured" }
   }
 
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        To: params.to,
-        From: fromNumber,
-        Body: params.message,
-      }),
-    }
+  const adapter = SMS_ADAPTERS[resolved.providerName]
+  const result  = await adapter(
+    { to: params.to, message: params.message },
+    resolved.credentials,
   )
 
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data.message || "Twilio API error")
+  if (!result.success) {
+    throw new Error(result.error ?? `${result.provider} send failed`)
   }
-
   return {
-    success: true,
-    messageId: data.sid,
-    status: data.status,
+    success:   true,
+    messageId: result.messageId,
+    status:    result.status,
   }
 }
 

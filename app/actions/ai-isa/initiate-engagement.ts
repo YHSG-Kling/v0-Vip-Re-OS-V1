@@ -429,6 +429,9 @@ async function dispatchToChannel(
       vapiResponse = await initiateCall({
         phoneNumber:  phone,
         assistantId:  vapiAssistantId,
+        contactId:    contactRow.id,
+        brokerageId:  lead.brokerage_id,
+        initiatedBy:  lead.agent_id ?? null,
         assistantOverrides: {
           name:         callContext.assistantName,
           firstMessage: callContext.firstMessage,

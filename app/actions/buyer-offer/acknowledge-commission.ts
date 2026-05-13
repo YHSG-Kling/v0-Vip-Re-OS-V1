@@ -19,6 +19,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
+import { resolveESignProviderForBrokerage } from "@/lib/integrations/resolve-esign-provider"
 
 export interface AcknowledgeCommissionInput {
   offerId: string
@@ -94,7 +95,51 @@ export async function acknowledgeBuyerCommissionAction(
   }
 
   const hdrs = await headers()
-  const method = input.disclosureMethod ?? (isBuyer ? "click_through" : "wet_signature")
+  let method = input.disclosureMethod ?? (isBuyer ? "click_through" : "wet_signature")
+
+  // If method is docusign/dotloop, dispatch through the brokerage's configured
+  // e-sign provider so the buyer receives an actual signing email through the
+  // platform they expect. The provider's webhook will update signed_at when the
+  // buyer signs; click_through and wet_signature are recorded inline below.
+  if (method === "docusign" || method === "dotloop") {
+    try {
+      const resolved = await resolveESignProviderForBrokerage(offer.brokerage_id)
+      // Look up buyer's email for the signer
+      const { data: buyer } = await svc
+        .from("contacts")
+        .select("first_name, last_name, email")
+        .eq("id", offer.buyer_id)
+        .maybeSingle()
+      if (!buyer?.email) {
+        return { ok: false, error: "Buyer contact has no email — cannot dispatch e-sign request" }
+      }
+      const tx = await resolved.provider.createTransaction({
+        propertyAddress: `Commission disclosure — offer ${input.offerId.slice(0, 8)}`,
+        transactionType: "purchase",
+        agentId:         user.id,
+        contactId:       offer.buyer_id,
+      })
+      if (!tx.success || !tx.externalTransactionId) {
+        return { ok: false, error: tx.error ?? "E-sign provider createTransaction failed" }
+      }
+      const send = await resolved.provider.sendForSignature({
+        externalTransactionId: tx.externalTransactionId,
+        documentId:            input.offerId,
+        signers: [{
+          email: buyer.email as string,
+          name:  [buyer.first_name, buyer.last_name].filter(Boolean).join(" ") || "Buyer",
+          role:  "buyer",
+        }],
+        message: `Please review and acknowledge the commission terms for this offer.`,
+      })
+      if (!send.success) {
+        return { ok: false, error: send.error ?? "E-sign provider sendForSignature failed" }
+      }
+      method = resolved.providerName === "dotloop" ? "dotloop" : "docusign"
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? "E-sign dispatch failed" }
+    }
+  }
 
   const { error } = await svc
     .from("offers")

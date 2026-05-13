@@ -24,6 +24,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
+import { resolveESignProviderForBrokerage } from "@/lib/integrations/resolve-esign-provider"
 
 const AGENT_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
 
@@ -206,6 +207,112 @@ export async function clickThroughSignBBAAction(params: {
   revalidatePath(`/dashboard/contacts/${agreement.buyer_contact_id}`)
   revalidatePath("/portal")
   return { ok: true }
+}
+
+// ── DISPATCH TO BROKERAGE'S CONFIGURED E-SIGN PROVIDER ──────────────────────
+
+/**
+ * Dispatch a draft BBA to the brokerage's configured e-sign provider
+ * (Dotloop / DocuSign / SkySlope / Authentisign per platform_credentials).
+ *
+ * Creates a transaction in the provider, attaches the BBA form, and sends
+ * to the buyer for signature. Updates BBA status → pending_signature with
+ * the provider's external transaction id stored in signature_request_id.
+ *
+ * The brokerage's choice is resolved by resolveESignProviderForBrokerage
+ * (cascade: provider_overrides → platform_credentials → system default).
+ * Throws if no provider is configured — admin must fix in Settings.
+ */
+export async function dispatchBBAToSigningProviderAction(
+  agreementId: string,
+): Promise<
+  | { ok: true; provider: string; externalTransactionId: string }
+  | { ok: false; error: string }
+> {
+  const auth = await requireAgentInBrokerage()
+  if (!auth.ok) return auth
+
+  const svc = createServiceClient()
+
+  const { data: bba } = await svc
+    .from("buyer_broker_agreements")
+    .select(`
+      id, status, brokerage_id, agent_id, buyer_contact_id,
+      agreement_type, commission_percentage, commission_flat_amount,
+      commission_payer, effective_date, expiration_date,
+      buyer:contacts!inner ( first_name, last_name, email )
+    `)
+    .eq("id", agreementId)
+    .maybeSingle()
+  if (!bba) return { ok: false, error: "Agreement not found" }
+  if (bba.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden — different brokerage" }
+  if (bba.status !== "draft") {
+    return { ok: false, error: `Cannot dispatch — status is ${bba.status}` }
+  }
+
+  const buyer = Array.isArray(bba.buyer) ? bba.buyer[0] : bba.buyer
+  if (!buyer?.email) {
+    return { ok: false, error: "Buyer contact has no email — cannot dispatch for signature" }
+  }
+
+  // Resolve the brokerage's configured e-sign provider
+  let resolved: Awaited<ReturnType<typeof resolveESignProviderForBrokerage>>
+  try {
+    resolved = await resolveESignProviderForBrokerage(auth.brokerageId)
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "No e-sign provider configured" }
+  }
+
+  // Create a "transaction" / loop in the provider for this BBA
+  const txReq = await resolved.provider.createTransaction({
+    propertyAddress: "Buyer Representation Agreement",
+    transactionType: "purchase",
+    agentId:         bba.agent_id as string,
+    contactId:       bba.buyer_contact_id as string,
+  })
+  if (!txReq.success || !txReq.externalTransactionId) {
+    return { ok: false, error: txReq.error ?? "Provider createTransaction failed" }
+  }
+
+  // Send the BBA document for signature. The provider returns success on
+  // queue; webhook will update signed_at when the buyer actually signs.
+  const sendReq = await resolved.provider.sendForSignature({
+    externalTransactionId: txReq.externalTransactionId,
+    documentId:            agreementId,
+    signers: [{
+      email: buyer.email as string,
+      name:  [buyer.first_name, buyer.last_name].filter(Boolean).join(" ") || "Buyer",
+      role:  "buyer",
+    }],
+    message: `Buyer Broker Agreement — review and sign to continue your home search. Commission: ${
+      bba.commission_percentage != null ? `${bba.commission_percentage}%`
+        : bba.commission_flat_amount != null ? `$${Number(bba.commission_flat_amount).toLocaleString()}`
+        : "see document"
+    }, paid by ${bba.commission_payer}.`,
+  })
+  if (!sendReq.success) {
+    return { ok: false, error: sendReq.error ?? "Provider sendForSignature failed" }
+  }
+
+  const signedMethod = resolved.providerName === "docusign" ? "docusign"
+                    : resolved.providerName === "dotloop"  ? "dotloop"
+                    : "docusign" // Authentisign + SkySlope use DocuSign-style flow
+
+  await svc
+    .from("buyer_broker_agreements")
+    .update({
+      status:               "pending_signature",
+      signed_method:        signedMethod,
+      signature_request_id: txReq.externalTransactionId,
+    })
+    .eq("id", agreementId)
+
+  revalidatePath(`/dashboard/contacts/${bba.buyer_contact_id}`)
+  return {
+    ok: true,
+    provider: resolved.providerName,
+    externalTransactionId: txReq.externalTransactionId,
+  }
 }
 
 // ── AGENT-SIDE RECORD WET / DOCUSIGN SIGNATURE ───────────────────────────────
