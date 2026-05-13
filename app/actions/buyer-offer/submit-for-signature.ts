@@ -29,12 +29,30 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // The contact has no provider relationship; providers are owned by the brokerage
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, contact_id, listing_id, brokerage_id, esign_provider")
+    .select("id, contact_id, listing_id, brokerage_id, esign_provider, buyer_commission_acknowledged_at, disclosed_commission_payer")
     .eq("id", offerId)
     .single()
 
   if (offerError || !offer) {
     return { success: false, error: "Offer not found" }
+  }
+
+  // NAR 2024 GATE: buyer commission disclosure must be acknowledged before submit.
+  // The acknowledgment captures explicit comp terms + audit trail (IP/UA for
+  // click-through, method=wet_signature/docusign/dotloop for agent-recorded).
+  if (!offer.buyer_commission_acknowledged_at) {
+    await supabase.from("activities").insert({
+      activity_type: "buyer.offer.block",
+      agent_id:      userId,
+      entity_type:   "offer",
+      title:         "Signature blocked: buyer commission disclosure not acknowledged",
+      description:   `Offer ${offerId} blocked — NAR 2024 requires explicit commission acknowledgment before submission`,
+    })
+    return {
+      success: false,
+      error: "Buyer must acknowledge commission disclosure before submission (NAR 2024 settlement)",
+      blockerType: "commission_disclosure_required"
+    }
   }
 
   // COMPLIANCE GATE: Must pass before requesting signatures
