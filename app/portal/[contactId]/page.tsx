@@ -11,6 +11,7 @@ import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
+import { CustomerWelcomePanel } from "@/app/components/portal/customer-welcome-panel"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
@@ -405,6 +406,11 @@ export default async function PortalHomePage({
             )}
           </div>
         )}
+
+        {/* Sprint 10 — Customer welcome panel. Auto-starts the onboarding
+            journey on first visit. Persona-aware copy. Hides when journey
+            is complete or the customer has dismissed it. */}
+        <CustomerWelcomePanel contactId={contactId} />
 
         {/* Sprint 8 — Negotiation mirror: when an open negotiation strategy
             exists for this contact, show the AI's plain-language explanation
