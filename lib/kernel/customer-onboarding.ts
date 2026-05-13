@@ -5,40 +5,40 @@
  * agent_onboarding (that's for agent/tc/isa/team_lead); they get this
  * persona+portal-view-tailored walkthrough.
  *
- * Four distinct journeys:
+ * Mirrors the portal kernel's PortalView enum exactly — three journey
+ * types, one per portal view:
  *
  *   BUYER     — welcome → meet_your_agent → tour_portal → set_preferences
  *               → first_lesson
  *   SELLER    — welcome → meet_your_agent → upload_property_details
  *               → review_pricing_strategy → market_prep_checklist
  *               → first_lesson
- *   FOREVER   — welcome_back → review_home_value → set_refi_alerts
+ *   LIFETIME  — welcome_back → review_home_value → set_refi_alerts
  *               → connect_anniversaries → vendor_marketplace_tour
- *   LIFETIME  — welcome_back → revisit_preferences → reconnect_with_agent
- *               → vendor_marketplace_tour
+ *               (this is the post-close / forever-mode arc; the portal
+ *               kernel emits view='lifetime' when there's a closed deal
+ *               and no active deal, OR when buyer_stage='BUYER_LIFETIME')
+ *
+ * The journey type is resolved EXACTLY from determinePortalView() so we
+ * never disagree with the portal kernel about which arc a customer is on.
  *
  * Public API:
  *   ensureCustomerOnboardingStarted(contactId)
  *   advanceCustomerOnboardingStep(contactId, stepKey)
  *   dismissCustomerWelcome(contactId)
  *   resolveCustomerOnboardingState(contactId)
- *   resolveJourneyType(persona, portalView) — exposed for the welcome panel
- *
- * Step keys are stable strings; brokerages can extend the vocabulary by
- * writing their own steps into completed_steps without breaking the
- * percentage math (only steps in STEPS_BY_JOURNEY count toward 100%).
+ *   resolveJourneyTypeFromPortalView(view, persona)
  */
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-export type JourneyType = "buyer" | "seller" | "forever" | "lifetime"
+export type JourneyType = "buyer" | "seller" | "lifetime"
 
 export const STEPS_BY_JOURNEY: Record<JourneyType, readonly string[]> = {
   buyer:    ["welcome", "meet_your_agent", "tour_portal", "set_preferences", "first_lesson"] as const,
   seller:   ["welcome", "meet_your_agent", "upload_property_details", "review_pricing_strategy", "market_prep_checklist", "first_lesson"] as const,
-  forever:  ["welcome_back", "review_home_value", "set_refi_alerts", "connect_anniversaries", "vendor_marketplace_tour"] as const,
-  lifetime: ["welcome_back", "revisit_preferences", "reconnect_with_agent", "vendor_marketplace_tour"] as const,
+  lifetime: ["welcome_back", "review_home_value", "set_refi_alerts", "connect_anniversaries", "vendor_marketplace_tour"] as const,
 }
 
 export interface CustomerOnboardingState {
@@ -55,16 +55,22 @@ export interface CustomerOnboardingState {
 }
 
 /**
- * Infer the customer's journey type from their persona and portal view.
- * Priority: portal_view ('forever' / 'lifetime' / 'deal' / 'match') overrides,
- * then seller-side personas fall to 'seller', everything else 'buyer'.
+ * Direct 1:1 mapping from PortalView → JourneyType. The portal kernel is
+ * the source of truth — if it says the contact is on the 'seller' view,
+ * the onboarding arc is 'seller'. No re-derivation, no parallel logic.
+ *
+ * Persona is accepted but only used when portalView is null (e.g., the
+ * portal kernel failed to resolve), as a defensive fallback.
  */
-export function resolveJourneyType(
-  persona:    string | null | undefined,
+export function resolveJourneyTypeFromPortalView(
   portalView: string | null | undefined,
+  persona?:   string | null,
 ): JourneyType {
-  if (portalView === "forever")  return "forever"
+  if (portalView === "seller")   return "seller"
   if (portalView === "lifetime") return "lifetime"
+  if (portalView === "buyer")    return "buyer"
+
+  // Fallback only — portal kernel didn't return a view
   const sellerPersonas = new Set([
     "expired", "fsbo", "divorce", "estate", "downsize_seller", "luxury_seller", "seller",
   ])
@@ -101,7 +107,7 @@ export async function ensureCustomerOnboardingStarted(
     // resolver may not be available in all contexts
   }
 
-  const journeyType = resolveJourneyType(c.contact_persona as string | null, portalView)
+  const journeyType = resolveJourneyTypeFromPortalView(portalView, c.contact_persona as string | null)
   const firstStep   = STEPS_BY_JOURNEY[journeyType][0] ?? "welcome"
 
   await supabase.from("customer_onboarding").upsert({

@@ -30,6 +30,8 @@ interface Props {
 
 type Step = { key: string; label: string; description: string }
 
+// Aligned 1:1 with PortalView from lib/kernel/portal.ts (buyer / seller /
+// lifetime). 'lifetime' is the post-close / forever-mode arc.
 const STEPS_BY_JOURNEY: Record<string, Step[]> = {
   buyer: [
     { key: "welcome",          label: "Welcome",                  description: "Get oriented with your portal" },
@@ -46,18 +48,12 @@ const STEPS_BY_JOURNEY: Record<string, Step[]> = {
     { key: "market_prep_checklist",    label: "Pre-market prep checklist",     description: "Staging, repairs, photos, sign install" },
     { key: "first_lesson",             label: "Start your first lesson",      description: "Plain-language guide for sellers" },
   ],
-  forever: [
+  lifetime: [
     { key: "welcome_back",             label: "Welcome back",                  description: "Your post-close wealth + home dashboard" },
     { key: "review_home_value",        label: "See your home's value today",   description: "Current AVM + equity trend" },
     { key: "set_refi_alerts",          label: "Set refinance alerts",          description: "Get pinged when refi savings cross your threshold" },
     { key: "connect_anniversaries",    label: "Mark your milestones",          description: "Closing anniversaries, birthdays, life events" },
     { key: "vendor_marketplace_tour",  label: "Tour your vendor marketplace",  description: "Vetted handyman, landscaping, HVAC, more" },
-  ],
-  lifetime: [
-    { key: "welcome_back",            label: "Welcome back",                description: "Pick up where you left off" },
-    { key: "revisit_preferences",     label: "Refresh your preferences",    description: "Update channel, frequency, what you want to hear" },
-    { key: "reconnect_with_agent",    label: "Reconnect with your agent",   description: "A quick hello — your agent's been holding your spot" },
-    { key: "vendor_marketplace_tour", label: "Tour your vendor marketplace", description: "Trusted partners for everyday and big-deal needs" },
   ],
 }
 
@@ -66,11 +62,9 @@ function personaIntro(
   persona: string | null,
   _view:   string | null,
 ): string {
-  // Forever / lifetime journey-type wins
-  if (journeyType === "forever")
-    return "Welcome back. Your forever-portal tracks your home value, refi opportunities, anniversaries, and trusted-vendor access."
+  // Lifetime is the post-close / forever-mode arc (PortalView='lifetime')
   if (journeyType === "lifetime")
-    return "Welcome back. We've kept the door open — pick up where you left off, and your agent's just a tap away."
+    return "Welcome back. Your forever-portal tracks your home value, refi opportunities, anniversaries, and trusted-vendor access — and your agent's a tap away when you need them."
 
   // Seller-side
   if (journeyType === "seller") {
@@ -150,8 +144,7 @@ export function CustomerWelcomePanel({ contactId }: Props) {
   const titleByJourney: Record<string, string> = {
     buyer:    "Getting started",
     seller:   "Getting your listing ready",
-    forever:  "Your forever portal",
-    lifetime: "Welcome back",
+    lifetime: "Your forever portal",
   }
 
   return (

@@ -26,6 +26,8 @@ import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { CustomerWelcomePanel } from "@/app/components/portal/customer-welcome-panel"
+import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -226,6 +228,17 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     <div className="space-y-6">
       {/* Analytics: fires once on the client after mount — never during SSR/prefetch */}
       <SellerPortalViewTracker contactId={contactId} page="seller_home" />
+
+      {/* Sprint 10 — Customer welcome panel (journey_type='seller'). Auto-
+          starts the seller-specific 6-step onboarding (upload property
+          details → review pricing strategy → market prep checklist).
+          Hides on completion / dismissal. */}
+      <CustomerWelcomePanel contactId={contactId} />
+
+      {/* Sprint 8 — Negotiation mirror: when a strategy exists for an
+          offer on this seller's listing, the customer-mirror panel
+          renders here. Hides on empty. */}
+      <NegotiationMirrorPanel contactId={contactId} />
 
       {/* 0. WHAT'S NEW — kernel fan-out feeds milestones from listing
            transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).
