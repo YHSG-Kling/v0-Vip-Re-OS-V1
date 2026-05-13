@@ -125,11 +125,25 @@ export const voiceTools: Record<string, VoiceTool> = {
     name: "stage_offer_packet",
     category: "stage",
     authority: "agent",
-    gates: ["active_bba"],
+    gates: [],  // Soft-checked inside the handler. Offer DRAFTING is permitted
+                // without an active BBA so the agent doesn't have to redo the
+                // call; the document carries requires_bba_first metadata.
+                // Submit-for-signature (Commit L) is the HARD gate that
+                // refuses dispatch until BBA is signed.
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Stage a filled offer packet from voice intake. Voice → conversation → intake → forms → email agent with review link. BBA required (NAR 2024).",
+    description: "Stage a filled offer packet from voice intake. If no active BBA exists, AI must ALSO call stage_bba_packet in the same call to capture BBA terms — offer can't dispatch until BBA is signed.",
+  },
+  stage_bba_packet: {
+    name: "stage_bba_packet",
+    category: "stage",
+    authority: "agent",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: true,
+    description: "Stage a Buyer Broker Agreement (NAR 2024 mandatory artifact) from voice intake. Captures agreement type, commission terms, scope, expiration. Companion to stage_offer_packet — fires when buyer has no active BBA.",
   },
   stage_listing_packet: {
     name: "stage_listing_packet",

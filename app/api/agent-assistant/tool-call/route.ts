@@ -231,6 +231,9 @@ async function runTool(
     case "stage_offer_packet":
       return stageOfferPacket(params, session, supabase)
 
+    case "stage_bba_packet":
+      return stageBBAPacket(params, session, supabase)
+
     case "stage_newsletter_draft":
       return stageNewsletterDraftVoice(params, session)
 
@@ -572,9 +575,18 @@ async function stageOfferPacket(
     .maybeSingle()
   if (!contact) return { error: "Contact not found in your brokerage" }
 
-  // NAR 2024 Settlement: active Buyer Broker Agreement required before any
-  // offer can be drafted. Voice-staging is "drafting" — gate at this point
-  // (not just at form-submit) so the agent gets the failure feedback aloud.
+  // NAR 2024 Settlement: signed BBA required before an offer can be DISPATCHED.
+  // Voice-staging is "drafting" — when no active BBA exists, we still allow the
+  // offer DRAFT to stage so the agent doesn't have to redo the call later.
+  // BUT we mark the offer document.metadata.requires_bba_first = true, which
+  // the offer review page + e-sign dispatch gate (Commit L: submit-for-signature)
+  // refuses to let the offer go out for signatures until the BBA is signed.
+  //
+  // The AI cockpit's response logic also checks for `needs_bba_intake` in the
+  // return — when true, the AI captures BBA terms in the same call and stages
+  // both packets (BBA via stage_bba_packet + offer here).
+  let needsBBAIntake = false
+  let activeBBAId: string | null = null
   if (contact.agent_id) {
     const { requireActiveBBA } = await import("@/lib/buyer-broker/gate")
     const bba = await requireActiveBBA({
@@ -582,11 +594,23 @@ async function stageOfferPacket(
       agentId:        contact.agent_id as string,
       brokerageId:    session.brokerage_id,
     })
-    if (!bba.allowed) {
-      return {
-        error: bba.reason ?? "Active Buyer Broker Agreement required (NAR 2024 settlement).",
-        spoken_summary: `Can't draft the offer — ${contact.first_name ?? "this buyer"} doesn't have a signed Buyer Broker Agreement with you. Send the BBA first, then we'll draft.`,
-        block_reason: "bba_required",
+    if (bba.allowed && bba.agreementId) {
+      activeBBAId = bba.agreementId
+    } else {
+      // Check if a draft BBA already exists in this same staging session
+      const { data: draftBBA } = await supabase
+        .from("buyer_broker_agreements")
+        .select("id")
+        .eq("buyer_contact_id", contactId)
+        .eq("agent_id", contact.agent_id as string)
+        .in("status", ["draft", "pending_signature"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (draftBBA?.id) {
+        activeBBAId = draftBBA.id as string
+      } else {
+        needsBBAIntake = true
       }
     }
   }
@@ -625,6 +649,11 @@ async function stageOfferPacket(
           agent_must_complete: filledPacket.agentMustComplete,
           audit: filledPacket.audit,
           source: "voice_intake_elevenlabs",
+          // BBA dependency tracking — submit-for-signature gate (Commit L)
+          // refuses to dispatch when this flag is set and no active BBA exists.
+          requires_bba_first:      activeBBAId === null,
+          linked_bba_id:           activeBBAId,
+          needs_bba_intake_first:  needsBBAIntake,
         },
         content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
       })
@@ -691,12 +720,166 @@ async function stageOfferPacket(
       document_id: doc.id,
       contact_name: contactName,
       emailed_at: emailedAt,
-      spoken_summary: emailedAt
+      linked_bba_id: activeBBAId,
+      needs_bba_intake: needsBBAIntake,
+      spoken_summary: needsBBAIntake
+        ? `Offer for ${contactName} is staged, but there's no Buyer Broker Agreement on file yet. Per NAR rules the BBA has to be signed before this offer can go out. Let's capture the BBA terms now — I'll need the agreement type, commission percentage or flat amount, and who pays. Then I'll stage the BBA too and email you both.`
+        : emailedAt
         ? `Offer for ${contactName} is staged. I've emailed you the review link — open it after the call, check the filled forms, and send for signatures from there.`
         : `Offer for ${contactName} is staged in the CRM. Email send failed — open the contact's record after the call to review and send for signatures.`,
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Offer staging failed" }
+  }
+}
+
+// ─── stage_bba_packet (voice) ────────────────────────────────────────────────
+// Companion to stage_offer_packet. When the AI determines the buyer has no
+// active BBA, it captures the BBA terms in the same conversation and stages
+// a draft via this tool. The agent reviews + sends for signatures first;
+// once signed (status='active'), the offer document's requires_bba_first
+// flag is satisfied and submit-for-signature gate (Commit L) lets the offer
+// go out too.
+
+async function stageBBAPacket(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const contactId = String(params.contact_id ?? "").trim()
+  const voiceInput = String(params.voice_input ?? "").trim()
+  if (!contactId || !voiceInput) return { error: "contact_id and voice_input required" }
+
+  // Resolve buyer + agent_id (agents.id — BBA FKs agents not users)
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, agent_id")
+    .eq("id", contactId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!contact) return { error: "Contact not found in your brokerage" }
+  if (!contact.agent_id) return { error: "Contact has no assigned agent — assign one before drafting a BBA." }
+
+  try {
+    const { extractBBAIntake } = await import("@/lib/workflow/intake/voice-to-bba")
+    const extracted = await extractBBAIntake({ text: voiceInput })
+
+    if (!extracted.readyToDraft) {
+      // AI must capture more before drafting — return the missing questions
+      // so ElevenLabs Conv AI can continue the conversation.
+      return {
+        error: "BBA intake incomplete — need more information before drafting.",
+        missing_questions: extracted.missingQuestions,
+        intake_so_far: extracted.intake,
+        spoken_summary: "I need a few more details on the BBA before I can draft it.",
+      }
+    }
+
+    // Map IntakeField → buyer_broker_agreements column shape
+    const i = extracted.intake
+    const agreementType  = (i.agreementType.value ?? "exclusive") as "exclusive" | "non_exclusive" | "showing_only" | "open"
+    const commissionPct  = i.commissionPercentage.value ?? null
+    const commissionFlat = i.commissionFlatAmount.value ?? null
+    const commissionPayer = (i.commissionPayer.value ?? "seller") as "seller" | "buyer" | "split" | "either"
+
+    if (commissionPct === null && commissionFlat === null && agreementType !== "showing_only") {
+      return {
+        error: "BBA requires either a commission percentage or flat amount (showing_only is the only exception).",
+        missing_questions: [{ field: "commissionPercentage", question: "What's the commission percentage or flat amount?", severity: "must_ask" }],
+      }
+    }
+
+    const today = new Date().toISOString().slice(0, 10)
+    const ninetyD = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+
+    // Create the draft BBA row directly (mirrors createBBADraftAction logic
+    // but uses service client because the voice tool runs without an auth
+    // session user — it has session.user_id from the agent_assistant_sessions
+    // row, which we use as created_by).
+    const { data: bba, error: bbaErr } = await supabase
+      .from("buyer_broker_agreements")
+      .insert({
+        brokerage_id:           session.brokerage_id,
+        buyer_contact_id:       contactId,
+        agent_id:               contact.agent_id,
+        agreement_type:         agreementType,
+        commission_percentage:  commissionPct,
+        commission_flat_amount: commissionFlat,
+        commission_payer:       commissionPayer,
+        commission_notes:       i.commissionNotes.value ?? null,
+        geographic_scope:       i.geographicScope.value ?? null,
+        property_type_scope:    i.propertyTypeScope.value ?? ["residential"],
+        effective_date:         i.effectiveDate.value ?? today,
+        expiration_date:        i.expirationDate.value ?? ninetyD,
+        status:                 "draft",
+        created_by:             session.user_id,
+        notes:                  i.agentNotes.value ?? null,
+      })
+      .select("id")
+      .single()
+
+    if (bbaErr || !bba) return { error: bbaErr?.message ?? "Could not create BBA draft" }
+
+    const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/dashboard/buyer-broker-agreements?id=${bba.id}`
+
+    // Post-call email handoff to the agent
+    let emailedAt: string | null = null
+    try {
+      const { data: agentUser } = await supabase
+        .from("users")
+        .select("email, first_name")
+        .eq("id", session.user_id)
+        .maybeSingle()
+
+      if (agentUser?.email) {
+        const { sendEmail } = await import("@/lib/providers/messaging")
+        const commissionLine = commissionPct !== null
+          ? `${commissionPct}% paid by ${commissionPayer}`
+          : commissionFlat !== null
+          ? `$${commissionFlat.toLocaleString()} paid by ${commissionPayer}`
+          : `terms in document`
+        const subject = `Buyer Broker Agreement staged for ${contactName} — review and send for signature`
+        const html = `<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#0f172a;max-width:640px;margin:0 auto;padding:24px;">
+          <h2 style="margin:0 0 12px 0;">Buyer Broker Agreement staged</h2>
+          <p>Hi ${agentUser.first_name ?? "there"} — captured the BBA terms with ${contactName} from your call. Here's what to do next:</p>
+          <ol>
+            <li>Review the agreement type + commission terms</li>
+            <li>Click <strong>Send for signature</strong> to dispatch via your configured e-sign provider</li>
+            <li>Buyer signs through their portal — once signed (status=active), the linked offer can go out for signatures too</li>
+          </ol>
+          <div style="margin:24px 0;">
+            <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review & send for signature →</a>
+          </div>
+          <p style="font-size:12px;color:#94a3b8;margin-top:32px;">
+            Type: ${agreementType} · Commission: ${commissionLine} · Expires: ${i.expirationDate.value ?? ninetyD}
+          </p>
+        </body></html>`
+
+        const sendResult = await sendEmail({
+          to:          agentUser.email,
+          subject,
+          html,
+          agentUserId: session.user_id,
+          contactId,
+        })
+        if (sendResult.success) emailedAt = new Date().toISOString()
+      }
+    } catch (err: any) {
+      console.error("[voice/stageBBAPacket] post-stage email failed:", err?.message)
+    }
+
+    return {
+      success:       true,
+      bba_id:        bba.id,
+      contact_name:  contactName,
+      emailed_at:    emailedAt,
+      spoken_summary: emailedAt
+        ? `BBA for ${contactName} is staged. I've emailed you the review link — sign it off and dispatch it to the buyer first. Once signed, the offer goes out next.`
+        : `BBA for ${contactName} is staged in the CRM. Email send failed — open it manually to review and send for signature.`,
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "BBA staging failed" }
   }
 }
 
