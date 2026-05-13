@@ -28,6 +28,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted } from "@/lib/ai/models"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,16 +80,16 @@ async function scoreDOM(supabase: Supa, listingId: string): Promise<ListingCompo
   let score = 100
   let dom: number | null = null
 
+  // DOM is computed from go_live_date (the public-active date). The pre-MLS
+  // period (listing_date → go_live_date) doesn't count toward DOM.
   const { data: listing } = await supabase
     .from("listings")
-    .select("listing_date, list_price, city, state, status")
+    .select("go_live_date, list_price, city, state, status")
     .eq("id", listingId)
     .maybeSingle()
 
-  if (listing?.listing_date) {
-    dom = Math.floor(
-      (Date.now() - new Date(listing.listing_date).getTime()) / 86_400_000,
-    )
+  dom = computeDaysOnMarket(listing?.go_live_date ?? null)
+  if (dom !== null) {
     // DOM penalty curve — every market is different but these are common
     // industry-conservative thresholds.
     if (dom >= 90)      { score = 20; issues.push(`On market ${dom} days — well past typical absorption`) }
@@ -103,7 +104,7 @@ async function scoreDOM(supabase: Supa, listingId: string): Promise<ListingCompo
     score,
     weight:   CATEGORY_WEIGHTS.DOM,
     issues,
-    data:     { dom, listing_date: listing?.listing_date ?? null, status: listing?.status ?? null },
+    data:     { dom, go_live_date: listing?.go_live_date ?? null, status: listing?.status ?? null },
   }
 }
 

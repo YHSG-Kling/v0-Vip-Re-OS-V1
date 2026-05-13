@@ -53,7 +53,10 @@ interface WorkbenchRailProps {
     property_type?: string
     list_price?: number
     price?: number
+    /** Pre-computed by server from listings.go_live_date via
+     *  computeDaysOnMarket. UI just reads it. */
     days_on_market?: number
+    go_live_date?: string | null
     showing_count?: number
   }
 }
@@ -96,7 +99,13 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, brokerageId
   // AI Price Adjustment Advisor state
   const [advisorLoading, setAdvisorLoading] = useState(false)
   const [advisorResult, setAdvisorResult] = useState<any>(null)
-  const daysOnMarket = listing.days_on_market ?? 0
+  // Prefer pre-computed days_on_market (set by server from go_live_date);
+  // fall back to client-side computation from go_live_date.
+  const daysOnMarket =
+    listing.days_on_market ??
+    (listing.go_live_date
+      ? Math.floor((Date.now() - new Date(listing.go_live_date).getTime()) / 86_400_000)
+      : 0)
 
   // AI Presentation Readiness state
   const [presentationReadinessLoading, setPresentationReadinessLoading] = useState(false)

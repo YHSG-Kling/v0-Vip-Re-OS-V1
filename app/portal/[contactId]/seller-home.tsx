@@ -202,15 +202,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
 
-  // Derived values — use already-fetched context and offerSummary (no duplicate DB call)
-  const daysOnMarket: number | null =
-    context.listing?.dom ??
-    (context.listing?.listing_date
-      ? Math.floor(
-          (Date.now() - new Date(context.listing.listing_date).getTime()) /
-            (1000 * 60 * 60 * 24)
-        )
-      : null)
+  // Derived values — use already-fetched context (DOM is pre-computed from
+  // go_live_date by resolveSellerContext; this is just the read).
+  const daysOnMarket: number | null = context.listing?.dom ?? null
   const dashboardOfferCount: number = offerSummary?.total ?? 0
 
   // Derived values from getShowingInsights

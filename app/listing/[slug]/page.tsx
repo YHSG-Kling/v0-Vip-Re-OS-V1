@@ -116,7 +116,7 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
     getSimilarListings(listing.id, listing.zip),
   ])
 
-  const daysOnMarket = calculateDaysOnMarket(listing.listing_date)
+  const daysOnMarket = calculateDaysOnMarket(listing.go_live_date ?? null)
 
   // AI Greeting based on source
   let aiGreeting: string | null = null

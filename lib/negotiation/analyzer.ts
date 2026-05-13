@@ -19,6 +19,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 export interface NegotiationContext {
   offerId:              string
@@ -103,19 +104,17 @@ export async function buildNegotiationContext(
   const listingId   = offer.listing_id as string
   if (!brokerageId) return null
 
-  // 2. Listing — gives us list_price, listing-side agent, listing_date (for DOM).
-  // The `listings` table does not store DOM as a column — it's derived from
-  // listing_date or go_live_date.
+  // 2. Listing — gives us list_price, listing-side agent, go_live_date (DOM).
+  // DOM is computed from go_live_date only (the public-active date). The
+  // pre-MLS period between listing_date and go_live_date doesn't count.
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, agent_id, list_price, listing_date, go_live_date, status, address")
+    .select("id, agent_id, list_price, go_live_date, status, address")
     .eq("id", listingId)
     .maybeSingle()
   if (!listing) return null
 
-  const daysOnMarket = computeDom(
-    (listing.go_live_date as string | null) ?? (listing.listing_date as string | null) ?? null,
-  )
+  const daysOnMarket = computeDaysOnMarket(listing.go_live_date as string | null)
 
   // Determine side: if the requesting agent is the listing-side agent, it's
   // a seller-side strategy. Otherwise buyer-side.
@@ -297,11 +296,3 @@ export async function buildNegotiationContext(
   }
 }
 
-function computeDom(from: string | null): number | null {
-  if (!from) return null
-  const start = new Date(from).getTime()
-  if (!Number.isFinite(start)) return null
-  const diff = Date.now() - start
-  if (diff < 0) return 0
-  return Math.floor(diff / 86_400_000)
-}

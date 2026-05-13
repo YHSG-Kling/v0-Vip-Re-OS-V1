@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // Get education resources for a contact based on their persona
 export async function getEducationResources(params: {
@@ -100,7 +101,14 @@ export async function getRecommendedProperties(params: {
 
     if (error) throw error
 
-    return { success: true, properties: listings || [] }
+    // DOM is computed from go_live_date — the column does not exist on
+    // listings. Materialize it before returning so client UIs can read
+    // `days_on_market` directly.
+    const properties = (listings || []).map((l: any) => ({
+      ...l,
+      days_on_market: computeDaysOnMarket(l.go_live_date),
+    }))
+    return { success: true, properties }
   } catch (error) {
     console.error("[getRecommendedProperties] Error:", error)
     return { success: false, error: "Failed to fetch recommended properties", properties: [] }

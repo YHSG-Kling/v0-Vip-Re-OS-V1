@@ -1,6 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 export interface BuyerPortalMatch {
   id: string
@@ -53,7 +54,7 @@ export async function getBuyerPortalMatches(contactId: string, limit = 12): Prom
 
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status")
+    .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, go_live_date")
     .in("id", propertyIds)
 
   const byId = new Map<string, any>()
@@ -77,7 +78,8 @@ export async function getBuyerPortalMatches(contactId: string, limit = 12): Prom
         bathrooms: l.bathrooms ?? null,
         sqft: l.sqft ?? null,
         status: l.status ?? null,
-        days_on_market: null,
+        // DOM is computed from go_live_date — listings has no DOM column.
+        days_on_market: computeDaysOnMarket(l.go_live_date),
         primary_photo_url: null,
       } as BuyerPortalMatch
     })
