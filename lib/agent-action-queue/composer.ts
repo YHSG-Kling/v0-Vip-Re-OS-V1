@@ -42,6 +42,7 @@ export type ActionSource =
   | "listing_health"
   | "lifetime_npv"
   | "negotiation_strategy"
+  | "income_gap"
 
 export type ActionSeverity = "low" | "medium" | "high" | "critical" | "celebration"
 
@@ -575,6 +576,59 @@ async function fetchNegotiationStrategyActions(
   })
 }
 
+// ─── Source 6: income_gap_recommended_actions (Sprint 14 — Income Truth) ──
+// These already carry scoring fields; we just need to wrap them in the
+// AgentActionItem shape. Open + in_progress only.
+async function fetchIncomeGapActions(
+  supabase: SupabaseClient,
+  input: FetchInput,
+): Promise<AgentActionItem[]> {
+  if (!input.agentsId) return []
+  const { data, error } = await supabase
+    .from("income_gap_recommended_actions")
+    .select(`
+      id, action_category, action_title, action_description, action_rank,
+      contact_id, transaction_id, listing_id,
+      estimated_gci_impact_cents, estimated_effort_hours,
+      confidence_score, impact_score, urgency_score, priority_score,
+      due_by, status, created_at,
+      contact:contacts ( first_name, last_name )
+    `)
+    .eq("agent_id", input.agentsId)
+    .in("status", ["open", "in_progress"])
+    .order("priority_score", { ascending: false })
+    .limit(20)
+  if (error || !data) return []
+
+  return data.map((r: any) => {
+    const c = Array.isArray(r.contact) ? r.contact[0] : r.contact
+    const contactName = c ? [c.first_name, c.last_name].filter(Boolean).join(" ") || null : null
+    return {
+      id:                  r.id,
+      source:              "income_gap" as const,
+      title:               r.action_title,
+      detail:              r.action_description ?? null,
+      contactId:           r.contact_id ?? null,
+      contactName,
+      transactionId:       r.transaction_id ?? null,
+      listingId:           r.listing_id ?? null,
+      impactDollars:       Math.round(Number(r.estimated_gci_impact_cents ?? 0) / 100),
+      severity:            "medium" as const,
+      urgencyScore:        Number(r.urgency_score    ?? 50),
+      impactScore:         Number(r.impact_score     ?? 50),
+      confidenceScore:     Number(r.confidence_score ?? 50),
+      effortScore:         clamp(100 - Math.min(100, Number(r.estimated_effort_hours ?? 1) * 25)),
+      priority:            Number(r.priority_score ?? 0),
+      surfacedAt:          r.created_at as string,
+      hasInlineDisposition: false,
+      resolveHref:         r.contact_id     ? `/contacts/${r.contact_id}`
+                          : r.transaction_id ? `/dashboard/transactions/${r.transaction_id}`
+                          : r.listing_id     ? `/dashboard/listings/${r.listing_id}`
+                          : "/dashboard/income-truth",
+    }
+  })
+}
+
 // ─── Public composer ──────────────────────────────────────────────────────
 
 export interface ComposeInput {
@@ -610,7 +664,7 @@ export async function composeAgentActionQueue(
     agentsId:    input.agentsId,
     brokerageId: input.brokerageId,
   }
-  const [portal, deal, listing, npv, negotiation] = await Promise.all([
+  const [portal, deal, listing, npv, negotiation, incomeGap] = await Promise.all([
     fetchPortalEventActions(supabase, baseInput),
     fetchDealHealthActions(supabase,   baseInput),
     fetchListingHealthActions(supabase, baseInput),
@@ -620,10 +674,12 @@ export async function composeAgentActionQueue(
       agentUserId: input.agentUserId,
       brokerageId: input.brokerageId,
     }),
+    // Sprint 14 — Income Truth ranked weekly actions
+    fetchIncomeGapActions(supabase, baseInput),
   ])
 
   // Union + sort by priority desc, cap to limit
-  const allItems = [...portal, ...deal, ...listing, ...npv, ...negotiation]
+  const allItems = [...portal, ...deal, ...listing, ...npv, ...negotiation, ...incomeGap]
   allItems.sort((a, b) => b.priority - a.priority)
   const items = allItems.slice(0, limit)
 
@@ -634,6 +690,7 @@ export async function composeAgentActionQueue(
     listing_health:       listing.length,
     lifetime_npv:         npv.length,
     negotiation_strategy: negotiation.length,
+    income_gap:           incomeGap.length,
   }
 
   return {

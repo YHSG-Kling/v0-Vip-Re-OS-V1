@@ -55,6 +55,7 @@ const SOURCE_META: Record<ActionSource, { label: string; color: string; icon: ty
   listing_health:       { label: "Listing Health",  color: "bg-amber-100 text-amber-800",   icon: Radio        },
   lifetime_npv:         { label: "Lifetime NPV",    color: "bg-violet-100 text-violet-800", icon: Crown        },
   negotiation_strategy: { label: "Negotiation",     color: "bg-emerald-100 text-emerald-800", icon: Sparkles   },
+  income_gap:           { label: "Income Truth",    color: "bg-rose-100 text-rose-800",     icon: Sparkles    },
 }
 
 const SEVERITY_STRIPE: Record<string, string> = {
