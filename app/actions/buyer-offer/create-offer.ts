@@ -10,6 +10,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkFinancialVerification } from "@/lib/buyer-lifecycle"
 import { isValidUUID } from "@/lib/validations"
+import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 
 const MAX_PENDING_OFFERS = 3 // Configurable limit
 
@@ -69,6 +70,27 @@ export async function createBuyerOffer(
       success: false,
       error: "Buyer must be financially verified before creating offers",
       errorCode: "not_financially_verified",
+    }
+  }
+
+  // NAR 2024 Settlement: signed Buyer Broker Agreement required before
+  // drafting an offer. Resolve buyer's agent and gate.
+  const { data: buyerAgentRow } = await supabase
+    .from("contacts")
+    .select("agent_id")
+    .eq("id", buyerId)
+    .maybeSingle()
+  if (buyerAgentRow?.agent_id) {
+    const bbaGate = await requireActiveBBA({
+      buyerContactId: buyerId,
+      agentId:        buyerAgentRow.agent_id,
+    })
+    if (!bbaGate.allowed) {
+      return {
+        success: false,
+        error: bbaGate.reason ?? "Active Buyer Broker Agreement required (NAR 2024 settlement)",
+        errorCode: "bba_required",
+      }
     }
   }
 

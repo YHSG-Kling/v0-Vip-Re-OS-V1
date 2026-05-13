@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 
 export async function requestShowing(data: {
   contactId: string
@@ -46,6 +47,27 @@ export async function requestShowing(data: {
       .maybeSingle()
     const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
     const { data: { user } } = await supabase.auth.getUser()
+
+    // ── NAR 2024 Settlement: BBA gate ──────────────────────────────────────
+    // Before scheduling a showing, the buyer must have a signed Buyer Broker
+    // Agreement with their assigned agent. Skip when there's no assigned
+    // agent (yet) — those are pre-representation inquiries that go through
+    // the lead-pickup flow, not the BBA-gated showing flow.
+    const { data: contactForBBA } = await supabase
+      .from("contacts")
+      .select("agent_id")
+      .eq("id", data.contactId)
+      .maybeSingle()
+    if (contactForBBA?.agent_id) {
+      const gate = await requireActiveBBA({
+        buyerContactId: data.contactId,
+        agentId:        contactForBBA.agent_id,
+        brokerageId:    brokerageId ?? undefined,
+      })
+      if (!gate.allowed) {
+        return { success: false, error: gate.reason ?? "BBA gate failed", errorCode: "bba_required" }
+      }
+    }
 
     // Build a readable message from preferred dates and notes
     const datesText = data.preferredDates
