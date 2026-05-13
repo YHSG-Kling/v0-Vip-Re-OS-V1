@@ -729,9 +729,9 @@ async function stageOfferPacket(
       linked_bba_id: activeBBAId,
       needs_bba_intake: needsBBAIntake,
       spoken_summary: needsBBAIntake
-        ? `Offer for ${contactName} is staged. There's no Buyer Broker Agreement on file yet — let's capture those terms now. Agreement type, commission percentage or flat, and who pays. I'll stage the BBA too and we'll send both in one e-sign packet — the buyer signs them together.`
+        ? `Offer for ${contactName} is staged. There's no Buyer Broker Agreement on file yet — let's capture those terms now. Agreement type, commission percentage or flat, and who pays. I'll stage the BBA too and email you both review links. Review them, then tell me to send for signatures when you're ready — I won't send anything until you say so.`
         : emailedAt
-        ? `Offer for ${contactName} is staged. I've emailed you the review link — open it after the call, check the filled forms, and send for signatures from there.`
+        ? `Offer for ${contactName} is staged. I've emailed you the review link — open it, verify the filled forms look right, then tell me to send for signature or send it yourself from the review page. Nothing's been dispatched yet.`
         : `Offer for ${contactName} is staged in the CRM. Email send failed — open the contact's record after the call to review and send for signatures.`,
     }
   } catch (err) {
@@ -881,7 +881,7 @@ async function stageBBAPacket(
       contact_name:  contactName,
       emailed_at:    emailedAt,
       spoken_summary: emailedAt
-        ? `BBA for ${contactName} is staged. I've emailed you the review link. If there's also a staged offer, I'll bundle both into one e-sign packet so the buyer signs them together.`
+        ? `BBA for ${contactName} is staged. I've emailed you the review link — verify the terms, then tell me to send for signature when you're ready. If there's a staged offer too, I'll bundle them into one packet. Nothing's been dispatched yet.`
         : `BBA for ${contactName} is staged in the CRM. Email send failed — open it manually to review and send for signature.`,
     }
   } catch (err) {
@@ -1390,8 +1390,12 @@ async function dispatchTransactionPacket(
   const contactId       = String(params.contact_id ?? "").trim()
   const offerDocumentId = params.offer_document_id ? String(params.offer_document_id) : null
   const bbaId           = params.bba_id ? String(params.bba_id) : null
-  if (!contactId)                       return { error: "contact_id required" }
-  if (!offerDocumentId && !bbaId)       return { error: "At least one of bba_id / offer_document_id required" }
+  /** When true (default), the AI can be called with ONLY contact_id and we
+   *  auto-resolve the most recent draftable BBA + offer for that buyer.
+   *  Agent can say "send Jane's offer for signature" without quoting IDs. */
+  const autoResolve     = params.auto_resolve === false ? false : true
+
+  if (!contactId) return { error: "contact_id required" }
 
   // Brokerage check + resolve buyer + agent_id for e-sign provider routing
   const { data: contact } = await supabase
@@ -1403,9 +1407,14 @@ async function dispatchTransactionPacket(
   if (!contact)        return { error: "Contact not found in your brokerage" }
   if (!contact.email)  return { error: "Buyer has no email — cannot dispatch for signature" }
 
-  // Verify both artifacts belong to this brokerage + buyer
+  // Verify both artifacts belong to this brokerage + buyer.
+  // When the agent didn't quote IDs, auto-resolve the most recent dispatchable
+  // BBA (status='draft') + offer (status='needs_agent_input' or 'draft_ready')
+  // for this contact. The AI uses this when the agent says "send Jane's offer
+  // for signature" — we look up Jane's staged packet from the contact record.
   let bba: any = null
   let offerDoc: any = null
+
   if (bbaId) {
     const { data } = await supabase
       .from("buyer_broker_agreements")
@@ -1419,11 +1428,23 @@ async function dispatchTransactionPacket(
       return { error: `BBA is already ${data.status} — cannot bundle into a new packet` }
     }
     bba = data
+  } else if (autoResolve) {
+    const { data } = await supabase
+      .from("buyer_broker_agreements")
+      .select("id, status, agreement_type, commission_percentage, commission_flat_amount, commission_payer")
+      .eq("brokerage_id", session.brokerage_id)
+      .eq("buyer_contact_id", contactId)
+      .eq("status", "draft")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    bba = data ?? null
   }
+
   if (offerDocumentId) {
     const { data } = await supabase
       .from("documents")
-      .select("id, status, document_type, state_code")
+      .select("id, status, document_type, state_code, metadata")
       .eq("id", offerDocumentId)
       .eq("brokerage_id", session.brokerage_id)
       .eq("contact_id", contactId)
@@ -1434,6 +1455,25 @@ async function dispatchTransactionPacket(
       return { error: `Offer is already ${data.status} — cannot bundle into a new packet` }
     }
     offerDoc = data
+  } else if (autoResolve) {
+    const { data } = await supabase
+      .from("documents")
+      .select("id, status, document_type, state_code, metadata")
+      .eq("brokerage_id", session.brokerage_id)
+      .eq("contact_id", contactId)
+      .eq("document_type", "offer")
+      .in("status", ["needs_agent_input", "draft_ready"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    offerDoc = data ?? null
+  }
+
+  if (!bba && !offerDoc) {
+    return {
+      error: "No staged BBA or offer found for this buyer.",
+      spoken_summary: `${contact.first_name ?? "This buyer"} has no draft BBA or staged offer ready to send. Stage one first.`,
+    }
   }
 
   // Resolve the agent's configured e-sign provider (user-scope > brokerage)

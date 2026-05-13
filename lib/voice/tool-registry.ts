@@ -163,7 +163,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_outbound: true,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Dispatch a staged BBA + offer (or either alone) to the buyer as ONE e-sign envelope via the brokerage/agent's configured provider. Buyer signs both in sequence within the same packet.",
+    description: "Dispatch a staged BBA + offer (or either alone) to the buyer as ONE e-sign envelope via the agent's configured provider. Buyer signs both in sequence in the same packet. Agent normally reviews via emailed link first, then says 'send Jane's offer for signature' — pass contact_id alone and the tool auto-resolves the most recent draft BBA + staged offer for that contact. Optionally pass explicit bba_id / offer_document_id to bypass auto-resolution, or auto_resolve:false to require explicit IDs.",
   },
   stage_listing_packet: {
     name: "stage_listing_packet",
