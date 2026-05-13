@@ -13,7 +13,7 @@ import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
-import { CustomerWelcomePanel } from "@/app/components/portal/customer-welcome-panel"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import {
   Bell,
@@ -77,12 +77,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      {/* Sprint 10 — Customer welcome panel for the lifetime / post-close
-          arc. Steps: review_home_value → set_refi_alerts →
-          connect_anniversaries → vendor_marketplace_tour. The portal
-          kernel emits view='lifetime' when there's a closed deal or
-          buyer_stage='BUYER_LIFETIME'. Hides on completion / dismissal. */}
-      <CustomerWelcomePanel contactId={contactId} />
+      {/* Milestone-gated education for post-close contacts. Lifetime
+          customers see wealth + home-care lessons (set_refi_alerts,
+          home_value_tracking, annual_market_update, etc.). Hides on empty. */}
+      <MilestoneEducationPanel contactId={contactId} />
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">

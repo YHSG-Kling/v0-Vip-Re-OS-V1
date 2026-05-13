@@ -47,8 +47,7 @@ export async function GET(request: NextRequest) {
   const sevenDaysAgo = new Date(Date.now() - 7  * 86_400_000).toISOString()
   const twoDaysAgo   = new Date(Date.now() - 2  * 86_400_000).toISOString()
 
-  let agentNudged    = 0
-  let customerNudged = 0
+  let agentNudged = 0
   const errors: string[] = []
 
   try {
@@ -86,42 +85,16 @@ export async function GET(request: NextRequest) {
       agentNudged++
     }
 
-    // ── Customer onboarding nudges ──────────────────────────────────────
-    const { data: custRows } = await svc
-      .from("customer_onboarding")
-      .select("id, contact_id, brokerage_id, completion_percentage, last_nudge_sent_at, start_date")
-      .eq("status", "in_progress")
-      .lt("start_date", twoDaysAgo.slice(0, 10))
-      .or(`last_nudge_sent_at.is.null,last_nudge_sent_at.lt.${sevenDaysAgo}`)
-      .limit(100)
+    // Note: customer_onboarding table was dropped in migration 1049 —
+    // customer "education" is now milestone-gated via portal-stream
+    // projector + learning_modules.gated_until_milestone, not a separate
+    // welcome wizard. So this cron now only scans staff/agent onboarding.
+    void sevenDaysAgo  // referenced for the agent query if needed
 
-    for (const r of (custRows ?? []) as Array<{
-      id: string; contact_id: string; brokerage_id: string;
-      completion_percentage: number;
-    }>) {
-      await svc.from("lifecycle_events").insert({
-        event_type:   "onboarding.stalled",
-        entity_type:  "customer_onboarding",
-        entity_id:    r.id,
-        brokerage_id: r.brokerage_id,
-        metadata: {
-          actor_kind:     "customer",
-          contact_id:     r.contact_id,
-          completion_pct: r.completion_percentage,
-        },
-        created_at: new Date().toISOString(),
-      })
-      await svc
-        .from("customer_onboarding")
-        .update({ last_nudge_sent_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-        .eq("id", r.id)
-      customerNudged++
-    }
-
-    const summary = { agent_nudged: agentNudged, customer_nudged: customerNudged, errors: errors.length }
+    const summary = { agent_nudged: agentNudged, customer_nudged: 0, errors: errors.length }
     await recordCronSuccessAction({
       context_id:        contextId,
-      records_processed: agentNudged + customerNudged,
+      records_processed: agentNudged,
       metadata:          summary,
     })
     return NextResponse.json({ message: "Onboarding tracker complete", summary })

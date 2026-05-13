@@ -11,7 +11,7 @@ import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
-import { CustomerWelcomePanel } from "@/app/components/portal/customer-welcome-panel"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
@@ -407,16 +407,17 @@ export default async function PortalHomePage({
           </div>
         )}
 
-        {/* Sprint 10 — Customer welcome panel. Auto-starts the onboarding
-            journey on first visit. Persona-aware copy. Hides when journey
-            is complete or the customer has dismissed it. */}
-        <CustomerWelcomePanel contactId={contactId} />
-
         {/* Sprint 8 — Negotiation mirror: when an open negotiation strategy
             exists for this contact, show the AI's plain-language explanation
             of what's happening (same data the agent is looking at). Hides
             on empty. */}
         <NegotiationMirrorPanel contactId={contactId} />
+
+        {/* Milestone-gated education (Sprint 7 + migration 1049). Surfaces
+            authored learning_modules whose gated_until_milestone matches
+            the contact's current milestone (or any earlier one). Locked
+            previews show what unlocks next. Hides on empty. */}
+        <MilestoneEducationPanel contactId={contactId} />
 
         {/* What This Means — persona-aware */}
         <Card className="shadow-lg border-0">
