@@ -1,6 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
+import Link from "next/link"
 import {
   Building2, DollarSign, TrendingDown, TrendingUp, AlertTriangle,
   Gauge, Activity, ShieldAlert, Clock,
@@ -99,7 +101,15 @@ export default async function SuperadminPlatformPage() {
             Cross-tenant margin, fair-use violators, cron health, and tenant isolation findings.
           </p>
         </div>
-        <Badge variant="outline" className="text-xs">{totals.brokerage_count} brokerages</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs">{totals.brokerage_count} brokerages</Badge>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/brokerages">Manage all</Link>
+          </Button>
+          <Button asChild size="sm">
+            <Link href="/dashboard/superadmin/brokerages/new">+ Add subscriber</Link>
+          </Button>
+        </div>
       </div>
 
       {/* Hero row */}
