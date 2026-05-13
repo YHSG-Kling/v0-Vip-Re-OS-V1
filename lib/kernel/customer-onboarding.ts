@@ -172,7 +172,64 @@ export async function advanceCustomerOnboardingStep(
     .update(update)
     .eq("id", row.id)
 
+  // Sprint 7 + 10 cross-wire: when the customer marks 'first_lesson' done,
+  // the kernel actually surfaces a lesson to them via the Sprint 7 composer.
+  // Without this, the step was a no-op checkbox — they'd have to navigate
+  // to /portal/[contactId]/learn manually to find anything to learn.
+  // Best-effort: failures here don't break the step advance.
+  if (stepKey === "first_lesson") {
+    void seedFirstLessonAssignment(supabase, contactId).catch(err => {
+      console.error("[customer-onboarding] seedFirstLessonAssignment failed:", err)
+    })
+  }
+
   return await resolveCustomerOnboardingState(supabase, contactId)
+}
+
+/**
+ * Picks the top learning_module for this customer via the Sprint 7
+ * composer and creates a learning_assignments row so it shows up in their
+ * /learn feed. Idempotent — UNIQUE(contact_id, module_id) on
+ * learning_assignments protects against re-runs.
+ */
+async function seedFirstLessonAssignment(
+  supabase:  SupabaseClient,
+  contactId: string,
+): Promise<void> {
+  const { pickLearningModulesForActor } = await import("@/lib/learning-router/composer")
+
+  const picks = await pickLearningModulesForActor({
+    supabase,
+    actorKind: "customer",
+    actorId:   contactId,
+    limit:     1,
+  })
+  if (picks.length === 0) return
+
+  // Need brokerage_id for the assignment row
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact?.brokerage_id) return
+
+  const top = picks[0]
+  if (!top) return
+  await supabase
+    .from("learning_assignments")
+    .upsert({
+      brokerage_id:   contact.brokerage_id,
+      module_id:      top.id,
+      contact_id:     contactId,
+      signal_source:  "onboarding:first_lesson",
+      signal_metadata: { triggered_by: "customer_onboarding_advance" },
+      priority_score: 80,
+      status:         "open",
+    }, {
+      onConflict:       "contact_id,module_id",
+      ignoreDuplicates: true,
+    })
 }
 
 /**
