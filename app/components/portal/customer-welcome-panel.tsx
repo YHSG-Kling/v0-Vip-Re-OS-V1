@@ -1,13 +1,14 @@
 "use client"
 
 /**
- * Sprint 10 — Customer welcome panel.
+ * Sprint 10 — Customer welcome panel (journey-type-aware).
  *
  * Renders on the customer portal home when their customer_onboarding row is
- * in_progress AND not dismissed. Persona-aware copy. Five-step checklist
- * with progress bar. Auto-starts the journey if no row exists yet.
+ * in_progress AND not dismissed. The step list and intro copy adapt to the
+ * customer's JOURNEY TYPE — buyer, seller, forever (post-close), or
+ * lifetime (returning).
  *
- * Hides on completion + on dismissal — no flash.
+ * Auto-starts the journey on first visit. Hides on completion or dismissal.
  */
 
 import { useEffect, useState, useTransition } from "react"
@@ -27,16 +28,60 @@ interface Props {
   contactId: string
 }
 
-const STEPS = [
-  { key: "welcome",          label: "Welcome",                  description: "Get oriented with your portal" },
-  { key: "meet_your_agent",  label: "Meet your agent",          description: "See your agent's details and how to reach them" },
-  { key: "tour_portal",      label: "Tour your portal",         description: "Live updates, properties, documents, education" },
-  { key: "set_preferences",  label: "Set your preferences",     description: "Pick how and when you want to hear from us" },
-  { key: "first_lesson",     label: "Start your first lesson",  description: "A short learning module tailored to where you are" },
-] as const
+type Step = { key: string; label: string; description: string }
 
-function personaIntro(persona: string | null, view: string | null): string {
-  // Buyer-side personas
+const STEPS_BY_JOURNEY: Record<string, Step[]> = {
+  buyer: [
+    { key: "welcome",          label: "Welcome",                  description: "Get oriented with your portal" },
+    { key: "meet_your_agent",  label: "Meet your agent",          description: "See your agent's details and how to reach them" },
+    { key: "tour_portal",      label: "Tour your portal",         description: "Live updates, properties, documents, education" },
+    { key: "set_preferences",  label: "Set your preferences",     description: "Pick how and when you want to hear from us" },
+    { key: "first_lesson",     label: "Start your first lesson",  description: "A short module tailored to where you are" },
+  ],
+  seller: [
+    { key: "welcome",                  label: "Welcome",                       description: "Get oriented with your seller portal" },
+    { key: "meet_your_agent",          label: "Meet your listing agent",       description: "See your agent + the deal team" },
+    { key: "upload_property_details",  label: "Tell us about your home",       description: "Photos, features, condition, what makes it special" },
+    { key: "review_pricing_strategy",  label: "Review the pricing strategy",   description: "Comps, list-price recommendation, market context" },
+    { key: "market_prep_checklist",    label: "Pre-market prep checklist",     description: "Staging, repairs, photos, sign install" },
+    { key: "first_lesson",             label: "Start your first lesson",      description: "Plain-language guide for sellers" },
+  ],
+  forever: [
+    { key: "welcome_back",             label: "Welcome back",                  description: "Your post-close wealth + home dashboard" },
+    { key: "review_home_value",        label: "See your home's value today",   description: "Current AVM + equity trend" },
+    { key: "set_refi_alerts",          label: "Set refinance alerts",          description: "Get pinged when refi savings cross your threshold" },
+    { key: "connect_anniversaries",    label: "Mark your milestones",          description: "Closing anniversaries, birthdays, life events" },
+    { key: "vendor_marketplace_tour",  label: "Tour your vendor marketplace",  description: "Vetted handyman, landscaping, HVAC, more" },
+  ],
+  lifetime: [
+    { key: "welcome_back",            label: "Welcome back",                description: "Pick up where you left off" },
+    { key: "revisit_preferences",     label: "Refresh your preferences",    description: "Update channel, frequency, what you want to hear" },
+    { key: "reconnect_with_agent",    label: "Reconnect with your agent",   description: "A quick hello — your agent's been holding your spot" },
+    { key: "vendor_marketplace_tour", label: "Tour your vendor marketplace", description: "Trusted partners for everyday and big-deal needs" },
+  ],
+}
+
+function personaIntro(
+  journeyType: string,
+  persona: string | null,
+  _view:   string | null,
+): string {
+  // Forever / lifetime journey-type wins
+  if (journeyType === "forever")
+    return "Welcome back. Your forever-portal tracks your home value, refi opportunities, anniversaries, and trusted-vendor access."
+  if (journeyType === "lifetime")
+    return "Welcome back. We've kept the door open — pick up where you left off, and your agent's just a tap away."
+
+  // Seller-side
+  if (journeyType === "seller") {
+    if (persona === "expired")  return "Welcome — fresh start. We'll show you exactly what we'll do differently this time and walk you through every step."
+    if (persona === "fsbo")     return "Welcome. Selling is real work; your portal makes that work visible at every step so nothing slips."
+    if (persona === "divorce")  return "Welcome. Your portal is built for clarity and speed during this transition — only what matters, nothing extra."
+    if (persona === "estate")   return "Welcome. We'll handle the details; your portal keeps everything organized so you can focus on what matters."
+    return "Welcome. Selling your home should feel as predictable as the listing photos look. Here's your control panel."
+  }
+
+  // Buyer-side
   if (persona === "first_time_buyer")
     return "Welcome — buying your first home can feel like a lot, so we'll go at your pace. Here's everything ready for you."
   if (persona === "investor")
@@ -49,13 +94,7 @@ function personaIntro(persona: string | null, view: string | null): string {
     return "Welcome. Your portal surfaces every angle on price, days-on-market, and negotiation room."
   if (persona === "relocation")
     return "Welcome. Your portal is structured around your move timeline and the new market."
-  // Seller-side
-  if (persona === "expired")    return "Welcome — fresh start. We'll show you exactly what we'll do differently this time."
-  if (persona === "fsbo")       return "Welcome. Your portal makes the work of selling visible at every step."
-  if (persona === "divorce")    return "Welcome. Your portal is built for clarity and speed during this transition."
-  if (persona === "estate")     return "Welcome. We'll handle the details — your portal keeps everything organized."
-  // Forever / post-close
-  if (view === "forever")       return "Welcome back. Your forever-portal tracks your home value, refi opportunities, and life milestones."
+
   return "Welcome to your portal — everything about your real estate journey, in one place."
 }
 
@@ -74,7 +113,6 @@ export function CustomerWelcomePanel({ contactId }: Props) {
         return
       }
       if (!result.state.exists) {
-        // Auto-start on first visit
         const started = await startCustomerOnboardingAction(contactId)
         if (cancelled) return
         if (started.ok) setState(started.state)
@@ -86,10 +124,10 @@ export function CustomerWelcomePanel({ contactId }: Props) {
     return () => { cancelled = true }
   }, [contactId])
 
-  if (loading) return null
-  if (!state) return null
-  if (state.status === "completed") return null
-  if (state.welcomeDismissedAt) return null
+  if (loading)                       return null
+  if (!state)                        return null
+  if (state.status === "completed")  return null
+  if (state.welcomeDismissedAt)      return null
 
   function handleAdvance(stepKey: string): void {
     startTransition(async () => {
@@ -105,8 +143,16 @@ export function CustomerWelcomePanel({ contactId }: Props) {
     })
   }
 
-  const intro = personaIntro(state.contactPersona, state.portalView)
+  const steps = STEPS_BY_JOURNEY[state.journeyType] ?? STEPS_BY_JOURNEY.buyer
+  const intro = personaIntro(state.journeyType, state.contactPersona, state.portalView)
   const completed = new Set(state.completedSteps)
+
+  const titleByJourney: Record<string, string> = {
+    buyer:    "Getting started",
+    seller:   "Getting your listing ready",
+    forever:  "Your forever portal",
+    lifetime: "Welcome back",
+  }
 
   return (
     <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-purple-50">
@@ -114,7 +160,7 @@ export function CustomerWelcomePanel({ contactId }: Props) {
         <div className="flex items-start justify-between gap-3">
           <CardTitle className="flex items-center gap-2 text-base text-blue-900">
             <Sparkles className="h-4 w-4" />
-            Getting started
+            {titleByJourney[state.journeyType] ?? "Getting started"}
             <Badge variant="outline" className="ml-auto text-xs bg-white">
               {state.completionPercentage}% done
             </Badge>
@@ -135,8 +181,8 @@ export function CustomerWelcomePanel({ contactId }: Props) {
         <p className="text-sm text-blue-900/90 leading-snug">{intro}</p>
 
         <div className="flex flex-col gap-2">
-          {STEPS.map((s) => {
-            const isDone = completed.has(s.key)
+          {steps.map((s) => {
+            const isDone    = completed.has(s.key)
             const isCurrent = state.currentStep === s.key
             return (
               <div

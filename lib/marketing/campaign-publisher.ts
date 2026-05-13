@@ -66,16 +66,34 @@ export async function publishMarketingCampaignSafe(
   }
   const resolved = await resolveCampaignAudience(svc, c.brokerage_id as string, criteria)
 
-  // Compliance gate — defer to existing brand-voice / outbound evaluators
-  // when child assets are present. For the campaign-level launch, we mark
-  // as passed unless an explicit broker flag fails. Per-send compliance
-  // happens when the individual newsletter / direct mail asset transitions
-  // to 'sending' via existing lib/kernel/marketing.ts.
-  const complianceStatus: "passed" | "blocked" | "needs_review" =
-    resolved.contactIds.length === 0 ? "needs_review" : "passed"
-  const blockedReason = resolved.contactIds.length === 0
-    ? "No contacts match the audience criteria — review filters before launch."
-    : null
+  // ── Compliance gate ─────────────────────────────────────────────────────
+  // Per-send compliance (DNC / TCPA per individual contact) happens in the
+  // child-asset send paths (lib/kernel/marketing.ts:scheduleNewsletterSend,
+  // sendNewsletterNow, etc.) via evaluateKernelOutbound. At launch time we
+  // do a CAMPAIGN-LEVEL sanity check: if a high % of the resolved audience
+  // can't be reached on the campaign's channel, refuse to flip to 'live'.
+  // This catches "I built a list of 5,000 contacts but they all
+  // unsubscribed" before any send fires.
+
+  let complianceStatus: "passed" | "blocked" | "needs_review" = "passed"
+  let blockedReason: string | null = null
+
+  if (resolved.contactIds.length === 0) {
+    complianceStatus = "needs_review"
+    blockedReason    = "No contacts match the audience criteria — review filters before launch."
+  } else {
+    const channelType = (c.campaign_type as string | null) ?? "newsletter"
+    const unreachable = await countUnreachableContacts(svc, resolved.contactIds, channelType)
+    const totalSize   = resolved.contactIds.length
+    const reachable   = totalSize - unreachable
+    if (reachable === 0) {
+      complianceStatus = "blocked"
+      blockedReason    = `All ${totalSize} contacts in this audience have opted out of ${channelType}. Refresh the audience before launch.`
+    } else if (reachable / totalSize < 0.25) {
+      complianceStatus = "needs_review"
+      blockedReason    = `Only ${reachable} of ${totalSize} contacts are reachable on ${channelType} (${Math.round((reachable / totalSize) * 100)}%). Confirm intent or refresh audience.`
+    }
+  }
 
   const launchAt = new Date().toISOString()
   const newStatus: "scheduled" | "live" =
@@ -117,6 +135,44 @@ export async function publishMarketingCampaignSafe(
     complianceStatus,
     blockedReason:    blockedReason ?? undefined,
   }
+}
+
+/**
+ * Returns the count of contacts in the given list who have opted out of the
+ * campaign's channel. Used for the campaign-level compliance pre-check.
+ *
+ * Channel → contacts column mapping:
+ *   newsletter / email   → email_opt_out OR email_unsubscribed
+ *   sms                  → sms_opt_out  OR sms_unsubscribed OR call_stop_flag
+ *   direct_mail / mail   → direct_mail_opt_out
+ *   phone / voice        → phone_opt_out OR call_stop_flag
+ *   other                → no per-channel block; returns 0
+ */
+async function countUnreachableContacts(
+  svc:        SupabaseClient,
+  contactIds: string[],
+  channelType: string,
+): Promise<number> {
+  if (contactIds.length === 0) return 0
+  const ch = channelType.toLowerCase()
+  const { data } = await svc
+    .from("contacts")
+    .select("id, email_opt_out, email_unsubscribed, sms_opt_out, sms_unsubscribed, call_stop_flag, direct_mail_opt_out, phone_opt_out")
+    .in("id", contactIds)
+  const rows = (data ?? []) as Array<Record<string, boolean | null>>
+  let n = 0
+  for (const r of rows) {
+    if (ch === "newsletter" || ch === "email") {
+      if (r.email_opt_out || r.email_unsubscribed) n++
+    } else if (ch === "sms" || ch === "text") {
+      if (r.sms_opt_out || r.sms_unsubscribed || r.call_stop_flag) n++
+    } else if (ch === "direct_mail" || ch === "mail" || ch === "postcard") {
+      if (r.direct_mail_opt_out) n++
+    } else if (ch === "phone" || ch === "voice" || ch === "call") {
+      if (r.phone_opt_out || r.call_stop_flag) n++
+    }
+  }
+  return n
 }
 
 /**

@@ -1,43 +1,51 @@
 /**
- * Sprint 10 — Customer onboarding journey kernel.
+ * Sprint 10 — Customer onboarding journey kernel (journey-type aware).
  *
  * Per-contact welcome / arrival state machine. Customers don't go through
  * agent_onboarding (that's for agent/tc/isa/team_lead); they get this
- * persona+portal-view-tailored walkthrough that finishes when they've
- * acknowledged their portal capabilities.
+ * persona+portal-view-tailored walkthrough.
+ *
+ * Four distinct journeys:
+ *
+ *   BUYER     — welcome → meet_your_agent → tour_portal → set_preferences
+ *               → first_lesson
+ *   SELLER    — welcome → meet_your_agent → upload_property_details
+ *               → review_pricing_strategy → market_prep_checklist
+ *               → first_lesson
+ *   FOREVER   — welcome_back → review_home_value → set_refi_alerts
+ *               → connect_anniversaries → vendor_marketplace_tour
+ *   LIFETIME  — welcome_back → revisit_preferences → reconnect_with_agent
+ *               → vendor_marketplace_tour
  *
  * Public API:
  *   ensureCustomerOnboardingStarted(contactId)
  *   advanceCustomerOnboardingStep(contactId, stepKey)
  *   dismissCustomerWelcome(contactId)
  *   resolveCustomerOnboardingState(contactId)
+ *   resolveJourneyType(persona, portalView) — exposed for the welcome panel
  *
- * Step vocabulary (open-ended; brokerage can extend):
- *   welcome              — first-touch hello
- *   meet_your_agent      — agent intro card
- *   tour_portal          — major sections walkthrough
- *   set_preferences      — communication channel + frequency
- *   first_lesson         — first learning module / education lesson
- *   complete             — terminal state
+ * Step keys are stable strings; brokerages can extend the vocabulary by
+ * writing their own steps into completed_steps without breaking the
+ * percentage math (only steps in STEPS_BY_JOURNEY count toward 100%).
  */
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-export const CUSTOMER_WELCOME_STEPS = [
-  "welcome",
-  "meet_your_agent",
-  "tour_portal",
-  "set_preferences",
-  "first_lesson",
-] as const
+export type JourneyType = "buyer" | "seller" | "forever" | "lifetime"
 
-export type CustomerWelcomeStep = typeof CUSTOMER_WELCOME_STEPS[number]
+export const STEPS_BY_JOURNEY: Record<JourneyType, readonly string[]> = {
+  buyer:    ["welcome", "meet_your_agent", "tour_portal", "set_preferences", "first_lesson"] as const,
+  seller:   ["welcome", "meet_your_agent", "upload_property_details", "review_pricing_strategy", "market_prep_checklist", "first_lesson"] as const,
+  forever:  ["welcome_back", "review_home_value", "set_refi_alerts", "connect_anniversaries", "vendor_marketplace_tour"] as const,
+  lifetime: ["welcome_back", "revisit_preferences", "reconnect_with_agent", "vendor_marketplace_tour"] as const,
+}
 
 export interface CustomerOnboardingState {
   exists:                boolean
+  journeyType:           JourneyType
   status:                "in_progress" | "completed" | "abandoned"
-  currentStep:           CustomerWelcomeStep | "complete"
+  currentStep:           string
   completedSteps:        string[]
   completionPercentage:  number
   welcomeDismissedAt:    string | null
@@ -47,19 +55,35 @@ export interface CustomerOnboardingState {
 }
 
 /**
+ * Infer the customer's journey type from their persona and portal view.
+ * Priority: portal_view ('forever' / 'lifetime' / 'deal' / 'match') overrides,
+ * then seller-side personas fall to 'seller', everything else 'buyer'.
+ */
+export function resolveJourneyType(
+  persona:    string | null | undefined,
+  portalView: string | null | undefined,
+): JourneyType {
+  if (portalView === "forever")  return "forever"
+  if (portalView === "lifetime") return "lifetime"
+  const sellerPersonas = new Set([
+    "expired", "fsbo", "divorce", "estate", "downsize_seller", "luxury_seller", "seller",
+  ])
+  if (persona && sellerPersonas.has(persona)) return "seller"
+  return "buyer"
+}
+
+/**
  * Creates a customer_onboarding row for this contact if one doesn't exist.
- * Idempotent — the UNIQUE(contact_id) constraint protects against races.
- * Tenant-safe: pulls brokerage_id + persona + portal_view from the contact.
+ * Idempotent — UNIQUE(contact_id) protects against races. Resolves
+ * journey_type at start so subsequent step advances use the right vocab.
  */
 export async function ensureCustomerOnboardingStarted(
   supabase:  SupabaseClient,
   contactId: string,
 ): Promise<CustomerOnboardingState | null> {
-  // Already exists?
   const existing = await resolveCustomerOnboardingState(supabase, contactId)
   if (existing.exists) return existing
 
-  // Need brokerage_id + persona from contact
   const { data: c } = await supabase
     .from("contacts")
     .select("brokerage_id, contact_persona")
@@ -67,28 +91,31 @@ export async function ensureCustomerOnboardingStarted(
     .maybeSingle()
   if (!c?.brokerage_id) return null
 
-  // Best-effort portal view (used for the welcome arc copy)
+  // Best-effort portal view (used for the welcome arc copy AND journey type)
   let portalView: string | null = null
   try {
     const { determinePortalView } = await import("@/lib/kernel/portal")
     const v = await determinePortalView(supabase, { contactId })
     portalView = v?.view ?? null
   } catch {
-    // resolver may not be available in all contexts — leave null
+    // resolver may not be available in all contexts
   }
 
-  const insert = {
-    brokerage_id:           c.brokerage_id,
-    contact_id:             contactId,
-    contact_persona:        (c.contact_persona as string | null) ?? null,
-    portal_view:            portalView,
-    status:                 "in_progress",
-    current_step:           "welcome",
-    completed_steps:        [] as string[],
-    completion_percentage:  0,
-  }
-  await supabase.from("customer_onboarding").upsert(insert, {
-    onConflict: "contact_id",
+  const journeyType = resolveJourneyType(c.contact_persona as string | null, portalView)
+  const firstStep   = STEPS_BY_JOURNEY[journeyType][0] ?? "welcome"
+
+  await supabase.from("customer_onboarding").upsert({
+    brokerage_id:          c.brokerage_id,
+    contact_id:            contactId,
+    contact_persona:       (c.contact_persona as string | null) ?? null,
+    portal_view:           portalView,
+    journey_type:          journeyType,
+    status:                "in_progress",
+    current_step:          firstStep,
+    completed_steps:       [] as string[],
+    completion_percentage: 0,
+  }, {
+    onConflict:       "contact_id",
     ignoreDuplicates: true,
   })
 
@@ -96,9 +123,9 @@ export async function ensureCustomerOnboardingStarted(
 }
 
 /**
- * Marks a step complete. If the step is the LAST one, transitions status
- * to 'completed' + sets completed_at. completion_percentage is recomputed
- * from completed_steps ∩ CUSTOMER_WELCOME_STEPS.
+ * Marks a step complete. Percentage is computed against the journey's own
+ * step list — extra ad-hoc steps don't dilute the score. When all steps in
+ * the journey are complete, status flips to 'completed'.
  */
 export async function advanceCustomerOnboardingStep(
   supabase:  SupabaseClient,
@@ -107,19 +134,21 @@ export async function advanceCustomerOnboardingStep(
 ): Promise<CustomerOnboardingState | null> {
   const { data: row } = await supabase
     .from("customer_onboarding")
-    .select("id, completed_steps, status")
+    .select("id, completed_steps, status, journey_type")
     .eq("contact_id", contactId)
     .maybeSingle()
   if (!row) return null
   if (row.status === "completed") return await resolveCustomerOnboardingState(supabase, contactId)
 
+  const journeyType = (row.journey_type as JourneyType) ?? "buyer"
+  const journeySteps = STEPS_BY_JOURNEY[journeyType]
   const completed = new Set([...(row.completed_steps as string[] ?? []), stepKey])
-  const eligible  = CUSTOMER_WELCOME_STEPS.filter(s => completed.has(s))
-  const pct       = Math.round((eligible.length / CUSTOMER_WELCOME_STEPS.length) * 100)
-  const allDone   = eligible.length === CUSTOMER_WELCOME_STEPS.length
-  const nextStep  = allDone
+  const eligibleDone = journeySteps.filter(s => completed.has(s))
+  const pct = Math.round((eligibleDone.length / journeySteps.length) * 100)
+  const allDone = eligibleDone.length === journeySteps.length
+  const nextStep = allDone
     ? "complete"
-    : (CUSTOMER_WELCOME_STEPS.find(s => !completed.has(s)) ?? "complete")
+    : (journeySteps.find(s => !completed.has(s)) ?? "complete")
 
   const update: Record<string, unknown> = {
     completed_steps:       Array.from(completed),
@@ -141,9 +170,8 @@ export async function advanceCustomerOnboardingStep(
 }
 
 /**
- * Customer clicks "Dismiss welcome". Sets welcome_dismissed_at — the panel
- * hides until next time but the journey stays in_progress so step
- * completion still counts toward the percentage.
+ * Customer dismisses the welcome panel. Journey stays in_progress so step
+ * completion still counts; the panel just stops auto-rendering.
  */
 export async function dismissCustomerWelcome(
   supabase:  SupabaseClient,
@@ -165,12 +193,13 @@ export async function resolveCustomerOnboardingState(
 ): Promise<CustomerOnboardingState> {
   const { data } = await supabase
     .from("customer_onboarding")
-    .select("status, current_step, completed_steps, completion_percentage, welcome_dismissed_at, start_date, contact_persona, portal_view")
+    .select("status, current_step, completed_steps, completion_percentage, welcome_dismissed_at, start_date, contact_persona, portal_view, journey_type")
     .eq("contact_id", contactId)
     .maybeSingle()
   if (!data) {
     return {
       exists:               false,
+      journeyType:          "buyer",
       status:               "in_progress",
       currentStep:          "welcome",
       completedSteps:       [],
@@ -184,8 +213,9 @@ export async function resolveCustomerOnboardingState(
   const r = data as Record<string, unknown>
   return {
     exists:               true,
+    journeyType:          (r.journey_type as JourneyType) ?? "buyer",
     status:               r.status as "in_progress" | "completed" | "abandoned",
-    currentStep:          (r.current_step as CustomerWelcomeStep | "complete"),
+    currentStep:          r.current_step as string,
     completedSteps:       (r.completed_steps as string[] | null) ?? [],
     completionPercentage: (r.completion_percentage as number | null) ?? 0,
     welcomeDismissedAt:   (r.welcome_dismissed_at as string | null) ?? null,
