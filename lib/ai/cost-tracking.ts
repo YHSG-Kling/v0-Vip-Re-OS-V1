@@ -175,9 +175,21 @@ export async function logAIUsage(params: {
       p_team_id: params.teamId || null,
       p_agent_id: params.agentId || null
     })
-    
+
     if (rpcError) {
       console.error("[v0] Failed to increment monthly usage:", rpcError)
+    }
+
+    // Bump the generic usage_counters row so lib/usage/check-cap.ts sees
+    // AI consumption against the 'ai_tokens_monthly' fair-use metric.
+    // Without this the cap check would always read zero and never trip.
+    if (params.brokerageId) {
+      try {
+        const { incrementUsage } = await import("@/lib/usage")
+        await incrementUsage(params.brokerageId, "ai_tokens_monthly", totalTokens)
+      } catch (counterError) {
+        console.error("[v0] Failed to bump ai_tokens_monthly counter:", counterError)
+      }
     }
   } catch (error) {
     console.error("[v0] Error in logAIUsage:", error)

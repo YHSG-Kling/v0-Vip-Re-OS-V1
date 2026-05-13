@@ -23,7 +23,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { MediaMetric } from "./log-media-usage"
 
-export type CapMetric = MediaMetric | "llm_calls" | "sms_sent" | "emails_sent" | "storage_gb"
+export type CapMetric = MediaMetric | "llm_calls" | "sms_sent" | "emails_sent" | "storage_gb" | "ai_tokens_monthly"
 
 export interface CapResult {
   allowed: boolean

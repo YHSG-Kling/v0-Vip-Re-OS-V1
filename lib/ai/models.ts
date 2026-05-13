@@ -6,13 +6,14 @@ import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
 import { resolveAIModel } from "@/lib/kernel/ai-model"
-import { 
-  logAIUsage, 
-  calculateCost, 
-  estimateTokens, 
+import {
+  logAIUsage,
+  calculateCost,
+  estimateTokens,
   checkPlatformAIEnabled,
-  type AIModel 
+  type AIModel
 } from "./cost-tracking"
+import { checkAIFairUse } from "./fair-use"
 
 export type { AIModel } from "./cost-tracking"
 
@@ -383,7 +384,22 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   if (!platformCheck.enabled) {
     throw new Error(platformCheck.reason || "AI features are disabled")
   }
-  
+
+  // Fair-use quota pre-flight (subscription-included AI — protects platform margin).
+  // Estimate the call's token cost from the prompt + system so we trip BEFORE the
+  // call rather than after the counter actually exceeds. Background jobs without
+  // brokerageId are uncapped (handled inside checkAIFairUse).
+  const estimatedTokens = estimateTokens(
+    (request.prompt ?? "") + (request.system ?? "")
+  ) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({
+    brokerageId: request.metadata.brokerageId,
+    addTokens:   estimatedTokens,
+  })
+  if (!fairUse.allowed) {
+    throw new Error(fairUse.message ?? "AI fair-use limit reached for this billing period.")
+  }
+
   // Resolve model through kernel cascade.
   // Priority: governance caps > explicit caller request > feature routing > platform default.
   // Explicit caller models are NOT exempt from governance — caps always apply when
@@ -559,9 +575,19 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
+  // Fair-use pre-flight (skipped for background jobs without brokerageId)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
   const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
   const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  let modelUsed: AIModel = routedModel
+  let inputTokens = 0
+  let outputTokens = 0
+  let resultObject: z.infer<TSchema>
 
   try {
     const result = await generateText({
@@ -573,7 +599,9 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
       messages: request.messages as any,
       experimental_output: Output.object({ schema: request.schema }),
     })
-    return { object: result.experimental_output as z.infer<TSchema> }
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? 0
+    resultObject = result.experimental_output as z.infer<TSchema>
   } catch {
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
     const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
@@ -587,8 +615,25 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
       messages: request.messages as any,
       experimental_output: Output.object({ schema: request.schema }),
     })
-    return { object: result.experimental_output as z.infer<TSchema> }
+    modelUsed    = fallback
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? 0
+    resultObject = result.experimental_output as z.infer<TSchema>
   }
+
+  if (request.userId && request.brokerageId) {
+    await logAIUsage({
+      userId:       request.userId,
+      brokerageId:  request.brokerageId,
+      agentId:      request.agentId ?? null,
+      model:        modelUsed,
+      inputTokens,
+      outputTokens,
+      feature,
+    })
+  }
+
+  return { object: resultObject }
 }
 
 export async function generateTextRouted(
@@ -596,6 +641,11 @@ export async function generateTextRouted(
 ): Promise<{ text: string }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
+
+  // Fair-use pre-flight (skipped for background jobs without brokerageId)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
   // Resolve primary model to gateway-wrapped provider instance
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
@@ -605,6 +655,11 @@ export async function generateTextRouted(
   // When tools are present we need multi-step support; default to 5 steps so
   // the model can call a tool, see the result, and produce a final reply.
   const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
+
+  let modelUsed: AIModel = routedModel
+  let inputTokens = 0
+  let outputTokens = 0
+  let resultText = ""
 
   try {
     const result = await generateText({
@@ -617,7 +672,9 @@ export async function generateTextRouted(
       tools: request.tools as any,
       stopWhen,
     })
-    return { text: result.text }
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
+    resultText   = result.text
   } catch {
     // Automatic fallback to secondary model via gateway
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
@@ -633,8 +690,25 @@ export async function generateTextRouted(
       tools: request.tools as any,
       stopWhen,
     })
-    return { text: result.text }
+    modelUsed    = fallback
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
+    resultText   = result.text
   }
+
+  if (request.userId && request.brokerageId) {
+    await logAIUsage({
+      userId:       request.userId,
+      brokerageId:  request.brokerageId,
+      agentId:      request.agentId ?? null,
+      model:        modelUsed,
+      inputTokens,
+      outputTokens,
+      feature,
+    })
+  }
+
+  return { text: resultText }
 }
 
 /**
