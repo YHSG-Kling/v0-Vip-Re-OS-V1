@@ -117,26 +117,29 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Send a portal message to a contact. Runs brand voice + Them-First + fair housing.",
   },
 
-  // ── Stage (NAR-regulated artifacts — BBA gate required) ───────────────────
+  // ── Stage (NAR-regulated artifacts — BBA gate where required) ────────────
+  // These are contract-drafting tools tied to a CRM contact. They are NOT
+  // subject to ai_fair_use (a brokerage-level token-quota guard); the kernel
+  // BBA gate is the only thing that should block contract drafting.
   stage_offer_packet: {
     name: "stage_offer_packet",
     category: "stage",
     authority: "agent",
-    gates: ["active_bba", "ai_fair_use"],
+    gates: ["active_bba"],
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Stage a filled offer packet via voice intake. BBA required (NAR 2024).",
+    description: "Stage a filled offer packet from voice intake. Voice → conversation → intake → forms → email agent with review link. BBA required (NAR 2024).",
   },
   stage_listing_packet: {
     name: "stage_listing_packet",
     category: "stage",
     authority: "agent",
-    gates: ["ai_fair_use"],
+    gates: [],
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Stage a listing-agreement packet from voice intake. AI fair-use applies.",
+    description: "Stage a listing-agreement packet from voice intake. Voice → conversation → intake → forms → email agent with review link.",
   },
   stage_showing: {
     name: "stage_showing",

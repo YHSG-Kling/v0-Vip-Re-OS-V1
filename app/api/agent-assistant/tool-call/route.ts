@@ -492,11 +492,58 @@ async function stageListingPacket(
 
     if (error || !doc) return { error: error?.message ?? "Could not create listing document" }
 
+    // Post-call hand-off: email the agent with the review link. Same pattern
+    // as stageOfferPacket — voice tells them "I've emailed you the link",
+    // they open it after the call to review + dispatch for signatures.
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/dashboard/listings/new?documentId=${doc.id}`
+    let emailedAt: string | null = null
+    try {
+      const { data: agentUser } = await supabase
+        .from("users")
+        .select("email, first_name")
+        .eq("id", session.user_id)
+        .maybeSingle()
+
+      if (agentUser?.email) {
+        const { sendEmail } = await import("@/lib/providers/messaging")
+        const subject = `Listing agreement staged — review and send for signatures`
+        const propertyLine = (extracted.intake.propertyAddress?.value as string | undefined) ?? "the new listing"
+        const html = `<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#0f172a;max-width:640px;margin:0 auto;padding:24px;">
+          <h2 style="margin:0 0 12px 0;">Listing agreement staged</h2>
+          <p>Hi ${agentUser.first_name ?? "there"} — the AI captured the listing intake from your call and filled the ${state} state forms for ${propertyLine}. Here's what to do next:</p>
+          <ol>
+            <li>Review the filled packet for accuracy</li>
+            <li>Click <strong>Send for signature</strong> to dispatch via your configured e-sign provider</li>
+            <li>Seller signs through the portal; you get a webhook notification</li>
+          </ol>
+          <div style="margin:24px 0;">
+            <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review & send for signatures →</a>
+          </div>
+          <p style="font-size:12px;color:#94a3b8;margin-top:32px;">
+            Forms count: ${filledPacket.forms.length} · State: ${state}
+            ${filledPacket.agentMustComplete?.length ? `<br/>Fields still needing your input: ${filledPacket.agentMustComplete.length}` : ""}
+          </p>
+        </body></html>`
+
+        const sendResult = await sendEmail({
+          to:          agentUser.email,
+          subject,
+          html,
+          agentUserId: session.user_id,
+        })
+        if (sendResult.success) emailedAt = new Date().toISOString()
+      }
+    } catch (err: any) {
+      console.error("[voice/stageListingPacket] post-stage email failed:", err?.message)
+    }
+
     return {
       success: true,
       document_id: doc.id,
-      open_url: `/dashboard/listings/new?documentId=${doc.id}`,
-      spoken_summary: "Listing-agreement packet staged. The agent opens the FormWizard from their listings page to review and submit.",
+      emailed_at: emailedAt,
+      spoken_summary: emailedAt
+        ? "Listing agreement is staged. I've emailed you the review link — open it after the call to check the filled forms and send for signatures."
+        : "Listing agreement is staged in your listings page. Email send failed — open it manually to review and send for signatures.",
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Listing staging failed" }
@@ -586,12 +633,63 @@ async function stageOfferPacket(
     if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
 
     const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm?contact=${contactId}&action=new_offer&documentId=${doc.id}`
+
+    // Post-call hand-off: email the agent with a review link. The AI tells
+    // them aloud "I've staged the offer — check your email"; the email is the
+    // artifact they review after the call. They open the link, review the
+    // filled forms, and dispatch through the configured e-sign provider
+    // (Dotloop / DocuSign / etc. — see lib/integrations/resolve-esign-provider).
+    let emailedAt: string | null = null
+    try {
+      const { data: agentUser } = await supabase
+        .from("users")
+        .select("email, first_name")
+        .eq("id", session.user_id)
+        .maybeSingle()
+
+      if (agentUser?.email) {
+        const { sendEmail } = await import("@/lib/providers/messaging")
+        const subject = `Offer staged for ${contactName} — review and send for signatures`
+        const html = `<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#0f172a;max-width:640px;margin:0 auto;padding:24px;">
+          <h2 style="margin:0 0 12px 0;">Your offer for ${contactName} is staged</h2>
+          <p>Hi ${agentUser.first_name ?? "there"} — the AI captured the offer intake from your call and filled the ${state} state forms. Here's what to do next:</p>
+          <ol>
+            <li>Review the filled packet for accuracy</li>
+            <li>Click <strong>Send for signature</strong> to dispatch via your configured e-sign provider</li>
+            <li>Buyer signs through their portal; you get a webhook notification</li>
+          </ol>
+          <div style="margin:24px 0;">
+            <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review & send for signatures →</a>
+          </div>
+          <p style="font-size:12px;color:#94a3b8;margin-top:32px;">
+            Forms count: ${filledPacket.forms.length} · State: ${state}
+            ${filledPacket.agentMustComplete?.length ? `<br/>Fields still needing your input: ${filledPacket.agentMustComplete.length}` : ""}
+          </p>
+        </body></html>`
+
+        const sendResult = await sendEmail({
+          to:          agentUser.email,
+          subject,
+          html,
+          agentUserId: session.user_id,
+          contactId,
+        })
+        if (sendResult.success) emailedAt = new Date().toISOString()
+      }
+    } catch (err: any) {
+      // Email failure does not undo staging — the document exists in /crm.
+      console.error("[voice/stageOfferPacket] post-stage email failed:", err?.message)
+    }
+
     return {
       success: true,
       document_id: doc.id,
-      open_url: `/crm?contact=${contactId}&action=new_offer&documentId=${doc.id}`,
       contact_name: contactName,
-      spoken_summary: `Offer packet staged for ${contactName}. The agent opens it from the CRM to review and send for signature.`,
+      emailed_at: emailedAt,
+      spoken_summary: emailedAt
+        ? `Offer for ${contactName} is staged. I've emailed you the review link — open it after the call, check the filled forms, and send for signatures from there.`
+        : `Offer for ${contactName} is staged in the CRM. Email send failed — open the contact's record after the call to review and send for signatures.`,
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Offer staging failed" }
