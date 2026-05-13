@@ -22,7 +22,7 @@ export interface RecordTouchpointInput {
   campaignId:     string
   contactId:      string
   channel:        "email" | "sms" | "direct_mail" | "social" | "qr_scan"
-                | "blog" | "podcast" | "newsletter" | "phone" | "portal"
+                | "blog" | "podcast" | "newsletter" | "phone" | "portal" | "video"
   externalTable?: string
   externalId?:    string
   source?:        "launch" | "trigger" | "manual" | "retarget"

@@ -117,7 +117,7 @@ export async function publishMarketingCampaignSafe(
   // attribution engine can later back-attribute closed-transaction GCI
   // to this campaign. Fire-and-forget; failures isolated.
   if (newStatus === "live" && resolved.contactIds.length > 0) {
-    const channelMap: Record<string, "email" | "sms" | "direct_mail" | "social" | "newsletter" | "blog" | "podcast"> = {
+    const channelMap: Record<string, "email" | "sms" | "direct_mail" | "social" | "newsletter" | "blog" | "podcast" | "video"> = {
       newsletter:  "newsletter",
       email:       "email",
       sms:         "sms",
@@ -126,6 +126,9 @@ export async function publishMarketingCampaignSafe(
       social:      "social",
       blog:        "blog",
       podcast:     "podcast",
+      video:       "video",
+      video_email: "video",
+      video_social:"video",
     }
     const ch = channelMap[(c.campaign_type as string | null) ?? "newsletter"] ?? "email"
     void recordCampaignTouchpointsBulkSafe(
@@ -182,7 +185,7 @@ async function countUnreachableContacts(
   const ch = channelType.toLowerCase()
   const { data } = await svc
     .from("contacts")
-    .select("id, email_opt_out, email_unsubscribed, sms_opt_out, sms_unsubscribed, call_stop_flag, direct_mail_opt_out, phone_opt_out")
+    .select("id, email_opt_out, email_unsubscribed, sms_opt_out, sms_unsubscribed, call_stop_flag, direct_mail_opt_out, phone_opt_out, video_opt_out")
     .in("id", contactIds)
   const rows = (data ?? []) as Array<Record<string, boolean | null>>
   let n = 0
@@ -195,6 +198,8 @@ async function countUnreachableContacts(
       if (r.direct_mail_opt_out) n++
     } else if (ch === "phone" || ch === "voice" || ch === "call") {
       if (r.phone_opt_out || r.call_stop_flag) n++
+    } else if (ch === "video") {
+      if (r.video_opt_out) n++
     }
   }
   return n

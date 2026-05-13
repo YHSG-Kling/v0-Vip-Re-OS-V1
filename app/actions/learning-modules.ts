@@ -329,23 +329,56 @@ async function fanOutToChannel(
     }
 
     case "video": {
-      const { data, error } = await supabase
-        .from("training_videos")
+      // Sprint 7 + 1051: real fan-out. Create an ai_video_projects row
+      // (pending_review + heygen_status='pending') and link a training_videos
+      // row via ai_video_project_id so the lesson player can later swap in
+      // the real video_url once HeyGen finishes + an admin approves.
+      // ai_video_projects has no `description` column; we fold summary
+      // into video_metadata jsonb so the admin approval queue can read it.
+      const { data: avp, error: avpErr } = await supabase
+        .from("ai_video_projects")
         .insert({
-          brokerage_id:     mod.brokerage_id,
-          title:            mod.title,
-          description:      mod.summary,
-          category:         deriveVideoCategory(mod),
-          video_url:        "pending://learning-module",  // placeholder until media is uploaded
-          thumbnail_url:    mod.cover_image_url,
-          duration_seconds: secondsFromMinutes(mod.estimated_minutes),
-          created_by:       mod.authored_by ?? authorUserId,
-          is_required:      false,
+          brokerage_id:       mod.brokerage_id,
+          agent_id:           mod.authored_by ?? authorUserId,  // FK → users.id
+          title:              mod.title,
+          script_content:     mod.body ?? mod.summary ?? mod.title,
+          video_type:         "education",
+          video_provider:     "heygen",
+          heygen_status:      "pending",
+          status:             "draft",
+          approval_status:    "pending_review",
+          is_ai_generated:    true,
+          learning_module_id: mod.id,
+          video_metadata:     { description: mod.summary ?? null, source: "learning_module" },
         })
         .select("id")
         .single()
-      if (error || !data) throw new Error(error?.message ?? "video insert failed")
-      return { externalId: data.id as string, externalTable: "training_videos" }
+      if (avpErr || !avp) throw new Error(avpErr?.message ?? "ai_video_projects insert failed")
+
+      const { data: tv, error: tvErr } = await supabase
+        .from("training_videos")
+        .insert({
+          brokerage_id:        mod.brokerage_id,
+          title:               mod.title,
+          description:         mod.summary,
+          category:             deriveVideoCategory(mod),
+          video_url:            "pending://heygen",   // updated when HeyGen + approval finish
+          thumbnail_url:        mod.cover_image_url,
+          duration_seconds:     secondsFromMinutes(mod.estimated_minutes),
+          created_by:           mod.authored_by ?? authorUserId,
+          is_required:          false,
+          is_ai_generated:      true,
+          ai_video_project_id:  avp.id,
+        })
+        .select("id")
+        .single()
+      if (tvErr || !tv) throw new Error(tvErr?.message ?? "training_videos insert failed")
+
+      return {
+        externalId:    tv.id as string,
+        externalTable: "training_videos",
+        externalUrl:   `/training/${tv.id}`,
+      }
     }
 
     case "podcast": {
@@ -439,10 +472,23 @@ function slugify(t: string): string {
     .slice(0, 64)
 }
 
+/**
+ * Map a learning_module's audience/stage to one of training_videos.category's
+ * allowed values (CHECK: platform_tour / lead_management / listing_workflow /
+ * transaction / portal / marketing / isa_engine / compliance / them_first /
+ * mobile_app / custom). Everything Sprint 7 fans out as 'custom' unless it
+ * obviously maps onto an existing bucket.
+ */
 function deriveVideoCategory(mod: ModuleRow): string {
-  if (mod.stage_tags?.length)     return `stage:${mod.stage_tags[0]}`
-  if (mod.audience_roles?.length) return `role:${mod.audience_roles[0]}`
-  return "learning_module"
+  const roles  = mod.audience_roles  ?? []
+  const stages = mod.stage_tags      ?? []
+  if (roles.includes("customer"))           return "portal"
+  if (roles.includes("agent"))              return "platform_tour"
+  if (roles.includes("compliance_officer")) return "compliance"
+  if (roles.includes("tc"))                 return "transaction"
+  if (stages.some(s => /listing|showing/i.test(s))) return "listing_workflow"
+  if (stages.some(s => /offer|inspection|appraisal|closing/i.test(s))) return "transaction"
+  return "custom"
 }
 
 function secondsFromMinutes(mins: number | null | undefined): number {

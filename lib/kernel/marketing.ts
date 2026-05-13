@@ -851,19 +851,53 @@ export async function createVideoProject(
   if (!access.allowed) return { success: false, error: access.reason ?? "Video generation access denied" }
 
   const supabase = await createServiceClient()
+
+  // Migration 1051: fold brokerage about_text + bio_text + brand voice into
+  // brand_voice_context jsonb so HeyGen prompts (and the admin reviewer)
+  // see what voice flavor the AI generation should carry.
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("name, about_text, bio_text")
+    .eq("id", ctx.brokerageId)
+    .maybeSingle()
+  let brandVoiceTone: string | null = null
+  try {
+    const { data: bv } = await supabase
+      .from("brand_voice_profile")
+      .select("tone")
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    brandVoiceTone = (bv?.tone as string | null) ?? null
+  } catch {
+    // brand_voice_profile lookup is best-effort
+  }
+  const brandVoiceContext = {
+    brokerage_name:  (brokerage?.name       as string | null) ?? null,
+    brokerage_about: (brokerage?.about_text as string | null) ?? null,
+    brokerage_bio:   (brokerage?.bio_text   as string | null) ?? null,
+    brand_voice_tone: brandVoiceTone,
+    applied_at:      new Date().toISOString(),
+  }
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
-      brokerage_id:   ctx.brokerageId,
-      agent_id:       ctx.agentId ?? null,
-      title:          input.title.trim(),
-      script_content: input.scriptContent.trim(),
-      video_type:     input.videoType,
-      listing_id:     input.listingId    ?? null,
-      heygen_template_id: input.templateId ?? null,
-      status:         "draft",
-      heygen_status:  "pending",
-      created_at:     new Date().toISOString(),
+      brokerage_id:        ctx.brokerageId,
+      agent_id:            ctx.agentId ?? null,
+      title:               input.title.trim(),
+      script_content:      input.scriptContent.trim(),
+      video_type:          input.videoType,
+      listing_id:          input.listingId    ?? null,
+      heygen_template_id:  input.templateId ?? null,
+      status:              "draft",
+      heygen_status:       "pending",
+      // Migration 1051: AI videos await admin approval before publish
+      approval_status:     "pending_review",
+      is_ai_generated:     true,
+      brand_voice_context: brandVoiceContext,
+      created_at:          new Date().toISOString(),
     })
     .select("id")
     .single()
@@ -936,7 +970,7 @@ export async function distributeVideoAsset(params: {
 
   const { data: project } = await supabase
     .from("ai_video_projects")
-    .select("status, video_url, title")
+    .select("status, video_url, title, approval_status, marketing_campaign_id, listing_id")
     .eq("id", params.projectId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
@@ -947,6 +981,11 @@ export async function distributeVideoAsset(params: {
   }
   if (project.status !== "completed") {
     return { success: false, error: `Video is not yet completed (current: ${project.status}).` }
+  }
+  // Migration 1051: AI-generated videos can't distribute until admin
+  // approves. Reject pending_review / rejected.
+  if (project.approval_status && project.approval_status !== "approved" && project.approval_status !== "published") {
+    return { success: false, error: `Video is not yet approved (current: ${project.approval_status}).` }
   }
 
   const insertRows = params.platforms.map((platform) => ({
@@ -965,6 +1004,42 @@ export async function distributeVideoAsset(params: {
 
   const { error } = await supabase.from("repurposed_content_log").insert(insertRows)
   if (error) return { success: false, error: error.message }
+
+  // Migration 1051: when this video is tied to a marketing_campaigns row,
+  // distributing it counts as touchpoints for every audience contact.
+  // Fire-and-forget; failures isolated. Skip when no campaign linkage.
+  if (project.marketing_campaign_id) {
+    try {
+      const { recordCampaignTouchpointsBulkSafe } = await import("@/lib/marketing/touchpoint-recorder")
+      const { resolveCampaignAudience } = await import("@/lib/marketing/audience-resolver")
+      const { data: campaign } = await supabase
+        .from("marketing_campaigns")
+        .select("brokerage_id, audience_personas, audience_generations, audience_age_segs, audience_lead_source_tags, audience_buyer_stages, audience_contact_ids")
+        .eq("id", project.marketing_campaign_id)
+        .maybeSingle()
+      if (campaign) {
+        const audience = await resolveCampaignAudience(supabase, campaign.brokerage_id as string, {
+          personas:       (campaign.audience_personas       as string[] | null) ?? [],
+          generations:    (campaign.audience_generations    as string[] | null) ?? [],
+          ageSegs:        (campaign.audience_age_segs       as string[] | null) ?? [],
+          leadSourceTags: (campaign.audience_lead_source_tags as string[] | null) ?? [],
+          buyerStages:    (campaign.audience_buyer_stages   as string[] | null) ?? [],
+          contactIds:     (campaign.audience_contact_ids    as string[] | null) ?? undefined,
+        })
+        if (audience.contactIds.length > 0) {
+          void recordCampaignTouchpointsBulkSafe(
+            campaign.brokerage_id as string,
+            project.marketing_campaign_id as string,
+            audience.contactIds,
+            "video",
+            "manual",
+          )
+        }
+      }
+    } catch (err) {
+      console.error("[distributeVideoAsset] touchpoint record failed:", err)
+    }
+  }
 
   return { success: true }
 }

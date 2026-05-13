@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
-import { CheckCircle2, X, Loader2, Sparkles, Mail, FileText, Mic, Inbox } from "lucide-react"
+import { CheckCircle2, X, Loader2, Sparkles, Mail, FileText, Mic, Inbox, Video, ScrollText } from "lucide-react"
 import {
   approveMarketingAssetAction,
   rejectMarketingAssetAction,
@@ -16,10 +16,12 @@ import {
 interface Props { initialRows: PendingAssetRow[] }
 
 const KIND_META: Record<AssetKind, { label: string; icon: typeof Mail; tone: string }> = {
-  newsletter:  { label: "Newsletter",   icon: Mail,    tone: "bg-blue-100 text-blue-800" },
-  blog:        { label: "Blog post",    icon: FileText,tone: "bg-emerald-100 text-emerald-800" },
-  podcast:     { label: "Podcast",      icon: Mic,     tone: "bg-purple-100 text-purple-800" },
-  direct_mail: { label: "Direct mail",  icon: Inbox,   tone: "bg-amber-100 text-amber-800" },
+  newsletter:   { label: "Newsletter",     icon: Mail,       tone: "bg-blue-100 text-blue-800" },
+  blog:         { label: "Blog post",      icon: FileText,   tone: "bg-emerald-100 text-emerald-800" },
+  podcast:      { label: "Podcast",        icon: Mic,        tone: "bg-purple-100 text-purple-800" },
+  direct_mail:  { label: "Direct mail",    icon: Inbox,      tone: "bg-amber-100 text-amber-800" },
+  video:        { label: "Video",          icon: Video,      tone: "bg-rose-100 text-rose-800" },
+  video_script: { label: "Video script",   icon: ScrollText, tone: "bg-pink-100 text-pink-800" },
 }
 
 export function MarketingApprovalsClient({ initialRows }: Props) {

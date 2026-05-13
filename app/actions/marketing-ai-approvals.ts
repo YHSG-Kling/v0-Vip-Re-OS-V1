@@ -36,7 +36,7 @@ async function requireAdmin(): Promise<
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 
-export type AssetKind = "newsletter" | "blog" | "podcast" | "direct_mail"
+export type AssetKind = "newsletter" | "blog" | "podcast" | "direct_mail" | "video" | "video_script"
 
 export interface PendingAssetRow {
   kind:            AssetKind
@@ -56,7 +56,7 @@ export async function listPendingMarketingAssetsAction(): Promise<
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  const [nl, bl, pc, dm] = await Promise.all([
+  const [nl, bl, pc, dm, vp, vs] = await Promise.all([
     svc.from("newsletter_campaigns")
       .select("id, campaign_name, subject_line, content, created_at, is_ai_generated")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
@@ -68,6 +68,16 @@ export async function listPendingMarketingAssetsAction(): Promise<
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     svc.from("direct_mail_campaigns")
       .select("id, campaign_name, copy_text, created_at, is_ai_generated")
+      .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
+    // Sprint 9 cont. v2: full-length AI videos
+    // ai_video_projects has no `description` column; pull video_metadata
+    // jsonb instead and read .description from it for the row preview.
+    svc.from("ai_video_projects")
+      .select("id, title, video_metadata, script_content, created_at, is_ai_generated")
+      .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
+    // Sprint 9 cont. v2: video scripts library
+    svc.from("video_scripts_library")
+      .select("id, script_title, script_body, brand_voice_tone, created_at, ai_generated")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
   ])
 
@@ -112,16 +122,41 @@ export async function listPendingMarketingAssetsAction(): Promise<
       is_ai_generated: !!r.is_ai_generated,
     })
   }
+  for (const r of (vp.data ?? []) as Array<Record<string, unknown>>) {
+    const meta = (r.video_metadata as Record<string, unknown> | null) ?? null
+    rows.push({
+      kind: "video", id: r.id as string,
+      title: (r.title as string) ?? "(untitled video)",
+      summary: meta && typeof meta === "object" && "description" in meta
+        ? ((meta as { description?: string }).description ?? null)
+        : null,
+      body_preview: ((r.script_content as string | null) ?? "").slice(0, 600),
+      created_at: r.created_at as string,
+      is_ai_generated: !!r.is_ai_generated,
+    })
+  }
+  for (const r of (vs.data ?? []) as Array<Record<string, unknown>>) {
+    rows.push({
+      kind: "video_script", id: r.id as string,
+      title: (r.script_title as string) ?? "(untitled script)",
+      summary: r.brand_voice_tone ? `Tone: ${r.brand_voice_tone}` : null,
+      body_preview: ((r.script_body as string | null) ?? "").slice(0, 600),
+      created_at: r.created_at as string,
+      is_ai_generated: !!r.ai_generated,
+    })
+  }
 
   rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   return { ok: true, rows }
 }
 
 const TABLE_BY_KIND: Record<AssetKind, string> = {
-  newsletter:  "newsletter_campaigns",
-  blog:        "blog_posts",
-  podcast:     "podcast_episodes",
-  direct_mail: "direct_mail_campaigns",
+  newsletter:    "newsletter_campaigns",
+  blog:          "blog_posts",
+  podcast:       "podcast_episodes",
+  direct_mail:   "direct_mail_campaigns",
+  video:         "ai_video_projects",
+  video_script:  "video_scripts_library",
 }
 
 export async function approveMarketingAssetAction(
