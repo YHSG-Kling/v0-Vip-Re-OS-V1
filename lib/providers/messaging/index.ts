@@ -1,8 +1,18 @@
 /**
  * MESSAGING PROVIDER
  * Owns all outbound messaging API calls: Twilio SMS, SendGrid Email.
- * No business logic — pure API client wrappers.
+ *
+ * COMPLIANCE: every sendSMS/placeCall passes through enforceTCPACompliance
+ * BEFORE hitting Twilio. This is the single chokepoint — callers that go
+ * through this module cannot bypass TCPA. Decisions are logged to
+ * outbound_message_compliance_log for class-action defense + audit.
+ *
+ * To send a transactional notice (e.g. a "your offer was accepted" SMS to
+ * an existing client) that bypasses EWC but NOT DNC/quiet-hours, pass
+ * `transactional: true`.
  */
+
+import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
 
@@ -10,6 +20,14 @@ export interface SendSMSParams {
   to: string
   message: string
   contactId?: string
+  brokerageId?: string
+  initiatedBy?: string
+  /** Bypass EWC (still enforces DNC + quiet hours + opt-out + RND staleness) */
+  transactional?: boolean
+  /** Caller can opt out of the gate ONLY for system-internal flows where TCPA
+   *  doesn't apply (e.g. carrier-to-carrier 2FA via SendGrid email-to-SMS).
+   *  Logged + flagged for audit when used. */
+  skipTCPAGate?: boolean
 }
 
 export interface SendSMSResult {
@@ -18,9 +36,33 @@ export interface SendSMSResult {
   status?: string
   error?: string
   mock?: boolean
+  blocked?: boolean
+  blockReason?: string
+  complianceLogId?: string
 }
 
 export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
+  // ── TCPA gate (mandatory) ────────────────────────────────────────────────
+  if (!params.skipTCPAGate) {
+    const gate = await enforceTCPACompliance({
+      channel:       "sms",
+      phone:         params.to,
+      contactId:     params.contactId   ?? null,
+      brokerageId:   params.brokerageId ?? null,
+      initiatedBy:   params.initiatedBy ?? null,
+      transactional: params.transactional ?? false,
+    })
+    if (!gate.allowed) {
+      return {
+        success:         false,
+        blocked:         true,
+        blockReason:     gate.blockReason,
+        error:           gate.message ?? "TCPA compliance check blocked send",
+        complianceLogId: gate.logEntryId,
+      }
+    }
+  }
+
   const accountSid = process.env.TWILIO_ACCOUNT_SID
   const authToken = process.env.TWILIO_AUTH_TOKEN
   const fromNumber = process.env.TWILIO_PHONE_NUMBER
@@ -70,6 +112,12 @@ export interface PlaceCallParams {
   to: string
   /** TwiML URL that Twilio will request to control the call flow */
   twimlUrl: string
+  contactId?: string
+  brokerageId?: string
+  initiatedBy?: string
+  /** Bypass EWC (still enforces DNC + quiet hours + RND staleness) */
+  transactional?: boolean
+  skipTCPAGate?: boolean
 }
 
 export interface PlaceCallResult {
@@ -78,9 +126,33 @@ export interface PlaceCallResult {
   status?: string
   error?: string
   mock?: boolean
+  blocked?: boolean
+  blockReason?: string
+  complianceLogId?: string
 }
 
 export async function placeCall(params: PlaceCallParams): Promise<PlaceCallResult> {
+  // ── TCPA gate (mandatory) ────────────────────────────────────────────────
+  if (!params.skipTCPAGate) {
+    const gate = await enforceTCPACompliance({
+      channel:       "call",
+      phone:         params.to,
+      contactId:     params.contactId   ?? null,
+      brokerageId:   params.brokerageId ?? null,
+      initiatedBy:   params.initiatedBy ?? null,
+      transactional: params.transactional ?? false,
+    })
+    if (!gate.allowed) {
+      return {
+        success:         false,
+        blocked:         true,
+        blockReason:     gate.blockReason,
+        error:           gate.message ?? "TCPA compliance check blocked call",
+        complianceLogId: gate.logEntryId,
+      }
+    }
+  }
+
   const accountSid = process.env.TWILIO_ACCOUNT_SID
   const authToken = process.env.TWILIO_AUTH_TOKEN
   const fromNumber = process.env.TWILIO_PHONE_NUMBER
