@@ -142,6 +142,31 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   const resolvedUserId = newUserId ?? upsertedUser?.id ?? null
 
+  // ── 6b. Track this invitation in user_invitations (state machine source) ─
+  // Idempotent: ON CONFLICT (brokerage_id, lower(email)) WHERE status='pending'
+  // means clicking "Invite" twice updates the timestamp rather than failing.
+  if (resolvedBrokerageId) {
+    try {
+      await service
+        .from("user_invitations")
+        .upsert(
+          {
+            brokerage_id: resolvedBrokerageId,
+            team_id:      resolvedTeamId,
+            invited_by:   user.id,
+            email:        params.email.toLowerCase(),
+            user_type:    requestedRole,
+            first_name:   params.firstName,
+            last_name:    params.lastName,
+            status:       "pending",
+          },
+          { onConflict: "brokerage_id,email", ignoreDuplicates: false }
+        )
+    } catch (err: unknown) {
+      console.error("[v0] user_invitations upsert error:", err)
+    }
+  }
+
   // ── 7. Provision all role-specific domain records via kernel ──────────────
   // This is the canonical path — handles agents row, TC row, onboarding row,
   // user_role_assignments, and emits KernelEvent.USER_DOMAIN_RECORDS_CREATED
