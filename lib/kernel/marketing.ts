@@ -838,6 +838,13 @@ export interface CreateVideoProjectInput {
   videoType:    "listing" | "market_update" | "testimonial" | "educational" | "brand"
   listingId?:   string
   templateId?:  string
+  /**
+   * 'in_house' (default for internal training; brand voice only) vs
+   * 'customer_facing' (DNC/TCPA/fair-housing compliance gate applies on
+   * distribute). The publisher infers this from the campaign's audience
+   * but the kernel command lets the caller override.
+   */
+  audienceType?: "in_house" | "customer_facing"
 }
 
 export async function createVideoProject(
@@ -881,6 +888,20 @@ export async function createVideoProject(
     applied_at:      new Date().toISOString(),
   }
 
+  // Migration 1052: resolve the actual provider (D-ID default, agent
+  // voice profile override, brokerage global setting override). Was
+  // hardcoded 'heygen' which was wrong — D-ID is the platform primary.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider     = await resolveVideoProvider(supabase, {
+    brokerageId: ctx.brokerageId,
+    agentUserId: ctx.userId ?? null,
+  })
+  const providerCols = initialProviderColumns(provider)
+
+  // audience_type: caller passes explicitly when known; otherwise default
+  // to 'customer_facing' (safer — over-restrict by default).
+  const audienceType = input.audienceType ?? "customer_facing"
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
@@ -892,10 +913,12 @@ export async function createVideoProject(
       listing_id:          input.listingId    ?? null,
       heygen_template_id:  input.templateId ?? null,
       status:              "draft",
-      heygen_status:       "pending",
+      video_provider:      provider,
+      ...providerCols,
       // Migration 1051: AI videos await admin approval before publish
       approval_status:     "pending_review",
       is_ai_generated:     true,
+      audience_type:       audienceType,
       brand_voice_context: brandVoiceContext,
       created_at:          new Date().toISOString(),
     })
@@ -970,7 +993,7 @@ export async function distributeVideoAsset(params: {
 
   const { data: project } = await supabase
     .from("ai_video_projects")
-    .select("status, video_url, title, approval_status, marketing_campaign_id, listing_id")
+    .select("status, video_url, title, approval_status, marketing_campaign_id, listing_id, audience_type, script_content, video_provider")
     .eq("id", params.projectId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
@@ -986,6 +1009,49 @@ export async function distributeVideoAsset(params: {
   // approves. Reject pending_review / rejected.
   if (project.approval_status && project.approval_status !== "approved" && project.approval_status !== "published") {
     return { success: false, error: `Video is not yet approved (current: ${project.approval_status}).` }
+  }
+
+  // Migration 1052: customer-facing videos must pass the kernel's
+  // outbound-communication compliance gate (DNC/TCPA/fair-housing). In-
+  // house training videos (audience_type='in_house') skip this — they're
+  // agent/staff/team education and don't go to external contacts.
+  if (project.audience_type === "customer_facing") {
+    try {
+      const { evaluateKernelOutbound, isComplianceBlocked } = await import("@/lib/kernel/adapters/compliance")
+      const compliance = await evaluateKernelOutbound({
+        actorContext: {
+          userId: params.userId,
+          role: "agent",
+          brokerageId: params.brokerageId,
+        },
+        journeyType: "buyer",         // resolver normalizes
+        persona: "other",
+        messageType: "social",         // closest video-channel kind in the kernel enum
+        content: (project.script_content as string | null) ?? "",
+        contact: undefined,
+      })
+      if (isComplianceBlocked(compliance)) {
+        await supabase.from("ai_video_projects").update({
+          compliance_status:     "failed",
+          compliance_violations: compliance.violations ?? [],
+          compliance_evaluated_at: new Date().toISOString(),
+        }).eq("id", params.projectId)
+        return { success: false, error: `Compliance blocked distribution: ${compliance.blockedReason ?? "review required"}` }
+      }
+      await supabase.from("ai_video_projects").update({
+        compliance_status:     "passed",
+        compliance_violations: [],
+        compliance_evaluated_at: new Date().toISOString(),
+      }).eq("id", params.projectId)
+    } catch (err) {
+      // Compliance adapter failure → mark needs_review, refuse to distribute
+      await supabase.from("ai_video_projects").update({
+        compliance_status:     "needs_review",
+        compliance_violations: [{ error: err instanceof Error ? err.message : String(err) }],
+        compliance_evaluated_at: new Date().toISOString(),
+      }).eq("id", params.projectId)
+      return { success: false, error: "Compliance evaluator unavailable; refusing to distribute customer-facing video." }
+    }
   }
 
   const insertRows = params.platforms.map((platform) => ({

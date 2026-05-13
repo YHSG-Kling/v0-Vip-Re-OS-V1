@@ -329,25 +329,42 @@ async function fanOutToChannel(
     }
 
     case "video": {
-      // Sprint 7 + 1051: real fan-out. Create an ai_video_projects row
-      // (pending_review + heygen_status='pending') and link a training_videos
-      // row via ai_video_project_id so the lesson player can later swap in
-      // the real video_url once HeyGen finishes + an admin approves.
-      // ai_video_projects has no `description` column; we fold summary
-      // into video_metadata jsonb so the admin approval queue can read it.
+      // Sprint 7 + 1051 + 1052: real fan-out. Create an ai_video_projects
+      // row + linked training_videos row.
+      //
+      //   * Provider — resolved from agent_voice_profiles.preferred_avatar_provider
+      //     (default 'did') or global_settings.additional_settings.platform_video_provider.
+      //     D-ID is the platform primary, not HeyGen. Earlier code hardcoded heygen.
+      //   * audience_type — derived from learning_module.audience_roles:
+      //       'customer' → 'customer_facing' (compliance gate applies)
+      //       agent/staff/tc/compliance/team_lead → 'in_house' (brand voice only)
+      //   * Initial provider columns — set heygen_status / provider_status
+      //     to 'pending' only for the chosen provider.
+      const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+      const provider = await resolveVideoProvider(supabase, {
+        brokerageId:  mod.brokerage_id,
+        agentUserId:  mod.authored_by ?? authorUserId,
+      })
+      const providerCols = initialProviderColumns(provider)
+
+      const audienceType = (mod.audience_roles ?? []).includes("customer")
+        ? "customer_facing"
+        : "in_house"
+
       const { data: avp, error: avpErr } = await supabase
         .from("ai_video_projects")
         .insert({
           brokerage_id:       mod.brokerage_id,
-          agent_id:           mod.authored_by ?? authorUserId,  // FK → users.id
+          agent_id:           mod.authored_by ?? authorUserId,
           title:              mod.title,
           script_content:     mod.body ?? mod.summary ?? mod.title,
           video_type:         "education",
-          video_provider:     "heygen",
-          heygen_status:      "pending",
+          video_provider:     provider,
+          ...providerCols,
           status:             "draft",
           approval_status:    "pending_review",
           is_ai_generated:    true,
+          audience_type:      audienceType,
           learning_module_id: mod.id,
           video_metadata:     { description: mod.summary ?? null, source: "learning_module" },
         })

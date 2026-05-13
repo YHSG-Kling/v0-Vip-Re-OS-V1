@@ -84,10 +84,28 @@ export function MarketingApprovalsClient({ initialRows }: Props) {
                     {r.is_ai_generated && <Sparkles className="h-4 w-4 text-purple-500" />}
                     {r.title}
                   </CardTitle>
-                  <Badge className={meta.tone}>
-                    <Icon className="h-3 w-3 mr-1" />
-                    {meta.label}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {/* Video extras: audience_type (compliance level) + provider */}
+                    {r.audience_type === "customer_facing" && (
+                      <Badge className="bg-red-100 text-red-800" title="Customer-facing — full DNC/TCPA/fair-housing compliance gate applies on distribute">
+                        customer-facing
+                      </Badge>
+                    )}
+                    {r.audience_type === "in_house" && (
+                      <Badge className="bg-slate-100 text-slate-700" title="In-house training — brand voice only, no customer compliance gate">
+                        in-house
+                      </Badge>
+                    )}
+                    {r.video_provider && (
+                      <Badge variant="outline" className="text-xs uppercase">
+                        {r.video_provider}
+                      </Badge>
+                    )}
+                    <Badge className={meta.tone}>
+                      <Icon className="h-3 w-3 mr-1" />
+                      {meta.label}
+                    </Badge>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">

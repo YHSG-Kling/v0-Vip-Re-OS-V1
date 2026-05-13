@@ -46,6 +46,11 @@ export interface PendingAssetRow {
   body_preview:    string | null
   created_at:      string
   is_ai_generated: boolean
+  /** Only set for video kinds. 'in_house' vs 'customer_facing'
+   *  distinguishes the compliance gate level. */
+  audience_type?:  "in_house" | "customer_facing" | null
+  /** Only set for video kinds. 'did' is the platform primary. */
+  video_provider?: "did" | "heygen" | "upload" | null
 }
 
 export async function listPendingMarketingAssetsAction(): Promise<
@@ -70,10 +75,12 @@ export async function listPendingMarketingAssetsAction(): Promise<
       .select("id, campaign_name, copy_text, created_at, is_ai_generated")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     // Sprint 9 cont. v2: full-length AI videos
-    // ai_video_projects has no `description` column; pull video_metadata
-    // jsonb instead and read .description from it for the row preview.
+    // ai_video_projects: no `description` column → read video_metadata
+    // jsonb. Also surface audience_type ('in_house'|'customer_facing')
+    // and video_provider so admin sees compliance-gate level + provider
+    // at-a-glance.
     svc.from("ai_video_projects")
-      .select("id, title, video_metadata, script_content, created_at, is_ai_generated")
+      .select("id, title, video_metadata, script_content, created_at, is_ai_generated, audience_type, video_provider, compliance_status")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     // Sprint 9 cont. v2: video scripts library
     svc.from("video_scripts_library")
@@ -133,6 +140,8 @@ export async function listPendingMarketingAssetsAction(): Promise<
       body_preview: ((r.script_content as string | null) ?? "").slice(0, 600),
       created_at: r.created_at as string,
       is_ai_generated: !!r.is_ai_generated,
+      audience_type:  (r.audience_type  as "in_house" | "customer_facing" | null) ?? null,
+      video_provider: (r.video_provider as "did" | "heygen" | "upload" | null) ?? null,
     })
   }
   for (const r of (vs.data ?? []) as Array<Record<string, unknown>>) {

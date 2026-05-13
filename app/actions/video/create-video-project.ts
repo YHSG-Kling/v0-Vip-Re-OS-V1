@@ -216,6 +216,16 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
 
   const supabase = await createClient()
 
+  // Migration 1052: provider resolved (D-ID default; agent + brokerage
+  // overrides). Hard-coded 'heygen' before — wrong; @d-id/client-sdk is
+  // the primary in package.json and agent_voice_profiles defaults to 'did'.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider = await resolveVideoProvider(supabase, {
+    brokerageId: params.brokerageId,
+    agentUserId: params.agentId,
+  })
+  const providerCols = initialProviderColumns(provider)
+
   const { data: project, error } = await supabase
     .from("ai_video_projects")
     .insert({
@@ -236,9 +246,9 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       captions_enabled: params.captionsEnabled,
       listing_id: params.listingId ?? null,
       status: "draft",
-      heygen_status: null,
       retry_count: 0,
-      video_provider: "heygen",
+      video_provider: provider,
+      ...providerCols,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })

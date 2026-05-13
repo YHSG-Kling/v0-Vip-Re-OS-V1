@@ -177,6 +177,16 @@ export async function createVideoProject(params: {
     .maybeSingle()
   if (!agent?.id) return { data: null, error: "No agent record found" }
 
+  // Migration 1052: resolve the actual provider (D-ID default, with agent
+  // + brokerage overrides). Listing videos are customer-facing by default
+  // and must pass compliance at distribute time.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider = await resolveVideoProvider(supabase, {
+    brokerageId: params.brokerageId,
+    agentUserId: user.id,
+  })
+  const providerCols = initialProviderColumns(provider)
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
@@ -186,8 +196,10 @@ export async function createVideoProject(params: {
       title:               params.title,
       script_content:      params.scriptContent,
       video_type:          params.videoType,
-      video_provider:      "heygen",
+      video_provider:      provider,
+      ...providerCols,
       status:              "planning",
+      audience_type:       "customer_facing",
       heygen_avatar_id:    params.heygenAvatarId ?? null,
       heygen_voice_id:     params.heygenVoiceId ?? null,
       heygen_template_id:  params.heygenTemplateId ?? null,
