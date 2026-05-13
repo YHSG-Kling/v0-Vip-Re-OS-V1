@@ -19,7 +19,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { resolveESignProviderForBrokerage } from "@/lib/integrations/resolve-esign-provider"
+import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 
 export interface AcknowledgeCommissionInput {
   offerId: string
@@ -103,7 +103,11 @@ export async function acknowledgeBuyerCommissionAction(
   // buyer signs; click_through and wet_signature are recorded inline below.
   if (method === "docusign" || method === "dotloop") {
     try {
-      const resolved = await resolveESignProviderForBrokerage(offer.brokerage_id)
+      // user → team → brokerage cascade — agent's own DocuSign/Dotloop wins
+      const resolved = await resolveESignProviderForActor({
+        brokerageId: offer.brokerage_id,
+        userId:      user.id,
+      })
       // Look up buyer's email for the signer
       const { data: buyer } = await svc
         .from("contacts")

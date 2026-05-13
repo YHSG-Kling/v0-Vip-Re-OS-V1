@@ -5,7 +5,7 @@ import { canBuyerSubmitOffers }   from "@/app/actions/buyer-lifecycle-core"
 import { NewOfferPageClient }     from "./new-offer-page-client"
 
 interface Props {
-  params:      Promise<{ id: string }>
+  params:      Promise<{ contactId: string }>
   searchParams: Promise<{
     listingId?:       string
     firstName?:       string
@@ -17,7 +17,7 @@ interface Props {
 }
 
 export default async function NewOfferPage({ params, searchParams }: Props) {
-  const { id: contactId }    = await params
+  const { contactId }    = await params
   const {
     listingId,
     firstName:       prefillFirstName,

@@ -17,7 +17,7 @@
  */
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
-import { resolveSMSProviderForBrokerage } from "./resolve-sms-provider"
+import { resolveSMSProviderForActor } from "./resolve-sms-provider"
 import { SMS_ADAPTERS } from "./sms-adapters"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
@@ -69,10 +69,14 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
     }
   }
 
-  // ── Resolve the brokerage's configured SMS provider ─────────────────────
-  let resolved: Awaited<ReturnType<typeof resolveSMSProviderForBrokerage>>
+  // ── Resolve provider via the actor cascade (user → team → brokerage) ───
+  // email/SMS/phone are what the USER uses — their personal credentials win.
+  let resolved: Awaited<ReturnType<typeof resolveSMSProviderForActor>>
   try {
-    resolved = await resolveSMSProviderForBrokerage(params.brokerageId ?? null)
+    resolved = await resolveSMSProviderForActor({
+      brokerageId: params.brokerageId ?? null,
+      userId:      params.initiatedBy ?? null,
+    })
   } catch (err: any) {
     return { success: false, error: err?.message ?? "No SMS provider configured" }
   }

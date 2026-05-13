@@ -8,11 +8,11 @@ import { getBuyerEnabledGates }  from "@/app/actions/buyer-lifecycle-core"
 // calls on every page render that were causing memory exhaustion.
 
 interface PageProps {
-  params: Promise<{ id: string }>
+  params: Promise<{ contactId: string }>
 }
 
 export default async function BuyerDetailPage({ params }: PageProps) {
-  const { id: buyerId } = await params
+  const { contactId: buyerId } = await params
   const supabase = await createClient()
 
   // Auth check

@@ -18,11 +18,11 @@ import { ChevronLeft }         from "lucide-react"
  */
 
 interface PageProps {
-  params: Promise<{ id: string; offerId: string }>
+  params: Promise<{ contactId: string; offerId: string }>
 }
 
 export default async function OfferDetailPage({ params }: PageProps) {
-  const { id: contactId, offerId } = await params
+  const { contactId, offerId } = await params
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   const serverClient = await createClient()

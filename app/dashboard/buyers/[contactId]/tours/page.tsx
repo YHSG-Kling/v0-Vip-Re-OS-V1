@@ -13,7 +13,7 @@ import { AlertTriangle } from 'lucide-react'
 import { TourPipelineStepper } from '@/app/components/shared/TourPipelineStepper'
 
 interface Props {
-  params: Promise<{ id: string }>
+  params: Promise<{ contactId: string }>
   searchParams: Promise<{ tab?: string }>
 }
 
@@ -28,7 +28,7 @@ const TOUR_ELIGIBLE_STAGES = [
 ]
 
 export default async function BuyerToursPage({ params, searchParams }: Props) {
-  const { id: contactId }  = await params
+  const { contactId }  = await params
   const { tab }            = await searchParams
 
   const serverClient = await createClient()

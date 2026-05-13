@@ -5,11 +5,11 @@ import { SearchClient } from "./search-client"
 import { Button } from "@/components/ui/button"
 
 interface PageProps {
-  params: Promise<{ id: string }>
+  params: Promise<{ contactId: string }>
 }
 
 export default async function BuyerSearchPage({ params }: PageProps) {
-  const { id: buyerId } = await params
+  const { contactId: buyerId } = await params
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()

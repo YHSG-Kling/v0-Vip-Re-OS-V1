@@ -66,7 +66,7 @@ const PROPERTY_TYPE_OPTIONS = ["Single Family", "Condo", "Townhouse", "Multi-Fam
 
 export default function BuyerAlertsPage() {
   const params  = useParams()
-  const buyerId = params.id as string
+  const buyerId = params.contactId as string
 
   // Derived from URL — brokerage_id pulled from first alert or contact
   const [brokerageId, setBrokerageId] = useState<string>("")

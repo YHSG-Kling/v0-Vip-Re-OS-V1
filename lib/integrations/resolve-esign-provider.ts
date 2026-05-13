@@ -1,18 +1,16 @@
 /**
  * E-sign provider resolver — single source of truth for which provider
- * handles signature requests for a given brokerage.
+ * handles signature requests for a given user / team / brokerage.
  *
- * Resolution order (highest precedence first):
- *   1. provider_overrides (scope=brokerage, provider_type='esign', enabled=true)
- *   2. platform_credentials (most recently active credential with platform IN
- *      [dotloop, docusign, skyslope, authentisign])
- *   3. SYSTEM_DEFAULTS.esign from lib/kernel/providers (currently 'dotloop')
+ * Resolution cascade (each agent's own settings win — e-sign is what the
+ * USER uses, not just the brokerage):
+ *   1. provider_overrides (scope='user', provider_type='esign', enabled)
+ *   2. provider_overrides (scope='team', ...)
+ *   3. provider_overrides (scope='brokerage', ...)
+ *   4. platform_credentials (most recent active for user)
+ *   5. platform_credentials (most recent active for brokerage)
  *
- * Throws when no provider is configured — callers MUST surface this to the
- * admin so they configure a provider before signature flows run.
- *
- * Returns the provider instance (ITransactionProvider) ready to call
- * createTransaction / sendForSignature / etc.
+ * Throws when no provider is configured — admin must fix in Settings.
  */
 
 import "server-only"
@@ -26,75 +24,125 @@ export interface ResolvedESignProvider {
     apiKey:     string
     profileId:  string
   }
-  accountId:  string | null
+  accountId:    string | null
   credentialId: string
-  provider:   ITransactionProvider
+  provider:     ITransactionProvider
+  resolvedScope: "user" | "team" | "brokerage"
+}
+
+export interface ResolveESignContext {
+  brokerageId: string
+  userId?:     string | null
+  teamId?:     string | null
 }
 
 const SUPPORTED_PLATFORMS = ["dotloop", "docusign", "skyslope", "authentisign"]
 
-export async function resolveESignProviderForBrokerage(
-  brokerageId: string,
-): Promise<ResolvedESignProvider> {
-  if (!brokerageId) {
-    throw new Error("brokerageId required to resolve e-sign provider")
-  }
+async function readOverride(
+  scope: "user" | "team" | "brokerage",
+  scopeId: string,
+): Promise<string | null> {
   const svc = createServiceClient()
-
-  // 1. provider_overrides — explicit per-brokerage selection
-  const { data: override } = await svc
+  const { data } = await svc
     .from("provider_overrides")
-    .select("provider_key, config")
+    .select("provider_key")
     .eq("provider_type", "esign")
-    .eq("scope_type", "brokerage")
-    .eq("scope_id", brokerageId)
+    .eq("scope_type", scope)
+    .eq("scope_id", scopeId)
     .eq("enabled", true)
     .maybeSingle()
+  return (data?.provider_key as string | null) ?? null
+}
 
-  let providerName: string | null = (override?.provider_key as string | null) ?? null
-
-  // 2. platform_credentials — pick the active credential matching the override
-  //    or the most recently-tested active one if no override.
-  let credentialsQuery = svc
+async function readCredential(params: {
+  scopeColumn: "agent_user_id" | "brokerage_id"
+  scopeId: string
+  preferredPlatform: string | null
+}) {
+  const svc = createServiceClient()
+  let q = svc
     .from("platform_credentials")
     .select("id, platform, api_key, account_id, config")
-    .eq("brokerage_id", brokerageId)
+    .eq(params.scopeColumn, params.scopeId)
     .eq("is_active", true)
-    .in("platform", SUPPORTED_PLATFORMS)
+    .in("platform", params.preferredPlatform ? [params.preferredPlatform] : SUPPORTED_PLATFORMS)
     .order("last_tested_at", { ascending: false, nullsFirst: false })
     .limit(1)
-  if (providerName) {
-    credentialsQuery = credentialsQuery.eq("platform", providerName)
-  }
-  const { data: cred } = await credentialsQuery.maybeSingle()
+  const { data } = await q.maybeSingle()
+  return data
+}
 
-  if (!cred) {
+export async function resolveESignProviderForActor(
+  ctx: ResolveESignContext,
+): Promise<ResolvedESignProvider> {
+  if (!ctx.brokerageId) {
+    throw new Error("brokerageId required to resolve e-sign provider")
+  }
+
+  // 1. User override → user credential
+  if (ctx.userId) {
+    const userPick = await readOverride("user", ctx.userId)
+    const userCred = await readCredential({
+      scopeColumn:       "agent_user_id",
+      scopeId:           ctx.userId,
+      preferredPlatform: userPick,
+    })
+    if (userCred && userCred.api_key) {
+      return buildResolved(userCred, "user")
+    }
+  }
+
+  // 2. Team / 3. Brokerage overrides
+  let teamPick: string | null = null
+  if (ctx.teamId) teamPick = await readOverride("team", ctx.teamId)
+  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
+  const preferredPlatform = teamPick ?? brokeragePick
+
+  // 5. Brokerage credential (or matched against override)
+  const brokCred = await readCredential({
+    scopeColumn:       "brokerage_id",
+    scopeId:           ctx.brokerageId,
+    preferredPlatform,
+  })
+  if (!brokCred) {
     throw new Error(
-      providerName
-        ? `Brokerage selected '${providerName}' as e-sign provider but no active credentials are configured. Add credentials in Settings → Integrations.`
+      preferredPlatform
+        ? `Selected '${preferredPlatform}' as e-sign provider but no active credentials are configured. Add credentials in Settings → Integrations.`
         : "No e-sign provider configured for this brokerage. Add credentials in Settings → Integrations.",
     )
   }
-
-  providerName = providerName ?? cred.platform
-  const profileId = (cred.config as Record<string, unknown> | null)?.profile_id as string
-                    ?? cred.account_id
-                    ?? ""
-
-  if (!cred.api_key) {
-    throw new Error(`E-sign provider '${providerName}' credentials are missing an API key. Re-authorize in Settings → Integrations.`)
+  if (!brokCred.api_key) {
+    throw new Error(`E-sign provider '${brokCred.platform}' credentials are missing an API key. Re-authorize in Settings → Integrations.`)
   }
+  return buildResolved(brokCred, teamPick ? "team" : "brokerage")
+}
 
-  const provider = getTransactionProviderByName(providerName ?? undefined, {
+function buildResolved(
+  cred: any,
+  scope: "user" | "team" | "brokerage",
+): ResolvedESignProvider {
+  const profileId =
+    (cred.config as Record<string, unknown> | null)?.profile_id as string
+    ?? cred.account_id
+    ?? ""
+  const provider = getTransactionProviderByName(cred.platform, {
     apiKey:    cred.api_key as string,
     profileId,
   })
-
   return {
-    providerName: providerName as ResolvedESignProvider["providerName"],
-    credentials:  { apiKey: cred.api_key as string, profileId },
-    accountId:    cred.account_id as string | null,
-    credentialId: cred.id as string,
+    providerName:  cred.platform as ResolvedESignProvider["providerName"],
+    credentials:   { apiKey: cred.api_key as string, profileId },
+    accountId:     cred.account_id as string | null,
+    credentialId:  cred.id as string,
     provider,
+    resolvedScope: scope,
   }
 }
+
+/** Backwards-compat wrapper for callers without userId/teamId. */
+export async function resolveESignProviderForBrokerage(
+  brokerageId: string,
+): Promise<ResolvedESignProvider> {
+  return resolveESignProviderForActor({ brokerageId })
+}
+

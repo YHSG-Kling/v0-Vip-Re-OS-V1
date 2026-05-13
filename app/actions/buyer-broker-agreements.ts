@@ -24,7 +24,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
-import { resolveESignProviderForBrokerage } from "@/lib/integrations/resolve-esign-provider"
+import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 
 const AGENT_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
 
@@ -255,10 +255,14 @@ export async function dispatchBBAToSigningProviderAction(
     return { ok: false, error: "Buyer contact has no email — cannot dispatch for signature" }
   }
 
-  // Resolve the brokerage's configured e-sign provider
-  let resolved: Awaited<ReturnType<typeof resolveESignProviderForBrokerage>>
+  // Resolve the calling agent's e-sign provider (user → team → brokerage cascade).
+  // Each agent can wire their own DocuSign/Dotloop credentials in Settings.
+  let resolved: Awaited<ReturnType<typeof resolveESignProviderForActor>>
   try {
-    resolved = await resolveESignProviderForBrokerage(auth.brokerageId)
+    resolved = await resolveESignProviderForActor({
+      brokerageId: auth.brokerageId,
+      userId:      auth.userId,
+    })
   } catch (err: any) {
     return { ok: false, error: err?.message ?? "No e-sign provider configured" }
   }

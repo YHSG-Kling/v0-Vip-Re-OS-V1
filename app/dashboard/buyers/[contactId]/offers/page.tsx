@@ -16,11 +16,11 @@ const OFFER_ELIGIBLE_STAGES = [
 ]
 
 interface PageProps {
-  params: Promise<{ id: string }>
+  params: Promise<{ contactId: string }>
 }
 
 export default async function BuyerOffersPage({ params }: PageProps) {
-  const { id: buyerId } = await params
+  const { contactId: buyerId } = await params
 
   const serverClient = await createClient()
   const { data: { user } } = await serverClient.auth.getUser()
