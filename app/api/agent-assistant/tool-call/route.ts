@@ -516,14 +516,33 @@ async function stageOfferPacket(
   const voiceInput = String(params.voice_input ?? params.address ?? "").trim()
   if (!contactId || !voiceInput) return { error: "contact_id and voice_input required" }
 
-  // Brokerage check
+  // Brokerage check + agent_id for NAR-mandated BBA gate
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name")
+    .select("id, first_name, last_name, agent_id")
     .eq("id", contactId)
     .eq("brokerage_id", session.brokerage_id)
     .maybeSingle()
   if (!contact) return { error: "Contact not found in your brokerage" }
+
+  // NAR 2024 Settlement: active Buyer Broker Agreement required before any
+  // offer can be drafted. Voice-staging is "drafting" — gate at this point
+  // (not just at form-submit) so the agent gets the failure feedback aloud.
+  if (contact.agent_id) {
+    const { requireActiveBBA } = await import("@/lib/buyer-broker/gate")
+    const bba = await requireActiveBBA({
+      buyerContactId: contactId,
+      agentId:        contact.agent_id as string,
+      brokerageId:    session.brokerage_id,
+    })
+    if (!bba.allowed) {
+      return {
+        error: bba.reason ?? "Active Buyer Broker Agreement required (NAR 2024 settlement).",
+        spoken_summary: `Can't draft the offer — ${contact.first_name ?? "this buyer"} doesn't have a signed Buyer Broker Agreement with you. Send the BBA first, then we'll draft.`,
+        block_reason: "bba_required",
+      }
+    }
+  }
 
   try {
     const { extractOfferIntake } = await import("@/lib/workflow/intake/voice-to-offer")
@@ -801,14 +820,61 @@ async function sendPortalMessage(
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, agent_id, do_not_contact")
+    .select("id, first_name, last_name, email, phone, agent_id, dnc_status, call_stop_flag, tcpa_consent, contact_type, status")
     .eq("id", contactId)
     .eq("brokerage_id", session.brokerage_id)
     .maybeSingle()
 
   if (!contact) return { error: "Contact not found" }
-  if (contact.do_not_contact) {
-    return { error: "Contact is on the Do Not Contact list — message blocked." }
+  // dnc_status is the canonical "do not contact" gate (TCPA-level).
+  // call_stop_flag is the agent-toggled hard stop. Either blocks.
+  if (contact.dnc_status === true) {
+    return { error: "Contact is on the Do Not Call list — message blocked." }
+  }
+  if (contact.call_stop_flag === true) {
+    return { error: "Contact has requested no further communication (call_stop_flag) — message blocked." }
+  }
+
+  // Kernel-level outbound compliance gate (brand voice + Them-First + fair
+  // housing + content scans). Portal messages bypass TCPA (no phone/email
+  // touch) but content quality + brand voice still apply.
+  try {
+    const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const compliance = await evaluateOutbound({
+      actorContext: {
+        userId:      session.user_id,
+        brokerageId: session.brokerage_id,
+        role:        "agent",
+      },
+      journeyType:  (contact.contact_type as any) === "seller" ? "seller" : "buyer",
+      persona:      "other",
+      messageType:  "in_app",
+      content:      bodyText,
+      contact: {
+        id:                   contact.id,
+        first_name:           contact.first_name ?? "",
+        last_name:            contact.last_name ?? "",
+        email:                contact.email ?? undefined,
+        phone:                contact.phone ?? undefined,
+        contact_type:         contact.contact_type ?? "buyer",
+        tcpa_consent:         contact.tcpa_consent ?? false,
+        dnc_status:           contact.dnc_status ?? false,
+        isa_reengage_allowed: false,
+        status:               contact.status ?? undefined,
+        brokerage_id:         session.brokerage_id,
+      },
+    })
+    if (compliance.allowed === false) {
+      return {
+        error: compliance.blockedReason ?? "Message blocked by compliance gate.",
+        violations: compliance.violations,
+        spoken_summary: "I can't send that message — it didn't pass compliance. Try again with different wording.",
+      }
+    }
+  } catch (err: any) {
+    // Compliance evaluator failure should not bypass — fail CLOSED on portal sends.
+    console.error("[voice/sendPortalMessage] compliance evaluator threw:", err?.message)
+    return { error: "Compliance check failed — message not sent. Try again or escalate to admin." }
   }
 
   const { data, error } = await supabase
