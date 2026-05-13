@@ -234,6 +234,12 @@ async function runTool(
     case "stage_bba_packet":
       return stageBBAPacket(params, session, supabase)
 
+    case "read_form_status":
+      return readFormStatus(params, session, supabase)
+
+    case "dispatch_transaction_packet":
+      return dispatchTransactionPacket(params, session, supabase)
+
     case "stage_newsletter_draft":
       return stageNewsletterDraftVoice(params, session)
 
@@ -723,7 +729,7 @@ async function stageOfferPacket(
       linked_bba_id: activeBBAId,
       needs_bba_intake: needsBBAIntake,
       spoken_summary: needsBBAIntake
-        ? `Offer for ${contactName} is staged, but there's no Buyer Broker Agreement on file yet. Per NAR rules the BBA has to be signed before this offer can go out. Let's capture the BBA terms now — I'll need the agreement type, commission percentage or flat amount, and who pays. Then I'll stage the BBA too and email you both.`
+        ? `Offer for ${contactName} is staged. There's no Buyer Broker Agreement on file yet — let's capture those terms now. Agreement type, commission percentage or flat, and who pays. I'll stage the BBA too and we'll send both in one e-sign packet — the buyer signs them together.`
         : emailedAt
         ? `Offer for ${contactName} is staged. I've emailed you the review link — open it after the call, check the filled forms, and send for signatures from there.`
         : `Offer for ${contactName} is staged in the CRM. Email send failed — open the contact's record after the call to review and send for signatures.`,
@@ -875,7 +881,7 @@ async function stageBBAPacket(
       contact_name:  contactName,
       emailed_at:    emailedAt,
       spoken_summary: emailedAt
-        ? `BBA for ${contactName} is staged. I've emailed you the review link — sign it off and dispatch it to the buyer first. Once signed, the offer goes out next.`
+        ? `BBA for ${contactName} is staged. I've emailed you the review link. If there's also a staged offer, I'll bundle both into one e-sign packet so the buyer signs them together.`
         : `BBA for ${contactName} is staged in the CRM. Email send failed — open it manually to review and send for signature.`,
     }
   } catch (err) {
@@ -1288,6 +1294,256 @@ async function updateContactStatus(
     contact_id: data.id,
     name: `${data.first_name ?? ""} ${data.last_name ?? ""}`.trim(),
     new_status: data.status,
+  }
+}
+
+// ─── read_form_status (voice) ────────────────────────────────────────────────
+// The AI voice agent can OPEN any staged packet (offer / listing / BBA) and
+// read the fill status field-by-field back to the agent. Used when the agent
+// hasn't supplied enough info — the AI walks the unfilled fields aloud so the
+// agent can answer them in real time instead of staging and reopening later.
+
+async function readFormStatus(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const documentId = String(params.document_id ?? "").trim()
+  if (!documentId) return { error: "document_id required" }
+
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("id, document_type, status, state_code, content, metadata, brokerage_id, contact_id")
+    .eq("id", documentId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!doc) return { error: "Document not found in your brokerage" }
+
+  let filledPacket: any = {}
+  try {
+    const parsed = JSON.parse((doc.content as string | null) ?? "{}")
+    filledPacket = parsed?.filledPacket ?? {}
+  } catch { /* old docs may not be JSON — fall through */ }
+
+  // Build a flat list of (form, field, value/empty) tuples the AI can read aloud
+  const forms = [...(filledPacket.forms ?? []), ...(filledPacket.brokerageForms ?? [])]
+  const filledByForm: Array<{ form: string; filled_count: number; unfilled: string[] }> = []
+  const allUnfilled: Array<{ form: string; field: string; reason: string }> = []
+  let highConf = 0, medConf = 0, lowConf = 0
+
+  for (const f of forms) {
+    const filled = (f.filledFields ?? []) as Array<{ fieldName: string; confidence: string }>
+    const unfilled = (f.unfilled ?? []) as Array<{ fieldName: string; reason: string }>
+    for (const ff of filled) {
+      if (ff.confidence === "high") highConf++
+      else if (ff.confidence === "medium") medConf++
+      else if (ff.confidence === "low") lowConf++
+    }
+    filledByForm.push({
+      form: f.formName ?? f.formId,
+      filled_count: filled.length,
+      unfilled: unfilled.map(u => u.fieldName),
+    })
+    for (const u of unfilled) {
+      allUnfilled.push({ form: f.formName ?? f.formId, field: u.fieldName, reason: u.reason })
+    }
+  }
+
+  const meta = (doc.metadata as Record<string, unknown>) ?? {}
+  const agentMustComplete = (meta.agent_must_complete as string[]) ?? filledPacket.agentMustComplete ?? []
+
+  // Compose plain-English spoken summary the AI can use directly
+  const docLabel =
+    doc.document_type === "offer" ? "offer" :
+    doc.document_type === "listing_agreement" ? "listing agreement" :
+    doc.document_type
+  const spoken_summary = allUnfilled.length === 0
+    ? `The ${docLabel} packet is fully filled — ${highConf} high-confidence fields. Ready to send.`
+    : `The ${docLabel} packet has ${highConf + medConf + lowConf} fields filled. Still need: ${allUnfilled.slice(0, 10).map(u => u.field).join(", ")}${allUnfilled.length > 10 ? `, and ${allUnfilled.length - 10} more` : ""}. Want me to walk through them?`
+
+  return {
+    success: true,
+    document_id: documentId,
+    document_type: doc.document_type,
+    state_code: doc.state_code,
+    forms: filledByForm,
+    unfilled_fields: allUnfilled,
+    agent_must_complete: agentMustComplete,
+    confidence_breakdown: { high: highConf, medium: medConf, low: lowConf },
+    spoken_summary,
+  }
+}
+
+// ─── dispatch_transaction_packet (voice) ─────────────────────────────────────
+// Combined e-sign dispatch: when an agent has BOTH a staged BBA and a staged
+// offer for the same buyer, send them in ONE e-sign envelope so the buyer
+// signs both at once. Per NAR 2024, the BBA still has to be signed before
+// the offer is presented to the seller — bundling them in the same packet
+// to the BUYER is the correct UX (buyer signs both in sequence within the
+// envelope; offer is held until BBA section is signed).
+
+async function dispatchTransactionPacket(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const contactId       = String(params.contact_id ?? "").trim()
+  const offerDocumentId = params.offer_document_id ? String(params.offer_document_id) : null
+  const bbaId           = params.bba_id ? String(params.bba_id) : null
+  if (!contactId)                       return { error: "contact_id required" }
+  if (!offerDocumentId && !bbaId)       return { error: "At least one of bba_id / offer_document_id required" }
+
+  // Brokerage check + resolve buyer + agent_id for e-sign provider routing
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, email, agent_id")
+    .eq("id", contactId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!contact)        return { error: "Contact not found in your brokerage" }
+  if (!contact.email)  return { error: "Buyer has no email — cannot dispatch for signature" }
+
+  // Verify both artifacts belong to this brokerage + buyer
+  let bba: any = null
+  let offerDoc: any = null
+  if (bbaId) {
+    const { data } = await supabase
+      .from("buyer_broker_agreements")
+      .select("id, status, agreement_type, commission_percentage, commission_flat_amount, commission_payer")
+      .eq("id", bbaId)
+      .eq("brokerage_id", session.brokerage_id)
+      .eq("buyer_contact_id", contactId)
+      .maybeSingle()
+    if (!data) return { error: "BBA not found in your brokerage" }
+    if (data.status !== "draft" && data.status !== "pending_signature") {
+      return { error: `BBA is already ${data.status} — cannot bundle into a new packet` }
+    }
+    bba = data
+  }
+  if (offerDocumentId) {
+    const { data } = await supabase
+      .from("documents")
+      .select("id, status, document_type, state_code")
+      .eq("id", offerDocumentId)
+      .eq("brokerage_id", session.brokerage_id)
+      .eq("contact_id", contactId)
+      .maybeSingle()
+    if (!data)                                   return { error: "Offer document not found in your brokerage" }
+    if (data.document_type !== "offer")          return { error: "Document is not an offer" }
+    if (data.status !== "needs_agent_input" && data.status !== "draft_ready") {
+      return { error: `Offer is already ${data.status} — cannot bundle into a new packet` }
+    }
+    offerDoc = data
+  }
+
+  // Resolve the agent's configured e-sign provider (user-scope > brokerage)
+  let resolved: any
+  try {
+    const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+    resolved = await resolveESignProviderForActor({
+      brokerageId: session.brokerage_id,
+      userId:      session.user_id,
+    })
+  } catch (err: any) {
+    return { error: err?.message ?? "No e-sign provider configured. Add credentials in Settings → Integrations." }
+  }
+
+  // 1. Create ONE transaction in the e-sign provider
+  const txReq = await resolved.provider.createTransaction({
+    propertyAddress: bba && offerDoc
+      ? "BBA + Offer packet"
+      : bba ? "Buyer Broker Agreement" : "Offer packet",
+    transactionType: "purchase",
+    agentId:         contact.agent_id ?? session.user_id,
+    contactId,
+  })
+  if (!txReq.success || !txReq.externalTransactionId) {
+    return { error: txReq.error ?? "Provider createTransaction failed" }
+  }
+  const externalTxId = txReq.externalTransactionId
+
+  // 2. Attach both artifacts as separate forms in the same envelope
+  const formsToAttach: Array<{ formName: string; formData?: Record<string, any> }> = []
+  if (bba) {
+    const commissionLine = bba.commission_percentage !== null
+      ? `${bba.commission_percentage}% paid by ${bba.commission_payer}`
+      : bba.commission_flat_amount !== null
+      ? `$${bba.commission_flat_amount} paid by ${bba.commission_payer}`
+      : "see document"
+    formsToAttach.push({
+      formName: `Buyer Broker Agreement (${bba.agreement_type})`,
+      formData: { commission: commissionLine, agreement_type: bba.agreement_type, bba_id: bba.id },
+    })
+  }
+  if (offerDoc) {
+    formsToAttach.push({
+      formName: `Purchase Offer (${offerDoc.state_code})`,
+      formData: { offer_document_id: offerDoc.id, state: offerDoc.state_code },
+    })
+  }
+  await resolved.provider.attachForms({
+    externalTransactionId: externalTxId,
+    forms: formsToAttach,
+  })
+
+  // 3. Send ONE signature request to the buyer
+  const signers = [{
+    email: contact.email,
+    name:  [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Buyer",
+    role:  "buyer",
+  }]
+  const send = await resolved.provider.sendForSignature({
+    externalTransactionId: externalTxId,
+    documentId:            offerDoc?.id ?? bba?.id ?? externalTxId,
+    signers,
+    message: bba && offerDoc
+      ? "Please review and sign both the Buyer Broker Agreement and the Purchase Offer."
+      : bba
+      ? "Please review and sign your Buyer Broker Agreement."
+      : "Please review and sign your purchase offer.",
+  })
+  if (!send.success) {
+    return { error: send.error ?? "Provider sendForSignature failed" }
+  }
+
+  // 4. Update both artifact statuses
+  if (bba) {
+    await supabase
+      .from("buyer_broker_agreements")
+      .update({
+        status:               "pending_signature",
+        signed_method:        resolved.providerName === "dotloop" ? "dotloop" : "docusign",
+        signature_request_id: externalTxId,
+      })
+      .eq("id", bba.id)
+  }
+  if (offerDoc) {
+    await supabase
+      .from("documents")
+      .update({
+        status: "pending_signature",
+        metadata: {
+          ...((offerDoc as any).metadata ?? {}),
+          signature_request_id: externalTxId,
+          dispatched_via:       resolved.providerName,
+          dispatched_at:        new Date().toISOString(),
+          bundled_with_bba_id:  bba?.id ?? null,
+        },
+      })
+      .eq("id", offerDoc.id)
+  }
+
+  const contactName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Buyer"
+  return {
+    success: true,
+    external_transaction_id: externalTxId,
+    provider: resolved.providerName,
+    artifacts_sent: { bba_id: bba?.id ?? null, offer_document_id: offerDoc?.id ?? null },
+    spoken_summary: bba && offerDoc
+      ? `Both the BBA and the offer for ${contactName} are out for signature via ${resolved.providerName}. ${contact.first_name ?? "The buyer"} will get one packet with both. Webhook updates land on the document records as they sign.`
+      : bba
+      ? `BBA for ${contactName} is out for signature via ${resolved.providerName}.`
+      : `Offer for ${contactName} is out for signature via ${resolved.providerName}.`,
   }
 }
 
