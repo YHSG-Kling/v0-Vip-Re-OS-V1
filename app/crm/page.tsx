@@ -186,9 +186,12 @@ export default function CRMPage() {
   const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
-  // Selected contact detail state
+  // Selected contact detail state.
+  // Reader accepts BOTH ?contact= (canonical, preferred) AND ?contactId= (legacy alias).
+  // 18 writers across the app previously used the longer form; the alias here keeps
+  // every old URL, bookmark, and email-deeplink working while writers migrate.
   const [selectedContactId, setSelectedContactId] = useState<string | null>(
-    searchParams.get("contact")
+    searchParams.get("contact") ?? searchParams.get("contactId")
   )
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)

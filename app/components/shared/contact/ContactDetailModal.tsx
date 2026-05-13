@@ -20,7 +20,7 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
   const [localContact, setLocalContact] = useState<Contact>(contact)
 
   const handleEdit = () => {
-    router.push(`/crm?contactId=${contact.id}`)
+    router.push(`/crm?contact=${contact.id}`)
     onClose()
   }
 

@@ -67,7 +67,7 @@ function resolveNextStep(context: NextStepContext): NextStepResult {
       }
       return {
         label: "View Contact",
-        href: id ? `/crm?contactId=${id}` : "/crm",
+        href: id ? `/crm?contact=${id}` : "/crm",
         explanation: "Continue working with this contact",
       }
 

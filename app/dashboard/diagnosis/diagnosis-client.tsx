@@ -265,7 +265,7 @@ Business Diagnosis Data:
                           </p>
                         </div>
                       </div>
-                      <Link href={`/crm?contactId=${candidate.contact_id || candidate.id}`}>
+                      <Link href={`/crm?contact=${candidate.contact_id || candidate.id}`}>
                         <Button variant="outline" size="sm" className="gap-1">
                           Open Contact
                           <ArrowRight className="h-3 w-3" />
@@ -363,7 +363,7 @@ Business Diagnosis Data:
                               ? "/referrals"
                               : opp.type === LIFETIME_CUSTOMER_TYPE
                                 ? "/lifetime-customers"
-                                : `/crm?contactId=${opp.contact_id || opp.id}`
+                                : `/crm?contact=${opp.contact_id || opp.id}`
                           }
                         >
                           <Button size="sm" className="gap-1">
@@ -440,7 +440,7 @@ Business Diagnosis Data:
                                 Last contact: {contact.last_contact || "Unknown"} • {contact.churn_signal || "No recent engagement"}
                               </p>
                             </div>
-                            <Link href={`/crm?contactId=${contact.id}`}>
+                            <Link href={`/crm?contact=${contact.id}`}>
                               <Button variant="outline" size="sm" className="text-red-700 border-red-200">
                                 Re-engage
                               </Button>

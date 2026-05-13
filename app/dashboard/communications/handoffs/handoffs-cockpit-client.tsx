@@ -172,7 +172,7 @@ function HandoffCard({
               {busy === "approve" ? "Sending…" : "Send"}
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <Link href={`/crm?contactId=${contact.id}&draftId=${pendingDraft.id}`}>
+              <Link href={`/crm?contact=${contact.id}&draftId=${pendingDraft.id}`}>
                 Edit
               </Link>
             </Button>
@@ -191,7 +191,7 @@ function HandoffCard({
       {/* Action bar */}
       <div className="flex flex-wrap gap-2 pt-1">
         <Button size="sm" asChild>
-          <Link href={`/crm?contactId=${contact.id}`}>
+          <Link href={`/crm?contact=${contact.id}`}>
             Open in CRM
             <ArrowRight className="h-3 w-3 ml-1" />
           </Link>

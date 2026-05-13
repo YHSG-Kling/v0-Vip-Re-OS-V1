@@ -799,7 +799,7 @@ export function HomeValuePageBuilderClient({
                                 {c ? `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.email : ""}
                               </p>
                             </div>
-                            <Link href={`/crm?contactId=${req.contact_id}`}>
+                            <Link href={`/crm?contact=${req.contact_id}`}>
                               <Button size="sm" variant="outline">
                                 View in CRM
                               </Button>

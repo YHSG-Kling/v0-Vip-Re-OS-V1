@@ -304,7 +304,7 @@ const { data: listingVendorBookings } = await supabase
             <div className="flex gap-2 mt-3 flex-wrap">
               {sellerContact?.id && (
                 <Button size="sm" asChild>
-                  <Link href={`/crm?contactId=${sellerContact.id}`}>
+                  <Link href={`/crm?contact=${sellerContact.id}`}>
                     View in CRM as Lifetime
                   </Link>
                 </Button>
