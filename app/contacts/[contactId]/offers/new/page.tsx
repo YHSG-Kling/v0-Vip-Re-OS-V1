@@ -13,6 +13,10 @@ interface Props {
     email?:           string
     phone?:           string
     propertyAddress?: string
+    /** When set, the page mounts the canonical FormWizard with the staged
+     *  packet preloaded (AI-staged from voice intake). Without it, the
+     *  agent goes through the regular OfferInitiationFlow. */
+    documentId?:      string
   }>
 }
 
@@ -25,6 +29,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
     email:           prefillEmail,
     phone:           prefillPhone,
     propertyAddress: prefillAddress,
+    documentId,
   }                          = await searchParams
 
   const supabase = await createClient()
@@ -42,10 +47,10 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
 
   if (!profile?.brokerage_id) redirect("/dashboard")
 
-  // Load contact for display name + email
+  // Load contact (full row — FormWizard requires the canonical Contact shape)
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, email, phone, brokerage_id")
+    .select("*")
     .eq("id", contactId)
     .eq("brokerage_id", profile.brokerage_id)
     .single()
@@ -75,9 +80,11 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
       agentUserId={user.id}
       contactName={contactName}
       contactEmail={contact.email ?? ""}
+      contactFull={contact as any}
       prefillListingId={listingId ?? null}
       prefillAddress={prefillAddress ?? null}
       prefillPhone={prefillPhone ?? contact.phone ?? null}
+      documentId={documentId ?? null}
     />
   )
 }

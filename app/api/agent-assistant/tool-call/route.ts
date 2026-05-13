@@ -633,7 +633,11 @@ async function stageOfferPacket(
     if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
 
     const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
-    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm?contact=${contactId}&action=new_offer&documentId=${doc.id}`
+    // Review URL lands on the contact's offer-new page with the staged
+    // documentId — FormWizard preloads the filled packet from the documents
+    // row, the agent reviews + adjusts in the actual forms UI, then dispatches
+    // to the configured e-sign provider (resolveESignProviderForActor cascade).
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/contacts/${contactId}/offers/new?documentId=${doc.id}`
 
     // Post-call hand-off: email the agent with a review link. The AI tells
     // them aloud "I've staged the offer — check your email"; the email is the

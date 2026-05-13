@@ -60,6 +60,19 @@ export interface OfferIntake {
   earnestMoneyPercent: IntakeField<number>          // computed if % was spoken
   downPaymentPercent: IntakeField<number>
   financingType:      IntakeField<"conventional" | "fha" | "va" | "cash" | "usda" | "other">
+  /**
+   * Contract template the agent specified. Required for form selection —
+   * the state-forms registry has multiple variants per state (as-is vs
+   * standard residential vs new-construction etc.) and the agent MUST
+   * speak which one during the call. Without this, the AI can't pick
+   * the correct contract template.
+   *   - residential       : standard buyer's contract (most common)
+   *   - as_is             : seller-as-is variant — buyer waives most repair contingencies
+   *   - new_construction  : builder contract (separate state form usually)
+   *   - land              : raw-land variant
+   *   - commercial        : commercial real estate contract
+   */
+  contractType:       IntakeField<"residential" | "as_is" | "new_construction" | "land" | "commercial">
   closeDate:          IntakeField<string>            // ISO date
   inspectionDays:     IntakeField<number>
   appraisalDays:      IntakeField<number>
@@ -114,6 +127,7 @@ function emptyIntake(): OfferIntake {
     earnestMoneyPercent: emptyField(),
     downPaymentPercent: emptyField(),
     financingType:      emptyField(),
+    contractType:       emptyField(),
     closeDate:          emptyField(),
     inspectionDays:     emptyField(),
     appraisalDays:      emptyField(),
@@ -137,6 +151,9 @@ const REQUIRED_FIELDS: Array<keyof OfferIntake> = [
   "offerPrice",
   "closeDate",
   "financingType",
+  // Contract template is required for form selection — state-forms registry
+  // resolves the wrong form bundle without this. Agent must speak it.
+  "contractType",
 ]
 
 // ─── Field-specific question templates for conversational follow-up ────────
@@ -150,7 +167,8 @@ const FIELD_QUESTIONS: Partial<Record<keyof OfferIntake, string>> = {
   offerPrice:             "What's the offer price?",
   earnestMoneyAmount:     "Earnest money — dollar amount or percent?",
   downPaymentPercent:     "How much down — and is that conventional, FHA, VA, or cash?",
-  financingType:          "Cash or financed? If financed, what loan type?",
+  financingType:          "Cash or financed? If financed, what loan type — FHA, VA, conventional, or USDA?",
+  contractType:           "Is this an as-is contract, a standard residential purchase, new construction, land, or commercial?",
   closeDate:              "Target close date?",
   inspectionDays:         "Inspection contingency window — how many days?",
   appraisalDays:          "Appraisal contingency window?",
@@ -214,6 +232,7 @@ Return ONLY valid JSON matching this exact shape (no prose, no markdown):
   "earnestMoneyPercent": { "value": number|null, ... },
   "downPaymentPercent": { "value": number|null, ... },
   "financingType": { "value": "conventional|fha|va|cash|usda|other|null", ... },
+  "contractType":  { "value": "residential|as_is|new_construction|land|commercial|null", ... },
   "closeDate": { "value": "YYYY-MM-DD|null", ... },
   "inspectionDays": { "value": number|null, ... },
   "appraisalDays": { "value": number|null, ... },
