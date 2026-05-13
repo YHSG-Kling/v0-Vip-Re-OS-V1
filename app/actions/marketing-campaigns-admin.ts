@@ -45,6 +45,9 @@ export interface MarketingCampaignRow {
   impressions:            number
   engagements:            number
   conversions:            number
+  /** Migration 1050: rolled-up linear-model attributed GCI dollars. */
+  attributed_gci_total:   number
+  attribution_synced_at:  string | null
   compliance_status:      string
   compliance_blocked_reason: string | null
   created_at:             string | null
@@ -60,7 +63,7 @@ export async function listMarketingCampaignsAction(): Promise<
   const svc = createServiceClient()
   const { data, error } = await svc
     .from("marketing_campaigns")
-    .select("id, campaign_name, campaign_type, status, scheduled_start_at, launched_at, audience_size_resolved, impressions, engagements, conversions, compliance_status, compliance_blocked_reason, created_at")
+    .select("id, campaign_name, campaign_type, status, scheduled_start_at, launched_at, audience_size_resolved, impressions, engagements, conversions, attributed_gci_total, attribution_synced_at, compliance_status, compliance_blocked_reason, created_at")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(100)
@@ -77,6 +80,8 @@ export async function listMarketingCampaignsAction(): Promise<
     impressions:               (r.impressions as number | null) ?? 0,
     engagements:               (r.engagements as number | null) ?? 0,
     conversions:               (r.conversions as number | null) ?? 0,
+    attributed_gci_total:      Number((r.attributed_gci_total as number | null) ?? 0),
+    attribution_synced_at:     (r.attribution_synced_at as string | null) ?? null,
     compliance_status:         r.compliance_status as string,
     compliance_blocked_reason: (r.compliance_blocked_reason as string | null) ?? null,
     created_at:                (r.created_at as string | null) ?? null,

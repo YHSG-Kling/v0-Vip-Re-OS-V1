@@ -100,7 +100,7 @@ export function MarketingCampaignsClient({ initialRows }: Props) {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
                   <div>
                     <div className="text-xs text-muted-foreground">Audience</div>
                     <div className="font-medium">{r.audience_size_resolved.toLocaleString()}</div>
@@ -116,6 +116,12 @@ export function MarketingCampaignsClient({ initialRows }: Props) {
                   <div>
                     <div className="text-xs text-muted-foreground">Conversions</div>
                     <div className="font-medium">{r.conversions.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Attributed GCI</div>
+                    <div className="font-medium text-emerald-700">
+                      ${Math.round(r.attributed_gci_total).toLocaleString()}
+                    </div>
                   </div>
                 </div>
 

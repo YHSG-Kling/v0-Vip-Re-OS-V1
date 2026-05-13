@@ -22,6 +22,7 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveCampaignAudience, type AudienceCriteria } from "./audience-resolver"
+import { recordCampaignTouchpointsBulkSafe } from "./touchpoint-recorder"
 
 export interface PublishCampaignResult {
   ok:              boolean
@@ -111,6 +112,30 @@ export async function publishMarketingCampaignSafe(
     })
     .eq("id", c.id)
   if (updErr) return { ok: false, error: updErr.message }
+
+  // Migration 1050: record one touchpoint per resolved contact so the
+  // attribution engine can later back-attribute closed-transaction GCI
+  // to this campaign. Fire-and-forget; failures isolated.
+  if (newStatus === "live" && resolved.contactIds.length > 0) {
+    const channelMap: Record<string, "email" | "sms" | "direct_mail" | "social" | "newsletter" | "blog" | "podcast"> = {
+      newsletter:  "newsletter",
+      email:       "email",
+      sms:         "sms",
+      direct_mail: "direct_mail",
+      mail:        "direct_mail",
+      social:      "social",
+      blog:        "blog",
+      podcast:     "podcast",
+    }
+    const ch = channelMap[(c.campaign_type as string | null) ?? "newsletter"] ?? "email"
+    void recordCampaignTouchpointsBulkSafe(
+      c.brokerage_id as string,
+      c.id as string,
+      resolved.contactIds,
+      ch,
+      "launch",
+    )
+  }
 
   // Lifecycle event — fan-out to portal_event_stream via projector
   if (newStatus === "live") {
