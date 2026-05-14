@@ -2,6 +2,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
 import { ensureRequiredMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { populateInitialParticipants } from "./participant-populator"
 
 /**
  * Create transaction from accepted offer
@@ -164,6 +165,18 @@ Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
     is_client_visible: true,
     created_at: new Date().toISOString()
   })
-  
+
+  // Auto-populate transaction_participants from offer + listing + brokerage
+  // preferred-vendor directory. Never inserts placeholders — only rows for
+  // which we can resolve real names/emails. Idempotent (skips when the
+  // transaction already has any participants).
+  try {
+    await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+  } catch (err: any) {
+    // Failure here must not roll back the transaction. The agent can still
+    // populate participants manually from the transaction UI.
+    console.error("[offer-bridge] populateInitialParticipants failed (non-fatal):", err?.message ?? err)
+  }
+
   return { success: true, transactionId: transaction.id }
 }
