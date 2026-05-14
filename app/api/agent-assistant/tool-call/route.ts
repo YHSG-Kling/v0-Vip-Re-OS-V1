@@ -237,6 +237,12 @@ async function runTool(
     case "read_form_status":
       return readFormStatus(params, session, supabase)
 
+    case "fill_form_field":
+      return fillFormField(params, session, supabase)
+
+    case "next_unfilled_field":
+      return nextUnfilledField(params, session, supabase)
+
     case "dispatch_transaction_packet":
       return dispatchTransactionPacket(params, session, supabase)
 
@@ -1394,6 +1400,288 @@ async function readFormStatus(
     agent_must_complete: agentMustComplete,
     confidence_breakdown: { high: highConf, medium: medConf, low: lowConf },
     spoken_summary,
+  }
+}
+
+// ─── fill_form_field (voice) ─────────────────────────────────────────────────
+// Single-field voice fill. The AI uses this when walking unfilled fields one
+// at a time: "Next field is closing date — typical default is 45 days from
+// today. Want default?" → agent says "default" → AI calls fill_form_field with
+// value="default" → tool resolves the suggested_default and writes it.
+//
+// Storage model recap:
+//   - Originals (state-form schemas + brokerage PDFs) are READ-ONLY.
+//   - Each fill is a NEW row in documents — never mutates the source.
+//   - This tool mutates only documents.content (the intake snapshot) on the
+//     same row, which represents this fill instance — not the template.
+
+function inferModeFromDocumentType(t: string): "offer" | "bba" | "listing" | null {
+  if (t === "offer") return "offer"
+  if (t === "listing_agreement") return "listing"
+  // BBAs live in buyer_broker_agreements, not documents — so this tool only
+  // targets offer + listing documents. BBA field walking can be added later
+  // when we surface BBA drafts as document rows too.
+  return null
+}
+
+async function fillFormField(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const documentId = String(params.document_id ?? "").trim()
+  const fieldName  = String(params.field_name ?? "").trim()
+  const rawValue   = params.value
+  if (!documentId || !fieldName) return { error: "document_id and field_name required" }
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return { error: "value required (or 'default' to apply the suggested default)" }
+  }
+
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("id, brokerage_id, contact_id, document_type, status, content, metadata")
+    .eq("id", documentId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!doc) return { error: "Document not found in your brokerage" }
+
+  // Ownership: only the contact's assigned agent (or broker/admin) may edit fills
+  if (doc.contact_id) {
+    const { data: docContact } = await supabase
+      .from("contacts")
+      .select("agent_id, first_name")
+      .eq("id", doc.contact_id)
+      .maybeSingle()
+    if (docContact) {
+      const ownership = await requireContactOwnership(docContact, session, supabase)
+      if ("error" in ownership) return ownership
+    }
+  }
+
+  // Refuse once the doc is past the editable window
+  if (doc.status === "pending_signature" || doc.status === "signed" || doc.status === "cancelled") {
+    return {
+      error: `Document is ${doc.status} — fields can no longer be edited.`,
+      spoken_summary: `That packet is ${doc.status} — I can't change its fields now.`,
+    }
+  }
+
+  const mode = inferModeFromDocumentType(doc.document_type as string)
+  if (!mode) return { error: `fill_form_field doesn't yet support document_type=${doc.document_type}` }
+
+  const { getFieldDef, resolveSuggestedDefault } = await import("@/lib/state-forms/field-defs")
+  const def = getFieldDef(mode, fieldName)
+  if (!def) return { error: `Unknown field "${fieldName}" for ${mode}` }
+
+  // Resolve "default" sentinel
+  let value: unknown = rawValue
+  if (typeof rawValue === "string" && rawValue.trim().toLowerCase() === "default") {
+    if (def.suggested_default === undefined || def.suggested_default === null) {
+      return {
+        error: `Field "${def.label}" has no safe default — agent must provide a value.`,
+        spoken_summary: `${def.label} doesn't have a typical default — what value should I use?`,
+      }
+    }
+    value = resolveSuggestedDefault(def.suggested_default)
+  }
+
+  // Type coercion + validation
+  switch (def.type) {
+    case "number":
+    case "money":
+    case "percent": {
+      const n = typeof value === "number" ? value : parseFloat(String(value).replace(/[$,%]/g, "").trim())
+      if (isNaN(n)) return { error: `"${value}" is not a valid number for ${def.label}` }
+      value = n
+      break
+    }
+    case "boolean": {
+      const s = String(value).trim().toLowerCase()
+      value = s === "true" || s === "yes" || s === "y" || s === "1" || s === "default" && def.suggested_default === true
+      break
+    }
+    case "enum": {
+      const allowed = def.enum_values ?? []
+      const v = String(value).trim().toLowerCase().replace(/\s+/g, "_")
+      if (!allowed.includes(v)) {
+        return {
+          error: `"${value}" is not a valid option for ${def.label}. Choose from: ${allowed.join(", ")}`,
+          spoken_summary: `That's not a valid option for ${def.label}. Pick one of: ${allowed.join(", ")}`,
+        }
+      }
+      value = v
+      break
+    }
+    case "date": {
+      // resolveSuggestedDefault returns ISO string for sentinels; otherwise
+      // accept what the agent says. Loose validation — agent can speak natural
+      // dates later if we add NL-date parsing.
+      value = String(value).trim()
+      break
+    }
+    case "list": {
+      if (Array.isArray(value)) break
+      // Accept comma-separated or single value
+      const s = String(value).trim()
+      value = s ? s.split(/\s*,\s*/) : []
+      break
+    }
+    default: {
+      // text, party, address — keep as string
+      value = String(value).trim()
+    }
+  }
+
+  // Load existing intake from documents.content
+  let parsed: any = {}
+  try { parsed = JSON.parse((doc.content as string | null) ?? "{}") } catch { /* ignore */ }
+  const intake = (parsed.intake && typeof parsed.intake === "object") ? parsed.intake : {}
+  const filledPacket = (parsed.filledPacket && typeof parsed.filledPacket === "object") ? parsed.filledPacket : {}
+
+  // Update intake field with confidence=high (agent explicitly confirmed)
+  intake[fieldName] = {
+    value,
+    confidence: "high",
+    sourceSpan: null,
+    note: rawValue === "default" ? `agent applied default (${String(def.suggested_default)})` : "agent confirmed via voice",
+  }
+
+  // Re-run the form-fill engine so the form fields update with the new value.
+  // No-op for unsupported modes but keeps the source of truth consistent.
+  if (mode === "offer") {
+    try {
+      const { fillOfferPacket } = await import("@/lib/workflow/intake/form-fill-engine")
+      const refreshed = await fillOfferPacket({ intake, brokerageId: session.brokerage_id })
+      Object.assign(filledPacket, refreshed)
+    } catch (err: any) {
+      console.warn("[voice/fillFormField] refill engine failed:", err?.message)
+    }
+  } else if (mode === "listing") {
+    try {
+      const { fillListingPacket } = await import("@/lib/workflow/intake/form-fill-engine")
+      const refreshed = await fillListingPacket({ intake, brokerageId: session.brokerage_id })
+      Object.assign(filledPacket, refreshed)
+    } catch (err: any) {
+      console.warn("[voice/fillFormField] refill engine failed:", err?.message)
+    }
+  }
+
+  const newContent = JSON.stringify({ ...parsed, intake, filledPacket }, null, 2)
+  const { error: writeErr } = await supabase
+    .from("documents")
+    .update({ content: newContent, updated_at: new Date().toISOString() })
+    .eq("id", documentId)
+  if (writeErr) return { error: `Could not save: ${writeErr.message}` }
+
+  // Count remaining unfilled (REQUIRED-only — non-required can be skipped)
+  const registry = mode === "offer"
+    ? (await import("@/lib/state-forms/field-defs")).OFFER_FIELD_DEFS
+    : (await import("@/lib/state-forms/field-defs")).LISTING_FIELD_DEFS
+  const remainingRequired = Object.values(registry).filter(d => {
+    if (!d.required) return false
+    const f = intake[d.id]
+    return !f || f.value === null || f.value === undefined || f.confidence === "missing" || f.confidence === "low"
+  }).map(d => d.label)
+
+  return {
+    success: true,
+    field: def.label,
+    value,
+    applied_default: rawValue === "default",
+    remaining_required: remainingRequired.length,
+    remaining_required_labels: remainingRequired.slice(0, 5),
+    spoken_summary: remainingRequired.length === 0
+      ? `Got it. ${def.label} is ${formatForSpeech(value, def.type)}. All required fields are filled — you can review and dispatch.`
+      : `Got it. ${def.label} is ${formatForSpeech(value, def.type)}. ${remainingRequired.length} required field${remainingRequired.length === 1 ? "" : "s"} left.`,
+  }
+}
+
+function formatForSpeech(v: unknown, t: "text" | "number" | "money" | "percent" | "date" | "enum" | "boolean" | "party" | "address" | "list"): string {
+  if (v === null || v === undefined) return "blank"
+  if (Array.isArray(v)) return v.join(", ")
+  if (t === "money") return `$${Number(v).toLocaleString()}`
+  if (t === "percent") return `${v}%`
+  if (t === "boolean") return v ? "yes" : "no"
+  return String(v)
+}
+
+// ─── next_unfilled_field (voice) ─────────────────────────────────────────────
+// Returns the next required-but-unfilled field with its label, hint, and the
+// suggested default if one exists. The AI reads this back to the agent and
+// then calls fill_form_field with their answer (or "default").
+
+async function nextUnfilledField(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const documentId = String(params.document_id ?? "").trim()
+  if (!documentId) return { error: "document_id required" }
+
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("id, brokerage_id, contact_id, document_type, status, content")
+    .eq("id", documentId)
+    .eq("brokerage_id", session.brokerage_id)
+    .maybeSingle()
+  if (!doc) return { error: "Document not found in your brokerage" }
+
+  if (doc.contact_id) {
+    const { data: docContact } = await supabase
+      .from("contacts")
+      .select("agent_id, first_name")
+      .eq("id", doc.contact_id)
+      .maybeSingle()
+    if (docContact) {
+      const ownership = await requireContactOwnership(docContact, session, supabase)
+      if ("error" in ownership) return ownership
+    }
+  }
+
+  const mode = inferModeFromDocumentType(doc.document_type as string)
+  if (!mode) return { error: `next_unfilled_field doesn't yet support document_type=${doc.document_type}` }
+
+  const { OFFER_FIELD_DEFS, LISTING_FIELD_DEFS, resolveSuggestedDefault } =
+    await import("@/lib/state-forms/field-defs")
+  const registry = mode === "offer" ? OFFER_FIELD_DEFS : LISTING_FIELD_DEFS
+
+  let parsed: any = {}
+  try { parsed = JSON.parse((doc.content as string | null) ?? "{}") } catch { /* ignore */ }
+  const intake = (parsed.intake && typeof parsed.intake === "object") ? parsed.intake : {}
+
+  // Pick the next required-and-unfilled field in declaration order
+  const next = Object.values(registry).find(d => {
+    if (!d.required) return false
+    const f = intake[d.id]
+    return !f || f.value === null || f.value === undefined || f.confidence === "missing" || f.confidence === "low"
+  })
+
+  if (!next) {
+    return {
+      success: true,
+      done: true,
+      spoken_summary: "All required fields are filled. You can review and dispatch when ready.",
+    }
+  }
+
+  const resolvedDefault = next.suggested_default !== undefined && next.suggested_default !== null
+    ? resolveSuggestedDefault(next.suggested_default)
+    : null
+
+  const defaultClause = resolvedDefault !== null
+    ? ` — typical default is ${formatForSpeech(resolvedDefault, next.type)}, say "default" to use it`
+    : ""
+
+  return {
+    success: true,
+    done: false,
+    field_name:        next.id,
+    field_label:       next.label,
+    field_type:        next.type,
+    enum_values:       next.enum_values ?? null,
+    suggested_default: resolvedDefault,
+    hint:              next.hint,
+    spoken_summary: `${next.hint}${defaultClause}`,
   }
 }
 

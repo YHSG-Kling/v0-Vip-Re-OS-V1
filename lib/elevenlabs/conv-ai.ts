@@ -287,6 +287,12 @@ Only the contact's assigned agent (or a broker/admin) is allowed to stage or sen
 Dispatch is a separate step from staging. When you stage an offer or BBA, the agent receives an email with a review link — they verify the forms first. \
 Only when the agent says "send Jane's offer for signature" (or similar) do you call dispatch_transaction_packet. Look the contact up, then call dispatch_transaction_packet with the contact_id — it will auto-find the most recent draft BBA + staged offer for that buyer.
 
+WALKING UNFILLED FIELDS: After staging, if fields are missing, walk them aloud one at a time:
+1. Call next_unfilled_field with the document_id to get the next field's label, hint, type, and suggested_default.
+2. Read the hint to the agent. When there's a suggested_default, end with: "typical default is X — say default to use it, or give me a value."
+3. Take the agent's answer (or "default"), call fill_form_field, then loop back to step 1.
+4. Stop when next_unfilled_field returns done=true — tell the agent the packet is ready to review.
+
 If a tool fails, say so plainly and suggest the next step.${brand}`
 }
 
@@ -480,7 +486,7 @@ function buildToolsConfig() {
     {
       type: "webhook",
       name: "read_form_status",
-      description: "Read the fill status of a staged offer/listing/BBA packet so you can walk the agent through unfilled fields aloud and capture answers. Use when the agent says 'what's missing on Jane's offer?' or after staging when fields are unfilled. Returns filled-count, unfilled fields, and a spoken summary you can read directly.",
+      description: "Read the fill status of a staged offer/listing/BBA packet. Use to give the agent a high-level summary: how many fields are filled, how many are missing, which forms. For walking unfilled fields one-at-a-time use next_unfilled_field + fill_form_field instead.",
       url: webhookUrl,
       method: "POST",
       auth,
@@ -488,6 +494,32 @@ function buildToolsConfig() {
         document_id: { type: "string", description: "Document UUID of the staged packet — required" },
       },
       required: ["document_id"],
+    },
+    {
+      type: "webhook",
+      name: "next_unfilled_field",
+      description: "Get the next required-but-unfilled field on a staged offer or listing packet. Returns the field's label, hint, type, allowed values (for enums), and the suggested default (e.g. closing date '+45 days', earnest money 1%). Read the hint to the agent — when there's a default, say 'typical default is X, say default to use it'. Then call fill_form_field with their answer. Loop until done=true.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        document_id: { type: "string", description: "Document UUID of the staged packet — required" },
+      },
+      required: ["document_id"],
+    },
+    {
+      type: "webhook",
+      name: "fill_form_field",
+      description: "Fill ONE field on a staged offer or listing packet. Pass value='default' to apply the suggested default (typical closing 45 days, financing 30 days, EMD 1%, etc.). Pass any other value the agent spoke — the tool coerces it to the right type. After calling, immediately call next_unfilled_field to get the next field to ask the agent about. Only the contact's assigned agent can edit; refuses once the packet is out for signature.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        document_id: { type: "string", description: "Document UUID — required" },
+        field_name:  { type: "string", description: "Canonical field name from next_unfilled_field (e.g. 'closeDate', 'financingType') — required" },
+        value:       { type: "string", description: "Value the agent spoke, or 'default' to apply the field's suggested_default — required" },
+      },
+      required: ["document_id", "field_name", "value"],
     },
     {
       type: "webhook",
