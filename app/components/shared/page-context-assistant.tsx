@@ -17,9 +17,9 @@
  *   /dashboard/transactions/[transactionId]/...      → transactionId
  *   /dashboard/transactions/[txId]/offers/[offerId]  → transactionId + offerId
  *   /dashboard/listings/[id]/offers/[offerId]        → listingId + offerId
- *   /contacts/[contactId]/offers/[offerId]   → contactId + offerId
- *   /contacts/[contactId]/...                → contactId (legacy)
- *   /dashboard/contacts/[contactId]/...              → contactId
+ *   /crm/contacts/[contactId]/offers/[offerId]   → contactId + offerId
+ *   /crm/contacts/[contactId]/...                → contactId (legacy)
+ *   /crm/contacts/[contactId]/...              → contactId
  *   /portal/[contactId]/...                          → contactId
  *
  * Falls back to a `pageLabel` derived from the path for non-entity pages
@@ -92,21 +92,21 @@ function resolveContext(pathname: string, searchParams: URLSearchParams): Resolv
     return { ...ctx, pageLabel: "listing" }
   }
 
-  // /contacts/[contactId]/offers/[offerId]
+  // /crm/contacts/[contactId]/offers/[offerId]
   m = pathname.match(/^\/dashboard\/buyers\/([^/]+)\/offers\/([^/]+)/)
   if (m) {
     ctx.contactId = m[1]
     ctx.offerId = m[2]
     return { ...ctx, pageLabel: "buyer-offer" }
   }
-  // /contacts/[contactId]/...
+  // /crm/contacts/[contactId]/...
   m = pathname.match(/^\/dashboard\/buyers\/([^/]+)/)
   if (m) {
     ctx.contactId = m[1]
     return { ...ctx, pageLabel: "buyer" }
   }
 
-  // /dashboard/contacts/[contactId]/...
+  // /crm/contacts/[contactId]/...
   m = pathname.match(/^\/dashboard\/contacts\/([^/]+)/)
   if (m) {
     ctx.contactId = m[1]

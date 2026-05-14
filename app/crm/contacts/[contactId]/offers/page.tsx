@@ -52,7 +52,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
 
   // Gate: must be BUYER_OFFER_ELIGIBLE or later
   if (!OFFER_ELIGIBLE_STAGES.includes(contact.buyer_stage ?? "")) {
-    redirect(`/contacts/${buyerId}?gate=offer_not_eligible`)
+    redirect(`/crm/contacts/${buyerId}?gate=offer_not_eligible`)
   }
 
   // Lifecycle gate check
@@ -83,7 +83,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
           <AlertTriangle className="h-4 w-4 text-amber-600" />
           <AlertDescription className="text-amber-800">
             Offers are locked: {offerGateResult.reason}.{" "}
-            <Link href={`/contacts/${buyerId}`} className="underline font-medium">
+            <Link href={`/crm/contacts/${buyerId}`} className="underline font-medium">
               Complete financial verification
             </Link>{" "}
             to unlock.

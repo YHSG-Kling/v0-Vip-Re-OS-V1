@@ -120,7 +120,7 @@ export default async function BuyerBrokerAgreementsPage() {
                         </td>
                         <td className="px-4 py-2.5 text-right">
                           <Button asChild size="sm" variant="ghost">
-                            <Link href={`/dashboard/contacts/${buyer?.id}`}>Open contact</Link>
+                            <Link href={`/crm/contacts/${buyer?.id}`}>Open contact</Link>
                           </Button>
                         </td>
                       </tr>

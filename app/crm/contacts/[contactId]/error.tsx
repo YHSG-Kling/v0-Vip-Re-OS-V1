@@ -48,7 +48,7 @@ export default function ContactError({
           <Button
             variant="outline"
             className="w-full gap-2"
-            onClick={() => router.push("/contacts")}
+            onClick={() => router.push("/crm/contacts")}
           >
             <Users className="h-4 w-4" />
             Back to Contacts

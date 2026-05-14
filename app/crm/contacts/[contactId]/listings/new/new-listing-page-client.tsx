@@ -33,7 +33,7 @@ export function NewListingPageClient({
 
   function handleClose() {
     setWizardOpen(false)
-    router.push(`/dashboard/contacts/${contactId}`)
+    router.push(`/crm/contacts/${contactId}`)
   }
 
   return (

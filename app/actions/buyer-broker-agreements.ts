@@ -133,7 +133,7 @@ export async function createBBADraftAction(input: CreateBBAInput): Promise<
 
   if (error || !inserted) return { ok: false, error: error?.message ?? "Insert failed" }
 
-  revalidatePath(`/dashboard/contacts/${input.buyerContactId}`)
+  revalidatePath(`/crm/contacts/${input.buyerContactId}`)
   return { ok: true, agreementId: inserted.id as string }
 }
 
@@ -204,7 +204,7 @@ export async function clickThroughSignBBAAction(params: {
 
   if (error) return { ok: false, error: error.message }
 
-  revalidatePath(`/dashboard/contacts/${agreement.buyer_contact_id}`)
+  revalidatePath(`/crm/contacts/${agreement.buyer_contact_id}`)
   revalidatePath("/portal")
   return { ok: true }
 }
@@ -311,7 +311,7 @@ export async function dispatchBBAToSigningProviderAction(
     })
     .eq("id", agreementId)
 
-  revalidatePath(`/dashboard/contacts/${bba.buyer_contact_id}`)
+  revalidatePath(`/crm/contacts/${bba.buyer_contact_id}`)
   return {
     ok: true,
     provider: resolved.providerName,

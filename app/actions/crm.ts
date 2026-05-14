@@ -49,8 +49,8 @@ export async function updateContactStage(params: {
       })
     }
 
-    revalidatePath("/contacts")
-    revalidatePath(`/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    revalidatePath(`/crm/contacts/${params.contactId}`)
     revalidatePath("/dashboard")
 
     return result

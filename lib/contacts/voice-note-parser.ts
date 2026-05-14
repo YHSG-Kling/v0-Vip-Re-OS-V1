@@ -1,5 +1,5 @@
 /**
- * lib/contacts/voice-note-parser.ts
+ * lib/crm/contacts/voice-note-parser.ts
  *
  * Parses an agent's free-form dictation into structured CRM updates:
  *   • a clean note body to append to the contact's notes

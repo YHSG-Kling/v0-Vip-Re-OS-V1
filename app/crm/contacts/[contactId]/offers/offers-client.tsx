@@ -283,7 +283,7 @@ export function OffersClient({
           </div>
           {!disableOfferCreation && (
             <Link
-              href={`/contacts/${contactId}/offers/new`}
+              href={`/crm/contacts/${contactId}/offers/new`}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               Create New Offer
@@ -378,9 +378,9 @@ export function OffersClient({
                     )}
                   </div>
                   <div className="flex flex-col gap-1.5 flex-shrink-0">
-                    {/* Link to canonical offer detail page (/contacts/[contactId]/offers/[offerId]) */}
+                    {/* Link to canonical offer detail page (/crm/contacts/[contactId]/offers/[offerId]) */}
                     <Link
-                      href={`/contacts/${contactId}/offers/${offer.id}`}
+                      href={`/crm/contacts/${contactId}/offers/${offer.id}`}
                       className="rounded-md border border-border px-3 py-1 text-xs font-medium hover:bg-muted/50 transition-colors text-center"
                     >
                       View Details

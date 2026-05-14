@@ -30,7 +30,7 @@ export default async function BuyerSearchPage({ params }: PageProps) {
       {/* Header */}
       <div className="border-b border-border bg-card px-6 py-4 flex items-center gap-4">
         <Link
-          href={`/contacts/${buyerId}`}
+          href={`/crm/contacts/${buyerId}`}
           className="text-muted-foreground hover:text-foreground transition-colors"
           aria-label="Back to buyer overview"
         >
@@ -59,7 +59,7 @@ export default async function BuyerSearchPage({ params }: PageProps) {
               ].filter(Boolean).join(' · ') || 'Searching broadly based on your preferences'}
             </p>
           </div>
-          <Link href={`/contacts/${buyerId}/tours`} className="shrink-0">
+          <Link href={`/crm/contacts/${buyerId}/tours`} className="shrink-0">
             <Button size="sm" variant="ghost" className="text-xs text-blue-700 font-semibold">
               Move to Tour Planner
             </Button>

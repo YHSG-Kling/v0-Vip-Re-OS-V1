@@ -135,7 +135,7 @@ export function ConversionCoachingPanel({
                 </div>
                 {issue.contact_ids.length > 0 && (
                   <Button variant="ghost" size="sm" asChild>
-                    <Link href={`/contacts?ids=${issue.contact_ids.slice(0, 5).join(",")}`}>
+                    <Link href={`/crm/contacts?ids=${issue.contact_ids.slice(0, 5).join(",")}`}>
                       <Users className="mr-1 h-4 w-4" />
                       View
                     </Link>

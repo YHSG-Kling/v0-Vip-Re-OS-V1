@@ -838,7 +838,7 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, brokerageId
                     </p>
                   )}
                   <div className="flex items-center gap-1.5 mt-0.5">
-                    <Link href={`/dashboard/contacts/${match.contact_id}`}>
+                    <Link href={`/crm/contacts/${match.contact_id}`}>
                       <Button size="sm" variant="outline" className="h-6 text-xs px-2 gap-1">
                         <MessageSquare className="h-3 w-3" />
                         Contact Agent

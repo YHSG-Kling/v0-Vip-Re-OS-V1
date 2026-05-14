@@ -1,5 +1,5 @@
 /**
- * lib/contacts/contact-brief.ts
+ * lib/crm/contacts/contact-brief.ts
  *
  * Pre-call briefing — pulls a 10-second intel summary for any contact:
  *   • last interaction (date + channel + summary)

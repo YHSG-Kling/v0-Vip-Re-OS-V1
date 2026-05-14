@@ -136,7 +136,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
 
   async function quickScheduleShowing() {
     setActionMsg("Opening showing scheduler…")
-    window.open(`/contacts/${contact!.id}?tab=showings`, "_blank")
+    window.open(`/crm/contacts/${contact!.id}?tab=showings`, "_blank")
     setTimeout(() => setActionMsg(null), 2000)
   }
 
@@ -363,7 +363,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
 
         {/* View profile link */}
         <a
-          href={`/contacts/${contact.id}`}
+          href={`/crm/contacts/${contact.id}`}
           className="block text-center text-xs text-primary hover:underline pt-1 pb-1"
         >
           View full profile

@@ -159,7 +159,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
     ],
     commandPaletteItems: [
-      { id: 'quick-contact', label: 'Create Contact', href: '/contacts/new' },
+      { id: 'quick-contact', label: 'Create Contact', href: '/crm/contacts/new' },
       { id: 'video-studio', label: 'Create AI Video', href: '/dashboard/videos/create' },
       { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads' },
@@ -715,7 +715,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing' },
       { id: 'view-team', label: 'View Team', href: '/dashboard/team' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap' },
-      { id: 'new-contact', label: 'New Contact', href: '/contacts/new' },
+      { id: 'new-contact', label: 'New Contact', href: '/crm/contacts/new' },
       { id: 'video-studio', label: 'Create AI Video', href: '/dashboard/videos/create' },
     ],
   },

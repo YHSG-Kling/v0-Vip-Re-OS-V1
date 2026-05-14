@@ -248,7 +248,7 @@ export function BuyerEngagementHealthCard({ buyerId, brokerageId }: Props) {
         {showActions && (
           <div className="pt-1 flex flex-wrap gap-2">
             <Link
-              href={`/contacts/${buyerId}/search`}
+              href={`/crm/contacts/${buyerId}/search`}
               className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/50 transition-colors"
             >
               Send Curated List
@@ -260,7 +260,7 @@ export function BuyerEngagementHealthCard({ buyerId, brokerageId }: Props) {
               Schedule Call
             </Link>
             <Link
-              href={`/contacts/${buyerId}/alerts`}
+              href={`/crm/contacts/${buyerId}/alerts`}
               className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/50 transition-colors"
             >
               Adjust Search Criteria

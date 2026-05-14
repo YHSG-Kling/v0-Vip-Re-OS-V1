@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createClient } from "@/lib/supabase/server"
-import { logEventAndTrigger } from "@/lib/events"
+import { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } from "@/lib/esign-webhooks/finalize-packet"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOCUSIGN CONNECT WEBHOOK HANDLER
@@ -81,108 +81,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ received: true, action: "ignored", event, envelopeStatus })
     }
 
-    const now = new Date().toISOString()
-
-    // ── Voice-cockpit staged artifacts ──────────────────────────────────────
-    // dispatch_transaction_packet bundles BBA + offer (or either alone) into
-    // ONE provider envelope. dispatchTransactionPacket stamps the SAME
-    // envelopeId on both rows; reversing the lookup here flips them in sync.
-
-    // Documents (offer or listing-agreement) matched by metadata jsonb path
-    const { data: matchedDocs } = await supabase
-      .from("documents")
-      .select("id, document_type, contact_id, brokerage_id, metadata")
-      .filter("metadata->>signature_request_id", "eq", envelopeId)
-
-    for (const docRow of (matchedDocs ?? [])) {
-      const existingMeta = (docRow.metadata as Record<string, unknown>) ?? {}
-      await supabase
-        .from("documents")
-        .update({
-          status: "signed",
-          metadata: {
-            ...existingMeta,
-            signed_at:           now,
-            signed_via:          "docusign",
-            signed_envelope_id:  envelopeId,
-          },
-        })
-        .eq("id", docRow.id)
-
-      await logEventAndTrigger({
-        brokerage_id: docRow.brokerage_id as string,
-        event_type:   "voice_cockpit.packet.signed",
-        user_id:      (docRow.contact_id as string | null) ?? "",
-        payload:      { documentId: docRow.id, documentType: docRow.document_type, envelopeId, provider: "docusign" },
-        source:       "webhook",
-        dedupe_key:   `voice-packet-signed-${docRow.id}`,
-      } as any)
-    }
-
-    // BBA row matched by signature_request_id column
-    const { data: matchedBBA } = await supabase
-      .from("buyer_broker_agreements")
-      .select("id, brokerage_id, buyer_contact_id")
-      .eq("signature_request_id", envelopeId)
-      .maybeSingle()
-
-    if (matchedBBA) {
-      await supabase
-        .from("buyer_broker_agreements")
-        .update({
-          status:        "active",
-          signed_at:     now,
-          signed_method: "docusign",
-        })
-        .eq("id", matchedBBA.id)
-
-      await logEventAndTrigger({
-        brokerage_id: matchedBBA.brokerage_id as string,
-        event_type:   "buyer_broker_agreement.signed",
-        user_id:      matchedBBA.buyer_contact_id as string,
-        payload:      { agreementId: matchedBBA.id, envelopeId, provider: "docusign" },
-        source:       "webhook",
-        dedupe_key:   `bba-signed-${matchedBBA.id}`,
-      } as any)
-    }
-
-    // ── Legacy offers table (pre-voice-cockpit dispatch path) ───────────────
-    // Same pattern as the Dotloop handler for the legacy offer / listing
-    // agreement rows that store the provider ref directly.
-    const { data: matchedOffer } = await supabase
-      .from("offers")
-      .select("id, contact_id")
-      .eq("esign_provider", envelopeId)
-      .maybeSingle()
-    if (matchedOffer) {
-      await supabase
-        .from("offers")
-        .update({ esign_status: "fully_signed", esign_completed_at: now })
-        .eq("id", matchedOffer.id)
-    }
-
-    const { data: matchedAgreement } = await supabase
-      .from("listing_agreements")
-      .select("id, listing_id")
-      .eq("provider_ref", envelopeId)
-      .maybeSingle()
-    if (matchedAgreement) {
-      await supabase
-        .from("listing_agreements")
-        .update({ esign_status: "fully_signed", fully_executed_at: now })
-        .eq("id", matchedAgreement.id)
-      await supabase
-        .from("listings")
-        .update({ current_stage: "active", stage_entered_at: now })
-        .eq("id", matchedAgreement.listing_id)
-        .in("current_stage", ["prep", "pre_listing", "coming_soon"])
-    }
+    // Voice-cockpit packet + legacy artifacts — shared helpers handle both.
+    const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "docusign")
+    const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
 
     return NextResponse.json({
-      received: true,
+      received:    true,
       envelopeId,
-      docs_signed: (matchedDocs ?? []).length,
-      bba_signed: matchedBBA ? 1 : 0,
+      docs_signed: voice.docs_signed,
+      bba_signed:  voice.bba_signed,
+      legacy,
     })
   } catch (error: any) {
     console.error("[docusign-webhook] Error:", error)

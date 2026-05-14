@@ -227,7 +227,7 @@ export default function CRMPage() {
   const [callAnalyses, setCallAnalyses] = useState<Record<string, any>>({})
 
   // Contact-detail data for the Credit / Videos / Transactions / Activity tabs
-  // (these tabs were previously only available on the deprecated /contacts/[id] route)
+  // (these tabs were previously only available on the deprecated /crm/contacts/[id] route)
   const [creditAccounts, setCreditAccounts] = useState<any[]>([])
   const [contactVideos, setContactVideos] = useState<any[]>([])
   const [contactTransactions, setContactTransactions] = useState<any[]>([])

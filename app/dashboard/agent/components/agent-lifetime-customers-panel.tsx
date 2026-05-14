@@ -123,7 +123,7 @@ export function AgentLifetimeCustomersPanel({
                       }}
                     />
                     {change.contacts && (
-                      <Link href={`/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">
+                      <Link href={`/crm/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">
                         Open Record
                       </Link>
                     )}

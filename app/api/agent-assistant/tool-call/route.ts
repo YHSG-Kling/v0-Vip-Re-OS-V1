@@ -531,7 +531,7 @@ async function stageListingPacket(
     // they open it after the call to review + dispatch for signatures.
     // Contact-scoped URL mirrors the offer flow so FormWizard mounts with the
     // seller as the contact prop and the documentId preloaded.
-    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/contacts/${sellerContactId}/listings/new?documentId=${doc.id}`
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm/contacts/${sellerContactId}/listings/new?documentId=${doc.id}`
     let emailedAt: string | null = null
     try {
       const { data: agentUser } = await supabase
@@ -706,7 +706,7 @@ async function stageOfferPacket(
     // documentId — FormWizard preloads the filled packet from the documents
     // row, the agent reviews + adjusts in the actual forms UI, then dispatches
     // to the configured e-sign provider (resolveESignProviderForActor cascade).
-    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/contacts/${contactId}/offers/new?documentId=${doc.id}`
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm/contacts/${contactId}/offers/new?documentId=${doc.id}`
 
     // Post-call hand-off: email the agent with a review link. The AI tells
     // them aloud "I've staged the offer — check your email"; the email is the

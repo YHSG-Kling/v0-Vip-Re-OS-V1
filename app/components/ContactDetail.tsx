@@ -588,7 +588,7 @@ export function ContactDetail({
               Force Reassess
             </Button>
 
-            <a href={`/contacts/${contact.id}?tab=calls`} className="block">
+            <a href={`/crm/contacts/${contact.id}?tab=calls`} className="block">
               <Button variant="ghost" className="w-full justify-start text-muted-foreground">
                 <Phone className="w-4 h-4 mr-2" />
                 View Call History

@@ -34,7 +34,7 @@ export default async function NewListingForContactPage({ params, searchParams }:
     .eq("id", contactId)
     .eq("brokerage_id", profile.brokerage_id)
     .single()
-  if (!contact) redirect("/dashboard/contacts")
+  if (!contact) redirect("/crm/contacts")
 
   const sellerName = [contact.first_name, contact.last_name].filter(Boolean).join(" ")
 

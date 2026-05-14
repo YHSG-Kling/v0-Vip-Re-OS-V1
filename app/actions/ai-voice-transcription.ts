@@ -182,7 +182,7 @@ Extract:
       status:        "completed",
     })
 
-    revalidatePath(`/contacts/${params.contactId}`)
+    revalidatePath(`/crm/contacts/${params.contactId}`)
 
     return {
       success: true,

@@ -19,7 +19,7 @@ const QuickActionsFAB: React.FC = () => {
             label: 'Add Note', 
             icon: PenTool, 
             color: 'bg-emerald-600',
-            onClick: () => router.push('/contacts/new?action=note')
+            onClick: () => router.push('/crm/contacts/new?action=note')
         },
         { 
             label: 'Log Call', 

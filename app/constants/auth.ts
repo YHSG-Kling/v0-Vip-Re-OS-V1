@@ -75,7 +75,7 @@ export const PROTECTED_ROUTES = [
   '/referral-partners',
   '/listings',
   '/properties',
-  '/contacts',
+  '/crm/contacts',
   '/transactions',
   '/mobile',
   '/seed',

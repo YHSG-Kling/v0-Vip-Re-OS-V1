@@ -166,7 +166,7 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             </p>
             {prep.cma.cmaId && (
               <Link
-                href={`/dashboard/contacts/${prep.contactId ?? ""}/cma/${prep.cma.cmaId}`}
+                href={`/crm/contacts/${prep.contactId ?? ""}/cma/${prep.cma.cmaId}`}
                 className="text-[11px] text-indigo-700 hover:underline"
               >
                 Open CMA →

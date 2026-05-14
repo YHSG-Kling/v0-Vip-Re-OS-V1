@@ -60,7 +60,7 @@ interface OfferWorkspaceProps {
   history:  OfferRow[]
   agentId:  string
   brokerageId: string
-  buyerPath: string   // e.g. /contacts/{id}
+  buyerPath: string   // e.g. /crm/contacts/{id}
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────

@@ -148,7 +148,7 @@ export function BuyerMatchWidget({ listingId }: BuyerMatchWidgetProps) {
                 className="text-sm text-primary hover:underline"
                 onClick={() => {
                   // Navigate to contact or initiate outreach
-                  window.location.href = `/contacts/${match.contact_id}`
+                  window.location.href = `/crm/contacts/${match.contact_id}`
                 }}
               >
                 Contact →

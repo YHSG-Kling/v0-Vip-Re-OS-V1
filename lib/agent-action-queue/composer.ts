@@ -621,7 +621,7 @@ async function fetchIncomeGapActions(
       priority:            Number(r.priority_score ?? 0),
       surfacedAt:          r.created_at as string,
       hasInlineDisposition: false,
-      resolveHref:         r.contact_id     ? `/contacts/${r.contact_id}`
+      resolveHref:         r.contact_id     ? `/crm/contacts/${r.contact_id}`
                           : r.transaction_id ? `/dashboard/transactions/${r.transaction_id}`
                           : r.listing_id     ? `/dashboard/listings/${r.listing_id}`
                           : "/dashboard/income-truth",

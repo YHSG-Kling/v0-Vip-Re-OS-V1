@@ -19,8 +19,8 @@
  *        - Buyer letter generator (`aiGenerateBuyerLetter`)
  *        - Contingency recommender (`aiRecommendContingencies`)
  *      All optional / collapsible — agent can skip if doing a quick capture
- *   2. Update `app/contacts/[contactId]/offers/new/new-offer-page-client.tsx`
- *      and `app/contacts/[contactId]/offers/offers-client.tsx` to launch
+ *   2. Update `app/crm/contacts/[contactId]/offers/new/new-offer-page-client.tsx`
+ *      and `app/crm/contacts/[contactId]/offers/offers-client.tsx` to launch
  *      FormWizard mode="offer" with strategic mode enabled
  *   3. Delete OfferInitiationFlow + OfferFormWizard (~1944 lines retired)
  *

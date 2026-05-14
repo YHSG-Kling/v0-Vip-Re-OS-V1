@@ -60,7 +60,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
   // Server-side gate: reject direct URL navigation for locked buyers
   const offerGate = await canBuyerSubmitOffers(contactId)
   if (!offerGate.allowed) {
-    redirect(`/contacts/${contactId}/offers`)
+    redirect(`/crm/contacts/${contactId}/offers`)
   }
 
   // Emit kernel event: buyer.offer.draft_started

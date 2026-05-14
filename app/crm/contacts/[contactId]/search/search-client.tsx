@@ -884,9 +884,9 @@ export function SearchClient({
                   className="flex-1 h-7 text-xs"
                   onClick={() => {
                     if (isBrokerageListing) {
-                      router.push(`/contacts/${buyerId}/offers/new?listingId=${s.listing_id}`)
+                      router.push(`/crm/contacts/${buyerId}/offers/new?listingId=${s.listing_id}`)
                     } else {
-                      router.push(`/contacts/${buyerId}/offers/new?address=${encodeURIComponent(s.property_address ?? "")}`)
+                      router.push(`/crm/contacts/${buyerId}/offers/new?address=${encodeURIComponent(s.property_address ?? "")}`)
                     }
                   }}
                 >

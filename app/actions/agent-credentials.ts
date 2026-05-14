@@ -183,7 +183,7 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
 
       case "ghl":
         // Test GHL API
-        const ghlResponse = await fetch(`https://rest.gohighlevel.com/v1/contacts/`, {
+        const ghlResponse = await fetch(`https://rest.gohighlevel.com/v1/crm/contacts/`, {
           headers: {
             Authorization: `Bearer ${credential.api_key}`,
             Version: "2021-07-28",

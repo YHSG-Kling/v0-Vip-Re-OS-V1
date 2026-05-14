@@ -68,7 +68,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
               Buyer must complete search setup before tours can be planned.
             </p>
             <Button asChild variant="outline" size="sm">
-              <Link href={`/contacts/${contactId}`}>
+              <Link href={`/crm/contacts/${contactId}`}>
                 Go to Financial Verification
               </Link>
             </Button>
@@ -125,7 +125,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           <AlertTriangle className="h-4 w-4 text-amber-600" />
           <AlertDescription className="text-amber-800">
             Tours are locked: {tourGateResult.reason}.{' '}
-            <Link href={`/contacts/${contactId}`} className="underline font-medium">
+            <Link href={`/crm/contacts/${contactId}`} className="underline font-medium">
               Complete financial verification
             </Link>{' '}
             to unlock.

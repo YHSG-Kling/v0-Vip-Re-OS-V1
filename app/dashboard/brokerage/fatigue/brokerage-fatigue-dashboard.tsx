@@ -145,7 +145,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
                   <div className="flex-1 min-w-0 space-y-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <Link
-                        href={`/contacts/${contactId}`}
+                        href={`/crm/contacts/${contactId}`}
                         className="text-sm font-semibold text-foreground hover:underline"
                       >
                         {name}
@@ -225,7 +225,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
                     <tr key={buyer.contact_id} className="hover:bg-muted/20 transition-colors">
                       <td className="px-4 py-3">
                         <Link
-                          href={`/contacts/${id}`}
+                          href={`/crm/contacts/${id}`}
                           className="font-medium text-foreground hover:underline"
                         >
                           {name}

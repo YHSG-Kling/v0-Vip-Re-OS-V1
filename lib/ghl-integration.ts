@@ -146,7 +146,7 @@ export class GHLIntegration {
       // Check if contact exists in GHL
       if (contact.ghl_contact_id) {
         // Update existing contact
-        const response = await fetch(`${this.baseUrl}/contacts/${contact.ghl_contact_id}`, {
+        const response = await fetch(`${this.baseUrl}/crm/contacts/${contact.ghl_contact_id}`, {
           method: "PUT",
           headers: {
             Authorization: `Bearer ${this.apiKey}`,
@@ -162,7 +162,7 @@ export class GHLIntegration {
         return { success: true, ghlContactId: contact.ghl_contact_id }
       } else {
         // Create new contact
-        const response = await fetch(`${this.baseUrl}/contacts`, {
+        const response = await fetch(`${this.baseUrl}/crm/contacts`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${this.apiKey}`,
@@ -409,7 +409,7 @@ export class GHLIntegration {
     compliancePassed: boolean
   }): Promise<{ success: boolean; error?: string }> {
     try {
-      await fetch(`${this.baseUrl}/contacts/${data.ghlContactId}/notes`, {
+      await fetch(`${this.baseUrl}/crm/contacts/${data.ghlContactId}/notes`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,

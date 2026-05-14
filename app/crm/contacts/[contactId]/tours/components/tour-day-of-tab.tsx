@@ -296,7 +296,7 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
               {buyerName} loved {lovedStops[0].property_address}. Ready to discuss an offer?
             </p>
             <a
-              href={`/contacts/${contactId}/offers/new`}
+              href={`/crm/contacts/${contactId}/offers/new`}
               className="shrink-0 px-3 py-1.5 bg-amber-700 text-white text-xs font-semibold rounded-md hover:bg-amber-800 transition-colors whitespace-nowrap"
             >
               Start Offer

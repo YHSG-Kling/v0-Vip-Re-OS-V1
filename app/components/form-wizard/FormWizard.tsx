@@ -5,7 +5,7 @@
  *
  * mode="listing" — used by `app/dashboard/listings/listings-new-button.tsx`
  *   (the one-and-only listing creation entry point)
- * mode="offer"   — used by `app/contacts/[contactId]/offers/new` and the
+ * mode="offer"   — used by `app/crm/contacts/[contactId]/offers/new` and the
  *   CRM contact action menu. Going forward this is also the canonical
  *   buyer-detail offer creation flow, replacing OfferInitiationFlow +
  *   OfferFormWizard once those are retired.
@@ -393,7 +393,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
                 Your offer is recorded. Open the offer workspace to view details, history, and next steps.
               </p>
               <Button asChild className="mt-2">
-                <Link href={`/contacts/${contact?.id ?? ""}/offers/${state.offerId}`}>
+                <Link href={`/crm/contacts/${contact?.id ?? ""}/offers/${state.offerId}`}>
                   Open Offer Workspace
                   <ExternalLink className="h-4 w-4 ml-1" />
                 </Link>

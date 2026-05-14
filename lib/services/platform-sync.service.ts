@@ -245,7 +245,7 @@ export async function syncGHLContact(params: {
 
       // Push to GHL
       const response = await fetch(
-        `${credentials.api_url}/contacts/`,
+        `${credentials.api_url}/crm/contacts/`,
         {
           method: contact.ghl_contact_id ? "PUT" : "POST",
           headers: {
@@ -290,7 +290,7 @@ export async function syncGHLContact(params: {
       }
 
       const response = await fetch(
-        `${credentials.api_url}/contacts/${contact.ghl_contact_id}`,
+        `${credentials.api_url}/crm/contacts/${contact.ghl_contact_id}`,
         {
           headers: {
             Authorization: `Bearer ${credentials.access_token}`,
@@ -341,7 +341,7 @@ export async function triggerGHLWorkflow(params: {
     }
 
     await fetch(
-      `${credentials.api_url}/contacts/${contact.ghl_contact_id}/workflow/${params.workflowId}`,
+      `${credentials.api_url}/crm/contacts/${contact.ghl_contact_id}/workflow/${params.workflowId}`,
       {
         method: "POST",
         headers: {

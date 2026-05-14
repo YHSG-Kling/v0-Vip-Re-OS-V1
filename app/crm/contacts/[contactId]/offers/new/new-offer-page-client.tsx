@@ -38,7 +38,7 @@ export function NewOfferPageClient({
   const [wizardOpen, setWizardOpen] = useState<boolean>(Boolean(documentId))
 
   function handleSuccess() {
-    router.push(`/contacts/${contactId}/offers`)
+    router.push(`/crm/contacts/${contactId}/offers`)
   }
 
   function handleCancel() {

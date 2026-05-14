@@ -5,7 +5,7 @@
  *
  *   side="seller" — used at /dashboard/listings/[id]/offers when an offer
  *                   comes in on our listing
- *   side="buyer"  — used at /contacts/[contactId]/offers/[offerId] when
+ *   side="buyer"  — used at /crm/contacts/[contactId]/offers/[offerId] when
  *                   the seller has countered our buyer's offer
  *
  * Single button → comprehensive panel with:

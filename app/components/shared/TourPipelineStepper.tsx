@@ -15,12 +15,12 @@ interface TourPipelineStepperProps {
 const STEPS = ['Search', 'Save', 'Schedule', 'Tour', 'Offer', 'Close']
 
 const STEP_ROUTES: Record<string, string> = {
-  Search: '/contacts/{id}/search',
-  Save: '/contacts/{id}/search',
-  Schedule: '/contacts/{id}/tours',
-  Tour: '/contacts/{id}/tours',
-  Offer: '/contacts/{id}/offers/new',
-  Close: '/contacts/{id}',
+  Search: '/crm/contacts/{id}/search',
+  Save: '/crm/contacts/{id}/search',
+  Schedule: '/crm/contacts/{id}/tours',
+  Tour: '/crm/contacts/{id}/tours',
+  Offer: '/crm/contacts/{id}/offers/new',
+  Close: '/crm/contacts/{id}',
 }
 
 const STAGE_TO_STEP_INDEX: Record<string, number> = {

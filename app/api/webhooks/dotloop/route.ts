@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createClient } from "@/lib/supabase/server"
 import { logEventAndTrigger } from "@/lib/events"
+import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -162,71 +163,10 @@ export async function POST(request: NextRequest) {
         }
 
         // ── Esign completion: voice-cockpit staged artifacts ─────────────────
-        // dispatch_transaction_packet bundles a BBA + offer (or either alone)
-        // into ONE provider envelope (externalTransactionId === loop_id here).
-        // The dispatch handler stamps the same loop_id onto:
-        //   - documents.metadata.signature_request_id (the offer / listing-agreement document)
-        //   - buyer_broker_agreements.signature_request_id (the BBA row)
-        // Without this block the buyer can sign but our state machine never
-        // hears about it — voice-cockpit dispatch was end-to-end broken.
-
-        // Documents: flip ANY document whose metadata.signature_request_id matches
-        const { data: matchedDocs } = await supabase
-          .from("documents")
-          .select("id, document_type, contact_id, brokerage_id, metadata")
-          .filter("metadata->>signature_request_id", "eq", loop_id)
-
-        for (const docRow of (matchedDocs ?? [])) {
-          const existingMeta = (docRow.metadata as Record<string, unknown>) ?? {}
-          await supabase
-            .from("documents")
-            .update({
-              status: "signed",
-              metadata: {
-                ...existingMeta,
-                signed_at:        now,
-                signed_via:       "dotloop",
-                signed_loop_id:   loop_id,
-              },
-            })
-            .eq("id", docRow.id)
-
-          await logEventAndTrigger({
-            brokerage_id: docRow.brokerage_id as string,
-            event_type:   "voice_cockpit.packet.signed",
-            user_id:      (docRow.contact_id as string | null) ?? "",
-            payload:      { documentId: docRow.id, documentType: docRow.document_type, loop_id, provider: "dotloop" },
-            source:       "webhook",
-            dedupe_key:   `voice-packet-signed-${docRow.id}`,
-          } as any)
-        }
-
-        // BBA: flip the buyer_broker_agreements row to 'active' once signed
-        const { data: matchedBBA } = await supabase
-          .from("buyer_broker_agreements")
-          .select("id, brokerage_id, buyer_contact_id")
-          .eq("signature_request_id", loop_id)
-          .maybeSingle()
-
-        if (matchedBBA) {
-          await supabase
-            .from("buyer_broker_agreements")
-            .update({
-              status:        "active",
-              signed_at:     now,
-              signed_method: "dotloop",
-            })
-            .eq("id", matchedBBA.id)
-
-          await logEventAndTrigger({
-            brokerage_id: matchedBBA.brokerage_id as string,
-            event_type:   "buyer_broker_agreement.signed",
-            user_id:      matchedBBA.buyer_contact_id as string,
-            payload:      { agreementId: matchedBBA.id, loop_id, provider: "dotloop" },
-            source:       "webhook",
-            dedupe_key:   `bba-signed-${matchedBBA.id}`,
-          } as any)
-        }
+        // Shared helper handles the documents + buyer_broker_agreements flip
+        // and kernel event emission. Every provider webhook calls this so the
+        // dispatch chain converges regardless of which provider the agent uses.
+        await finalizeVoiceCockpitPacket(supabase as any, loop_id, "dotloop")
       }
     }
 

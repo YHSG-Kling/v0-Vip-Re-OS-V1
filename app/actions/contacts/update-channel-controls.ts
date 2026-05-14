@@ -1,7 +1,7 @@
 'use server'
 
 /**
- * app/actions/contacts/update-channel-controls.ts
+ * app/actions/crm/contacts/update-channel-controls.ts
  *
  * Server actions for managing per-contact channel preferences:
  *   - preferred_channel  — which channel the AI ISA should use first
@@ -119,7 +119,7 @@ export async function updateChannelControls(
       }
     }
 
-    revalidatePath(`/dashboard/contacts`)
+    revalidatePath(`/crm/contacts`)
 
     return { success: true }
   } catch (err: any) {

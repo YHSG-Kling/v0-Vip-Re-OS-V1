@@ -699,7 +699,7 @@ export default function BriefingPage() {
                 ))}
                 {churnRiskTotal > 5 && (
                   <Button variant="ghost" size="sm" className="w-full text-xs h-7" asChild>
-                    <Link href="/dashboard/contacts?filter=churn-risk">
+                    <Link href="/crm/contacts?filter=churn-risk">
                       +{churnRiskTotal - 5} more
                     </Link>
                   </Button>

@@ -630,7 +630,7 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
   // Award points for new contact assignment
   await awardPoints(agentId, 10, "New contact assigned", "lead")
 
-  revalidatePath("/contacts")
+  revalidatePath("/crm/contacts")
   return { data }
 }
 

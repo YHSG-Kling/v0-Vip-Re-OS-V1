@@ -103,7 +103,7 @@ export async function createContact(params: CreateContactParams) {
     })
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
+    revalidatePath("/crm/contacts")
 
     return { success: true, contact }
   } catch (error) {
@@ -188,8 +188,8 @@ export async function updateContact(params: UpdateContactParams) {
     }
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
-    revalidatePath(`/dashboard/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    revalidatePath(`/crm/contacts/${params.contactId}`)
 
     return { success: true, contact }
   } catch (error) {
@@ -235,7 +235,7 @@ export async function deleteContact(contactId: string, agentId: string) {
     }
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
+    revalidatePath("/crm/contacts")
 
     return { success: true }
   } catch (error) {
