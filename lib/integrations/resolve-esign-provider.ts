@@ -121,13 +121,19 @@ function buildResolved(
   cred: any,
   scope: "user" | "team" | "brokerage",
 ): ResolvedESignProvider {
+  const cfg = (cred.config as Record<string, unknown> | null) ?? {}
   const profileId =
-    (cred.config as Record<string, unknown> | null)?.profile_id as string
+    (cfg.profile_id as string)
     ?? cred.account_id
     ?? ""
+  // Optional per-provider base URI override (e.g. demo.docusign.net vs prod).
+  const baseUri = (cfg.base_uri as string | undefined)
+                ?? (cfg.baseUri as string | undefined)
+                ?? undefined
   const provider = getTransactionProviderByName(cred.platform, {
     apiKey:    cred.api_key as string,
     profileId,
+    baseUri,
   })
   return {
     providerName:  cred.platform as ResolvedESignProvider["providerName"],
