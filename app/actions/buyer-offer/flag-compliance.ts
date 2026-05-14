@@ -28,7 +28,7 @@ export interface FlagOfferComplianceParams {
   /** users.id of whoever raised the flag (agent, TC, scanner). */
   raiserUserId: string
   /** Stable type — drives filtering / analytics. */
-  flagType:   "missing_signature" | "missing_initial" | "missing_form" | "expired_disclosure" | "other"
+  flagType:   "missing_signature" | "missing_initial" | "missing_form" | "missing_field" | "expired_disclosure" | "other"
   severity:   "low" | "medium" | "high" | "critical"
   title:      string
   /** Optional body / detail (e.g. "Page 3 buyer initial missing"). */

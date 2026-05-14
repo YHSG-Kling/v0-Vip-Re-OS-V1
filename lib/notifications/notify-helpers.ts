@@ -171,22 +171,59 @@ export async function notifyComplianceFlag(
   const recipients = Array.from(recipientSet)
   if (recipients.length === 0) return { notified_count: 0, recipient_user_ids: [] }
 
-  const rows = recipients.map(uid => ({
-    user_id:      uid,
-    brokerage_id: brokerageId,
-    type:         flag.type,
-    title:        flag.title,
-    body:         flag.body ?? null,
-    entity_type:  flag.entityType,
-    entity_id:    flag.entityId,
-    priority,
-    channel:      "in_app",
-  }))
+  // Channel selection by severity:
+  //   low / medium       → in-app bell only (avoid email/SMS noise)
+  //   high / critical    → multi-channel (in-app + email + SMS-if-consented + push-if-enabled)
+  // We always write the in-app row directly so the bell rings instantly even
+  // if the multi-channel service has a transient failure mid-fan-out.
+  const escalate = flag.severity === "high" || flag.severity === "critical"
 
-  const { error } = await supabase.from("notifications").insert(rows)
-  if (error) {
-    console.error("[notify-helpers] notifyComplianceFlag insert failed:", error.message)
+  if (!escalate) {
+    const rows = recipients.map(uid => ({
+      user_id:      uid,
+      brokerage_id: brokerageId,
+      type:         flag.type,
+      title:        flag.title,
+      body:         flag.body ?? null,
+      entity_type:  flag.entityType,
+      entity_id:    flag.entityId,
+      priority,
+      channel:      "in_app",
+    }))
+    const { error } = await supabase.from("notifications").insert(rows)
+    if (error) {
+      console.error("[notify-helpers] notifyComplianceFlag insert failed:", error.message)
+      return { notified_count: 0, recipient_user_ids: [] }
+    }
+    return { notified_count: rows.length, recipient_user_ids: recipients }
+  }
+
+  // High / critical: route through NotificationService so email + SMS + push
+  // also fire per recipient consent + brokerage global settings. The service
+  // writes the in-app row itself (using the corrected schema), logs every
+  // delivery attempt to notification_log, and respects user
+  // communication_preferences for SMS gating.
+  try {
+    const { NotificationService } = await import("@/lib/transactions/notification-service")
+    const svc = new NotificationService()
+    await svc.sendMultiChannelNotification({
+      brokerageId,
+      recipientIds: recipients,
+      entityType:   flag.entityType,
+      entityId:     flag.entityId,
+      eventType:    flag.type,
+      title:        flag.title,
+      message:      flag.body ?? flag.title,
+      priority:     priority === "critical" ? "critical" : priority,
+      metadata: {
+        severity:    flag.severity,
+        offer_id:    flag.offerId ?? null,
+        document_id: flag.documentId ?? null,
+      },
+    })
+    return { notified_count: recipients.length, recipient_user_ids: recipients }
+  } catch (err: any) {
+    console.error("[notify-helpers] notifyComplianceFlag multi-channel failed:", err?.message ?? err)
     return { notified_count: 0, recipient_user_ids: [] }
   }
-  return { notified_count: rows.length, recipient_user_ids: recipients }
 }
