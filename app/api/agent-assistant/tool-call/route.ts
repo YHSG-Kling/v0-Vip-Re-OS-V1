@@ -461,13 +461,28 @@ async function stageListingPacket(
   params: Record<string, unknown>,
   session: SessionRow,
 ) {
-  const voiceInput = String(params.voice_input ?? params.address ?? "").trim()
-  if (!voiceInput) return { error: "voice_input required" }
+  const voiceInput      = String(params.voice_input ?? params.address ?? "").trim()
+  const sellerContactId = String(params.seller_contact_id ?? params.contact_id ?? "").trim()
+  if (!voiceInput)      return { error: "voice_input required" }
+  if (!sellerContactId) return { error: "seller_contact_id required — call lookup_contact for the seller first" }
 
   try {
-    const { extractListingIntake } = await import("@/lib/workflow/intake/voice-to-listing")
-    const { fillListingPacket } = await import("@/lib/workflow/intake/form-fill-engine")
     const supabase = createServiceClient()
+
+    // Resolve seller contact + ownership check
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, agent_id")
+      .eq("id", sellerContactId)
+      .eq("brokerage_id", session.brokerage_id)
+      .maybeSingle()
+    if (!contact) return { error: "Seller contact not found in your brokerage" }
+
+    const ownership = await requireContactOwnership(contact, session, supabase)
+    if ("error" in ownership) return ownership
+
+    const { extractListingIntake } = await import("@/lib/workflow/intake/voice-to-listing")
+    const { fillListingPacket }    = await import("@/lib/workflow/intake/form-fill-engine")
 
     const extracted = await extractListingIntake({ text: voiceInput })
     const state = extracted.intake.propertyState.value
@@ -488,6 +503,7 @@ async function stageListingPacket(
       .from("documents")
       .insert({
         brokerage_id: session.brokerage_id,
+        contact_id:   sellerContactId,
         document_type: "listing_agreement",
         status: "needs_agent_input",
         state_code: state,
@@ -510,7 +526,9 @@ async function stageListingPacket(
     // Post-call hand-off: email the agent with the review link. Same pattern
     // as stageOfferPacket — voice tells them "I've emailed you the link",
     // they open it after the call to review + dispatch for signatures.
-    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/dashboard/listings/new?documentId=${doc.id}`
+    // Contact-scoped URL mirrors the offer flow so FormWizard mounts with the
+    // seller as the contact prop and the documentId preloaded.
+    const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/contacts/${sellerContactId}/listings/new?documentId=${doc.id}`
     let emailedAt: string | null = null
     try {
       const { data: agentUser } = await supabase
@@ -552,13 +570,15 @@ async function stageListingPacket(
       console.error("[voice/stageListingPacket] post-stage email failed:", err?.message)
     }
 
+    const sellerName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "the seller"
     return {
       success: true,
       document_id: doc.id,
+      seller_contact_id: sellerContactId,
       emailed_at: emailedAt,
       spoken_summary: emailedAt
-        ? "Listing agreement is staged. I've emailed you the review link — open it after the call to check the filled forms and send for signatures."
-        : "Listing agreement is staged in your listings page. Email send failed — open it manually to review and send for signatures.",
+        ? `Listing agreement for ${sellerName} is staged. I've emailed you the review link — verify the filled forms, then tell me to send for signature when you're ready. Nothing's been dispatched yet.`
+        : `Listing agreement for ${sellerName} is staged. Email send failed — open the seller's contact record after the call to review and send for signatures.`,
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Listing staging failed" }

@@ -448,14 +448,15 @@ function buildToolsConfig() {
     {
       type: "webhook",
       name: "stage_listing_packet",
-      description: "Stage a listing-agreement packet from a voice transcript. Use when the agent says \"create a listing\", \"list a property\", \"start a new listing at...\". The tool extracts seller, address, price, terms, marketing obligations, fills the state's listing-agreement forms, and emails the agent a review link. Does NOT send for signature — the agent reviews and dispatches separately. Only the seller's assigned agent (or broker/admin) can list for them, so look up the seller first if the agent gives you a name.",
+      description: "Stage a listing-agreement packet from a voice transcript. YOU MUST call lookup_contact FIRST to resolve the seller's contact_id — never invent it. The tool extracts address, price, terms, marketing obligations, fills the state's listing-agreement forms, emails the agent a review link, and stages the document scoped to the seller contact. Does NOT send for signature — agent reviews then says 'send for signature'. Only the seller's assigned agent (or broker/admin) can list for them.",
       url: webhookUrl,
       method: "POST",
       auth,
       parameters: {
-        voice_input: { type: "string", description: "Full transcript — pass through unchanged. The extractor parses address, price, seller, terms, marketing obligations with confidence scoring." },
+        seller_contact_id: { type: "string", description: "Seller contact UUID from lookup_contact — required" },
+        voice_input:       { type: "string", description: "Full transcript — pass through unchanged. The extractor parses address, price, terms, marketing obligations with confidence scoring." },
       },
-      required: ["voice_input"],
+      required: ["seller_contact_id", "voice_input"],
     },
     {
       type: "webhook",
