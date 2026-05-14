@@ -1,26 +1,31 @@
 /**
  * lib/transactions/participant-populator.ts
  *
- * Auto-populate transaction_participants on transaction creation.
+ * Auto-populate transaction_participants on transaction creation — ONLY for
+ * the people the brokerage actually knows from the offer + listing.
  *
- * Sources (in order of confidence):
+ * Sources (real data only):
  *   1. BUYER         — offers.contact_id  →  contacts row (name/email/phone)
  *   2. BUYER_AGENT   — offers.agent_id    →  agents → users (name/email/phone, license)
- *   3. SELLER        — listings.seller_contact_id  →  contacts row (when listing exists)
- *   4. SELLER_AGENT  — listings.agent_id           →  agents → users (when listing exists)
- *   5. LENDER        — vendor_directory.preferred WHERE category='lender' AND
- *                      (audience_tags @> financing_type OR no tags) for this brokerage
- *   6. TITLE_COMPANY — vendor_directory.preferred WHERE category='title'   for this brokerage
- *   7. INSPECTOR     — vendor_directory.preferred WHERE category='inspector' for this brokerage
+ *   3. SELLER        — listings.seller_contact_id  →  contacts row (when in-house listing)
+ *   4. SELLER_AGENT  — listings.agent_id           →  agents → users (when in-house listing)
  *
- * We never insert a placeholder. If a source has no data, that participant row
- * is simply not created — the agent can add it manually from the transaction
- * UI. This honors the "no stubs/mock data" rule.
+ * DELIBERATELY NOT AUTO-POPULATED:
+ *   - LENDER   — comes from the buyer's pre-approval letter, not from any
+ *                brokerage preference. Agent / lender-doc parser fills this
+ *                in once the PAL is uploaded.
+ *   - TITLE    — comes from the contract itself (the offer dictates the title
+ *                company). Agent fills from contract text or contract-parsing.
+ *   - INSPECTOR — there may be several preferred inspectors; we don't pick
+ *                 one for the agent. Filled in when the inspection is
+ *                 scheduled.
  *
- * Idempotent: safe to call multiple times. Each role is inserted at most
- * once per transaction (deduped by (transaction_id, role) within this call,
- * and we skip the entire populator if the transaction already has
- * participants from a prior run).
+ * Brokerage preferred-vendor list still drives the UI typeahead when the
+ * agent is filling those fields — but we never auto-insert them as
+ * participants. Honors "no stubs / never assume the transaction team".
+ *
+ * Idempotent: safe to call multiple times. Skips entirely if the transaction
+ * already has any participants.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -72,12 +77,14 @@ export async function populateInitialParticipants(
     .maybeSingle()
   if (!tx) return { inserted_count: 0, roles_inserted: [], skipped_existing: false }
 
-  // Pull offer for financing_type (drives lender selection) + buyer fields
+  // Pull offer for buyer fields. We deliberately do NOT read financing_type
+  // here — lender is sourced from the buyer's pre-approval letter, not from
+  // a brokerage preferred-vendor list. Agent fills lender after PAL upload.
   let offer: any = null
   if (tx.offer_id) {
     const { data } = await supabase
       .from("offers")
-      .select("id, financing_type, contact_id, agent_id")
+      .select("id, contact_id, agent_id")
       .eq("id", tx.offer_id)
       .maybeSingle()
     offer = data ?? null
@@ -151,19 +158,9 @@ export async function populateInitialParticipants(
     if (sellerAgent) pending.push({ role: "seller_agent", ...sellerAgent })
   }
 
-  // ── LENDER (from preferred vendors, financing-type aware) ────────────────
-  if (offer?.financing_type && offer.financing_type !== "cash") {
-    const lender = await pickPreferredVendor(supabase, brokerageId, "lender", offer.financing_type as string)
-    if (lender) pending.push({ role: "lender", ...lender })
-  }
-
-  // ── TITLE_COMPANY ────────────────────────────────────────────────────────
-  const title = await pickPreferredVendor(supabase, brokerageId, "title", null)
-  if (title) pending.push({ role: "title_company", ...title })
-
-  // ── INSPECTOR ────────────────────────────────────────────────────────────
-  const inspector = await pickPreferredVendor(supabase, brokerageId, "inspector", null)
-  if (inspector) pending.push({ role: "inspector", ...inspector })
+  // NOTE: lender / title_company / inspector are deliberately NOT auto-populated.
+  // Lender comes from the PAL doc; title comes from the contract; inspectors
+  // are picked per-deal. Agent fills these in after the contract is executed.
 
   // Insert all collected participants in one statement
   if (pending.length === 0) {
@@ -232,48 +229,3 @@ async function resolveAgent(
   }
 }
 
-/**
- * Pick the brokerage's preferred vendor for a category, optionally filtered
- * by a tag (used by lender selection to match the offer's financing_type).
- * Returns null when no preferred vendor is on file — the agent will populate
- * the transaction participant manually in that case.
- */
-async function pickPreferredVendor(
-  supabase: SupabaseClient,
-  brokerageId: string,
-  category: "lender" | "title" | "inspector",
-  preferredTag: string | null,
-): Promise<{ name: string; company?: string | null; email?: string | null; phone?: string | null } | null> {
-  let q = supabase
-    .from("vendor_directory")
-    .select("id, name, email, phone, website, audience_tags, display_priority, rating, preferred, category")
-    .eq("brokerage_id", brokerageId)
-    .eq("category", category)
-    .eq("preferred", true)
-    .order("display_priority", { ascending: false, nullsFirst: false })
-    .order("rating",           { ascending: false, nullsFirst: false })
-
-  // Tag-aware match (e.g., financing_type for lenders). Postgres ARRAY ops
-  // via PostgREST: `cs` = contains.
-  if (preferredTag) {
-    // First try a tagged match; if no row, fall back to the untagged top-priority pick.
-    const { data: tagged } = await q.contains("audience_tags", [preferredTag]).limit(1).maybeSingle()
-    if (tagged) {
-      return {
-        name:    tagged.name,
-        company: tagged.name,
-        email:   tagged.email,
-        phone:   tagged.phone,
-      }
-    }
-  }
-
-  const { data: fallback } = await q.limit(1).maybeSingle()
-  if (!fallback) return null
-  return {
-    name:    fallback.name,
-    company: fallback.name,
-    email:   fallback.email,
-    phone:   fallback.phone,
-  }
-}
