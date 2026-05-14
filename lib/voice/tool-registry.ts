@@ -239,6 +239,16 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Spoken summary of agent's gap to income goal + this week's ranked actions.",
   },
+  get_morning_briefing: {
+    name: "get_morning_briefing",
+    category: "report",
+    authority: "agent",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Compose the agent's top-priority action queue into a spoken briefing. Pulls from 6 sources (portal_event / deal_health / listing_health / lifetime_npv / negotiation_strategy / income_gap) via composeAgentActionQueue. The voice cockpit calls this on session start to open with 'three things to act on today' so the AI feels proactive instead of order-taking.",
+  },
 }
 
 /**

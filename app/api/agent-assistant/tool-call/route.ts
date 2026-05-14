@@ -243,6 +243,9 @@ async function runTool(
     case "next_unfilled_field":
       return nextUnfilledField(params, session, supabase)
 
+    case "get_morning_briefing":
+      return getMorningBriefing(params, session, supabase)
+
     case "dispatch_transaction_packet":
       return dispatchTransactionPacket(params, session, supabase)
 
@@ -1702,6 +1705,97 @@ async function nextUnfilledField(
     suggested_default: resolvedDefault,
     hint:              next.hint,
     spoken_summary: `${next.hint}${defaultClause}`,
+  }
+}
+
+// ─── get_morning_briefing (voice) ────────────────────────────────────────────
+// Composes the agent's top-priority action queue into a spoken briefing the
+// voice cockpit can open the session with: "Good morning — three things to
+// act on today. Maria viewed 123 Main twice yesterday. Bob's BBA expires in
+// four days. James's offer is at day 14 with no response. Want to start
+// with Maria?" Reads from the canonical composeAgentActionQueue (6 sources).
+
+async function getMorningBriefing(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const limit = Math.max(1, Math.min(5, Number(params.limit ?? 3)))
+
+  if (!session.agent_id) {
+    return {
+      success: true,
+      items: [],
+      spoken_summary: "I don't see an agent profile for this session, so there's no action queue to brief on. Talk to your broker about getting your agent record set up.",
+    }
+  }
+
+  const { composeAgentActionQueue } = await import("@/lib/agent-action-queue/composer")
+  let queue
+  try {
+    queue = await composeAgentActionQueue(supabase as any, {
+      agentUserId: session.user_id,
+      agentsId:    session.agent_id,
+      brokerageId: session.brokerage_id,
+      limit:       12,
+    })
+  } catch (err: any) {
+    console.error("[voice/getMorningBriefing] queue compose failed:", err?.message)
+    return {
+      error: "Could not compose the action queue.",
+      spoken_summary: "I couldn't pull your action queue just now — try again in a minute or check the dashboard.",
+    }
+  }
+
+  const top = queue.items.slice(0, limit)
+  if (top.length === 0) {
+    return {
+      success: true,
+      items: [],
+      total_impact_sum: 0,
+      spoken_summary: "Your action queue is clear — no items above the priority threshold. Good time to prospect or catch up on past clients.",
+    }
+  }
+
+  // Compose a natural spoken summary: "Three things today. <title 1>. <title 2>. <title 3>."
+  const opener =
+    top.length === 1 ? "One thing to act on right now."
+    : top.length === 2 ? "Two things on the action queue."
+    : `${top.length} things on the action queue, top priority first.`
+
+  const lines = top.map((item, i) => {
+    const lead = top.length > 1 ? `${i + 1}. ` : ""
+    const detail = item.detail ? ` — ${item.detail}` : ""
+    const impact = item.impactDollars && item.impactDollars > 0
+      ? ` Worth roughly $${Math.round(item.impactDollars).toLocaleString()}.`
+      : ""
+    return `${lead}${item.title}${detail}.${impact}`
+  })
+
+  const totalImpactSentence = queue.totalImpactSum > 1000
+    ? ` Total potential impact on the full queue is around $${Math.round(queue.totalImpactSum).toLocaleString()}.`
+    : ""
+
+  const spoken_summary = `${opener} ${lines.join(" ")}${totalImpactSentence} Which one do you want to start with?`
+
+  return {
+    success: true,
+    items: top.map(t => ({
+      id:            t.id,
+      source:        t.source,
+      title:         t.title,
+      detail:        t.detail,
+      contact_id:    t.contactId,
+      contact_name:  t.contactName,
+      transaction_id: t.transactionId,
+      listing_id:    t.listingId,
+      impact_dollars: t.impactDollars,
+      priority:      t.priority,
+      resolve_href:  t.resolveHref,
+    })),
+    total_impact_sum: queue.totalImpactSum,
+    count_by_source:  queue.countBySource,
+    spoken_summary,
   }
 }
 

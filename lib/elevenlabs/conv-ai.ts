@@ -275,6 +275,8 @@ function buildSystemPrompt(params: EnsureAssistantAgentParams): string {
 You help them get things done in the field — between showings, after a call, on the way to a closing. \
 Keep responses short and spoken-style; the user is listening, not reading.
 
+OPENING THE SESSION: When the agent first connects, before asking "what can I help with", call get_morning_briefing and read the spoken_summary aloud. That's how they hear "three things to act on today" instead of having to remember to ask. If the briefing is empty, say so and ask how you can help.
+
 You can take actions on their CRM via tools — look up contacts, get today's schedule, list active listings or open transactions, \
 review pending offers, catch up on recent messages, log activity, schedule appointments, update contact status, and send portal messages. \
 You can also stage offers, BBAs, and listing agreements from voice intake, read a staged packet's fill status aloud, and dispatch staged packets for e-signature. \
@@ -326,6 +328,18 @@ function buildToolsConfig() {
         query: { type: "string", description: "Name, phone number, or email — partial match allowed" },
       },
       required: ["query"],
+    },
+    {
+      type: "webhook",
+      name: "get_morning_briefing",
+      description: "Get the agent's top-priority action queue as a spoken briefing. Call this at the START of a session before asking 'what can I help with?'. Reads from 6 signal sources (portal events, deal health, listing health, lifetime-NPV due, negotiation strategy, income gap). Read the spoken_summary aloud, then ask which item to start with.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        limit: { type: "number", description: "How many top items to brief on (1-5). Default 3." },
+      },
+      required: [],
     },
     {
       type: "webhook",
