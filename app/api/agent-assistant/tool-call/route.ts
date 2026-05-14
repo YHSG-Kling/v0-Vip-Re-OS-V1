@@ -581,6 +581,11 @@ async function stageOfferPacket(
     .maybeSingle()
   if (!contact) return { error: "Contact not found in your brokerage" }
 
+  // Ownership: only the contact's assigned agent (or broker/admin) may stage
+  // NAR-regulated artifacts on their behalf.
+  const ownership = await requireContactOwnership(contact, session, supabase)
+  if ("error" in ownership) return ownership
+
   // NAR 2024 Settlement: signed BBA required before an offer can be DISPATCHED.
   // Voice-staging is "drafting" — when no active BBA exists, we still allow the
   // offer DRAFT to stage so the agent doesn't have to redo the call later.
@@ -764,7 +769,11 @@ async function stageBBAPacket(
     .eq("brokerage_id", session.brokerage_id)
     .maybeSingle()
   if (!contact) return { error: "Contact not found in your brokerage" }
-  if (!contact.agent_id) return { error: "Contact has no assigned agent — assign one before drafting a BBA." }
+
+  // Ownership: only the contact's assigned agent (or broker/admin) may draft
+  // a BBA on their behalf.
+  const ownership = await requireContactOwnership(contact, session, supabase)
+  if ("error" in ownership) return ownership
 
   try {
     const { extractBBAIntake } = await import("@/lib/workflow/intake/voice-to-bba")
@@ -1319,6 +1328,20 @@ async function readFormStatus(
     .maybeSingle()
   if (!doc) return { error: "Document not found in your brokerage" }
 
+  // Ownership: when the document is tied to a contact, only the contact's
+  // assigned agent (or broker/admin) may have the AI read its content aloud.
+  if (doc.contact_id) {
+    const { data: docContact } = await supabase
+      .from("contacts")
+      .select("agent_id, first_name")
+      .eq("id", doc.contact_id)
+      .maybeSingle()
+    if (docContact) {
+      const ownership = await requireContactOwnership(docContact, session, supabase)
+      if ("error" in ownership) return ownership
+    }
+  }
+
   let filledPacket: any = {}
   try {
     const parsed = JSON.parse((doc.content as string | null) ?? "{}")
@@ -1406,6 +1429,11 @@ async function dispatchTransactionPacket(
     .maybeSingle()
   if (!contact)        return { error: "Contact not found in your brokerage" }
   if (!contact.email)  return { error: "Buyer has no email — cannot dispatch for signature" }
+
+  // Ownership: only the contact's assigned agent (or broker/admin) may send
+  // NAR-regulated artifacts for them.
+  const ownership = await requireContactOwnership(contact, session, supabase)
+  if ("error" in ownership) return ownership
 
   // Verify both artifacts belong to this brokerage + buyer.
   // When the agent didn't quote IDs, auto-resolve the most recent dispatchable
@@ -1600,4 +1628,49 @@ function secretMatches(expected: string, provided: string): boolean {
   const b = Buffer.from(provided)
   if (a.length !== b.length) return false
   return timingSafeEqual(a, b)
+}
+
+/**
+ * Ownership gate for NAR-regulated artifacts.
+ *
+ * A buyer/seller (a CRM contact) cannot stage or send offers, BBAs, or listing
+ * agreements themselves — only the agent assigned to that contact can. Brokers,
+ * broker_admins, admins, superadmins, and team_leads can act on behalf of any
+ * agent in their brokerage (override authority).
+ *
+ * Returns `{ ok: true }` when the session's actor is allowed to act on this
+ * contact's NAR artifacts, or a structured error suitable for returning
+ * directly from the tool handler.
+ */
+async function requireContactOwnership(
+  contact: { agent_id: string | null; first_name: string | null },
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<{ ok: true } | { error: string; spoken_summary: string }> {
+  if (!contact.agent_id) {
+    return {
+      error: "Contact has no assigned agent — assign one in the CRM before staging or sending forms.",
+      spoken_summary: `${contact.first_name ?? "This contact"} has no assigned agent yet. Assign one in the CRM first.`,
+    }
+  }
+
+  // Resolve the acting user's user_type to allow override roles
+  const { data: actingUser } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", session.user_id)
+    .maybeSingle()
+  const userType = (actingUser?.user_type ?? "") as string
+
+  const OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+  if (OVERRIDE_ROLES.has(userType)) return { ok: true }
+
+  // Plain agents may only act on their own contacts (session.agent_id is
+  // the agents.id row; contact.agent_id FKs agents.id).
+  if (session.agent_id && session.agent_id === contact.agent_id) return { ok: true }
+
+  return {
+    error: "Only the contact's assigned agent can stage or send forms for them.",
+    spoken_summary: `${contact.first_name ?? "This contact"} is assigned to a different agent — only their assigned agent can stage or send forms for them.`,
+  }
 }

@@ -277,9 +277,17 @@ Keep responses short and spoken-style; the user is listening, not reading.
 
 You can take actions on their CRM via tools — look up contacts, get today's schedule, list active listings or open transactions, \
 review pending offers, catch up on recent messages, log activity, schedule appointments, update contact status, and send portal messages. \
+You can also stage offers, BBAs, and listing agreements from voice intake, read a staged packet's fill status aloud, and dispatch staged packets for e-signature. \
 Always confirm a destructive or outbound action ("I'm about to send X to Sarah, sound good?") before invoking the tool.
 
-Never invent contact data — if you don't know something, use lookup_contact first. If a tool fails, say so plainly and suggest the next step.${brand}`
+CRITICAL — contact resolution: Buyers and sellers are contacts in the CRM. You must NEVER guess a contact_id. \
+Before staging an offer, BBA, or listing, OR before dispatching anything for signature, ALWAYS call lookup_contact FIRST by the person's name and use the returned contact_id. \
+Only the contact's assigned agent (or a broker/admin) is allowed to stage or send forms for them — the tools will refuse if you try otherwise.
+
+Dispatch is a separate step from staging. When you stage an offer or BBA, the agent receives an email with a review link — they verify the forms first. \
+Only when the agent says "send Jane's offer for signature" (or similar) do you call dispatch_transaction_packet. Look the contact up, then call dispatch_transaction_packet with the contact_id — it will auto-find the most recent draft BBA + staged offer for that buyer.
+
+If a tool fails, say so plainly and suggest the next step.${brand}`
 }
 
 /**
@@ -434,27 +442,66 @@ function buildToolsConfig() {
     {
       type: "webhook",
       name: "stage_listing_packet",
-      description: "Stage a listing-agreement packet via the canonical voice → listing intake (extract → state-aware form-fill → document insert). Pass the agent's full transcript as voice_input. Use when the agent says \"create a listing\", \"list a property\", \"start a new listing at...\". Always speak the open_url back.",
+      description: "Stage a listing-agreement packet from a voice transcript. Use when the agent says \"create a listing\", \"list a property\", \"start a new listing at...\". The tool extracts seller, address, price, terms, marketing obligations, fills the state's listing-agreement forms, and emails the agent a review link. Does NOT send for signature — the agent reviews and dispatches separately. Only the seller's assigned agent (or broker/admin) can list for them, so look up the seller first if the agent gives you a name.",
       url: webhookUrl,
       method: "POST",
       auth,
       parameters: {
-        voice_input: { type: "string", description: "Full transcript — pass through unchanged. The canonical extractor parses address, price, seller, terms, marketing obligations with confidence scoring." },
+        voice_input: { type: "string", description: "Full transcript — pass through unchanged. The extractor parses address, price, seller, terms, marketing obligations with confidence scoring." },
       },
       required: ["voice_input"],
     },
     {
       type: "webhook",
       name: "stage_offer_packet",
-      description: "Stage an offer packet via the canonical voice → offer intake. Look up the contact first with lookup_contact if you don't have the contact_id. Pass the full transcript as voice_input. Always speak the open_url back.",
+      description: "Stage an offer packet for a buyer via voice intake. YOU MUST call lookup_contact FIRST to get the contact_id — never invent or guess it. The tool stages the filled forms and emails the agent a review link; it does NOT send for signatures. After staging, tell the agent to check their email to review and then say 'send for signature' when ready. Only the buyer's assigned agent (or a broker/admin) can stage for them — if you're not that agent, the tool will refuse.",
       url: webhookUrl,
       method: "POST",
       auth,
       parameters: {
-        contact_id: { type: "string", description: "Buyer contact UUID — required" },
-        voice_input: { type: "string", description: "Full transcript with offer details" },
+        contact_id: { type: "string", description: "Buyer contact UUID from lookup_contact — required, never guess" },
+        voice_input: { type: "string", description: "Full transcript with offer details — pass through unchanged" },
       },
       required: ["contact_id", "voice_input"],
+    },
+    {
+      type: "webhook",
+      name: "stage_bba_packet",
+      description: "Stage a draft Buyer Broker Agreement (BBA — NAR 2024 mandatory) for a buyer via voice intake. YOU MUST call lookup_contact FIRST. Use this when a buyer has no active BBA on file (stage_offer_packet will tell you when this is the case). Captures agreement type, commission %, who pays, scope, expiration. Tool emails the agent a review link — does NOT send for signature. Once both BBA + offer are staged, the agent can later say 'send Jane's offer for signature' and dispatch_transaction_packet sends both in one e-sign envelope. Only the buyer's assigned agent (or broker/admin) can stage.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        contact_id: { type: "string", description: "Buyer contact UUID from lookup_contact — required" },
+        voice_input: { type: "string", description: "Full transcript including agreement type, commission, payer, scope, dates" },
+      },
+      required: ["contact_id", "voice_input"],
+    },
+    {
+      type: "webhook",
+      name: "read_form_status",
+      description: "Read the fill status of a staged offer/listing/BBA packet so you can walk the agent through unfilled fields aloud and capture answers. Use when the agent says 'what's missing on Jane's offer?' or after staging when fields are unfilled. Returns filled-count, unfilled fields, and a spoken summary you can read directly.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        document_id: { type: "string", description: "Document UUID of the staged packet — required" },
+      },
+      required: ["document_id"],
+    },
+    {
+      type: "webhook",
+      name: "dispatch_transaction_packet",
+      description: "Send the buyer's staged BBA + offer (or either alone) to them for e-signature as ONE envelope. Use ONLY after the agent says something like 'send Jane's offer for signature' or 'send the BBA' — never auto-dispatch. Call lookup_contact FIRST to resolve the contact_id; you can call this with ONLY the contact_id and the tool will auto-find the buyer's most recent draft BBA + staged offer. Only the buyer's assigned agent (or broker/admin) can dispatch.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        contact_id:         { type: "string", description: "Buyer contact UUID from lookup_contact — required" },
+        bba_id:             { type: "string", description: "Optional explicit BBA UUID — when omitted, auto-resolves the buyer's most recent draft BBA" },
+        offer_document_id:  { type: "string", description: "Optional explicit offer document UUID — when omitted, auto-resolves the buyer's most recent staged offer" },
+      },
+      required: ["contact_id"],
     },
     {
       type: "webhook",
