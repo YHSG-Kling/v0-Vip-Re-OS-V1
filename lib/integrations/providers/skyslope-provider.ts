@@ -34,6 +34,9 @@ import type {
   UploadDocumentRequest,
   UploadDocumentResponse,
   ProviderDocument,
+  ListFormsRequest,
+  ListFormsResponse,
+  ProviderForm,
 } from "./transaction-provider.interface"
 
 export class SkyslopeProvider implements ITransactionProvider {
@@ -199,6 +202,39 @@ export class SkyslopeProvider implements ITransactionProvider {
     }
   }
 
+  async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
+    try {
+      // SkySlope's form library lives under /forms with state + category filters.
+      const params = new URLSearchParams()
+      if (request.stateCode) params.set("state",    request.stateCode)
+      if (request.category)  params.set("category", request.category)
+      if (request.query)     params.set("q",         request.query)
+      params.set("officeId", this.officeId)
+      params.set("limit",   String(request.pageSize ?? 100))
+
+      const res = await fetch(`${this.baseUri}/forms?${params.toString()}`, {
+        headers: this.headers(),
+      })
+      if (!res.ok) {
+        return { success: false, error: `SkySlope listForms ${res.status}: ${await res.text()}` }
+      }
+      const data = await res.json()
+      const items: any[] = data.forms ?? data.items ?? data ?? []
+      const forms: ProviderForm[] = items.map(f => ({
+        formId:    String(f.formId ?? f.id),
+        name:      f.name ?? f.title ?? "Form",
+        issuer:    f.association ?? f.publisher,
+        stateCode: f.state ?? f.stateCode,
+        category:  mapSkyslopeCategory(f.category ?? f.type),
+        version:   f.version,
+        previewUrl: f.previewUrl ?? f.url,
+      }))
+      return { success: true, forms }
+    } catch (err: any) {
+      return { success: false, error: err?.message ?? "SkySlope listForms failed" }
+    }
+  }
+
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
       const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}/documents`, {
@@ -222,4 +258,14 @@ export class SkyslopeProvider implements ITransactionProvider {
       return { success: false, syncedCount: 0, documents: [], error: err?.message }
     }
   }
+}
+
+function mapSkyslopeCategory(c: string | undefined): ProviderForm["category"] {
+  const s = (c ?? "").toString().toLowerCase()
+  if (s.includes("listing"))    return "listing"
+  if (s.includes("purchase") || s.includes("offer")) return "offer"
+  if (s.includes("addendum"))   return "addendum"
+  if (s.includes("disclosure")) return "disclosure"
+  if (s.includes("agency"))     return "agency"
+  return "other"
 }

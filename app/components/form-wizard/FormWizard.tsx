@@ -43,13 +43,29 @@ import { createOffer } from "@/app/actions/buyer-offers"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import Link from "next/link"
 
-type TransactionProvider = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
+type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
 interface FormRef {
   source: "my_forms" | "transaction_provider"
   formRef: string
   name: string
   scope?: "brokerage" | "team" | "agent"
+  /** When source === "transaction_provider", the provider id of the source. */
+  providerName?: TransactionProvider
+  /** When source === "transaction_provider", optional issuer / category for display. */
+  issuer?:    string
+  category?:  string
+  stateCode?: string
+}
+
+interface ProviderFormItem {
+  formId:     string
+  name:       string
+  issuer?:    string
+  stateCode?: string
+  category?:  string
+  version?:   string
+  previewUrl?: string
 }
 
 interface Signer {
@@ -136,6 +152,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const [myForms, setMyForms] = useState<{ name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]>([])
   const [formsLoaded, setFormsLoaded] = useState(false)
   const [providerInfo, setProviderInfo] = useState<{ provider: TransactionProvider; embedUrl: string | null } | null | "loading">("loading")
+  // Provider form library — fetched lazily when Step 2 mounts. null = not loaded
+  // yet, [] = loaded but empty.
+  const [providerForms, setProviderForms] = useState<ProviderFormItem[] | null>(null)
+  const [providerFormsLoading, setProviderFormsLoading] = useState(false)
+  const [providerFormsError, setProviderFormsError] = useState<string | null>(null)
   const [esignProvider, setEsignProvider] = useState<string | null>(null)
   // ── Packet preload (optional) — only active when documentId prop is set ──
   const [stagedPacket, setStagedPacket] = useState<StagedPacket | null>(null)
@@ -381,7 +402,42 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           {stagedPacket && <PacketBanner packet={stagedPacket} />}
 
           {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
-          {step === 2 && <Step2Forms mode={mode} state={state} update={update} myForms={myForms} providerInfo={providerInfo} />}
+          {step === 2 && (
+            <Step2Forms
+              mode={mode}
+              state={state}
+              update={update}
+              myForms={myForms}
+              providerInfo={providerInfo}
+              providerForms={providerForms}
+              providerFormsLoading={providerFormsLoading}
+              providerFormsError={providerFormsError}
+              onLoadProviderForms={async () => {
+                if (providerForms !== null || providerFormsLoading) return
+                if (!providerInfo || providerInfo === "loading") return
+                setProviderFormsLoading(true)
+                setProviderFormsError(null)
+                try {
+                  const params = new URLSearchParams()
+                  if (state.propertyState) params.set("state", state.propertyState)
+                  params.set("category", mode === "offer" ? "offer" : "listing")
+                  const res = await fetch(`/api/forms/provider-library?${params.toString()}`)
+                  const json = await res.json()
+                  if (!res.ok) {
+                    setProviderFormsError(json?.error ?? "Could not load provider forms.")
+                    setProviderForms([])
+                  } else {
+                    setProviderForms(json.forms ?? [])
+                  }
+                } catch (err: any) {
+                  setProviderFormsError(err?.message ?? "Network error loading provider forms.")
+                  setProviderForms([])
+                } finally {
+                  setProviderFormsLoading(false)
+                }
+              }}
+            />
+          )}
           {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
           {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
@@ -537,12 +593,16 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
 
 // ─── Step 2 — Form Selection ─────────────────────────────────────────────────
 
-function Step2Forms({ mode, state, update, myForms, providerInfo }: {
+function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms }: {
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
   myForms: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]
   providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"
+  providerForms: ProviderFormItem[] | null
+  providerFormsLoading: boolean
+  providerFormsError: string | null
+  onLoadProviderForms: () => void
 }) {
   const selected = state.selectedForms
 
@@ -555,13 +615,24 @@ function Step2Forms({ mode, state, update, myForms, providerInfo }: {
     }
   }
 
-  function toggleProvider() {
+  function toggleProviderForm(f: ProviderFormItem) {
     if (!providerInfo || providerInfo === "loading") return
-    const exists = selected.find(s => s.source === "transaction_provider")
+    const exists = selected.find(s => s.source === "transaction_provider" && s.formRef === f.formId)
     if (exists) {
-      update("selectedForms", selected.filter(s => s.source !== "transaction_provider"))
+      update("selectedForms", selected.filter(s => !(s.source === "transaction_provider" && s.formRef === f.formId)))
     } else {
-      update("selectedForms", [...selected, { source: "transaction_provider", formRef: "provider_forms", name: `${providerInfo.provider} forms` }])
+      update("selectedForms", [
+        ...selected,
+        {
+          source:       "transaction_provider",
+          formRef:      f.formId,
+          name:         f.name,
+          providerName: providerInfo.provider,
+          issuer:       f.issuer,
+          category:     f.category,
+          stateCode:    f.stateCode,
+        },
+      ])
     }
   }
 
@@ -607,7 +678,7 @@ function Step2Forms({ mode, state, update, myForms, providerInfo }: {
           )}
         </TabsContent>
 
-        <TabsContent value="provider" className="mt-3">
+        <TabsContent value="provider" className="mt-3" onFocus={onLoadProviderForms} onClick={onLoadProviderForms}>
           {providerInfo === "loading" && (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -624,21 +695,61 @@ function Step2Forms({ mode, state, update, myForms, providerInfo }: {
           )}
           {providerInfo && providerInfo !== "loading" && (
             <div className="space-y-3">
-              <label className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
-                <Checkbox
-                  checked={!!selected.find(s => s.source === "transaction_provider")}
-                  onCheckedChange={toggleProvider}
-                />
-                <div>
-                  <p className="text-sm font-medium capitalize">{providerInfo.provider} — include provider forms</p>
-                  <p className="text-xs text-muted-foreground">You'll fill forms directly in the {providerInfo.provider} interface in the next step.</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground capitalize">
+                  Forms from {providerInfo.provider}
+                  {state.propertyState ? ` for ${state.propertyState}` : ""}
+                  {mode === "listing" ? " (listing)" : " (offer)"}.
+                </p>
+                {providerInfo.embedUrl && (
+                  <a href={providerInfo.embedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                    <ExternalLink className="h-3 w-3" />
+                    Open {providerInfo.provider}
+                  </a>
+                )}
+              </div>
+
+              {providerFormsLoading && (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                 </div>
-              </label>
-              {providerInfo.embedUrl && (
-                <a href={providerInfo.embedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-                  <ExternalLink className="h-3 w-3" />
-                  Open {providerInfo.provider} in new tab
-                </a>
+              )}
+              {providerFormsError && !providerFormsLoading && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{providerFormsError}</AlertDescription>
+                </Alert>
+              )}
+              {!providerFormsLoading && !providerFormsError && providerForms && providerForms.length === 0 && (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  No forms in {providerInfo.provider}'s library
+                  {state.propertyState ? ` for ${state.propertyState}` : ""}.
+                  <br />
+                  <span className="text-xs">Forms uploaded directly to {providerInfo.provider} will appear here.</span>
+                </div>
+              )}
+              {!providerFormsLoading && !providerFormsError && providerForms && providerForms.length > 0 && (
+                <div className="space-y-2">
+                  {providerForms.map(f => {
+                    const checked = !!selected.find(s => s.source === "transaction_provider" && s.formRef === f.formId)
+                    return (
+                      <label key={f.formId} className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
+                        <Checkbox checked={checked} onCheckedChange={() => toggleProviderForm(f)} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{f.name}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {[f.issuer, f.stateCode, f.category].filter(Boolean).join(" · ")}
+                          </p>
+                        </div>
+                        {f.previewUrl && (
+                          <a href={f.previewUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-muted-foreground hover:text-foreground shrink-0">
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </label>
+                    )
+                  })}
+                </div>
               )}
             </div>
           )}

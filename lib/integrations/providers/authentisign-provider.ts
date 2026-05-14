@@ -35,6 +35,9 @@ import type {
   UploadDocumentRequest,
   UploadDocumentResponse,
   ProviderDocument,
+  ListFormsRequest,
+  ListFormsResponse,
+  ProviderForm,
 } from "./transaction-provider.interface"
 
 export class AuthentisignProvider implements ITransactionProvider {
@@ -230,4 +233,47 @@ export class AuthentisignProvider implements ITransactionProvider {
       return { success: false, syncedCount: 0, documents: [], error: err?.message }
     }
   }
+
+  async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
+    try {
+      // Lone Wolf Authentisign exposes the form library under /forms with
+      // optional state + category filters.
+      const params = new URLSearchParams()
+      if (request.stateCode) params.set("state",    request.stateCode)
+      if (request.category)  params.set("category", request.category)
+      if (request.query)     params.set("q",         request.query)
+      params.set("limit", String(request.pageSize ?? 100))
+
+      const res = await fetch(this.url(`/forms?${params.toString()}`), {
+        headers: this.headers(),
+      })
+      if (!res.ok) {
+        return { success: false, error: `Authentisign listForms ${res.status}: ${await res.text()}` }
+      }
+      const data = await res.json()
+      const items: any[] = data.forms ?? data.items ?? data ?? []
+      const forms: ProviderForm[] = items.map(f => ({
+        formId:    String(f.formId ?? f.id),
+        name:      f.name ?? f.title ?? "Form",
+        issuer:    f.association ?? f.publisher,
+        stateCode: f.state ?? f.stateCode,
+        category:  mapAuthentisignCategory(f.category ?? f.type),
+        version:   f.version,
+        previewUrl: f.previewUrl ?? f.url,
+      }))
+      return { success: true, forms }
+    } catch (err: any) {
+      return { success: false, error: err?.message ?? "Authentisign listForms failed" }
+    }
+  }
+}
+
+function mapAuthentisignCategory(c: string | undefined): ProviderForm["category"] {
+  const s = (c ?? "").toString().toLowerCase()
+  if (s.includes("listing"))    return "listing"
+  if (s.includes("purchase") || s.includes("offer")) return "offer"
+  if (s.includes("addendum"))   return "addendum"
+  if (s.includes("disclosure")) return "disclosure"
+  if (s.includes("agency"))     return "agency"
+  return "other"
 }

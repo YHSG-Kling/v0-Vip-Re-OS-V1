@@ -38,6 +38,9 @@ import type {
   UploadDocumentRequest,
   UploadDocumentResponse,
   ProviderDocument,
+  ListFormsRequest,
+  ListFormsResponse,
+  ProviderForm,
 } from "./transaction-provider.interface"
 
 export class DocusignProvider implements ITransactionProvider {
@@ -252,6 +255,57 @@ export class DocusignProvider implements ITransactionProvider {
       return { success: true, externalDocumentId: documentId }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "DocuSign uploadDocument failed" }
+    }
+  }
+
+  async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
+    try {
+      // DocuSign's form library lives as Templates. /templates returns the
+      // account's saved templates which can be reused as offer/listing forms.
+      const params = new URLSearchParams()
+      if (request.query)    params.set("search_text", request.query)
+      params.set("count", String(request.pageSize ?? 100))
+      params.set("order_by", "name")
+
+      const res = await fetch(this.url(`/templates?${params.toString()}`), {
+        headers: this.headers(),
+      })
+      if (!res.ok) {
+        return { success: false, error: `DocuSign listTemplates ${res.status}: ${await res.text()}` }
+      }
+      const data = await res.json()
+      let forms: ProviderForm[] = (data.envelopeTemplates ?? []).map((t: any) => {
+        const name = String(t.name ?? "Template")
+        // Infer state + category from template name when possible (DocuSign
+        // doesn't expose structured taxonomy on templates).
+        const stateMatch = name.match(/\b([A-Z]{2})\b/)
+        const lower = name.toLowerCase()
+        const category: ProviderForm["category"] =
+          lower.includes("listing")  ? "listing"
+          : lower.includes("offer") || lower.includes("purchase") ? "offer"
+          : lower.includes("addendum")   ? "addendum"
+          : lower.includes("disclosure") ? "disclosure"
+          : lower.includes("agency")     ? "agency" : "other"
+        return {
+          formId:    t.templateId,
+          name,
+          issuer:    t.owner?.userName,
+          stateCode: stateMatch ? stateMatch[1] : undefined,
+          category,
+          version:   t.lastModified,
+        }
+      })
+      // Optional client-side filter — DocuSign API doesn't accept state filter.
+      if (request.stateCode) {
+        const sc = request.stateCode.toUpperCase()
+        forms = forms.filter(f => !f.stateCode || f.stateCode === sc)
+      }
+      if (request.category) {
+        forms = forms.filter(f => f.category === request.category)
+      }
+      return { success: true, forms }
+    } catch (err: any) {
+      return { success: false, error: err?.message ?? "DocuSign listForms failed" }
     }
   }
 
