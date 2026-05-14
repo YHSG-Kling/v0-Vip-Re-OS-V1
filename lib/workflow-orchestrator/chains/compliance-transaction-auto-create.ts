@@ -92,12 +92,15 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
         const notifyTargets: string[] = []
         if (ctx.agentUserId) notifyTargets.push(ctx.agentUserId)
 
-        // Find TC + compliance officer for this brokerage
+        // Find TC + compliance officer for this brokerage. The live
+        // users.user_type CHECK constraint allows 'TC' (uppercase) +
+        // 'compliance_officer' — earlier code used 'tc' /
+        // 'transaction_coordinator' which never matched any row.
         const { data: staff } = await svc
           .from("users")
           .select("id, user_type")
           .eq("brokerage_id", ctx.brokerageId)
-          .in("user_type", ["transaction_coordinator", "tc", "compliance_officer"])
+          .in("user_type", ["TC", "compliance_officer"])
 
         for (const u of staff ?? []) notifyTargets.push(u.id)
 

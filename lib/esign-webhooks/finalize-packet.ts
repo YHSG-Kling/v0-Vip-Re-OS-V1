@@ -29,6 +29,7 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { logEventAndTrigger } from "@/lib/events"
+import { notifyEsignSigned }  from "@/lib/notifications/notify-helpers"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -187,13 +188,13 @@ async function finalizeMatchingOffer(
     })
     .eq("id", matchedOffer.id)
 
-  // Activity for the agent's queue: "next step is forwarding to listing agent
-  // and awaiting seller response." We tag entity_type='offer' + offer_id in
-  // notes so the activities feed for the agent can surface it.
-  // matchedOffer.agent_id holds agents.id which is exactly what activities.agent_id FKs.
+  // Activity for the agent's queue (left feed) + notification for the bell.
+  // matchedOffer.agent_id holds agents.id which is what activities.agent_id FKs.
+  // The notification bell, by contrast, targets users.id — we resolve it via
+  // the agents table join so both surfaces fire together.
   const agentId = (matchedOffer.agent_id as string | null) ?? null
   if (agentId) {
-    await supabase.from("activities").insert({
+    const { data: activityRow } = await supabase.from("activities").insert({
       brokerage_id:  matchedOffer.brokerage_id,
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
@@ -205,7 +206,25 @@ async function finalizeMatchingOffer(
       metadata:      { offer_id: matchedOffer.id, envelopeId, provider, signed_at: now },
       status:        "completed",
       priority:      "high",
-    })
+    }).select("id").maybeSingle()
+
+    // Resolve agents.id → users.id for the notification recipient
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("user_id")
+      .eq("id", agentId)
+      .maybeSingle()
+
+    if (agentRow?.user_id) {
+      await notifyEsignSigned(supabase, {
+        brokerageId:  matchedOffer.brokerage_id as string,
+        agentUserId:  agentRow.user_id as string,
+        offerId:      matchedOffer.id as string,
+        envelopeId,
+        provider,
+        activityId:   activityRow?.id ?? null,
+      })
+    }
   }
 }
 
