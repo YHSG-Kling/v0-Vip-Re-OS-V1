@@ -701,6 +701,69 @@ async function stageOfferPacket(
       .maybeSingle()
     if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
 
+    // Also create the canonical `offers` row so the post-signed chain
+    // (compliance.passed → recordSellerResponse → convertOfferToTransaction)
+    // can take over once the buyer signs. Without this row, the voice
+    // cockpit dispatch would terminate at documents.status='signed' and
+    // never create a transaction. The two are cross-linked:
+    //   documents.metadata.linked_offer_id  ↔  offers.metadata.linked_document_id
+    const intake = extracted.intake
+    const offerInsert: Record<string, any> = {
+      brokerage_id:     session.brokerage_id,
+      contact_id:       contactId,
+      listing_id:       (intake.listingId.value as string | null) ?? null,
+      agent_id:         (contact as any).agent_id ?? null,
+      property_address: [intake.propertyAddress.value, intake.propertyCity.value, intake.propertyState.value]
+                          .filter(Boolean).join(", ") || null,
+      offer_price:      (intake.offerPrice.value as number | null) ?? 0,
+      earnest_money:    (intake.earnestMoneyAmount.value as number | null) ?? null,
+      financing_type:   (intake.financingType.value as string | null) ?? null,
+      closing_date:     (intake.closeDate.value as string | null) ?? null,
+      inspection_period_days:      (intake.inspectionDays.value as number | null) ?? null,
+      appraisal_contingency_days:  (intake.appraisalDays.value as number | null) ?? null,
+      financing_contingency_days:  (intake.financingDays.value as number | null) ?? null,
+      down_payment_percent:        (intake.downPaymentPercent.value as number | null) ?? null,
+      status:           "draft",
+      esign_status:     "pending",
+      esign_provider:   null,
+      form_source:      "in_app",
+      ai_extracted_data: { intake_snapshot: intake, source: "voice_intake_elevenlabs" },
+      ai_extraction_status: "completed",
+    }
+    const { data: offerRow, error: offerInsertErr } = await supabase
+      .from("offers")
+      .insert(offerInsert)
+      .select("id")
+      .maybeSingle()
+    if (offerInsertErr) {
+      console.warn("[voice/stageOfferPacket] offers row insert failed (continuing):", offerInsertErr.message)
+    }
+
+    // Cross-link both rows so the webhook can find the offer from the
+    // documents row at signature time + the FormWizard can find the offer
+    // from the documents row at review time.
+    if (offerRow?.id) {
+      await supabase
+        .from("documents")
+        .update({
+          metadata: {
+            ...{
+              packet_type: "offer", state,
+              forms_count: filledPacket.forms.length,
+              brokerage_forms_count: filledPacket.brokerageForms.length,
+              agent_must_complete: filledPacket.agentMustComplete,
+              audit: filledPacket.audit,
+              source: "voice_intake_elevenlabs",
+              requires_bba_first:     activeBBAId === null,
+              linked_bba_id:          activeBBAId,
+              needs_bba_intake_first: needsBBAIntake,
+            },
+            linked_offer_id: offerRow.id,
+          },
+        })
+        .eq("id", doc.id)
+    }
+
     const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
     // Review URL lands on the contact's offer-new page with the staged
     // documentId — FormWizard preloads the filled packet from the documents
@@ -2001,6 +2064,25 @@ async function dispatchTransactionPacket(
         },
       })
       .eq("id", offerDoc.id)
+
+    // Mirror the envelope id onto the linked `offers` row so the post-signed
+    // chain (compliance.passed → ACCEPTED → convertOfferToTransaction) can
+    // find the offer at webhook time. Without this, the voice-cockpit chain
+    // dead-ended at documents.status='signed' and no transaction was created.
+    const linkedOfferId = (offerDoc as any).metadata?.linked_offer_id as string | undefined
+    if (linkedOfferId) {
+      await supabase
+        .from("offers")
+        .update({
+          provider_envelope_id: externalTxId,
+          esign_provider:       resolved.providerName,
+          esign_status:         "sent",
+          esign_sent_at:        new Date().toISOString(),
+          form_source:          resolved.providerName,
+          status:               "submitted",
+        })
+        .eq("id", linkedOfferId)
+    }
   }
 
   const contactName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Buyer"

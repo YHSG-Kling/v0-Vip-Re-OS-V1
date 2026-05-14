@@ -62,6 +62,11 @@ export async function createTransactionFromOffer(params: {
   }
 
   // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
+  // deal_name is NOT NULL on transactions; default to property_address (or
+  // a synthetic name from offer id if address is somehow missing) so the
+  // chain never fails the insert.
+  const dealName = resolvedAddress
+    ?? `Transaction ${params.offerId.slice(0, 8)}`
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
@@ -72,8 +77,12 @@ export async function createTransactionFromOffer(params: {
       seller_contact_id:    sellerContactId,             // resolved from listing → enables seller-side close logic
       listing_id:           (offer as any).listing_id ?? null,
       offer_id:             params.offerId,
+      deal_name:            dealName,
       property_address:     resolvedAddress,
-      deal_type:            "purchase",
+      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. Voice-cockpit + manual
+      // offers create the BUYER side of the transaction; "purchase" was the
+      // pre-existing value here and never matched the constraint.
+      deal_type:            "buyer",
       purchase_price:       (offer as any).offer_price,
       contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,

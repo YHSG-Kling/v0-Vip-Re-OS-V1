@@ -25,11 +25,12 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   const supabase = createServiceClient()
 
-  // Get offer — use schema-correct columns: esign_provider, brokerage_id
-  // The contact has no provider relationship; providers are owned by the brokerage
+  // Get offer. Note esign_provider is the PLATFORM NAME (dotloop/docusign/…),
+  // and provider_envelope_id is the actual envelope reference returned by the
+  // provider — the webhook matches on that column.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, contact_id, listing_id, brokerage_id, esign_provider, buyer_commission_acknowledged_at, disclosed_commission_payer")
+    .select("id, contact_id, listing_id, brokerage_id, esign_provider, provider_envelope_id, property_address, buyer_commission_acknowledged_at, disclosed_commission_payer")
     .eq("id", offerId)
     .single()
 
@@ -99,37 +100,63 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     .limit(1)
     .maybeSingle()
 
+  // Track the envelope id we end up with so we can stamp it on the offer.
+  let envelopeId: string | null = offer.provider_envelope_id ?? null
+
   if (credential) {
     try {
-      const provider = getTransactionProviderByName(credential.platform)
-      // Only call sendForSignature if the offer has an external transaction reference
-        if (offer.esign_provider) {
-          await provider.sendForSignature({
-            externalTransactionId: offer.esign_provider,
-            documentId: offerId,
-            signers: signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
-          })
-        }
+      const provider = getTransactionProviderByName(credential.platform, {
+        apiKey:    credential.access_token ?? "",
+        profileId: credential.account_id ?? "",
+      })
 
-        await supabase.from("activities").insert({
-          activity_type: "buyer.offer.provider.signature.requested",
-          agent_id:      userId,
-          entity_type:   "offer",
-          title:         `Provider signature requested via ${credential.platform}`,
-          description:   `Offer ${offerId} sent to ${credential.platform} for signature`,
+      // First-time submit: create the provider envelope/loop so we have an
+      // externalTransactionId to send. Previously this was skipped when the
+      // offer had no envelope, which silently turned sendForSignature into
+      // a no-op + stamped the platform name as the "envelope id". The
+      // webhook could then never match.
+      if (!envelopeId) {
+        const createRes = await provider.createTransaction({
+          propertyAddress: offer.property_address ?? "Real estate transaction",
+          transactionType: "purchase",
+          agentId:         userId,
+          contactId:       offer.contact_id ?? undefined,
+          listingId:       offer.listing_id ?? undefined,
         })
-    } catch (error) {
-      // Provider call failed — event already logged; signature request still proceeds in-app
+        if (!createRes.success || !createRes.externalTransactionId) {
+          throw new Error(createRes.error ?? "Provider createTransaction failed")
+        }
+        envelopeId = createRes.externalTransactionId
+      }
+
+      await provider.sendForSignature({
+        externalTransactionId: envelopeId,
+        documentId:            offerId,
+        signers:               signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
+      })
+
+      await supabase.from("activities").insert({
+        activity_type: "buyer.offer.provider.signature.requested",
+        agent_id:      userId,
+        entity_type:   "offer",
+        title:         `Provider signature requested via ${credential.platform}`,
+        description:   `Offer ${offerId} sent to ${credential.platform} for signature`,
+      })
+    } catch (error: any) {
+      // Provider call failed — log and continue; offer status reflects intent
+      console.error("[submit-for-signature] Provider call failed:", error?.message ?? error)
     }
   }
 
-  // Mark offer esign_status as sent and record the send time
+  // Mark offer esign_status as sent + stamp the canonical envelope reference
+  // on provider_envelope_id (not on esign_provider — that's the platform name).
   await supabase
     .from("offers")
     .update({
-      esign_status:   "sent",
-      esign_sent_at:  new Date().toISOString(),
-      esign_provider: credential?.platform ?? offer.esign_provider ?? null,
+      esign_status:         "sent",
+      esign_sent_at:        new Date().toISOString(),
+      esign_provider:       credential?.platform ?? offer.esign_provider ?? null,
+      provider_envelope_id: envelopeId ?? offer.provider_envelope_id ?? null,
     })
     .eq("id", offerId)
 
