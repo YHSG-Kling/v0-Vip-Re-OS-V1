@@ -669,11 +669,14 @@ export const PROVIDER_GROUPS = {
       calendar: 0,
     },
   },
-  // Optional = accounting, MLS/IDX, lead portals, alternative video provider.
+  // Optional = accounting, MLS/IDX, lead portals, direct mail.
+  // Video generation (D-ID + HeyGen) and voice cloning (ElevenLabs) run on
+  // platform-managed infrastructure — subscribers configure their personal
+  // avatar/voice in Twin Studio, not by entering API keys here.
   optional: {
     label: "Optional",
     description: "Connect any that apply to your business",
-    providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity", "heygen"] as ProviderName[],
+    providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity"] as ProviderName[],
     requirements: {},
   },
 }

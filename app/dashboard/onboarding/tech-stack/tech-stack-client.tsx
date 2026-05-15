@@ -676,9 +676,10 @@ export function TechStackClient({
 }
 
 // ─── Avatar & Voice Clone Setup Card ──────────────────────────────────────────
-// D-ID (avatar video) and ElevenLabs (voice clone) are platform-level APIs —
-// they are not user-configurable credentials. Agents personalise their own
-// headshot/video clip and record a voice sample in Twin Studio.
+// Avatar video and voice cloning run on platform-managed AI infrastructure —
+// the underlying provider keys live at the platform layer, never in the
+// subscriber's settings. Each agent personalises their own headshot/video
+// clip and voice sample inside Twin Studio.
 
 function AvatarVoiceSetupCard({ brokerageId }: { brokerageId: string }) {
   return (
@@ -692,9 +693,9 @@ function AvatarVoiceSetupCard({ brokerageId }: { brokerageId: string }) {
           </Badge>
         </CardTitle>
         <CardDescription className="text-xs">
-          AI avatar videos (D-ID) and voice cloning (ElevenLabs) are built into the platform — no API
-          keys needed here. Each agent must upload their headshot or short video clip and record a
-          voice sample to personalise their AI assistant and auto-generated marketing videos.
+          AI avatar video and voice cloning are built into the platform — no API keys to enter
+          here. Each agent uploads their own headshot or short video clip and records a voice
+          sample so the AI assistant and auto-generated marketing videos sound and look like them.
         </CardDescription>
       </CardHeader>
       <CardContent>
