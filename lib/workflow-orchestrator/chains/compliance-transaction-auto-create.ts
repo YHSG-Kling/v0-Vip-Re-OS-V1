@@ -100,7 +100,7 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
           .from("users")
           .select("id, user_type")
           .eq("brokerage_id", ctx.brokerageId)
-          .in("user_type", ["TC", "compliance_officer"])
+          .in("user_type", ["TC", "compliance_officer", "compliance_manager"])
 
         for (const u of staff ?? []) notifyTargets.push(u.id)
 

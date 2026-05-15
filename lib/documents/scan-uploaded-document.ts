@@ -54,6 +54,7 @@ export type DocumentClassification =
   | "agency_disclosure"
   | "commission_agreement"
   | "lender_letter"
+  | "earnest_money_receipt"
   | "other"
 
 export interface ScanResult {
@@ -73,13 +74,14 @@ Classify into ONE of:
   counter_offer | addendum | disclosure | inspection_report |
   appraisal_report | title_report | hoa_documents | closing_disclosure |
   wire_instructions | agency_disclosure | commission_agreement |
-  lender_letter | other
+  lender_letter | earnest_money_receipt | other
 
 Output schema:
 {
   "classification": "<one of above>",
-  "confidence": "high" | "medium" | "low",
-  "summary": "<1-2 sentence plain-English summary the agent reads at a glance>",
+  "confidence":     "high" | "medium" | "low",
+  "summary":        "<1-2 sentence plain-English summary the agent reads at a glance>",
+  "state_form_id":  "<the specific state form number when recognizable, e.g. 'TREC 20-17' / 'TREC OP-H' / 'CAR RPA-CA' / 'FAR/BAR ASIS-5' / 'CAR RLA' — null if generic>",
   "extracted_fields": { ... }   // shape depends on classification (see below)
 }
 
@@ -100,6 +102,7 @@ Per-classification extracted_fields shape:
   agency_disclosure     → { brokerage_name, agent_name, signed_at }
   commission_agreement  → { commission_percentage, commission_payer, expires_at }
   lender_letter         → { lender_name, letter_type, issued_at }
+  earnest_money_receipt → { amount, depositor, escrow_holder, received_at }
   other                 → { document_type_guess }
 
 Now classify this document content:
@@ -128,18 +131,29 @@ export async function scanUploadedDocument(params: {
     }
   }
 
-  // Source text for the classifier. Strategy:
+  // Source text for the classifier:
   //   1. Prefer documents.content (JSON or text) when present.
-  //   2. Fall back to a stub mentioning the document_type + storage_url.
-  // PDF OCR for storage_url-only docs is a separate path (file fetch + parse)
-  // and is the lowest-hanging follow-on. For now we send the text we have.
+  //   2. Otherwise OCR the PDF/image at storage_url (pdf-parse → vision fallback).
   let sourceText = ""
   if (doc.content) {
     sourceText = typeof doc.content === "string"
       ? doc.content.slice(0, 8000)
       : JSON.stringify(doc.content).slice(0, 8000)
   } else if (doc.storage_url) {
-    sourceText = `Document type hint: ${doc.document_type}\nStorage URL: ${doc.storage_url}\n(No inline text — PDF OCR not yet wired.)`
+    try {
+      const { ocrDocumentFromUrl } = await import("./ocr-pdf")
+      const ocr = await ocrDocumentFromUrl({
+        storageUrl:   doc.storage_url as string,
+        brokerageId:  (doc as any).brokerage_id ?? null,
+      })
+      if (ocr.success && ocr.text) {
+        sourceText = ocr.text
+      } else {
+        sourceText = `Document type hint: ${doc.document_type}\nStorage URL: ${doc.storage_url}\n(OCR failed: ${ocr.error ?? "unknown"} — classifier will use the hint only.)`
+      }
+    } catch (err: any) {
+      sourceText = `Document type hint: ${doc.document_type}\nStorage URL: ${doc.storage_url}\n(OCR threw: ${err?.message ?? err})`
+    }
   } else {
     sourceText = `Document type hint: ${doc.document_type}\n(No content provided.)`
   }
@@ -171,6 +185,9 @@ export async function scanUploadedDocument(params: {
     ? result.extracted_fields
     : {}
 
+  const stateFormId = (typeof result.state_form_id === "string" && result.state_form_id.trim())
+    ? result.state_form_id.trim() : null
+
   await supabase
     .from("documents")
     .update({
@@ -178,6 +195,7 @@ export async function scanUploadedDocument(params: {
       classification_confidence: confidence,
       summary,
       extracted_fields:          extracted,
+      state_form_id:             stateFormId,
       scanned_at:                new Date().toISOString(),
       scan_error:                null,
     })
@@ -218,5 +236,5 @@ const CLASSIFICATIONS: DocumentClassification[] = [
   "counter_offer","addendum","disclosure","inspection_report",
   "appraisal_report","title_report","hoa_documents","closing_disclosure",
   "wire_instructions","agency_disclosure","commission_agreement",
-  "lender_letter","other",
+  "lender_letter","earnest_money_receipt","other",
 ]

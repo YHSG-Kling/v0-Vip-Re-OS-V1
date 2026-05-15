@@ -149,8 +149,8 @@ export async function notifyComplianceFlag(
 
   const widenForCritical = flag.severity === "critical"
   const targetRoles = widenForCritical
-    ? ["TC", "compliance_officer", "broker", "broker_admin", "admin"]
-    : ["TC", "compliance_officer"]
+    ? ["TC", "compliance_officer", "compliance_manager", "broker", "broker_admin", "admin"]
+    : ["TC", "compliance_officer", "compliance_manager"]
 
   const { data: staff } = await supabase
     .from("users")

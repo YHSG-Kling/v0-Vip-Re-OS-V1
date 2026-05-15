@@ -30,7 +30,7 @@ export type DocumentClassification =
   | "disclosure"          | "inspection_report" | "appraisal_report"
   | "title_report"        | "hoa_documents"  | "closing_disclosure"
   | "wire_instructions"   | "agency_disclosure" | "commission_agreement"
-  | "lender_letter"       | "other"
+  | "lender_letter"       | "earnest_money_receipt" | "other"
 
 export interface ResolvedRequiredDoc {
   classification:    DocumentClassification
