@@ -9,6 +9,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
       { id: 'first-deal', label: 'First Deal', href: '/dashboard/agent/first-deal', icon: 'Target' },
+      { id: 'ai-roi', label: 'AI ROI', href: '/dashboard/agent/roi', icon: 'TrendingUp' },
       { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       // NOTE: agents work contacts — "My Leads", "Lead Acquisition", and "Lead Intelligence"
       // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
