@@ -645,17 +645,95 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
 async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
-    const { video_id, video_type, video_url, listing_id, agent_user_id } = event.payload
+    const {
+      video_id,
+      video_type,
+      video_url,
+      thumbnail_url,
+      listing_id,
+      contact_id,
+      marketing_campaign_id,
+      agent_user_id,
+    } = event.payload
     const agentId = agent_user_id ?? event.user_id
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
+    const summary: string[] = []
 
-    // For listing promo, market update, neighborhood tour, and agent intro:
-    // auto-draft one social post per platform. social_posts is one row per
-    // platform — createSocialPost only writes the first platform passed in,
-    // so we loop here to actually create the multi-platform fan-out.
+    if (!video_url) {
+      return { success: false, handler: "handleVideoGenerated", error: "video_url missing", processing_time_ms: Date.now() - startTime }
+    }
+
+    const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
+    const svc = svcCreate()
+
+    // ── 1. Personal videos to a specific contact → drafts in ai_message_drafts ─
+    // Channels: email if contact has email, SMS if contact has phone. Agent
+    // reviews + acts on these drafts from their unified inbox.
+    const personalVideoTypes = ["thank_you", "personal", "buyer_guide", "memory_video"]
+    if (personalVideoTypes.includes(video_type) && contact_id && agentId) {
+      try {
+        const { data: contact } = await svc
+          .from("contacts")
+          .select("first_name, last_name, email, phone")
+          .eq("id", contact_id)
+          .maybeSingle()
+        if (contact) {
+          const greeting = contact.first_name ?? "there"
+          const sharedRow = {
+            brokerage_id:    event.brokerage_id,
+            agent_user_id:   agentId,
+            contact_id,
+            listing_id:      listing_id ?? null,
+            trigger_event:   "video.generated",
+            context_summary: `${video_type} video for ${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim(),
+            status:          "pending",
+          }
+          if (contact.email) {
+            await svc.from("ai_message_drafts").insert({
+              ...sharedRow,
+              channel:       "email",
+              draft_subject: "I recorded a quick video for you",
+              draft_body:    `Hi ${greeting},\n\nI recorded a short personal video for you — watch it here: ${video_url}\n\n— Your agent`,
+            })
+            summary.push("draft email")
+          }
+          if (contact.phone) {
+            await svc.from("ai_message_drafts").insert({
+              ...sharedRow,
+              channel:    "sms",
+              draft_body: `Hi ${greeting}, I recorded a quick video for you — ${video_url}`,
+            })
+            summary.push("draft text")
+          }
+        }
+      } catch (personalErr) {
+        console.error("[handleVideoGenerated] Personal draft failed:", personalErr)
+      }
+    }
+
+    // ── 2. Listing videos → attach to the property landing page ─────────────
+    // listing_marketing_content rows with content_type='video' surface on the
+    // public listing page. listing_promo and neighborhood_tour both attach.
+    const listingAttachTypes = ["listing_promo", "neighborhood_tour"]
+    if (listingAttachTypes.includes(video_type) && listing_id) {
+      try {
+        await svc.from("listing_marketing_content").insert({
+          listing_id,
+          brokerage_id: event.brokerage_id,
+          content_type: "video",
+          content:      video_url,
+        })
+        summary.push("attached to listing landing page")
+      } catch (listingErr) {
+        console.error("[handleVideoGenerated] Listing attach failed:", listingErr)
+      }
+    }
+
+    // ── 3. Multi-platform social drafts (one row per platform) ──────────────
+    // social_posts is one row per platform — createSocialPost only writes the
+    // first platform passed in, so we loop to fan out across FB / IG / LinkedIn.
     const socialVideoTypes = ["listing_promo", "market_update", "neighborhood_tour", "agent_introduction"]
-    let draftCreated = false
-    if (socialVideoTypes.includes(video_type) && video_url && agentId) {
+    if (socialVideoTypes.includes(video_type) && agentId) {
       const captionByType: Record<string, string> = {
         listing_promo:      "Just listed! Check out this beautiful property. #JustListed #RealEstate",
         market_update:      "Market update — see what's happening in your local real estate market. #MarketUpdate #RealEstate",
@@ -680,14 +758,45 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
             userId:          agentId,
           })
         }
-        draftCreated = true
+        summary.push("draft social posts (FB, IG, LinkedIn)")
       } catch (socialErr) {
-        console.error("[handleVideoGenerated] Draft social post failed:", socialErr)
+        console.error("[handleVideoGenerated] Social draft failed:", socialErr)
       }
     }
 
-    // Notify the agent so they can review and publish
+    // ── 4. Campaign-attached videos → embed in the linked email campaign ────
+    // When the video was generated to accompany a marketing campaign or
+    // newsletter, append the video thumbnail+link block to the campaign's
+    // content so the agent can finalize and send.
+    if (marketing_campaign_id) {
+      try {
+        const { data: campaign } = await svc
+          .from("email_campaigns")
+          .select("id, content")
+          .eq("id", marketing_campaign_id)
+          .maybeSingle()
+        if (campaign) {
+          const videoBlock =
+            `\n\n<div style="margin:24px 0;text-align:center">` +
+            `<a href="${video_url}" target="_blank">` +
+            (thumbnail_url
+              ? `<img src="${thumbnail_url}" alt="Watch video" style="max-width:480px;width:100%;border-radius:8px"/>`
+              : `<span style="display:inline-block;padding:14px 28px;background:#2563eb;color:#fff;border-radius:6px;font-weight:600">▶ Watch the video</span>`) +
+            `</a></div>\n`
+          await svc
+            .from("email_campaigns")
+            .update({ content: (campaign.content ?? "") + videoBlock })
+            .eq("id", marketing_campaign_id)
+          summary.push("embedded in email campaign")
+        }
+      } catch (campaignErr) {
+        console.error("[handleVideoGenerated] Campaign embed failed:", campaignErr)
+      }
+    }
+
+    // ── 5. Always notify the agent ──────────────────────────────────────────
     if (agentId) {
+      const actionSummary = summary.length ? ` Auto-drafted: ${summary.join(", ")}.` : ""
       await generateSmartSuggestion({
         brokerage_id:    event.brokerage_id,
         user_id:         agentId,
@@ -695,8 +804,8 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
         context_id:      video_id,
         suggestion_type: "review",
         title:           "New Video Ready for Review",
-        description:     `AI-generated ${video_type} video is ready.${draftCreated ? " A draft social post has been queued on Facebook, Instagram, and LinkedIn — review and publish from the Social Planner." : ""}`,
-        action_payload:  { video_id, listing_id, action: "review_and_publish" },
+        description:     `AI-generated ${video_type} video is ready.${actionSummary} Review and publish.`,
+        action_payload:  { video_id, listing_id, contact_id, marketing_campaign_id, action: "review_and_publish" },
       })
     }
 
