@@ -204,6 +204,33 @@ export async function generateMarketingImage(
     }
   }
 
+  // Fire image.generated orchestrator event so handleImageGenerated can
+  // route the image to the same downstream destinations as videos: social
+  // post drafts, contact message drafts, listing landing page, and any
+  // marketing-campaign assets sharing the same umbrella.
+  try {
+    const { emitEventFromCron } = await import("@/app/actions/orchestrator")
+    await emitEventFromCron({
+      brokerage_id: ctx.brokerageId,
+      user_id:      ctx.userId ?? undefined,
+      event_type:   "image.generated",
+      source:       "system",
+      dedupe_key:   `image.generated:${asset.id}`,
+      payload: {
+        image_id:              asset.id,
+        image_type:            input.purpose,
+        image_url:             genResult.imageUrl,
+        thumbnail_url:         genResult.thumbnailUrl ?? null,
+        caption:               assetName,
+        listing_id:            input.listingId ?? null,
+        marketing_campaign_id: input.campaignId ?? null,
+        agent_user_id:         ctx.userId ?? null,
+      },
+    })
+  } catch (eventErr) {
+    console.error("[generateMarketingImage] image.generated event failed:", eventErr)
+  }
+
   return {
     success: true,
     assetId: asset.id,

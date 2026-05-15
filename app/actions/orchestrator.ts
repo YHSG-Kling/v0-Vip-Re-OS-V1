@@ -315,6 +315,10 @@ export async function orchestrateEvent(event: Event): Promise<void> {
         results.push(await handleVideoGenerated(event))
         break
 
+      case EVENT_TYPES.IMAGE_GENERATED:
+        results.push(await handleImageGenerated(event))
+        break
+
       default:
         console.log(`[v0] No handler for event type: ${event.event_type}`)
         results.push({
@@ -529,8 +533,42 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
     const { listing_id, mls_number } = event.payload
+    const extras: string[] = []
 
-    // Create marketing suggestions
+    // Auto-mint a QR code pointing to the public listing landing page so the
+    // agent has it ready for yard signs, flyers, postcards, and brochures.
+    try {
+      const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
+      const svc = svcCreate()
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.vipre.os"
+      const targetUrl = `${appUrl}/listings/${listing_id}`
+      // qr_codes.slug is globally unique, so suffix with a timestamp.
+      const slug = `listing-${String(listing_id).slice(0, 8)}-${Date.now().toString(36)}`.toLowerCase()
+      const { data: existing } = await svc
+        .from("qr_codes")
+        .select("id")
+        .eq("brokerage_id", event.brokerage_id)
+        .eq("target_url", targetUrl)
+        .maybeSingle()
+      if (!existing) {
+        await svc.from("qr_codes").insert({
+          brokerage_id: event.brokerage_id,
+          agent_id:     event.user_id ?? null,
+          label:        `Listing ${mls_number ?? listing_id}`,
+          slug,
+          target_url:   targetUrl,
+          purpose:      "listing",
+          listing_id,
+          scan_count:   0,
+          lead_count:   0,
+          is_active:    true,
+        })
+        extras.push("QR code minted for landing page")
+      }
+    } catch (qrErr) {
+      console.error("[handleListingLive] QR code creation failed:", qrErr)
+    }
+
     await generateSmartSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
@@ -538,10 +576,10 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
       context_id: listing_id,
       suggestion_type: "marketing",
       title: "Listing is Live - Marketing Time",
-      description: `MLS# ${mls_number} is now active. Boost visibility with these marketing tactics.`,
+      description: `MLS# ${mls_number} is now active.${extras.length ? " " + extras.join(", ") + "." : ""} Boost visibility with these marketing tactics.`,
       action_payload: {
         listing_id,
-        actions: ["share_on_social", "send_to_sphere", "schedule_open_house", "create_video_tour"],
+        actions: ["share_on_social", "send_to_sphere", "schedule_open_house", "create_video_tour", "print_qr_yard_sign"],
       },
     })
 
@@ -837,6 +875,189 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     return {
       success: false,
       handler: "handleVideoGenerated",
+      error: error instanceof Error ? error.message : "Unknown error",
+      processing_time_ms: Date.now() - startTime,
+    }
+  }
+}
+
+/**
+ * handleImageGenerated — photo equivalent of handleVideoGenerated.
+ *
+ * Fires when an AI-generated or uploaded image is added to marketing_assets.
+ * Routes the image to every destination the agent has wired up, so a single
+ * generated graphic can simultaneously land on:
+ *
+ *   1. The contact's inbox (email + SMS drafts) — for personal sends
+ *   2. The listing landing page (listing_marketing_content row, type='photo')
+ *   3. Facebook / Instagram / LinkedIn (one social_posts draft per platform)
+ *   4. The marketing-campaign assets (email_campaigns + newsletter_campaigns
+ *      under the same marketing_campaign_id get the image embedded inline)
+ *
+ * Payload shape (all optional except brokerage_id + image_url):
+ *   image_id, image_type, image_url, thumbnail_url, caption,
+ *   listing_id, contact_id, marketing_campaign_id, agent_user_id
+ */
+async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
+  const startTime = Date.now()
+  try {
+    const {
+      image_id,
+      image_type,
+      image_url,
+      caption,
+      listing_id,
+      contact_id,
+      marketing_campaign_id,
+      agent_user_id,
+    } = event.payload
+    const agentId = agent_user_id ?? event.user_id
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
+    const summary: string[] = []
+
+    if (!image_url) {
+      return { success: false, handler: "handleImageGenerated", error: "image_url missing", processing_time_ms: Date.now() - startTime }
+    }
+
+    const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
+    const svc = svcCreate()
+
+    const baseCaption = caption ?? "Check this out!"
+
+    // 1. Personal image to a specific contact → drafts (email + SMS)
+    const personalImageTypes = ["personal", "thank_you", "memory_card"]
+    if (contact_id && agentId && personalImageTypes.includes(image_type)) {
+      try {
+        const { data: contact } = await svc
+          .from("contacts")
+          .select("first_name, last_name, email, phone")
+          .eq("id", contact_id)
+          .maybeSingle()
+        if (contact) {
+          const greeting = contact.first_name ?? "there"
+          const sharedRow = {
+            brokerage_id:    event.brokerage_id,
+            agent_user_id:   agentId,
+            contact_id,
+            listing_id:      listing_id ?? null,
+            trigger_event:   "image.generated",
+            context_summary: `${image_type} image for ${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim(),
+            status:          "pending",
+          }
+          if (contact.email) {
+            await svc.from("ai_message_drafts").insert({
+              ...sharedRow,
+              channel:       "email",
+              draft_subject: "Just for you",
+              draft_body:    `Hi ${greeting},\n\n${baseCaption}\n\n${image_url}\n\n— Your agent`,
+            })
+            summary.push("draft email")
+          }
+          if (contact.phone) {
+            await svc.from("ai_message_drafts").insert({
+              ...sharedRow,
+              channel:    "sms",
+              draft_body: `Hi ${greeting}, ${baseCaption} — ${image_url}`,
+            })
+            summary.push("draft text")
+          }
+        }
+      } catch (err) {
+        console.error("[handleImageGenerated] Personal draft failed:", err)
+      }
+    }
+
+    // 2. Listing image → attach to property landing page
+    if (listing_id && (image_type === "listing_photo" || image_type === "listing_marketing")) {
+      try {
+        await svc.from("listing_marketing_content").insert({
+          listing_id,
+          brokerage_id: event.brokerage_id,
+          content_type: "photo",
+          content:      image_url,
+        })
+        summary.push("attached to listing landing page")
+      } catch (err) {
+        console.error("[handleImageGenerated] Listing attach failed:", err)
+      }
+    }
+
+    // 3. Multi-platform social drafts for marketing-oriented images
+    const socialImageTypes = ["social_graphic", "listing_marketing", "market_update", "agent_branding", "open_house_flyer"]
+    if (socialImageTypes.includes(image_type) && agentId) {
+      const platforms = ["facebook", "instagram", "linkedin"]
+      try {
+        const { createSocialPost } = await import("@/app/actions/social-publishing")
+        for (const platform of platforms) {
+          await createSocialPost({
+            content:         baseCaption,
+            mediaUrls:       [image_url],
+            mediaTypes:      ["image"],
+            scheduledFor:    tomorrow,
+            platforms:       [platform],
+            contentType:     image_type === "listing_marketing" ? "listing" : "market_update",
+            linkedListingId: listing_id ?? undefined,
+            generatedByAi:   true,
+            aiPrompt:        `Auto-drafted from completed ${image_type} image ${image_id}`,
+            userId:          agentId,
+          })
+        }
+        summary.push("draft social posts (FB, IG, LinkedIn)")
+      } catch (err) {
+        console.error("[handleImageGenerated] Social draft failed:", err)
+      }
+    }
+
+    // 4. Campaign-attached images → embed in every email/newsletter under
+    //    the same marketing_campaign_id umbrella.
+    if (marketing_campaign_id) {
+      const imageBlock =
+        `\n\n<div style="margin:24px 0;text-align:center">` +
+        `<img src="${image_url}" alt="${(caption ?? "").replace(/"/g, "&quot;")}" ` +
+        `style="max-width:600px;width:100%;border-radius:8px"/>` +
+        `</div>\n`
+      try {
+        const { data: emailAssets } = await svc
+          .from("email_campaigns")
+          .select("id, content")
+          .eq("marketing_campaign_id", marketing_campaign_id)
+        for (const c of (emailAssets ?? []) as Array<{ id: string; content: string | null }>) {
+          await svc.from("email_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id)
+        }
+        const { data: newsletterAssets } = await svc
+          .from("newsletter_campaigns")
+          .select("id, content")
+          .eq("marketing_campaign_id", marketing_campaign_id)
+        for (const c of (newsletterAssets ?? []) as Array<{ id: string; content: string | null }>) {
+          await svc.from("newsletter_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id)
+        }
+        const total = (emailAssets?.length ?? 0) + (newsletterAssets?.length ?? 0)
+        if (total > 0) summary.push(`embedded in ${total} campaign asset${total === 1 ? "" : "s"}`)
+      } catch (err) {
+        console.error("[handleImageGenerated] Campaign embed failed:", err)
+      }
+    }
+
+    // 5. Notify the agent
+    if (agentId) {
+      const actionSummary = summary.length ? ` Auto-drafted: ${summary.join(", ")}.` : ""
+      await generateSmartSuggestion({
+        brokerage_id:    event.brokerage_id,
+        user_id:         agentId,
+        context_type:    "image",
+        context_id:      image_id ?? null,
+        suggestion_type: "review",
+        title:           "New Image Ready for Review",
+        description:     `AI-generated ${image_type ?? "image"} is ready.${actionSummary} Review and publish.`,
+        action_payload:  { image_id, listing_id, contact_id, marketing_campaign_id, action: "review_and_publish" },
+      })
+    }
+
+    return { success: true, handler: "handleImageGenerated", processing_time_ms: Date.now() - startTime }
+  } catch (error) {
+    return {
+      success: false,
+      handler: "handleImageGenerated",
       error: error instanceof Error ? error.message : "Unknown error",
       processing_time_ms: Date.now() - startTime,
     }
