@@ -310,10 +310,14 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
 export async function rejectDraft(params: RejectDraftParams): Promise<{ success: boolean; error?: string }> {
   const supabase = createServiceClient()
 
+  // ai_message_drafts.status CHECK only allows pending/accepted/edited/dismissed/sent.
+  // 'rejected' is invalid and the update would fail silently — the UI button
+  // would appear to do nothing. 'dismissed' is the canonical "agent passed on
+  // this suggestion" state.
   const { error } = await supabase
     .from("ai_message_drafts")
     .update({
-      status:   "rejected",
+      status:   "dismissed",
       acted_at: new Date().toISOString(),
       edit_delta: params.reason ? { rejection_reason: params.reason } : { rejection_reason: null },
     })

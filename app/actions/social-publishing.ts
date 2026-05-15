@@ -255,7 +255,12 @@ export async function createSocialPost(params: {
         listing_id: params.linkedListingId ?? null,
         ai_generated: params.generatedByAi ?? false,
         post_brief: params.aiPrompt ?? null,
-        status: "compliance_review",
+        // social_posts.status CHECK only allows draft/scheduled/publishing/
+        // published/failed/cancelled. 'compliance_review' is invalid and the
+        // insert silently fails, losing the compliance-blocked content.
+        // Keep it as 'draft' + approval_status='pending' + brand_compliance_passed=false
+        // which together encode "held for human review before publish".
+        status: "draft",
         brand_compliance_passed: false,
         approval_status: "pending",
       })
