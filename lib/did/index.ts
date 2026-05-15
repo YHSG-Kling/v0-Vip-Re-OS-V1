@@ -10,11 +10,14 @@
  *     - Voice-only mode (voiceOnly=true): synthesizes audio via ElevenLabs TTS,
  *       uploads to Vercel Blob, returns an audio URL instead of a video URL.
  *     - Background image: injected via D-ID config.background.source_url.
- *     - Logo watermark: composited onto D-ID output thumbnail via Sharp (video
- *       frame branding — actual video frame overlay requires ffmpeg, deferred).
+ *     - Logo watermark: composited onto D-ID output thumbnail via Sharp,
+ *       AND burned into the finished video by lib/video/composite-attribution.ts
+ *       (ffmpeg-static + filter_complex overlay) in the poll-did-videos cron.
+ *       Public-marketing videos get the brokerage logo + attribution band;
+ *       MLS-bound videos pass through clean (MLS rules forbid branding).
  *
- * B-roll, intro/outro clip compositing requires ffmpeg post-processing (Sprint C).
- * For now, those params are accepted but a note is included in the output.
+ * B-roll and intro/outro clip compositing still require additional ffmpeg
+ * filter graphs (deferred — separate from the logo overlay shipped above).
  *
  * D-ID Auth: Authorization: Basic base64(DID_API_KEY + ":")
  * API base:  https://api.d-id.com
@@ -223,13 +226,15 @@ export async function generateVideo(
 
   const notes: string[] = []
   if ((input.brollUrls?.length ?? 0) > 0) {
-    notes.push("B-roll compositing deferred to Sprint C (ffmpeg)")
+    notes.push("B-roll compositing pending (ffmpeg filter graph not yet wired)")
   }
   if (input.introUrl || input.outroUrl) {
-    notes.push("Intro/outro compositing deferred to Sprint C (ffmpeg)")
+    notes.push("Intro/outro compositing pending (ffmpeg filter graph not yet wired)")
   }
   if (input.logoUrl) {
-    notes.push("Logo overlay deferred to Sprint C (ffmpeg)")
+    // Logo + attribution band overlay runs in the poll-did-videos cron via
+    // lib/video/composite-attribution.ts. No deferral needed here.
+    notes.push("Logo overlay applied post-render by compositeVideoAttribution()")
   }
 
   // ---------------------------------------------------------------------------

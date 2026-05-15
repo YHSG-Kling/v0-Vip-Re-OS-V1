@@ -257,7 +257,7 @@ async function checkVideo(ctx: {
 
   const { data: video } = await supabase
     .from("ai_video_projects")
-    .select("heygen_avatar_id, heygen_voice_id, status, usage_intent, has_verbal_disclosure, script_content")
+    .select("heygen_avatar_id, heygen_voice_id, status, usage_intent, has_verbal_disclosure, has_visual_brand_overlay, script_content")
     .eq("id", contentId)
     .maybeSingle()
 
@@ -267,21 +267,27 @@ async function checkVideo(ctx: {
   }
 
   const usageIntent: string = video.usage_intent ?? "public_marketing"
+  const hasBeenRendered = video.status && video.status !== "draft" && video.status !== "pending"
 
   if (usageIntent === "mls") {
     // MLS rules forbid agent / brokerage branding in listing media submitted
-    // to the MLS feed. Enforce the inverse compliance: no brokerage avatar
-    // / voice / verbal disclosure should be present.
+    // to the MLS feed. Enforce the inverse compliance — no verbal disclosure
+    // AND no visual overlay should be present.
     if (video.has_verbal_disclosure) {
       violations.push(
         "MLS-bound video must NOT include a brokerage verbal disclosure (MLS rules)"
       )
     }
+    if (video.has_visual_brand_overlay) {
+      violations.push(
+        "MLS-bound video must NOT include a brokerage visual brand overlay (MLS rules)"
+      )
+    }
     return
   }
 
-  // Public-marketing path: brokerage avatar / voice / verbal disclosure
-  // are all required when the brokerage has them configured.
+  // Public-marketing path: brokerage avatar / voice are checked when the
+  // brokerage has them configured.
   if (brokerageAvatarId && video.heygen_avatar_id !== brokerageAvatarId) {
     violations.push(
       `Video uses avatar '${video.heygen_avatar_id ?? "none"}' — expected brokerage avatar '${brokerageAvatarId}'`
@@ -294,14 +300,22 @@ async function checkVideo(ctx: {
     )
   }
 
-  // Verbal disclosure check — defer to the live flag; the D-ID route
-  // (/api/did/generate-video) sets has_verbal_disclosure=true after it
-  // appends the "Brought to you by [Brokerage]..." text to the script.
-  // Skip the check when the script hasn't been rendered yet (status='draft').
-  const hasBeenRendered = video.status && video.status !== "draft" && video.status !== "pending"
+  // Verbal disclosure — set by /api/did/generate-video after the script
+  // gains the "Brought to you by [Brokerage]..." line.
   if (hasBeenRendered && !video.has_verbal_disclosure) {
     violations.push(
       "Public-marketing video missing brokerage verbal disclosure — required by real-estate advertising law"
+    )
+  }
+
+  // Visual overlay — set by the D-ID poll cron after ffmpeg burns in the
+  // logo + attribution band. Silent video clips and visual-only ads need
+  // this even if the script never runs, because the verbal disclosure
+  // alone doesn't satisfy advertising law for muted playback (e.g. social
+  // feed autoplay).
+  if (hasBeenRendered && !video.has_visual_brand_overlay) {
+    violations.push(
+      "Public-marketing video missing brokerage visual brand overlay — required for muted playback compliance"
     )
   }
 }

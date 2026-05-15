@@ -1,6 +1,13 @@
 {
   "buildCommand": "pnpm install --no-frozen-lockfile && next build",
   "installCommand": "pnpm install --no-frozen-lockfile",
+  "functions": {
+    "app/api/cron/poll-did-videos/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/dotloop-sync",

@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -163,8 +163,85 @@ export async function GET(request: NextRequest) {
             } catch { /* thumbnail is non-critical */ }
           }
 
-          // Use our persisted URL when available; keep D-ID URL as provider fallback
-          const finalVideoUrl = persistedVideoUrl ?? didResultUrl
+          // ─── Pixel-level visual brand overlay (sprint C — now live) ─────────
+          // Public-marketing videos get the brokerage logo + attribution band
+          // burned in via ffmpeg. MLS-bound videos pass through untouched
+          // because MLS rules forbid agent/brokerage branding.
+          const usageIntent: string = (video as any).usage_intent ?? "public_marketing"
+          let brandedVideoUrl: string | null = null
+          let visualOverlayApplied = false
+
+          if (persistedVideoUrl && usageIntent !== "mls") {
+            try {
+              const { data: brokerage } = await supabase
+                .from("brokerages")
+                .select("name, dba, logo_url, license_number, license_state")
+                .eq("id", video.brokerage_id ?? "")
+                .maybeSingle()
+
+              // Team logo/name via the agent's team_id (FK chain agents.team_id → teams)
+              let teamName: string | null = null
+              let teamLogoUrl: string | null = null
+              if (video.agent_id) {
+                const { data: agentRow } = await supabase
+                  .from("agents")
+                  .select("team_id")
+                  .eq("id", video.agent_id)
+                  .maybeSingle()
+                if (agentRow?.team_id) {
+                  const { data: team } = await supabase
+                    .from("teams")
+                    .select("name, logo_url")
+                    .eq("id", agentRow.team_id)
+                    .maybeSingle()
+                  teamName    = team?.name ?? null
+                  teamLogoUrl = team?.logo_url ?? null
+                }
+              }
+
+              const { compositeVideoAttribution } = await import("@/lib/video/composite-attribution")
+              const result = await compositeVideoAttribution({
+                inputVideoUrl: persistedVideoUrl,
+                brand: {
+                  brokerageName:         brokerage?.name ?? null,
+                  brokerageDba:          brokerage?.dba ?? null,
+                  brokerageLicense:      brokerage?.license_number ?? null,
+                  brokerageLicenseState: brokerage?.license_state ?? null,
+                  teamName,
+                  logoUrl:               teamLogoUrl ?? brokerage?.logo_url ?? null,
+                },
+              })
+
+              if (result.overlayApplied && result.outputBuffer.length > 0) {
+                // Upload the branded version. Suffix the path so we keep both
+                // — the clean D-ID render stays available for MLS export.
+                const agentFolder = video.agent_id ?? "shared"
+                const brandedPath = `agent-videos/${agentFolder}/${video.id}.branded.mp4`
+                const { error: brandedUploadErr } = await supabase.storage
+                  .from("listing-media")
+                  .upload(brandedPath, result.outputBuffer, {
+                    contentType: "video/mp4",
+                    upsert: true,
+                  })
+                if (!brandedUploadErr) {
+                  const { data: { publicUrl } } = supabase.storage
+                    .from("listing-media")
+                    .getPublicUrl(brandedPath)
+                  brandedVideoUrl = publicUrl
+                  visualOverlayApplied = true
+                } else {
+                  console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr)
+                }
+              }
+            } catch (overlayErr: any) {
+              // Overlay is best-effort — fall back to the un-branded persisted
+              // video. Compliance gate will flag the missing visual overlay.
+              console.error("[poll-did-videos] Visual overlay failed:", overlayErr?.message ?? overlayErr)
+            }
+          }
+
+          // Use the branded URL when overlay succeeded → persisted URL → D-ID URL
+          const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
           const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
 
           await supabase
@@ -177,12 +254,20 @@ export async function GET(request: NextRequest) {
               duration_seconds: duration,
               completed_at: new Date().toISOString(),
               error_message: null,
-              // Preserve original D-ID URL in metadata for reference
+              // Compliance audit trail: which post-render branding steps ran.
+              // MLS-bound videos report has_visual_brand_overlay=false on purpose.
+              has_visual_brand_overlay: visualOverlayApplied,
+              // Preserve original D-ID URL in metadata for reference, plus the
+              // clean (un-branded) Supabase URL so an MLS export step can pick
+              // it up directly without a second D-ID render.
               provider_metadata: {
                 ...((video as any).provider_metadata ?? {}),
-                did_result_url: didResultUrl,
-                did_thumbnail_url: didThumbnailUrl,
+                did_result_url:       didResultUrl,
+                did_thumbnail_url:    didThumbnailUrl,
                 persisted_to_storage: !!persistedVideoUrl,
+                clean_video_url:      persistedVideoUrl ?? null,
+                branded_video_url:    brandedVideoUrl,
+                visual_overlay_applied: visualOverlayApplied,
               },
             })
             .eq("id", video.id)
