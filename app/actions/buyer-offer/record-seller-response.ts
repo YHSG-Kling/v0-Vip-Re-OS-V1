@@ -95,6 +95,35 @@ export async function recordSellerResponse(
     .eq("id", offerId)
   if (updErr) return { success: false, error: updErr.message }
 
+  // When the agent attaches a document (seller-signed contract for
+  // accepted; counter PDF for countered; reject notice for rejected),
+  // route it through the universal uploader so it lands as a documents
+  // row with the classifier kicked off — gets organized into the right
+  // deal-file bucket with a summary.
+  if (documentUrl) {
+    try {
+      const { uploadDocument } = await import("@/lib/documents/upload-document")
+      const docType =
+        responseType === "accepted" ? "signed_contract"
+        : responseType === "countered" ? "counter_offer"
+        : "uploaded_document"
+      await uploadDocument({
+        brokerageId:  offer.brokerage_id,
+        storageUrl:   documentUrl,
+        fileName:     `Seller ${responseType} — offer ${offerId.slice(0, 8)}`,
+        documentType: docType,
+        contactId:    offer.contact_id,
+        offerId,
+        metadata: {
+          seller_response_type: responseType,
+          recorded_at:          now,
+        },
+      })
+    } catch (err: any) {
+      console.error("[record-seller-response] upload+scan failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   // Activity audit — both for the agent's queue + lifecycle reconstruction.
   // activities.agent_id FKs agents(id); use agent_user_id for users(id).
   await supabase.from("activities").insert({

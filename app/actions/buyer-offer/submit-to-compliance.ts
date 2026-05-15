@@ -151,29 +151,11 @@ export async function submitOfferToCompliance(
       return { success: false, error: "Transaction creation failed in offer-bridge" }
     }
 
-    // Cascade: if this offer is a counter, mark its parent chain as
-    // 'superseded' so the original (and any intermediate counters) don't
-    // appear as live in any "open offers" view. The chain is still
-    // readable via parent_offer_id walk for the compliance package
-    // (original offer + every counter + signed PDFs).
-    if (offer.parent_offer_id) {
-      let ancestor: string | null = offer.parent_offer_id as string
-      const visited = new Set<string>()
-      while (ancestor && !visited.has(ancestor)) {
-        visited.add(ancestor)
-        await supabase
-          .from("offers")
-          .update({ status: "superseded" })
-          .eq("id", ancestor)
-        const { data: nextRow }: { data: { parent_offer_id: string | null } | null } = await supabase
-          .from("offers")
-          .select("parent_offer_id")
-          .eq("id", ancestor)
-          .maybeSingle()
-        ancestor = nextRow?.parent_offer_id ?? null
-      }
-    }
-
+    // No supersede cascade. The original offer is always the parent root and
+    // stays part of the executed contract; counters AMEND it, they don't
+    // replace it. The has_counter checkbox on the parent (set by
+    // issueCounterOffer) is the UI signal. The compliance package reads the
+    // full chain via parent_offer_id from the counter back to the original.
     return { success: true, transaction_id: result.transactionId }
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Transaction creation threw" }

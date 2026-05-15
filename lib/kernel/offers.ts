@@ -420,8 +420,15 @@ export async function issueCounterOffer(params: {
 
   if (error || !counter) return { success: false, error: error?.message ?? "Counter creation failed" }
 
-  // Mark original as countered
-  await supabase.from("offers").update({ status: "countered" }).eq("id", offerId)
+  // The original offer is always the parent root and stays part of the
+  // executed contract — we do NOT mark it superseded when a counter is
+  // issued. We DO set has_counter=true (the agent-UI checkbox signal that a
+  // counter exists) and status='countered' so any "open offers" filter still
+  // sees that this offer received a counter.
+  await supabase
+    .from("offers")
+    .update({ status: "countered", has_counter: true })
+    .eq("id", offerId)
 
   await emitOfferEvent({
     event:       KernelEvent.OFFER_OS_COUNTERED,

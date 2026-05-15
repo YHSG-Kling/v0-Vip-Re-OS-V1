@@ -1,0 +1,202 @@
+/**
+ * lib/documents/scan-uploaded-document.ts
+ *
+ * Universal document scanner. Called for every uploaded document so the deal
+ * file stays organized.
+ *
+ * Per agent direction: "all documents that are uploaded need to be scanned
+ * and if it isnt something we need to fill in either the record or contract
+ * realatied, should be organized with summary of what it is."
+ *
+ * The scanner:
+ *   1. Classifies the document into the canonical taxonomy (PAL, POF, ID,
+ *      signed contract, counter, disclosure, addendum, inspection/appraisal
+ *      report, title report, HOA docs, CD, wire instructions, agency
+ *      disclosure, commission agreement, lender letter, or 'other').
+ *   2. Generates a 1-2 sentence summary the agent can read at a glance.
+ *   3. Extracts the structured fields appropriate to the classification:
+ *      - PAL                → { lender_name, loan_type, max_amount, expires_at }
+ *      - proof_of_funds     → { institution, account_holder, available_funds, statement_date }
+ *      - signed_contract /
+ *        counter_offer      → { property_address, all_signers_signed, signed_dates[], price }
+ *      - disclosure /
+ *        addendum           → { disclosure_type, signed_parties[] }
+ *      - inspection_report  → { inspector, inspection_date, key_issues[] }
+ *      - appraisal_report   → { appraiser, appraised_value, appraisal_date }
+ *      - other              → free-form summary only
+ *
+ * Result is written back to documents (classification, summary,
+ * extracted_fields, classification_confidence, scanned_at).
+ *
+ * The scanner is idempotent: re-running on a scanned doc skips it unless
+ * `force=true`. Failures stamp `scan_error` and leave classification null
+ * so the agent can hand-classify.
+ */
+
+import "server-only"
+import { createServiceClient } from "@/lib/supabase/service"
+import { generateTextRouted }   from "@/lib/ai/models"
+
+export type DocumentClassification =
+  | "pre_approval_letter"
+  | "proof_of_funds"
+  | "id_document"
+  | "signed_contract"
+  | "counter_offer"
+  | "addendum"
+  | "disclosure"
+  | "inspection_report"
+  | "appraisal_report"
+  | "title_report"
+  | "hoa_documents"
+  | "closing_disclosure"
+  | "wire_instructions"
+  | "agency_disclosure"
+  | "commission_agreement"
+  | "lender_letter"
+  | "other"
+
+export interface ScanResult {
+  success:        boolean
+  documentId:     string
+  classification?: DocumentClassification
+  classification_confidence?: "high" | "medium" | "low"
+  summary?:       string
+  extracted_fields?: Record<string, unknown>
+  error?:         string
+}
+
+const SCAN_PROMPT = `You are classifying a document uploaded into a real estate deal file. Return ONLY valid JSON. No markdown, no commentary.
+
+Classify into ONE of:
+  pre_approval_letter | proof_of_funds | id_document | signed_contract |
+  counter_offer | addendum | disclosure | inspection_report |
+  appraisal_report | title_report | hoa_documents | closing_disclosure |
+  wire_instructions | agency_disclosure | commission_agreement |
+  lender_letter | other
+
+Output schema:
+{
+  "classification": "<one of above>",
+  "confidence": "high" | "medium" | "low",
+  "summary": "<1-2 sentence plain-English summary the agent reads at a glance>",
+  "extracted_fields": { ... }   // shape depends on classification (see below)
+}
+
+Per-classification extracted_fields shape:
+  pre_approval_letter   → { lender_name, loan_type, max_loan_amount, issued_at, expires_at, borrower_name }
+  proof_of_funds        → { institution, account_holder, available_funds, statement_date }
+  id_document           → { document_type, full_name, expiration_date }
+  signed_contract       → { property_address, parties_signed[], signed_dates[], price }
+  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label }
+  addendum              → { addendum_type, signed_parties[] }
+  disclosure            → { disclosure_type, signed_parties[] }
+  inspection_report     → { inspector_name, inspection_date, key_issues[] }
+  appraisal_report      → { appraiser_name, appraised_value, appraisal_date }
+  title_report          → { title_company, report_date, key_exceptions[] }
+  hoa_documents         → { hoa_name, dues_amount, dues_frequency }
+  closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close }
+  wire_instructions     → { receiving_institution, account_number_last_4, beneficiary_name }
+  agency_disclosure     → { brokerage_name, agent_name, signed_at }
+  commission_agreement  → { commission_percentage, commission_payer, expires_at }
+  lender_letter         → { lender_name, letter_type, issued_at }
+  other                 → { document_type_guess }
+
+Now classify this document content:
+
+`
+
+export async function scanUploadedDocument(params: {
+  documentId: string
+  force?:     boolean
+}): Promise<ScanResult> {
+  const { documentId, force = false } = params
+  const supabase = createServiceClient()
+
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("id, brokerage_id, document_type, content, storage_url, classification, scanned_at")
+    .eq("id", documentId)
+    .maybeSingle()
+
+  if (!doc) return { success: false, documentId, error: "Document not found" }
+  if (!force && doc.scanned_at) {
+    return {
+      success: true, documentId,
+      classification: doc.classification as DocumentClassification | undefined,
+      summary: undefined,  // already on disk
+    }
+  }
+
+  // Source text for the classifier. Strategy:
+  //   1. Prefer documents.content (JSON or text) when present.
+  //   2. Fall back to a stub mentioning the document_type + storage_url.
+  // PDF OCR for storage_url-only docs is a separate path (file fetch + parse)
+  // and is the lowest-hanging follow-on. For now we send the text we have.
+  let sourceText = ""
+  if (doc.content) {
+    sourceText = typeof doc.content === "string"
+      ? doc.content.slice(0, 8000)
+      : JSON.stringify(doc.content).slice(0, 8000)
+  } else if (doc.storage_url) {
+    sourceText = `Document type hint: ${doc.document_type}\nStorage URL: ${doc.storage_url}\n(No inline text — PDF OCR not yet wired.)`
+  } else {
+    sourceText = `Document type hint: ${doc.document_type}\n(No content provided.)`
+  }
+
+  let result: any
+  try {
+    const { text } = await generateTextRouted({
+      feature:    "document_classification",
+      system:     "You are a strict JSON classifier for real estate documents. Output JSON only — no prose.",
+      prompt:     SCAN_PROMPT + sourceText,
+      temperature: 0,
+      maxTokens:  800,
+    })
+    const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim()
+    result = JSON.parse(cleaned)
+  } catch (err: any) {
+    await supabase
+      .from("documents")
+      .update({ scan_error: err?.message ?? "scan failed", scanned_at: new Date().toISOString() })
+      .eq("id", documentId)
+    return { success: false, documentId, error: err?.message ?? "scan failed" }
+  }
+
+  const classification: DocumentClassification =
+    (CLASSIFICATIONS.includes(result.classification) ? result.classification : "other") as DocumentClassification
+  const confidence = (["high","medium","low"].includes(result.confidence) ? result.confidence : "low") as "high" | "medium" | "low"
+  const summary = String(result.summary ?? "")
+  const extracted = (result.extracted_fields && typeof result.extracted_fields === "object")
+    ? result.extracted_fields
+    : {}
+
+  await supabase
+    .from("documents")
+    .update({
+      classification,
+      classification_confidence: confidence,
+      summary,
+      extracted_fields:          extracted,
+      scanned_at:                new Date().toISOString(),
+      scan_error:                null,
+    })
+    .eq("id", documentId)
+
+  return {
+    success: true,
+    documentId,
+    classification,
+    classification_confidence: confidence,
+    summary,
+    extracted_fields: extracted,
+  }
+}
+
+const CLASSIFICATIONS: DocumentClassification[] = [
+  "pre_approval_letter","proof_of_funds","id_document","signed_contract",
+  "counter_offer","addendum","disclosure","inspection_report",
+  "appraisal_report","title_report","hoa_documents","closing_disclosure",
+  "wire_instructions","agency_disclosure","commission_agreement",
+  "lender_letter","other",
+]

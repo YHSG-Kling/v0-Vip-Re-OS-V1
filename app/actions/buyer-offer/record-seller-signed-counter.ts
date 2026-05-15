@@ -122,6 +122,31 @@ export async function recordSellerSignedCounter(
     })
     .eq("id", counterId)
 
+  // Route the seller-signed PDF through the universal uploader so it lands
+  // as a documents row with the classifier kicked off (counter_offer
+  // classification + extracted fields like counter_price, signed-by parties).
+  if (sellerSignedDocumentUrl) {
+    try {
+      const { uploadDocument } = await import("@/lib/documents/upload-document")
+      await uploadDocument({
+        brokerageId,
+        storageUrl:   sellerSignedDocumentUrl,
+        fileName:     `Counter offer (round ${round}) — seller signed`,
+        documentType: "counter_offer",
+        contactId:    (parentOffer.contact_id as string | null) ?? null,
+        offerId:      counterId,
+        metadata: {
+          parent_offer_id:   parentOfferId,
+          counter_offer_id:  counterId,
+          source,
+          counter_round:     round,
+        },
+      })
+    } catch (err: any) {
+      console.error("[record-seller-signed-counter] upload+scan failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   // Activity for the buyer-side agent's queue
   await supabase.from("activities").insert({
     brokerage_id:   brokerageId,
