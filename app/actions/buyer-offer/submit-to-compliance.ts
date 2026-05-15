@@ -29,6 +29,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { createTransactionFromOffer } from "@/lib/transactions"
+import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
+import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
+import { notifyComplianceFlag }       from "@/lib/notifications/notify-helpers"
 
 export interface SubmitToComplianceParams {
   offerId: string
@@ -38,9 +41,13 @@ export interface SubmitToComplianceParams {
 }
 
 export interface SubmitToComplianceResult {
-  success: boolean
+  success:        boolean
   transaction_id?: string
-  error?:  string
+  error?:         string
+  /** When refused: which brokerage-required documents are missing (blocking). */
+  missing_required?: string[]
+  /** When refused: which packet fields/signatures/initials are missing. */
+  packet_blockers?:  Array<{ flagType: string; severity: string; title: string }>
 }
 
 export async function submitOfferToCompliance(
@@ -86,6 +93,68 @@ export async function submitOfferToCompliance(
 
   const now = new Date().toISOString()
   const finalContractDate = contractDate ?? now.slice(0, 10)
+
+  // 1.5 — Pre-flight compliance gate. Two checks BEFORE we stamp anything:
+  //   A) Brokerage-required documents — the broker's onboarding checklist.
+  //      Resolution cascade: agent → team → brokerage. Blocking misses
+  //      refuse the submit; warning misses are returned but pass through.
+  //   B) Packet completeness scan — walks documents.content.filledPacket
+  //      for missing signatures / initials / fields. Any blockers refuse.
+  // On refusal we fan out compliance flags so the agent + TC see why.
+  const { data: actingUser } = await supabase
+    .from("users")
+    .select("team_id")
+    .eq("id", userId)
+    .maybeSingle()
+  const teamId = (actingUser?.team_id as string | null) ?? null
+
+  const audit = await auditOfferDocuments(supabase as any, {
+    offerId,
+    brokerageId:  offer.brokerage_id as string,
+    contactId:    offer.contact_id as string | null,
+    agentUserId:  userId,
+    teamId,
+    dealType:     "buyer",
+  })
+
+  const packetScan = await scanOfferPacketCompleteness({
+    offerId,
+    raiserUserId: userId,
+  })
+
+  const hasBlockingMissing = audit.missing_blocking.length > 0
+  const hasPacketBlockers  = packetScan.blockers && packetScan.blockers.length > 0
+
+  if (hasBlockingMissing || hasPacketBlockers) {
+    // Fan out a critical compliance flag so the agent + TC + compliance_officer
+    // all see the unblock work clearly in their bells (high/critical severity
+    // routes through multi-channel: in-app + email + SMS-on-consent).
+    const summaryBits: string[] = []
+    if (hasBlockingMissing) summaryBits.push(`${audit.missing_blocking.length} required document(s) missing`)
+    if (hasPacketBlockers)  summaryBits.push(`${packetScan.blockers.length} packet blocker(s)`)
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId: offer.brokerage_id as string,
+      agentUserId: userId,
+      flag: {
+        type:        "compliance.submit_blocked",
+        severity:    "high",
+        title:       `Submit to compliance blocked: ${summaryBits.join(", ")}`,
+        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.`,
+        entityType:  "offer",
+        entityId:    offerId,
+        offerId,
+      },
+    })
+
+    return {
+      success: false,
+      error: `Cannot submit to compliance — ${summaryBits.join(" and ")}. Fix the listed items first.`,
+      missing_required: audit.missing_blocking,
+      packet_blockers: packetScan.blockers.map(b => ({
+        flagType: b.flagType, severity: b.severity, title: b.title,
+      })),
+    }
+  }
 
   // 2. Stamp readiness + compliance pass on the offer.
   await supabase

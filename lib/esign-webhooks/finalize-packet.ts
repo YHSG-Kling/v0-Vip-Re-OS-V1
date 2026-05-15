@@ -28,8 +28,9 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { logEventAndTrigger } from "@/lib/events"
-import { notifyEsignSigned }  from "@/lib/notifications/notify-helpers"
+import { logEventAndTrigger }  from "@/lib/events"
+import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
+import { downloadSignedPackage } from "./download-signed-package"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -251,6 +252,27 @@ async function finalizeMatchingOffer(
         activityId:   activityRow?.id ?? null,
       })
     }
+  }
+
+  // Pull every signed document from the provider into our `documents` table
+  // so the deal file is complete + the executed contract is downloadable from
+  // Supabase storage. Each downloaded PDF fires the classifier (signed_contract /
+  // counter_offer / addendum / disclosure / etc.) and links to offer + contact
+  // (+ transaction when present).
+  try {
+    await downloadSignedPackage(supabase, {
+      envelopeId,
+      provider,
+      matchedOffer: {
+        id:             matchedOffer.id as string,
+        brokerage_id:   matchedOffer.brokerage_id as string,
+        contact_id:     (matchedOffer.contact_id as string | null) ?? null,
+        agent_id:       (matchedOffer.agent_id   as string | null) ?? null,
+        transaction_id: (matchedOffer.transaction_id as string | null) ?? null,
+      },
+    })
+  } catch (err: any) {
+    console.error("[finalize-packet] downloadSignedPackage failed (non-fatal):", err?.message ?? err)
   }
 }
 
