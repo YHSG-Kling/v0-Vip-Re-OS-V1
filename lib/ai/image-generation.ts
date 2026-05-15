@@ -48,6 +48,8 @@ export interface BrandHints {
   brokerageLicense?: string | null
   /** State the brokerage license is issued in (e.g. CA, TX, FL) */
   brokerageLicenseState?: string | null
+  /** Team trade name — used in attribution when the agent is team-branded */
+  teamName?: string | null
   primaryColor?: string | null
   agentName?: string | null
   /** Agent's individual license # — required in CA / FL / TX / NY etc. */
@@ -57,6 +59,12 @@ export interface BrandHints {
   logoUrl?: string | null
   /** When true, skip logo overlay and use brokerageName text in the prompt instead */
   noLogo?: boolean
+  /**
+   * Render MLS-clean — when true, BOTH the logo composite AND the attribution
+   * band are skipped. MLS rules forbid agent/brokerage branding on listing
+   * media submitted to the MLS feed.
+   */
+  mlsClean?: boolean
 }
 
 export interface GenerateImageInput {
@@ -264,9 +272,11 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
   // The null check is enforced by early returns in both paths above.
   let finalImageBytes: Buffer = imageBytes as Buffer
 
-  // 3. Composite brokerage/team logo if provided (and not opted out)
+  // 3. Composite brokerage/team logo if provided (and not opted out).
+  //    SKIPPED entirely when mlsClean=true — MLS rules forbid agent/brokerage
+  //    branding on photos and videos in the MLS feed.
   const logoUrl = input.brand?.logoUrl
-  const skipLogo = input.brand?.noLogo === true
+  const skipLogo = input.brand?.noLogo === true || input.brand?.mlsClean === true
   if (logoUrl && !skipLogo) {
     try {
       finalImageBytes = await compositeLogoOntoImage(finalImageBytes, logoUrl)
@@ -279,10 +289,13 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
   //     name, license #, "Equal Housing Opportunity". This is what makes the
   //     image compliant with state real-estate advertising law + the federal
   //     Fair Housing Act for housing-related marketing.
-  try {
-    finalImageBytes = await compositeAttributionBand(finalImageBytes, input.brand ?? {})
-  } catch {
-    // Attribution band is best-effort — never fail the whole generation
+  //     SKIPPED entirely when mlsClean=true (MLS rules forbid this).
+  if (input.brand?.mlsClean !== true) {
+    try {
+      finalImageBytes = await compositeAttributionBand(finalImageBytes, input.brand ?? {})
+    } catch {
+      // Attribution band is best-effort — never fail the whole generation
+    }
   }
 
   // 4. Upload to Vercel Blob — public URL won't expire
@@ -384,14 +397,18 @@ async function compositeAttributionBand(
   imageBytes: Buffer,
   brand: BrandHints
 ): Promise<Buffer> {
-  if (!brand.brokerageName) return imageBytes
+  // Real-estate ad law requires SOME identifiable brokerage / team
+  // attribution on every public-facing piece. Try brokerage DBA → brokerage
+  // name → team name in that order. If none are available the band is
+  // skipped (private/draft images).
+  const tradeName = brand.brokerageDba ?? brand.brokerageName ?? brand.teamName
+  if (!tradeName) return imageBytes
 
   const baseMeta = await sharp(imageBytes).metadata()
   const baseWidth  = baseMeta.width  ?? 1024
   const baseHeight = baseMeta.height ?? 1024
 
   // Build the attribution line. License # and state are appended when present.
-  const tradeName = brand.brokerageDba ?? brand.brokerageName
   const licenseParts: string[] = []
   if (brand.brokerageLicense) {
     const state = brand.brokerageLicenseState ? ` (${brand.brokerageLicenseState})` : ""
@@ -400,7 +417,14 @@ async function compositeAttributionBand(
   if (brand.agentLicense && brand.agentLicense !== brand.brokerageLicense) {
     licenseParts.push(`Agent #${brand.agentLicense}`)
   }
-  const attributionText = [tradeName, ...licenseParts].join(" · ")
+  // Append the team name as a secondary line item when both a brokerage and
+  // a team are present (e.g. "Sotheby's · The Smith Group · Lic #12345").
+  const attributionTextParts: string[] = [tradeName]
+  if (brand.teamName && brand.teamName !== tradeName) {
+    attributionTextParts.push(brand.teamName)
+  }
+  attributionTextParts.push(...licenseParts)
+  const attributionText = attributionTextParts.join(" · ")
 
   // SVG-text escape — these strings end up inside an SVG element so any
   // angle brackets, ampersands, or quotes in a brokerage name would break

@@ -32,10 +32,23 @@ export async function uploadListingMedia(params: {
   isPrimary?: boolean
   approvalRequired?: boolean
   /**
+   * Where this asset will be used:
+   *   - 'mls' — submitted to the MLS feed. MLS rules forbid agent/brokerage
+   *             branding so this asset must NOT carry attribution. Skips
+   *             the marketing fan-out so it doesn't end up auto-drafted
+   *             into social posts.
+   *   - 'public_marketing' (default) — used on the agent's landing page,
+   *             social media, postcards, etc. Brokerage attribution is
+   *             REQUIRED by state real-estate advertising law.
+   *   - 'both' — agent will hand-curate two cuts (clean MLS + branded
+   *             marketing). Treated as public_marketing for the upload row.
+   */
+  usageIntent?: "mls" | "public_marketing" | "both"
+  /**
    * Optional: caller asserts the uploaded file already carries the legal
    * brokerage attribution (logo, license #, EHO) — typical for photographer-
    * produced photos that have the brokerage info embedded in the frame.
-   * Defaults false so the compliance review queue picks it up.
+   * Ignored when usageIntent='mls'.
    */
   hasEmbeddedAttribution?: boolean
 }) {
@@ -43,7 +56,12 @@ export async function uploadListingMedia(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
 
-  const attributionAsserted = params.hasEmbeddedAttribution === true
+  const usageIntent = params.usageIntent ?? "public_marketing"
+  const isMlsBound = usageIntent === "mls"
+
+  // Attribution flags default to false — MLS-bound uploads MUST be false
+  // regardless of what the caller asserted (MLS rules override agent intent).
+  const attributionAsserted = !isMlsBound && params.hasEmbeddedAttribution === true
 
   const { data, error } = await supabase
     .from("listing_media")
@@ -60,11 +78,7 @@ export async function uploadListingMedia(params: {
       approval_required:  params.approvalRequired ?? true,
       is_approved:        false,
       kernel_compliance_passed: false,
-      // Migration 1084 added these columns so the compliance gate can tell
-      // whether an asset carries the legally-required brokerage attribution.
-      // Uploaded photos default to false; the brokerage info is provided by
-      // the listing landing page itself unless the agent explicitly asserts
-      // it was embedded in the source file.
+      usage_intent:              usageIntent,
       has_logo_overlay:          attributionAsserted,
       has_brokerage_attribution: attributionAsserted,
       has_eho_mark:              attributionAsserted,
@@ -83,11 +97,10 @@ export async function uploadListingMedia(params: {
     brokerageId: params.brokerageId,
   })
 
-  // For the hero photo (is_primary), fan the upload through the marketing
-  // pipeline so the agent gets a draft social post and a smart suggestion
-  // to share the new listing. Non-hero photos stay attached to the listing
-  // only — avoids spamming Marketing Review with every drag-and-drop upload.
-  if (params.mediaType === "photo" && params.isPrimary) {
+  // Hero-photo fan-out — ONLY when the asset is public-marketing-bound.
+  // MLS-bound uploads stay attached to the listing only; they would
+  // violate MLS rules if they auto-drafted into branded social posts.
+  if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
     try {
       const { emitEventFromCron } = await import("@/app/actions/orchestrator")
       await emitEventFromCron({

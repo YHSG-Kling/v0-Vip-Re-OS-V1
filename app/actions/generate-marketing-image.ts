@@ -45,6 +45,16 @@ export interface GenerateMarketingImageInput {
    * instead. Use when the agent explicitly wants text branding over a logo badge.
    */
   noLogo?: boolean
+  /**
+   * Determines whether real-estate ad-law attribution gets overlaid:
+   *   - 'public_marketing' (default) — composite logo + brokerage attribution
+   *     band + EHO mark.
+   *   - 'mls' — render MLS-clean (no brokerage/agent branding). MLS rules
+   *     forbid agent-specific branding on listing media submitted to the MLS.
+   *   - 'both' — same as public_marketing; the agent should generate two
+   *     separate versions if they need an MLS-clean cut.
+   */
+  usageIntent?: "public_marketing" | "mls" | "both"
 }
 
 export interface GenerateMarketingImageResult {
@@ -99,6 +109,7 @@ export async function generateMarketingImage(
 
   let agentName: string | null = null
   let agentLicense: string | null = null
+  let teamName: string | null = null
   let logoUrl: string | null = brokerage?.logo_url ?? globalSettings?.app_logo_url ?? null
 
   if (ctx.userId) {
@@ -113,20 +124,25 @@ export async function generateMarketingImage(
     // license numbers on advertising.
     const { data: agentRow } = await svc
       .from("agents")
-      .select("license_number, license_state")
+      .select("id, license_number, license_state, team_id")
       .eq("user_id", ctx.userId)
       .maybeSingle()
     agentLicense = agentRow?.license_number ?? null
 
-    // Check if agent belongs to a team with its own logo
-    const { data: teamMembership } = await svc
-      .from("agent_teams")
-      .select("team_id, teams(logo_url)")
-      .eq("agent_id", ctx.userId)
-      .limit(1)
-      .maybeSingle()
-    const teamLogo = (teamMembership?.teams as any)?.logo_url
-    if (teamLogo) logoUrl = teamLogo
+    // Team-branded agents get team name + logo overrides. Team membership
+    // lives on agents.team_id (migration history confirms — there is no
+    // agent_teams table; the older code path queried a non-existent table
+    // and silently returned null). When the agent has a team with a logo,
+    // it takes precedence over the brokerage logo.
+    if (agentRow?.team_id) {
+      const { data: team } = await svc
+        .from("teams")
+        .select("name, logo_url")
+        .eq("id", agentRow.team_id)
+        .maybeSingle()
+      teamName = team?.name ?? null
+      if (team?.logo_url) logoUrl = team.logo_url
+    }
   }
 
   // Best-effort brand voice tone
@@ -153,12 +169,17 @@ export async function generateMarketingImage(
       brokerageDba: brokerage?.dba ?? null,
       brokerageLicense: brokerage?.license_number ?? null,
       brokerageLicenseState: brokerage?.license_state ?? null,
+      teamName,
       agentName,
       agentLicense,
       primaryColor: brokerage?.primary_color ?? null,
       brandVoiceTone,
       logoUrl: input.noLogo ? null : logoUrl,
       noLogo: input.noLogo ?? false,
+      // MLS rules forbid brokerage/agent branding on listing media submitted
+      // to the MLS — the rendering pipeline reads this to short-circuit
+      // both the logo composite and the attribution band.
+      mlsClean: input.usageIntent === "mls",
     },
     listingContext: (listingResult as any).data
       ? {
@@ -210,13 +231,16 @@ export async function generateMarketingImage(
         listing_id: input.listingId ?? null,
         provider: "dall-e-3",
         // Real-estate ad-law attribution audit trail. compositeAttributionBand
-        // in image-generation.ts overlays the brokerage name + license # +
-        // EHO mark whenever brokerageName is set, so these flags reflect
-        // what was actually rendered onto the image bytes.
-        logo_composited:           !input.noLogo && !!logoUrl,
-        brokerage_attribution:     !!brokerage?.name,
-        license_number_on_image:   !!brokerage?.license_number,
-        eho_mark_on_image:         !!brokerage?.name,
+        // and compositeLogoOntoImage in image-generation.ts both short-circuit
+        // when usageIntent='mls' so MLS-bound images render clean — agent /
+        // brokerage attribution is FORBIDDEN on MLS listing media.
+        usage_intent:            input.usageIntent ?? "public_marketing",
+        mls_clean:               input.usageIntent === "mls",
+        logo_composited:         input.usageIntent !== "mls" && !input.noLogo && !!logoUrl,
+        brokerage_attribution:   input.usageIntent !== "mls" && !!brokerage?.name,
+        license_number_on_image: input.usageIntent !== "mls" && !!brokerage?.license_number,
+        eho_mark_on_image:       input.usageIntent !== "mls" && !!brokerage?.name,
+        team_name:               teamName,
       },
     })
     .select("id")

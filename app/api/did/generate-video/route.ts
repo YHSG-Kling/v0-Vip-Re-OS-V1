@@ -105,6 +105,51 @@ export async function POST(request: NextRequest) {
     const isVideoSource = !!resolvedAvatarId || !!agent_video_url
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
 
+    // ─── Resolve usage_intent + bake real-estate ad-law disclosure ────────────
+    // ai_video_projects.usage_intent (migration 1085) decides whether the
+    // rendered video needs the legally-required brokerage disclosure:
+    //   public_marketing / both → verbal disclosure appended to script
+    //   mls                     → render is left clean (MLS forbids
+    //                             agent / brokerage attribution)
+    // ffmpeg-based visual overlay is deferred (per lib/did/index.ts notes),
+    // so the disclosure goes into the script the avatar speaks.
+    let renderScript: string = script
+    let injectedDisclosure = false
+    {
+      const { data: videoRow } = await supabase
+        .from("ai_video_projects")
+        .select("usage_intent")
+        .eq("id", video_project_id)
+        .maybeSingle()
+      const usageIntent: string = videoRow?.usage_intent ?? "public_marketing"
+
+      if (usageIntent !== "mls" && auth.brokerageId) {
+        const { data: brokerage } = await supabase
+          .from("brokerages")
+          .select("name, dba, license_number, license_state")
+          .eq("id", auth.brokerageId)
+          .maybeSingle()
+        const tradeName = brokerage?.dba ?? brokerage?.name
+        if (tradeName) {
+          const licenseSuffix = brokerage?.license_number
+            ? `, License ${brokerage.license_number}${brokerage?.license_state ? ` ${brokerage.license_state}` : ""}`
+            : ""
+          // Concise verbal disclosure — kept short so it doesn't disrupt the
+          // narrative. Equal Housing Opportunity is included because most
+          // listing-related videos count as housing-related advertising
+          // under the federal Fair Housing Act.
+          const disclosure = `. Brought to you by ${tradeName}${licenseSuffix}. Equal Housing Opportunity.`
+          renderScript = `${script.replace(/[.!?\s]+$/, "")}${disclosure}`
+          injectedDisclosure = true
+        }
+      }
+
+      await supabase
+        .from("ai_video_projects")
+        .update({ has_verbal_disclosure: injectedDisclosure })
+        .eq("id", video_project_id)
+    }
+
     // ─── Brand compliance gate ────────────────────────────────────────────────
     if (auth.brokerageId) {
       const compliance = await checkBrandCompliance({
@@ -132,7 +177,7 @@ export async function POST(request: NextRequest) {
         Cookie: request.headers.get("cookie") ?? "",
       },
       body: JSON.stringify({
-        text: script,
+        text: renderScript,
         voice_id: elevenlabs_voice_id,
         upload_to_storage: true,
       }),

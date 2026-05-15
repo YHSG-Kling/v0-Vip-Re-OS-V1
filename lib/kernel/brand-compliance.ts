@@ -257,7 +257,7 @@ async function checkVideo(ctx: {
 
   const { data: video } = await supabase
     .from("ai_video_projects")
-    .select("heygen_avatar_id, heygen_voice_id, status")
+    .select("heygen_avatar_id, heygen_voice_id, status, usage_intent, has_verbal_disclosure, script_content")
     .eq("id", contentId)
     .maybeSingle()
 
@@ -266,17 +266,42 @@ async function checkVideo(ctx: {
     return
   }
 
-  // Verify brokerage avatar is used — only checked when brokerage has a configured avatar
+  const usageIntent: string = video.usage_intent ?? "public_marketing"
+
+  if (usageIntent === "mls") {
+    // MLS rules forbid agent / brokerage branding in listing media submitted
+    // to the MLS feed. Enforce the inverse compliance: no brokerage avatar
+    // / voice / verbal disclosure should be present.
+    if (video.has_verbal_disclosure) {
+      violations.push(
+        "MLS-bound video must NOT include a brokerage verbal disclosure (MLS rules)"
+      )
+    }
+    return
+  }
+
+  // Public-marketing path: brokerage avatar / voice / verbal disclosure
+  // are all required when the brokerage has them configured.
   if (brokerageAvatarId && video.heygen_avatar_id !== brokerageAvatarId) {
     violations.push(
       `Video uses avatar '${video.heygen_avatar_id ?? "none"}' — expected brokerage avatar '${brokerageAvatarId}'`
     )
   }
 
-  // Verify brokerage voice is used — only checked when brokerage has a configured voice
   if (brokerageVoiceId && video.heygen_voice_id !== brokerageVoiceId) {
     violations.push(
       `Video uses voice '${video.heygen_voice_id ?? "none"}' — expected brokerage voice '${brokerageVoiceId}'`
+    )
+  }
+
+  // Verbal disclosure check — defer to the live flag; the D-ID route
+  // (/api/did/generate-video) sets has_verbal_disclosure=true after it
+  // appends the "Brought to you by [Brokerage]..." text to the script.
+  // Skip the check when the script hasn't been rendered yet (status='draft').
+  const hasBeenRendered = video.status && video.status !== "draft" && video.status !== "pending"
+  if (hasBeenRendered && !video.has_verbal_disclosure) {
+    violations.push(
+      "Public-marketing video missing brokerage verbal disclosure — required by real-estate advertising law"
     )
   }
 }
