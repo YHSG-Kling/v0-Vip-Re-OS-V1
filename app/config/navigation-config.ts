@@ -19,6 +19,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'listing-health', label: 'Listing Health', href: '/dashboard/listings/health', icon: 'ShieldCheck' },
       { id: 'open-houses', label: 'Open Houses', href: '/dashboard/open-houses', icon: 'CalendarDays' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
+      { id: 'closing-concierge', label: 'Closing Concierge', href: '/dashboard/transactions/closing-concierge', icon: 'ShieldCheck' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       { id: 'overdue', label: 'Overdue', href: '/dashboard/overdue', icon: 'AlertCircle', badgeKey: 'overdue_count' },
       { id: 'weekly-insights', label: 'Weekly Insights', href: '/dashboard/insights/weekly', icon: 'Sparkles' },
