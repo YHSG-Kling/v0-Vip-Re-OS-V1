@@ -7,6 +7,8 @@ import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
 import { sendNotificationToAgent } from "./communications"
 import { supabaseService } from "@/services/supabaseService"
+import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
+import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 
 // =====================================================
 // EVENT TYPES - Standardized event type constants
@@ -201,6 +203,65 @@ export async function emitEvent(input: EventInput, processImmediately = false): 
   }
 }
 
+/**
+ * Service-client variant of emitEvent — safe to call from cron/webhook route
+ * handlers where there is no user session. Uses service role to bypass RLS.
+ * Inserts the lifecycle_event then immediately runs orchestrateEvent.
+ */
+export async function emitEventFromCron(input: EventInput): Promise<{ success: boolean; eventId?: string; error?: string }> {
+  try {
+    const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
+    const svc = svcCreate()
+
+    if (!input.brokerage_id) {
+      return { success: false, error: "brokerage_id is required" }
+    }
+
+    if (input.dedupe_key) {
+      const { data: existing } = await svc
+        .from("lifecycle_events")
+        .select("id")
+        .eq("dedupe_key", input.dedupe_key)
+        .eq("brokerage_id", input.brokerage_id)
+        .maybeSingle()
+      if (existing) return { success: true, eventId: existing.id }
+    }
+
+    const { data: event, error } = await svc
+      .from("lifecycle_events")
+      .insert({
+        brokerage_id:  input.brokerage_id,
+        actor_user_id: input.user_id ?? null,
+        event_type:    input.event_type,
+        metadata:      input.payload,
+        source:        input.source,
+        dedupe_key:    input.dedupe_key ?? null,
+        processed:     false,
+        entity_id:   (input.payload as any)?.video_id
+                      ?? (input.payload as any)?.contact_id
+                      ?? (input.payload as any)?.listing_id
+                      ?? null,
+        entity_type: (input.payload as any)?.video_id   ? "video"
+                    : (input.payload as any)?.contact_id ? "contact"
+                    : (input.payload as any)?.listing_id ? "listing"
+                    : "system",
+      })
+      .select()
+      .single()
+
+    if (error || !event) {
+      return { success: true } // non-fatal
+    }
+
+    // Orchestrate immediately — cron context is async by definition
+    await orchestrateEvent(event as Event)
+    return { success: true, eventId: event.id }
+  } catch (err) {
+    console.error("[emitEventFromCron] failed:", err)
+    return { success: true } // non-fatal
+  }
+}
+
 // =====================================================
 // MAIN ORCHESTRATOR - Routes events to appropriate handlers
 // =====================================================
@@ -253,6 +314,35 @@ export async function orchestrateEvent(event: Event): Promise<void> {
           handler: "default",
           processing_time_ms: Date.now() - startTime,
         })
+    }
+
+    // Chain registry — trigger any registered multi-step workflow chains for this event.
+    // This is additive: inline switch handlers above handle quick reactions while chains
+    // handle long-running, multi-step, approval-gated workflows. Both coexist.
+    try {
+      const chains = getChainsByTrigger(event.event_type)
+      const pl = event.payload as Record<string, any>
+      for (const chain of chains) {
+        const chainResult = await engineStartRun({
+          chainKey:       chain.key,
+          brokerageId:    event.brokerage_id,
+          contactId:      pl?.contact_id ?? null,
+          listingId:      pl?.listing_id ?? null,
+          transactionId:  pl?.transaction_id ?? null,
+          agentUserId:    pl?.agent_user_id ?? event.user_id ?? null,
+          triggerEvent:   event.event_type,
+          triggerEventId: event.id,
+          metadata:       pl ?? {},
+        })
+        results.push({
+          success: !chainResult.error,
+          handler: `chain:${chain.key}`,
+          error: chainResult.error,
+          processing_time_ms: 0,
+        })
+      }
+    } catch (chainErr) {
+      console.error(`[v0] Chain dispatch error for event ${event.event_type}:`, chainErr)
     }
 
     // Log all processing results
@@ -547,23 +637,83 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
 async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
-    const { video_id, video_type, listing_id } = event.payload
+    const { video_id, video_type, video_url, listing_id, contact_id, agent_user_id } = event.payload
+    const agentId = agent_user_id ?? event.user_id
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
 
-    // Create suggestion to review and publish
-    await generateSmartSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "video",
-      context_id: video_id,
-      suggestion_type: "review",
-      title: "New Video Ready for Review",
-      description: `AI-generated ${video_type} video is ready. Review and publish to your channels.`,
-      action_payload: {
-        video_id,
-        listing_id,
-        action: "review_and_publish",
-      },
-    })
+    // For listing promo, market update, and neighborhood tour: auto-draft a social post
+    const socialVideoTypes = ["listing_promo", "market_update", "neighborhood_tour", "agent_introduction"]
+    if (socialVideoTypes.includes(video_type) && video_url && agentId) {
+      const captionByType: Record<string, string> = {
+        listing_promo:      "Just listed! Check out this beautiful property. 🏡 #JustListed #RealEstate",
+        market_update:      "Market update — see what's happening in your local real estate market. #MarketUpdate #RealEstate",
+        neighborhood_tour:  "Neighborhood tour — discover what makes this area special. #NeighborhoodTour",
+        agent_introduction: "Hi, I'm your local real estate expert. Let's connect! #RealEstate #YourAgent",
+      }
+      const caption = captionByType[video_type] ?? `New video from your real estate team. #RealEstate`
+      const platforms = ["facebook", "instagram", "linkedin"]
+
+      try {
+        const { createSocialPost } = await import("@/app/actions/social-publishing")
+        await createSocialPost({
+          content:       caption,
+          mediaUrls:     [video_url],
+          mediaTypes:    ["video"],
+          scheduledFor:  tomorrow,
+          platforms,
+          contentType:   video_type === "listing_promo" ? "listing" : "market_update",
+          linkedListingId: listing_id ?? undefined,
+          generatedByAi: true,
+          aiPrompt:      `Auto-drafted from completed ${video_type} video ${video_id}`,
+          userId:        agentId,
+        })
+      } catch (socialErr) {
+        console.error("[handleVideoGenerated] Draft social post failed:", socialErr)
+      }
+    }
+
+    // For personal / thank_you videos with a known contact: draft a contact communication
+    const personalVideoTypes = ["thank_you", "personal", "buyer_guide"]
+    if (personalVideoTypes.includes(video_type) && contact_id && video_url && agentId) {
+      try {
+        const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
+        const svc = svcCreate()
+        const { data: contact } = await svc
+          .from("contacts")
+          .select("first_name, last_name, email")
+          .eq("id", contact_id)
+          .maybeSingle()
+        if (contact?.email) {
+          // Queue a draft email for this contact with the video link
+          await svc.from("email_queue").insert({
+            brokerage_id: event.brokerage_id,
+            to_email:     contact.email,
+            to_name:      `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || null,
+            subject:      "I recorded a quick video for you",
+            body:         `<p>Hi ${contact.first_name ?? "there"},</p><p>I recorded a short personal video for you — <a href="${video_url}">click here to watch it</a>.</p>`,
+            template:     "personal_video",
+            metadata:     { video_id, video_type, contact_id, agent_id: agentId, source: "video_generated" },
+            status:       "draft",
+          })
+        }
+      } catch (personalErr) {
+        console.error("[handleVideoGenerated] Draft contact email failed:", personalErr)
+      }
+    }
+
+    // Always notify the agent with a smart suggestion to review and share
+    if (agentId) {
+      await generateSmartSuggestion({
+        brokerage_id:    event.brokerage_id,
+        user_id:         agentId,
+        context_type:    "video",
+        context_id:      video_id,
+        suggestion_type: "review",
+        title:           "New Video Ready for Review",
+        description:     `AI-generated ${video_type} video is ready.${socialVideoTypes.includes(video_type) ? " A draft social post has been queued for your review." : ""} Review and publish to your channels.`,
+        action_payload:  { video_id, listing_id, contact_id, action: "review_and_publish" },
+      })
+    }
 
     return {
       success: true,

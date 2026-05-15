@@ -23,6 +23,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitEventFromCron } from "@/app/actions/orchestrator"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -62,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, provider_job_id, provider_metadata, status, retry_count, video_type, provider_metadata")
+      .select("id, agent_id, brokerage_id, contact_id, provider_job_id, provider_metadata, status, retry_count, video_type")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -213,6 +214,25 @@ export async function GET(request: NextRequest) {
             entityType: "video_project",
             entityId: video.id,
           }).catch((err) => console.error("[poll-did-videos] Kernel event failed:", err))
+
+          // Emit orchestrator event so handleVideoGenerated can auto-draft social posts /
+          // personal contact emails based on video_type
+          if (video.brokerage_id) {
+            await emitEventFromCron({
+              brokerage_id: video.brokerage_id,
+              user_id:      video.agent_id ?? undefined,
+              event_type:   "video.generated",
+              source:       "system",
+              dedupe_key:   `video.generated:${video.id}`,
+              payload: {
+                video_id:      video.id,
+                video_type:    video.video_type,
+                video_url:     persistedVideoUrl ?? didResultUrl ?? null,
+                contact_id:    (video as any).contact_id ?? null,
+                agent_user_id: video.agent_id ?? null,
+              },
+            }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
+          }
 
           results.completed++
         } else if (didStatus === "error" || didStatus === "rejected") {
