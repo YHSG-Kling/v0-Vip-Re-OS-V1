@@ -115,7 +115,7 @@ export async function scanUploadedDocument(params: {
 
   const { data: doc } = await supabase
     .from("documents")
-    .select("id, brokerage_id, document_type, content, storage_url, classification, scanned_at")
+    .select("id, brokerage_id, contact_id, transaction_id, document_type, content, storage_url, classification, scanned_at, metadata")
     .eq("id", documentId)
     .maybeSingle()
 
@@ -182,6 +182,26 @@ export async function scanUploadedDocument(params: {
       scan_error:                null,
     })
     .eq("id", documentId)
+
+  // Post-scan hook: when the classification yields participant info (PAL →
+  // lender; signed_contract → title_company), wire the extracted fields
+  // straight into transaction_participants if a transaction already exists.
+  // No-op when there's no tx yet — the tx-creation participant populator
+  // will read the PAL / signed_contract for the contact at that time.
+  try {
+    const { autoPopulateFromScannedDocument } = await import("./auto-populate-participants")
+    await autoPopulateFromScannedDocument(supabase as any, {
+      documentId,
+      classification,
+      extractedFields: extracted,
+      brokerageId:    (doc.brokerage_id as string),
+      contactId:      (doc as any).contact_id ?? null,
+      offerId:        ((doc as any).metadata?.linked_offer_id as string | undefined) ?? null,
+      transactionId:  (doc as any).transaction_id ?? null,
+    })
+  } catch (err: any) {
+    console.error("[scan] auto-populate hook failed (non-fatal):", err?.message ?? err)
+  }
 
   return {
     success: true,

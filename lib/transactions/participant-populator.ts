@@ -158,9 +158,66 @@ export async function populateInitialParticipants(
     if (sellerAgent) pending.push({ role: "seller_agent", ...sellerAgent })
   }
 
-  // NOTE: lender / title_company / inspector are deliberately NOT auto-populated.
-  // Lender comes from the PAL doc; title comes from the contract; inspectors
-  // are picked per-deal. Agent fills these in after the contract is executed.
+  // ── LENDER (from buyer's most-recent PAL on file) ────────────────────────
+  // No brokerage preferred-vendor fallback — lender comes from the actual
+  // pre-approval letter the buyer's lender issued. The universal scanner
+  // already extracted lender_name + loan_type + max_loan_amount when the
+  // PAL was uploaded.
+  if (buyerContactId) {
+    const { data: palDoc } = await supabase
+      .from("documents")
+      .select("extracted_fields")
+      .eq("brokerage_id", brokerageId)
+      .eq("contact_id", buyerContactId)
+      .eq("classification", "pre_approval_letter")
+      .order("scanned_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    const lenderName = (palDoc?.extracted_fields as any)?.lender_name?.toString().trim()
+    if (lenderName) {
+      const ef = palDoc?.extracted_fields as any
+      pending.push({
+        role:    "lender",
+        name:    lenderName,
+        company: lenderName,
+        notes: [
+          ef?.loan_type        ? `Loan type: ${ef.loan_type}`         : null,
+          ef?.max_loan_amount  ? `Max loan: $${ef.max_loan_amount}`   : null,
+          ef?.borrower_name    ? `Borrower: ${ef.borrower_name}`      : null,
+          ef?.expires_at       ? `PAL expires: ${ef.expires_at}`      : null,
+        ].filter(Boolean).join(" · ") || null,
+      })
+    }
+  }
+
+  // ── TITLE_COMPANY (from the executed signed contract on file) ────────────
+  // Title is dictated by the contract — scanner extracts title_company when
+  // the signed contract is uploaded.
+  if (buyerContactId) {
+    const { data: contractDoc } = await supabase
+      .from("documents")
+      .select("extracted_fields")
+      .eq("brokerage_id", brokerageId)
+      .eq("contact_id", buyerContactId)
+      .eq("classification", "signed_contract")
+      .order("scanned_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    const titleCompany = (contractDoc?.extracted_fields as any)?.title_company?.toString().trim()
+    if (titleCompany) {
+      const ef = contractDoc?.extracted_fields as any
+      pending.push({
+        role:    "title_company",
+        name:    titleCompany,
+        company: titleCompany,
+        notes:   ef?.title_officer ? `Officer: ${ef.title_officer}` : null,
+      })
+    }
+  }
+
+  // INSPECTOR is still NOT auto-populated — agent picks per deal, multiple
+  // preferred inspectors exist, and we don't have a single source of truth
+  // for which one this deal will use.
 
   // Insert all collected participants in one statement
   if (pending.length === 0) {
