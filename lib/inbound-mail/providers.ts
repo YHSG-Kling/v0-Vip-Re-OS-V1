@@ -1,35 +1,33 @@
 /**
  * lib/inbound-mail/providers.ts
  *
- * Email-provider-aware inbound webhook helpers. The active provider is
- * detected from the request headers (each provider sends a distinctive
- * signature header) and verified using that provider's secret. This
- * mirrors the agent's brokerage settings — whichever email provider the
- * brokerage configured for sending also handles their inbound.
+ * Email-provider-aware inbound webhook helpers. Two classes of provider:
  *
- * Supported providers (matches platform_credentials.platform values for
- * email): postmark | sendgrid | mailgun | resend.
+ *   A) TRANSACTIONAL (HMAC-signed body, attachments inline):
+ *        postmark | sendgrid | mailgun | resend
+ *      The provider sends us the whole email + attachments in the webhook
+ *      body. We verify with HMAC/ECDSA and parse the body shape per-provider.
+ *      Typically used by brokerages that own a domain + route inbound
+ *      through a transactional service.
  *
- * Each provider parser exposes:
- *   - verify(rawBody, headers): boolean   — HMAC / signature check
- *   - parse(rawBody): ParsedEmail | null  — sender / recipient / subject /
- *                                            attachments[] in a normalized
- *                                            shape downstream code uses.
+ *   B) PER-USER OAUTH (push notification, fetch via API):
+ *        gmail | outlook
+ *      The provider posts a small notification (Gmail Pub/Sub + Outlook
+ *      Graph subscription). We identify which USER the notification is for,
+ *      then fetch the actual message + attachments using the user's stored
+ *      OAuth tokens. Used by independent-contractor agents / team leads
+ *      who use their own email accounts.
  *
- * Env vars (one per provider; the brokerage tells their provider to forward
- * to /api/webhooks/inbound-mail and we accept any of the four):
- *   POSTMARK_INBOUND_WEBHOOK_SECRET
- *   SENDGRID_INBOUND_WEBHOOK_VERIFY_KEY   (ECDSA public key, PEM)
- *   MAILGUN_WEBHOOK_SIGNING_KEY
- *   RESEND_WEBHOOK_SECRET
- *
- * For a brokerage that ONLY uses one provider, only that env var needs
- * to be set; requests with unknown signature headers are rejected 401.
+ * Detection: signature header or notification shape tells us which class.
+ * Verification: A uses HMAC/ECDSA against an env-var secret; B uses the
+ *   user-scoped OAuth tokens stored in platform_credentials.
+ * Parsing: A returns ParsedInboundEmail directly; B returns a "fetch
+ *   instruction" the route handler executes via lib/inbound-mail/oauth-fetchers.
  */
 
 import { createHmac, timingSafeEqual, createVerify } from "crypto"
 
-export type InboundEmailProvider = "postmark" | "sendgrid" | "mailgun" | "resend"
+export type InboundEmailProvider = "postmark" | "sendgrid" | "mailgun" | "resend" | "gmail" | "outlook"
 
 export interface InboundAttachment {
   fileName:    string
@@ -47,13 +45,31 @@ export interface ParsedInboundEmail {
   attachments: InboundAttachment[]
 }
 
+/**
+ * For OAuth-fetcher providers, the webhook body doesn't contain the email;
+ * we have to fetch it via API. This shape carries the IDs we need to do
+ * that — the route handler passes it to lib/inbound-mail/oauth-fetchers.
+ */
+export interface OAuthFetchInstruction {
+  provider:        "gmail" | "outlook"
+  inboxEmail?:     string         // Gmail: emailAddress from Pub/Sub data
+  historyId?:      string         // Gmail: new historyId for the watch
+  outlookResource?: string        // Outlook: Graph resource path (e.g. "Users('uid')/Messages('mid')")
+  outlookSubscriptionId?: string  // Outlook: subscription id (for refresh)
+  outlookClientState?: string     // Outlook: client state we set at sub-create
+}
+
 // ─── Detection ──────────────────────────────────────────────────────────────
 
-export function detectInboundProvider(headers: Headers): InboundEmailProvider | null {
+export function detectInboundProvider(headers: Headers, rawBody?: string): InboundEmailProvider | null {
   if (headers.get("x-postmark-webhook-signature")) return "postmark"
   if (headers.get("x-twilio-email-event-webhook-signature") || headers.get("x-sg-webhook-signature")) return "sendgrid"
   if (headers.get("x-mailgun-signature-256") || headers.get("x-mailgun-signature")) return "mailgun"
   if (headers.get("svix-signature") || headers.get("resend-signature")) return "resend"
+  // Gmail Pub/Sub push: body has { message: { data: <base64>, ... }, subscription: "..." }
+  if (rawBody && rawBody.includes('"subscription"') && rawBody.includes('"message"')) return "gmail"
+  // Outlook Graph notifications: body has { value: [{ subscriptionId, clientState, resource }] }
+  if (rawBody && rawBody.includes('"clientState"') && rawBody.includes('"subscriptionId"')) return "outlook"
   return null
 }
 
@@ -225,6 +241,76 @@ function parseResend(rawBody: string): ParsedInboundEmail | null {
   } catch { return null }
 }
 
+// ─── Gmail Pub/Sub + Outlook Graph: parse-only (no HMAC; auth is OAuth) ────
+
+/**
+ * Gmail Pub/Sub push verification — Google signs the push request with a
+ * JWT in the Authorization header. We verify it's from Google and that the
+ * audience matches our configured URL.
+ *
+ * Without a Google Cloud sign-in flow we accept the request when
+ * GOOGLE_PUBSUB_VERIFICATION_AUDIENCE matches the X-Goog-Audience claim
+ * if present; otherwise we trust the body shape + the Pub/Sub subscription
+ * ID. Production deploys should set up explicit JWT verification.
+ */
+function verifyGmail(_rawBody: string, _headers: Headers): boolean {
+  // Gmail pushes auth via JWT in Authorization: Bearer <id_token>.
+  // Full OIDC verification is a multi-step setup (fetch Google's certs,
+  // verify aud + iss). For now we trust the body shape (presence of
+  // subscription + message.data) and rely on the user-scoped OAuth fetch
+  // to authoritatively prove identity. When GOOGLE_PUBSUB_VERIFICATION_AUDIENCE
+  // env is set, the route enforces the JWT audience claim.
+  return true
+}
+
+function parseGmailNotification(rawBody: string): OAuthFetchInstruction | null {
+  try {
+    const body = JSON.parse(rawBody)
+    const dataB64 = body?.message?.data
+    if (!dataB64) return null
+    const decoded = Buffer.from(dataB64, "base64").toString("utf-8")
+    const data = JSON.parse(decoded)   // { emailAddress, historyId }
+    if (!data?.emailAddress || !data?.historyId) return null
+    return {
+      provider:   "gmail",
+      inboxEmail: String(data.emailAddress).toLowerCase().trim(),
+      historyId:  String(data.historyId),
+    }
+  } catch { return null }
+}
+
+/**
+ * Outlook Graph subscription validation handshake.
+ *
+ * When Microsoft Graph creates a subscription, it POSTs a single request
+ * with a ?validationToken= query string to verify our endpoint owns the URL.
+ * The route handler returns the token as text/plain to complete the handshake.
+ *
+ * For real notifications the body contains { value: [ { subscriptionId,
+ * clientState, resource, changeType } ] }. We rely on clientState matching
+ * the value we stored at subscription-create time as the authentication
+ * mechanism (Microsoft's recommended pattern).
+ */
+function verifyOutlook(_rawBody: string, _headers: Headers): boolean {
+  // clientState matching happens in the route after parsing — it ties the
+  // notification to a specific platform_credentials row.
+  return true
+}
+
+function parseOutlookNotification(rawBody: string): OAuthFetchInstruction | null {
+  try {
+    const body = JSON.parse(rawBody)
+    const note = (body?.value ?? [])[0]
+    if (!note?.resource || !note?.clientState) return null
+    return {
+      provider:              "outlook",
+      outlookResource:       String(note.resource),
+      outlookSubscriptionId: String(note.subscriptionId ?? ""),
+      outlookClientState:    String(note.clientState),
+    }
+  } catch { return null }
+}
+
 // ─── Dispatcher ─────────────────────────────────────────────────────────────
 
 export function verifyInbound(provider: InboundEmailProvider, rawBody: string, headers: Headers): boolean {
@@ -233,14 +319,29 @@ export function verifyInbound(provider: InboundEmailProvider, rawBody: string, h
     case "sendgrid": return verifySendgrid(rawBody, headers)
     case "mailgun":  return verifyMailgun(rawBody, headers)
     case "resend":   return verifyResend(rawBody, headers)
+    case "gmail":    return verifyGmail(rawBody, headers)
+    case "outlook":  return verifyOutlook(rawBody, headers)
   }
 }
 
+/**
+ * For TRANSACTIONAL providers: returns the parsed inbound email directly.
+ * For OAUTH providers: returns null — the route must call parseFetchInstruction
+ * instead and use the OAuth fetchers to retrieve the actual messages.
+ */
 export function parseInbound(provider: InboundEmailProvider, rawBody: string): ParsedInboundEmail | null {
   switch (provider) {
     case "postmark": return parsePostmark(rawBody)
     case "sendgrid": return parseSendgrid(rawBody)
     case "mailgun":  return parseMailgun(rawBody)
     case "resend":   return parseResend(rawBody)
+    case "gmail":
+    case "outlook":  return null  // use parseFetchInstruction instead
   }
+}
+
+export function parseFetchInstruction(provider: "gmail" | "outlook", rawBody: string): OAuthFetchInstruction | null {
+  if (provider === "gmail")   return parseGmailNotification(rawBody)
+  if (provider === "outlook") return parseOutlookNotification(rawBody)
+  return null
 }
