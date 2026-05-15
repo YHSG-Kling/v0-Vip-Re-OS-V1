@@ -3,17 +3,23 @@
 /**
  * app/actions/annual-home-value-report.ts
  *
- * Annual home-value report generated on the closing anniversary of every
- * lifetime customer's most recent purchase. The report is written into
- * lifetime_customer_touchpoints with payload = the report HTML, and
- * surfaces in:
- *   • the lifetime customer portal (RealScout-style home dashboard)
- *   • the agent's pending touchpoint queue
+ * Home-value report generated for every lifetime customer:
+ *   - on each closing anniversary (1y / 2y / 3y / ...)
+ *   - every quarter in between (3m / 6m / 9m from anniversary)
  *
- * No new tables — uses existing transactions, contacts, lifetime_customer_touchpoints.
+ * The report is written into lifetime_customer_touchpoints AND emailed to
+ * the past client directly. The email is what replaces the agent's
+ * HomeBot / Cloze / Cash Offer subscription. Routes through dispatchEmail
+ * which handles TCPA / opt-out compliance + records vendor usage so the
+ * agent's AI ROI dashboard credits the send.
+ *
+ * No new tables — uses existing transactions, contacts,
+ * lifetime_customer_touchpoints.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { dispatchEmail } from "@/lib/providers/dispatch"
+import { buildHomeValueEmailHtml, buildHomeValueEmailSubject } from "@/lib/marketing/home-value-email"
 
 interface ReportInput {
   contactId: string
@@ -192,19 +198,204 @@ export async function generateAnnualHomeValueReportsCronTick() {
       continue
     }
 
+    // Ship the email AND record the touchpoint. The touchpoint engagement_data
+    // carries the dispatch result so the agent's ROI dashboard can credit it.
+    const emailResult = await sendHomeValueReportEmail({
+      report,
+      brokerageId:   c.brokerage_id as string,
+      agentUserId:   c.agent_id as string | null,
+      contactId:     c.buyer_contact_id as string,
+      cadence:       "anniversary",
+    })
+
     await supabase.from("lifetime_customer_touchpoints").insert({
-      brokerage_id: c.brokerage_id,
-      agent_id: c.agent_id,
-      contact_id: c.buyer_contact_id,
-      touchpoint_type: "annual_home_value_report",
-      channel: "in_app",
-      status: "pending_review",
-      scheduled_date: new Date().toISOString().slice(0, 10),
+      brokerage_id:           c.brokerage_id,
+      agent_id:               c.agent_id,
+      contact_id:             c.buyer_contact_id,
+      touchpoint_type:        "annual_home_value_report",
+      channel:                emailResult.sent ? "email" : "in_app",
+      status:                 emailResult.sent ? "sent" : "pending_review",
+      scheduled_date:         new Date().toISOString().slice(0, 10),
+      sent_date:              emailResult.sent ? new Date().toISOString().slice(0, 10) : null,
       related_transaction_id: c.id,
-      engagement_data: report,
+      engagement_data:        { ...report, email_dispatch: emailResult },
     })
 
     generated.push({ contactId: c.buyer_contact_id as string, transactionId: c.id as string, ok: true })
+  }
+
+  return { processed: generated.length, generated }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Email dispatch helper — shared between the annual + quarterly crons
+// ────────────────────────────────────────────────────────────────────────────
+
+interface EmailDispatchResult {
+  sent:        boolean
+  providerKey?: string
+  error?:      string
+}
+
+async function sendHomeValueReportEmail(args: {
+  report:        AnnualHomeValueReport
+  brokerageId:   string
+  agentUserId:   string | null
+  contactId:     string
+  cadence:       "anniversary" | "quarterly"
+}): Promise<EmailDispatchResult> {
+  const svc = createServiceClient()
+
+  // Need the contact's email + the agent's display info + the brokerage brand.
+  const [{ data: contact }, { data: brokerage }, { data: agentUser }] = await Promise.all([
+    svc.from("contacts").select("email, first_name, last_name").eq("id", args.contactId).maybeSingle(),
+    svc.from("brokerages").select("name, logo_url, primary_color, license_number, license_state").eq("id", args.brokerageId).maybeSingle(),
+    args.agentUserId
+      ? svc.from("users").select("first_name, last_name, email, phone").eq("id", args.agentUserId).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+
+  if (!contact?.email)        return { sent: false, error: "contact has no email" }
+  if (!brokerage?.name)       return { sent: false, error: "brokerage missing name" }
+
+  // Build the HTML + subject using the brand-compliant template
+  const ctx = {
+    report:    args.report,
+    brokerage: {
+      name:          brokerage.name,
+      logoUrl:       brokerage.logo_url ?? null,
+      licenseNumber: brokerage.license_number ?? null,
+      licenseState:  brokerage.license_state ?? null,
+      primaryColor:  brokerage.primary_color ?? null,
+    },
+    agent: {
+      firstName: agentUser?.first_name ?? null,
+      lastName:  agentUser?.last_name ?? null,
+      email:     agentUser?.email ?? null,
+      phone:     agentUser?.phone ?? null,
+      photoUrl:  null,  // future: pull from agents.profile_photo_url
+    },
+    cadence: args.cadence,
+  }
+
+  const subject = buildHomeValueEmailSubject(ctx)
+  const html    = buildHomeValueEmailHtml(ctx)
+
+  // dispatchEmail handles: TCPA opt-out gate, assembleEmail (unsubscribe link
+  // injection + signature + legal), provider selection, vendor usage logging.
+  const dispatchResult = await dispatchEmail({
+    brokerageId:   args.brokerageId,
+    userId:        args.agentUserId ?? args.brokerageId,
+    agentId:       args.agentUserId ?? undefined,
+    contactId:     args.contactId,
+    from:          agentUser?.email ?? `noreply@${brokerage.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}.com`,
+    to:            contact.email,
+    subject,
+    html,
+    channelPurpose: "update",
+    systemSource:   "home_value_report",
+    metadata: {
+      cadence:           args.cadence,
+      years_owned:       args.report.yearsOwned,
+      property_address:  args.report.propertyAddress,
+      estimated_value:   args.report.currentEstimatedValue,
+    },
+  })
+
+  return {
+    sent:        dispatchResult.success,
+    providerKey: dispatchResult.providerKey,
+    error:       dispatchResult.error,
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Quarterly cron — sends a fresh value check-in every 90 days BETWEEN
+// closing anniversaries, so past clients hear from the agent ~4×/year
+// instead of just once. This is what makes the platform a HomeBot replacement.
+// ────────────────────────────────────────────────────────────────────────────
+
+export async function generateQuarterlyHomeValueReportsCronTick() {
+  const supabase = createServiceClient()
+  const today = new Date()
+  const todayMD = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`
+
+  const { data: candidates } = await supabase
+    .from("transactions")
+    .select(
+      `id, brokerage_id, agent_id, close_date, buyer_contact_id, property_address,
+       contact:buyer_contact_id (id, contact_type)`,
+    )
+    .eq("status", "closed")
+    .not("close_date", "is", null)
+    .not("buyer_contact_id", "is", null)
+    .limit(500)
+
+  const generated: Array<{ contactId: string; transactionId: string; ok: boolean; cadence: "quarterly"; reason?: string }> = []
+
+  for (const c of candidates ?? []) {
+    const close = new Date(c.close_date as string)
+
+    // Quarterly cadence: send at +3mo, +6mo, +9mo from the close date.
+    // Annual (+12mo) is handled by the anniversary cron — skip it here so
+    // a contact doesn't get two emails on the same day.
+    const monthsSinceClose =
+      (today.getFullYear() - close.getFullYear()) * 12 + (today.getMonth() - close.getMonth())
+    const dayMatch = close.getDate() === today.getDate()
+    const isQuarterMark = dayMatch && monthsSinceClose > 0 && monthsSinceClose % 3 === 0 && monthsSinceClose % 12 !== 0
+    if (!isQuarterMark) continue
+
+    // Idempotency: did we already send a quarterly report this period?
+    // Use a period key like "2026-Q1-3mo" baked into engagement_data.period_key.
+    const periodKey = `${today.getFullYear()}-m${monthsSinceClose}`
+    const { data: existing } = await supabase
+      .from("lifetime_customer_touchpoints")
+      .select("id, engagement_data")
+      .eq("contact_id", c.buyer_contact_id as string)
+      .eq("touchpoint_type", "quarterly_home_value_report")
+      .gte("created_at", new Date(today.getTime() - 10 * 86_400_000).toISOString())
+    const alreadySent = (existing ?? []).some(
+      (e: any) => (e.engagement_data?.period_key as string | undefined) === periodKey
+    )
+    if (alreadySent) continue
+
+    const report = await buildAnnualHomeValueReport({
+      contactId: c.buyer_contact_id as string,
+      closedTransactionId: c.id as string,
+    })
+    if (!report) {
+      generated.push({ contactId: c.buyer_contact_id as string, transactionId: c.id as string, ok: false, cadence: "quarterly", reason: "no report" })
+      continue
+    }
+
+    const emailResult = await sendHomeValueReportEmail({
+      report,
+      brokerageId:  c.brokerage_id as string,
+      agentUserId:  c.agent_id as string | null,
+      contactId:    c.buyer_contact_id as string,
+      cadence:      "quarterly",
+    })
+
+    await supabase.from("lifetime_customer_touchpoints").insert({
+      brokerage_id:           c.brokerage_id,
+      agent_id:               c.agent_id,
+      contact_id:             c.buyer_contact_id,
+      touchpoint_type:        "quarterly_home_value_report",
+      channel:                emailResult.sent ? "email" : "in_app",
+      status:                 emailResult.sent ? "sent" : "pending_review",
+      scheduled_date:         new Date().toISOString().slice(0, 10),
+      sent_date:              emailResult.sent ? new Date().toISOString().slice(0, 10) : null,
+      related_transaction_id: c.id,
+      engagement_data:        { ...report, period_key: periodKey, email_dispatch: emailResult },
+    })
+
+    generated.push({
+      contactId:     c.buyer_contact_id as string,
+      transactionId: c.id as string,
+      ok:            emailResult.sent,
+      cadence:       "quarterly",
+      reason:        emailResult.sent ? undefined : emailResult.error,
+    })
   }
 
   return { processed: generated.length, generated }
