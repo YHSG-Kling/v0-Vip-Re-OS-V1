@@ -16,6 +16,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
+      { id: 'listing-health', label: 'Listing Health', href: '/dashboard/listings/health', icon: 'ShieldCheck' },
       { id: 'open-houses', label: 'Open Houses', href: '/dashboard/open-houses', icon: 'CalendarDays' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
