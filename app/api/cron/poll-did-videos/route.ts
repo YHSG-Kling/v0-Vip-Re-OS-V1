@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, contact_id, provider_job_id, provider_metadata, status, retry_count, video_type")
+      .select("id, agent_id, brokerage_id, listing_id, provider_job_id, provider_metadata, status, retry_count, video_type")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -228,7 +228,7 @@ export async function GET(request: NextRequest) {
                 video_id:      video.id,
                 video_type:    video.video_type,
                 video_url:     persistedVideoUrl ?? didResultUrl ?? null,
-                contact_id:    (video as any).contact_id ?? null,
+                listing_id:    (video as any).listing_id ?? null,
                 agent_user_id: video.agent_id ?? null,
               },
             }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))

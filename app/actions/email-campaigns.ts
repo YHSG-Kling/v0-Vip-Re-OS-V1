@@ -345,45 +345,29 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
     // Resolve from_email from the campaign agent's profile (or actorUserId)
     const agentId = campaign.agent_id ?? actorUserId
     let fromEmail = "noreply@example.com"
-    let fromName = ""
     const { data: agentUser } = await svc
       .from("users")
-      .select("email, first_name, last_name, full_name")
+      .select("email, first_name, last_name")
       .eq("id", agentId)
       .maybeSingle()
     if (agentUser?.email) {
       fromEmail = agentUser.email
-      fromName = agentUser.full_name ?? `${agentUser.first_name ?? ""} ${agentUser.last_name ?? ""}`.trim()
     }
 
-    // Fetch active subscribers. newsletter_subscribers has no brokerage_id — query by agent.
-    // If campaign has an agent_id, use their subscribers; otherwise get all agents in the
-    // brokerage and pull their subscribers (brokerage-wide blast).
-    let subscribers: Array<{ id: string; email: string; first_name: string | null; last_name: string | null; contact_id: string | null }> = []
-
+    // Fetch active subscribers — newsletter_subscribers.brokerage_id is NOT NULL
+    // and exists on every row, so a single brokerage-scoped query covers both
+    // the agent-specific and brokerage-wide cases. When campaign.agent_id is
+    // set we additionally narrow to that agent's list.
+    let subscriberQuery = svc
+      .from("newsletter_subscribers")
+      .select("id, email, first_name, last_name, contact_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "active")
     if (campaign.agent_id) {
-      const { data } = await svc
-        .from("newsletter_subscribers")
-        .select("id, email, first_name, last_name, contact_id")
-        .eq("agent_id", campaign.agent_id)
-        .eq("status", "active")
-      subscribers = data ?? []
-    } else {
-      // Brokerage-wide: get all user IDs in this brokerage first
-      const { data: brokerageUsers } = await svc
-        .from("users")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-      const agentIds = (brokerageUsers ?? []).map((u: { id: string }) => u.id)
-      if (agentIds.length > 0) {
-        const { data } = await svc
-          .from("newsletter_subscribers")
-          .select("id, email, first_name, last_name, contact_id")
-          .in("agent_id", agentIds)
-          .eq("status", "active")
-        subscribers = data ?? []
-      }
+      subscriberQuery = subscriberQuery.eq("agent_id", campaign.agent_id)
     }
+    const { data: subscribersData } = await subscriberQuery
+    const subscribers: Array<{ id: string; email: string; first_name: string | null; last_name: string | null; contact_id: string | null }> = subscribersData ?? []
 
     // Deduplicate by email so a contact subscribed to multiple agents only gets one copy
     const seen = new Set<string>()
@@ -418,22 +402,22 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
         contactId: sub.contact_id ?? undefined,
         channelPurpose: "campaign",
         systemSource: "email_campaign",
-        metadata: { campaign_id: campaignId },
+        metadata: { campaign_id: campaignId, subscriber_id: sub.id },
       })
 
-      // Write an email_sends tracking row for each recipient
-      await svc.from("email_sends").insert({
-        campaign_id: campaignId,
-        lead_id: sub.contact_id ?? null,
-        status: result.success ? "sent" : "failed",
-        sent_at: result.success ? new Date().toISOString() : null,
-        error_message: result.success ? null : result.error ?? "Dispatch failed",
-        personalization_data: {
-          subscriber_email: sub.email,
-          subscriber_name: `${sub.first_name ?? ""} ${sub.last_name ?? ""}`.trim() || null,
-          provider_key: result.providerKey,
-        },
-      })
+      // Per-recipient tracking goes through newsletter_sends when the subscriber
+      // is linked to a contact. Subscribers without a contact_id are counted in
+      // the campaign-level totals only.
+      if (sub.contact_id) {
+        await svc.from("newsletter_sends").insert({
+          brokerage_id: brokerageId,
+          contact_id:   sub.contact_id,
+          campaign_id:  campaignId,
+          subject:      campaign.subject_line,
+          status:       result.success ? "sent" : "failed",
+          sent_at:      result.success ? new Date().toISOString() : null,
+        })
+      }
 
       if (result.success) sent++; else failed++
     }

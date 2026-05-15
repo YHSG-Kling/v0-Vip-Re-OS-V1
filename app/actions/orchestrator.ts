@@ -162,25 +162,30 @@ export async function emitEvent(input: EventInput, processImmediately = false): 
       return { success: false, error: "brokerage_id is required" }
     }
 
-    // Insert the event — map to actual lifecycle_events schema
+    // Insert the event — lifecycle_events requires both payload (NOT NULL)
+    // and entity_id/entity_type (NOT NULL). entity falls back to brokerage
+    // when no specific entity is in the payload.
+    const pl = (input.payload ?? {}) as Record<string, any>
+    const entityId   = pl.contact_id ?? pl.listing_id ?? pl.video_id ?? pl.transaction_id ?? input.brokerage_id
+    const entityType = pl.contact_id     ? "contact"
+                     : pl.listing_id     ? "listing"
+                     : pl.video_id       ? "video"
+                     : pl.transaction_id ? "transaction"
+                     : "brokerage"
     const { data: event, error } = await supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id:  input.brokerage_id,
-        actor_user_id: input.user_id ?? null,   // lifecycle_events uses actor_user_id
+        actor_user_id: input.user_id ?? null,
+        user_id:       input.user_id ?? null,
         event_type:    input.event_type,
-        metadata:      input.payload,            // lifecycle_events uses metadata not payload
+        payload:       pl,
+        metadata:      pl,
         source:        input.source,
         dedupe_key:    input.dedupe_key ?? null,
         processed:     false,
-        entity_id:   (input.payload as any)?.contact_id
-                      ?? (input.payload as any)?.listing_id
-                      ?? (input.payload as any)?.video_id
-                      ?? null,
-        entity_type: (input.payload as any)?.contact_id  ? "contact"
-                    : (input.payload as any)?.listing_id ? "listing"
-                    : (input.payload as any)?.video_id   ? "video"
-                    : "system",
+        entity_id:     entityId,
+        entity_type:   entityType,
       })
       .select()
       .single()
@@ -227,24 +232,27 @@ export async function emitEventFromCron(input: EventInput): Promise<{ success: b
       if (existing) return { success: true, eventId: existing.id }
     }
 
+    const pl = (input.payload ?? {}) as Record<string, any>
+    const entityId   = pl.video_id ?? pl.contact_id ?? pl.listing_id ?? pl.transaction_id ?? input.brokerage_id
+    const entityType = pl.video_id       ? "video"
+                     : pl.contact_id     ? "contact"
+                     : pl.listing_id     ? "listing"
+                     : pl.transaction_id ? "transaction"
+                     : "brokerage"
     const { data: event, error } = await svc
       .from("lifecycle_events")
       .insert({
         brokerage_id:  input.brokerage_id,
         actor_user_id: input.user_id ?? null,
+        user_id:       input.user_id ?? null,
         event_type:    input.event_type,
-        metadata:      input.payload,
+        payload:       pl,
+        metadata:      pl,
         source:        input.source,
         dedupe_key:    input.dedupe_key ?? null,
         processed:     false,
-        entity_id:   (input.payload as any)?.video_id
-                      ?? (input.payload as any)?.contact_id
-                      ?? (input.payload as any)?.listing_id
-                      ?? null,
-        entity_type: (input.payload as any)?.video_id   ? "video"
-                    : (input.payload as any)?.contact_id ? "contact"
-                    : (input.payload as any)?.listing_id ? "listing"
-                    : "system",
+        entity_id:     entityId,
+        entity_type:   entityType,
       })
       .select()
       .single()
@@ -637,71 +645,48 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
 async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
-    const { video_id, video_type, video_url, listing_id, contact_id, agent_user_id } = event.payload
+    const { video_id, video_type, video_url, listing_id, agent_user_id } = event.payload
     const agentId = agent_user_id ?? event.user_id
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
 
-    // For listing promo, market update, and neighborhood tour: auto-draft a social post
+    // For listing promo, market update, neighborhood tour, and agent intro:
+    // auto-draft one social post per platform. social_posts is one row per
+    // platform — createSocialPost only writes the first platform passed in,
+    // so we loop here to actually create the multi-platform fan-out.
     const socialVideoTypes = ["listing_promo", "market_update", "neighborhood_tour", "agent_introduction"]
+    let draftCreated = false
     if (socialVideoTypes.includes(video_type) && video_url && agentId) {
       const captionByType: Record<string, string> = {
-        listing_promo:      "Just listed! Check out this beautiful property. 🏡 #JustListed #RealEstate",
+        listing_promo:      "Just listed! Check out this beautiful property. #JustListed #RealEstate",
         market_update:      "Market update — see what's happening in your local real estate market. #MarketUpdate #RealEstate",
         neighborhood_tour:  "Neighborhood tour — discover what makes this area special. #NeighborhoodTour",
         agent_introduction: "Hi, I'm your local real estate expert. Let's connect! #RealEstate #YourAgent",
       }
-      const caption = captionByType[video_type] ?? `New video from your real estate team. #RealEstate`
+      const caption = captionByType[video_type] ?? "New video from your real estate team. #RealEstate"
       const platforms = ["facebook", "instagram", "linkedin"]
-
       try {
         const { createSocialPost } = await import("@/app/actions/social-publishing")
-        await createSocialPost({
-          content:       caption,
-          mediaUrls:     [video_url],
-          mediaTypes:    ["video"],
-          scheduledFor:  tomorrow,
-          platforms,
-          contentType:   video_type === "listing_promo" ? "listing" : "market_update",
-          linkedListingId: listing_id ?? undefined,
-          generatedByAi: true,
-          aiPrompt:      `Auto-drafted from completed ${video_type} video ${video_id}`,
-          userId:        agentId,
-        })
+        for (const platform of platforms) {
+          await createSocialPost({
+            content:         caption,
+            mediaUrls:       [video_url],
+            mediaTypes:      ["video"],
+            scheduledFor:    tomorrow,
+            platforms:       [platform],
+            contentType:     video_type === "listing_promo" ? "listing" : "market_update",
+            linkedListingId: listing_id ?? undefined,
+            generatedByAi:   true,
+            aiPrompt:        `Auto-drafted from completed ${video_type} video ${video_id}`,
+            userId:          agentId,
+          })
+        }
+        draftCreated = true
       } catch (socialErr) {
         console.error("[handleVideoGenerated] Draft social post failed:", socialErr)
       }
     }
 
-    // For personal / thank_you videos with a known contact: draft a contact communication
-    const personalVideoTypes = ["thank_you", "personal", "buyer_guide"]
-    if (personalVideoTypes.includes(video_type) && contact_id && video_url && agentId) {
-      try {
-        const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
-        const svc = svcCreate()
-        const { data: contact } = await svc
-          .from("contacts")
-          .select("first_name, last_name, email")
-          .eq("id", contact_id)
-          .maybeSingle()
-        if (contact?.email) {
-          // Queue a draft email for this contact with the video link
-          await svc.from("email_queue").insert({
-            brokerage_id: event.brokerage_id,
-            to_email:     contact.email,
-            to_name:      `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || null,
-            subject:      "I recorded a quick video for you",
-            body:         `<p>Hi ${contact.first_name ?? "there"},</p><p>I recorded a short personal video for you — <a href="${video_url}">click here to watch it</a>.</p>`,
-            template:     "personal_video",
-            metadata:     { video_id, video_type, contact_id, agent_id: agentId, source: "video_generated" },
-            status:       "draft",
-          })
-        }
-      } catch (personalErr) {
-        console.error("[handleVideoGenerated] Draft contact email failed:", personalErr)
-      }
-    }
-
-    // Always notify the agent with a smart suggestion to review and share
+    // Notify the agent so they can review and publish
     if (agentId) {
       await generateSmartSuggestion({
         brokerage_id:    event.brokerage_id,
@@ -710,8 +695,8 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
         context_id:      video_id,
         suggestion_type: "review",
         title:           "New Video Ready for Review",
-        description:     `AI-generated ${video_type} video is ready.${socialVideoTypes.includes(video_type) ? " A draft social post has been queued for your review." : ""} Review and publish to your channels.`,
-        action_payload:  { video_id, listing_id, contact_id, action: "review_and_publish" },
+        description:     `AI-generated ${video_type} video is ready.${draftCreated ? " A draft social post has been queued on Facebook, Instagram, and LinkedIn — review and publish from the Social Planner." : ""}`,
+        action_payload:  { video_id, listing_id, action: "review_and_publish" },
       })
     }
 
