@@ -510,21 +510,26 @@ export const PROVIDER_METADATA: Record<ProviderName, {
     oauthProvider: "docusign",
   },
   dotloop: {
+    // Real estate transaction-and-forms platform with built-in e-sign. Counts
+    // as both transaction-management and e-sign — primary type is esign so
+    // it satisfies the required e-sign category in the progress calc.
     displayName: "DotLoop",
-    providerType: "transaction",
+    providerType: "esign",
     credentialFields: [
       { key: "access_token", label: "Access Token", type: "password", required: true },
       { key: "partner_key", label: "Partner Key", type: "text", required: false },
     ],
   },
   skyslope: {
+    // Transaction-and-forms platform with built-in DigiSign e-sign.
     displayName: "SkySlope",
-    providerType: "transaction",
+    providerType: "esign",
     credentialFields: [
       { key: "api_key", label: "API Key", type: "password", required: true },
     ],
   },
   brokermint: {
+    // Pure transaction-management + commission tracking (no built-in e-sign).
     displayName: "Brokermint",
     providerType: "transaction",
     credentialFields: [
@@ -636,29 +641,38 @@ export const PROVIDER_METADATA: Record<ProviderName, {
 // ─── PROVIDER GROUPS ──────────────────────────────────────────────────────────
 
 export const PROVIDER_GROUPS = {
+  // Required = the minimum tech a brokerage needs to operate on the platform.
+  // E-sign covers DocuSign, Dotloop, and SkySlope (the latter two also serve
+  // as transaction-form platforms, so connecting one of them satisfies both
+  // the required e-sign category and the recommended transaction category).
   required: {
     label: "Required",
-    description: "Must connect at least one of each to advance in onboarding",
-    providers: ["twilio", "sendgrid", "docusign"] as ProviderName[],
+    description: "Connect one provider per category to advance in onboarding",
+    providers: ["twilio", "sendgrid", "docusign", "dotloop", "skyslope"] as ProviderName[],
     requirements: {
-      sms: 1,    // At least 1 SMS provider
-      email: 1,  // At least 1 email provider
-      esign: 1,  // At least 1 e-sign provider
+      sms: 1,
+      email: 1,
+      esign: 1,
     },
   },
+  // Recommended = transaction-form platform (so the form wizard can pull
+  // state contracts/disclosures), calendar, CRM. Dotloop and SkySlope are
+  // listed here too for the transaction-management UX even though their
+  // primary type is e-sign — connecting them counts toward both.
   recommended: {
     label: "Recommended",
-    description: "Transaction management, calendar, and CRM — connect at least one transaction platform",
+    description: "Transaction-form platform, CRM, calendar — strongly recommended for the AI workflow",
     providers: ["dotloop", "skyslope", "brokermint", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
     requirements: {
-      transaction: 0, // At least 1 recommended
+      transaction: 0,
       crm: 0,
       calendar: 0,
     },
   },
+  // Optional = accounting, MLS/IDX, lead portals, alternative video provider.
   optional: {
     label: "Optional",
-    description: "Additional integrations — connect any that apply to your business",
+    description: "Connect any that apply to your business",
     providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity", "heygen"] as ProviderName[],
     requirements: {},
   },
