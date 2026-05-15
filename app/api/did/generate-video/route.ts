@@ -17,9 +17,18 @@
  *   elevenlabs_voice_id: string,
  *   agent_photo_url?: string,   // preferred for UGC / social content
  *   agent_video_url?: string,   // preferred for formal / brand videos
- *   background?: { type: "color" | "image"; value: string },
+ *   background?: { type: "color" | "image" | "video"; value: string },
  * }
  * Provide at least one of agent_photo_url or agent_video_url.
+ *
+ * Background types:
+ *   color  → static color behind the avatar (D-ID composites it pre-render)
+ *   image  → static image behind the avatar (D-ID composites it pre-render)
+ *   video  → EXPLAINER MODE. D-ID still renders just the talking head; the
+ *            poll cron post-composites it as a bottom-right PIP over the
+ *            background video (typical: property walkthrough, drone footage,
+ *            screen recording). Logo moves to top-left, attribution band
+ *            spans the bottom edge. The value is the public video URL.
  */
 
 import { type NextRequest, NextResponse } from "next/server"
@@ -198,12 +207,27 @@ export async function POST(request: NextRequest) {
 
     // Background handling — D-ID supports `background` on /talks (color hex or image URL).
     // For /clips, background gets baked in via the source clip itself.
+    // type='video' is the EXPLAINER mode: D-ID still renders only the talking
+    // head; we persist the video URL on the row so the poll cron can post-
+    // composite the head as a PIP over it.
     const bgValue: string | { type: string; url?: string; color?: string } | undefined =
       background?.type === "image" && background?.value
         ? { type: "image", url: background.value }
         : background?.type === "color" && background?.value
         ? { type: "color", color: background.value }
         : undefined
+
+    // Persist the background intent on the row so the cron can route to the
+    // right compositor (standard talking-head vs explainer PIP).
+    if (background?.type && background?.value) {
+      await supabase
+        .from("ai_video_projects")
+        .update({
+          background_type: background.type,
+          background_url:  background.value,
+        })
+        .eq("id", video_project_id)
+    }
 
     const didPayload = isVideoSource
       ? {

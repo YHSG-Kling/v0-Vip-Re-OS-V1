@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -199,18 +199,37 @@ export async function GET(request: NextRequest) {
                 }
               }
 
-              const { compositeVideoAttribution } = await import("@/lib/video/composite-attribution")
-              const result = await compositeVideoAttribution({
-                inputVideoUrl: persistedVideoUrl,
-                brand: {
-                  brokerageName:         brokerage?.name ?? null,
-                  brokerageDba:          brokerage?.dba ?? null,
-                  brokerageLicense:      brokerage?.license_number ?? null,
-                  brokerageLicenseState: brokerage?.license_state ?? null,
-                  teamName,
-                  logoUrl:               teamLogoUrl ?? brokerage?.logo_url ?? null,
-                },
-              })
+              // Explainer mode — when background_type='video' and a background
+              // URL is set, the talking head becomes a PIP in the bottom-right
+              // over a property walkthrough / drone footage / market-update
+              // background. Logo moves to top-left so it doesn't collide with
+              // the PIP. Audio is pulled from the talking head.
+              //
+              // Standard mode — single talking head, logo bottom-right.
+              const isExplainer =
+                (video as any).background_type === "video" &&
+                typeof (video as any).background_url === "string" &&
+                (video as any).background_url.length > 0
+              const brand = {
+                brokerageName:         brokerage?.name ?? null,
+                brokerageDba:          brokerage?.dba ?? null,
+                brokerageLicense:      brokerage?.license_number ?? null,
+                brokerageLicenseState: brokerage?.license_state ?? null,
+                teamName,
+                logoUrl:               teamLogoUrl ?? brokerage?.logo_url ?? null,
+              }
+
+              const { compositeVideoAttribution, compositeExplainerVideo } = await import("@/lib/video/composite-attribution")
+              const result = isExplainer
+                ? await compositeExplainerVideo({
+                    backgroundVideoUrl:  (video as any).background_url,
+                    talkingHeadVideoUrl: persistedVideoUrl,
+                    brand,
+                  })
+                : await compositeVideoAttribution({
+                    inputVideoUrl: persistedVideoUrl,
+                    brand,
+                  })
 
               if (result.overlayApplied && result.outputBuffer.length > 0) {
                 // Upload the branded version. Suffix the path so we keep both
@@ -262,12 +281,20 @@ export async function GET(request: NextRequest) {
               // it up directly without a second D-ID render.
               provider_metadata: {
                 ...((video as any).provider_metadata ?? {}),
-                did_result_url:       didResultUrl,
-                did_thumbnail_url:    didThumbnailUrl,
-                persisted_to_storage: !!persistedVideoUrl,
-                clean_video_url:      persistedVideoUrl ?? null,
-                branded_video_url:    brandedVideoUrl,
+                did_result_url:        didResultUrl,
+                did_thumbnail_url:     didThumbnailUrl,
+                persisted_to_storage:  !!persistedVideoUrl,
+                clean_video_url:       persistedVideoUrl ?? null,
+                branded_video_url:     brandedVideoUrl,
                 visual_overlay_applied: visualOverlayApplied,
+                // 'explainer' when the cron composited PIP + background;
+                // 'standard' when it ran the single-talking-head pipeline.
+                render_mode:
+                  (video as any).background_type === "video" &&
+                  typeof (video as any).background_url === "string" &&
+                  (video as any).background_url.length > 0
+                    ? "explainer"
+                    : "standard",
               },
             })
             .eq("id", video.id)
