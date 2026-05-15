@@ -55,6 +55,7 @@ import {
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video-generation"
+import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { getHeyGenAvatars } from "@/app/actions/heygen-avatars"
 import { getPlatformVideoProvider } from "@/app/actions/settings/global-settings-actions"
@@ -212,6 +213,13 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
   const [qualityPreset, setQualityPreset] = useState<string>("1080p")
   const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
+  // Cinematic touches — brokerage-curated bookend clips + b-roll the agent
+  // picks from a card grid. Post-render compositing in poll-did-videos cron.
+  const [brollSelection, setBrollSelection] = useState<{
+    introVideoUrl: string | null
+    outroVideoUrl: string | null
+    bRollUrls:     string[]
+  }>({ introVideoUrl: null, outroVideoUrl: null, bRollUrls: [] })
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
 
   // Step 3: Custom background upload / webcam capture
@@ -516,6 +524,12 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                 ? agentDIDProfile?.did_video_url
                 : null,
             background: didBackground,
+            // Cinematic touches — picked from the brokerage stock library in
+            // step 3. All optional. The poll cron concatenates intro→main→outro
+            // after the brand overlay.
+            ...(brollSelection.introVideoUrl ? { intro_video_url: brollSelection.introVideoUrl } : {}),
+            ...(brollSelection.outroVideoUrl ? { outro_video_url: brollSelection.outroVideoUrl } : {}),
+            ...(brollSelection.bRollUrls.length > 0 ? { b_roll_urls: brollSelection.bRollUrls } : {}),
           }
         : {
             script,
@@ -1773,6 +1787,19 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                )}
+
+                {/* Cinematic touches — intro / outro / b-roll from the brokerage
+                    stock library. Entirely optional. */}
+                {brokerage?.id && (
+                  <div className="pt-4 border-t">
+                    <BrollPicker
+                      brokerageId={brokerage.id}
+                      videoType={aiScriptVideoType}
+                      value={brollSelection}
+                      onChange={setBrollSelection}
+                    />
                   </div>
                 )}
               </div>

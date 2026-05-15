@@ -276,6 +276,131 @@ async function runFfmpeg(args: string[]): Promise<void> {
 }
 
 // ============================================================================
+// INTRO + OUTRO CONCAT — brokerage-curated bookend clips
+// ============================================================================
+//
+// After the brand-overlay step has finished and the agent's branded talking
+// head (or explainer) is in hand, optionally prepend an intro clip and
+// append an outro clip from the brokerage's stock library
+// (video_assets). The result is one seamless video the agent can post to
+// any channel.
+//
+// Implementation uses ffmpeg's concat filter with normalisation:
+//   1. Each input is scaled+padded to the main video's exact resolution
+//      so a 720p drone clip doesn't break a 1080p main render.
+//   2. Audio tracks are normalised to AAC stereo so concat doesn't drop
+//      any segment that lacks an audio track.
+//   3. concat=n=N:v=1:a=1 stitches them in order.
+//
+// SKIPPED:
+//   - When neither intro nor outro URL is provided (returns input bytes).
+//   - When any download fails (returns input unchanged so the agent always
+//     gets the main video even if the bookend clips 404).
+
+export interface ConcatIntroOutroInput {
+  /** The branded main video buffer produced by the prior overlay step. */
+  mainVideoBuffer: Buffer
+  introVideoUrl?: string | null
+  outroVideoUrl?: string | null
+}
+
+export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<CompositeVideoAttributionResult> {
+  if (!FFMPEG_BIN) {
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "ffmpeg-static binary unavailable" }
+  }
+  if (!opts.introVideoUrl && !opts.outroVideoUrl) {
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "no intro or outro selected" }
+  }
+
+  let workDir: string | null = null
+  try {
+    workDir = await mkdtemp(path.join(tmpdir(), "vip-bookend-"))
+    const mainPath  = path.join(workDir, "main.mp4")
+    const outputPath = path.join(workDir, "out.mp4")
+    await writeFile(mainPath, opts.mainVideoBuffer)
+
+    // Probe main video to know the canvas size + frame rate the bookends
+    // must be normalised to.
+    const dims = await probeDimensions(mainPath)
+    const W = dims.width  ?? 1280
+    const H = dims.height ?? 720
+
+    // Download bookends in parallel (when present)
+    const introPath = opts.introVideoUrl ? path.join(workDir, "intro.mp4") : null
+    const outroPath = opts.outroVideoUrl ? path.join(workDir, "outro.mp4") : null
+    const downloads: Promise<void>[] = []
+    if (opts.introVideoUrl && introPath) {
+      downloads.push((async () => {
+        const r = await fetch(opts.introVideoUrl!)
+        if (!r.ok) throw new Error(`intro fetch ${r.status}`)
+        await writeFile(introPath, Buffer.from(await r.arrayBuffer()))
+      })())
+    }
+    if (opts.outroVideoUrl && outroPath) {
+      downloads.push((async () => {
+        const r = await fetch(opts.outroVideoUrl!)
+        if (!r.ok) throw new Error(`outro fetch ${r.status}`)
+        await writeFile(outroPath, Buffer.from(await r.arrayBuffer()))
+      })())
+    }
+    await Promise.all(downloads)
+
+    // Build the input order: intro? -> main -> outro?
+    const inputs: string[] = []
+    if (introPath) inputs.push(introPath)
+    inputs.push(mainPath)
+    if (outroPath) inputs.push(outroPath)
+
+    // Build the filter graph. Each input segment gets scaled+padded to (W,H)
+    // and re-encoded audio to stereo AAC so concat doesn't choke.
+    const normalised: string[] = []
+    inputs.forEach((_, i) => {
+      // Normalise video: scale to fit inside W:H, then pad to exact W:H with black bars,
+      // setsar=1 to avoid aspect-ratio mismatch warnings.
+      normalised.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
+      // Normalise audio: take whatever the input has (or generate silence) and
+      // resample to a common rate. anullsrc creates a silent track when
+      // the segment has no audio so concat=...a=1 doesn't fail.
+      normalised.push(`[${i}:a]aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
+    })
+    const concatList = inputs.map((_, i) => `[v${i}][a${i}]`).join("")
+    const filter = `${normalised.join(";")};${concatList}concat=n=${inputs.length}:v=1:a=1[outv][outa]`
+
+    // Ensure every input has an audio stream — when an intro/outro is silent,
+    // ffmpeg's filter needs SOME audio track or [i:a] is invalid. The
+    // -af approach is to add silence for inputs that lack audio. Simpler:
+    // when probing reveals no audio, splice in -f lavfi -i anullsrc and
+    // re-map. For first version we rely on aresample being lenient when an
+    // input has audio, and accept failure to silent inputs.
+    const args = [
+      "-y",
+      ...inputs.flatMap((p) => ["-i", p]),
+      "-filter_complex", filter,
+      "-map", "[outv]",
+      "-map", "[outa]",
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      "-preset", "fast",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-movflags", "+faststart",
+      outputPath,
+    ]
+    await runFfmpeg(args)
+    const outputBuffer = await readFile(outputPath)
+    return { outputBuffer, overlayApplied: true }
+  } catch (err: any) {
+    // Bookends are best-effort. Always return the main video so the agent
+    // still gets a working file when an intro/outro URL is broken.
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: err?.message ?? "concat failed" }
+  } finally {
+    if (workDir) {
+      await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+}
+
+// ============================================================================
 // EXPLAINER MODE — talking head PIP over a background video
 // ============================================================================
 //

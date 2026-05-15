@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url, intro_video_url, outro_video_url")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -219,8 +219,9 @@ export async function GET(request: NextRequest) {
                 logoUrl:               teamLogoUrl ?? brokerage?.logo_url ?? null,
               }
 
-              const { compositeVideoAttribution, compositeExplainerVideo } = await import("@/lib/video/composite-attribution")
-              const result = isExplainer
+              const { compositeVideoAttribution, compositeExplainerVideo, concatIntroOutro } =
+                await import("@/lib/video/composite-attribution")
+              let result = isExplainer
                 ? await compositeExplainerVideo({
                     backgroundVideoUrl:  (video as any).background_url,
                     talkingHeadVideoUrl: persistedVideoUrl,
@@ -230,6 +231,25 @@ export async function GET(request: NextRequest) {
                     inputVideoUrl: persistedVideoUrl,
                     brand,
                   })
+
+              // Intro / outro bookends — applied AFTER the brand overlay so the
+              // brokerage-curated intro/outro clips don't get another attribution
+              // band stacked on top of theirs (they're already brokerage-approved).
+              // Best-effort: if the bookend concat fails the agent still gets the
+              // branded main video.
+              const introUrl = (video as any).intro_video_url as string | null
+              const outroUrl = (video as any).outro_video_url as string | null
+              if (result.overlayApplied && result.outputBuffer.length > 0 && (introUrl || outroUrl)) {
+                const bookended = await concatIntroOutro({
+                  mainVideoBuffer: result.outputBuffer,
+                  introVideoUrl:   introUrl,
+                  outroVideoUrl:   outroUrl,
+                })
+                if (bookended.overlayApplied && bookended.outputBuffer.length > 0) {
+                  // Replace result so the bookended buffer is what gets uploaded
+                  result = { outputBuffer: bookended.outputBuffer, overlayApplied: true }
+                }
+              }
 
               if (result.overlayApplied && result.outputBuffer.length > 0) {
                 // Upload the branded version. Suffix the path so we keep both

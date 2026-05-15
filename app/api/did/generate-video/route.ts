@@ -18,6 +18,13 @@
  *   agent_photo_url?: string,   // preferred for UGC / social content
  *   agent_video_url?: string,   // preferred for formal / brand videos
  *   background?: { type: "color" | "image" | "video"; value: string },
+ *   intro_video_url?: string,     // brokerage-curated clip prepended to the
+ *                                 // branded main video
+ *   outro_video_url?: string,     // brokerage-curated clip appended to the
+ *                                 // branded main video
+ *   b_roll_urls?: string[],       // splice candidates stored on the row for
+ *                                 // the audit trail; segment splicing wired
+ *                                 // in a follow-up
  * }
  * Provide at least one of agent_photo_url or agent_video_url.
  *
@@ -67,6 +74,9 @@ export async function POST(request: NextRequest) {
       did_avatar_id: callerAvatarId,
       background,
       ugc_mode,
+      intro_video_url,
+      outro_video_url,
+      b_roll_urls,
     } = body
 
     if (!video_project_id || !script || !elevenlabs_voice_id) {
@@ -217,15 +227,31 @@ export async function POST(request: NextRequest) {
         ? { type: "color", color: background.value }
         : undefined
 
-    // Persist the background intent on the row so the cron can route to the
-    // right compositor (standard talking-head vs explainer PIP).
+    // Persist the cinematic-touch selections on the row so the cron knows what
+    // to composite after D-ID returns. background_type/background_url drive
+    // the standard-vs-explainer decision; intro/outro/b-roll are layered on
+    // top of whichever rendering mode the agent picked.
+    const cinematicUpdates: Record<string, unknown> = {}
     if (background?.type && background?.value) {
+      cinematicUpdates.background_type = background.type
+      cinematicUpdates.background_url  = background.value
+    }
+    if (typeof intro_video_url === "string" && intro_video_url.length > 0) {
+      cinematicUpdates.intro_video_url = intro_video_url
+    }
+    if (typeof outro_video_url === "string" && outro_video_url.length > 0) {
+      cinematicUpdates.outro_video_url = outro_video_url
+    }
+    if (Array.isArray(b_roll_urls) && b_roll_urls.length > 0) {
+      // Filter to valid URL strings; the column is jsonb.
+      cinematicUpdates.b_roll_urls = b_roll_urls.filter(
+        (u): u is string => typeof u === "string" && u.length > 0
+      )
+    }
+    if (Object.keys(cinematicUpdates).length > 0) {
       await supabase
         .from("ai_video_projects")
-        .update({
-          background_type: background.type,
-          background_url:  background.value,
-        })
+        .update(cinematicUpdates)
         .eq("id", video_project_id)
     }
 
