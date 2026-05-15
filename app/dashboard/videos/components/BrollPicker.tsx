@@ -20,8 +20,14 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Check, Sparkles, X, Play, Film, ArrowRight, Loader2 } from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Check, Sparkles, X, Play, Film, ArrowRight, Loader2, Upload, User as UserIcon, Users, Building2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { uploadStockClip } from "@/app/actions/stock-video-upload"
+import { toast } from "sonner"
 
 export interface BrollSelection {
   introVideoUrl:  string | null
@@ -37,6 +43,8 @@ interface StockClip {
   category:         string | null
   duration_seconds: number | null
   tags:             string[] | null
+  /** scope label derived from agent_id / team_id presence */
+  scope:            "agent" | "team" | "brokerage"
 }
 
 interface Props {
@@ -74,36 +82,46 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState<string | null>(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [uploadCategory, setUploadCategory] = useState<"intro" | "outro" | "b_roll">("intro")
   const previewRef = useRef<HTMLVideoElement | null>(null)
 
-  // Load the brokerage's stock library on mount
+  // Load stock library: any video_assets row in this brokerage matching one
+  // of our categories. The scope label is derived client-side from agent_id
+  // / team_id presence so the picker can show "Yours" / "Team" / "Brokerage"
+  // badges. Order: agent → team → brokerage (most-specific first).
+  const loadLibrary = async () => {
+    const supabase = createClient()
+    setLoading(true)
+    const { data, error } = await supabase
+      .from("video_assets")
+      .select("id, title, video_url, thumbnail_url, category, duration_seconds, tags, agent_id, team_id")
+      .eq("brokerage_id", brokerageId)
+      .in("category", ["intro", "outro", "b_roll"])
+      .order("created_at", { ascending: false })
+      .limit(200)
+    if (error) {
+      setError(error.message)
+      setLoading(false)
+      return
+    }
+    const grouped: Record<string, StockClip[]> = { intro: [], outro: [], b_roll: [] }
+    for (const c of (data ?? []) as Array<StockClip & { agent_id?: string | null; team_id?: string | null }>) {
+      const k = c.category ?? "b_roll"
+      if (!grouped[k]) continue
+      const scope: "agent" | "team" | "brokerage" =
+        c.agent_id ? "agent" : c.team_id ? "team" : "brokerage"
+      grouped[k].push({ ...c, scope })
+    }
+    setClips(grouped)
+    setLoading(false)
+  }
+
   useEffect(() => {
     let cancelled = false
-    const supabase = createClient()
-    ;(async () => {
-      setLoading(true)
-      const { data, error } = await supabase
-        .from("video_assets")
-        .select("id, title, video_url, thumbnail_url, category, duration_seconds, tags")
-        .eq("brokerage_id", brokerageId)
-        .in("category", ["intro", "outro", "b_roll"])
-        .order("created_at", { ascending: false })
-        .limit(120)
-      if (cancelled) return
-      if (error) {
-        setError(error.message)
-        setLoading(false)
-        return
-      }
-      const grouped: Record<string, StockClip[]> = { intro: [], outro: [], b_roll: [] }
-      for (const c of (data ?? []) as StockClip[]) {
-        const k = c.category ?? "b_roll"
-        if (grouped[k]) grouped[k].push(c)
-      }
-      setClips(grouped)
-      setLoading(false)
-    })()
+    ;(async () => { if (!cancelled) await loadLibrary() })()
     return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brokerageId])
 
   // ── Selection helpers ─────────────────────────────────────────────────────
@@ -148,22 +166,40 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
   // ── Empty-state copy: zero clips in the library ──────────────────────────
   if (!loading && total === 0) {
     return (
-      <Card className="border-dashed">
-        <CardContent className="py-10 text-center space-y-3">
-          <Film className="h-10 w-10 text-muted-foreground mx-auto" />
-          <div>
-            <p className="text-sm font-medium">Your stock video library is empty.</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Ask your brokerage admin to upload a few intro stings, outros, and b-roll clips to
-              the Video Library. Once they're there, every agent can pick from them with one
-              click — no editing required.
-            </p>
-          </div>
-          <Button asChild variant="outline" size="sm" className="mt-2">
-            <a href="/dashboard/videos/library">Open Video Library <ArrowRight className="h-3 w-3 ml-1" /></a>
-          </Button>
-        </CardContent>
-      </Card>
+      <>
+        <Card className="border-dashed">
+          <CardContent className="py-10 text-center space-y-3">
+            <Film className="h-10 w-10 text-muted-foreground mx-auto" />
+            <div>
+              <p className="text-sm font-medium">Your clip library is empty.</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Upload your own intros, outros, and b-roll — or ask your team lead / brokerage
+                admin to seed a few. Once they're in, every video render picks from them with
+                one click.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 justify-center">
+              <Button size="sm" onClick={() => { setUploadCategory("intro"); setUploadOpen(true) }}>
+                <Upload className="h-3 w-3 mr-1" /> Upload my first clip
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <a href="/dashboard/videos/library">
+                  Open Video Library <ArrowRight className="h-3 w-3 ml-1" />
+                </a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+        <UploadStockClipDialog
+          open={uploadOpen}
+          onOpenChange={setUploadOpen}
+          defaultCategory={uploadCategory}
+          onUploaded={async () => {
+            await loadLibrary()
+            setUploadOpen(false)
+          }}
+        />
+      </>
     )
   }
 
@@ -187,6 +223,9 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
               <Sparkles className="h-3 w-3 mr-1" /> AI pick for me
             </Button>
           )}
+          <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
+            <Upload className="h-3 w-3 mr-1" /> Upload your own
+          </Button>
         </div>
       </div>
 
@@ -227,7 +266,195 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
       {error && (
         <p className="text-xs text-destructive">Couldn't load library: {error}</p>
       )}
+
+      <UploadStockClipDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        defaultCategory={uploadCategory}
+        onUploaded={async () => {
+          await loadLibrary()
+          setUploadOpen(false)
+        }}
+      />
     </div>
+  )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Upload dialog — agent or team lead adds their own clip to the library
+// without leaving the wizard.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface UploadDialogProps {
+  open:            boolean
+  onOpenChange:    (open: boolean) => void
+  defaultCategory: "intro" | "outro" | "b_roll"
+  onUploaded:      () => Promise<void> | void
+}
+
+function UploadStockClipDialog({ open, onOpenChange, defaultCategory, onUploaded }: UploadDialogProps) {
+  const supabase = createClient()
+  const [file, setFile]   = useState<File | null>(null)
+  const [title, setTitle] = useState("")
+  const [category, setCategory] = useState<"intro" | "outro" | "b_roll">(defaultCategory)
+  const [scope, setScope] = useState<"agent" | "team" | "brokerage">("agent")
+  const [tags, setTags]   = useState("")
+  const [busy, setBusy]   = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  // Reset category when defaultCategory changes (caller switches tabs)
+  useEffect(() => { setCategory(defaultCategory) }, [defaultCategory])
+
+  async function handleSubmit() {
+    setErrorMessage(null)
+    if (!file) { setErrorMessage("Pick a video file first"); return }
+    if (!title.trim()) { setErrorMessage("Give your clip a title so you can find it later"); return }
+    if (!file.type.startsWith("video/")) { setErrorMessage("File must be a video (mp4, mov, webm)"); return }
+    if (file.size > 100 * 1024 * 1024) { setErrorMessage("Keep clips under 100 MB so renders stay fast"); return }
+
+    setBusy(true)
+    try {
+      // 1. Upload to Supabase Storage (listing-media bucket, stock-clips/ prefix)
+      const ext = (file.name.split(".").pop() ?? "mp4").toLowerCase()
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40) || "clip"
+      const path = `stock-clips/${scope}/${Date.now()}-${slug}.${ext}`
+      const { error: upErr } = await supabase.storage
+        .from("listing-media")
+        .upload(path, file, { contentType: file.type || "video/mp4", upsert: false })
+      if (upErr) {
+        setErrorMessage(`Upload failed: ${upErr.message}`)
+        setBusy(false)
+        return
+      }
+      const { data: { publicUrl } } = supabase.storage.from("listing-media").getPublicUrl(path)
+
+      // 2. Insert the row via the server action so scope rules apply
+      const result = await uploadStockClip({
+        fileUrl:   publicUrl,
+        title:     title.trim(),
+        category,
+        scope,
+        tags:      tags.split(",").map(t => t.trim()).filter(Boolean),
+      })
+      if (!result.success) {
+        setErrorMessage(result.error ?? "Save failed")
+        setBusy(false)
+        return
+      }
+      toast.success(`${title} added to your library`)
+      setFile(null); setTitle(""); setTags("")
+      await onUploaded()
+    } catch (err: any) {
+      setErrorMessage(err?.message ?? "Upload failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add a clip to your library</DialogTitle>
+          <DialogDescription>
+            Upload a short video — intro sting, outro sign-off, or any b-roll you want available
+            when you build your next AI video. Pick the scope so only the right people see it.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="clip-file">Video file</Label>
+            <Input
+              id="clip-file"
+              type="file"
+              accept="video/mp4,video/quicktime,video/webm"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+            {file && (
+              <p className="text-xs text-muted-foreground">
+                {file.name} · {(file.size / 1024 / 1024).toFixed(1)} MB
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="clip-title">Title</Label>
+            <Input
+              id="clip-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Downtown drone fly-in"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select value={category} onValueChange={(v) => setCategory(v as any)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="intro">Intro</SelectItem>
+                  <SelectItem value="outro">Outro</SelectItem>
+                  <SelectItem value="b_roll">B-roll</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Who sees it</Label>
+              <Select value={scope} onValueChange={(v) => setScope(v as any)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="agent">
+                    <div className="flex items-center gap-2">
+                      <UserIcon className="h-3 w-3" /> Just me
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="team">
+                    <div className="flex items-center gap-2">
+                      <Users className="h-3 w-3" /> My team
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="brokerage">
+                    <div className="flex items-center gap-2">
+                      <Building2 className="h-3 w-3" /> Whole brokerage
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {scope === "brokerage" && (
+                <p className="text-[10px] text-muted-foreground">
+                  Brokerage-wide publishing is broker/admin only.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="clip-tags">Tags (optional)</Label>
+            <Input
+              id="clip-tags"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="drone, exterior, neighborhood"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Comma-separated. Tags drive the &quot;AI pick for me&quot; auto-selection.
+            </p>
+          </div>
+
+          {errorMessage && <p className="text-xs text-destructive">{errorMessage}</p>}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={busy || !file || !title.trim()}>
+            {busy ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Upload className="h-3 w-3 mr-1" />}
+            Add to library
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -335,7 +562,20 @@ function CategoryGrid(props: GridProps) {
                 </button>
               </div>
               <CardContent className="py-2 px-3">
-                <p className="text-xs font-medium truncate">{clip.title}</p>
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <p className="text-xs font-medium truncate flex-1">{clip.title}</p>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[9px] px-1 py-0 leading-tight uppercase",
+                      clip.scope === "agent"     && "border-blue-300 text-blue-700",
+                      clip.scope === "team"      && "border-amber-300 text-amber-700",
+                      clip.scope === "brokerage" && "border-slate-300 text-slate-600",
+                    )}
+                  >
+                    {clip.scope === "agent" ? "yours" : clip.scope === "team" ? "team" : "brokerage"}
+                  </Badge>
+                </div>
                 {clip.duration_seconds != null && (
                   <p className="text-[10px] text-muted-foreground">{clip.duration_seconds}s</p>
                 )}

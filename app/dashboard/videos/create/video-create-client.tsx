@@ -492,18 +492,29 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         ? "/api/did/generate-video"
         : "/api/heygen/generate-video"
 
-      // Resolve background payload (color hex or image URL) for the D-ID API
+      // Resolve background payload (color hex or image URL) for the D-ID API.
+      // D-ID requires a valid color (hex) or an image URL. The "office" and
+      // "modern" presets are stylised gradients with no image asset behind
+      // them — they were silently passing the literal word "office" as the
+      // background value, which D-ID rejects. Fall back to a neutral hex
+      // for any preset whose color isn't a usable hex or http(s) URL.
       const didBackground = backgroundStyle === "custom" && customBgUrl
         ? { type: "image" as const, value: customBgUrl }
         : (() => {
             const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
             const bgColorValue = bgPreset?.color
             if (!bgColorValue) return undefined
-            // Gradients / patterns can't be passed as a flat color — fall back to white
-            if (bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating")) {
-              return { type: "color" as const, value: "#ffffff" }
+            // Hex color → pass through as color
+            if (/^#[0-9a-f]{3,8}$/i.test(bgColorValue)) {
+              return { type: "color" as const, value: bgColorValue }
             }
-            return { type: "color" as const, value: bgColorValue }
+            // http(s) URL → pass through as image
+            if (/^https?:\/\//i.test(bgColorValue)) {
+              return { type: "image" as const, value: bgColorValue }
+            }
+            // Gradients, patterns, or named presets without an asset →
+            // fall back to neutral white so D-ID still renders.
+            return { type: "color" as const, value: "#ffffff" }
           })()
 
       // Resolve the did_avatar_id for the selected asset (null for photo fallback)
