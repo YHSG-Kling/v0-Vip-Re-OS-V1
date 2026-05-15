@@ -928,6 +928,9 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
       contact_id,
       marketing_campaign_id,
       agent_user_id,
+      // When set by uploadListingMedia (hero-photo fan-out), the image is
+      // already a row in listing_media — don't try to re-insert it.
+      skip_listing_attach,
     } = event.payload
     const agentId = agent_user_id ?? event.user_id
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
@@ -985,8 +988,14 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
-    // 2. Listing image → attach to property landing page (listing_media)
-    if (listing_id && (image_type === "listing_photo" || image_type === "listing_marketing")) {
+    // 2. Listing image → attach to property landing page (listing_media).
+    //    Skipped when skip_listing_attach is set — the image is already a
+    //    listing_media row (uploaded photo fan-out path).
+    if (
+      !skip_listing_attach &&
+      listing_id &&
+      (image_type === "listing_photo" || image_type === "listing_marketing")
+    ) {
       try {
         await svc.from("listing_media").insert({
           brokerage_id: event.brokerage_id,

@@ -325,15 +325,36 @@ async function checkListingMedia(ctx: {
 
   const { data: media } = await supabase
     .from("listing_media")
-    .select("id, media_type, status")
+    .select("id, media_type, has_logo_overlay, has_brokerage_attribution, has_eho_mark, is_primary")
     .eq("id", contentId)
     .maybeSingle()
 
   if (!media) {
     violations.push("listing_media record not found")
+    return
   }
-  // Listing media brand rules are currently limited to record existence;
-  // deeper pixel-level inspection is delegated to the media vendor pipeline.
+
+  // Real-estate advertising law: every public-facing piece of marketing
+  // needs brokerage attribution and the Equal Housing Opportunity mark.
+  // For listing photos, attribution is typically carried by the listing
+  // landing page itself, BUT photos that go out as standalone marketing
+  // (social shares, postcards, ads) must carry it on the image.
+  //
+  // The hero photo (is_primary=true) is what fans out to the marketing
+  // pipeline, so we enforce strict attribution on that one. Other photos
+  // are flagged as warnings rather than violations so the agent isn't
+  // blocked from uploading raw listing photos.
+  const isHero = media.is_primary === true
+  const requireAttribution = isHero || media.media_type === "video"
+
+  if (requireAttribution) {
+    if (!media.has_brokerage_attribution) {
+      violations.push("Listing media missing brokerage attribution (name + license #)")
+    }
+    if (!media.has_eho_mark) {
+      violations.push("Listing media missing Equal Housing Opportunity mark")
+    }
+  }
 }
 
 // ─── Record updater ───────────────────────────────────────────────────────────

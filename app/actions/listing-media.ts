@@ -31,10 +31,19 @@ export async function uploadListingMedia(params: {
   tags?: string[]
   isPrimary?: boolean
   approvalRequired?: boolean
+  /**
+   * Optional: caller asserts the uploaded file already carries the legal
+   * brokerage attribution (logo, license #, EHO) — typical for photographer-
+   * produced photos that have the brokerage info embedded in the frame.
+   * Defaults false so the compliance review queue picks it up.
+   */
+  hasEmbeddedAttribution?: boolean
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
+
+  const attributionAsserted = params.hasEmbeddedAttribution === true
 
   const { data, error } = await supabase
     .from("listing_media")
@@ -51,6 +60,14 @@ export async function uploadListingMedia(params: {
       approval_required:  params.approvalRequired ?? true,
       is_approved:        false,
       kernel_compliance_passed: false,
+      // Migration 1084 added these columns so the compliance gate can tell
+      // whether an asset carries the legally-required brokerage attribution.
+      // Uploaded photos default to false; the brokerage info is provided by
+      // the listing landing page itself unless the agent explicitly asserts
+      // it was embedded in the source file.
+      has_logo_overlay:          attributionAsserted,
+      has_brokerage_attribution: attributionAsserted,
+      has_eho_mark:              attributionAsserted,
       uploaded_by:        user.id,
       sort_order:         0,
     })
@@ -65,6 +82,36 @@ export async function uploadListingMedia(params: {
     contentId:   data.id,
     brokerageId: params.brokerageId,
   })
+
+  // For the hero photo (is_primary), fan the upload through the marketing
+  // pipeline so the agent gets a draft social post and a smart suggestion
+  // to share the new listing. Non-hero photos stay attached to the listing
+  // only — avoids spamming Marketing Review with every drag-and-drop upload.
+  if (params.mediaType === "photo" && params.isPrimary) {
+    try {
+      const { emitEventFromCron } = await import("@/app/actions/orchestrator")
+      await emitEventFromCron({
+        brokerage_id: params.brokerageId,
+        user_id:      user.id,
+        event_type:   "image.generated",
+        source:       "system",
+        dedupe_key:   `image.generated:listing_media:${data.id}`,
+        payload: {
+          image_id:        data.id,
+          image_type:      "listing_marketing",
+          image_url:       params.fileUrl,
+          thumbnail_url:   params.thumbnailUrl ?? null,
+          caption:         params.caption ?? null,
+          listing_id:      params.listingId,
+          agent_user_id:   user.id,
+          // Already in listing_media — handler skips the listing-attach branch.
+          skip_listing_attach: true,
+        },
+      })
+    } catch (eventErr) {
+      console.error("[uploadListingMedia] image.generated fan-out failed:", eventErr)
+    }
+  }
 
   return { data: { ...data, compliance }, error: null }
 }

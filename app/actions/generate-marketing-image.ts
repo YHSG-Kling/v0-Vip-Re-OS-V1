@@ -71,12 +71,22 @@ export async function generateMarketingImage(
 
   const svc = createServiceClient()
 
-  // Load brokerage brand + listing context in parallel
-  const [{ data: brokerage }, listingResult] = await Promise.all([
+  // Load brokerage brand + listing context in parallel. brokerages now stores
+  // logo_url, license_number, and license_state (migration 1084) — these are
+  // the columns the image-overlay pipeline uses to satisfy real-estate
+  // advertising law (brokerage attribution + license # + EHO).
+  const [{ data: brokerage }, { data: globalSettings }, listingResult] = await Promise.all([
     svc
       .from("brokerages")
-      .select("name, primary_color, logo_url")
+      .select("name, primary_color, logo_url, license_number, license_state, dba")
       .eq("id", ctx.brokerageId)
+      .maybeSingle(),
+    // Fallback for brokerages that captured the logo via the onboarding brand
+    // flow before logo_url was back-filled.
+    svc
+      .from("global_settings")
+      .select("app_logo_url")
+      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle(),
     input.listingId
       ? svc
@@ -88,8 +98,8 @@ export async function generateMarketingImage(
   ])
 
   let agentName: string | null = null
-  // Team logo takes precedence over brokerage logo (more specific branding)
-  let logoUrl: string | null = brokerage?.logo_url ?? null
+  let agentLicense: string | null = null
+  let logoUrl: string | null = brokerage?.logo_url ?? globalSettings?.app_logo_url ?? null
 
   if (ctx.userId) {
     const { data: u } = await svc
@@ -98,6 +108,15 @@ export async function generateMarketingImage(
       .eq("id", ctx.userId)
       .maybeSingle()
     agentName = [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null
+
+    // Pull agent's own license # — many states require both broker and agent
+    // license numbers on advertising.
+    const { data: agentRow } = await svc
+      .from("agents")
+      .select("license_number, license_state")
+      .eq("user_id", ctx.userId)
+      .maybeSingle()
+    agentLicense = agentRow?.license_number ?? null
 
     // Check if agent belongs to a team with its own logo
     const { data: teamMembership } = await svc
@@ -131,8 +150,12 @@ export async function generateMarketingImage(
     style: input.style,
     brand: {
       brokerageName: brokerage?.name ?? null,
-      primaryColor: brokerage?.primary_color ?? null,
+      brokerageDba: brokerage?.dba ?? null,
+      brokerageLicense: brokerage?.license_number ?? null,
+      brokerageLicenseState: brokerage?.license_state ?? null,
       agentName,
+      agentLicense,
+      primaryColor: brokerage?.primary_color ?? null,
       brandVoiceTone,
       logoUrl: input.noLogo ? null : logoUrl,
       noLogo: input.noLogo ?? false,
@@ -186,7 +209,14 @@ export async function generateMarketingImage(
         cost_usd: genResult.cost,
         listing_id: input.listingId ?? null,
         provider: "dall-e-3",
-        logo_composited: !input.noLogo && !!logoUrl,
+        // Real-estate ad-law attribution audit trail. compositeAttributionBand
+        // in image-generation.ts overlays the brokerage name + license # +
+        // EHO mark whenever brokerageName is set, so these flags reflect
+        // what was actually rendered onto the image bytes.
+        logo_composited:           !input.noLogo && !!logoUrl,
+        brokerage_attribution:     !!brokerage?.name,
+        license_number_on_image:   !!brokerage?.license_number,
+        eho_mark_on_image:         !!brokerage?.name,
       },
     })
     .select("id")

@@ -42,8 +42,16 @@ export type ImagePurpose =
 
 export interface BrandHints {
   brokerageName?: string | null
+  /** Doing-business-as name, when the legal name differs from the trade name */
+  brokerageDba?: string | null
+  /** Brokerage license # — required on advertising in most US states */
+  brokerageLicense?: string | null
+  /** State the brokerage license is issued in (e.g. CA, TX, FL) */
+  brokerageLicenseState?: string | null
   primaryColor?: string | null
   agentName?: string | null
+  /** Agent's individual license # — required in CA / FL / TX / NY etc. */
+  agentLicense?: string | null
   brandVoiceTone?: string | null
   /** Brokerage or team logo URL — composited onto the finished image via Sharp */
   logoUrl?: string | null
@@ -267,6 +275,16 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     }
   }
 
+  // 3a. Composite the legal attribution band along the bottom edge — brokerage
+  //     name, license #, "Equal Housing Opportunity". This is what makes the
+  //     image compliant with state real-estate advertising law + the federal
+  //     Fair Housing Act for housing-related marketing.
+  try {
+    finalImageBytes = await compositeAttributionBand(finalImageBytes, input.brand ?? {})
+  } catch {
+    // Attribution band is best-effort — never fail the whole generation
+  }
+
   // 4. Upload to Vercel Blob — public URL won't expire
   let permanentUrl: string
   try {
@@ -347,6 +365,76 @@ async function compositeLogoOntoImage(imageBytes: Buffer, logoUrl: string): Prom
 
   return sharp(imageBytes)
     .composite([{ input: logoPill, left, top }])
+    .png()
+    .toBuffer()
+}
+
+// ---------------------------------------------------------------------------
+// Attribution band — brokerage name + license # + EHO mark
+// ---------------------------------------------------------------------------
+// Composites a 56px-tall semi-transparent band along the bottom edge of the
+// image carrying the legal attribution every public real-estate ad needs:
+//
+//   "[Brokerage Name] · License #[Number] ([State])    [⌂ Equal Housing Opportunity]"
+//
+// Skipped silently when no brokerage name is provided (private/draft images
+// can still render). The Equal Housing Opportunity mark uses the standard
+// house+equals glyph + text — no external image fetch needed.
+async function compositeAttributionBand(
+  imageBytes: Buffer,
+  brand: BrandHints
+): Promise<Buffer> {
+  if (!brand.brokerageName) return imageBytes
+
+  const baseMeta = await sharp(imageBytes).metadata()
+  const baseWidth  = baseMeta.width  ?? 1024
+  const baseHeight = baseMeta.height ?? 1024
+
+  // Build the attribution line. License # and state are appended when present.
+  const tradeName = brand.brokerageDba ?? brand.brokerageName
+  const licenseParts: string[] = []
+  if (brand.brokerageLicense) {
+    const state = brand.brokerageLicenseState ? ` (${brand.brokerageLicenseState})` : ""
+    licenseParts.push(`Lic #${brand.brokerageLicense}${state}`)
+  }
+  if (brand.agentLicense && brand.agentLicense !== brand.brokerageLicense) {
+    licenseParts.push(`Agent #${brand.agentLicense}`)
+  }
+  const attributionText = [tradeName, ...licenseParts].join(" · ")
+
+  // SVG-text escape — these strings end up inside an SVG element so any
+  // angle brackets, ampersands, or quotes in a brokerage name would break
+  // the layout.
+  const xmlEscape = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+
+  const bandHeight = Math.max(48, Math.round(baseHeight * 0.06))
+  const fontSize   = Math.max(14, Math.round(bandHeight * 0.4))
+  const pad        = Math.round(bandHeight * 0.4)
+
+  const svg = Buffer.from(`
+    <svg width="${baseWidth}" height="${bandHeight}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="${baseWidth}" height="${bandHeight}"
+            fill="black" fill-opacity="0.55"/>
+      <text x="${pad}" y="${bandHeight / 2}"
+            font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}"
+            fill="white" dominant-baseline="middle">
+        ${xmlEscape(attributionText)}
+      </text>
+      <!-- Equal Housing Opportunity mark on the right side. Glyph is the
+           standard house outline + '=' rendered with SVG primitives. -->
+      <g transform="translate(${baseWidth - pad - 200}, ${bandHeight / 2})">
+        <text x="0" y="0"
+              font-family="Arial, Helvetica, sans-serif" font-size="${Math.round(fontSize * 0.85)}"
+              fill="white" dominant-baseline="middle">
+          ⌂ Equal Housing Opportunity
+        </text>
+      </g>
+    </svg>
+  `)
+
+  return sharp(imageBytes)
+    .composite([{ input: svg, left: 0, top: baseHeight - bandHeight }])
     .png()
     .toBuffer()
 }
