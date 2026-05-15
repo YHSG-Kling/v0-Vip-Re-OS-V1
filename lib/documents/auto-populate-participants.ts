@@ -105,6 +105,47 @@ export async function autoPopulateFromScannedDocument(
     }
   }
 
+  // ── Signed contract → stamp EM due window on the linked offer ──
+  // The contract dictates "earnest money due within N days" — we lift
+  // earnest_money_due_days into offers + compute earnest_money_due_at
+  // from contract_date when known. The EM-receipt-watcher cron reads
+  // earnest_money_due_at per-deal instead of a hardcoded window.
+  if (classification === "signed_contract" && offerId) {
+    const dueDaysRaw = extractedFields?.earnest_money_due_days
+    const dueDays    = typeof dueDaysRaw === "number" ? dueDaysRaw : parseInt(String(dueDaysRaw ?? ""), 10)
+    if (Number.isFinite(dueDays) && dueDays > 0) {
+      const { data: offerRow } = await supabase
+        .from("offers")
+        .select("compliance_passed_at, fully_signed_contract_received_at, seller_signed_at, buyer_signed_at, earnest_money, earnest_money_due_days")
+        .eq("id", offerId)
+        .maybeSingle()
+      if (offerRow && !offerRow.earnest_money_due_days) {
+        // Anchor the deadline to whatever "contract is in effect" timestamp
+        // we have on the offer:
+        //   fully_signed_contract_received_at  →  the executed contract
+        //   compliance_passed_at                →  agent submitted to compliance
+        //   seller_signed_at OR buyer_signed_at →  whichever is later (counter case)
+        const anchorIso =
+          (offerRow.fully_signed_contract_received_at as string | null)
+          ?? (offerRow.compliance_passed_at as string | null)
+          ?? laterOf(offerRow.seller_signed_at as string | null, offerRow.buyer_signed_at as string | null)
+          ?? new Date().toISOString()
+        const anchor = new Date(anchorIso)
+        const due    = new Date(anchor.getTime() + dueDays * 24 * 3600 * 1000)
+        const emAmount = (extractedFields?.earnest_money_amount ?? null) as number | null
+        await supabase
+          .from("offers")
+          .update({
+            earnest_money_due_days: dueDays,
+            earnest_money_due_at:   due.toISOString(),
+            ...(emAmount && (!offerRow.earnest_money || Number(offerRow.earnest_money) === 0)
+              ? { earnest_money: emAmount } : {}),
+          })
+          .eq("id", offerId)
+      }
+    }
+  }
+
   // ── Signed contract → title_company participant ──
   if (classification === "signed_contract") {
     const titleCompany = (extractedFields?.title_company ?? "").toString().trim()
@@ -133,4 +174,11 @@ export async function autoPopulateFromScannedDocument(
   void contactId
 
   return { inserted_count: inserted.length, roles_inserted: inserted }
+}
+
+function laterOf(a: string | null, b: string | null): string | null {
+  if (!a && !b) return null
+  if (!a) return b
+  if (!b) return a
+  return new Date(a).getTime() >= new Date(b).getTime() ? a : b
 }

@@ -89,8 +89,8 @@ Per-classification extracted_fields shape:
   pre_approval_letter   → { lender_name, loan_type, max_loan_amount, issued_at, expires_at, borrower_name }
   proof_of_funds        → { institution, account_holder, available_funds, statement_date }
   id_document           → { document_type, full_name, expiration_date }
-  signed_contract       → { property_address, parties_signed[], signed_dates[], price }
-  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label }
+  signed_contract       → { property_address, parties_signed[], signed_dates[], price, title_company, earnest_money_amount, earnest_money_due_days, contract_effective_date }
+  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label, earnest_money_due_days }
   addendum              → { addendum_type, signed_parties[] }
   disclosure            → { disclosure_type, signed_parties[] }
   inspection_report     → { inspector_name, inspection_date, key_issues[] }

@@ -1,30 +1,30 @@
 /**
  * Cron: earnest-money receipt watcher.
  *
- * Many states (and most brokerage policies) require the buyer's earnest money
- * to be on file within a fixed window after contract execution — typically
- * 3 business days. When an offer is signed-and-accepted but has no
- * earnest_money_receipt classification on file after that window, we raise
- * a high-severity compliance flag so the agent + TC + compliance_officer +
- * compliance_manager all see it.
+ * The EMD deadline is dictated by THE CONTRACT, not a hardcoded fallback.
+ * Each offer carries earnest_money_due_at (computed from the contract's
+ * earnest_money_due_days, set by the scanner when the signed contract
+ * is uploaded). When that deadline passes and no earnest_money_receipt
+ * is on file, we raise a high-severity compliance flag.
  *
  * Runs daily. Picks up:
- *   - offers where status='accepted' AND compliance_passed_at IS NOT NULL
- *   - AND age >= EM_RECEIPT_DAYS (default 3)
- *   - AND no documents row with classification='earnest_money_receipt' linked
- *     to the offer/contact
+ *   - offers where earnest_money_due_at IS NOT NULL AND earnest_money_due_at <= now()
+ *   - AND no documents row with classification='earnest_money_receipt'
+ *     linked to the offer/contact
  *   - AND no prior em-receipt compliance flag in the last 48h (dedupe)
  *
+ * Fallback for legacy offers without earnest_money_due_at: we don't fire
+ * a flag — those need the agent or the next signed-contract scan to fill
+ * in the deadline. We never invent a deadline the contract didn't dictate.
+ *
  * For each match, fires flagOfferCompliance with severity='high' →
- * notifyComplianceFlag fans out through NotificationService (in_app + email +
- * SMS-on-consent).
+ * notifyComplianceFlag fans to agent + TC + compliance_officer + compliance_manager
+ * (multi-channel for high severity: in-app + email + SMS-on-consent).
  */
 
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { flagOfferCompliance } from "@/app/actions/buyer-offer/flag-compliance"
-
-const EM_RECEIPT_DAYS = 3
 
 export async function GET(req: Request) {
   // Standard cron-bearer auth — same pattern as the other cron routes
@@ -35,14 +35,15 @@ export async function GET(req: Request) {
 
   const supabase = createServiceClient()
 
-  // Find candidate offers: accepted, with a transaction, older than EM_RECEIPT_DAYS
-  const cutoff = new Date(Date.now() - EM_RECEIPT_DAYS * 24 * 3600 * 1000).toISOString()
+  // Find candidate offers: deadline has arrived/passed per the CONTRACT's own
+  // earnest_money_due_at — not a fixed N-day window.
+  const nowIso = new Date().toISOString()
   const { data: offers, error } = await supabase
     .from("offers")
-    .select("id, brokerage_id, contact_id, agent_id, earnest_money, compliance_passed_at")
+    .select("id, brokerage_id, contact_id, agent_id, earnest_money, earnest_money_due_at, earnest_money_due_days, contract_date")
     .eq("status", "accepted")
-    .not("compliance_passed_at", "is", null)
-    .lte("compliance_passed_at", cutoff)
+    .not("earnest_money_due_at", "is", null)
+    .lte("earnest_money_due_at", nowIso)
     .not("transaction_id", "is", null)
     .limit(200)
 
@@ -90,14 +91,15 @@ export async function GET(req: Request) {
     }
     if (!raiserUserId) continue
 
-    const days = Math.floor((Date.now() - new Date(offer.compliance_passed_at as string).getTime()) / 86_400_000)
+    const overdueDays = Math.floor((Date.now() - new Date(offer.earnest_money_due_at as string).getTime()) / 86_400_000)
+    const dueDaysContract = offer.earnest_money_due_days ?? "?"
     await flagOfferCompliance({
       offerId:      offer.id as string,
       raiserUserId,
-      flagType:     "missing_form",      // closest taxonomy bucket; flag body explains it's EM receipt
+      flagType:     "missing_form",      // closest taxonomy bucket; body explains it's EM receipt
       severity:     "high",
-      title:        `Earnest money receipt missing (${days} days past contract)`,
-      body:         `Offer ${offer.id} has been under contract for ${days} days with no earnest_money_receipt on file. Brokerage policy + state law typically requires the receipt within ${EM_RECEIPT_DAYS} business days. Upload the EM receipt or document the reason.`,
+      title:        `Earnest money receipt missing (${overdueDays >= 0 ? overdueDays : 0} day${overdueDays === 1 ? "" : "s"} past contract deadline)`,
+      body:         `Contract required EMD within ${dueDaysContract} day(s) of contract date — deadline was ${offer.earnest_money_due_at}. No earnest_money_receipt on file. Upload the receipt or document the reason.`,
     })
     flagged++
   }
