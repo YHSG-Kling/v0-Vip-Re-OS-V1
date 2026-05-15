@@ -168,7 +168,7 @@ async function finalizeMatchingOffer(
 
   const { data: matchedOffer } = await supabase
     .from("offers")
-    .select("id, brokerage_id, agent_id, contact_id, transaction_id, esign_status")
+    .select("id, brokerage_id, agent_id, contact_id, transaction_id, esign_status, seller_signed_at, seller_signed_document_url, parent_offer_id, current_round")
     .eq("provider_envelope_id", envelopeId)
     .maybeSingle()
 
@@ -176,17 +176,37 @@ async function finalizeMatchingOffer(
   if (matchedOffer.transaction_id) return  // already converted — idempotent
   if (matchedOffer.esign_status === "fully_signed") return  // already past this step
 
-  // Mark buyer-side signature complete. The seller has not signed yet —
-  // status stays in 'partially_signed' until the agent uploads/captures the
-  // seller's response.
-  await supabase
-    .from("offers")
-    .update({
-      esign_status:    "partially_signed",
-      buyer_signed_at: now,
-      esign_provider:  provider,
-    })
-    .eq("id", matchedOffer.id)
+  // Counter case: when seller_signed_at is already set, the buyer's signature
+  // landing means BOTH sides have signed → the counter is FULLY EXECUTED.
+  // No separate "seller signs back" step. The combined original offer +
+  // signed counter is the executed contract.
+  const isCounterFullyExecuted = !!matchedOffer.seller_signed_at
+
+  if (isCounterFullyExecuted) {
+    await supabase
+      .from("offers")
+      .update({
+        esign_status:                     "fully_signed",
+        buyer_signed_at:                  now,
+        fully_signed_contract_received_at: now,
+        esign_completed_at:               now,
+        esign_provider:                   provider,
+        status:                           "accepted",
+      })
+      .eq("id", matchedOffer.id)
+  } else {
+    // Standard buyer-first path (original offer, not yet seller-countered):
+    // mark buyer side as signed; seller side still pending the agent's
+    // forward-and-await workflow.
+    await supabase
+      .from("offers")
+      .update({
+        esign_status:    "partially_signed",
+        buyer_signed_at: now,
+        esign_provider:  provider,
+      })
+      .eq("id", matchedOffer.id)
+  }
 
   // Activity for the agent's queue (left feed) + notification for the bell.
   // matchedOffer.agent_id holds agents.id which is what activities.agent_id FKs.
@@ -199,11 +219,17 @@ async function finalizeMatchingOffer(
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
       entity_type:   "offer",
-      activity_type: "buyer.offer.buyer_signed",
-      title:         "Buyer signed the offer",
-      description:   `Buyer signed envelope ${envelopeId} via ${provider}. Forward to listing agent and await seller response.`,
-      notes:         JSON.stringify({ offer_id: matchedOffer.id, envelopeId, provider, signed_at: now }),
-      metadata:      { offer_id: matchedOffer.id, envelopeId, provider, signed_at: now },
+      activity_type: isCounterFullyExecuted
+                       ? "buyer.offer.counter.fully_executed"
+                       : "buyer.offer.buyer_signed",
+      title:         isCounterFullyExecuted
+                       ? "Counter fully executed — both sides signed"
+                       : "Buyer signed the offer",
+      description:   isCounterFullyExecuted
+                       ? `Buyer signed counter envelope ${envelopeId} via ${provider}. Seller already signed (${matchedOffer.seller_signed_at}). Counter is fully executed — review and submit to compliance.`
+                       : `Buyer signed envelope ${envelopeId} via ${provider}. Forward to listing agent and await seller response.`,
+      notes:         JSON.stringify({ offer_id: matchedOffer.id, envelopeId, provider, signed_at: now, counter_fully_executed: isCounterFullyExecuted }),
+      metadata:      { offer_id: matchedOffer.id, envelopeId, provider, signed_at: now, counter_fully_executed: isCounterFullyExecuted },
       status:        "completed",
       priority:      "high",
     }).select("id").maybeSingle()
