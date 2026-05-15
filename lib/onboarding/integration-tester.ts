@@ -10,11 +10,13 @@ export interface TestResult {
   detail: string
 }
 
-export type ProviderName = 
+export type ProviderName =
   | "twilio"
   | "sendgrid"
   | "docusign"
   | "dotloop"
+  | "skyslope"
+  | "brokermint"
   | "heygen"
   | "gohighlevel"
   | "google_calendar"
@@ -67,6 +69,10 @@ export async function testIntegration(
         return await testRealtorCom(credentials)
       case "opcity":
         return await testOpcity(credentials)
+      case "skyslope":
+        return await testSkySlope(credentials)
+      case "brokermint":
+        return await testBrokermint(credentials)
       default:
         return { pass: false, detail: `Unknown provider: ${provider}` }
     }
@@ -409,14 +415,43 @@ async function testRealtorCom(credentials: Record<string, string>): Promise<Test
 
 async function testOpcity(credentials: Record<string, string>): Promise<TestResult> {
   const { username, password } = credentials
-  
+
   if (!username || !password) {
     return { pass: false, detail: "Username and Password are required" }
   }
-  
-  // Opcity doesn't have a public API health check
-  // Validate credentials exist and assume valid
+
   return { pass: true, detail: "Opcity credentials saved - will verify on first sync" }
+}
+
+async function testSkySlope(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // SkySlope REST API health check
+  const response = await fetch("https://api.skyslope.com/v3/transactions?pageSize=1", {
+    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid SkySlope API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `SkySlope API returned ${response.status}` }
+  }
+  return { pass: true, detail: "SkySlope credentials verified - transaction platform accessible" }
+}
+
+async function testBrokermint(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key, office_id } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // Brokermint API health check
+  const url = office_id
+    ? `https://brokermint.com/api/v1/offices/${office_id}`
+    : "https://brokermint.com/api/v1/offices"
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid Brokermint API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `Brokermint API returned ${response.status}` }
+  }
+  return { pass: true, detail: "Brokermint credentials verified - office accessible" }
 }
 
 // ─── PROVIDER METADATA ────────────────────────────────────────────────────────
@@ -476,10 +511,25 @@ export const PROVIDER_METADATA: Record<ProviderName, {
   },
   dotloop: {
     displayName: "DotLoop",
-    providerType: "esign",
+    providerType: "transaction",
     credentialFields: [
       { key: "access_token", label: "Access Token", type: "password", required: true },
       { key: "partner_key", label: "Partner Key", type: "text", required: false },
+    ],
+  },
+  skyslope: {
+    displayName: "SkySlope",
+    providerType: "transaction",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+    ],
+  },
+  brokermint: {
+    displayName: "Brokermint",
+    providerType: "transaction",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+      { key: "office_id", label: "Office ID", type: "text", required: false },
     ],
   },
   heygen: {
@@ -588,28 +638,28 @@ export const PROVIDER_METADATA: Record<ProviderName, {
 export const PROVIDER_GROUPS = {
   required: {
     label: "Required",
-    description: "Must connect to advance in onboarding",
-    providers: ["twilio", "sendgrid", "docusign", "dotloop"] as ProviderName[],
+    description: "Must connect at least one of each to advance in onboarding",
+    providers: ["twilio", "sendgrid", "docusign"] as ProviderName[],
     requirements: {
-      sms: 1,      // At least 1 SMS provider
-      email: 1,    // At least 1 email provider
-      esign: 1,    // At least 1 e-sign provider (DocuSign OR DotLoop)
+      sms: 1,    // At least 1 SMS provider
+      email: 1,  // At least 1 email provider
+      esign: 1,  // At least 1 e-sign provider
     },
   },
   recommended: {
     label: "Recommended",
-    description: "Enhance your AI capabilities",
-    providers: ["heygen", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
+    description: "Transaction management, calendar, and CRM — connect at least one transaction platform",
+    providers: ["dotloop", "skyslope", "brokermint", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
     requirements: {
-      video: 0,    // Optional
-      crm: 0,      // Optional
-      calendar: 0, // Optional (Google OR Outlook)
+      transaction: 0, // At least 1 recommended
+      crm: 0,
+      calendar: 0,
     },
   },
   optional: {
     label: "Optional",
-    description: "Additional integrations",
-    providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity"] as ProviderName[],
+    description: "Additional integrations — connect any that apply to your business",
+    providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity", "heygen"] as ProviderName[],
     requirements: {},
   },
 }

@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/dialog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
-const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls"] as const
+const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
 
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
   esign:       ["dotloop", "docusign", "skyslope", "none"],
@@ -37,29 +37,33 @@ const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  // MLS feeds (full IDX licensing) and MLS-adjacent paid data (Rentcast)
   mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
+  accounting:  ["quickbooks", "xero"],
+  crm:         ["gohighlevel", "none"],
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
-  dotloop:    "Dotloop",
-  docusign:   "DocuSign",
-  skyslope:   "SkySlope",
-  brokermint: "Brokermint",
-  twilio:     "Twilio",
-  bandwidth:  "Bandwidth",
-  vonage:     "Vonage",
-  sendgrid:   "SendGrid",
-  mailgun:    "Mailgun",
-  resend:     "Resend",
-  google:     "Google",
-  outlook:    "Outlook / Microsoft",
-  rets:       "RETS",
-  spark:      "Spark API",
-  bridge:     "Bridge Interactive",
-  idx_broker: "IDX Broker",
-  rentcast:   "Rentcast (no IDX needed)",
-  none:       "None (Disabled)",
+  dotloop:      "Dotloop",
+  docusign:     "DocuSign",
+  skyslope:     "SkySlope",
+  brokermint:   "Brokermint",
+  twilio:       "Twilio",
+  bandwidth:    "Bandwidth",
+  vonage:       "Vonage",
+  sendgrid:     "SendGrid",
+  mailgun:      "Mailgun",
+  resend:       "Resend",
+  google:       "Google",
+  outlook:      "Outlook / Microsoft",
+  rets:         "RETS",
+  spark:        "Spark API",
+  bridge:       "Bridge Interactive",
+  idx_broker:   "IDX Broker",
+  rentcast:     "Rentcast (no IDX needed)",
+  quickbooks:   "QuickBooks",
+  xero:         "Xero",
+  gohighlevel:  "GoHighLevel",
+  none:         "None (Disabled)",
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
