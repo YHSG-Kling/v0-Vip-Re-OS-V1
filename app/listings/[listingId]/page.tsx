@@ -76,9 +76,9 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const [mediaResult, agentInfo, brokerageResult] = await Promise.all([
     service
       .from("listing_media")
-      .select("id, file_url, thumbnail_url, media_type, display_order")
+      .select("id, file_url, thumbnail_url, media_type, sort_order, is_approved, approval_required")
       .eq("listing_id", listingId)
-      .order("display_order", { ascending: true }),
+      .order("sort_order", { ascending: true }),
 
     (async () => {
       if (!listing.agent_id) return null
@@ -101,8 +101,17 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       : Promise.resolve({ data: null }),
   ])
 
-  const photos = (mediaResult.data ?? []).filter(
+  // Only show media that's been approved (or doesn't require approval).
+  // Skips the auto-drafted-but-unreviewed video/photo entries from the
+  // marketing pipeline until the agent approves them in Listing Media.
+  const approvedMedia = (mediaResult.data ?? []).filter(
+    (m) => m.is_approved === true || m.approval_required === false
+  )
+  const photos = approvedMedia.filter(
     (m) => m.media_type === "photo" && (m.file_url || m.thumbnail_url)
+  )
+  const videos = approvedMedia.filter(
+    (m) => m.media_type === "video" && m.file_url
   )
   const heroPhoto = photos[0]
 
@@ -235,6 +244,28 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
                 +{photos.length - 8} more
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Property videos — drone tour, walkthrough, neighborhood. Auto-drafted
+          via handleVideoGenerated when an agent renders a listing_promo or
+          neighborhood_tour, surfaces here once the agent approves the media. */}
+      {videos.length > 0 && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Property videos</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {videos.map((video) => (
+              <div key={video.id} className="rounded-xl overflow-hidden bg-black aspect-video">
+                <video
+                  src={video.file_url}
+                  poster={video.thumbnail_url ?? undefined}
+                  controls
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            ))}
           </div>
         </div>
       )}

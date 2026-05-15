@@ -542,6 +542,20 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
       const svc = svcCreate()
       const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.vipre.os"
       const targetUrl = `${appUrl}/listings/${listing_id}`
+
+      // qr_codes.agent_id FKs agents(id), not users(id). Look up the agents
+      // row from the event's user_id; fall back to null when no agent record
+      // exists (qr_codes.agent_id is nullable).
+      let agentRowId: string | null = null
+      if (event.user_id) {
+        const { data: agentRow } = await svc
+          .from("agents")
+          .select("id")
+          .eq("user_id", event.user_id)
+          .maybeSingle()
+        agentRowId = agentRow?.id ?? null
+      }
+
       // qr_codes.slug is globally unique, so suffix with a timestamp.
       const slug = `listing-${String(listing_id).slice(0, 8)}-${Date.now().toString(36)}`.toLowerCase()
       const { data: existing } = await svc
@@ -553,7 +567,7 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
       if (!existing) {
         await svc.from("qr_codes").insert({
           brokerage_id: event.brokerage_id,
-          agent_id:     event.user_id ?? null,
+          agent_id:     agentRowId,
           label:        `Listing ${mls_number ?? listing_id}`,
           slug,
           target_url:   targetUrl,
@@ -750,16 +764,20 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     }
 
     // ── 2. Listing videos → attach to the property landing page ─────────────
-    // listing_marketing_content rows with content_type='video' surface on the
-    // public listing page. listing_promo and neighborhood_tour both attach.
+    // listing_media is the canonical table the public listing detail page
+    // reads from. media_type='video' + file_url=video_url. We let the
+    // approval workflow defaults take over (approval_required=true,
+    // is_approved=false) so the agent reviews before it goes live.
     const listingAttachTypes = ["listing_promo", "neighborhood_tour"]
     if (listingAttachTypes.includes(video_type) && listing_id) {
       try {
-        await svc.from("listing_marketing_content").insert({
+        await svc.from("listing_media").insert({
+          brokerage_id:  event.brokerage_id,
           listing_id,
-          brokerage_id: event.brokerage_id,
-          content_type: "video",
-          content:      video_url,
+          media_type:    "video",
+          file_url:      video_url,
+          thumbnail_url: thumbnail_url ?? null,
+          uploaded_by:   agentId ?? null,
         })
         summary.push("attached to listing landing page")
       } catch (listingErr) {
@@ -967,14 +985,15 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
-    // 2. Listing image → attach to property landing page
+    // 2. Listing image → attach to property landing page (listing_media)
     if (listing_id && (image_type === "listing_photo" || image_type === "listing_marketing")) {
       try {
-        await svc.from("listing_marketing_content").insert({
-          listing_id,
+        await svc.from("listing_media").insert({
           brokerage_id: event.brokerage_id,
-          content_type: "photo",
-          content:      image_url,
+          listing_id,
+          media_type:   "photo",
+          file_url:     image_url,
+          uploaded_by:  agentId ?? null,
         })
         summary.push("attached to listing landing page")
       } catch (err) {
