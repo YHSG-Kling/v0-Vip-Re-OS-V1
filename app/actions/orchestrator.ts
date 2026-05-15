@@ -764,30 +764,49 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
-    // ── 4. Campaign-attached videos → embed in the linked email campaign ────
-    // When the video was generated to accompany a marketing campaign or
-    // newsletter, append the video thumbnail+link block to the campaign's
-    // content so the agent can finalize and send.
+    // ── 4. Campaign-attached videos → embed in every asset under the umbrella ─
+    // ai_video_projects.marketing_campaign_id FKs marketing_campaigns (the
+    // umbrella). The actual email body lives on newsletter_campaigns and
+    // email_campaigns rows that share the same marketing_campaign_id. We
+    // append the video block to each asset's content so the agent finalises
+    // and sends with the video embedded.
     if (marketing_campaign_id) {
+      const videoBlock =
+        `\n\n<div style="margin:24px 0;text-align:center">` +
+        `<a href="${video_url}" target="_blank">` +
+        (thumbnail_url
+          ? `<img src="${thumbnail_url}" alt="Watch video" style="max-width:480px;width:100%;border-radius:8px"/>`
+          : `<span style="display:inline-block;padding:14px 28px;background:#2563eb;color:#fff;border-radius:6px;font-weight:600">Watch the video</span>`) +
+        `</a></div>\n`
+
       try {
-        const { data: campaign } = await svc
+        const { data: emailAssets } = await svc
           .from("email_campaigns")
           .select("id, content")
-          .eq("id", marketing_campaign_id)
-          .maybeSingle()
-        if (campaign) {
-          const videoBlock =
-            `\n\n<div style="margin:24px 0;text-align:center">` +
-            `<a href="${video_url}" target="_blank">` +
-            (thumbnail_url
-              ? `<img src="${thumbnail_url}" alt="Watch video" style="max-width:480px;width:100%;border-radius:8px"/>`
-              : `<span style="display:inline-block;padding:14px 28px;background:#2563eb;color:#fff;border-radius:6px;font-weight:600">▶ Watch the video</span>`) +
-            `</a></div>\n`
+          .eq("marketing_campaign_id", marketing_campaign_id)
+        for (const c of (emailAssets ?? []) as Array<{ id: string; content: string | null }>) {
           await svc
             .from("email_campaigns")
-            .update({ content: (campaign.content ?? "") + videoBlock })
-            .eq("id", marketing_campaign_id)
-          summary.push("embedded in email campaign")
+            .update({ content: (c.content ?? "") + videoBlock })
+            .eq("id", c.id)
+        }
+        const emailCount = emailAssets?.length ?? 0
+
+        const { data: newsletterAssets } = await svc
+          .from("newsletter_campaigns")
+          .select("id, content")
+          .eq("marketing_campaign_id", marketing_campaign_id)
+        for (const c of (newsletterAssets ?? []) as Array<{ id: string; content: string | null }>) {
+          await svc
+            .from("newsletter_campaigns")
+            .update({ content: (c.content ?? "") + videoBlock })
+            .eq("id", c.id)
+        }
+        const newsletterCount = newsletterAssets?.length ?? 0
+
+        const total = emailCount + newsletterCount
+        if (total > 0) {
+          summary.push(`embedded in ${total} campaign asset${total === 1 ? "" : "s"}`)
         }
       } catch (campaignErr) {
         console.error("[handleVideoGenerated] Campaign embed failed:", campaignErr)
