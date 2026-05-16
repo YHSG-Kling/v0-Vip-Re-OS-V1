@@ -91,6 +91,9 @@ export interface ShowingBriefing {
   matchup:           MatchupRow[]
   recentSignals:     string[]
   predictedNextAction: string | null
+  // Pure market comps — same ZIP, sold/pending/active from the brokerage's
+  // listings table. This is the pricing/valuation signal the agent uses
+  // to anchor "is this priced right?" conversations.
   recentComps: Array<{
     address:    string
     listPrice:  number | null
@@ -98,7 +101,18 @@ export interface ShowingBriefing {
     bathrooms:  number | null
     sqft:       number | null
     status:     string | null
-    source:     "listing" | "saved"
+  }>
+
+  // Buyer-journey context — other properties THIS buyer has saved in the
+  // same city. Separate from comps because this is engagement data,
+  // not pricing data ("remember you also liked X for $Y").
+  buyerAlsoConsidered: Array<{
+    address:    string
+    listPrice:  number | null
+    bedrooms:   number | null
+    bathrooms:  number | null
+    sqft:       number | null
+    propertyType: string | null
   }>
 
   aiSummary:         string | null
@@ -380,35 +394,33 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   const coachObjects  = coachingRows.flatMap(c => (c.common_objections ?? []) as string[]).slice(0, 3)
   const coachRisks    = coachingRows.flatMap(c => (c.risk_signals ?? []) as string[]).slice(0, 3)
 
-  // Merge comps: seller-side listings in this ZIP + buyer-side properties
-  // the buyer has saved in this city. Tagged with source so the UI can
-  // visually distinguish them. Capped at 8 total so the brief stays scannable.
-  const compsView: ShowingBriefing["recentComps"] = [
-    ...((listingComps ?? []) as any[]).map((c) => ({
-      address:   c.address ?? "",
-      listPrice: c.list_price ?? null,
-      bedrooms:  c.bedrooms ?? null,
-      bathrooms: c.bathrooms ?? null,
-      sqft:      c.sqft ?? null,
-      status:    c.status ?? null,
-      source:    "listing" as const,
-    })),
-    ...((savedComps ?? []) as any[]).map((c) => ({
-      address:   c.property_address ?? "",
-      listPrice: c.list_price ?? null,
-      bedrooms:  c.bedrooms ?? null,
-      bathrooms: c.bathrooms ?? null,
-      sqft:      c.sqft ?? null,
-      status:    c.property_type ?? null,
-      source:    "saved" as const,
-    })),
-  ].slice(0, 8)
+  // Market comps — seller-side listings in this ZIP only. Pure pricing signal.
+  const compsView: ShowingBriefing["recentComps"] = ((listingComps ?? []) as any[]).map((c) => ({
+    address:   c.address ?? "",
+    listPrice: c.list_price ?? null,
+    bedrooms:  c.bedrooms ?? null,
+    bathrooms: c.bathrooms ?? null,
+    sqft:      c.sqft ?? null,
+    status:    c.status ?? null,
+  }))
+
+  // Buyer-journey context — properties this buyer has also saved in the
+  // same city. Distinct from comps — this is engagement data.
+  const alsoConsideredView: ShowingBriefing["buyerAlsoConsidered"] = ((savedComps ?? []) as any[]).map((c) => ({
+    address:      c.property_address ?? "",
+    listPrice:    c.list_price ?? null,
+    bedrooms:     c.bedrooms ?? null,
+    bathrooms:    c.bathrooms ?? null,
+    sqft:         c.sqft ?? null,
+    propertyType: c.property_type ?? null,
+  }))
 
   // AI: 4-6 specific talking points tied to THIS buyer and THIS property
   const aiResult = await generateBriefAI({
     buyer, property: propertyView, matchup, signals, coachTalking, coachObjects,
     predictedNextAction, predictedReadyToOffer: prediction?.predicted_ready_to_offer === true,
     aiReasoning: prediction?.ai_reasoning ?? null,
+    buyerAlsoConsidered: alsoConsideredView,
     brokerageId: showing.brokerage_id,
   })
 
@@ -427,6 +439,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     recentSignals:       signals,
     predictedNextAction,
     recentComps:         compsView,
+    buyerAlsoConsidered: alsoConsideredView,
     aiSummary:           aiResult.summary,
     aiTalkingPoints:     aiResult.talkingPoints,
     aiObjections:        aiResult.objections.length ? aiResult.objections : coachObjects,
@@ -449,6 +462,7 @@ interface AiBriefInput {
   predictedNextAction:   string | null
   predictedReadyToOffer: boolean
   aiReasoning:           string | null
+  buyerAlsoConsidered:   ShowingBriefing["buyerAlsoConsidered"]
   brokerageId:           string | null
 }
 
@@ -491,6 +505,16 @@ async function generateBriefAI(input: AiBriefInput): Promise<AiBriefOutput> {
     ? `AI MATCH SCORE: ${Math.round(input.property.aiMatchScore * 100)}%`
     : ""
 
+  // Buyer-journey context — other properties this buyer is shopping. Lets the
+  // AI riff on "compared to the X you also saved at $Y, this one offers Z".
+  const alsoConsideredText = input.buyerAlsoConsidered.length
+    ? `BUYER IS ALSO CONSIDERING: ${input.buyerAlsoConsidered.slice(0, 4).map(p => {
+        const beds = p.bedrooms != null ? `${p.bedrooms}bd` : ""
+        const price = p.listPrice ? dollars(p.listPrice) : ""
+        return [p.address, beds, price].filter(Boolean).join(" ")
+      }).join("; ")}`
+    : ""
+
   const prompt = `You are coaching a real-estate agent who's about to walk a buyer through a property. Output structured guidance — be specific, never generic.
 
 BUYER: ${buyerLine}
@@ -498,6 +522,7 @@ PROPERTY: ${propertyLine}
 ${aiScoreText}
 ${matchReasonsText}
 ${buyerNotesText}
+${alsoConsideredText}
 
 MATCHUP:
 ${matchupText || "(no inferred criteria yet)"}
@@ -564,6 +589,7 @@ export async function persistShowingBriefing(brief: ShowingBriefing, brokerageId
     ai_objections:     brief.aiObjections as any,
     ai_risk_flags:     brief.aiRiskFlags as any,
     recent_comps:      brief.recentComps as any,
+    buyer_also_considered: brief.buyerAlsoConsidered as any,
     generated_at:      new Date().toISOString(),
     ai_model_used:     brief.modelUsed,
     updated_at:        new Date().toISOString(),

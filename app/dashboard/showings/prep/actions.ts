@@ -109,6 +109,7 @@ export async function loadShowingBriefing(showingId: string): Promise<{ briefing
         recentSignals:      [],
         predictedNextAction: null,
         recentComps:        (row.recent_comps ?? []) as any,
+        buyerAlsoConsidered: (row.buyer_also_considered ?? []) as any,
         aiSummary:          row.ai_summary ?? null,
         aiTalkingPoints:    (row.ai_talking_points ?? []) as string[],
         aiObjections:       (row.ai_objections ?? []) as string[],

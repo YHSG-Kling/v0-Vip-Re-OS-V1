@@ -316,12 +316,45 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
                       {c.bedrooms != null && `${c.bedrooms} bd`}
                       {c.bathrooms != null && ` · ${c.bathrooms} ba`}
                       {c.sqft != null && ` · ${c.sqft.toLocaleString()} sqft`}
-                      {c.source === "saved" && " · buyer also saved"}
                     </p>
                   </div>
                   <div className="text-right shrink-0">
                     <p className="font-medium">{dollars(c.listPrice)}</p>
                     {c.status && <Badge variant="outline" className="text-[9px]">{c.status}</Badge>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Buyer is also considering ────────────────────────────────── */}
+      {briefing.buyerAlsoConsidered.length > 0 && (
+        <Card className="mt-4 border-indigo-200/60">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <User className="h-4 w-4 text-indigo-600" /> Buyer is also considering
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-[11px] text-muted-foreground mb-2">
+              Other properties this buyer has saved in the same area. Use these for &ldquo;compared to X you also liked&hellip;&rdquo; framing.
+            </p>
+            <div className="divide-y">
+              {briefing.buyerAlsoConsidered.map((p, i) => (
+                <div key={i} className="py-2 flex items-center justify-between gap-2 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">{p.address}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {p.bedrooms != null && `${p.bedrooms} bd`}
+                      {p.bathrooms != null && ` · ${p.bathrooms} ba`}
+                      {p.sqft != null && ` · ${p.sqft.toLocaleString()} sqft`}
+                      {p.propertyType && ` · ${p.propertyType}`}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="font-medium">{dollars(p.listPrice)}</p>
                   </div>
                 </div>
               ))}
