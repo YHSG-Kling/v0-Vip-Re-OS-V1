@@ -104,7 +104,7 @@ export async function loadShowingBriefing(showingId: string): Promise<{ briefing
         durationMinutes:    null,
         accessInstructions: null,
         buyer:              (row.buyer_snapshot ?? {}) as any,
-        listing:            (row.listing_snapshot ?? {}) as any,
+        property:           (row.listing_snapshot ?? {}) as any,
         matchup:            (row.matchup ?? []) as any,
         recentSignals:      [],
         predictedNextAction: null,

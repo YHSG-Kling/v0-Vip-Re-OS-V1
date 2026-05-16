@@ -3,20 +3,33 @@
  *
  * Builds a per-showing 1-pager the agent reads before walking the buyer
  * into a property. Pure-function compositor over data the platform
- * already captures — no new ingest, no new scraping.
+ * already captures.
  *
- * Pull order (each step is best-effort; missing data degrades gracefully):
- *   1. showing  → listing_id + contact_id + scheduled_at + access_method
- *   2. listing  → property facts
- *   3. contact  → name, contact_type, budget_min/max, timeline
- *   4. property_preferences → AI-inferred criteria (price range, beds, etc)
- *   5. buyer_financial_profiles → pre-approval amount, cash buyer flag
- *   6. buyer_behavior_predictions → ready-to-offer, predicted next action
- *   7. recent buyer_behavior_log (14d) → "they viewed 12 similar in 3 days"
- *   8. buyer_stage_coaching → suggested talking points + objections
- *   9. recent comp listings within ZIP for context
+ * Vocabulary the codebase uses:
+ *   LISTING  = seller-side inventory (the brokerage's own listings table)
+ *   PROPERTY = buyer-side, lives in saved_properties when the buyer has
+ *              shown interest, or comes from external sources (RentCast,
+ *              IDX, Zillow/Realtor scrape) via /lib/property/
  *
- * Then computeMatchup() pairs each criterion against the listing and
+ * Property-facts resolution order (buyer-side first, because most showings
+ * are external-MLS properties the buyer found):
+ *   1. saved_properties row for this (contact_id, mls / external_id /
+ *      address) — best source: has price, beds/baths, sqft, photo, AI match
+ *      score, the buyer's notes, dismissed flag
+ *   2. listings row when showings.listing_id is set (our seller-side
+ *      inventory — showings of our own listings)
+ *   3. showings.external_metadata jsonb (set by ingestion adapters)
+ *   4. showings.external_address as a final string fallback
+ *
+ * Comps come from BOTH the brokerage's listings table AND saved_properties
+ * in the same ZIP so the buyer sees properties they've already considered
+ * alongside seller-side inventory.
+ *
+ * Other parallel pulls:
+ *   contact + property_preferences + buyer_financial_profiles +
+ *   buyer_behavior_predictions + buyer_behavior_log (14d) + buyer_stage_coaching
+ *
+ * Then computeMatchup() pairs each buyer criterion against the property and
  * generateAiSummary() asks the AI for 4-6 specific talking points tied
  * to THIS buyer's signals (not generic real-estate advice).
  */
@@ -27,7 +40,7 @@ import { generateTextRouted } from "@/lib/ai/models"
 export interface MatchupRow {
   criterion:   string
   buyerWants:  string
-  listingHas:  string
+  propertyHas: string
   match:       "yes" | "no" | "partial" | "unknown"
 }
 
@@ -50,8 +63,15 @@ export interface ShowingBriefing {
     notes:               string | null
   }
 
-  listing: {
-    listingId:         string | null
+  /**
+   * The property being shown. Resolved (in priority order) from
+   *   1. saved_properties (buyer-side cache, richest data)
+   *   2. listings (when showings.listing_id is set — our seller-side inventory)
+   *   3. showings.external_metadata jsonb (set by ingestion adapters)
+   *   4. showings.external_address as final text fallback
+   */
+  property: {
+    listingId:         string | null  // non-null only when it's our seller-side listing
     address:           string | null
     city:              string | null
     state:             string | null
@@ -62,6 +82,10 @@ export interface ShowingBriefing {
     sqft:              number | null
     mlsNumber:         string | null
     status:            string | null
+    source:            "saved" | "listing" | "external_metadata" | "external_address" | null
+    aiMatchScore:      number | null
+    matchReasons:      string[]
+    buyerNotes:        string | null
   }
 
   matchup:           MatchupRow[]
@@ -74,6 +98,7 @@ export interface ShowingBriefing {
     bathrooms:  number | null
     sqft:       number | null
     status:     string | null
+    source:     "listing" | "saved"
   }>
 
   aiSummary:         string | null
@@ -94,15 +119,17 @@ const dollars = (n: number | null | undefined) =>
 export async function buildShowingBriefing(showingId: string): Promise<ShowingBriefing | null> {
   const svc = createServiceClient()
 
-  // 1. Showing core
+  // 1. Showing core — listing_id is set for seller-side inventory shows;
+  //    for buyer-side external MLS shows it's null and external_* carry the
+  //    property reference.
   const { data: showing } = await svc
     .from("showings")
-    .select("id, listing_id, contact_id, agent_id, scheduled_at, duration_minutes, access_method, access_code, access_instructions, brokerage_id, external_address")
+    .select("id, listing_id, contact_id, agent_id, scheduled_at, duration_minutes, access_method, access_code, access_instructions, brokerage_id, external_address, external_mls_id, external_metadata")
     .eq("id", showingId)
     .maybeSingle()
   if (!showing) return null
 
-  // 2-9 in parallel
+  // 2-N in parallel — buyer data + (optional) seller-side listing row
   const [
     { data: listing },
     { data: contact },
@@ -111,7 +138,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     { data: prediction },
     { data: behavior },
     { data: coaching },
-    { data: comps },
+    { data: savedRow },
   ] = await Promise.all([
     showing.listing_id
       ? svc.from("listings").select("id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, mls_number, status").eq("id", showing.listing_id).maybeSingle()
@@ -131,25 +158,68 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     showing.contact_id
       ? svc.from("buyer_behavior_log").select("signal_type, signal_value, property_address, bedrooms, bathrooms, list_price, created_at").eq("contact_id", showing.contact_id).gte("created_at", new Date(Date.now() - 14 * 86_400_000).toISOString()).order("created_at", { ascending: false }).limit(30)
       : Promise.resolve({ data: [] }),
+    svc.from("buyer_stage_coaching").select("buyer_stage, suggested_talking_points, common_objections, success_signals, risk_signals").eq("is_active", true).limit(5),
+    // Buyer-side property cache lookup. Match strategy (any one):
+    //   - showings.listing_id matches saved_properties.listing_id
+    //   - showings.external_mls_id matches saved_properties.mls_number
+    //   - normalised address match within this contact's saves
     showing.contact_id
-      ? svc.from("buyer_stage_coaching").select("buyer_stage, suggested_talking_points, common_objections, success_signals, risk_signals").eq("is_active", true).limit(5)
-      : Promise.resolve({ data: [] }),
-    (async (): Promise<{ data: Array<{ address: string; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null; status: string | null }> }> => {
-      // Recent comps in the same ZIP within last 90 days
-      if (!showing.listing_id) return { data: [] }
-      const { data: l } = await svc.from("listings").select("zip").eq("id", showing.listing_id).maybeSingle()
-      if (!l?.zip) return { data: [] }
-      const { data } = await svc
-        .from("listings")
-        .select("address, list_price, bedrooms, bathrooms, sqft, status")
-        .eq("zip", l.zip)
-        .neq("id", showing.listing_id)
-        .in("status", ["sold", "pending", "active"])
-        .order("list_price", { ascending: false })
-        .limit(5)
-      return { data: (data ?? []) as any }
-    })(),
+      ? (async () => {
+          const orParts: string[] = []
+          if (showing.listing_id)      orParts.push(`listing_id.eq.${showing.listing_id}`)
+          if (showing.external_mls_id) orParts.push(`mls_number.eq.${showing.external_mls_id}`)
+          if (showing.external_address) {
+            // ilike with the first segment of the address (street # + name)
+            const seg = showing.external_address.split(",")[0].trim().replace(/[%']/g, "")
+            if (seg) orParts.push(`property_address.ilike.${seg}%`)
+          }
+          if (orParts.length === 0) return { data: null }
+          const { data } = await svc
+            .from("saved_properties")
+            .select("listing_id, mls_number, external_property_id, property_address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, primary_photo_url, ai_match_score, match_reasons, notes")
+            .eq("contact_id", showing.contact_id)
+            .or(orParts.join(","))
+            .order("saved_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          return { data }
+        })()
+      : Promise.resolve({ data: null }),
   ])
+
+  // Comp lookup — pulls from BOTH listings (seller-side) and saved_properties
+  // (buyer-side, what the buyer has already considered) in the same ZIP.
+  // Buyer-shopping comps are more meaningful for a buyer-side showing.
+  const compZip =
+    listing?.zip ??
+    (savedRow as any)?.state ?? null  // saved_properties has state but no zip column
+  const resolvedZip = listing?.zip ?? null  // only seller-side has zip directly
+
+  const [{ data: listingComps }, { data: savedComps }] = await Promise.all([
+    resolvedZip
+      ? svc
+          .from("listings")
+          .select("address, list_price, bedrooms, bathrooms, sqft, status")
+          .eq("zip", resolvedZip)
+          .neq("id", showing.listing_id ?? "00000000-0000-0000-0000-000000000000")
+          .in("status", ["sold", "pending", "active"])
+          .order("list_price", { ascending: false })
+          .limit(5)
+      : Promise.resolve({ data: [] }),
+    // Saved-properties comps: other properties this buyer has saved in the
+    // same city (best proxy when zip isn't on saved_properties).
+    showing.contact_id && (savedRow as any)?.city
+      ? svc
+          .from("saved_properties")
+          .select("property_address, list_price, bedrooms, bathrooms, sqft, property_type")
+          .eq("contact_id", showing.contact_id)
+          .eq("city", (savedRow as any).city)
+          .neq("property_address", (savedRow as any).property_address ?? "")
+          .order("saved_at", { ascending: false })
+          .limit(5)
+      : Promise.resolve({ data: [] }),
+  ])
+  void compZip
 
   // Build buyer snapshot
   const fullName = contact
@@ -169,19 +239,34 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     notes:             contact?.notes ?? null,
   }
 
-  // Listing snapshot (use external_address fallback for non-IDX listings)
-  const listingView = {
-    listingId:  listing?.id ?? null,
-    address:    listing?.address ?? showing.external_address ?? null,
-    city:       listing?.city ?? null,
-    state:      listing?.state ?? null,
-    zip:        listing?.zip ?? null,
-    listPrice:  listing?.list_price ?? null,
-    bedrooms:   listing?.bedrooms ?? null,
-    bathrooms:  listing?.bathrooms ?? null,
-    sqft:       listing?.sqft ?? null,
-    mlsNumber:  listing?.mls_number ?? null,
-    status:     listing?.status ?? null,
+  // Property snapshot — resolves through 4 fallback sources in priority order.
+  // saved_properties wins because it's the buyer-side cache and carries the
+  // platform's AI match score + the buyer's own notes.
+  const saved = savedRow as any
+  const meta  = (showing.external_metadata ?? {}) as Record<string, any>
+  const source: ShowingBriefing["property"]["source"] =
+    saved ? "saved"
+    : listing ? "listing"
+    : Object.keys(meta).length > 0 ? "external_metadata"
+    : showing.external_address ? "external_address"
+    : null
+
+  const propertyView: ShowingBriefing["property"] = {
+    listingId:    listing?.id ?? null,
+    address:      saved?.property_address ?? listing?.address ?? meta?.address ?? showing.external_address ?? null,
+    city:         saved?.city ?? listing?.city ?? meta?.city ?? null,
+    state:        saved?.state ?? listing?.state ?? meta?.state ?? null,
+    zip:          listing?.zip ?? meta?.zip ?? meta?.postal_code ?? null,
+    listPrice:    saved?.list_price ?? listing?.list_price ?? meta?.list_price ?? meta?.price ?? null,
+    bedrooms:     saved?.bedrooms ?? listing?.bedrooms ?? meta?.bedrooms ?? null,
+    bathrooms:    saved?.bathrooms ?? listing?.bathrooms ?? meta?.bathrooms ?? null,
+    sqft:         saved?.sqft ?? listing?.sqft ?? meta?.sqft ?? meta?.square_feet ?? null,
+    mlsNumber:    saved?.mls_number ?? listing?.mls_number ?? showing.external_mls_id ?? meta?.mls_number ?? null,
+    status:       listing?.status ?? meta?.status ?? null,
+    source,
+    aiMatchScore: saved?.ai_match_score ?? null,
+    matchReasons: Array.isArray(saved?.match_reasons) ? (saved!.match_reasons as string[]) : [],
+    buyerNotes:   typeof saved?.notes === "string" ? saved.notes : null,
   }
 
   // Build matchup grid — each row compares one buyer criterion vs the listing
@@ -190,13 +275,13 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   // Price
   if (buyer.budgetMax || buyer.preApprovedAmount) {
     const budget = buyer.preApprovedAmount ?? buyer.budgetMax ?? null
-    if (budget && listingView.listPrice) {
-      const fitsBudget = listingView.listPrice <= budget * 1.05
-      const stretches  = listingView.listPrice > budget && listingView.listPrice <= budget * 1.05
+    if (budget && propertyView.listPrice) {
+      const fitsBudget = propertyView.listPrice <= budget * 1.05
+      const stretches  = propertyView.listPrice > budget && propertyView.listPrice <= budget * 1.05
       matchup.push({
         criterion:  "Budget",
         buyerWants: dollars(budget),
-        listingHas: dollars(listingView.listPrice),
+        propertyHas: dollars(propertyView.listPrice),
         match:      fitsBudget ? (stretches ? "partial" : "yes") : "no",
       })
     }
@@ -204,43 +289,43 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
 
   // Beds
   const wantBedsMin = pref?.inferred_beds_min ?? null
-  if (wantBedsMin && listingView.bedrooms != null) {
+  if (wantBedsMin && propertyView.bedrooms != null) {
     matchup.push({
       criterion:  "Bedrooms",
       buyerWants: `≥ ${wantBedsMin}`,
-      listingHas: `${listingView.bedrooms}`,
-      match:      listingView.bedrooms >= wantBedsMin ? "yes" : "no",
+      propertyHas: `${propertyView.bedrooms}`,
+      match:      propertyView.bedrooms >= wantBedsMin ? "yes" : "no",
     })
   }
 
   // Baths
   const wantBathsMin = pref?.inferred_baths_min ?? null
-  if (wantBathsMin && listingView.bathrooms != null) {
+  if (wantBathsMin && propertyView.bathrooms != null) {
     matchup.push({
       criterion:  "Bathrooms",
       buyerWants: `≥ ${wantBathsMin}`,
-      listingHas: `${listingView.bathrooms}`,
-      match:      listingView.bathrooms >= wantBathsMin ? "yes" : "no",
+      propertyHas: `${propertyView.bathrooms}`,
+      match:      propertyView.bathrooms >= wantBathsMin ? "yes" : "no",
     })
   }
 
   // Cities / ZIPs
   const inferredCities = (pref?.inferred_cities ?? []) as string[]
   const inferredZips   = (pref?.inferred_zip_codes ?? []) as string[]
-  if (inferredCities.length && listingView.city) {
-    const m = inferredCities.some(c => c.toLowerCase() === listingView.city!.toLowerCase())
+  if (inferredCities.length && propertyView.city) {
+    const m = inferredCities.some(c => c.toLowerCase() === propertyView.city!.toLowerCase())
     matchup.push({
       criterion:  "Location",
       buyerWants: inferredCities.slice(0, 3).join(", "),
-      listingHas: listingView.city,
+      propertyHas: propertyView.city,
       match:      m ? "yes" : "partial",
     })
-  } else if (inferredZips.length && listingView.zip) {
-    const m = inferredZips.includes(listingView.zip)
+  } else if (inferredZips.length && propertyView.zip) {
+    const m = inferredZips.includes(propertyView.zip)
     matchup.push({
       criterion:  "ZIP",
       buyerWants: inferredZips.slice(0, 3).join(", "),
-      listingHas: listingView.zip,
+      propertyHas: propertyView.zip,
       match:      m ? "yes" : "partial",
     })
   }
@@ -251,7 +336,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     matchup.push({
       criterion:  "Must-haves",
       buyerWants: mustHaves.slice(0, 4).join(", "),
-      listingHas: "(check on tour)",
+      propertyHas: "(check on tour)",
       match:      "unknown",
     })
   }
@@ -262,7 +347,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     matchup.push({
       criterion:  "Deal-breakers",
       buyerWants: `Avoid: ${dealBreakers.slice(0, 3).join(", ")}`,
-      listingHas: "(check on tour)",
+      propertyHas: "(check on tour)",
       match:      "unknown",
     })
   }
@@ -295,18 +380,33 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   const coachObjects  = coachingRows.flatMap(c => (c.common_objections ?? []) as string[]).slice(0, 3)
   const coachRisks    = coachingRows.flatMap(c => (c.risk_signals ?? []) as string[]).slice(0, 3)
 
-  const compsView = (comps ?? []).map((c: any) => ({
-    address:   c.address,
-    listPrice: c.list_price ?? null,
-    bedrooms:  c.bedrooms ?? null,
-    bathrooms: c.bathrooms ?? null,
-    sqft:      c.sqft ?? null,
-    status:    c.status ?? null,
-  }))
+  // Merge comps: seller-side listings in this ZIP + buyer-side properties
+  // the buyer has saved in this city. Tagged with source so the UI can
+  // visually distinguish them. Capped at 8 total so the brief stays scannable.
+  const compsView: ShowingBriefing["recentComps"] = [
+    ...((listingComps ?? []) as any[]).map((c) => ({
+      address:   c.address ?? "",
+      listPrice: c.list_price ?? null,
+      bedrooms:  c.bedrooms ?? null,
+      bathrooms: c.bathrooms ?? null,
+      sqft:      c.sqft ?? null,
+      status:    c.status ?? null,
+      source:    "listing" as const,
+    })),
+    ...((savedComps ?? []) as any[]).map((c) => ({
+      address:   c.property_address ?? "",
+      listPrice: c.list_price ?? null,
+      bedrooms:  c.bedrooms ?? null,
+      bathrooms: c.bathrooms ?? null,
+      sqft:      c.sqft ?? null,
+      status:    c.property_type ?? null,
+      source:    "saved" as const,
+    })),
+  ].slice(0, 8)
 
-  // AI: 4-6 specific talking points tied to THIS buyer and THIS listing
+  // AI: 4-6 specific talking points tied to THIS buyer and THIS property
   const aiResult = await generateBriefAI({
-    buyer, listing: listingView, matchup, signals, coachTalking, coachObjects,
+    buyer, property: propertyView, matchup, signals, coachTalking, coachObjects,
     predictedNextAction, predictedReadyToOffer: prediction?.predicted_ready_to_offer === true,
     aiReasoning: prediction?.ai_reasoning ?? null,
     brokerageId: showing.brokerage_id,
@@ -322,7 +422,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
       showing.access_instructions,
     ].filter(Boolean).join(" • ") || null,
     buyer,
-    listing:             listingView,
+    property:            propertyView,
     matchup,
     recentSignals:       signals,
     predictedNextAction,
@@ -341,7 +441,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
 
 interface AiBriefInput {
   buyer:                 ShowingBriefing["buyer"]
-  listing:               ShowingBriefing["listing"]
+  property:              ShowingBriefing["property"]
   matchup:               MatchupRow[]
   signals:               string[]
   coachTalking:          string[]
@@ -362,11 +462,11 @@ interface AiBriefOutput {
 
 async function generateBriefAI(input: AiBriefInput): Promise<AiBriefOutput> {
   const propertyLine = [
-    input.listing.address,
-    input.listing.listPrice ? dollars(input.listing.listPrice) : null,
-    input.listing.bedrooms != null ? `${input.listing.bedrooms} bd` : null,
-    input.listing.bathrooms != null ? `${input.listing.bathrooms} ba` : null,
-    input.listing.sqft ? `${input.listing.sqft} sqft` : null,
+    input.property.address,
+    input.property.listPrice ? dollars(input.property.listPrice) : null,
+    input.property.bedrooms != null ? `${input.property.bedrooms} bd` : null,
+    input.property.bathrooms != null ? `${input.property.bathrooms} ba` : null,
+    input.property.sqft ? `${input.property.sqft} sqft` : null,
   ].filter(Boolean).join(" · ")
 
   const buyerLine = [
@@ -376,13 +476,28 @@ async function generateBriefAI(input: AiBriefInput): Promise<AiBriefOutput> {
     input.buyer.isCashBuyer ? "Cash buyer" : null,
   ].filter(Boolean).join(" · ")
 
-  const matchupText = input.matchup.map((m) => `- ${m.criterion}: wants ${m.buyerWants}, listing has ${m.listingHas} → ${m.match}`).join("\n")
+  const matchupText = input.matchup.map((m) => `- ${m.criterion}: wants ${m.buyerWants}, property has ${m.propertyHas} → ${m.match}`).join("\n")
   const signalsText = input.signals.length ? input.signals.join(" · ") : "(no recent signals)"
+
+  // Buyer-side enrichment from saved_properties — the platform may have
+  // already explained WHY this property matched + the buyer's own notes.
+  const matchReasonsText = input.property.matchReasons.length
+    ? `WHY THIS MATCHED ORIGINALLY: ${input.property.matchReasons.slice(0, 4).join("; ")}`
+    : ""
+  const buyerNotesText = input.property.buyerNotes
+    ? `BUYER'S OWN NOTES: "${input.property.buyerNotes}"`
+    : ""
+  const aiScoreText = input.property.aiMatchScore != null
+    ? `AI MATCH SCORE: ${Math.round(input.property.aiMatchScore * 100)}%`
+    : ""
 
   const prompt = `You are coaching a real-estate agent who's about to walk a buyer through a property. Output structured guidance — be specific, never generic.
 
 BUYER: ${buyerLine}
 PROPERTY: ${propertyLine}
+${aiScoreText}
+${matchReasonsText}
+${buyerNotesText}
 
 MATCHUP:
 ${matchupText || "(no inferred criteria yet)"}
@@ -442,7 +557,7 @@ export async function persistShowingBriefing(brief: ShowingBriefing, brokerageId
     brokerage_id:      brokerageId,
     agent_id:          agentId,
     buyer_snapshot:    brief.buyer as any,
-    listing_snapshot:  brief.listing as any,
+    listing_snapshot:  brief.property as any,
     matchup:           brief.matchup as any,
     ai_summary:        brief.aiSummary,
     ai_talking_points: brief.aiTalkingPoints as any,

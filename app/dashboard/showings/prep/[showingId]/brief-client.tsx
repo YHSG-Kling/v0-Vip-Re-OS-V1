@@ -104,7 +104,7 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
         <p className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1 mb-1">
           <Sparkles className="h-3 w-3" /> Showing brief
         </p>
-        <h1 className="text-2xl font-bold tracking-tight">{briefing.listing.address ?? "Property"}</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{briefing.property.address ?? "Property"}</h1>
         <p className="text-sm text-muted-foreground mt-1 flex items-center gap-3 flex-wrap">
           {showingScheduledAt && (
             <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {fmt(showingScheduledAt)}</span>
@@ -158,23 +158,50 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
           </CardContent>
         </Card>
 
-        {/* ── Listing snapshot ────────────────────────────────────────── */}
+        {/* ── Property ────────────────────────────────────────────────── */}
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Home className="h-4 w-4 text-indigo-600" /> Property
+              {briefing.property.source === "saved" && (
+                <Badge variant="outline" className="text-[9px] ml-auto">From buyer&apos;s saves</Badge>
+              )}
+              {briefing.property.source === "listing" && (
+                <Badge variant="outline" className="text-[9px] ml-auto">Our listing</Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             <Row label={<><MapPin className="h-3 w-3 inline mr-1" /> Address</>} value={
-              [briefing.listing.address, briefing.listing.city, briefing.listing.state, briefing.listing.zip].filter(Boolean).join(", ") || "—"
+              [briefing.property.address, briefing.property.city, briefing.property.state, briefing.property.zip].filter(Boolean).join(", ") || "—"
             } />
-            <Row label={<><DollarSign className="h-3 w-3 inline mr-1" /> List price</>} value={dollars(briefing.listing.listPrice)} />
-            <Row label={<><Bed className="h-3 w-3 inline mr-1" /> Beds</>}         value={briefing.listing.bedrooms?.toString() ?? "—"} />
-            <Row label={<><Bath className="h-3 w-3 inline mr-1" /> Baths</>}       value={briefing.listing.bathrooms?.toString() ?? "—"} />
-            <Row label={<><Square className="h-3 w-3 inline mr-1" /> Sqft</>}      value={briefing.listing.sqft?.toLocaleString() ?? "—"} />
-            <Row label="MLS#" value={briefing.listing.mlsNumber ?? "—"} />
-            <Row label="Status" value={briefing.listing.status ?? "—"} />
+            <Row label={<><DollarSign className="h-3 w-3 inline mr-1" /> List price</>} value={dollars(briefing.property.listPrice)} />
+            <Row label={<><Bed className="h-3 w-3 inline mr-1" /> Beds</>}         value={briefing.property.bedrooms?.toString() ?? "—"} />
+            <Row label={<><Bath className="h-3 w-3 inline mr-1" /> Baths</>}       value={briefing.property.bathrooms?.toString() ?? "—"} />
+            <Row label={<><Square className="h-3 w-3 inline mr-1" /> Sqft</>}      value={briefing.property.sqft?.toLocaleString() ?? "—"} />
+            <Row label="MLS#" value={briefing.property.mlsNumber ?? "—"} />
+            <Row label="Status" value={briefing.property.status ?? "—"} />
+            {briefing.property.aiMatchScore != null && (
+              <Row label="AI match" value={`${Math.round(briefing.property.aiMatchScore * 100)}%`} />
+            )}
+            {briefing.property.matchReasons.length > 0 && (
+              <div className="pt-2 border-t mt-2">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Why this matched</p>
+                <ul className="space-y-0.5">
+                  {briefing.property.matchReasons.slice(0, 4).map((r, i) => (
+                    <li key={i} className="text-xs flex items-start gap-1.5">
+                      <span className="text-indigo-600 mt-0.5">·</span>{r}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {briefing.property.buyerNotes && (
+              <div className="pt-2 border-t mt-2">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Buyer&apos;s own notes</p>
+                <p className="text-xs italic">{briefing.property.buyerNotes}</p>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -184,7 +211,7 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
         <Card className="mt-4">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-indigo-600" /> Buyer vs listing matchup
+              <CheckCircle2 className="h-4 w-4 text-indigo-600" /> Buyer vs property matchup
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -198,7 +225,7 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
                     <div className="grid grid-cols-3 gap-2 flex-1 text-sm">
                       <p className="font-medium">{m.criterion}</p>
                       <p className="text-muted-foreground">{m.buyerWants}</p>
-                      <p>{m.listingHas}</p>
+                      <p>{m.propertyHas}</p>
                     </div>
                   </div>
                 )
@@ -289,6 +316,7 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
                       {c.bedrooms != null && `${c.bedrooms} bd`}
                       {c.bathrooms != null && ` · ${c.bathrooms} ba`}
                       {c.sqft != null && ` · ${c.sqft.toLocaleString()} sqft`}
+                      {c.source === "saved" && " · buyer also saved"}
                     </p>
                   </div>
                   <div className="text-right shrink-0">
