@@ -1,4 +1,5 @@
-import { createClient } from "@/lib/supabase/server"
+import {
+createClient } from "@/lib/supabase/server"
 import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/lifetime-customer-touchpoints"
 import {
   createCronRunContextAction,
@@ -6,17 +7,16 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // This cron job runs daily at 9 AM to process touchpoints, anniversaries, birthdays
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "lifetime-customer-touchpoints",

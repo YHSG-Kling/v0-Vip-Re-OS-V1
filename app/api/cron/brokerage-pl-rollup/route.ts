@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -6,6 +7,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -27,11 +29,9 @@ export const maxDuration = 300
  * IDEMPOTENT — safe to re-run multiple times per day.
  */
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get("authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const ctx = await createCronRunContextAction({
     cron_name: "brokerage-pl-rollup",

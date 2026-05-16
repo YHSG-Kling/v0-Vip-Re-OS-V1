@@ -7,16 +7,15 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { aiGenerateReviewRequest } from "@/app/actions/ai-review-automation"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 // Default delay in days between closing and sending review request
 const DEFAULT_DELAY_DAYS = 5
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get("authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "review-request-on-close",

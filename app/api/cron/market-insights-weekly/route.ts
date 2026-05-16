@@ -4,7 +4,8 @@
  * Generates AI insights for all active markets
  */
 
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateMarketInsight } from "@/lib/intelligence/market-insight-generator"
 import {
@@ -13,16 +14,15 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300 // 5 minutes
 
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "market-insights-weekly",

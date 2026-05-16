@@ -16,13 +16,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildListingPresentation } from "@/lib/workflow/intelligence/listing-presentation-builder"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const authHeader = req.headers.get("Authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const svc = createServiceClient()
 

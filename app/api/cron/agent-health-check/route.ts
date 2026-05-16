@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server'
+import {
+NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { escalateToHuman } from '@/lib/intelligence/multi-agent-router'
 import {
@@ -7,6 +8,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /api/cron/agent-health-check
@@ -25,11 +27,9 @@ const STALE_THRESHOLDS: Record<string, number> = {
 const DEFAULT_THRESHOLD = 60 // Default 1 hour
 
 export async function GET(request: NextRequest) {
-  // Verify cron secret
-  const authHeader = request.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: 'agent-health-check',

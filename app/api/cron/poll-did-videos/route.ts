@@ -24,6 +24,7 @@ import {
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitEventFromCron } from "@/app/actions/orchestrator"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -31,10 +32,9 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "poll-did-videos",

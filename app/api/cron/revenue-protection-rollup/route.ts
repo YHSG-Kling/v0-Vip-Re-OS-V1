@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateRevenueProtection } from "@/lib/revenue-protection/scorer"
 import {
@@ -7,6 +8,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 
@@ -21,10 +23,9 @@ export const dynamic = "force-dynamic"
  * POST endpoint allows an admin-triggered on-demand rollup from the UI.
  */
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const ctx = await createCronRunContextAction({
     cron_name: "revenue-protection-rollup",
@@ -106,10 +107,9 @@ export async function GET(request: NextRequest) {
  * POST: admin-triggered rollup for one brokerage or agent. Auth same as GET.
  */
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
   try {
     const { brokerage_id, agent_id, snapshot_type } = await request.json() as {
       brokerage_id?: string

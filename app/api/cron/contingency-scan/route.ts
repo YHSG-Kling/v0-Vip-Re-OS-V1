@@ -14,14 +14,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanContingenciesNearingDeadline } from "@/lib/workflow/intelligence/proactive-checks"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  // Auth — Vercel cron sends the cron secret as Authorization
-  const authHeader = req.headers.get("Authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const findings = await scanContingenciesNearingDeadline({ withinDays: 3 })
   if (findings.length === 0) {

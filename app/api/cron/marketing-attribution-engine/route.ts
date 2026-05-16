@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   attributeTransactionSafe,
   findTransactionsNeedingAttribution,
 } from "@/lib/marketing/attribution"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -31,10 +33,9 @@ const MAX_PER_RUN  = 50
 const LOOKBACK_DAYS = 14
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const ctx = await createCronRunContextAction({
     cron_name: "marketing-attribution-engine",

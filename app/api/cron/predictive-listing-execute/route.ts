@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { runDuePredictiveTouches } from "@/lib/predictive-listing/auto-send"
 import {
   createCronRunContextAction,
@@ -6,6 +7,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -16,10 +18,9 @@ export const maxDuration = 300
  * Schedule: `0 * * * *` (top of every hour).
  */
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const ctxResult = await createCronRunContextAction({
     cron_name: "predictive-listing-execute",

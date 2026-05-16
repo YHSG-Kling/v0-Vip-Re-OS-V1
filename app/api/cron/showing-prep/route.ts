@@ -16,15 +16,15 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { generateShowingBriefingsCronTick } from "@/lib/showings/showing-brief"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const ctx = await createCronRunContextAction({
     cron_name: "showing-prep",

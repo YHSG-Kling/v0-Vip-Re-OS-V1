@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { getErrorsDueForRetry, scheduleRetry } from "@/lib/errors/auto-retry"
 import {
   createCronRunContextAction,
@@ -6,6 +7,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 /**
  * GET /api/cron/retry-errors
@@ -14,12 +16,9 @@ import {
  */
 export async function GET(request: NextRequest) {
   const startTime = Date.now()
-
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "retry-errors",

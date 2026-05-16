@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   enrichContact,
@@ -6,6 +7,7 @@ import {
   getUnenrichedContacts,
   getContactsNeedingLifeChangeCheck,
 } from "@/app/actions/contact-enrichment"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -21,11 +23,9 @@ export const maxDuration = 300 // 5 minutes
  * Runs every 6 hours
  */
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "contact-enrichment",

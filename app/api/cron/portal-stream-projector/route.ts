@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   translateEvent,
   PROJECTABLE_EVENT_TYPES,
 } from "@/lib/portal-stream/event-translator"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { eventTypeToStageTags } from "@/lib/portal-stream/event-to-stage-tags"
 import { MILESTONE_LESSON_MAP } from "@/lib/portal/resolve-education-context"
 import {
@@ -33,10 +35,9 @@ const BATCH_SIZE = 200
 const LOOKBACK_MINUTES = 90
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const ctx = await createCronRunContextAction({
     cron_name: "portal-stream-projector",
@@ -158,10 +159,9 @@ export async function GET(request: NextRequest) {
  * already projected — useful for testing new translations.
  */
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
   // Same path as GET — the unique index quietly skips duplicates.
   return GET(request)
 }

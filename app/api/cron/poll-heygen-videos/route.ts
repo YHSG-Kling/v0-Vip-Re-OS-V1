@@ -1,4 +1,5 @@
-import { type NextRequest, NextResponse } from "next/server"
+import {
+type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import {
   createCronRunContextAction,
@@ -6,6 +7,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 const HEYGEN_API_BASE = "https://api.heygen.com/v2"
 const MAX_RETRIES = 3
@@ -15,11 +17,9 @@ export const runtime = "nodejs"
 
 // Run every 5 minutes to check HeyGen video status
 export async function GET(request: NextRequest) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "poll-heygen-videos",
