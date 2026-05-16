@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   finalizeVoiceCockpitPacket,
   finalizeLegacyEsignArtifacts,
@@ -55,7 +55,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = JSON.parse(rawBody)
-    const supabase = await createClient()
+    // Use service client — no user session in webhook; RLS would block writes
+    // to documents / buyer_broker_agreements without a current_user_brokerage_id.
+    const supabase = createServiceClient()
 
     // Authentisign envelope events:
     //   - "signing.completed"   all signers have signed

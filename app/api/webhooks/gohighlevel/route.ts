@@ -1,23 +1,50 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { createHmac, timingSafeEqual } from "crypto"
 import { logEventAndTrigger } from "@/lib/events"
-import { createServerClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // =====================================================
 // GOHIGHLEVEL WEBHOOK HANDLER
-// Receives events from GoHighLevel CRM
+// Receives events from GoHighLevel CRM.
+//
+// HMAC-SHA256 of raw body, verified against GHL_WEBHOOK_SECRET. Sent as
+// X-GHL-Signature (hex digest). Rejects if env var or signature is missing
+// so an unconfigured deploy can't be exploited by arbitrary POSTs that fire
+// internal kernel events.
+//
+// Uses the service client because there is no user session — the RLS-enforced
+// server client would block the brokerage lookup and event insert.
 // =====================================================
+
+function verifyGoHighLevelSignature(rawBody: string, signatureHeader: string | null): boolean {
+  const secret = process.env.GHL_WEBHOOK_SECRET
+  if (!secret) {
+    console.warn("[gohighlevel-webhook] GHL_WEBHOOK_SECRET not set — rejecting request")
+    return false
+  }
+  if (!signatureHeader) return false
+
+  const computed = createHmac("sha256", secret).update(rawBody, "utf-8").digest("hex")
+  try {
+    const a = Buffer.from(computed, "hex")
+    const b = Buffer.from(signatureHeader, "hex")
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const payload = await request.json()
+    const rawBody = await request.text()
+    const signatureHeader = request.headers.get("x-ghl-signature")
 
-    console.log("[v0] GoHighLevel webhook received:", payload)
+    if (!verifyGoHighLevelSignature(rawBody, signatureHeader)) {
+      return NextResponse.json({ error: "Invalid or missing webhook signature" }, { status: 401 })
+    }
 
-    // Verify webhook signature (implement based on GHL docs)
-    // const signature = request.headers.get("x-ghl-signature")
-    // if (!verifySignature(signature, payload)) {
-    //   return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
-    // }
+    const payload = JSON.parse(rawBody)
 
     // Map GHL events to internal events
     const eventType = mapGHLEventType(payload.type)
@@ -26,7 +53,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get brokerage_id from GHL custom field or location
-    const supabase = await createServerClient()
+    const supabase = createServiceClient()
     const { data: brokerage } = await supabase
       .from("brokerages")
       .select("id")

@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 
@@ -47,7 +47,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = JSON.parse(rawBody)
-    const supabase = await createClient()
+    // Use service client — no user session in webhook; RLS would block writes
+    // to client_documents without current_user_brokerage_id.
+    const supabase = createServiceClient()
 
     if (body.event === "document.signed") {
       const { document_id, loop_id } = body.data

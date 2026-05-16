@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   finalizeVoiceCockpitPacket,
   finalizeLegacyEsignArtifacts,
@@ -57,7 +57,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = JSON.parse(rawBody)
-    const supabase = await createClient()
+    // Use service client — no user session in webhook; RLS would block writes
+    // to documents / BBA tables without current_user_brokerage_id.
+    const supabase = createServiceClient()
 
     // SkySlope events of interest:
     //   - "transaction.signed"           single document signed (per-doc)

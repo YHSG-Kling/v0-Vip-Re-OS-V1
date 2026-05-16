@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } from "@/lib/esign-webhooks/finalize-packet"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +54,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = JSON.parse(rawBody)
-    const supabase = await createClient()
+    // Use service client — no user session in webhook; RLS would block the
+    // documents / BBA status updates without current_user_brokerage_id.
+    const supabase = createServiceClient()
 
     // DocuSign Connect JSON shape:
     //   { event: "envelope-completed", data: { envelopeId, envelopeSummary: { status, ... } } }

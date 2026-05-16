@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { createHmac, timingSafeEqual } from "crypto"
 import { updateVapiCallStatus } from "@/app/actions/voice-call-bridge"
 import { handleVapiCallComplete } from "@/app/actions/ai-isa"
 import { isCapabilityEnabled } from "@/app/actions/ai-isa-settings"
@@ -8,7 +9,33 @@ import type { IsaCapability } from "@/lib/ai-isa/settings-types"
  * Vapi Webhook Handler
  * Receives call status updates and transcripts from Vapi.ai
  * Handles both voice-call-bridge and AI ISA calls
+ *
+ * Signature: Vapi signs each request with HMAC-SHA256 of the raw body using
+ * the secret set in the Vapi dashboard. The signature is sent as
+ * `x-vapi-signature` (hex digest). If VAPI_WEBHOOK_SECRET is not set, the
+ * endpoint REJECTS all requests — without this gate any caller could trigger
+ * appointment booking, SMS to arbitrary phone numbers, and fake ISA call
+ * completions (which mark contacts as qualified and trigger follow-ups).
  */
+
+function verifyVapiSignature(rawBody: string, signatureHeader: string | null): boolean {
+  const secret = process.env.VAPI_WEBHOOK_SECRET
+  if (!secret) {
+    console.warn("[vapi-webhook] VAPI_WEBHOOK_SECRET not set — rejecting request")
+    return false
+  }
+  if (!signatureHeader) return false
+
+  const computed = createHmac("sha256", secret).update(rawBody, "utf-8").digest("hex")
+  try {
+    const a = Buffer.from(computed, "hex")
+    const b = Buffer.from(signatureHeader, "hex")
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Capability gate — every ISA function tool handler runs through this. If
@@ -31,7 +58,12 @@ async function gateByCapability(
 
 export async function POST(req: NextRequest) {
   try {
-    const payload = await req.json()
+    const rawBody = await req.text()
+    const signatureHeader = req.headers.get("x-vapi-signature")
+    if (!verifyVapiSignature(rawBody, signatureHeader)) {
+      return NextResponse.json({ error: "Invalid or missing webhook signature" }, { status: 401 })
+    }
+    const payload = JSON.parse(rawBody)
 
     // Vapi webhook events: call.started, call.ended, call.transcribed, function-call, end-of-call-report
     const { type, call, functionCall } = payload
@@ -110,8 +142,9 @@ export async function POST(req: NextRequest) {
 
 // Helper: Book appointment from AI ISA
 async function handleBookAppointment(params: any) {
-  const { createClient } = await import("@/lib/supabase/server")
-  const supabase = await createClient()
+  // Service client — webhook has no user session; RLS would block writes.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const supabase = createServiceClient()
 
   const { data: showing } = await supabase
     .from("showings")
@@ -149,8 +182,9 @@ async function handleTransferToAgent(params: {
   call_id?: string
   reason?: string
 }) {
-  const { createClient } = await import("@/lib/supabase/server")
-  const supabase = await createClient()
+  // Service client — webhook has no user session; RLS would block writes.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const supabase = createServiceClient()
 
   let brokerageId: string | null = params.brokerage_id ?? null
   let assignedAgentId: string | null = null
@@ -294,8 +328,9 @@ async function handleRequestShowingInHouseListing(params: {
     })
   }
 
-  const { createClient } = await import("@/lib/supabase/server")
-  const supabase = await createClient()
+  // Service client — webhook has no user session; RLS would block writes.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const supabase = createServiceClient()
 
   // 1. Verify in-house listing
   const { data: listing } = await supabase

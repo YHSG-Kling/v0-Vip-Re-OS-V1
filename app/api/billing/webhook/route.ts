@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/stripe"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import Stripe from "stripe"
@@ -30,7 +29,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
 
-  const supabase = await createClient()
+  // Webhook is authenticated by Stripe signature verification above. There is
+  // no user session in this request, so the RLS-enforced server client would
+  // block every upsert (current_user_brokerage_id() returns null → the
+  // billing_invoices_tenant_* and subscriptions_tenant_* policies reject the
+  // row). Use the service client.
+  const supabase = createServiceClient()
 
   try {
     switch (event.type) {
@@ -211,10 +215,9 @@ export async function POST(request: NextRequest) {
 
       // ─── STRIPE CONNECT: ACCOUNT UPDATED (onboarding complete) ───────────────
       case "account.updated": {
-        const svc = createServiceClient()
         const account = event.data.object as Stripe.Account
         if (account.details_submitted && account.charges_enabled) {
-          await svc
+          await supabase
             .from("vendor_marketplace_profiles")
             .update({ stripe_onboarding_complete: true })
             .eq("stripe_account_id", account.id)
