@@ -32,11 +32,8 @@ import {
   toggleIsaPhoneNumber,
   type VapiPhoneNumberRow,
 } from "@/app/actions/isa-phone-numbers"
-import {
-  saveAIISASettings,
-  type IsaCapability,
-  type IsaCapabilityDescriptor,
-} from "@/app/actions/ai-isa-settings"
+import { saveAIISASettings } from "@/app/actions/ai-isa-settings"
+import type { IsaCapability, IsaCapabilityDescriptor } from "@/lib/ai-isa/settings-types"
 import { ShieldCheck, ShieldAlert, ShieldX } from "lucide-react"
 
 interface DutyAgent {

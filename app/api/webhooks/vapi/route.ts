@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { updateVapiCallStatus } from "@/app/actions/voice-call-bridge"
 import { handleVapiCallComplete } from "@/app/actions/ai-isa"
-import { isCapabilityEnabled, type IsaCapability } from "@/app/actions/ai-isa-settings"
+import { isCapabilityEnabled } from "@/app/actions/ai-isa-settings"
+import type { IsaCapability } from "@/lib/ai-isa/settings-types"
 
 /**
  * Vapi Webhook Handler

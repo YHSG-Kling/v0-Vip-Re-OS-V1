@@ -1,5 +1,3 @@
-"use server"
-
 /**
  * User-type Brief — orchestrator.
  *

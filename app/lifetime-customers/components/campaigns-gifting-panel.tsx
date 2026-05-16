@@ -37,8 +37,8 @@ import { toast } from "sonner"
 import {
   listCampaignSequences,
   enrollContactInSequence,
-  type CampaignSequence,
 } from "@/app/actions/campaign-sequences"
+import type { CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import {
   aiRecommendGift,
   createGiftOrder,

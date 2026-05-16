@@ -4,124 +4,17 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-export interface CampaignSequence {
-  id: string
-  name: string
-  description: string | null
-  sequence_type: string
-  trigger_event: string | null
-  trigger_conditions: Record<string, unknown> | null
-  is_active: boolean
-  is_ab_test: boolean
-  ab_test_split_pct: number | null
-  compliance_gated: boolean
-  enrollments_total: number
-  completions_total: number
-  conversions_total: number
-  created_at: string
-  updated_at: string
-  brokerage_id: string
-  created_by: string | null
-  steps?: SequenceStep[]
-}
-
-export interface SequenceStep {
-  id: string
-  sequence_id: string
-  step_number: number
-  step_name: string
-  channel: string
-  delay_days: number
-  delay_hours: number
-  subject: string | null
-  body: string | null
-  send_time: string | null
-  is_active: boolean
-  ab_variant: string | null
-  condition_field: string | null
-  condition_operator: string | null
-  condition_value: string | null
-  video_template_id: string | null
-  direct_mail_template_id: string | null
-  personalization_tokens: Record<string, unknown> | null
-  sent_count: number
-  open_count: number
-  click_count: number
-  reply_count: number
-  created_at: string
-}
-
-export interface SequenceEnrollment {
-  id: string
-  sequence_id: string
-  contact_id: string | null
-  lead_id: string | null
-  status: string
-  current_step: number
-  enrolled_at: string
-  completed_at: string | null
-  converted_at: string | null
-  next_step_at: string | null
-  ab_variant: string | null
-  contact?: { first_name: string | null; last_name: string | null; email: string | null }
-}
-
-// ─── Valid step types (all 20+ channels registered in the workflow registry) ──
-
-export const VALID_STEP_TYPES = new Set([
-  // Core communication
-  "email",
-  "sms",
-  "voice_drop",
-  "in_app",
-  "ai_call",
-  // Flow control
-  "wait",
-  "condition",
-  "add_to_segment",
-  "remove_from_campaign",
-  // Rich media
-  "ai_image",
-  "video",
-  // Marketing channels
-  "direct_mail",
-  "newsletter",
-  "social_post",
-  "ad_campaign",
-  "listing_landing_page",
-  // Documents & actions
-  "avm_cma",
-  "draft_document",
-  "assign_task",
-  "schedule_showing",
-  "schedule_tour",
-] as const)
-
-export type ChannelType = typeof VALID_STEP_TYPES extends Set<infer T> ? T : never
-
-// ─── Sequence type categories ─────────────────────────────────────────────────
-
-export const MARKETING_SEQUENCE_TYPES = [
-  "listing_launch",
-  "price_reduction",
-  "just_sold",
-  "open_house",
-  "ad_campaign",
-] as const
-
-export const NURTURE_SEQUENCE_TYPES = [
-  "buyer_nurture",
-  "seller_nurture",
-  "lead_followup",
-  "post_close",
-  "sphere_touchpoint",
-  "credit_journey",
-] as const
-
-export type SequenceCategory = "marketing" | "nurture"
+import {
+  type CampaignSequence,
+  type SequenceStep,
+  type SequenceEnrollment,
+  type ChannelType,
+  type SequenceCategory,
+  type SequenceBuilderStep,
+  VALID_STEP_TYPES,
+  MARKETING_SEQUENCE_TYPES,
+  NURTURE_SEQUENCE_TYPES,
+} from "@/lib/campaigns/sequence-constants"
 
 // ─── List sequences ───────────────────────────────────────────────────────────
 
@@ -611,45 +504,7 @@ export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ su
   return { success: true, count: sequenceIds.length }
 }
 
-// ─── Sequence Step Builder ────────────────────────────────────────────────────
-
-export interface SequenceBuilderStep {
-  id?: string
-  step_number: number
-  step_name: string
-  step_type: ChannelType
-  delay_days: number
-  delay_hours: number
-  subject?: string | null
-  body: string
-  is_active: boolean
-  // Variable graph
-  output_variable_name?: string | null
-  // Channel-specific config (subset kept here for the builder UI)
-  image_prompt?: string | null
-  image_style?: string | null
-  image_aspect_ratio?: string | null
-  video_script?: string | null
-  video_voice_only?: boolean
-  video_background_url?: string | null
-  voice_drop_script?: string | null
-  voice_drop_voice_id?: string | null
-  social_platform?: string | null
-  social_caption_prompt?: string | null
-  task_assignee_type?: string | null
-  task_title?: string | null
-  task_due_offset_days?: number
-  document_type?: string | null
-  document_state?: string | null
-  avm_data_source?: string | null
-  avm_report_type?: string | null
-  avm_include_investor_adj?: boolean
-  ad_platform?: string | null
-  ad_objective?: string | null
-  direct_mail_piece_type?: string | null
-  qr_attached?: boolean
-  qr_target_url_pattern?: string | null
-}
+// SequenceBuilderStep moved to @/lib/campaigns/sequence-constants
 
 export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
   try {

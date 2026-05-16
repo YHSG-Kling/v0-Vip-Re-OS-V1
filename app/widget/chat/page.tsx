@@ -8,10 +8,8 @@ import WidgetChatClient from "./widget-chat-client"
 
 export const metadata = {
   title: "Chat Widget",
+  robots: { index: false },
 }
-
-// Prevent this page from being indexed
-export const robots = { index: false }
 
 export default function WidgetChatPage() {
   return (

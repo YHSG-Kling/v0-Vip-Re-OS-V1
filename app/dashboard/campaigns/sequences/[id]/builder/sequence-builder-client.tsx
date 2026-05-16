@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles, Wand2, AlertTriangle, List, Network } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import Link from "next/link"
-import { saveSequenceSteps, type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/app/actions/campaign-sequences"
+import { saveSequenceSteps } from "@/app/actions/campaign-sequences"
+import { type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import { composeSequenceStepCopy } from "@/app/actions/sequence-step-ai"
 import { useToast } from "@/hooks/use-toast"
 

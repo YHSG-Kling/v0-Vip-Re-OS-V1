@@ -47,7 +47,7 @@ import {
   GitBranch,
   ArrowUpRight,
 } from "lucide-react"
-import type { SequenceBuilderStep } from "@/app/actions/campaign-sequences"
+import type { SequenceBuilderStep } from "@/lib/campaigns/sequence-constants"
 
 // ---------------------------------------------------------------------------
 // Node type → icon + colour

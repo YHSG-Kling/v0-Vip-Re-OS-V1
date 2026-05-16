@@ -143,5 +143,8 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
   }
 }
 
-// Re-export from lead-magnet-capture for convenience
-export { captureFormSubmissionAction } from "./lead-magnet-capture"
+// Re-exports are illegal in "use server" files — wrap instead.
+import { captureFormSubmissionAction as _captureFormSubmission } from "./lead-magnet-capture"
+export async function captureFormSubmissionAction(...args: Parameters<typeof _captureFormSubmission>) {
+  return _captureFormSubmission(...args)
+}

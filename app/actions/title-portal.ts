@@ -1,25 +1,9 @@
+"use server"
+
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-
-// ─── TITLE MILESTONES (visible to title portal) ──────────────────────────────
-export const TITLE_VISIBLE_MILESTONES = [
-  "title_search_ordered",
-  "title_commitment_issued",
-  "closing_scheduled",
-  "closed",
-  "funding_confirmed",
-] as const
-
-// ─── TITLE ESCROW STATUS OPTIONS ─────────────────────────────────────────────
-export const TITLE_STATUS_OPTIONS = [
-  { value: "title_search", label: "Title Search in Progress" },
-  { value: "commitment_issued", label: "Commitment Issued" },
-  { value: "closing_ready", label: "Closing Ready" },
-  { value: "closed", label: "Closed" },
-] as const
-
-export type TitleStatus = typeof TITLE_STATUS_OPTIONS[number]["value"]
+import { TITLE_VISIBLE_MILESTONES, TITLE_STATUS_OPTIONS, type TitleStatus } from "@/lib/title-portal/constants"
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
 export async function getTitleDashboard(titleUserId: string) {

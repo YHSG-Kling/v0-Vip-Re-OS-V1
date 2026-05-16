@@ -27,7 +27,9 @@ export interface AudienceTemplate {
   estimatedSizeLabel: string
 }
 
-export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
+// Internal-only — "use server" prohibits non-async-function exports.
+// Consumers must call listAudienceTemplates() or resolveAudienceTemplate().
+const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
   // ─── REMARKETING ────────────────────────────────────────────────────────
   {
     id: "qualified_leads_remarketing",

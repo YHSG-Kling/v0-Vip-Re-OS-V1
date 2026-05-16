@@ -1,6 +1,7 @@
 import { cache } from "react"
 import { redirect, notFound } from "next/navigation"
-import { getCampaignSequence, VALID_STEP_TYPES, type SequenceBuilderStep } from "@/app/actions/campaign-sequences"
+import { getCampaignSequence } from "@/app/actions/campaign-sequences"
+import { VALID_STEP_TYPES, type SequenceBuilderStep } from "@/lib/campaigns/sequence-constants"
 import { getAgentContext } from "@/lib/identity"
 import SequenceStepBuilderClient from "./sequence-builder-client"
 

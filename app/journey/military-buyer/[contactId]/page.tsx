@@ -100,7 +100,7 @@ const MILITARY_BUYER_STAGES = [
   },
 ]
 
-export default function MilitaryBuyerJourneyPage({ params }: { params: { contactId: string } }) {
+export default function MilitaryBuyerJourneyPage({ params }: { params: Promise<{ contactId: string }> }) {
   const [currentStage, setCurrentStage] = useState(2)
   const progress = (currentStage / MILITARY_BUYER_STAGES.length) * 100
 

@@ -74,10 +74,12 @@ import {
   deleteSequenceStep,
   reorderSequenceSteps,
   updateCampaignSequence,
-  type CampaignSequence,
-  type SequenceStep,
-  type SequenceEnrollment,
 } from "@/app/actions/campaign-sequences"
+import type {
+  CampaignSequence,
+  SequenceStep,
+  SequenceEnrollment,
+} from "@/lib/campaigns/sequence-constants"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 
 // ─── Types ────────────────────────────────────────────────────────────────────

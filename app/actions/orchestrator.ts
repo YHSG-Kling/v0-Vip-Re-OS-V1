@@ -1,3 +1,4 @@
+"use server"
 
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
 import type { Event, EventInput } from "@/lib/orchestrator"
@@ -10,12 +11,9 @@ import { supabaseService } from "@/services/supabaseService"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 
-// =====================================================
-// EVENT TYPES - Standardized event type constants
-// =====================================================
-
-// Re-export canonical types from lib/ so existing importers of this action keep working.
-export { EVENT_TYPES, type EventInput, type Event } from "@/lib/orchestrator"
+// Non-function exports (EVENT_TYPES constant + Event/EventInput types) used to
+// be re-exported here, but "use server" only permits async function exports.
+// Callers can import them directly from "@/lib/orchestrator".
 
 interface ProcessingResult {
   success: boolean

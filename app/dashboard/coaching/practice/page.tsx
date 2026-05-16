@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { listPracticeSessions, OBJECTION_SCENARIOS } from "@/app/actions/objection-training"
+import { listPracticeSessions } from "@/app/actions/objection-training"
+import { OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
 import { PracticeClient } from "./practice-client"
 
 export const dynamic = "force-dynamic"

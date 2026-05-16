@@ -11,7 +11,7 @@
 
 import { cn } from "@/lib/utils"
 import { CheckCircle, XCircle, Minus } from "lucide-react"
-import type { OfferRow } from "@/lib/kernel/offers"
+import type { OfferRow } from "@/lib/kernel/offer-types"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

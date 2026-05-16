@@ -15,7 +15,7 @@ import { CounterOfferHistory } from "./counteroffer-history"
 import { NegotiationCoPilotPanel } from "./negotiation-copilot-panel"
 import { NetSheetView }        from "./net-sheet-view"
 import { OfferDocumentPanel }  from "./offer-document-panel"
-import type { OfferRow }       from "@/lib/kernel/offers"
+import type { OfferRow }       from "@/lib/kernel/offer-types"
 
 // ─── Local helpers ────────────────────────────────────────────────────────────
 
@@ -85,8 +85,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { acceptOffer } = await import("@/lib/kernel/offers")
-      const res = await acceptOffer({ offerId: offer.id, agentId, brokerageId })
+      const { acceptOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await acceptOfferAction({ offerId: offer.id, agentId, brokerageId })
       if (res.success) {
         setActionMsg("Offer accepted. All other pending offers have been rejected.")
         window.location.reload()
@@ -100,8 +100,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { rejectOffer } = await import("@/lib/kernel/offers")
-      const res = await rejectOffer({ offerId: offer.id, agentId, brokerageId, reason })
+      const { rejectOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await rejectOfferAction({ offerId: offer.id, agentId, brokerageId, reason })
       if (res.success) {
         setActionMsg("Offer rejected.")
         window.location.reload()
@@ -115,8 +115,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { withdrawOffer } = await import("@/lib/kernel/offers")
-      const res = await withdrawOffer({ offerId: offer.id, agentId, brokerageId })
+      const { withdrawOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await withdrawOfferAction({ offerId: offer.id, agentId, brokerageId })
       if (res.success) {
         setActionMsg("Offer withdrawn.")
         window.location.reload()

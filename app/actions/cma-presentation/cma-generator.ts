@@ -42,7 +42,8 @@ export interface CMAResult {
 /**
  * MANDATORY CMA DISCLAIMER (REQUIRED IN EVERY CMA)
  */
-export const CMA_DISCLAIMER = `This Comparative Market Analysis (CMA) is provided for informational purposes only and is not an appraisal. An appraisal can only be performed by a licensed appraiser.`
+// CMA_DISCLAIMER moved to @/lib/cma/disclaimer (const exports illegal in "use server")
+import { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 
 /**
  * Generate CMA for seller (presentation-flow variant).

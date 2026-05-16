@@ -9,7 +9,7 @@
  */
 
 import { cn }       from "@/lib/utils"
-import type { OfferRow } from "@/lib/kernel/offers"
+import type { OfferRow } from "@/lib/kernel/offer-types"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -3,11 +3,11 @@ import { redirect } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { listIsaPhoneNumbers } from "@/app/actions/isa-phone-numbers"
+import { getAIISASettings } from "@/app/actions/ai-isa-settings"
 import {
-  getAIISASettings,
   defaultEnabledCapabilities,
   ISA_CAPABILITY_CATALOG,
-} from "@/app/actions/ai-isa-settings"
+} from "@/lib/ai-isa/settings-types"
 import { IsaCallingClient } from "./isa-calling-client"
 
 export const metadata = {

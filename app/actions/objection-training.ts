@@ -19,8 +19,9 @@ import { anthropic } from "@ai-sdk/anthropic"
 import { getScenarioByKey, OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 
-export { OBJECTION_SCENARIOS }
-export type { ObjectionScenario }
+// OBJECTION_SCENARIOS + ObjectionScenario were re-exported here but "use server"
+// rejects non-async exports. Consumers import them directly from
+// "@/lib/training/objection-scenarios".
 
 const MODEL = "claude-haiku-4-5-20251001"
 

@@ -9,6 +9,8 @@ export const metadata = {
   description: "AI-powered podcast creation and distribution for real estate agents",
 }
 
+export const dynamic = "force-dynamic"
+
 export default async function PodcastPage() {
   // Resolve agent context + load initial data server-side
   let agentId = ""

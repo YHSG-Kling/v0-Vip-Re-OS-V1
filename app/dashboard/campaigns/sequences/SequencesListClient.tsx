@@ -47,8 +47,8 @@ import {
   createCampaignSequence,
   updateCampaignSequence,
   deleteCampaignSequence,
-  type CampaignSequence,
 } from "@/app/actions/campaign-sequences"
+import type { CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
 import { AlertTriangle, ShieldCheck } from "lucide-react"
 import { WORKFLOW_TRIGGERS, groupedTriggers } from "@/lib/workflow/triggers"

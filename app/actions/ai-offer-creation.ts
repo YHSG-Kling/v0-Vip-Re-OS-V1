@@ -612,9 +612,13 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
   }
 }
 
-// Backward compatibility aliases
-export const aiAnalyzeOfferStrategy = aiOfferStrategyAdvisor
-export const generateOfferLetter = aiGenerateBuyerLetter
+// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
+export async function aiAnalyzeOfferStrategy(...args: Parameters<typeof aiOfferStrategyAdvisor>) {
+  return aiOfferStrategyAdvisor(...args)
+}
+export async function generateOfferLetter(...args: Parameters<typeof aiGenerateBuyerLetter>) {
+  return aiGenerateBuyerLetter(...args)
+}
 
 // ============================================
 // 9. COMPLETE OFFER CREATION WORKFLOW

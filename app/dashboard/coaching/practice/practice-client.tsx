@@ -13,9 +13,9 @@ import {
   startObjectionPracticeSession,
   submitPracticeTurn,
   endPracticeSession,
-  type ObjectionScenario,
   type PracticeSession,
 } from "@/app/actions/objection-training"
+import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 import { VoicePracticeOverlay } from "./voice-practice-overlay"
 
 interface Props {

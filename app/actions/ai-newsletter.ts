@@ -835,9 +835,13 @@ export async function getNewsletters(agentId: string) {
   }
 }
 
-// Backward compatibility aliases
-export const createNewsletter = createNewsletterCampaign
-export const generateNewsletterContent = aiWriteNewsletterContent
+// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
+export async function createNewsletter(...args: Parameters<typeof createNewsletterCampaign>) {
+  return createNewsletterCampaign(...args)
+}
+export async function generateNewsletterContent(...args: Parameters<typeof aiWriteNewsletterContent>) {
+  return aiWriteNewsletterContent(...args)
+}
 
 // ============================================
 // WORKFLOW OS — queue newsletter for a single contact
