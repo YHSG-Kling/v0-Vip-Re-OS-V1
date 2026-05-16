@@ -131,11 +131,27 @@ export async function updateCampaignSequence(
   sequenceId: string,
   updates: Partial<Pick<CampaignSequence, "name" | "description" | "is_active" | "trigger_event" | "compliance_gated" | "is_ab_test" | "ab_test_split_pct">>
 ): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before mutating.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+  const { data: existing } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   const { error } = await service
     .from("campaign_sequences")
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -146,11 +162,27 @@ export async function updateCampaignSequence(
 // ─── Delete sequence ──────────────────────────────────────────────────────────
 
 export async function deleteCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before deleting.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+  const { data: existing } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   const { error } = await service
     .from("campaign_sequences")
     .delete()
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")

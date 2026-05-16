@@ -9,6 +9,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireWriteContext } from "@/lib/kernel/identity"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 
 // ─── UPSERT FINANCIAL PROFILE ─────────────────────────────────────────────────
@@ -100,7 +101,27 @@ export async function markFinanciallyVerified(params: {
   brokerageId: string
   agentUserId: string
 }): Promise<{ success: boolean; error?: string }> {
+  // Auth: caller must be an authenticated agent/admin in the contact's brokerage.
+  // Without this, service-client bypassed RLS and any caller could mark any
+  // contact as financially verified.
+  const ctx = await requireWriteContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+  if (ctx.brokerageId !== params.brokerageId) {
+    return { success: false, error: "Forbidden: brokerage mismatch" }
+  }
+
   const supabase = createServiceClient()
+
+  // Verify the contact is actually in the caller's brokerage before mutating.
+  const { data: contactRow } = await supabase
+    .from("contacts")
+    .select("brokerage_id, agent_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contactRow) return { success: false, error: "Contact not found" }
+  if (contactRow.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: contact in another brokerage" }
+  }
 
   // 1. Update buyer_financial_profiles
   const { error: profileError } = await supabase

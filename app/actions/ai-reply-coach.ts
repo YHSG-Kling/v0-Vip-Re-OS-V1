@@ -14,6 +14,7 @@
 
 import { generateAIResponse }  from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext }     from "@/lib/identity"
 import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
 import { processKernelEvent }  from "@/lib/kernel/notification-engine"
 import { KernelEvent }         from "@/lib/kernel/events"
@@ -267,16 +268,24 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
 // ─── ACTION 2: ACCEPT DRAFT ───────────────────────────────────────────────────
 
 export async function acceptDraft(params: AcceptDraftParams): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so verify the draft belongs to
+  // the caller's brokerage before acting on it.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const supabase = createServiceClient()
 
   const { data: draft, error: fetchError } = await supabase
     .from("ai_message_drafts")
-    .select("draft_body, draft_subject, status")
+    .select("draft_body, draft_subject, status, brokerage_id")
     .eq("id", params.draftId)
     .maybeSingle()
 
   if (fetchError || !draft) {
     return { success: false, error: fetchError?.message ?? "Draft not found" }
+  }
+  if (draft.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: draft in another brokerage" }
   }
   if (draft.status !== "pending") {
     return { success: false, error: `Draft already ${draft.status}` }
@@ -293,6 +302,7 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
       acted_at:    new Date().toISOString(),
     })
     .eq("id", params.draftId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
 
@@ -308,6 +318,10 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
 // ─── ACTION 3: REJECT DRAFT ───────────────────────────────────────────────────
 
 export async function rejectDraft(params: RejectDraftParams): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate — see acceptDraft above for rationale.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const supabase = createServiceClient()
 
   // ai_message_drafts.status CHECK only allows pending/accepted/edited/dismissed/sent.
@@ -322,6 +336,7 @@ export async function rejectDraft(params: RejectDraftParams): Promise<{ success:
       edit_delta: params.reason ? { rejection_reason: params.reason } : { rejection_reason: null },
     })
     .eq("id", params.draftId)
+    .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "pending")
 
   if (error) return { success: false, error: error.message }
@@ -350,12 +365,18 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
   }>
   error?: string
 }> {
+  // Tenant gate — scope reads to the caller's brokerage so cross-tenant
+  // conversation IDs can't leak draft bodies.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
     .from("ai_message_drafts")
     .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status")
     .eq("conversation_id", conversationId)
+    .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "pending")
     .order("created_at", { ascending: false })
     .limit(5)
