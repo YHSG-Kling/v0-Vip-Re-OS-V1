@@ -612,13 +612,33 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
 
 // ==================== AGENT ASSIGNMENT ====================
 
+/**
+ * Assign a contact to an agent. Restricted to broker/admin/team-lead roles.
+ * Lead/contact routing is an admin responsibility — agents may not move
+ * contacts off another agent's book.
+ */
+const ASSIGN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+
 export async function assignAgentToContact(contactId: string, agentId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: "Not authenticated" }
 
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("user_type, brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!userRow || !ASSIGN_ROLES.has(userRow.user_type ?? "")) {
+    return { error: "Only brokers / admins / team leads can assign contacts" }
+  }
+
+  // Tenant isolation — only operate on contacts in the caller's brokerage.
   const { data, error } = await supabase
     .from("contacts")
     .update({ agent_id: agentId })
     .eq("id", contactId)
+    .eq("brokerage_id", userRow.brokerage_id)
     .select()
     .single()
 

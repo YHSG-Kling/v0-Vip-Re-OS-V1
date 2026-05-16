@@ -300,13 +300,27 @@ export async function deleteExpense(expenseId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
 
-  const { error } = await supabase
+  // business_expenses.agent_id references agents.id (not auth.users.id).
+  // Resolve the caller's agent.id before scoping the delete, otherwise the
+  // .eq filter silently matches nothing and the delete is a no-op.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (!agentRow?.id) return { success: false, error: "No agent profile" }
+
+  const { data: deleted, error } = await supabase
     .from("business_expenses")
     .delete()
     .eq("id", expenseId)
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentRow.id)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!deleted || deleted.length === 0) {
+    return { success: false, error: "Expense not found or not yours to delete" }
+  }
 
   revalidatePath("/dashboard/financials/expenses")
   revalidatePath("/dashboard/financials/agent")
