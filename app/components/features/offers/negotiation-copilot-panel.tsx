@@ -15,15 +15,21 @@
  *   - Draft response message in agent voice (audience flips per side)
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Loader2, Send, AlertTriangle, ShieldAlert, Sparkles, Eye } from "lucide-react"
+import { Loader2, Send, AlertTriangle, ShieldAlert, Sparkles, Eye, CheckCircle2, XCircle, Copy } from "lucide-react"
 import {
   negotiationCoPilot,
   sendDraftAsCounterResponse,
   type NegotiationCoPilotResult,
 } from "@/app/actions/negotiation-copilot"
-import { generateAndPersistNegotiationStrategyAction } from "@/app/actions/negotiation-strategy"
+import {
+  generateAndPersistNegotiationStrategyAction,
+  getNegotiationStrategyForOfferAction,
+  acceptStrategyAction,
+  dismissStrategyAction,
+  type NegotiationStrategyView,
+} from "@/app/actions/negotiation-strategy"
 
 interface Props {
   offerId:       string
@@ -56,6 +62,68 @@ export function NegotiationCoPilotPanel({
     | { kind: "error"; message: string }
     | null
   >(null)
+  // Pre-computed strategy from the per-minute cron — loaded on mount.
+  const [preStrategy, setPreStrategy] = useState<NegotiationStrategyView | null>(null)
+  const [preStrategyLoading, setPreStrategyLoading] = useState(true)
+  const [strategyActionPending, setStrategyActionPending] = useState(false)
+  const [copiedDraft, setCopiedDraft] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setPreStrategyLoading(true)
+    getNegotiationStrategyForOfferAction(offerId, side)
+      .then((r) => {
+        if (cancelled) return
+        if (r.ok) setPreStrategy(r.strategy)
+      })
+      .finally(() => { if (!cancelled) setPreStrategyLoading(false) })
+    return () => { cancelled = true }
+  }, [offerId, side])
+
+  async function refreshPreStrategy() {
+    const r = await getNegotiationStrategyForOfferAction(offerId, side)
+    if (r.ok) setPreStrategy(r.strategy)
+  }
+
+  async function handleAcceptStrategy() {
+    if (!preStrategy) return
+    setStrategyActionPending(true)
+    try {
+      const r = await acceptStrategyAction(preStrategy.id, "did_now")
+      if (r.ok) await refreshPreStrategy()
+    } finally {
+      setStrategyActionPending(false)
+    }
+  }
+
+  async function handleDismissStrategy(reason: string) {
+    if (!preStrategy) return
+    setStrategyActionPending(true)
+    try {
+      const r = await dismissStrategyAction(preStrategy.id, reason)
+      if (r.ok) await refreshPreStrategy()
+    } finally {
+      setStrategyActionPending(false)
+    }
+  }
+
+  async function copyDraftToClipboard() {
+    if (!preStrategy?.draftedCounterLanguage) return
+    try {
+      await navigator.clipboard.writeText(preStrategy.draftedCounterLanguage)
+      setCopiedDraft(true)
+      setTimeout(() => setCopiedDraft(false), 2000)
+    } catch {}
+  }
+
+  const ageMinutes = preStrategy
+    ? Math.floor((Date.now() - new Date(preStrategy.createdAt).getTime()) / 60_000)
+    : 0
+  const ageLabel =
+    ageMinutes < 1   ? "just now"
+    : ageMinutes < 60 ? `${ageMinutes}m ago`
+    : ageMinutes < 1440 ? `${Math.floor(ageMinutes / 60)}h ago`
+    : `${Math.floor(ageMinutes / 1440)}d ago`
 
   async function handleGeneratePersistedStrategy() {
     setPersisting(true)
@@ -128,8 +196,107 @@ export function NegotiationCoPilotPanel({
       ? "🧠 Negotiation Co-Pilot — should we accept, counter, or walk?"
       : "🧠 Negotiation Co-Pilot — respond to seller's counter?"
 
+  const ACTION_BADGE_COLOR: Record<string, string> = {
+    accept:     "bg-emerald-600",
+    counter:    "bg-blue-600",
+    walk_away:  "bg-red-600",
+    wait:       "bg-amber-600",
+    hold:       "bg-amber-600",
+    reject:     "bg-red-600",
+  }
+  const actionBadgeColor =
+    (preStrategy && ACTION_BADGE_COLOR[preStrategy.recommendedAction.toLowerCase()]) ?? "bg-slate-600"
+
   return (
     <div className="rounded-lg border border-purple-200 bg-purple-50 p-4 space-y-3">
+      {/* ── Pre-computed strategy from cron (auto-loaded) ─────────────────── */}
+      {preStrategyLoading && (
+        <div className="rounded-md bg-white border border-purple-300 p-3 text-xs text-purple-700 flex items-center gap-2">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading latest AI strategy…
+        </div>
+      )}
+      {!preStrategyLoading && preStrategy && (
+        <div className="rounded-md bg-white border-2 border-purple-400 p-3 space-y-2.5 shadow-sm">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Sparkles className="h-4 w-4 text-purple-700" />
+              <span className="text-xs font-semibold uppercase tracking-wide text-purple-900">AI strategy ready</span>
+              <span className={`text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded ${actionBadgeColor}`}>
+                {preStrategy.recommendedAction.replace(/_/g, " ")}
+              </span>
+              {preStrategy.status === "accepted_by_agent" && (
+                <span className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-emerald-700 flex items-center gap-0.5">
+                  <CheckCircle2 className="h-2.5 w-2.5" /> Accepted
+                </span>
+              )}
+              {preStrategy.status === "dismissed" && (
+                <span className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-slate-500 flex items-center gap-0.5">
+                  <XCircle className="h-2.5 w-2.5" /> Dismissed
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] text-muted-foreground">refreshed {ageLabel}</span>
+          </div>
+
+          {/* Numeric drivers */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            {preStrategy.recommendedCounterPrice != null && (
+              <div className="border rounded p-1.5 bg-purple-50/30">
+                <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Counter at</p>
+                <p className="font-bold text-sm">${Math.round(preStrategy.recommendedCounterPrice).toLocaleString("en-US")}</p>
+              </div>
+            )}
+            {preStrategy.winProbability != null && (
+              <div className="border rounded p-1.5 bg-purple-50/30">
+                <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Win probability</p>
+                <p className="font-bold text-sm">{Math.round(preStrategy.winProbability * 100)}%</p>
+              </div>
+            )}
+            {preStrategy.confidence != null && (
+              <div className="border rounded p-1.5 bg-purple-50/30">
+                <p className="text-[9px] uppercase tracking-wide text-muted-foreground">AI confidence</p>
+                <p className="font-bold text-sm">{Math.round(preStrategy.confidence * 100)}%</p>
+              </div>
+            )}
+          </div>
+
+          {/* Agent-facing strategy markdown */}
+          {preStrategy.agentStrategyMd && (
+            <div className="text-xs leading-relaxed bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-48 overflow-y-auto">
+              {preStrategy.agentStrategyMd}
+            </div>
+          )}
+
+          {/* Drafted counter language — copy-to-clipboard ready */}
+          {preStrategy.draftedCounterLanguage && (
+            <div className="border rounded bg-white">
+              <div className="flex items-center justify-between p-1.5 bg-slate-50 border-b">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Ready-to-send counter language</span>
+                <Button size="sm" variant="ghost" onClick={copyDraftToClipboard} className="h-6 px-2 text-xs">
+                  <Copy className="h-3 w-3 mr-1" /> {copiedDraft ? "Copied" : "Copy"}
+                </Button>
+              </div>
+              <p className="text-xs leading-relaxed p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                {preStrategy.draftedCounterLanguage}
+              </p>
+            </div>
+          )}
+
+          {/* Agent actions on the pre-computed strategy */}
+          {preStrategy.status !== "accepted_by_agent" && preStrategy.status !== "dismissed" && (
+            <div className="flex gap-2 flex-wrap pt-1">
+              <Button size="sm" variant="default" onClick={handleAcceptStrategy} disabled={strategyActionPending} className="h-7 text-xs">
+                {strategyActionPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <CheckCircle2 className="h-3 w-3 mr-1" />}
+                I&apos;ll use this
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleDismissStrategy("agent_disagrees")} disabled={strategyActionPending} className="h-7 text-xs">
+                <XCircle className="h-3 w-3 mr-1" /> Not this time
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-sm font-semibold text-purple-900">{headerLabel}</p>
         <div className="flex items-center gap-2">
