@@ -191,6 +191,8 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
 
 /**
  * Claim an unassigned stale lead — assigns to the current agent.
+ * Restricted to broker/admin/team-lead roles. Agents may NOT self-assign
+ * leads from the unassigned pool; lead routing is an admin responsibility.
  */
 export async function claimStaleLead(leadId: string): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
@@ -198,8 +200,14 @@ export async function claimStaleLead(leadId: string): Promise<{ success: boolean
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+  const [{ data: agentRow }, { data: userRow }] = await Promise.all([
+    svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle(),
+    svc.from("users").select("user_type").eq("id", user.id).maybeSingle(),
+  ])
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
+  if (!BROKER_ROLES.has((userRow?.user_type ?? "") as string)) {
+    return { success: false, error: "Only brokers / admins can assign leads" }
+  }
 
   const { error } = await svc
     .from("leads")

@@ -154,7 +154,7 @@ function UnclaimedLeadRow({ lead, onRefresh }: { lead: StaleLeadRow; onRefresh: 
           <Button asChild size="sm" variant="ghost"><Link href={`/leads/${lead.id}`}>View</Link></Button>
           <Button size="sm" onClick={handleClaim} disabled={pending}>
             {pending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <UserPlus className="h-3 w-3 mr-1" />}
-            Claim
+            Assign to me
           </Button>
         </div>
       </CardContent>
