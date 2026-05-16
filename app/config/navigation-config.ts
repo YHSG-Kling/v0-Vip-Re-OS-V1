@@ -92,6 +92,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         href: '/lifetime-customers',
         children: [
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
+          { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
+          { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
@@ -271,6 +273,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         href: '/lifetime-customers',
         children: [
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
+          { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
+          { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
@@ -701,6 +705,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         href: '/lifetime-customers',
         children: [
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
+          { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
+          { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
