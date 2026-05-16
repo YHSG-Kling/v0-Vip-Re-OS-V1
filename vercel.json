@@ -210,6 +210,10 @@
       "schedule": "0 */6 * * *"
     },
     {
+      "path": "/api/cron/showing-prep",
+      "schedule": "15 * * * *"
+    },
+    {
       "path": "/api/cron/gbp-auto-posts",
       "schedule": "0 * * * *"
     },
