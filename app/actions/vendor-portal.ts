@@ -151,7 +151,29 @@ export async function declineVendorBookingAction(params: {
 // VENDOR JOB MANAGEMENT (Vendor Portal)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Helper: auth-gate vendor-side action. Wraps requireVendorActor with
+// PortalAuthError -> friendly { success:false } shape.
+async function gateVendor(vendorId: string): Promise<
+  | { ok: true; userId: string; vendorId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  try {
+    const actor = await requireVendorActor(vendorId)
+    return { ok: true, ...actor }
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { ok: false, error: err.message }
+    throw err
+  }
+}
+
 export async function getVendorJobs(vendorId: string) {
+  // Auth gate — previously open, so any caller could enumerate any
+  // vendor's job book (job titles, costs, agent notes, vendor notes,
+  // scheduled dates, transaction property addresses) by passing the
+  // vendor id.
+  const gate = await gateVendor(vendorId)
+  if (!gate.ok) return []
+
   const supabase = await createClient()
 
   const { data: jobs, error } = await supabase
@@ -175,7 +197,8 @@ export async function getVendorJobs(vendorId: string) {
         transactions:transaction_id(id, property_address)
       )
     `)
-    .eq("vendor_id", vendorId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) throw error
@@ -187,6 +210,9 @@ export async function updateVendorJobStatus(data: {
   vendorId: string
   status: string
 }) {
+  const gate = await gateVendor(data.vendorId)
+  if (!gate.ok) throw new Error(gate.error)
+
   const supabase = await createClient()
 
   const { data: job, error: updateError } = await supabase
@@ -196,14 +222,16 @@ export async function updateVendorJobStatus(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", data.jobId)
-    .eq("vendor_id", data.vendorId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
     .select()
     .maybeSingle()
 
   if (updateError) throw updateError
+  if (!job) throw new Error("Job not found in your scope")
 
-  // If job is completed, also update the parent assignment
-  if (data.status === "completed") {
+  // If job is completed, also update the parent assignment — scoped
+  if (data.status === "completed" && job.assignment_id) {
     await supabase
       .from("vendor_assignments")
       .update({
@@ -211,6 +239,8 @@ export async function updateVendorJobStatus(data: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", job.assignment_id)
+      .eq("vendor_id", gate.vendorId)
+      .eq("brokerage_id", gate.brokerageId)
   }
 
   return job
@@ -222,6 +252,9 @@ export async function addVendorJobNote(data: {
   vendorId: string
   note: string
 }) {
+  const gate = await gateVendor(data.vendorId)
+  if (!gate.ok) throw new Error(gate.error)
+
   const supabase = await createClient()
 
   const { data: job, error } = await supabase
@@ -231,21 +264,22 @@ export async function addVendorJobNote(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", data.jobId)
-    .eq("vendor_id", data.vendorId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
     .select()
     .maybeSingle()
 
   if (error) throw error
+  if (!job) throw new Error("Job not found in your scope")
 
-  // Emit kernel event - get brokerage from vendor
-  const { data: vendorData } = await supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).maybeSingle()
+  // Emit kernel event scoped to verified brokerage
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: vendorData?.brokerage_id,
+    brokerage_id: gate.brokerageId,
     event_type: KernelEvent.PORTAL_MODULE_VIEWED,
     entity_type: "vendor_job",
     entity_id: data.jobId,
     metadata: {
-      vendor_id: data.vendorId,
+      vendor_id: gate.vendorId,
       action: "note_added",
     },
     created_at: new Date().toISOString(),
@@ -259,6 +293,9 @@ export async function updateVendorJobCost(data: {
   vendorId: string
   costActual: number
 }) {
+  const gate = await gateVendor(data.vendorId)
+  if (!gate.ok) throw new Error(gate.error)
+
   const supabase = await createClient()
 
   const { data: job, error } = await supabase
@@ -268,11 +305,13 @@ export async function updateVendorJobCost(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", data.jobId)
-    .eq("vendor_id", data.vendorId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
     .select()
     .maybeSingle()
 
   if (error) throw error
+  if (!job) throw new Error("Job not found in your scope")
   return job
 }
 
@@ -284,33 +323,57 @@ export async function uploadVendorJobDocument(data: {
   fileName: string
   fileData: Buffer | string
 }) {
+  const gate = await gateVendor(data.vendorId)
+  if (!gate.ok) throw new Error(gate.error)
+
   const supabase = await createClient()
+
+  // Verify the job belongs to this vendor + brokerage AND links to this
+  // transaction (via vendor_assignments). Without this, a vendor could
+  // upload documents to any transaction in the brokerage.
+  const { data: jobRow } = await supabase
+    .from("vendor_jobs")
+    .select("id, vendor_assignments:assignment_id(transaction_id)")
+    .eq("id", data.jobId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
+    .maybeSingle()
+  const linkedTransactionId = (jobRow?.vendor_assignments as any)?.transaction_id
+  if (!jobRow || linkedTransactionId !== data.transactionId) {
+    throw new Error("Job not linked to this transaction in your scope")
+  }
+
+  // Also verify the transaction is in the caller's brokerage (defense in depth)
+  const { data: txRow } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
+  if (!txRow || txRow.brokerage_id !== gate.brokerageId) {
+    throw new Error("Transaction not in your scope")
+  }
 
   // Create document record — use correct transaction_documents schema
   const { data: document, error: docError } = await supabase
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
+      brokerage_id: gate.brokerageId,
       doc_type: data.documentType,
       doc_label: data.fileName,
       status: "uploaded",
-      uploaded_by: data.vendorId,
+      uploaded_by: gate.userId,
     })
     .select()
     .maybeSingle()
 
   if (docError) throw docError
 
-  // Emit kernel event - get brokerage from transaction
-  const { data: txnDoc } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: txnDoc?.brokerage_id,
+    brokerage_id: gate.brokerageId,
     event_type: KernelEvent.DOCUMENT_UPLOADED,
     entity_type: "vendor_job_document",
     entity_id: document.id,
     metadata: {
       job_id: data.jobId,
-      vendor_id: data.vendorId,
+      vendor_id: gate.vendorId,
       document_type: data.documentType,
     },
     created_at: new Date().toISOString(),
@@ -325,33 +388,54 @@ export async function sendVendorMessageToAgent(data: {
   vendorId: string
   message: string
 }) {
+  const gate = await gateVendor(data.vendorId)
+  if (!gate.ok) throw new Error(gate.error)
+
   const supabase = await createClient()
+
+  // Verify transaction belongs to caller's brokerage AND the vendor has
+  // a job linked to this transaction (prevents spamming arbitrary
+  // tenants' transaction inboxes).
+  const { data: txRow } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
+  if (!txRow || txRow.brokerage_id !== gate.brokerageId) {
+    throw new Error("Transaction not in your scope")
+  }
+  const { data: jobLink } = await supabase
+    .from("vendor_jobs")
+    .select("id, vendor_assignments:assignment_id(transaction_id)")
+    .eq("id", data.jobId)
+    .eq("vendor_id", gate.vendorId)
+    .eq("brokerage_id", gate.brokerageId)
+    .maybeSingle()
+  if (!jobLink || (jobLink.vendor_assignments as any)?.transaction_id !== data.transactionId) {
+    throw new Error("Job not linked to this transaction")
+  }
 
   // Create message routing to agent
   const { error: msgError } = await supabase
     .from("client_portal_messages")
     .insert({
+      brokerage_id: gate.brokerageId,
       transaction_id: data.transactionId,
       direction: "inbound",
       body: `[Vendor Message] ${data.message}`,
       created_at: new Date().toISOString(),
       metadata: {
-        from_vendor_id: data.vendorId,
+        from_vendor_id: gate.vendorId,
         from_job_id: data.jobId,
       },
     })
 
   if (msgError) throw msgError
 
-  // Emit kernel event - get brokerage from transaction
-  const { data: txnMsg } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: txnMsg?.brokerage_id,
+    brokerage_id: gate.brokerageId,
     event_type: KernelEvent.MESSAGE_CREATED,
     entity_type: "vendor_message",
     entity_id: data.jobId,
     metadata: {
-      vendor_id: data.vendorId,
+      vendor_id: gate.vendorId,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
