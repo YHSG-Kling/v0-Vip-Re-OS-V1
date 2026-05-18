@@ -157,13 +157,23 @@ Return ONLY the spoken script text.`
         },
       })
 
-      setQueueId(queueItem.id)
+      // queueVideoGeneration currently returns { error } because of schema
+      // drift on video_generation_queue. Surface that to the UI instead of
+      // pretending a queue id was issued.
+      if (!queueItem || "error" in queueItem) {
+        setIsGenerating(false)
+        setStatusMessage(queueItem?.error ?? "Video queue not available")
+        return
+      }
+      const queueItemId = (queueItem as { id: string }).id
+
+      setQueueId(queueItemId)
       setProgress(40)
       setStatusMessage("Submitted to production queue — polling for completion...")
 
       // Poll video_generation_queue until status = 'completed' or 'failed'
       const pollInterval = setInterval(async () => {
-        const statusResult = await executeWorkflow("poll-heygen-video", { queueId: queueItem.id })
+        const statusResult = await executeWorkflow("poll-heygen-video", { queueId: queueItemId })
         if (statusResult?.status === "completed" && statusResult?.video_url) {
           clearInterval(pollInterval)
           setVideoUrl(statusResult.video_url)
