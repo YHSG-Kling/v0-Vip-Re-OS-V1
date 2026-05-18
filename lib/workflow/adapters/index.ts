@@ -68,6 +68,7 @@ const inAppAdapter: ChannelAdapter = {
       conversation_id: convRow.id,
       contact_id: contact.id,
       agent_id: resolvedAgentId,
+      brokerage_id: brokerageId,  // for superadmin billing rollups
       type: "in_app",
       direction: "outbound",
       body: step.body ?? "",

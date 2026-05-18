@@ -352,9 +352,10 @@ async function dispatchToChannel(
       bodySnippet: finalEmailBody.substring(0, 500),
     })
 
-    // Unified inbox row
+    // Unified inbox row — stamped with brokerage for billing rollups
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'email',
       direction: 'outbound',
       subject,
@@ -550,6 +551,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'sms',
       direction: 'outbound',
       body: smsBody,
@@ -586,6 +588,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'direct_mail',
       direction: 'outbound',
       body: 'Direct mail campaign initiated',
@@ -616,6 +619,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'social',
       direction: 'outbound',
       body: socialBody,

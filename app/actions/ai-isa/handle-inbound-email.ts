@@ -214,10 +214,11 @@ export async function processInboundEmail(params: {
     ],
   })
 
-  // ── Persist inbound message ───────────────────────────────────────────────
+  // ── Persist inbound message — stamped with brokerage for billing rollups ─
   await supabase.from('messages').insert({
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
+    brokerage_id: lead.brokerage_id,
     type: 'email',
     direction: 'inbound',
     subject: params.subject,
@@ -246,10 +247,11 @@ export async function processInboundEmail(params: {
     return { success: false, responded: false, error: `Dispatch failed: ${sendResult.error}` }
   }
 
-  // ── Persist outbound message (unified inbox row) ──────────────────────────
+  // ── Persist outbound message (unified inbox row) — stamped with brokerage ─
   await supabase.from('messages').insert({
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
+    brokerage_id: lead.brokerage_id,
     type: 'email',
     direction: 'outbound',
     subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
