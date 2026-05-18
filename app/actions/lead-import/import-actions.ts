@@ -9,12 +9,32 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 // ─── processImportRows ────────────────────────────────────────────────────────
 
 export async function processImportRows(params: {
-  brokerageId: string
-  agentUserId?: string | null
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string | null  // ignored — derived from session
   importId: string
   rows: Record<string, unknown>[]
 }): Promise<{ created: number; merged: number; failed: number }> {
+  // Auth gate — was previously trusting caller-supplied brokerageId, letting
+  // any signed-in user bulk-create contacts in any brokerage.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { created: 0, merged: 0, failed: params.rows.length }
+  }
+  const brokerageId = ctx.brokerageId
+  const agentUserId = ctx.userId
+
   const supabase = createServiceClient()
+
+  // Verify the import row belongs to caller's brokerage
+  const { data: importRow } = await supabase
+    .from('lead_imports')
+    .select('brokerage_id')
+    .eq('id', params.importId)
+    .maybeSingle()
+  if (!importRow || importRow.brokerage_id !== brokerageId) {
+    return { created: 0, merged: 0, failed: params.rows.length }
+  }
+
   let created = 0
   let merged = 0
   let failed = 0
@@ -24,8 +44,8 @@ export async function processImportRows(params: {
     const r = params.rows[i]
     try {
       const { action } = await captureContact({
-        brokerageId: params.brokerageId,
-        agentUserId: params.agentUserId ?? null,
+        brokerageId: brokerageId,
+        agentUserId: agentUserId,
         source: 'import',
         first_name: typeof r.first_name === 'string' ? r.first_name : null,
         last_name: typeof r.last_name === 'string' ? r.last_name : null,
@@ -57,12 +77,14 @@ export async function processImportRows(params: {
       completed_at: new Date().toISOString(),
     })
     .eq('id', params.importId)
+    .eq('brokerage_id', brokerageId)
 
   await supabase.from('lifecycle_events').insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: brokerageId,
     entity_type: 'lead_import',
     entity_id: params.importId,
     event_type: KernelEvent.LEAD_IMPORT_COMPLETED,
+    actor_user_id: agentUserId,
     metadata: {
       created,
       merged,
