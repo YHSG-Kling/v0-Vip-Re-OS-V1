@@ -100,13 +100,14 @@ export async function sendMessage(params: {
     const callerAgentId = auth.agentId  // use session-resolved agent id, ignore callerAgentId
     const now = new Date().toISOString()
 
-    // Step 1: INSERT into messages
+    // Step 1: INSERT into messages — stamp brokerage_id for billing rollups
     const { data: message, error: msgError } = await supabase
       .from("messages")
       .insert({
         conversation_id:  params.conversationId,
         contact_id:       params.contactId,
         agent_id:         callerAgentId,
+        brokerage_id:     auth.brokerageId,
         type:             params.channel,
         direction:        "outbound",
         body:             params.body,
