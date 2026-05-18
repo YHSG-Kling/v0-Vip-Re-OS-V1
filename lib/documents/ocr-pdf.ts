@@ -79,9 +79,11 @@ export async function ocrDocumentFromUrl(params: {
     try {
       // Dynamic import keeps the bundle slim when pdf-parse isn't installed.
       // The module name is constructed to defer the TS module resolution
-      // until runtime (pdf-parse is an optional dependency).
+      // until runtime (pdf-parse is an optional dependency). The
+      // /* webpackIgnore */ comment silences webpack's expression-import
+      // warning by leaving this as a runtime-only import.
       const pkg = "pdf-parse"
-      const mod: any = await import(pkg).catch(() => null)
+      const mod: any = await import(/* webpackIgnore: true */ pkg).catch(() => null)
       if (mod) {
         const parsed = await (mod.default ?? mod)(buf)
         const text = (parsed?.text ?? "").trim()

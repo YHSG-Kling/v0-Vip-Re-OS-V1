@@ -37,8 +37,12 @@ export async function dispatchCommand(request: DispatchCommandRequest): Promise<
       }
     }
 
-    // Dynamically import action module
-    const actionModule = await import(mapping.module_path)
+    // Dynamically import action module. The /* webpackIgnore: true */
+    // comment tells webpack to leave this as a runtime import (since the
+    // path is data-driven) instead of trying to statically analyze it —
+    // which previously surfaced as a "Critical dependency: the request of
+    // a dependency is an expression" build warning.
+    const actionModule = await import(/* webpackIgnore: true */ mapping.module_path)
     const actionFunction = actionModule[mapping.function_name]
 
     if (!actionFunction) {
