@@ -46,6 +46,7 @@ export async function trackBehavior(sessionData: {
   calculator_inputs?: any
   ip_address?: string
   user_agent?: string
+  brokerage_id?: string  // optional — set by widget bootstrap on agent sites
 }) {
   try {
     const supabase = createServiceClient()
@@ -83,11 +84,12 @@ export async function trackBehavior(sessionData: {
 
       signalId = signal.id
     } else {
-      // Create new signal
+      // Create new signal — stamp brokerage_id when supplied (from widget on agent site)
       const { data: newSignal } = await supabase
         .from("behavioral_signals")
         .insert({
           visitor_id: sessionData.visitor_id,
+          brokerage_id: sessionData.brokerage_id ?? null,
           ip_address: sessionData.ip_address,
           user_agent: sessionData.user_agent,
           city: location.city,
@@ -100,9 +102,10 @@ export async function trackBehavior(sessionData: {
       signalId = newSignal!.id
     }
 
-    // Log site activity
+    // Log site activity — inherits brokerage from the signal
     await supabase.from("site_activity").insert({
       behavioral_signal_id: signalId,
+      brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
       page_visited: sessionData.page_visited,
       time_on_page_seconds: sessionData.time_spent,
       action_taken: sessionData.action_taken,
@@ -167,6 +170,7 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
         if ((intent.confidence as number) >= 70 && totalSessions >= 3) {
           await supabase.from("intelligence_signals_log").insert({
             lead_profile_id: signalId,
+            brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
             signal_type: "high_intent_behavioral",
             signal_data_json: intent,
             signal_strength: 10,
@@ -371,6 +375,8 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error, signals: [], count: 0 }
 
+  const brokerageId = auth.brokerageId
+
   try {
     const supabase = createServiceClient()
 
@@ -413,6 +419,7 @@ export async function scrapeSocialSignalsWithZenRows(location: {
       const { data: signal } = await supabase
         .from("social_intelligence")
         .insert({
+          brokerage_id: brokerageId,
           source: "nextdoor",
           post_url: post.url,
           post_content: post.content,
@@ -492,6 +499,7 @@ export async function enrichPropertyIntelligence(propertyData: {
     const { data: property } = await supabase
       .from("property_intelligence")
       .insert({
+        brokerage_id: auth.brokerageId,
         address: propertyData.address,
         city: propertyData.city,
         state: propertyData.state,
@@ -847,6 +855,14 @@ function calculateAverageDaysBetween(behaviors: any[]): number {
 async function detectMotivatedSellerSignals(leadId: string) {
   const supabase = createServiceClient()
 
+  // Resolve the contact's brokerage so we can stamp signal rows correctly
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", leadId)
+    .maybeSingle()
+  const contactBrokerageId = contact?.brokerage_id ?? null
+
   const { data: properties } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
 
   if (!properties || properties.length === 0) return
@@ -928,7 +944,9 @@ async function detectMotivatedSellerSignals(leadId: string) {
   }
 
   if (signals.length > 0) {
-    await supabase.from("motivated_seller_signals").insert(signals)
+    // Stamp brokerage_id on every batch-inserted signal row
+    const signalsWithBrokerage = signals.map(s => ({ ...s, brokerage_id: contactBrokerageId }))
+    await supabase.from("motivated_seller_signals").insert(signalsWithBrokerage)
   }
 
   return signals
@@ -1179,6 +1197,7 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
       }) as any
 
       await supabase.from("google_search_intelligence").insert({
+        brokerage_id: auth.brokerageId,
         search_query: query,
         detected_location: targetLocation.city,
         related_searches: searchData.relatedSearches || [],
@@ -1384,11 +1403,24 @@ Timeline: ${profile.estimated_timeline}
       link: `/tools/neighborhood-compare?ref=${profile.id}`,
     }
 
+    // intelligent_outreach_log schema: id, contact_id, outreach_type, channel,
+    // content, result, created_at, brokerage_id. The previous code wrote
+    // `lead_profile_id` (column doesn't exist — insert was silently failing).
+    // Map the unified_lead_profile.id → contacts.id via the contact_email
+    // captured on the profile, falling back to NULL if the profile isn't
+    // linked to a contact yet.
+    const { data: profileRow } = await supabase
+      .from("unified_lead_profile")
+      .select("contact_id")
+      .eq("id", leadProfileId)
+      .maybeSingle()
     await supabase.from("intelligent_outreach_log").insert({
-      lead_profile_id: leadProfileId,
+      brokerage_id: auth.brokerageId,
+      contact_id:   profileRow?.contact_id ?? null,
       outreach_type: "value_first_email",
-      value_offer: valueOffer,
-      sent_at: new Date().toISOString(),
+      channel:       "email",
+      content:       JSON.stringify({ subject: (emailData.data as any)?.subject, body: (emailData.data as any)?.emailBody, value_offer: valueOffer }),
+      created_at:    new Date().toISOString(),
     })
 
     return { success: true, email: emailData.data, valueOffer }
@@ -1435,6 +1467,7 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
       const propertyDetails = enrichedData[0] || {}
 
       await supabase.from("external_behavior").insert({
+        brokerage_id: auth.brokerageId,
         source: property.source || "zillow",
         behavior_type: "property_view",
         property_address: property.address,
@@ -1445,6 +1478,7 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
 
       // Store enriched property intelligence
       await supabase.from("property_intelligence").insert({
+        brokerage_id: auth.brokerageId,
         property_address: property.address,
         city: targetLocation.city,
         state: targetLocation.state,
@@ -1495,9 +1529,10 @@ export async function trackExternalActivity(data: {
       return { success: false, error: "No behavioral signal found for visitor" }
     }
 
-    // Log external behavior
+    // Log external behavior — stamp brokerage from caller's session
     await supabase.from("external_behavior").insert({
       behavioral_signal_id: signal.id,
+      brokerage_id: auth.brokerageId,
       source: data.source,
       behavior_type: data.behaviorType,
       property_address: data.propertyAddress,
@@ -1583,6 +1618,7 @@ Determine:
 
       if (analysis.data?.is_motivated_seller) {
         await supabase.from("motivated_seller_signals").insert({
+          brokerage_id: auth.brokerageId,
           lead_id: signal.contact_id || null,
           signal_type: "social_media",
           signal_details: {
@@ -1597,6 +1633,7 @@ Determine:
 
         // Create social intelligence record
         await supabase.from("social_intelligence").insert({
+          brokerage_id: auth.brokerageId,
           source: signal.source,
           post_content: signal.content || signal.text,
           post_url: signal.url,
