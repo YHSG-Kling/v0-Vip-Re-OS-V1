@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
@@ -51,17 +52,38 @@ export async function initiateAIISAEngagement(
   const supabase = createServiceClient()
 
   try {
+    // ── AUTH GATE ────────────────────────────────────────────────────────
+    // Permitted callers:
+    //   1. Session-authenticated server actions (UI) — verify ctx.brokerageId
+    //      matches the lead row's brokerage_id.
+    //   2. Internal trusted callers (cron, internal server-action chain like
+    //      app/actions/leads.ts post-create). CRON_SECRET must be set so an
+    //      unconfigured deploy does not silently become an open endpoint.
+    const ctx = await getAgentContext()
+    const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
+    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    if (!hasSession && !isTrustedInternal) {
+      return { success: false, reason: 'Unauthorized' }
+    }
+
     // ── Fetch lead with channel fields ──────────────────────────────────────
-    const { data: lead, error: leadError } = await supabase
+    let leadQuery = supabase
       .from('leads')
       .select(
         `*, preferred_channel, call_stop_flag, contact_id`
       )
       .eq('id', leadId)
-      .maybeSingle()
+    if (hasSession && ctx.brokerageId) {
+      leadQuery = leadQuery.eq('brokerage_id', ctx.brokerageId)
+    }
+    const { data: lead, error: leadError } = await leadQuery.maybeSingle()
 
     if (leadError || !lead) {
       throw new Error(`Lead not found: ${leadId}`)
+    }
+
+    if (hasSession && ctx.brokerageId && lead.brokerage_id !== ctx.brokerageId) {
+      return { success: false, reason: 'Forbidden' }
     }
 
     if (lead.agent_id) {
