@@ -11,9 +11,14 @@
  * NOTE: These actions read from keyword_intelligence and competitor_content.
  * Population of those tables is handled by background scrapers (Google Trends,
  * Facebook Ad Library, social listening) running on cron — outside this file.
+ *
+ * SECURITY: Every export is auth-gated and tenant-scoped via getAgentContext().
+ * Caller-supplied brokerageId is IGNORED — we always derive it from the
+ * authenticated session. Cross-tenant reads are not possible from this surface.
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export interface TrendingKeyword {
   keyword: string
@@ -46,11 +51,14 @@ export interface CompetitorPost {
  * in Marketing Studio, blog editor, newsletter editor, etc.
  */
 export async function getTrendingKeywords(params: {
-  brokerageId: string
+  brokerageId?: string // ignored — derived from session
   zipCodes?: string[]
   intentCategory?: string
   limit?: number
 }): Promise<TrendingKeyword[]> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
   const supabase = await createClient()
   const limit = params.limit ?? 20
 
@@ -60,7 +68,7 @@ export async function getTrendingKeywords(params: {
       "keyword, search_volume_monthly, competition_score, trend_change_pct, " +
         "intent_category, related_keywords, zip_code"
     )
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .eq("trend_direction", "rising")
     .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     .order("trend_change_pct", { ascending: false })
@@ -100,11 +108,14 @@ export async function getTrendingKeywords(params: {
  * Omnipresence as "what's working for competitors" inspiration.
  */
 export async function getCompetitorHighPerformers(params: {
-  brokerageId: string
+  brokerageId?: string // ignored — derived from session
   daysBack?: number
   platform?: string
   limit?: number
 }): Promise<CompetitorPost[]> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
   const supabase = await createClient()
   const daysBack = params.daysBack ?? 14
   const limit = params.limit ?? 20
@@ -117,7 +128,7 @@ export async function getCompetitorHighPerformers(params: {
         "likes_count, engagement_rate, detected_topics, detected_keywords, hook_type, " +
         "competitor_id, competitor_profiles!inner(competitor_name)"
     )
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .eq("is_high_performing", true)
     .gte("observed_at", since)
     .order("engagement_rate", { ascending: false })
@@ -169,6 +180,9 @@ export async function getCompetitorHighPerformers(params: {
  *
  * Returns the building blocks; actual rewrite uses the agent's brand voice
  * profile via the AI content generation surface (NOT a direct copy).
+ *
+ * Tenant-scoped: caller can only access competitor_content rows owned by
+ * their brokerage.
  */
 export async function getCompetitorPostInspiration(
   competitorPostId: string
@@ -179,11 +193,15 @@ export async function getCompetitorPostInspiration(
   emotionalTone: string | null
   inspirationPrompt: string
 } | null> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return null
+
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("competitor_content")
     .select("detected_topics, detected_keywords, hook_type, emotional_tone, content_type, platform")
     .eq("id", competitorPostId)
+    .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
   if (error || !data) return null

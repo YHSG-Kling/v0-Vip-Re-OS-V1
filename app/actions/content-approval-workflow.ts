@@ -19,11 +19,31 @@ import {
   type ApproverRole,
 } from "@/lib/approval-workflow"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================
 // SYSTEM 4.3 – CONTENT APPROVAL WORKFLOW
 // Server Actions (Public API)
 // ============================================
+
+/**
+ * Resolves session-derived agent identifier for approval logging.
+ * NEVER trusts caller-supplied agent_id.
+ */
+async function getSessionAgentId(): Promise<
+  | { ok: true; agentId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  return {
+    ok: true,
+    agentId: ctx.agentId ?? ctx.userId,
+    brokerageId: ctx.brokerageId,
+  }
+}
 
 /**
  * Evaluate approval decision for content
@@ -34,7 +54,7 @@ export async function evaluateContentApproval(params: {
   complianceVerdict: ComplianceVerdict
   context: ApprovalContext
   log_signal?: boolean
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   content_id?: string
 }): Promise<{
   success: boolean
@@ -42,17 +62,15 @@ export async function evaluateContentApproval(params: {
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.draft || !params.complianceVerdict || !params.context) {
       return {
         success: false,
         error: "Missing required inputs: draft, complianceVerdict, or context",
       }
-    }
-
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return { success: false, error: "Invalid agent_id format" }
     }
 
     // Validate content_id if provided
@@ -63,11 +81,11 @@ export async function evaluateContentApproval(params: {
     // Determine approval decision
     const decision = determineApprovalDecision(params.draft, params.complianceVerdict, params.context)
 
-    // Optionally log signal to activities
-    if (params.log_signal && params.agent_id) {
+    // Optionally log signal to activities — attribute to authenticated agent
+    if (params.log_signal) {
       const contentPreview = params.draft.raw_content.substring(0, 200)
       await logApprovalDecision({
-        agent_id: params.agent_id,
+        agent_id: auth.agentId,
         content_id: params.content_id,
         decision,
         requester_role: params.context.requester_role,
@@ -95,30 +113,28 @@ export async function batchEvaluateContentApproval(params: {
     context: ApprovalContext
   }>
   log_signals?: boolean
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
 }): Promise<{
   success: boolean
   decisions?: ApprovalDecision[]
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.inputs || params.inputs.length === 0) {
       return { success: false, error: "No inputs provided" }
     }
 
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return { success: false, error: "Invalid agent_id format" }
-    }
-
     // Determine approval decisions
     const decisions = batchDetermineApprovalDecisions(params.inputs)
 
-    // Optionally log signals
-    if (params.log_signals && params.agent_id) {
+    // Optionally log signals — attribute to authenticated agent
+    if (params.log_signals) {
       const loggingData = decisions.map((decision, index) => ({
-        agent_id: params.agent_id,
+        agent_id: auth.agentId,
         decision,
         requester_role: params.inputs[index].context.requester_role,
         content_preview: params.inputs[index].draft.raw_content.substring(0, 200),
@@ -152,6 +168,9 @@ export async function checkApprovalAuthority(params: {
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.user_role || !params.draft || !params.complianceVerdict || !params.context) {
       return { success: false, error: "Missing required inputs" }
@@ -195,6 +214,9 @@ export async function previewContentApproval(params: {
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.content_type || !params.channel_intent || !params.compliance_status || !params.context) {
       return { success: false, error: "Missing required inputs" }
@@ -248,7 +270,7 @@ export async function formatApprovalDecisionForDisplay(
  * Get approval decision history
  */
 export async function getApprovalHistory(params: {
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   limit?: number
   status_filter?: "approved" | "pending" | "rejected"
 }): Promise<{
@@ -266,12 +288,13 @@ export async function getApprovalHistory(params: {
   error?: string
 }> {
   try {
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return { success: false, error: "Invalid agent_id format" }
-    }
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    const history = await getApprovalDecisionHistory(params)
+    const history = await getApprovalDecisionHistory({
+      ...params,
+      agent_id: auth.agentId,
+    })
     return { success: true, history }
   } catch (error) {
     console.error("[System 4.3] Error getting approval history:", error)
@@ -286,7 +309,7 @@ export async function getApprovalHistory(params: {
  * Get approval statistics
  */
 export async function getApprovalStatistics(params: {
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   date_range?: { start: string; end: string }
 }): Promise<{
   success: boolean
@@ -304,10 +327,8 @@ export async function getApprovalStatistics(params: {
   error?: string
 }> {
   try {
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return { success: false, error: "Invalid agent_id format" }
-    }
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     // Validate date range if provided
     if (params.date_range) {
@@ -321,7 +342,10 @@ export async function getApprovalStatistics(params: {
       }
     }
 
-    const stats = await getApprovalStats(params)
+    const stats = await getApprovalStats({
+      ...params,
+      agent_id: auth.agentId,
+    })
     return { success: true, stats }
   } catch (error) {
     console.error("[System 4.3] Error getting approval stats:", error)
@@ -350,6 +374,9 @@ export async function getMyPendingApprovals(params: {
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.approver_role) {
       return { success: false, error: "Missing approver_role" }
@@ -375,7 +402,7 @@ export async function evaluateContentWorkflow(params: {
   complianceVerdict: ComplianceVerdict
   context: ApprovalContext
   log_signals?: boolean
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   content_id?: string
 }): Promise<{
   success: boolean
@@ -387,6 +414,9 @@ export async function evaluateContentWorkflow(params: {
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate inputs
     if (!params.draft || !params.complianceVerdict || !params.context) {
       return {
@@ -395,13 +425,12 @@ export async function evaluateContentWorkflow(params: {
       }
     }
 
-    // Evaluate approval decision
+    // Evaluate approval decision — agent_id is session-derived inside the callee
     const approvalResult = await evaluateContentApproval({
       draft: params.draft,
       complianceVerdict: params.complianceVerdict,
       context: params.context,
       log_signal: params.log_signals,
-      agent_id: params.agent_id,
       content_id: params.content_id,
     })
 

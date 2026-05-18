@@ -2,11 +2,65 @@
 
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { sendVendorBookingConfirmation } from "@/lib/communications"
 import { syncToPlatform } from "@/lib/platform-sync" // Import syncToPlatform function
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+// ============================================
+// TENANT GUARDS
+// ============================================
+
+async function requireBrokerage(): Promise<
+  | { ok: true; brokerageId: string; userId: string; agentId: string | null }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId }
+}
+
+/**
+ * Verify a transaction row belongs to the caller's brokerage.
+ * Uses the service client so the lookup isn't blocked by RLS.
+ */
+async function verifyTransactionInBrokerage(
+  transactionId: string,
+  brokerageId: string
+): Promise<boolean> {
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  return !!data && (data as any).brokerage_id === brokerageId
+}
+
+/**
+ * Verify a listing_marketing_packages row resolves back to a transaction
+ * owned by the caller's brokerage.
+ */
+async function verifyPackageInBrokerage(
+  packageId: string,
+  brokerageId: string
+): Promise<{ ok: boolean; transactionId?: string }> {
+  const svc = createServiceClient()
+  const { data: pkg } = await svc
+    .from("listing_marketing_packages")
+    .select("id, transaction_id")
+    .eq("id", packageId)
+    .maybeSingle()
+  if (!pkg) return { ok: false }
+  const txId = (pkg as any).transaction_id as string
+  const ok = await verifyTransactionInBrokerage(txId, brokerageId)
+  return { ok, transactionId: ok ? txId : undefined }
+}
 
 // ============================================
 // MARKETING PACKAGE MANAGEMENT
@@ -21,6 +75,12 @@ export async function activateMarketingPackage(params: {
     return { success: false, error: "Invalid transaction ID" }
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsTx = await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId)
+  if (!ownsTx) return { success: false, error: "Forbidden" }
+
   const supabase = await createClient()
 
   try {
@@ -28,6 +88,7 @@ export async function activateMarketingPackage(params: {
       .from("transactions")
       .select("*, listings(*)")
       .eq("id", params.transactionId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     if (!transaction || !transaction.listings) {
@@ -134,6 +195,17 @@ export async function bookMarketingService(params: {
 }) {
   if (!isValidUUID(params.packageId) || !isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid package or transaction ID" }
+  }
+
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsTx = await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId)
+  if (!ownsTx) return { success: false, error: "Forbidden" }
+
+  const pkgCheck = await verifyPackageInBrokerage(params.packageId, auth.brokerageId)
+  if (!pkgCheck.ok || pkgCheck.transactionId !== params.transactionId) {
+    return { success: false, error: "Forbidden" }
   }
 
   const supabase = await createClient()
@@ -251,6 +323,12 @@ export async function getVendorRecommendations(serviceType: string, transactionI
     return []
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return []
+
+  const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
+  if (!ownsTx) return []
+
   const supabase = await createClient()
 
   const { data: vendors } = await supabase
@@ -296,6 +374,12 @@ export async function syncListingToPlatforms(transactionId: string) {
   if (!isValidUUID(transactionId)) {
     return { success: false, error: "Invalid transaction ID" }
   }
+
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
+  if (!ownsTx) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -377,6 +461,12 @@ export async function generateListingOptimizations(transactionId: string) {
     return { success: false, error: "Invalid transaction ID" }
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
+  if (!ownsTx) return { success: false, error: "Forbidden" }
+
   const supabase = await createClient()
 
   try {
@@ -384,6 +474,7 @@ export async function generateListingOptimizations(transactionId: string) {
       .from("transactions")
       .select("*, listings(*), listing_photos(*), ai_generated_content(*)")
       .eq("id", transactionId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     if (!transaction || !transaction.listings) {
@@ -488,6 +579,12 @@ export async function getMarketingPackageStatus(transactionId: string) {
     return null
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return null
+
+  const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
+  if (!ownsTx) return null
+
   const supabase = await createClient()
 
   const { data: pkg } = await supabase
@@ -506,6 +603,12 @@ export async function getMarketingPackageServices(packageId: string) {
   if (!isValidUUID(packageId)) {
     return []
   }
+
+  const auth = await requireBrokerage()
+  if (!auth.ok) return []
+
+  const pkgCheck = await verifyPackageInBrokerage(packageId, auth.brokerageId)
+  if (!pkgCheck.ok) return []
 
   const supabase = await createClient()
 
