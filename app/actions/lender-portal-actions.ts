@@ -15,31 +15,34 @@ const LENDER_VISIBLE_MILESTONES = [
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, lenderId: string) {
+  // Auth gate — requireLenderActor verifies the session user is mapped
+  // to this lender_portal_users row. Without this, any caller could
+  // enumerate transaction detail for any lender (loan amount, buyer
+  // contact info, agent contact info, milestones, documents).
+  let actor
+  try {
+    actor = await requireLenderActor(lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
-  // Auth: lender is authorized if they are directly assigned to this transaction
-  // via lender_portal_users.transaction_id OR via transactions.lender_id
-  // lender_portal_users has no transaction_id column; authorization is checked via transactions.lender_id below
-  const isDirectlyAssigned = false
-
+  // Verify this lender is actually assigned to this transaction AND the
+  // transaction is in the actor's brokerage scope.
   const { data: txnLenderCheck } = await supabase
     .from("transactions")
-    .select("lender_id")
+    .select("lender_id, brokerage_id")
     .eq("id", transactionId)
     .maybeSingle()
 
-  const isTransactionLender = txnLenderCheck?.lender_id === lenderId
-
-  if (!isDirectlyAssigned && !isTransactionLender) {
+  if (!txnLenderCheck) throw new Error("Transaction not found")
+  if (txnLenderCheck.lender_id !== actor.lenderId) {
     throw new Error("Unauthorized: Lender not assigned to this transaction")
+  }
+  if (txnLenderCheck.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
   }
 
   // Get lender details from transaction_lenders for loan specifics
@@ -107,27 +110,39 @@ export async function uploadLenderDocument(data: {
   fileName: string
   fileUrl: string
 }) {
+  // Auth gate — closing_disclosure docs are CD-3-day-rule sensitive
+  // (wire-fraud / TRID compliance vector). Previously any caller could
+  // upload to any transaction by passing the right ids.
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, email")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
+  // Verify the lender is assigned to this transaction + brokerage scope
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("lender_id, brokerage_id")
+    .eq("id", data.transactionId)
+    .maybeSingle()
+  if (!tx) throw new Error("Transaction not found")
+  if (tx.lender_id !== actor.lenderId || tx.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: lender not assigned to this transaction")
+  }
 
   const { data: document, error } = await supabase
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       doc_type: data.documentType,
       doc_label: data.fileName,
       storage_url: data.fileUrl,
-      uploaded_by: user.id,
+      uploaded_by: actor.userId,
       status: "pending_review",
     })
     .select()
@@ -144,26 +159,30 @@ export async function issueClearToClose(data: {
   transactionId: string
   lenderId: string
 }) {
+  // CRITICAL auth gate — Clear to Close is a legally binding lending
+  // milestone that triggers closing scheduling, buyer notifications,
+  // and downstream funding workflows. Previously any caller could
+  // issue CTC on any transaction by passing the right ids.
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, email, company_name")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
 
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id")
+    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id, lender_id")
     .eq("id", data.transactionId)
     .single()
 
   if (!transaction) throw new Error("Transaction not found")
+  if (transaction.lender_id !== actor.lenderId || transaction.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: lender not assigned to this transaction")
+  }
 
   const { error: milestoneError } = await supabase
     .from("transaction_milestones")
@@ -172,11 +191,13 @@ export async function issueClearToClose(data: {
       completed_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
     .in("milestone_name", ["clear_to_close", "clear_to_close_received"])
 
   if (milestoneError) {
     await supabase.from("transaction_milestones").insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       milestone_name: "clear_to_close_received",
       milestone_type: "lender",
       status: "completed",
@@ -184,41 +205,37 @@ export async function issueClearToClose(data: {
     })
   }
 
-  // Update transaction_lenders by transaction_id (no lender_email column)
+  // Update transaction_lenders by transaction_id — scoped by brokerage
   await supabase
     .from("transaction_lenders")
     .update({ underwriting_status: "approved", clear_to_close_date: new Date().toISOString().split("T")[0] })
     .eq("transaction_id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
 
   if (transaction.buyer_contact_id) {
     await supabase.from("client_portal_messages").insert({
+      brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
       direction: "outbound",
       channel: "portal",
-      body: `Great news! ${lender.company_name || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
     })
   }
 
-  // Use emitTransactionEvent so the lifecycle_event insert AND fan-out
-  // (staff notifications + buyer/seller portal updates + sequence auto-enroll)
-  // both happen. Previously only the lifecycle row was written and the seller
-  // portal + title portal + notification engine were left out.
   try {
-    const supabaseAuth = await createClient()
-    const { data: { user } } = await supabaseAuth.auth.getUser()
     const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
     await emitTransactionEvent({
       event:        KernelEvent.MILESTONE_COMPLETED,
-      brokerageId:  transaction.brokerage_id,
+      brokerageId:  actor.brokerageId,
       entityId:     data.transactionId,
-      actorUserId:  user?.id ?? "",
+      actorUserId:  actor.userId,
       metadata: {
         milestone_name:      "clear_to_close_received",
         financing_event:     "clear_to_close",
-        issued_by_lender_id: lender.id,
+        issued_by_lender_id: actor.lenderId,
         issued_by_type:      "lender",
-        lender_company:      lender.company_name ?? null,
+        lender_company:      actor.lenderCompany ?? null,
       },
     })
   } catch (err) {

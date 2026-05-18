@@ -203,6 +203,19 @@ export async function createVendorBooking(data: {
 export async function getVendorBookingsForTransaction(transactionId: string) {
   const supabase = await createClient()
 
+  // Auth gate — was previously open, so any caller could enumerate any
+  // transaction's vendor bookings (vendor names, emails, phones, costs).
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return []
+
+  // Verify the transaction belongs to caller's brokerage
+  const { data: tx } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+  if (!tx || tx.brokerage_id !== u.brokerage_id) return []
+
   const { data: bookings, error } = await supabase
     .from("vendor_bookings")
     .select(`
@@ -210,6 +223,7 @@ export async function getVendorBookingsForTransaction(transactionId: string) {
       vendors:vendor_id(id, name, email, phone, category, rating)
     `)
     .eq("transaction_id", transactionId)
+    .eq("brokerage_id", u.brokerage_id)
     .order("scheduled_date", { ascending: false })
 
   if (error) throw error
@@ -249,7 +263,12 @@ export async function markBookingComplete(bookingId: string) {
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) throw new Error("Not authenticated")
 
+  // Scope the UPDATE by brokerage_id so caller can't complete bookings
+  // outside their tenant.
   const { data: booking, error } = await supabase
     .from("vendor_bookings")
     .update({
@@ -257,11 +276,12 @@ export async function markBookingComplete(bookingId: string) {
       completed_at: new Date().toISOString(),
     })
     .eq("id", bookingId)
+    .eq("brokerage_id", u.brokerage_id)
     .select("*, transactions:transaction_id(id)")
     .maybeSingle()
 
   if (error) throw error
-  if (!booking) throw new Error("Booking not found")
+  if (!booking) throw new Error("Booking not found in your scope")
 
   // Fan-out via the transaction kernel so the agent, buyer + seller portals
   // and any post-vendor-completion sequences fire. Previously only revalidate
@@ -313,23 +333,27 @@ export async function rateVendorBooking(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (!profile?.brokerage_id) throw new Error("Not authenticated")
 
-  // Get booking to find vendor
+  // Get booking to find vendor — scoped by caller's brokerage so an
+  // attacker can't 1-star vendors in another tenant's marketplace.
   const { data: booking } = await supabase
     .from("vendor_bookings")
     .select("vendor_id, transaction_id, brokerage_id")
     .eq("id", data.bookingId)
+    .eq("brokerage_id", profile.brokerage_id)
     .maybeSingle()
 
-  if (!booking) throw new Error("Booking not found")
+  if (!booking) throw new Error("Booking not found in your brokerage")
 
-  // Update booking with rating
+  // Update booking with rating — scoped
   const { error: updateError } = await supabase
     .from("vendor_bookings")
     .update({
       agent_rating: data.rating,
     })
     .eq("id", data.bookingId)
+    .eq("brokerage_id", profile.brokerage_id)
 
   if (updateError) throw updateError
 
@@ -585,6 +609,21 @@ export async function assignVendorToTransaction(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+
+  // Verify vendor + transaction belong to caller's brokerage before any
+  // inserts. Without this, caller could attach any vendor to any deal +
+  // trigger an auto-email to that vendor's address fan-out.
+  const [{ data: vendorRow }, { data: txRow }] = await Promise.all([
+    supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).maybeSingle(),
+    supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle(),
+  ])
+  if (!vendorRow || vendorRow.brokerage_id !== profile.brokerage_id) {
+    throw new Error("Forbidden: vendor not in your brokerage")
+  }
+  if (!txRow || txRow.brokerage_id !== profile.brokerage_id) {
+    throw new Error("Forbidden: transaction not in your brokerage")
+  }
 
   // Get agent ID from user
   const { data: agent } = await supabase
@@ -732,6 +771,20 @@ export async function createVendorBookingWithKernelEvent(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+
+  // Verify vendor + transaction belong to caller's brokerage before any
+  // inserts or vendor-email fan-out.
+  const [{ data: vendorRow }, { data: txRow }] = await Promise.all([
+    supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).maybeSingle(),
+    supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle(),
+  ])
+  if (!vendorRow || vendorRow.brokerage_id !== profile.brokerage_id) {
+    throw new Error("Forbidden: vendor not in your brokerage")
+  }
+  if (!txRow || txRow.brokerage_id !== profile.brokerage_id) {
+    throw new Error("Forbidden: transaction not in your brokerage")
+  }
 
   // Create booking
   const { data: booking, error } = await supabase
@@ -845,6 +898,18 @@ export async function createVendorBookingWithKernelEvent(data: {
 export async function getAssignedVendorsForTransaction(transactionId: string) {
   const supabase = await createClient()
 
+  // Auth gate — was previously open and leaked vendor contact info +
+  // job costs for any transaction.
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return []
+
+  const { data: tx } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+  if (!tx || tx.brokerage_id !== u.brokerage_id) return []
+
   const { data: assignments, error } = await supabase
     .from("vendor_assignments")
     .select(`
@@ -857,6 +922,7 @@ export async function getAssignedVendorsForTransaction(transactionId: string) {
       vendor_jobs!vendor_jobs_assignment_id_fkey(id, job_title, status, cost_estimate, cost_actual)
     `)
     .eq("transaction_id", transactionId)
+    .eq("brokerage_id", u.brokerage_id)
     .order("scheduled_date", { ascending: false, nullsFirst: false })
 
   if (error) throw error

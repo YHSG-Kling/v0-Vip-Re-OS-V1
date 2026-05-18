@@ -10,6 +10,7 @@ export type ServiceType = "listing_provider" | "crm_sync" | "social_media"
 interface AgentCredential {
   id: string
   agent_id: string
+  brokerage_id: string
   service_name: ServiceName
   service_type: ServiceType
   api_key?: string
@@ -213,7 +214,10 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
     errorMessage = err.message
   }
 
-  // Update verification status
+  // Update verification status — defense in depth: although credential.id
+  // came from getServiceCredential (which is session-scoped), also scope
+  // the UPDATE by brokerage_id so even an injected credential.id can't
+  // mutate another tenant's row.
   const { error } = await supabase
     .from("agent_api_credentials")
     .update({
@@ -222,6 +226,7 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
       error_message: isValid ? null : errorMessage,
     })
     .eq("id", credential.id)
+    .eq("brokerage_id", credential.brokerage_id)
 
   if (error) throw error
 

@@ -7,13 +7,24 @@ import { TITLE_VISIBLE_MILESTONES, TITLE_STATUS_OPTIONS, type TitleStatus } from
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
 export async function getTitleDashboard(titleUserId: string) {
+  // Auth gate — requireTitleActor verifies the session user is mapped to
+  // the claimed title_company_user row. Without this, any caller could
+  // enumerate any title company's full deal pipeline (purchase prices,
+  // close dates, buyer + agent contact info, earnest money status).
+  let actor
+  try {
+    actor = await requireTitleActor(titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Get title user profile
   const { data: titleUser } = await supabase
     .from("title_company_users")
     .select("id, user_id, company_name, email, phone")
-    .eq("id", titleUserId)
+    .eq("id", actor.titleUserId)
     .single()
 
   if (!titleUser) {
@@ -88,13 +99,22 @@ export async function getTitleDashboard(titleUserId: string) {
 
 // ─── GET TITLE TRANSACTION DETAIL ────────────────────────────────────────────
 export async function getTitleTransactionDetail(transactionId: string, titleUserId: string) {
+  // Auth gate — requireTitleActor verifies the session user is mapped
+  // to this title_company_user row.
+  let actor
+  try {
+    actor = await requireTitleActor(titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Verify title user
   const { data: titleUser } = await supabase
     .from("title_company_users")
     .select("id, email, company_name")
-    .eq("id", titleUserId)
+    .eq("id", actor.titleUserId)
     .single()
 
   if (!titleUser) {
@@ -192,19 +212,31 @@ export async function uploadTitleDocument(data: {
   fileName: string
   fileUrl: string
 }) {
+  // Auth gate — wire_instructions especially are CRITICAL (wire fraud
+  // vector). Previously any caller could upload a wire-instructions
+  // document to any transaction in any tenant.
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) throw new Error("Not authenticated")
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
+  // Verify this transaction is assigned to the actor's title company
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select("transaction_id, brokerage_id, transactions(brokerage_id)")
+    .eq("transaction_id", data.transactionId)
+    .eq("title_company_email", actor.email)
+    .maybeSingle()
+  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
+  const txBrokerageId = (titleEscrow.transactions as any)?.brokerage_id ?? actor.brokerageId
+  if (txBrokerageId !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
+  }
 
   // Insert document with warning metadata for wire instructions
   const metadata = data.documentType === "wire_instructions"
@@ -215,10 +247,11 @@ export async function uploadTitleDocument(data: {
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       document_type: data.documentType,
       file_name: data.fileName,
       file_url: data.fileUrl,
-      uploaded_by: user.id,
+      uploaded_by: actor.userId,
       uploaded_by_type: "title",
       metadata,
     })
@@ -403,36 +436,47 @@ export async function sendTitleMessageToAgent(data: {
   titleUserId: string
   message: string
 }) {
+  // Auth gate
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Verify title user access
+  // Verify title company is assigned to this transaction AND the
+  // transaction is in the actor's brokerage scope.
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select("transaction_id, transactions(brokerage_id, property_address, agent_id)")
+    .eq("transaction_id", data.transactionId)
+    .eq("title_company_email", actor.email)
+    .maybeSingle()
+  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
+  const tx = titleEscrow.transactions as any
+  if (!tx || tx.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
+  }
+
   const { data: titleUser } = await supabase
     .from("title_company_users")
-    .select("id, email, company_name")
-    .eq("id", data.titleUserId)
+    .select("company_name")
+    .eq("id", actor.titleUserId)
     .single()
 
-  if (!titleUser) throw new Error("Title user not found")
-
-  // Get transaction agent
-  const { data: transaction } = await supabase
-    .from("transactions")
-    .select("id, property_address, agent_id")
-    .eq("id", data.transactionId)
-    .single()
-
-  if (!transaction) throw new Error("Transaction not found")
-
-  // Insert message
   const { error } = await supabase.from("client_portal_messages").insert({
-    contact_id: transaction.agent_id,
+    brokerage_id: actor.brokerageId,
+    contact_id: tx.agent_id,
     direction: "outbound",
     channel: "portal",
-    body: `[TITLE/ESCROW] ${titleUser.company_name || "Title Company"} re: ${transaction.property_address || "Transaction"}:\n\n${data.message}`,
+    body: `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`,
     metadata: {
       type: "title_message",
-      title_user_id: data.titleUserId,
-      title_email: titleUser.email,
+      title_user_id: actor.titleUserId,
+      title_email: actor.email,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
@@ -440,7 +484,6 @@ export async function sendTitleMessageToAgent(data: {
 
   if (error) throw error
 
-  // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
