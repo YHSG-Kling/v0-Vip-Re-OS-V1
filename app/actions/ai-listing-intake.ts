@@ -75,11 +75,15 @@ interface ListingIntakeData {
 // ============================================
 // 1. AI PROPERTY DATA ENRICHMENT
 // ============================================
-export async function aiEnrichPropertyData(address: string, agentId: string) {
+export async function aiEnrichPropertyData(address: string, _agentId?: string) {
   try {
-    if (!isValidUUID(agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference. Was previously open: any
+    // caller could spoof an agentId and trigger AI calls.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const agentId = ctx.agentId ?? ctx.userId
 
     const supabase = await createClient()
 
@@ -235,43 +239,31 @@ List only the form names, one per line. If none, respond with "NONE".`,
 // 3. AI LISTING DESCRIPTION GENERATOR
 // ============================================
 export async function aiGenerateListingDescription(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   propertyData: any
   style: "luxury" | "family" | "investor" | "first_time_buyer"
   highlights?: string[]
   neighborhood?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference. Previously accepted a
+    // caller-supplied agentId and "fell back" to looking it up in the DB
+    // when the session user didn't match, which let any caller drive
+    // generation under any other agent's brokerage + brand-voice context.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId ?? ctx.userId
 
     const supabase = await createClient()
-
-    // Resolve brokerage for the agent (used for compliance/brand-voice scoping).
-    // getAgentContext() resolves the CURRENT session user, which may differ from
-    // params.agentId when a broker acts on behalf of another agent. Fall back to a
-    // direct DB lookup on the agents table so brand-voice / compliance scope is
-    // always tied to the generating agent, not the caller.
-    const agentCtx = await getAgentContext().catch(() => null)
-    let brokerageId: string | null = agentCtx?.brokerageId ?? null
-    if (!brokerageId || agentCtx?.agentId !== params.agentId) {
-      const { data: agentRow } = await supabase
-        .from("agents")
-        .select("brokerage_id")
-        .eq("id", params.agentId)
-        .maybeSingle()
-      brokerageId = agentRow?.brokerage_id ?? null
-      if (!brokerageId) {
-        return { success: false, error: "Unable to resolve agent brokerage for compliance checks" }
-      }
-    }
 
     // Get agent's brand voice
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", agentId)
       .maybeSingle()
 
     const { object: descriptions } = await generateObject({
@@ -304,21 +296,20 @@ IMPORTANT RULES:
     })
 
     // Run compliance + BrandVoice guard on MLS description (the regulated channel)
-    const guardResult = brokerageId
-      ? await guardContent({
-          content:     descriptions.mlsDescription,
-          agentId:     params.agentId,
-          brokerageId,
-          contentType: "listing_description",
-        }).catch((err) => {
-            console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
-            return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
-          })
-      : null
+    const guardResult = await guardContent({
+      content:     descriptions.mlsDescription,
+      agentId,
+      brokerageId,
+      contentType: "listing_description",
+    }).catch((err) => {
+      console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
+      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+    })
 
     // Save generated content
     await supabase.from("listing_marketing_content").insert({
-      agent_id: params.agentId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       content_type: "ai_descriptions",
       content: descriptions,
       target_audience: params.style,
@@ -328,11 +319,11 @@ IMPORTANT RULES:
     return {
       success: true,
       descriptions,
-      guardResult: guardResult ? {
-        flagged:     guardResult.flagged,
-        violations:  guardResult.violations,
-        notes:       guardResult.notes,
-      } : null,
+      guardResult: {
+        flagged:    guardResult.flagged,
+        violations: guardResult.violations,
+        notes:      guardResult.notes,
+      },
     }
   } catch (error) {
     console.error("[AI Listing Intake] Description error:", error)
@@ -344,15 +335,17 @@ IMPORTANT RULES:
 // 4. AI PRICING RECOMMENDATION
 // ============================================
 export async function aiSuggestListPrice(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   propertyData: any
   comparables?: any[]
   marketConditions?: "hot" | "balanced" | "cooling"
   motivation?: "quick_sale" | "maximize_price" | "balanced"
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const { object: pricing } = await generateObject({
@@ -404,12 +397,19 @@ Provide:
 // 5. AI COMPLIANCE CHECKER
 // ============================================
 export async function aiCheckListingCompliance(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   description: string
   photos?: string[]
   state: string
 }) {
   try {
+    // Auth gate — was previously fully open (no auth check at all).
+    // Burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const { object: compliance } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: z.object({
@@ -460,7 +460,7 @@ Be thorough - missing compliance can result in fines or license issues.`,
 // 6. DOTLOOP INTEGRATION - CREATE OR PULL LOOP
 // ============================================
 export async function createOrPullDotloop(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   listingId?: string
   propertyAddress: string
   sellerId: string
@@ -468,26 +468,32 @@ export async function createOrPullDotloop(params: {
   existingLoopId?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // CRITICAL auth gate — was previously taking caller-supplied agentId,
+    // resolving it to a brokerage, then using THAT brokerage's stored
+    // Dotloop OAuth credentials to call the Dotloop API. Any caller could
+    // create/pull loops on any other brokerage's Dotloop account.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
     const supabase = await createClient()
 
-    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-    if (!agentRow?.brokerage_id) {
-      return { success: false, error: "Agent or brokerage not found" }
+    // Verify the listing (if linking) belongs to caller's brokerage
+    if (params.listingId && isValidUUID(params.listingId)) {
+      const { data: listingRow } = await supabase
+        .from("listings").select("brokerage_id").eq("id", params.listingId).maybeSingle()
+      if (!listingRow || listingRow.brokerage_id !== brokerageId) {
+        return { success: false, error: "Forbidden: listing not in your brokerage" }
+      }
     }
+
     const serviceClient = createServiceClient()
     const { data: dotloopCred } = await serviceClient
       .from("platform_credentials")
       .select("access_token, account_id")
-      .eq("brokerage_id", agentRow.brokerage_id)
+      .eq("brokerage_id", brokerageId)
       .eq("platform", "dotloop")
       .eq("is_active", true)
       .maybeSingle()
@@ -560,9 +566,12 @@ export async function createOrPullDotloop(params: {
     const result = await response.json()
     const loopId = result.data?.loop_id
 
-    // Update listing with loop ID
+    // Update listing with loop ID — ownership verified above
     if (params.listingId) {
-      await supabase.from("listings").update({ dotloop_loop_id: loopId }).eq("id", params.listingId)
+      await supabase.from("listings")
+        .update({ dotloop_loop_id: loopId })
+        .eq("id", params.listingId)
+        .eq("brokerage_id", brokerageId)
     }
 
     return {
@@ -580,27 +589,21 @@ export async function createOrPullDotloop(params: {
 // ============================================
 // 7. AI DOCUMENT STATUS CHECKER
 // ============================================
-export async function aiCheckDocumentStatus(params: { loopId: string; agentId: string }) {
+export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: string }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Same Dotloop credential-leak fix as createOrPullDotloop — derive
+    // brokerage from session, never trust caller-supplied agentId.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
-    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
-    const supabase = await createClient()
-    const { data: agentRow2 } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-    if (!agentRow2?.brokerage_id) {
-      return { success: false, error: "Agent or brokerage not found" }
-    }
     const serviceClient2 = createServiceClient()
     const { data: dotloopCred2 } = await serviceClient2
       .from("platform_credentials")
       .select("access_token, account_id")
-      .eq("brokerage_id", agentRow2.brokerage_id)
+      .eq("brokerage_id", brokerageId)
       .eq("platform", "dotloop")
       .eq("is_active", true)
       .maybeSingle()
