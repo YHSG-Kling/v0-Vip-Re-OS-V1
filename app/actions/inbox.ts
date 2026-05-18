@@ -323,18 +323,34 @@ export async function markInboxRead(params: {
     } = await supabase.auth.getUser()
     if (!user) return { success: false, error: "Unauthorized" }
 
-    // Mark portal messages as read
+    // Resolve caller's brokerage_id — previous code authed the caller but
+    // then mutated by contact_id only, letting anyone mark another tenant's
+    // messages read.
+    const { data: callerRow } = await supabase
+      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+    // Verify the contact belongs to the caller's brokerage
+    const { data: contact } = await supabase
+      .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+    if (!contact || contact.brokerage_id !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    // Mark portal messages as read — scoped by brokerage
     await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", callerRow.brokerage_id)
       .eq("read", false)
 
-    // Mark messages table
+    // Mark messages table — scoped by brokerage
     await supabase
       .from("messages")
       .update({ status: "read" })
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", callerRow.brokerage_id)
       .eq("status", "unread")
 
     return { success: true }

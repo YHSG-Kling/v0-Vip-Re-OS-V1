@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
@@ -607,16 +609,30 @@ export async function updateCMAReport(cmaId: string, updates: Partial<any>) {
     return { success: false, error: "Invalid CMA ID" }
   }
 
-  const supabase = await createClient()
+  // Auth gate — previously open. Any caller could mutate any CMA in the
+  // database (the price-strategy / valuation report that goes to sellers).
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Strip caller-supplied tenant-control fields from the update payload
+    const safeUpdates = { ...updates }
+    delete safeUpdates.brokerage_id
+    delete safeUpdates.id
+    delete safeUpdates.agent_id
+
     const { data, error } = await supabase
       .from("cma_reports")
       .update({
-        ...updates,
+        ...safeUpdates,
         updated_at: new Date().toISOString(),
       })
       .eq("id", cmaId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
       .single()
 
@@ -638,12 +654,21 @@ export async function getCMAReports(agentId: string, filters?: { status?: string
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const supabase = await createClient()
+  // Auth gate — previously open. Any caller could read any agent's CMAs
+  // by passing the agent_id.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Always scope by caller's brokerage; agent_id narrows within it.
     let query = supabase
       .from("cma_reports")
       .select("*")
+      .eq("brokerage_id", ctx.brokerageId)
       .eq("agent_id", agentId)
       .order("created_at", { ascending: false })
 
@@ -679,13 +704,20 @@ export async function getAIPriceAdjustmentRecommendation(
     return { success: false, error: "Invalid CMA ID" }
   }
 
-  const supabase = await createClient()
+  // Auth gate — burns paid AI inference and reads sensitive CMA data.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
     const { data: cma } = await supabase
       .from("cma_reports")
       .select("*")
       .eq("id", cmaId)
+      .eq("brokerage_id", ctx.brokerageId)
       .single()
 
     if (!cma) {
