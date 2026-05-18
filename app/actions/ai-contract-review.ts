@@ -1,13 +1,28 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+
+// Every exported function in this file previously skipped the auth gate
+// and the brokerage scope check. Any signed-in caller could:
+//   - Run AI contract review against any brokerage's documents (Claude/GPT cost burn)
+//   - Read/extract contract terms from any transaction
+//   - Apply extracted terms to any transaction (mutating purchase_price,
+//     close_date, property_address, milestones) — wreaking havoc on
+//     other tenants' deals
+//   - Compare any two documents in the database
+//   - Generate AI document checklists for any transaction
+//
+// Helper resolves session brokerage; every function then verifies the
+// target transaction / document belongs to that brokerage.
 
 /**
  * AI Contract Review System
@@ -51,7 +66,7 @@ const ContractReviewSchema = z.object({
 export async function reviewContract(params: {
   documentId: string
   transactionId: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
   documentType: "purchase_agreement" | "listing_agreement" | "disclosure" | "addendum" | "amendment" | "other"
   state: string
 }) {
@@ -59,25 +74,41 @@ export async function reviewContract(params: {
     return { success: false, error: "Invalid document or transaction ID" }
   }
 
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const brokerageId = ctx.brokerageId
+  const agentId = ctx.agentId ?? ctx.userId
+
+  const supabase = createServiceClient()
 
   try {
-    // Get document content
+    // Verify the transaction belongs to caller's brokerage before any AI burn
+    const { data: txOwnership } = await supabase
+      .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+    if (!txOwnership || txOwnership.brokerage_id !== brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    // Get document content — scoped to brokerage
     const { data: document } = await supabase
       .from("transaction_documents")
       .select("*, transactions(*)")
       .eq("id", params.documentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (!document) {
       return { success: false, error: "Document not found" }
     }
 
-    // Get transaction context
+    // Get transaction context — scoped to brokerage
     const { data: transaction } = await supabase
       .from("transactions")
       .select("*, listings(*), contacts:contact_id(*)")
       .eq("id", params.transactionId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     // Get state-specific requirements
@@ -128,7 +159,8 @@ Be thorough but practical. Focus on actionable issues.`,
       .insert({
         document_id: params.documentId,
         transaction_id: params.transactionId,
-        agent_id: params.agentId,
+        brokerage_id: brokerageId,
+        agent_id: agentId,
         review_type: "ai_automated",
         overall_score: review.overallScore,
         overall_assessment: review.overallAssessment,
@@ -150,7 +182,8 @@ Be thorough but practical. Focus on actionable issues.`,
     if (criticalIssues.length > 0) {
       const tasks = criticalIssues.map(issue => ({
         transaction_id: params.transactionId,
-        agent_id: params.agentId,
+        brokerage_id: brokerageId,
+        agent_id: agentId,
         title: `CRITICAL: ${issue.category}`,
         description: `${issue.description}\n\nRecommendation: ${issue.recommendation}`,
         priority: "urgent",
@@ -166,7 +199,8 @@ Be thorough but practical. Focus on actionable issues.`,
     if (review.issues.length > 0) {
       await supabase.from("compliance_checks").insert({
         transaction_id: params.transactionId,
-        agent_id: params.agentId,
+        brokerage_id: brokerageId,
+        agent_id: agentId,
         event_type: "contract_review_issues",
         severity: criticalIssues.length > 0 ? "high" : "medium",
         details: {
@@ -199,16 +233,33 @@ Be thorough but practical. Focus on actionable issues.`,
 // Check all documents for a transaction
 export async function reviewTransactionDocuments(params: {
   transactionId: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
   state: string
 }) {
-  const supabase = await createClient()
+  if (!isValidUUID(params.transactionId)) {
+    return { success: false, error: "Invalid transaction ID" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Verify the transaction belongs to caller's brokerage
+    const { data: txOwnership } = await supabase
+      .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+    if (!txOwnership || txOwnership.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     const { data: documents } = await supabase
       .from("transaction_documents")
       .select("*")
       .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     if (!documents || documents.length === 0) {
       return { success: true, reviews: [], message: "No documents to review" }
@@ -217,10 +268,10 @@ export async function reviewTransactionDocuments(params: {
     const reviews = []
     for (const doc of documents) {
       const docType = inferDocumentType(doc.name || doc.document_type)
+      // reviewContract runs its own auth + brokerage gate — safe to call
       const result = await reviewContract({
         documentId: doc.id,
         transactionId: params.transactionId,
-        agentId: params.agentId,
         documentType: docType,
         state: params.state,
       })
@@ -252,14 +303,27 @@ export async function reviewTransactionDocuments(params: {
 export async function compareContractVersions(params: {
   documentId1: string
   documentId2: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
+  if (!isValidUUID(params.documentId1) || !isValidUUID(params.documentId2)) {
+    return { success: false, error: "Invalid document ID" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Scope both lookups by caller's brokerage so a hostile caller can't
+    // diff their own document against another tenant's contract.
     const [{ data: doc1 }, { data: doc2 }] = await Promise.all([
-      supabase.from("transaction_documents").select("*").eq("id", params.documentId1).single(),
-      supabase.from("transaction_documents").select("*").eq("id", params.documentId2).single(),
+      supabase.from("transaction_documents").select("*")
+        .eq("id", params.documentId1).eq("brokerage_id", ctx.brokerageId).single(),
+      supabase.from("transaction_documents").select("*")
+        .eq("id", params.documentId2).eq("brokerage_id", ctx.brokerageId).single(),
     ])
 
     if (!doc1 || !doc2) {
@@ -297,16 +361,33 @@ export async function generateDocumentChecklist(params: {
   transactionId: string
   transactionType: "purchase" | "sale" | "lease"
   state: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
+  if (!isValidUUID(params.transactionId)) {
+    return { success: false, error: "Invalid transaction ID" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
-    // Get existing documents
+    // Verify the transaction belongs to caller's brokerage
+    const { data: txOwnership } = await supabase
+      .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+    if (!txOwnership || txOwnership.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    // Get existing documents — scoped by brokerage
     const { data: existingDocs } = await supabase
       .from("transaction_documents")
       .select("document_type, name")
       .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     // Get state requirements
     const { data: stateReqs } = await supabase
@@ -374,6 +455,21 @@ export async function extractContractTerms(params: {
   error?: string
 }> {
   try {
+    // Auth gate — burns paid GPT-4o inference per call.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    // If transactionId is provided, verify ownership before AI burn
+    if (params.transactionId && isValidUUID(params.transactionId)) {
+      const svc = createServiceClient()
+      const { data: txOwnership } = await svc
+        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+      if (txOwnership && txOwnership.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
     const ContractTermsSchema = z.object({
       purchasePrice: z.number().nullable(),
       earnestMoneyAmount: z.number().nullable(),
@@ -405,7 +501,7 @@ ${params.contractText}`,
 // Apply extracted contract terms to the transaction and create milestone rows
 export async function applyContractExtraction(params: {
   transactionId: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
   extracted: {
     purchasePrice: number | null
     earnestMoneyAmount: number | null
@@ -418,9 +514,28 @@ export async function applyContractExtraction(params: {
     propertyAddress: string | null
   }
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  if (!isValidUUID(params.transactionId)) {
+    return { success: false, error: "Invalid transaction ID" }
+  }
+
+  // CRITICAL auth gate — was previously open. Any caller could update
+  // any transaction's purchase_price, close_date, property_address, and
+  // create milestone rows on it.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Verify the transaction belongs to caller's brokerage
+    const { data: txOwnership } = await supabase
+      .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+    if (!txOwnership || txOwnership.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Build transaction updates from non-null extracted values
     const transactionUpdates: Record<string, unknown> = {}
 
@@ -441,12 +556,14 @@ export async function applyContractExtraction(params: {
       transactionUpdates.property_address = params.extracted.propertyAddress
     }
 
-    // Update the transactions row if there is anything to update
+    // Update the transactions row if there is anything to update — scoped
+    // by brokerage as a belt-and-suspenders check
     if (Object.keys(transactionUpdates).length > 0) {
       const { error: txError } = await supabase
         .from("transactions")
         .update(transactionUpdates)
         .eq("id", params.transactionId)
+        .eq("brokerage_id", ctx.brokerageId)
 
       if (txError) {
         return { success: false, error: txError.message }
@@ -456,6 +573,7 @@ export async function applyContractExtraction(params: {
     // Upsert milestone rows for each deadline
     const milestoneEntries: Array<{
       transaction_id: string
+      brokerage_id: string
       milestone_name: string
       status: string
       due_date: string
@@ -464,6 +582,7 @@ export async function applyContractExtraction(params: {
     if (params.extracted.inspectionDeadline !== null) {
       milestoneEntries.push({
         transaction_id: params.transactionId,
+        brokerage_id: ctx.brokerageId,
         milestone_name: "inspection_deadline",
         status: "pending",
         due_date: params.extracted.inspectionDeadline,
@@ -472,6 +591,7 @@ export async function applyContractExtraction(params: {
     if (params.extracted.appraisalDeadline !== null) {
       milestoneEntries.push({
         transaction_id: params.transactionId,
+        brokerage_id: ctx.brokerageId,
         milestone_name: "appraisal_deadline",
         status: "pending",
         due_date: params.extracted.appraisalDeadline,
@@ -480,6 +600,7 @@ export async function applyContractExtraction(params: {
     if (params.extracted.financingDeadline !== null) {
       milestoneEntries.push({
         transaction_id: params.transactionId,
+        brokerage_id: ctx.brokerageId,
         milestone_name: "financing_deadline",
         status: "pending",
         due_date: params.extracted.financingDeadline,
@@ -488,6 +609,7 @@ export async function applyContractExtraction(params: {
     if (params.extracted.closingDate !== null) {
       milestoneEntries.push({
         transaction_id: params.transactionId,
+        brokerage_id: ctx.brokerageId,
         milestone_name: "closing_day",
         status: "pending",
         due_date: params.extracted.closingDate,
