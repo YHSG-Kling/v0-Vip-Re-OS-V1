@@ -75,7 +75,7 @@ interface OfferCreationParams {
 // 1. AI OFFER STRATEGY ADVISOR
 // ============================================
 export async function aiOfferStrategyAdvisor(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerId: string
   listingId: string
   listPrice: number
@@ -86,8 +86,11 @@ export async function aiOfferStrategyAdvisor(params: {
   buyerMaxBudget: number
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid AI inference. Was previously open to any
+    // caller via a spoofed agentId param.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const { object: strategy } = await generateObjectRouted({
@@ -261,15 +264,17 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
 // 4. AI BUYER LETTER GENERATOR
 // ============================================
 export async function aiGenerateBuyerLetter(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerFirstName: string
   buyerStory: string
   propertyAddress: string
   whyThisHome: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const { text: letter } = await generateText({
@@ -367,33 +372,42 @@ List only form names, one per line. If none needed, respond "NONE".`,
 // 6. CREATE DOTLOOP FOR OFFER
 // ============================================
 export async function createOfferDotloop(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerId: string
   propertyAddress: string
   transactionId?: string
   existingLoopId?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // CRITICAL auth gate — previously took caller-supplied agentId,
+    // resolved it to a brokerage_id, then pulled THAT brokerage's Dotloop
+    // OAuth credentials and made API calls under them. Any signed-in user
+    // (or unauthenticated, since there was no auth.getUser() check) could
+    // create loops on any brokerage's Dotloop account with their tokens.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
     const supabase = await createClient()
 
-    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-    if (!agentRow?.brokerage_id) {
-      return { success: false, error: "Agent or brokerage not found" }
+    // Verify the transaction (if provided) belongs to caller's brokerage
+    // before we both link it and use the brokerage's Dotloop creds.
+    if (params.transactionId && isValidUUID(params.transactionId)) {
+      const { data: tx } = await supabase
+        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+      if (!tx || tx.brokerage_id !== brokerageId) {
+        return { success: false, error: "Forbidden: transaction not in your brokerage" }
+      }
     }
+
+    // Resolve Dotloop credentials from caller's session brokerage only
     const serviceClient = createServiceClient()
     const { data: dotloopCred } = await serviceClient
       .from("platform_credentials")
       .select("access_token, account_id")
-      .eq("brokerage_id", agentRow.brokerage_id)
+      .eq("brokerage_id", brokerageId)
       .eq("platform", "dotloop")
       .eq("is_active", true)
       .maybeSingle()
@@ -407,13 +421,15 @@ export async function createOfferDotloop(params: {
     const DOTLOOP_API_KEY = dotloopCred.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
-    // If existing loop provided, link to it
+    // If existing loop provided, link to it (transaction ownership was
+    // already verified above)
     if (params.existingLoopId) {
       if (params.transactionId) {
         await supabase
           .from("transactions")
           .update({ dotloop_loop_id: params.existingLoopId })
           .eq("id", params.transactionId)
+          .eq("brokerage_id", brokerageId)
       }
 
       return {
@@ -449,9 +465,12 @@ export async function createOfferDotloop(params: {
     const result = await response.json()
     const loopId = result.data?.loop_id
 
-    // Update transaction
+    // Update transaction (ownership verified above)
     if (params.transactionId && loopId) {
-      await supabase.from("transactions").update({ dotloop_loop_id: loopId }).eq("id", params.transactionId)
+      await supabase.from("transactions")
+        .update({ dotloop_loop_id: loopId })
+        .eq("id", params.transactionId)
+        .eq("brokerage_id", brokerageId)
     }
 
     return {
