@@ -244,10 +244,17 @@ export async function getContactHistory(contactId: string) {
 export async function getCommunicationStats(params?: { agentId?: string; startDate?: string; endDate?: string }) {
   try {
     const supabase = await createClient()
-    
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    const { data: u } = await supabase
+      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+    // Always scope to caller's brokerage; agentId narrows within it.
     let query = supabase
       .from("messages")
       .select("*")
+      .eq("brokerage_id", u.brokerage_id)
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.startDate) query = query.gte("sent_at", params.startDate)
@@ -347,8 +354,17 @@ export async function publishSocialPost(params: {
   platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
   mediaUrls?: string[]
   scheduledTime?: string
-  agentId?: string
+  agentId?: string  // ignored — derived from session
 }) {
+  // Auth gate — previously open. Any caller could publish content to the
+  // brokerage's connected GHL social accounts under our credentials.
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   // Create post via GHL Social Planner
   const result = await createGHLSocialPost({
     content: params.content,
