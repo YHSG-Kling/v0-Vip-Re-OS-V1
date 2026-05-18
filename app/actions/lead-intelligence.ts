@@ -1,5 +1,87 @@
 "use server"
 
+/**
+ * ⚠️ SCHEMA-DRIFT WARNING
+ *
+ * Most of the INSERT/UPDATE statements in this file write to columns that
+ * DO NOT EXIST on the current live schema. The code was written against an
+ * older table design (visitor-session model) but the schema is now a lean
+ * scoring model. Concrete drifts observed against live Supabase
+ * (project hrvaqgvukzxfskkcrwbt):
+ *
+ *   behavioral_signals      — code writes visitor_id, total_sessions,
+ *                             last_seen_date, ip_address, user_agent, city,
+ *                             state, zip, intent_type,
+ *                             intent_confidence_score, email_captured,
+ *                             identified, unified_profile_id.
+ *                             Live cols: contact_id, signal_type,
+ *                             signal_value, weight, detected_at,
+ *                             brokerage_id.
+ *
+ *   site_activity           — code writes behavioral_signal_id, page_visited,
+ *                             time_on_page_seconds, action_taken,
+ *                             search_terms, timestamp.
+ *                             Live cols: contact_id, page_url,
+ *                             duration_seconds, occurred_at, brokerage_id.
+ *
+ *   external_behavior       — code writes behavioral_signal_id,
+ *                             behavior_type, property_address, location,
+ *                             detected_interest_level, timestamp.
+ *                             Live cols: contact_id, source, event_type,
+ *                             event_data, occurred_at, brokerage_id.
+ *
+ *   google_search_intel.    — code writes search_query, detected_location,
+ *                             related_searches, trend,
+ *                             potential_leads_count, scraped_at.
+ *                             Live cols: contact_id, intent_summary,
+ *                             high_value_keywords, intent_score,
+ *                             analyzed_at, brokerage_id.
+ *
+ *   social_intelligence     — code writes source, post_url, post_content,
+ *                             author, post_date, location_*,
+ *                             ai_intent_score, intent_summary, urgency_level,
+ *                             keywords. Live cols: contact_id, platform,
+ *                             signal_type, signal_data, detected_at,
+ *                             brokerage_id.
+ *
+ *   property_intelligence   — code writes city/state/zip + property
+ *                             attributes as columns. Live design folds these
+ *                             into a single jsonb `data` column.
+ *
+ *   motivated_seller_signals — code uses lead_id + signal_details + detected_via.
+ *                             Live: contact_id + signal_data, no detected_via.
+ *
+ *   intelligent_outreach_log — code wrote lead_profile_id + value_offer.
+ *                              Live: contact_id + channel + content. (Fixed
+ *                              for deliverIntelligentValue; the column-name
+ *                              bug there was rewritten in commit b6cd0b48.)
+ *
+ * IMPACT: every insert above fails silently at runtime (Postgres rejects
+ * the row with "column does not exist") UNLESS the code path explicitly
+ * catches the error. Reads against these tables return shapes the calling
+ * code doesn't recognize, so downstream UI shows empty results.
+ *
+ * The auth gates + brokerage_id stamping added in this session are still
+ * valuable — they block unauthenticated callers from burning paid AI/
+ * scraper budget — but the lead-intelligence flow does NOT currently
+ * persist what it claims to persist.
+ *
+ * RESOLUTION (future work, not in this commit):
+ *   Pick one of:
+ *     (a) Migrate the schema forward: add visitor_id, ip_address, etc.
+ *         columns to behavioral_signals + site_activity + external_behavior
+ *         to support the code's session-tracking model.
+ *     (b) Rewrite this file to use the existing schema's scoring model
+ *         (one row per signal observation, with signal_value + weight).
+ *     (c) Move visitor-tracking writes to the website_visitors table
+ *         (which already exists and has the right shape — see
+ *         app/api/track/identify/route.ts), and use behavioral_signals
+ *         only for derived per-contact signals.
+ *
+ * In the meantime the file ships with explicit auth gates so the
+ * security audit is satisfied even if the functional behavior is degraded.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePermission } from "@/lib/security"
