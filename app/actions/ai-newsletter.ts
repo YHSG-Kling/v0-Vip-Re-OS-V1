@@ -82,21 +82,24 @@ const NEWSLETTER_TEMPLATES: NewsletterTemplate[] = [
 // 1. AI SUBJECT LINE GENERATOR
 // ============================================
 export async function aiGenerateSubjectLines(params: {
-  agentId: string
-  brokerageId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   newsletterTopic: string
   audience?: "all" | "buyers" | "sellers" | "investors" | "lifetime_customers"
   tone?: "professional" | "friendly" | "urgent" | "curious"
   includeEmoji?: boolean
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
 
     // Kernel: Feature access check
-    const { userId: _ctxUserId } = await getAgentContext()
-    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
+    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -108,12 +111,12 @@ export async function aiGenerateSubjectLines(params: {
       supabase
         .from("brokerages")
         .select("city, state, name")
-        .eq("id", params.brokerageId)
+        .eq("id", sessionBrokerageId)
         .maybeSingle(),
       supabase
         .from("agents")
         .select("first_name, last_name, full_name")
-        .eq("user_id", params.agentId)
+        .eq("user_id", sessionUserId)
         .maybeSingle(),
     ])
 
@@ -206,8 +209,8 @@ Best practices:
 // 2. AI NEWSLETTER CONTENT WRITER
 // ============================================
 export async function aiWriteNewsletterContent(params: {
-  agentId: string
-  brokerageId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   template?: string
   /** Flat alias for template — content-studio-client passes this */
   targetAudience?: string
@@ -218,13 +221,16 @@ export async function aiWriteNewsletterContent(params: {
   customSections?: string[]
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
 
     // Kernel: Feature access check
-    const { userId: _ctxUserId } = await getAgentContext()
-    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
+    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -235,7 +241,7 @@ export async function aiWriteNewsletterContent(params: {
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", sessionAgentId ?? sessionUserId)
       .maybeSingle()
 
     const template = NEWSLETTER_TEMPLATES.find((t) => t.id === (params.template ?? "modern")) || NEWSLETTER_TEMPLATES[0]
@@ -273,8 +279,8 @@ Include clear CTAs where appropriate.`,
     const brandedSections = await Promise.all(
       content.sections.map(async (section: any) => {
         const branded = await applyBrandVoice({
-          brokerageId: params.brokerageId,
-          actorUserId: params.agentId,
+          brokerageId: sessionBrokerageId,
+          actorUserId: sessionAgentId ?? sessionUserId,
           actorRole: "agent",
           journeyType: "seller",
           persona: "seller",
@@ -288,7 +294,7 @@ Include clear CTAs where appropriate.`,
     // Run compliance check on all content
     for (const section of brandedSections) {
       const compliance = await evaluateOutbound({
-        actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId },
+        actorContext: { userId: sessionAgentId ?? sessionUserId, role: "agent", brokerageId: sessionBrokerageId },
         journeyType: "buyer",
         persona: "first_time",
         messageType: "email",
@@ -308,7 +314,7 @@ Include clear CTAs where appropriate.`,
       }
     }
 
-    await incrementFeatureUsage(params.agentId, "newsletter_engine")
+    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
 
     // Build a flat HTML string from sections for display with dangerouslySetInnerHTML
     const flatContent = brandedSections
@@ -343,14 +349,18 @@ Include clear CTAs where appropriate.`,
 // 3. AI SEND TIME OPTIMIZER
 // ============================================
 export async function aiOptimizeSendTime(params: {
-  agentId: string
+  agentId?: string // ignored — derived from session
   audienceSegment: string
   historicalData?: any[]
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
 
     const supabase = await createClient()
 
@@ -358,7 +368,7 @@ export async function aiOptimizeSendTime(params: {
     const { data: emailStats } = await supabase
       .from("newsletter_scheduled_sends")
       .select("sent_at, open_rate, click_rate")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", sessionAgentId ?? sessionUserId)
       .order("sent_at", { ascending: false })
       .limit(50)
 
@@ -403,22 +413,41 @@ Recommend optimal send time with reasoning.`,
 // 4. AI PERSONALIZATION ENGINE
 // ============================================
 export async function aiPersonalizeNewsletter(params: {
-  agentId: string
+  agentId?: string // ignored — derived from session
   newsletterId: string
   contactId: string
 }) {
   try {
-    if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
+
+    if (!isValidUUID(params.contactId)) {
       return { success: false, error: "Invalid IDs" }
     }
 
     const supabase = await createClient()
+
+    // Verify newsletter belongs to session brokerage
+    const { data: ownershipRow } = await supabase
+      .from("newsletter_campaigns")
+      .select("brokerage_id")
+      .eq("id", params.newsletterId)
+      .maybeSingle()
+    if (!ownershipRow || ownershipRow.brokerage_id !== sessionBrokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // Get contact data
     const { data: contact } = await supabase
       .from("contacts")
       .select("*, interactions(*), saved_searches(*)")
       .eq("id", params.contactId)
+      .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
     // Get newsletter content
@@ -426,6 +455,7 @@ export async function aiPersonalizeNewsletter(params: {
       .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
+      .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
     if (!contact || !newsletter) {
@@ -468,8 +498,8 @@ Create personalized elements that will resonate with this specific contact.`,
 // 5. CREATE NEWSLETTER CAMPAIGN
 // ============================================
 export async function createNewsletterCampaign(params: {
-  agentId: string
-  brokerageId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   title: string
   subjectLine: string
   preheaderText: string
@@ -479,13 +509,16 @@ export async function createNewsletterCampaign(params: {
   scheduledAt?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
 
     // Kernel: Feature access check
-    const { userId: _ctxUserId } = await getAgentContext()
-    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
+    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -493,12 +526,12 @@ export async function createNewsletterCampaign(params: {
     const supabase = await createClient()
 
     // STEP 1: Resolve agents.id from users.id (required for agent_id FK)
-    let agentsTableId: string | null = null
-    if (params.agentId) {
+    let agentsTableId: string | null = sessionAgentId
+    if (!agentsTableId) {
       const { data: agentRow } = await supabase
         .from("agents")
         .select("id")
-        .eq("user_id", params.agentId)
+        .eq("user_id", sessionUserId)
         .maybeSingle()
       agentsTableId = agentRow?.id ?? null
     }
@@ -515,9 +548,9 @@ export async function createNewsletterCampaign(params: {
         audience_segment: params.audienceSegment,
         status: params.scheduledAt ? "scheduled" : "draft",
         send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
-        brokerage_id: params.brokerageId ?? null, // ADD THIS
+        brokerage_id: sessionBrokerageId, // session-derived
         agent_id: agentsTableId, // agents.id NOT users.id
-        created_by: (await supabase.auth.getUser()).data.user?.id ?? null, // users.id
+        created_by: sessionUserId, // users.id
       })
       .select()
       .maybeSingle()
@@ -536,13 +569,13 @@ export async function createNewsletterCampaign(params: {
     if (params.scheduledAt && newsletter) {
       processKernelEvent({
         event: KernelEvent.NEWSLETTER_SCHEDULED,
-        brokerageId: params.brokerageId,
+        brokerageId: sessionBrokerageId,
         entityType: "newsletter_campaign",
         entityId: newsletter.id,
       }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
     }
 
-    await incrementFeatureUsage(params.agentId, "newsletter_engine")
+    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/marketing/studio")
@@ -561,26 +594,44 @@ export async function createNewsletterCampaign(params: {
 // ============================================
 // 6. SEND NEWSLETTER
 // ============================================
-export async function sendNewsletter(params: { newsletterId: string; agentId: string; brokerageId: string }) {
+export async function sendNewsletter(params: { newsletterId: string; agentId?: string /* ignored — derived from session */; brokerageId?: string /* ignored — derived from session */ }) {
   try {
-    if (!isValidUUID(params.newsletterId) || !isValidUUID(params.agentId)) {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
+
+    if (!isValidUUID(params.newsletterId)) {
       return { success: false, error: "Invalid IDs" }
     }
 
     // Kernel: Feature access check
-    const { userId: _ctxUserId } = await getAgentContext()
-    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
+    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
 
     const supabase = await createClient()
 
+    // Verify newsletter belongs to session brokerage before mutating
+    const { data: ownershipRow } = await supabase
+      .from("newsletter_campaigns")
+      .select("brokerage_id")
+      .eq("id", params.newsletterId)
+      .maybeSingle()
+    if (!ownershipRow || ownershipRow.brokerage_id !== sessionBrokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Get newsletter and subscribers
     const { data: newsletter } = await supabase
       .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
+      .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
     if (!newsletter) {
@@ -591,7 +642,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
     const compliance = await checkBrandCompliance({
       contentType: "newsletter",
       contentId: params.newsletterId,
-      brokerageId: params.brokerageId,
+      brokerageId: sessionBrokerageId,
     })
     if (!compliance.passed) {
       return { success: false, error: `Brand compliance failed: ${compliance.violations?.join(", ")}` }
@@ -600,7 +651,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
     const { data: subscribers } = await supabase
       .from("newsletter_subscribers")
       .select("*, contact:contacts(*)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", sessionAgentId ?? sessionUserId)
       .eq("segment", newsletter.audience_segment)
       .eq("subscribed", true)
 
@@ -613,7 +664,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .from("newsletter_scheduled_sends")
       .insert({
         newsletter_id: params.newsletterId,
-        agent_id: params.agentId,
+        agent_id: sessionAgentId ?? sessionUserId,
         sent_at: new Date().toISOString(),
         recipient_count: subscribers.length,
         status: "sending",
@@ -626,7 +677,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       const contactEmail: string | null = subscriber.contact?.email ?? null
       if (!contactEmail) continue
       await supabase.from("email_queue").insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: sessionBrokerageId,
         to_email:     contactEmail,
         to_name:      subscriber.contact
           ? `${subscriber.contact.first_name ?? ""} ${subscriber.contact.last_name ?? ""}`.trim() || null
@@ -644,11 +695,12 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .from("newsletter_campaigns")
       .update({ status: "sent", sent_at: new Date().toISOString() })
       .eq("id", params.newsletterId)
+      .eq("brokerage_id", sessionBrokerageId)
 
     // Kernel: Fire NEWSLETTER_SENT event
     processKernelEvent({
       event: KernelEvent.NEWSLETTER_SENT,
-      brokerageId: params.brokerageId,
+      brokerageId: sessionBrokerageId,
       entityType: "newsletter_campaign",
       entityId: params.newsletterId,
     }).catch((err) => console.error("[Kernel] NEWSLETTER_SENT error:", err))
@@ -670,13 +722,31 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
 // ============================================
 // 7. GET NEWSLETTER ANALYTICS
 // ============================================
-export async function getNewsletterAnalytics(params: { newsletterId: string; agentId: string }) {
+export async function getNewsletterAnalytics(params: { newsletterId: string; agentId?: string /* ignored — derived from session */; brokerageId?: string /* ignored — derived from session */ }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
+
     if (!isValidUUID(params.newsletterId)) {
       return { success: false, error: "Invalid newsletter ID" }
     }
 
     const supabase = await createClient()
+
+    // Verify newsletter belongs to session brokerage before reading analytics
+    const { data: ownershipRow } = await supabase
+      .from("newsletter_campaigns")
+      .select("brokerage_id")
+      .eq("id", params.newsletterId)
+      .maybeSingle()
+    if (!ownershipRow || ownershipRow.brokerage_id !== sessionBrokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     const { data: send } = await supabase
       .from("newsletter_scheduled_sends")
@@ -713,19 +783,39 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
 // ============================================
 // 8. AI PERFORMANCE ANALYZER
 // ============================================
-export async function aiAnalyzeNewsletterPerformance(params: { agentId: string; newsletterId?: string }) {
+export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string /* ignored — derived from session */; brokerageId?: string /* ignored — derived from session */; newsletterId?: string }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
 
     const supabase = await createClient()
+
+    // If a specific newsletterId is provided, verify ownership before analyzing
+    if (params.newsletterId) {
+      if (!isValidUUID(params.newsletterId)) {
+        return { success: false, error: "Invalid newsletter ID" }
+      }
+      const { data: ownershipRow } = await supabase
+        .from("newsletter_campaigns")
+        .select("brokerage_id")
+        .eq("id", params.newsletterId)
+        .maybeSingle()
+      if (!ownershipRow || ownershipRow.brokerage_id !== sessionBrokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
 
     // Get historical performance
     const { data: sends } = await supabase
       .from("newsletter_scheduled_sends")
-      .select("*, newsletter:newsletter_campaigns(*)")
-      .eq("agent_id", params.agentId)
+      .select("*, newsletter:newsletter_campaigns!inner(*)")
+      .eq("agent_id", sessionAgentId ?? sessionUserId)
+      .eq("newsletter.brokerage_id", sessionBrokerageId)
       .order("sent_at", { ascending: false })
       .limit(20)
 
@@ -777,16 +867,26 @@ Provide:
 export async function manageSubscribers(params: {
   action: "add" | "remove" | "unsubscribe"
   email: string
-  agentId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   source?: string
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
+
     const supabase = await createClient()
 
     if (params.action === "add") {
       const { data, error } = await supabase.from("newsletter_subscribers").insert({
         email: params.email,
-        agent_id: params.agentId,
+        agent_id: sessionAgentId ?? sessionUserId,
+        brokerage_id: sessionBrokerageId,
         subscribed_at: new Date().toISOString(),
         source: params.source || "manual",
         status: "active",
@@ -803,7 +903,8 @@ export async function manageSubscribers(params: {
         .from("newsletter_subscribers")
         .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
         .eq("email", params.email)
-        .eq("agent_id", params.agentId)
+        .eq("agent_id", sessionAgentId ?? sessionUserId)
+        .eq("brokerage_id", sessionBrokerageId)
 
       if (error) throw error
       revalidatePath("/content-studio")
@@ -817,14 +918,20 @@ export async function manageSubscribers(params: {
   }
 }
 
-export async function getNewsletters(agentId: string) {
+export async function getNewsletters(_agentId?: string /* ignored — derived from session */) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("newsletter_campaigns")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("brokerage_id", sessionBrokerageId)
       .order("created_at", { ascending: false })
 
     if (error) throw error
@@ -943,19 +1050,39 @@ export async function queueNewsletterForContact(params: {
 export async function manageSubscriberBatch(params: {
   action: "add" | "remove" | "update_segment"
   contactIds: string[]
-  agentId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   segment?: string
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+    const sessionUserId = ctx.userId
+    const sessionAgentId = ctx.agentId
+
     const supabase = await createClient()
     let affected = 0
 
     for (const contactId of params.contactIds) {
       if (!isValidUUID(contactId)) continue
 
+      // Verify the contact belongs to the session brokerage before mutating subscription
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (!contactRow || contactRow.brokerage_id !== sessionBrokerageId) {
+        continue
+      }
+
       if (params.action === "add") {
         await supabase.from("newsletter_subscribers").upsert({
-          agent_id: params.agentId,
+          agent_id: sessionAgentId ?? sessionUserId,
+          brokerage_id: sessionBrokerageId,
           contact_id: contactId,
           segment: params.segment || "all",
           subscribed: true,
@@ -967,14 +1094,16 @@ export async function manageSubscriberBatch(params: {
           .from("newsletter_subscribers")
           .update({ subscribed: false, unsubscribed_at: new Date().toISOString() })
           .eq("contact_id", contactId)
-          .eq("agent_id", params.agentId)
+          .eq("agent_id", sessionAgentId ?? sessionUserId)
+          .eq("brokerage_id", sessionBrokerageId)
         affected++
       } else if (params.action === "update_segment" && params.segment) {
         await supabase
           .from("newsletter_subscribers")
           .update({ segment: params.segment })
           .eq("contact_id", contactId)
-          .eq("agent_id", params.agentId)
+          .eq("agent_id", sessionAgentId ?? sessionUserId)
+          .eq("brokerage_id", sessionBrokerageId)
         affected++
       }
     }
