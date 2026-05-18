@@ -5,15 +5,53 @@ import { createClient }              from "@/lib/supabase/server"
 import { calculateFatigue }          from "@/lib/fatigue/fatigue-calculator"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
+// Every read in this file used to be unauthenticated and accepted
+// caller-supplied contactId / brokerageId. Any signed-in user could read
+// any brokerage's buyer fatigue scores and active alerts simply by
+// passing the brokerage's UUID. Now: session is required and brokerage
+// is resolved from the session.
+
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+async function verifyContactAccess(contactId: string, brokerageId: string): Promise<boolean> {
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  return !!contact && contact.brokerage_id === brokerageId
+}
+
 // ─── GET FATIGUE SCORE FOR ONE BUYER ─────────────────────────────────────────
 
 export async function getBuyerFatigueScore(contactId: string) {
-  const supabase = createServiceClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
+    return { success: false as const, error: "Forbidden" }
+  }
 
+  const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("buyer_fatigue_scores")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
 
   if (error) return { success: false as const, error: error.message }
@@ -23,12 +61,18 @@ export async function getBuyerFatigueScore(contactId: string) {
 // ─── GET ACTIVE FATIGUE ALERTS FOR ONE BUYER ─────────────────────────────────
 
 export async function getBuyerFatigueAlerts(contactId: string) {
-  const supabase = createServiceClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
+    return { success: false as const, error: "Forbidden" }
+  }
 
+  const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("fatigue_alerts")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", auth.brokerageId)
     .eq("dismissed", false)
     .order("created_at", { ascending: false })
 
@@ -39,19 +83,29 @@ export async function getBuyerFatigueAlerts(contactId: string) {
 // ─── DISMISS ALERT ────────────────────────────────────────────────────────────
 
 export async function dismissFatigueAlert(alertId: string) {
-  const serverClient = await createClient()
-  const { data: { user } } = await serverClient.auth.getUser()
-  if (!user) return { success: false as const, error: "Unauthorized" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
 
   const supabase = createServiceClient()
+
+  // Verify the alert belongs to caller's brokerage before mutating
+  const { data: alert } = await supabase
+    .from("fatigue_alerts")
+    .select("brokerage_id")
+    .eq("id", alertId)
+    .maybeSingle()
+  if (!alert) return { success: false as const, error: "Alert not found" }
+  if (alert.brokerage_id !== auth.brokerageId) return { success: false as const, error: "Forbidden" }
+
   const { error } = await supabase
     .from("fatigue_alerts")
     .update({
       dismissed:    true,
       dismissed_at: new Date().toISOString(),
-      dismissed_by: user.id,
+      dismissed_by: auth.userId,
     })
     .eq("id", alertId)
+    .eq("brokerage_id", auth.brokerageId)
 
   if (error) return { success: false as const, error: error.message }
   return { success: true as const }
@@ -61,14 +115,16 @@ export async function dismissFatigueAlert(alertId: string) {
 
 export async function triggerFatigueCalculation(
   contactId:   string,
-  brokerageId: string,
+  _brokerageId?: string,  // ignored — derived from session
 ) {
-  const serverClient = await createClient()
-  const { data: { user } } = await serverClient.auth.getUser()
-  if (!user) return { success: false as const, error: "Unauthorized" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
+    return { success: false as const, error: "Forbidden" }
+  }
 
   try {
-    const result = await calculateFatigue(contactId, brokerageId)
+    const result = await calculateFatigue(contactId, auth.brokerageId)
     return { success: true as const, data: result }
   } catch (err: any) {
     return { success: false as const, error: err.message }
@@ -79,8 +135,15 @@ export async function triggerFatigueCalculation(
 
 export async function getReinvigorationSuggestions(
   contactId:   string,
-  brokerageId: string,
+  _brokerageId?: string,  // ignored — derived from session
 ) {
+  // Burns paid AI inference — auth required
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
+    return { success: false as const, error: "Forbidden" }
+  }
+
   const supabase = createServiceClient()
 
   const [contactRes, scoreRes] = await Promise.all([
@@ -88,11 +151,13 @@ export async function getReinvigorationSuggestions(
       .from("contacts")
       .select("first_name, last_name, contact_persona, buyer_stage, timeline")
       .eq("id", contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .single(),
     supabase
       .from("buyer_fatigue_scores")
       .select("fatigue_score, risk_level, total_showings, total_tour_days, days_searching, offers_rejected, engagement_trend")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .maybeSingle(),
   ])
 
@@ -146,13 +211,16 @@ export async function getReinvigorationSuggestions(
 
 // ─── GET HIGH FATIGUE BUYERS (watch / warning / critical) ─────────────────────
 
-export async function getHighFatigueBuyers(brokerageId: string) {
+export async function getHighFatigueBuyers(_brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+
   const supabase = createServiceClient()
 
   const { data: scores, error } = await supabase
     .from("buyer_fatigue_scores")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .in("risk_level", ["moderate", "high", "critical"])
     .order("fatigue_score", { ascending: false })
 
@@ -165,6 +233,7 @@ export async function getHighFatigueBuyers(brokerageId: string) {
     .from("contacts")
     .select("id, first_name, last_name, agent_id, buyer_stage, deleted_at")
     .in("id", contactIds)
+    .eq("brokerage_id", auth.brokerageId)
     .is("deleted_at", null)
 
   const contactMap = new Map((contacts || []).map(c => [c.id, c]))
@@ -178,13 +247,16 @@ export async function getHighFatigueBuyers(brokerageId: string) {
 
 // ─── GET ACTIVE BROKERAGE-WIDE FATIGUE ALERTS ─────────────────────────────────
 
-export async function getBrokerageFatigueAlerts(brokerageId: string) {
+export async function getBrokerageFatigueAlerts(_brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
     .from("fatigue_alerts")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .eq("dismissed", false)
     .order("created_at", { ascending: false })
     .limit(50)
@@ -195,19 +267,20 @@ export async function getBrokerageFatigueAlerts(brokerageId: string) {
 
 // ─── BROKERAGE FATIGUE DASHBOARD DATA ────────────────────────────────────────
 
-export async function getBrokerageFatigueData(brokerageId: string) {
+export async function getBrokerageFatigueData(_brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+
   const supabase = createServiceClient()
 
-  // Query fatigue scores first
   const { data: scores, error } = await supabase
     .from("buyer_fatigue_scores")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("fatigue_score", { ascending: false })
 
   if (error) return { success: false as const, error: error.message }
-  
-  // Fetch contacts separately to avoid relationship ambiguity
+
   const contactIds = (scores || []).map(s => s.contact_id).filter(Boolean)
   if (contactIds.length === 0) return { success: true as const, data: [] }
 
@@ -215,6 +288,7 @@ export async function getBrokerageFatigueData(brokerageId: string) {
     .from("contacts")
     .select("id, first_name, last_name, agent_id, buyer_stage, deleted_at")
     .in("id", contactIds)
+    .eq("brokerage_id", auth.brokerageId)
     .is("deleted_at", null)
 
   // Fetch agent users for each contact
@@ -233,7 +307,6 @@ export async function getBrokerageFatigueData(brokerageId: string) {
     users: agentMap.get(c.agent_id) || null,
   }]))
 
-  // Merge contacts into scores
   const enrichedData = (scores || [])
     .filter(s => contactMap.has(s.contact_id))
     .map(s => ({

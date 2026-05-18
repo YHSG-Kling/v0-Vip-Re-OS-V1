@@ -14,7 +14,35 @@ import {
 } from '@/lib/buyer-search'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
+import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+
+// Search actions burn paid AI inference + read contact context. Was
+// unauthenticated previously — any caller could probe contacts by UUID.
+async function requireContactAccess(contactId: string): Promise<
+  | { ok: true; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  if (!isValidUUID(contactId)) return { ok: false, error: 'Invalid contact ID' }
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { ok: false, error: 'Unauthorized' }
+  const { data: callerRow } = await authClient
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { ok: false, error: 'Unauthorized' }
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from('contacts')
+    .select('brokerage_id')
+    .eq('id', contactId)
+    .maybeSingle()
+  if (!contact) return { ok: false, error: 'Contact not found' }
+  if (contact.brokerage_id !== callerRow.brokerage_id) return { ok: false, error: 'Forbidden' }
+  return { ok: true, brokerageId: callerRow.brokerage_id }
+}
 
 /**
  * Main buyer-facing search: Natural language → Smart matches
@@ -32,6 +60,8 @@ export async function searchPropertiesWithNaturalLanguage(params: {
     includeDebugInfo?: boolean
   }
 }) {
+  const gate = await requireContactAccess(params.contactId)
+  if (!gate.ok) return { success: false, error: gate.error }
   return searchPropertiesCore(params)
 }
 
@@ -40,6 +70,8 @@ export async function explainPropertyMatchForBuyer(params: {
   listingId: string
   context?: string
 }) {
+  const gate = await requireContactAccess(params.contactId)
+  if (!gate.ok) return { success: false, error: gate.error }
   return explainPropertyMatchCore(params)
 }
 
@@ -48,7 +80,8 @@ export async function previewSearchIntent(params: {
   naturalLanguageQuery: string
 }) {
   const { contactId, naturalLanguageQuery } = params
-  if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
+  const gate = await requireContactAccess(contactId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
   try {
     const supabase = createServiceClient()

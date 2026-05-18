@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
@@ -31,7 +32,29 @@ export async function getBuyerPortalMatches(contactId: string, limit = 12): Prom
   matches: BuyerPortalMatch[]
   error?: string
 }> {
+  // Auth gate — was previously unauthenticated, leaking any buyer's saved
+  // match list to anyone who could enumerate contact UUIDs.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, matches: [], error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, matches: [], error: "Unauthorized" }
+
   const supabase = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact || contact.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, matches: [], error: "Forbidden" }
+  }
 
   const { data: matchRows, error } = await supabase
     .from("property_matches")
