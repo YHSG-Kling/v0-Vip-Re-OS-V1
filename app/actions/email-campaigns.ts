@@ -31,6 +31,26 @@ import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { generateEmail } from "@/app/actions/ai-content-generation"
 
+// Previously most actions in this file trusted caller-supplied
+// brokerageId / createdBy / actorUserId / agentId. canAccessFeature
+// is a feature-gate check, not an identity check — it accepts whatever
+// user_id you pass it. The fix: always resolve identity from the session.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 export interface CreateEmailCampaignParams {
@@ -65,11 +85,10 @@ export interface AiComposeEmailParams {
 
 export async function createEmailCampaign(params: CreateEmailCampaignParams) {
   try {
-    if (!isValidUUID(params.brokerageId)) {
-      return { success: false, error: "Invalid brokerage ID" }
-    }
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    const access = await canAccessFeature(params.createdBy, "email_campaigns")
+    const access = await canAccessFeature(auth.userId, "email_campaigns")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
@@ -79,14 +98,14 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
     const { data: campaign, error } = await supabase
       .from("email_campaigns")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: auth.brokerageId,  // from session, not params
         agent_id: params.agentId ?? null,
         campaign_name: params.campaignName,
         subject_line: params.subjectLine,
         content: params.content ?? "",
         status: "draft",
         approval_status: "pending",
-        created_by: params.createdBy,
+        created_by: auth.userId,  // from session
         send_date: params.sendDate ?? null,
         brand_compliance_passed: false,
       })
@@ -95,11 +114,11 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
 
     if (error || !campaign) throw error ?? new Error("Failed to create campaign")
 
-    await incrementFeatureUsage(params.createdBy, "email_campaigns").catch(() => {})
+    await incrementFeatureUsage(auth.userId, "email_campaigns").catch(() => {})
 
     await processKernelEvent({
       event: KernelEvent.EMAIL_CAMPAIGN_CREATED,
-      brokerageId: params.brokerageId,
+      brokerageId: auth.brokerageId,
       entityType: "newsletter_campaign",
       entityId: campaign.id,
     }).catch((err) => {
@@ -116,18 +135,17 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
 
 // ─── LIST ─────────────────────────────────────────────────────────────────────
 
-export async function getEmailCampaigns(brokerageId: string, agentId?: string) {
+export async function getEmailCampaigns(_brokerageId?: string, agentId?: string) {
   try {
-    if (!isValidUUID(brokerageId)) {
-      return { success: false, error: "Invalid brokerage ID" }
-    }
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const supabase = await createClient()
 
     let query = supabase
       .from("email_campaigns")
       .select("*")
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
 
     if (agentId) {
@@ -152,12 +170,16 @@ export async function getEmailCampaign(campaignId: string) {
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("email_campaigns")
       .select("*")
       .eq("id", campaignId)
+      .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
 
     if (error) throw error
@@ -173,13 +195,16 @@ export async function getEmailCampaign(campaignId: string) {
 
 export async function updateEmailCampaign(
   campaignId: string,
-  actorUserId: string,
+  _actorUserId: string,  // ignored — derived from session
   updates: UpdateEmailCampaignParams
 ) {
   try {
     if (!isValidUUID(campaignId)) {
       return { success: false, error: "Invalid campaign ID" }
     }
+
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const supabase = await createClient()
 
@@ -190,6 +215,9 @@ export async function updateEmailCampaign(
       .maybeSingle()
 
     if (!existing) return { success: false, error: "Campaign not found" }
+    if (existing.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
     if (existing.status === "sent") {
       return { success: false, error: "Cannot update a sent campaign" }
     }
@@ -206,6 +234,7 @@ export async function updateEmailCampaign(
       .from("email_campaigns")
       .update(payload)
       .eq("id", campaignId)
+      .eq("brokerage_id", auth.brokerageId)
       .select()
       .maybeSingle()
 
@@ -227,15 +256,21 @@ export async function deleteEmailCampaign(campaignId: string) {
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const supabase = await createClient()
 
     const { data: existing } = await supabase
       .from("email_campaigns")
-      .select("status")
+      .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
     if (!existing) return { success: false, error: "Campaign not found" }
+    if (existing.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
     if (existing.status === "sent") {
       return { success: false, error: "Cannot delete a sent campaign" }
     }
@@ -244,6 +279,7 @@ export async function deleteEmailCampaign(campaignId: string) {
       .from("email_campaigns")
       .delete()
       .eq("id", campaignId)
+      .eq("brokerage_id", auth.brokerageId)
 
     if (error) throw error
 
@@ -259,14 +295,13 @@ export async function deleteEmailCampaign(campaignId: string) {
 
 export async function aiComposeEmail(params: AiComposeEmailParams) {
   try {
-    if (!isValidUUID(params.brokerageId)) {
-      return { success: false, error: "Invalid brokerage ID" }
-    }
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    // Apply brand voice
+    // Apply brand voice — uses session brokerage, not params
     const brandVoice = await applyBrandVoice({
-      brokerageId: params.brokerageId,
-      actorUserId: params.agentId,
+      brokerageId: auth.brokerageId,
+      actorUserId: auth.userId,
       actorRole: "agent",
       journeyType: "seller",
       persona: "seller",
@@ -294,7 +329,7 @@ Return ONLY valid JSON with NO markdown:
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
-      brokerageId: params.brokerageId,
+      brokerageId: auth.brokerageId,
     })
 
     const cleaned = text.replace(/```json\n?|\n?```/g, "").trim()
@@ -313,16 +348,22 @@ Return ONLY valid JSON with NO markdown:
 
 // ─── SEND ─────────────────────────────────────────────────────────────────────
 
-export async function sendEmailCampaign(campaignId: string, actorUserId: string, brokerageId: string) {
+export async function sendEmailCampaign(campaignId: string, _actorUserId?: string, _brokerageId?: string) {
   try {
-    if (!isValidUUID(campaignId) || !isValidUUID(brokerageId)) {
-      return { success: false, error: "Invalid IDs" }
+    if (!isValidUUID(campaignId)) {
+      return { success: false, error: "Invalid campaign ID" }
     }
 
-    const access = await canAccessFeature(actorUserId, "email_campaigns")
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
+    const access = await canAccessFeature(auth.userId, "email_campaigns")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
+
+    const actorUserId = auth.userId
+    const brokerageId = auth.brokerageId
 
     const supabase = await createClient()
 
@@ -333,6 +374,9 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
       .maybeSingle()
 
     if (!campaign) return { success: false, error: "Campaign not found" }
+    if (campaign.brokerage_id !== brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
     if (campaign.status === "sent" || campaign.status === "sending") {
       return { success: false, error: "Campaign already sent or currently sending" }
     }
@@ -386,6 +430,7 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
       .from("email_campaigns")
       .update({ status: "sending" })
       .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
 
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     let sent = 0
@@ -432,6 +477,7 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
         delivered_count: sent,
       })
       .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
 
     await processKernelEvent({
       event: KernelEvent.EMAIL_CAMPAIGN_SENT,
@@ -454,23 +500,32 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
 
 export async function scheduleEmailCampaign(
   campaignId: string,
-  actorUserId: string,
-  scheduledDate: string
+  _actorUserId?: string,  // ignored — derived from session
+  scheduledDate?: string
 ) {
   try {
     if (!isValidUUID(campaignId)) {
       return { success: false, error: "Invalid campaign ID" }
     }
+    if (!scheduledDate) {
+      return { success: false, error: "scheduledDate is required" }
+    }
+
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const supabase = await createClient()
 
     const { data: existing } = await supabase
       .from("email_campaigns")
-      .select("status, content, subject_line")
+      .select("status, content, subject_line, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
     if (!existing) return { success: false, error: "Campaign not found" }
+    if (existing.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
     if (existing.status === "sent") return { success: false, error: "Cannot schedule a sent campaign" }
     if (!existing.content) return { success: false, error: "Add content before scheduling" }
     if (!existing.subject_line) return { success: false, error: "Add a subject line before scheduling" }
@@ -482,6 +537,7 @@ export async function scheduleEmailCampaign(
         send_date: scheduledDate,
       })
       .eq("id", campaignId)
+      .eq("brokerage_id", auth.brokerageId)
       .select()
       .maybeSingle()
 
@@ -497,11 +553,10 @@ export async function scheduleEmailCampaign(
 
 // ─── STATS ────────────────────────────────────────────────────────────────────
 
-export async function getEmailCampaignStats(brokerageId: string) {
+export async function getEmailCampaignStats(_brokerageId?: string) {
   try {
-    if (!isValidUUID(brokerageId)) {
-      return { success: false, error: "Invalid brokerage ID" }
-    }
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const supabase = await createClient()
 
@@ -509,11 +564,11 @@ export async function getEmailCampaignStats(brokerageId: string) {
       supabase
         .from("email_campaigns")
         .select("id, status, open_rate, click_rate")
-        .eq("brokerage_id", brokerageId),
+        .eq("brokerage_id", auth.brokerageId),
       supabase
         .from("newsletter_subscribers")
         .select("id", { count: "exact", head: true })
-        .eq("brokerage_id", brokerageId)
+        .eq("brokerage_id", auth.brokerageId)
         .eq("status", "active"),
     ])
 
