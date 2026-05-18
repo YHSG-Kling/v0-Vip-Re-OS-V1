@@ -23,13 +23,16 @@ import { validateReadiness } from './core/validate-readiness'
 import { dispatchCommand } from './core/dispatch-command'
 import { generateResponse } from './core/generate-response'
 import { emitAuditEvent } from './core/emit-audit-event'
-import { isValidUUID } from '@/lib/validations'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 export interface VoiceCommandRequest {
   voice_input: string
-  user_id: string
-  user_role: 'agent' | 'team_lead' | 'admin' | 'broker' | 'tc' | 'compliance_officer' | 'vendor'
-  brokerage_id: string
+  /** ignored — derived from session */
+  user_id?: string
+  /** ignored — derived from session via users.user_type */
+  user_role?: 'agent' | 'team_lead' | 'admin' | 'broker' | 'tc' | 'compliance_officer' | 'vendor'
+  /** ignored — derived from session */
+  brokerage_id?: string
   context?: {
     current_listing_id?: string
     current_buyer_id?: string
@@ -62,7 +65,7 @@ export interface VoiceCommandResponse {
 export async function handleVoiceCommand(
   request: VoiceCommandRequest
 ): Promise<VoiceCommandResponse> {
-  const { voice_input, user_id, user_role, brokerage_id, context } = request
+  const { voice_input, context } = request
 
   // Validate inputs
   if (!voice_input || voice_input.trim().length === 0) {
@@ -74,17 +77,25 @@ export async function handleVoiceCommand(
     }
   }
 
-  if (!isValidUUID(user_id) || !isValidUUID(brokerage_id)) {
+  // SECURITY: never trust caller-supplied user_id / brokerage_id / user_role.
+  // Resolve from the authenticated session.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
     return {
       success: false,
       spoken_response: 'I had trouble identifying your account. Please try again.',
-      text_response: 'Invalid user or brokerage ID',
-      error: 'Invalid IDs'
+      text_response: 'Unauthorized',
+      error: 'Unauthorized'
     }
   }
 
+  const user_id = ctx.userId
+  const brokerage_id = ctx.brokerageId
+  // Resolve role from session via users.user_type (never trust caller-supplied role)
+  const user_role = ctx.userType as NonNullable<VoiceCommandRequest['user_role']>
+
   // Disallow buyer/seller roles
-  if (['buyer', 'seller', 'anonymous'].includes(user_role)) {
+  if (['buyer', 'seller', 'anonymous'].includes(user_role as string)) {
     return {
       success: false,
       spoken_response: 'Voice assistant is available for brokerage staff only.',

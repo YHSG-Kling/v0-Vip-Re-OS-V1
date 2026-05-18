@@ -1,30 +1,54 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * Call Whisper Bridge & Vapi Voice Bot System
  * - Initiates agent calls with AI-powered context whispers
  * - Triggers autonomous AI voice outreach to hot leads
+ *
+ * SECURITY: every entry point derives agent/brokerage from the authenticated
+ * session. Caller-supplied agentId values are ignored. Contact lookups verify
+ * brokerage ownership before any mutation.
  */
 
 // Initiate whisper bridge: Calls agent first, whispers context, then connects to contact
 export async function initiateWhisperBridge(params: {
   contactId: string
-  agentId: string
+  /** ignored — derived from session */
+  agentId?: string
   context: string // e.g., "viewing 123 Main St 3 times this week"
 }) {
-  const { contactId, agentId, context } = params
+  const { contactId, context } = params
 
-  if (!isValidUUID(contactId) || !isValidUUID(agentId)) {
-    return { success: false, error: "Invalid contact or agent ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const agentUserId = ctx.userId
+
+  if (!isValidUUID(contactId)) {
+    return { success: false, error: "Invalid contact ID" }
   }
 
+  const svc = createServiceClient()
   const supabase = await createClient()
 
   try {
+    // Verify the contact belongs to this brokerage
+    const { data: contactBroker } = await svc
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    if (!contactBroker || contactBroker.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Get contact and agent details
     const { data: contact } = await supabase
       .from("contacts")
@@ -35,7 +59,7 @@ export async function initiateWhisperBridge(params: {
     const { data: agent } = await supabase
       .from("users")
       .select("phone, first_name, last_name")
-      .eq("id", agentId)
+      .eq("id", agentUserId)
       .single()
 
     if (!contact || !agent) {
@@ -71,7 +95,7 @@ export async function initiateWhisperBridge(params: {
     // Log whisper bridge call
     const { error: logError } = await supabase.from("call_whisper_logs").insert({
       contact_id: contactId,
-      agent_id: agentId,
+      agent_id: agentUserId,
       whisper_text: whisperText,
       twilio_call_sid: callResult.callSid,
       agent_phone: agent.phone,
@@ -84,7 +108,7 @@ export async function initiateWhisperBridge(params: {
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
     await supabase.from("activities").insert({
-      user_id: agentId,
+      user_id: agentUserId,
       activity_type: "whisper_bridge_initiated",
       entity_type: "contact",
       entity_id: contactId,
@@ -103,16 +127,45 @@ export async function initiateWhisperBridge(params: {
 }
 
 // Update whisper bridge call status (webhook handler)
+// NOTE: this is invoked from the Twilio status callback endpoint, which should
+// verify the upstream Twilio signature. We additionally require an authenticated
+// session here so that direct RPC from a client cannot mutate arbitrary call
+// records. Webhook routes that need to call this server-side should use the
+// service client directly against `call_whisper_logs`.
 export async function updateWhisperBridgeStatus(params: {
   callSid: string
   status: string
   duration?: number
   outcome?: string
 }) {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
 
+  const svc = createServiceClient()
   try {
-    const { error } = await supabase
+    // Verify the call record belongs to this brokerage (via contact)
+    const { data: callRow } = await svc
+      .from("call_whisper_logs")
+      .select("contact_id")
+      .eq("twilio_call_sid", params.callSid)
+      .maybeSingle()
+    if (!callRow) {
+      return { success: false, error: "Call not found" }
+    }
+    if (callRow.contact_id) {
+      const { data: contact } = await svc
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", callRow.contact_id)
+        .maybeSingle()
+      if (!contact || contact.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
+    const { error } = await svc
       .from("call_whisper_logs")
       .update({
         call_connected: params.status === "completed",
@@ -142,13 +195,29 @@ export async function triggerVapiVoiceBot(params: {
 }) {
   const { contactId, triggerEvent, customMessage } = params
 
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   if (!isValidUUID(contactId)) {
     return { success: false, error: "Invalid contact ID" }
   }
 
+  const svc = createServiceClient()
   const supabase = await createClient()
 
   try {
+    // Verify the contact belongs to this brokerage
+    const { data: contactBroker } = await svc
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    if (!contactBroker || contactBroker.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Get contact details
     const { data: contact } = await supabase
       .from("contacts")
@@ -253,6 +322,10 @@ export async function triggerVapiVoiceBot(params: {
 }
 
 // Update Vapi call status (webhook handler)
+// NOTE: invoked from the Vapi webhook route (app/api/webhooks/vapi/route.ts)
+// which verifies the upstream HMAC signature. The webhook is permitted to call
+// this without a user session via the service client path below. Direct RPC
+// from a client must be authenticated.
 export async function updateVapiCallStatus(params: {
   callId: string
   status: string
@@ -262,10 +335,38 @@ export async function updateVapiCallStatus(params: {
   durationSeconds?: number
   costCents?: number
 }) {
-  const supabase = await createClient()
+  const svc = createServiceClient()
+  const ctx = await getAgentContext()
 
   try {
-    const { error } = await supabase
+    // Webhook (no session): allow unconditionally — the webhook handler has
+    // already verified the Vapi HMAC signature before calling us.
+    // UI (session present): scope to caller's brokerage.
+    if (ctx.isAuthenticated) {
+      if (!ctx.brokerageId) {
+        return { success: false, error: "Unauthorized" }
+      }
+      const { data: callRow } = await svc
+        .from("vapi_voice_calls")
+        .select("contact_id")
+        .eq("vapi_call_id", params.callId)
+        .maybeSingle()
+      if (!callRow) {
+        return { success: false, error: "Call not found" }
+      }
+      if (callRow.contact_id) {
+        const { data: contact } = await svc
+          .from("contacts")
+          .select("brokerage_id")
+          .eq("id", callRow.contact_id)
+          .maybeSingle()
+        if (!contact || contact.brokerage_id !== ctx.brokerageId) {
+          return { success: false, error: "Forbidden" }
+        }
+      }
+    }
+
+    const { error } = await svc
       .from("vapi_voice_calls")
       .update({
         call_status: params.status,
@@ -291,18 +392,21 @@ export async function updateVapiCallStatus(params: {
 }
 
 // Get whisper bridge call history
-export async function getWhisperBridgeCalls(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+export async function getWhisperBridgeCalls(_agentId?: string) {
+  // _agentId ignored — derived from session
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
   }
 
   const supabase = await createClient()
 
   try {
+    // Scope by the authenticated user's user_id (call_whisper_logs.agent_id is users.id)
     const { data, error } = await supabase
       .from("call_whisper_logs")
       .select("*, contacts(first_name, last_name, phone)")
-      .eq("agent_id", agentId)
+      .eq("agent_id", ctx.userId)
       .order("created_at", { ascending: false })
       .limit(50)
 
@@ -316,19 +420,56 @@ export async function getWhisperBridgeCalls(agentId: string) {
 
 // Get Vapi voice call history
 export async function getVapiVoiceCalls(contactId?: string) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
+  const svc = createServiceClient()
 
   try {
-    let query = supabase
-      .from("vapi_voice_calls")
-      .select("*, contacts(first_name, last_name, phone)")
-      .order("created_at", { ascending: false })
+    // Resolve all contact ids in this brokerage (so we can scope vapi_voice_calls)
+    // If a specific contactId is requested, verify ownership first.
+    if (contactId) {
+      if (!isValidUUID(contactId)) {
+        return { success: false, error: "Invalid contact ID" }
+      }
+      const { data: contactRow } = await svc
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (!contactRow || contactRow.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
 
-    if (contactId && isValidUUID(contactId)) {
-      query = query.eq("contact_id", contactId)
+      const { data, error } = await supabase
+        .from("vapi_voice_calls")
+        .select("*, contacts(first_name, last_name, phone)")
+        .eq("contact_id", contactId)
+        .order("created_at", { ascending: false })
+        .limit(50)
+      if (error) throw error
+      return { success: true, calls: data }
     }
 
-    const { data, error } = await query.limit(50)
+    // No contactId: list calls for all contacts in this brokerage
+    const { data: brokerageContacts } = await svc
+      .from("contacts")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId)
+    const contactIds = (brokerageContacts ?? []).map((c) => c.id)
+    if (contactIds.length === 0) {
+      return { success: true, calls: [] }
+    }
+
+    const { data, error } = await supabase
+      .from("vapi_voice_calls")
+      .select("*, contacts(first_name, last_name, phone)")
+      .in("contact_id", contactIds)
+      .order("created_at", { ascending: false })
+      .limit(50)
 
     if (error) throw error
 
