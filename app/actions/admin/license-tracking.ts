@@ -1,6 +1,37 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+
+// All functions in this file are brokerage-admin tooling. Previously every
+// one was unauthenticated and trusted caller-supplied brokerageId / agentId.
+// Now: session is required, brokerage is resolved from session, and write
+// actions require broker / admin / superadmin role.
+
+const ADMIN_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin"]
+
+async function requireAdminInBrokerage(): Promise<
+  | { ok: true; userId: string; brokerageId: string; userType: string; isSuperadmin: boolean }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  if (!ADMIN_ROLES.includes(u.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  return {
+    ok: true,
+    userId: user.id,
+    brokerageId: u.brokerage_id,
+    userType: u.user_type ?? "",
+    isSuperadmin: ["superadmin", "super_admin"].includes(u.user_type ?? ""),
+  }
+}
 
 export interface AgentLicenseStatus {
   userId: string
@@ -18,11 +49,15 @@ export interface AgentLicenseStatus {
 }
 
 export async function getBrokerageAgentLicenseStatuses(
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session (superadmins can pass any)
 ): Promise<{ agents: AgentLicenseStatus[]; error?: string }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { agents: [], error: auth.error }
+
   const service = createServiceClient()
 
-  // Pull users + their agent row (which holds ethics + CE columns from migration 1009)
+  const brokerageId = auth.isSuperadmin && _brokerageId ? _brokerageId : auth.brokerageId
+
   const { data: agents, error } = await service
     .from("users")
     .select(`
@@ -108,9 +143,12 @@ export async function logCeCompletion(input: CECompletionInput): Promise<{
   completionId?: string
   error?: string
 }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const service = createServiceClient()
 
-  // Resolve brokerage from the agent row
+  // Verify the agent belongs to caller's brokerage
   const { data: agent } = await service
     .from("agents")
     .select("id, brokerage_id, ce_hours_completed")
@@ -118,6 +156,9 @@ export async function logCeCompletion(input: CECompletionInput): Promise<{
     .maybeSingle()
 
   if (!agent) return { success: false, error: "Agent not found" }
+  if (!auth.isSuperadmin && agent.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const { data: completion, error } = await service
     .from("agent_ce_completions")
@@ -173,7 +214,20 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
   completedOn: string
   certificateUrl: string | null
 }>> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return []
+
   const service = createServiceClient()
+
+  // Verify the agent belongs to caller's brokerage before reading
+  const { data: agent } = await service
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (!agent) return []
+  if (!auth.isSuperadmin && agent.brokerage_id !== auth.brokerageId) return []
+
   const { data } = await service
     .from("agent_ce_completions")
     .select("id, course_name, provider, category, hours, completed_on, certificate_url")
@@ -203,14 +257,17 @@ export interface EducationModule {
 }
 
 export async function getEducationModules(
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session
 ): Promise<{ modules: EducationModule[]; error?: string }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { modules: [], error: auth.error }
+
   const service = createServiceClient()
 
   const { data, error } = await service
     .from("onboarding_quizzes")
     .select("id, title, description, target_roles, required, content_body, quiz_questions, created_at")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) return { modules: [], error: error.message }
@@ -218,7 +275,7 @@ export async function getEducationModules(
 }
 
 export async function createEducationModule(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   title: string
   description: string
   targetRoles: string[]
@@ -226,12 +283,15 @@ export async function createEducationModule(params: {
   contentBody: string
   quizQuestions: Array<{ question: string; choices: string[]; correct: number }>
 }): Promise<{ success: boolean; moduleId?: string; error?: string }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const service = createServiceClient()
 
   const { data, error } = await service
     .from("onboarding_quizzes")
     .insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       title: params.title,
       description: params.description,
       target_roles: params.targetRoles,
@@ -248,8 +308,28 @@ export async function createEducationModule(params: {
 }
 
 export async function deleteEducationModule(moduleId: string): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const service = createServiceClient()
-  const { error } = await service.from("onboarding_quizzes").delete().eq("id", moduleId)
+
+  // Verify the module belongs to caller's brokerage before deleting
+  const { data: existing } = await service
+    .from("onboarding_quizzes")
+    .select("brokerage_id")
+    .eq("id", moduleId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Module not found" }
+  if (!auth.isSuperadmin && existing.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const { error } = await service
+    .from("onboarding_quizzes")
+    .delete()
+    .eq("id", moduleId)
+    .eq("brokerage_id", existing.brokerage_id)
+
   if (error) return { success: false, error: error.message }
   return { success: true }
 }

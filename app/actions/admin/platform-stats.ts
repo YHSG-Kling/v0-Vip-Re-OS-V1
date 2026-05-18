@@ -1,8 +1,49 @@
+"use server"
+
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
+/**
+ * Platform-wide aggregate stats — cross-tenant counts of brokerages, users,
+ * integrations, and unresolved automation errors. Consumed by the Platform
+ * Owner OS dashboard. Previously unauthenticated, leaking platform metrics
+ * to anyone with the RPC bundle. Now: requires platform_admin role.
+ */
+
+async function requirePlatformAdmin(): Promise<
+  | { ok: true; userId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+
+  const svc = createServiceClient()
+  const { data: role } = await svc
+    .from("user_role_assignments")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (role?.role !== "platform_admin") return { ok: false, error: "Forbidden" }
+
+  return { ok: true, userId: user.id }
+}
+
 export async function getAdminStats() {
+  const auth = await requirePlatformAdmin()
+  if (!auth.ok) {
+    return {
+      brokerageCount: 0,
+      userCount: 0,
+      integrationCount: 0,
+      unresolvledErrorCount: 0,
+      recentErrors: [],
+      error: auth.error,
+    }
+  }
+
   const service = createServiceClient()
-  
+
   const [
     { count: brokerageCount },
     { count: userCount },
