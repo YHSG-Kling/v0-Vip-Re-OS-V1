@@ -13,6 +13,7 @@
  *   - When eSign callback marks offer as signed by buyer
  */
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 // NOTE: aiOfferStrategyAdvisor + aiCounterOfferStrategy require richer context
 // (negotiation round, buyer max budget, market conditions, days on market)
@@ -21,12 +22,23 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 interface HandleOfferReceivedInput {
   offerId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session / offer
 }
 
 export async function handleOfferReceived(
   input: HandleOfferReceivedInput
 ): Promise<{ success: boolean; error?: string }> {
+  // Auth gate — was previously trusting caller-supplied brokerageId
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   const supabase = createServiceClient()
 
   // 1. Load offer + listing context
@@ -67,6 +79,13 @@ export async function handleOfferReceived(
 
   if (!o.listings) return { success: false, error: "Listing missing on offer" }
 
+  // Use the listing's actual brokerage_id (not caller-supplied) — guards
+  // against a hostile caller passing a different brokerageId.
+  if (o.listings.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
+  const listingBrokerageId = o.listings.brokerage_id
+
   // 2. Notify the listing agent — AI analysis runs separately when the agent
   //    opens the Intelligence tab (which has the curated context inputs).
   const listingAgentId = o.listings.agent_id ?? o.agent_id
@@ -87,7 +106,7 @@ export async function handleOfferReceived(
       const body = `$${o.offer_price.toLocaleString()}${pctOfList ? ` (${pctOfList}% of list)` : ""}. Open the Intelligence tab to run AI analysis.`
       await supabase.from("notifications").insert({
         user_id: agent.user_id,
-        brokerage_id: input.brokerageId,
+        brokerage_id: listingBrokerageId,
         type: isCounter ? "counter_offer_received" : "offer_received",
         title,
         body,
@@ -126,7 +145,27 @@ export async function getOfferIntelligence(params: {
   closingDate: string | null
   submittedAt: string | null
 }>> {
+  // Auth gate — reads ai_recommendation + ai_analysis (sensitive deal data)
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return []
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return []
+
   const supabase = createServiceClient()
+
+  // Verify listing belongs to caller's brokerage
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", params.listingId)
+    .maybeSingle()
+  if (!listing || listing.brokerage_id !== callerRow.brokerage_id) return []
+
   const { data } = await supabase
     .from("offers")
     .select(
@@ -135,6 +174,7 @@ export async function getOfferIntelligence(params: {
         "escalation_cap, appraisal_gap, closing_date, submitted_at"
     )
     .eq("listing_id", params.listingId)
+    .eq("brokerage_id", callerRow.brokerage_id)
     .order("submitted_at", { ascending: false })
 
   if (!data) return []

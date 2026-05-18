@@ -14,6 +14,7 @@
  *   5. Agent reviews in transaction or contact view; can confirm or decline
  */
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ContactVendorRequestInput {
@@ -27,16 +28,45 @@ export interface ContactVendorRequestInput {
 export async function requestContactVendorBooking(
   input: ContactVendorRequestInput
 ): Promise<{ success: boolean; bookingId?: string; error?: string }> {
+  // Auth gate — caller must be either the contact themselves (portal session)
+  // or an agent/admin in the same brokerage as the contact. Previously this
+  // function was wide open — any caller could trigger vendor bookings under
+  // any contact.
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized" }
+
   const svc = createServiceClient()
 
   // Resolve contact + agent + brokerage + active transaction (best-effort)
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, brokerage_id, agent_id, first_name, last_name")
+    .select("id, brokerage_id, agent_id, first_name, last_name, contact_user_id, email")
     .eq("id", input.contactId)
     .maybeSingle()
 
   if (!contact) return { success: false, error: "Contact not found" }
+
+  // Access gate:
+  //  - Contact themselves: contact_user_id matches OR email matches
+  //  - Agent / admin: caller's brokerage matches contact's brokerage
+  const isContactSelf =
+    contact.contact_user_id === authUser.id ||
+    (contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
+
+  let isAgentInBrokerage = false
+  if (!isContactSelf) {
+    const { data: callerRow } = await svc
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", authUser.id)
+      .maybeSingle()
+    isAgentInBrokerage = !!callerRow?.brokerage_id && callerRow.brokerage_id === contact.brokerage_id
+  }
+
+  if (!isContactSelf && !isAgentInBrokerage) {
+    return { success: false, error: "Forbidden" }
+  }
 
   // Find an active transaction for the contact (optional — booking allowed without)
   const { data: tx } = await svc
