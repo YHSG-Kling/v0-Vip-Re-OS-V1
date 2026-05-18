@@ -43,8 +43,14 @@ async function requireCaller(): Promise<
 // TYPES — Layer 8.4 Snippet & Repurposing Generator
 // ============================================
 
-export type SnippetApprovalStatus = 
-  | "pending"
+// NOTE: Must match the live DB CHECK constraints on
+// video_snippets.approval_status and repurposed_content_log.approval_status:
+//   CHECK (approval_status IN ('draft','pending_review','approved','rejected'))
+// The previous "pending" literal was schema drift and made every
+// createVideoSnippet / logRepurposedContent insert fail at runtime.
+export type SnippetApprovalStatus =
+  | "draft"
+  | "pending_review"
   | "approved"
   | "rejected"
 
@@ -271,7 +277,7 @@ export async function createVideoSnippet(data: {
       caption_text: data.captionText ?? null,
       hashtags: data.hashtags ?? null,
       thumbnail_url: data.thumbnailUrl ?? null,
-      approval_status: "pending",
+      approval_status: "pending_review",
       created_by: createdBy,
     })
     .select()
@@ -619,7 +625,7 @@ export async function logRepurposedContent(data: {
       output_ref_id: data.outputRefId,
       platform_target: data.platformTarget ?? null,
       status: "created",
-      approval_status: "pending",
+      approval_status: "pending_review",
       notes: data.notes ?? null,
       created_by: createdBy,
     })

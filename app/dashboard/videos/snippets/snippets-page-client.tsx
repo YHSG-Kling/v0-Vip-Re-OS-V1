@@ -43,9 +43,10 @@ const PLATFORM_OPTIONS: { value: PlatformTarget; label: string; maxSeconds: numb
 ]
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
-  pending:  { label: "Pending",  variant: "secondary" },
-  approved: { label: "Approved", variant: "default" },
-  rejected: { label: "Rejected", variant: "destructive" },
+  draft:          { label: "Draft",    variant: "outline" },
+  pending_review: { label: "Pending",  variant: "secondary" },
+  approved:       { label: "Approved", variant: "default" },
+  rejected:       { label: "Rejected", variant: "destructive" },
 }
 
 interface Props {
@@ -220,8 +221,8 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
               ) : (
                 <div className="divide-y">
                   {snippets.map((s) => {
-                    const statusMeta = STATUS_BADGE[s.approval_status] ?? STATUS_BADGE.pending
-                    const isPendingStatus = s.approval_status === "pending" || !s.approval_status
+                    const statusMeta = STATUS_BADGE[s.approval_status] ?? STATUS_BADGE.pending_review
+                    const isPendingStatus = s.approval_status === "pending_review" || s.approval_status === "draft" || !s.approval_status
                     const isApproved = s.approval_status === "approved"
                     return (
                       <div key={s.id} className="flex items-center justify-between gap-4 py-4">
