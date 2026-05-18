@@ -25,8 +25,10 @@ import { stripe } from "@/lib/stripe"
 //     against any vendor.
 //
 // verifyVendorInCallerBrokerage() resolves the vendor's brokerage from
-// vendor_marketplace_profiles and confirms it matches the caller's
-// session brokerage. Brokerage-side payment ops MUST go through this.
+// the `vendors` table (the FK target for vendor_invoices.vendor_id,
+// vendor_bookings.vendor_id, etc.). vendor_marketplace_profiles is a
+// GLOBAL catalog with no brokerage_id — it cannot be used for tenant
+// scoping. Brokerage-side payment ops MUST go through this helper.
 async function verifyVendorInCallerBrokerage(
   vendorId: string,
   callerBrokerageId: string,
@@ -34,7 +36,7 @@ async function verifyVendorInCallerBrokerage(
   if (!vendorId) return false
   const svc = createServiceClient()
   const { data } = await svc
-    .from("vendor_marketplace_profiles")
+    .from("vendors")
     .select("brokerage_id")
     .eq("id", vendorId)
     .maybeSingle()
@@ -257,12 +259,12 @@ export async function markInvoicePaid(params: {
   if (updateErr) return { success: false, error: updateErr.message }
 
   // Create earnings record so vendor sees the payment.
-  // Use verified vendor_id + brokerage_id from the ownership check above.
+  // vendor_marketplace_profiles is a GLOBAL catalog (no brokerage_id) so
+  // tenant scope here is enforced by verifyInvoiceInCallerBrokerage above.
   const { data: profile } = await svc
     .from("vendor_marketplace_profiles")
     .select("revenue_share_percent")
     .eq("id", verify.vendor_id)
-    .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
   const revenueSharePct = (profile?.revenue_share_percent ?? 0) / 100
@@ -305,12 +307,12 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
 
   const svc = createServiceClient()
 
-  // Check if account already exists — scoped by brokerage
+  // vendor_marketplace_profiles is a GLOBAL catalog (no brokerage_id) —
+  // tenant scope was already enforced by requireVendorActor() above.
   const { data: profile } = await svc
     .from("vendor_marketplace_profiles")
     .select("stripe_account_id, stripe_onboarding_complete")
     .eq("id", vendorId)
-    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   let accountId: string
@@ -326,7 +328,6 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
       .from("vendor_marketplace_profiles")
       .update({ stripe_account_id: accountId })
       .eq("id", vendorId)
-      .eq("brokerage_id", actor.brokerageId)
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
@@ -390,11 +391,12 @@ export async function initiateVendorPayout(params: {
   let stripeTransferId: string | undefined
 
   if (method === "stripe") {
+    // vendor_marketplace_profiles is a GLOBAL catalog — tenant scope
+    // was already enforced by verifyVendorInCallerBrokerage above.
     const { data: profile } = await svc
       .from("vendor_marketplace_profiles")
       .select("stripe_account_id, stripe_onboarding_complete")
       .eq("id", params.vendorId)
-      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (!profile?.stripe_account_id || !profile.stripe_onboarding_complete) {
@@ -543,11 +545,12 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
 
   const svc = createServiceClient()
 
+  // vendor_marketplace_profiles is global; tenant scope enforced via
+  // requireVendorActor() above.
   const { data: profile } = await svc
     .from("vendor_marketplace_profiles")
     .select("stripe_account_id")
     .eq("id", vendorId)
-    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   if (!profile?.stripe_account_id) {
@@ -562,7 +565,6 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
     .from("vendor_marketplace_profiles")
     .update({ stripe_onboarding_complete: complete })
     .eq("id", vendorId)
-    .eq("brokerage_id", actor.brokerageId)
 
   return { success: complete, error: complete ? undefined : "Onboarding not yet complete in Stripe" }
 }
