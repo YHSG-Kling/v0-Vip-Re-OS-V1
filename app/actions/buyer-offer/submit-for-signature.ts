@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
@@ -8,7 +9,7 @@ import { logEventAndTrigger } from "@/lib/events/event-helpers"
 
 interface SubmitForSignatureParams {
   offerId: string
-  userId: string
+  userId?: string  // ignored — derived from session (was a forgery vector)
   signers: Array<{
     name: string
     email: string
@@ -17,11 +18,26 @@ interface SubmitForSignatureParams {
 }
 
 export async function submitForSignature(params: SubmitForSignatureParams) {
-  const { offerId, userId, signers } = params
+  const { offerId, signers } = params
 
-  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(offerId)) {
+    return { success: false, error: "Invalid offer ID" }
   }
+
+  // CRITICAL auth gate — previously took caller-supplied userId, fetched
+  // the offer by id (no auth), then used the offer's stored brokerage_id
+  // to pull platform_credentials (Dotloop/DocuSign/SkySlope/Authentisign
+  // OAuth tokens) and dispatched provider calls under them. Any
+  // signed-in caller could send any tenant's offer for signature with
+  // attacker-controlled signer emails — a wire-fraud / contract-fraud
+  // vector.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const userId = user.id
 
   const supabase = createServiceClient()
 
@@ -36,6 +52,12 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   if (offerError || !offer) {
     return { success: false, error: "Offer not found" }
+  }
+
+  // Verify the offer belongs to caller's brokerage BEFORE pulling
+  // platform_credentials with offer.brokerage_id.
+  if (offer.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
   }
 
   // NAR 2024 GATE: buyer commission disclosure must be acknowledged before submit.
