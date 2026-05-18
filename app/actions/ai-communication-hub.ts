@@ -15,7 +15,39 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 /**
  * AI Communication Hub
  * Unified messaging with sentiment analysis, smart drafting, and communication insights
+ *
+ * Auth model: every action in this file was previously unauthenticated and
+ * trusted caller-supplied agentId / contactId / conversationId / brokerageId.
+ * Any signed-in user could send messages under another agent's identity,
+ * read any brokerage's inbox, burn AI inference budget, and trigger paid
+ * email/SMS dispatch to arbitrary phone numbers.
+ *
+ * Now: all 9 exported functions resolve identity from the session via
+ * requireCaller() and verify the target entity (contact, conversation,
+ * agent) belongs to the caller's brokerage before any read, write, or
+ * AI inference.
  */
+
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  const { data: a } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
+}
 
 const SentimentSchema = z.object({
   sentiment: z.enum(["very_positive", "positive", "neutral", "negative", "very_negative", "urgent"]),
@@ -33,14 +65,39 @@ const SentimentSchema = z.object({
 export async function sendMessage(params: {
   conversationId: string
   contactId: string
-  agentId: string           // agents.id (NOT users.id)
+  agentId?: string           // ignored — derived from session
   channel: "email" | "sms" | "in_app"
   body: string
   subject?: string
   attachmentUrls?: string[]
 }) {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+    if (!auth.agentId) return { success: false, error: "Caller is not an agent" }
+
     const supabase = await createClient()
+    const svc = createServiceClient()
+
+    // Verify the conversation + contact both belong to caller's brokerage
+    const { data: convo } = await svc
+      .from("conversations")
+      .select("brokerage_id")
+      .eq("id", params.conversationId)
+      .maybeSingle()
+    if (!convo) return { success: false, error: "Conversation not found" }
+    if (convo.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+    const { data: contactOwn } = await svc
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+    if (!contactOwn || contactOwn.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const callerAgentId = auth.agentId  // use session-resolved agent id, ignore callerAgentId
     const now = new Date().toISOString()
 
     // Step 1: INSERT into messages
@@ -49,7 +106,7 @@ export async function sendMessage(params: {
       .insert({
         conversation_id:  params.conversationId,
         contact_id:       params.contactId,
-        agent_id:         params.agentId,
+        agent_id:         callerAgentId,
         type:             params.channel,
         direction:        "outbound",
         body:             params.body,
@@ -100,13 +157,13 @@ export async function sendMessage(params: {
         const { data: agent } = await supabase
           .from("agents")
           .select("brokerage_id")
-          .eq("id", params.agentId)
+          .eq("id", callerAgentId)
           .single()
 
         // assembleEmail() runs inside dispatchEmail() — do NOT call it here.
         dispatchResult = await dispatchEmail({
           brokerageId:    agent?.brokerage_id ?? "",
-          agentId:        params.agentId,
+          agentId:        callerAgentId,
           from:           "noreply@platform.com",
           to:             contact.email,
           subject:        params.subject ?? "(No Subject)",
@@ -150,12 +207,12 @@ export async function sendMessage(params: {
       const { data: agent } = await supabase
         .from("agents")
         .select("brokerage_id")
-        .eq("id", params.agentId)
+        .eq("id", callerAgentId)
         .maybeSingle()
 
       dispatchResult = await dispatchSms({
         brokerageId: agent?.brokerage_id ?? contact.brokerage_id ?? "",
-        agentId:     params.agentId,
+        agentId:     callerAgentId,
         to:          contact.phone,
         message:     params.body,
         systemSource: "inbox",
@@ -168,7 +225,7 @@ export async function sendMessage(params: {
     const { data: agentForLog } = await supabase
       .from("agents")
       .select("brokerage_id")
-      .eq("id", params.agentId)
+      .eq("id", callerAgentId)
       .single()
 
     // Fire-and-forget: log message provider activity without blocking response
@@ -199,13 +256,16 @@ export async function sendMessage(params: {
 
 // Get conversations/messages for inbox
 export async function getConversations(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   contactId?: string
   limit?: number
   unreadOnly?: boolean
   channel?: string
 }) {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error, conversations: [], total: 0 }
+
     const supabase = await createClient()
 
     let query = supabase
@@ -216,7 +276,7 @@ export async function getConversations(params: {
         agents(id, user_id, users(first_name, last_name)),
         messages!messages_conversation_id_fkey(body, content, created_at, direction)
       `)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", auth.brokerageId)
       .order("last_message_at", { ascending: false })
       .limit(params.limit ?? 50)
 
@@ -259,7 +319,19 @@ export async function getConversations(params: {
 // Get all messages in a conversation thread
 export async function getMessageThread(conversationId: string) {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error, messages: [] }
+
     const supabase = await createClient()
+
+    // Verify conversation belongs to caller's brokerage
+    const { data: convo } = await supabase
+      .from("conversations")
+      .select("brokerage_id")
+      .eq("id", conversationId)
+      .maybeSingle()
+    if (!convo) return { success: false, error: "Conversation not found", messages: [] }
+    if (convo.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden", messages: [] }
 
     const { data: messages, error } = await supabase
       .from("messages")
@@ -278,12 +350,25 @@ export async function getMessageThread(conversationId: string) {
 // Mark a conversation as read
 export async function markConversationRead(conversationId: string) {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const supabase = await createClient()
+
+    // Verify conversation belongs to caller's brokerage
+    const { data: convo } = await supabase
+      .from("conversations")
+      .select("brokerage_id")
+      .eq("id", conversationId)
+      .maybeSingle()
+    if (!convo) return { success: false, error: "Conversation not found" }
+    if (convo.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
     const { error } = await supabase
       .from("conversations")
       .update({ unread_count: 0, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
+      .eq("brokerage_id", auth.brokerageId)
 
     if (error) throw error
 
@@ -300,9 +385,13 @@ export async function analyzeMessageSentiment(params: {
   message: string
   contactId?: string
   conversationHistory?: string[]
-  agentId: string
+  agentId?: string  // ignored — derived from session
 }) {
   try {
+    // Auth gate — burns paid AI inference
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const { object: analysis } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: SentimentSchema,
@@ -333,33 +422,40 @@ Consider:
 export async function generateSmartResponse(params: {
   incomingMessage: string
   contactId: string
-  agentId: string
-  brokerageId: string
+  agentId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
   channel: "email" | "sms" | "chat"
   tone?: "formal" | "friendly" | "professional" | "empathetic"
   includeNextSteps?: boolean
 }) {
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
-    return { success: false, error: "Invalid contact, agent, or brokerage ID" }
+  // Auth gate — paid AI inference + contact PII access
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const effAgentId = auth.agentId ?? auth.userId
+  const effBrokerageId = auth.brokerageId
+
+  if (!isValidUUID(params.contactId)) {
+    return { success: false, error: "Invalid contact ID" }
   }
 
   const supabase = await createClient()
 
   try {
-    // Get contact context — maybeSingle() prevents PGRST116 if contact is missing
+    // Get contact context — must belong to caller's brokerage
     const { data: contact } = await supabase
       .from("contacts")
       .select("first_name, last_name, contact_type, contact_persona")
       .eq("id", params.contactId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", effBrokerageId)
       .maybeSingle()
+    if (!contact) return { success: false, error: "Contact not found" }
 
     // Get agent's communication style
     const { data: agentProfile } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", params.agentId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("agent_id", effAgentId)
+      .eq("brokerage_id", effBrokerageId)
       .maybeSingle()
 
     // Get conversation history
@@ -367,7 +463,7 @@ export async function generateSmartResponse(params: {
       .from("messages")
       .select("*")
       .eq("contact_id", params.contactId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", effBrokerageId)
       .order("created_at", { ascending: false })
       .limit(10)
 
@@ -407,7 +503,7 @@ Generate ONLY the response message, no explanations.`,
     // Analyze the response we generated
     const sentimentResult = await analyzeMessageSentiment({
       message: response,
-      agentId: params.agentId,
+      agentId: effAgentId,
     })
 
     // Union narrowing: check success before accessing analysis
@@ -417,19 +513,20 @@ Generate ONLY the response message, no explanations.`,
     // Fire-and-forget to avoid blocking response
     ;(async () => {
       try {
+        // audit_log has no brokerage_id column; user_id is the auth user id
         await supabase
           .from("audit_log")
           .insert({
             action: "ai_response_generated",
             entity_type: "message",
             entity_id: params.contactId,
-            brokerage_id: params.brokerageId,
-            user_id: params.agentId,
+            user_id: auth.userId,
             after: {
               channel: params.channel,
               tone: params.tone || "professional",
               characterCount: response.length,
               sentiment: sentimentAnalysis,
+              brokerage_id: effBrokerageId,
             },
           })
       } catch (err) {
@@ -452,11 +549,25 @@ Generate ONLY the response message, no explanations.`,
 // Analyze conversation health
 export async function analyzeConversationHealth(params: {
   contactId: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, health: null }
+
   const supabase = await createClient()
 
   try {
+    // Verify contact belongs to caller's brokerage
+    const { data: contactOwn } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+    if (!contactOwn) return { success: false, error: "Contact not found", health: null }
+    if (contactOwn.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden", health: null }
+    }
+
     // Get all messages for this contact
     const { data: messages } = await supabase
       .from("messages")
@@ -521,17 +632,22 @@ Assess:
 
 // Prioritize inbox messages
 export async function prioritizeInbox(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   limit?: number
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, prioritizedMessages: [] }
+  if (!auth.agentId) return { success: true, prioritizedMessages: [], message: "Caller is not an agent" }
+  const effAgentId = auth.agentId
+
   const supabase = await createClient()
 
   try {
-    // Get unread/unresponded messages
+    // Get unread/unresponded messages — scoped to caller's agent record
     const { data: messages } = await supabase
       .from("messages")
       .select("*, contacts(*)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", effAgentId)
       .eq("direction", "inbound")
       .eq("responded", false)
       .order("created_at", { ascending: false })
@@ -547,11 +663,11 @@ export async function prioritizeInbox(params: {
         const sentiment = await analyzeMessageSentiment({
           message: msg.content || "",
           contactId: msg.contact_id,
-          agentId: params.agentId,
+          agentId: effAgentId,
         })
 
         // Union narrowing: check success before accessing analysis
-        if (!sentiment.success) {
+        if (!sentiment.success || !sentiment.analysis) {
           return {
             ...msg,
             analysis: null,
@@ -588,12 +704,24 @@ export async function prioritizeInbox(params: {
 // Generate communication summary for contact
 export async function generateCommunicationSummary(params: {
   contactId: string
-  agentId: string
+  agentId?: string  // ignored — derived from session
   timeframe?: "week" | "month" | "all"
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
+    // Verify contact belongs to caller's brokerage
+    const { data: contactOwn } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+    if (!contactOwn) return { success: false, error: "Contact not found" }
+    if (contactOwn.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
     let query = supabase
       .from("messages")
       .select("*")
