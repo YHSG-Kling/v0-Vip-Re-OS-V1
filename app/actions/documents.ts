@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import { put, del } from "@vercel/blob"
 import { generateObject } from "@/lib/ai/generate"
@@ -11,11 +13,37 @@ import { handleError } from "@/lib/errors"
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {
+    // AUTH GATE — was returning any caller-supplied contact/transaction docs
+    // without scoping by brokerage. Multi-tenant leak.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
-    
+    const svc = createServiceClient()
+
+    // If the caller targets a specific contact or transaction, verify it
+    // belongs to their brokerage before returning any rows.
+    if (params?.contactId) {
+      const { data: c } = await svc
+        .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+      if (!c || c.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+    if (params?.transactionId) {
+      const { data: t } = await svc
+        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+      if (!t || t.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
     let query = supabase
       .from("transaction_documents")
       .select("*, uploaded_by_agent:agents!documents_uploaded_by_fkey(first_name, last_name)")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("uploaded_at", { ascending: false })
 
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
@@ -67,8 +95,14 @@ export async function deleteDocument(documentId: string) {
 
 export async function analyzeDocument(documentId: string) {
   try {
+    // AUTH GATE — previously kicked off paid AI analysis on any document id.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
-    
+
     const { data: document, error } = await supabase
       .from("transaction_documents")
       .select("*")
@@ -76,6 +110,11 @@ export async function analyzeDocument(documentId: string) {
       .maybeSingle()
 
     if (error || !document) throw error ?? new Error("Document not found")
+
+    // Cross-tenant scope check before burning AI tokens.
+    if (document.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // AI document analysis
     const { object: analysis } = await generateObject({
@@ -140,9 +179,35 @@ export async function uploadDocument(
   file: { name: string; type: string; size: number; base64: string },
   contactId: string,
   transactionId?: string,
-  userId?: string // For agent uploads
+  _userId?: string // ignored — derived from session
 ) {
+  // AUTH GATE — previously accepted spoofed userId + arbitrary contactId,
+  // letting any caller upload docs into any tenant's contact folder.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const userId = ctx.userId
+
   const supabase = await createClient()
+  const svc = createServiceClient()
+
+  // Verify the contact belongs to the caller's brokerage
+  if (contactId) {
+    const { data: c } = await svc
+      .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+    if (!c || c.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: contact not in your brokerage" }
+    }
+  }
+  // Verify the transaction (if provided) belongs to the caller's brokerage
+  if (transactionId) {
+    const { data: t } = await svc
+      .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+    if (!t || t.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: transaction not in your brokerage" }
+    }
+  }
 
   const filePath = transactionId
     ? `transactions/${transactionId}/${Date.now()}_${file.name}`
@@ -177,6 +242,7 @@ export async function uploadDocument(
   const { data: document, error: docError } = await supabase
     .from("client_documents")
     .insert({
+      brokerage_id: ctx.brokerageId,
       contact_id: contactId || null,
       transaction_id: transactionId || null,
       document_name: file.name,
@@ -597,12 +663,26 @@ async function validateDocumentFields(
 // ============================================
 
 export async function getContactDocuments(contactId: string) {
-  const supabase = await createClient()
+  // AUTH GATE — previously returned every document for any caller-supplied
+  // contact id with no tenant scope.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return []
+  }
 
+  const svc = createServiceClient()
+  const { data: c } = await svc
+    .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+  if (!c || c.brokerage_id !== ctx.brokerageId) {
+    return []
+  }
+
+  const supabase = await createClient()
   const { data: documents } = await supabase
     .from("client_documents")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   return documents || []

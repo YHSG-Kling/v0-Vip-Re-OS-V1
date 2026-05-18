@@ -1,7 +1,10 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+
+const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
 
 // ─── GET SUBSCRIPTION TIERS ──────────────────────────────────────────────────
 export async function getSubscriptionTiers() {
@@ -18,7 +21,13 @@ export async function getSubscriptionTiers() {
 }
 
 // ─── GET CURRENT SUBSCRIPTION ────────────────────────────────────────────────
-export async function getCurrentSubscription(brokerageId: string) {
+export async function getCurrentSubscription(_brokerageId?: string) {
+  // AUTH GATE — was returning any brokerage's subscription by id.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return null
+  }
+
   const supabase = await createClient()
 
   const { data: subscription, error } = await supabase
@@ -27,7 +36,7 @@ export async function getCurrentSubscription(brokerageId: string) {
       *,
       subscription_tiers:tier_id(*)
     `)
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .in("status", ["active", "trialing", "past_due"])
     .order("created_at", { ascending: false })
     .limit(1)
@@ -77,11 +86,31 @@ export async function getInvoiceHistory(brokerageId: string, year?: number) {
 
 // ─── START SUBSCRIPTION CHECKOUT ─────────────────────────────────────────────
 export async function startSubscriptionCheckout(
-  brokerageId: string,
+  _brokerageId: string, // ignored — derived from session
   tierId: string,
   billingCycle: "monthly" | "annual"
 ) {
+  // AUTH GATE — was creating Stripe checkout sessions on any brokerage id,
+  // letting a caller initiate paid subscription changes for tenants they
+  // don't belong to. Now scoped to caller's brokerage + admin role only.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    throw new Error("Unauthorized")
+  }
+
   const supabase = await createClient()
+
+  const { data: u } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", ctx.userId)
+    .maybeSingle()
+  const userType = u?.user_type ?? ctx.userType
+  if (!BILLING_ADMIN_ROLES.has(userType)) {
+    throw new Error("Forbidden: admin only")
+  }
+
+  const brokerageId = ctx.brokerageId
 
   // Get the tier
   const { data: tier, error: tierError } = await supabase

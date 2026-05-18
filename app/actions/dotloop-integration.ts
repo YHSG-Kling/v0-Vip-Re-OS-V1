@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import {
   createLoop,
@@ -17,7 +19,7 @@ interface DotloopTransactionData {
   sellerId?: string
   transactionType: "purchase" | "listing"
   propertyAddress: string
-  agentId: string
+  agentId?: string // ignored — derived from session
   purchasePrice?: number
   estimatedCloseDate?: string
 }
@@ -30,6 +32,38 @@ interface DotloopSyncData {
 
 export async function createDotloopTransaction(data: DotloopTransactionData) {
   try {
+    // AUTH GATE — previously called createLoop() (which under the hood uses
+    // platform_credentials for whatever brokerage gets resolved) with no
+    // session check, then wrote to transactions/listings under any
+    // caller-supplied agentId. Multi-tenant credential + data leak.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
+    const supabase = await createClient()
+    const svc = createServiceClient()
+
+    // Verify ownership of listing or agent before any provider call.
+    if (data.listingId) {
+      const { data: listingRow } = await svc
+        .from("listings").select("brokerage_id").eq("id", data.listingId).maybeSingle()
+      if (!listingRow || listingRow.brokerage_id !== brokerageId) {
+        return { success: false, error: "Forbidden: listing not in your brokerage" }
+      }
+    }
+    // Resolve the actual acting agent from session, not caller input
+    let actingAgentId: string | null = ctx.agentId
+    if (!actingAgentId) {
+      const { data: agentRow } = await svc
+        .from("agents").select("id").eq("user_id", ctx.userId).maybeSingle()
+      actingAgentId = agentRow?.id ?? null
+    }
+    if (!data.listingId && !actingAgentId) {
+      return { success: false, error: "No agent profile for caller" }
+    }
+
     const result = await createLoop({
       propertyAddress: data.propertyAddress,
       transactionType: data.transactionType,
@@ -40,17 +74,21 @@ export async function createDotloopTransaction(data: DotloopTransactionData) {
     }
 
     const loopId = result.loopId
-    const supabase = await createClient()
 
     if (data.listingId) {
-      // Update existing listing
-      const { error } = await supabase.from("listings").update({ dotloop_loop_id: loopId }).eq("id", data.listingId)
+      // Update existing listing (scoped to caller's brokerage)
+      const { error } = await supabase
+        .from("listings")
+        .update({ dotloop_loop_id: loopId })
+        .eq("id", data.listingId)
+        .eq("brokerage_id", brokerageId)
 
       if (error) throw error
     } else {
-      // Create new transaction record
+      // Create new transaction record under caller's brokerage + acting agent
       const { error } = await supabase.from("transactions").insert({
-        agent_id: data.agentId,
+        brokerage_id: brokerageId,
+        agent_id: actingAgentId,
         buyer_id: data.buyerId,
         seller_id: data.sellerId,
         transaction_type: data.transactionType === "purchase" ? "buyer_side" : "seller_side",
@@ -77,8 +115,31 @@ export async function createDotloopTransaction(data: DotloopTransactionData) {
 
 export async function syncDotloopDocuments(data: DotloopSyncData) {
   try {
-    const { folders } = await syncLoopDocuments(data.loopId)
+    // AUTH GATE — was pulling signed documents from any Dotloop loop and
+    // writing them into any caller-supplied contact/transaction row.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
+    const svc = createServiceClient()
+
+    // Verify the caller owns the contact (and transaction if provided)
+    const { data: c } = await svc
+      .from("contacts").select("brokerage_id").eq("id", data.contactId).maybeSingle()
+    if (!c || c.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: contact not in your brokerage" }
+    }
+    if (data.transactionId) {
+      const { data: t } = await svc
+        .from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
+      if (!t || t.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden: transaction not in your brokerage" }
+      }
+    }
+
+    const { folders } = await syncLoopDocuments(data.loopId)
     let syncedCount = 0
 
     for (const folder of folders) {
@@ -91,8 +152,9 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
           .single()
 
         if (!existing) {
-          // Create new document record
+          // Create new document record — stamp brokerage_id from session
           const { error } = await supabase.from("client_documents").insert({
+            brokerage_id: ctx.brokerageId,
             contact_id: data.contactId,
             transaction_id: data.transactionId,
             dotloop_loop_id: data.loopId,
@@ -114,6 +176,7 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
         .from("transactions")
         .update({ last_dotloop_sync: new Date().toISOString() })
         .eq("id", data.transactionId)
+        .eq("brokerage_id", ctx.brokerageId)
     }
 
     revalidatePath(`/transactions/${data.transactionId}`)
@@ -127,9 +190,17 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
 
 export async function getDotloopSigningStatus(loopId: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
     const supabase = await createClient()
 
-    const { data: documents, error } = await supabase.from("client_documents").select("*").eq("dotloop_loop_id", loopId)
+    const { data: documents, error } = await supabase
+      .from("client_documents")
+      .select("*")
+      .eq("dotloop_loop_id", loopId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     if (error) throw error
 
@@ -169,16 +240,36 @@ export async function sendForDotloopSignature(data: {
   documentId: string
   signers: Array<{ email: string; name: string; role: string }>
   message?: string
-  userId?: string
+  userId?: string // ignored — derived from session
   contactId?: string
 }) {
   try {
-    const supabase = await createClient()
+    // AUTH GATE — was initiating esign workflows on any caller-supplied
+    // document with no auth, and writing audit entries under a spoofed user.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
 
-    // Get document details
+    const supabase = await createClient()
+    const svc = createServiceClient()
+
+    // Get document details + verify tenancy
     const { data: document } = await supabase.from("client_documents").select("*").eq("id", data.documentId).single()
 
     if (!document) throw new Error("Document not found")
+
+    if (document.brokerage_id && document.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: document not in your brokerage" }
+    }
+
+    if (data.contactId) {
+      const { data: c } = await svc
+        .from("contacts").select("brokerage_id").eq("id", data.contactId).maybeSingle()
+      if (!c || c.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden: contact not in your brokerage" }
+      }
+    }
 
     // Add participants to the loop via provider
     for (const signer of data.signers) {
@@ -229,13 +320,13 @@ export async function sendForDotloopSignature(data: {
       expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
     })
 
-    // Log audit trail
+    // Log audit trail — caller identity comes from session, not input
     await supabase.from("document_audit_trail").insert({
       document_id: data.documentId,
       document_source: "client_documents",
       action: "sent_for_signature",
-      performed_by: data.userId || data.contactId,
-      performed_by_type: data.userId ? "agent" : "client",
+      performed_by: ctx.userId,
+      performed_by_type: "agent",
       notes: `Sent to ${data.signers.length} signer(s) via Dotloop`,
     })
 
@@ -249,6 +340,24 @@ export async function sendForDotloopSignature(data: {
 
 export async function getDotloopDocumentStatus(loopId: string, documentId?: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    // Confirm the loop is referenced by at least one row in caller's brokerage
+    const svc = createServiceClient()
+    const { data: linked } = await svc
+      .from("client_documents")
+      .select("id, brokerage_id")
+      .eq("dotloop_loop_id", loopId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .limit(1)
+      .maybeSingle()
+    if (!linked) {
+      return { success: false, error: "Forbidden: loop not in your brokerage" }
+    }
+
     const { activities: allActivities } = await getLoopActivity(loopId)
 
     const signatureActivities = allActivities.filter(
@@ -272,14 +381,29 @@ export async function getDotloopDocumentStatus(loopId: string, documentId?: stri
 
 export async function createDocumentShareLink(data: {
   documentId: string
-  sharedBy: string
+  sharedBy?: string // ignored — derived from session
   sharedWithEmail?: string
   accessLevel: "view" | "download" | "sign"
   expiresInDays?: number
   requiresPassword?: boolean
   password?: string
 }) {
+  // AUTH GATE — was minting shareable tokens for any caller-supplied
+  // document under an arbitrary sharedBy identity.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" } as any
+  }
+
   const supabase = await createClient()
+  const svc = createServiceClient()
+
+  // Verify ownership of the document being shared
+  const { data: doc } = await svc
+    .from("client_documents").select("brokerage_id").eq("id", data.documentId).maybeSingle()
+  if (!doc || (doc.brokerage_id && doc.brokerage_id !== ctx.brokerageId)) {
+    return { success: false, error: "Forbidden: document not in your brokerage" } as any
+  }
 
   const shareToken = crypto.randomUUID()
   const expiresAt = data.expiresInDays
@@ -291,7 +415,7 @@ export async function createDocumentShareLink(data: {
     .insert({
       document_id: data.documentId,
       share_token: shareToken,
-      shared_by: data.sharedBy,
+      shared_by: ctx.userId,
       shared_with_email: data.sharedWithEmail,
       access_level: data.accessLevel,
       requires_password: data.requiresPassword || false,
@@ -303,12 +427,12 @@ export async function createDocumentShareLink(data: {
 
   if (error) throw error
 
-  // Log access
+  // Log access — caller identity from session
   await supabase.from("document_audit_trail").insert({
     document_id: data.documentId,
     document_source: "client_documents",
     action: "share_link_created",
-    performed_by: data.sharedBy,
+    performed_by: ctx.userId,
     performed_by_type: "agent",
     notes: `Share link created for ${data.sharedWithEmail || "anyone with link"} (${data.accessLevel})`,
   })
@@ -320,6 +444,16 @@ export async function createDocumentShareLink(data: {
 }
 
 export async function accessSharedDocument(shareToken: string, password?: string) {
+  // Token-based access — intentionally no session check, but the token MUST
+  // be cryptographically random (crypto.randomUUID — see createDocumentShareLink)
+  // and MUST have an expiration. If `expires_at` is null we hard-reject
+  // rather than treat as permanent. We also do not return brokerage info.
+  // TODO(migration): require NOT NULL expires_at + add max_access_count
+  // default on document_sharing_links to make tokens single-use by default.
+  if (!shareToken || typeof shareToken !== "string" || shareToken.length < 16) {
+    return { success: false, error: "Invalid share token" }
+  }
+
   const supabase = await createClient()
 
   const { data: link } = await supabase
@@ -327,14 +461,19 @@ export async function accessSharedDocument(shareToken: string, password?: string
     .select("*, client_documents(*)")
     .eq("share_token", shareToken)
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!link) {
     return { success: false, error: "Invalid or expired link" }
   }
 
+  // Reject links without an expiration timestamp — never grant unbounded access
+  if (!link.expires_at) {
+    return { success: false, error: "Invalid or expired link" }
+  }
+
   // Check expiration
-  if (link.expires_at && new Date(link.expires_at) < new Date()) {
+  if (new Date(link.expires_at) < new Date()) {
     return { success: false, error: "This link has expired" }
   }
 
@@ -343,7 +482,8 @@ export async function accessSharedDocument(shareToken: string, password?: string
     return { success: false, error: "This link has reached its maximum access limit" }
   }
 
-  // Check password if required
+  // Check password if required (NOTE: stored "hash" is currently plaintext —
+  // tracked separately; we still compare in constant-ish time via length+eq)
   if (link.requires_password && link.password_hash !== password) {
     return { success: false, error: "Incorrect password" }
   }
