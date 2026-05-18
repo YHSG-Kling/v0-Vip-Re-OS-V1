@@ -2,7 +2,17 @@
 
 /**
  * Lead capture from the agent's public profile (/p/[agentSlug]).
- * Mirrors home-value-lead.ts but for general inquiries from the profile page.
+ *
+ * This is INTENTIONALLY public — visitors browsing an agent's marketing page
+ * don't have a Supabase session. We can't gate this with auth.getUser().
+ *
+ * Previous version: trusted caller-supplied agentId / agentUserId / brokerageId,
+ * so an attacker could write inquiry contacts attached to ANY (agent_id,
+ * brokerage_id) pair they chose, including mismatched cross-brokerage pairs.
+ *
+ * Fix: validate the (agentId, agentUserId, brokerageId) triple by looking up
+ * the agent row server-side and confirming all three fields are consistent.
+ * Any mismatch → reject.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -30,6 +40,20 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
 
   const svc = createServiceClient()
 
+  // Verify the (agentId, agentUserId, brokerageId) triple is a real, consistent
+  // agent record. Without this, a caller can pass any combination of IDs and
+  // get orphan / mismatched rows inserted.
+  const { data: agent } = await svc
+    .from("agents")
+    .select("id, user_id, brokerage_id")
+    .eq("id", input.agentId)
+    .maybeSingle()
+
+  if (!agent) return { success: false, error: "Agent not found" }
+  if (agent.user_id !== input.agentUserId || agent.brokerage_id !== input.brokerageId) {
+    return { success: false, error: "Agent identity mismatch" }
+  }
+
   const nameParts = input.fullName.trim().split(/\s+/)
   const firstName = nameParts[0] ?? ""
   const lastName = nameParts.slice(1).join(" ") || null
@@ -37,8 +61,8 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
   const { data: contact, error } = await svc
     .from("contacts")
     .insert({
-      brokerage_id: input.brokerageId,
-      agent_id: input.agentId,
+      brokerage_id: agent.brokerage_id,
+      agent_id: agent.id,
       first_name: firstName,
       last_name: lastName,
       email: input.email || null,
@@ -61,16 +85,16 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
 
   await svc.from("activities").insert({
     contact_id: contact.id,
-    brokerage_id: input.brokerageId,
-    agent_user_id: input.agentUserId,
+    brokerage_id: agent.brokerage_id,
+    agent_user_id: agent.user_id,
     activity_type: "profile_inquiry",
     description: `Inquiry from agent public profile: ${input.message ? `"${input.message}"` : "general contact request"}`,
     metadata: { source: "agent_public_profile" },
   })
 
   await svc.from("notifications").insert({
-    user_id: input.agentUserId,
-    brokerage_id: input.brokerageId,
+    user_id: agent.user_id,
+    brokerage_id: agent.brokerage_id,
     title: "📩 New profile inquiry",
     body: `${input.fullName} reached out from your public profile${input.message ? `: "${input.message}"` : ""}`,
     type: "new_lead",

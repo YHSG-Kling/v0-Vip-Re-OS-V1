@@ -190,9 +190,34 @@ export async function emitMultiOfferEvent(
       return { success: false, error: "Invalid contact ID" };
     }
 
+    // Auth gate — previously unauthenticated, letting any caller forge
+    // multi_offer signals against any contact's activity log.
+    const { createClient } = await import("@/lib/supabase/server")
+    const authClient = await createClient()
+    const { data: { user: authUser } } = await authClient.auth.getUser()
+    if (!authUser) return { success: false, error: "Unauthorized" }
+    const { data: callerRow } = await authClient
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", authUser.id)
+      .maybeSingle()
+    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
     const supabase = createServiceClient();
 
+    // Verify contact belongs to caller's brokerage
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    if (!contact) return { success: false, error: "Contact not found" }
+    if (contact.brokerage_id !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden" }
+    }
+
     const { error } = await supabase.from("activities").insert({
+      brokerage_id: callerRow.brokerage_id,
       entity_type: "contact",
       entity_id: contactId,
       activity_type: "multi_offer_signal",

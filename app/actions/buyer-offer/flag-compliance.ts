@@ -19,14 +19,15 @@
  * the notifications stay until the recipients mark them read.
  */
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
 
 export interface FlagOfferComplianceParams {
   offerId:    string
-  /** users.id of whoever raised the flag (agent, TC, scanner). */
-  raiserUserId: string
+  /** Ignored — derived from session. Kept for backward compat with existing callers. */
+  raiserUserId?: string
   /** Stable type — drives filtering / analytics. */
   flagType:   "missing_signature" | "missing_initial" | "missing_form" | "missing_field" | "expired_disclosure" | "other"
   severity:   "low" | "medium" | "high" | "critical"
@@ -46,11 +47,24 @@ export interface FlagOfferComplianceResult {
 export async function flagOfferCompliance(
   params: FlagOfferComplianceParams,
 ): Promise<FlagOfferComplianceResult> {
-  const { offerId, raiserUserId, flagType, severity, title, body, documentId } = params
+  const { offerId, flagType, severity, title, body, documentId } = params
 
-  if (!isValidUUID(offerId) || !isValidUUID(raiserUserId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(offerId)) {
+    return { success: false, error: "Invalid offer ID" }
   }
+
+  // Auth gate — previously trusted params.raiserUserId, letting any caller
+  // impersonate another user when raising compliance flags.
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const raiserUserId = authUser.id
 
   const supabase = createServiceClient()
 
@@ -61,6 +75,7 @@ export async function flagOfferCompliance(
     .eq("id", offerId)
     .maybeSingle()
   if (!offer) return { success: false, error: "Offer not found" }
+  if (offer.brokerage_id !== callerRow.brokerage_id) return { success: false, error: "Forbidden" }
 
   // Resolve the assigned buyer-side agent's users.id (the bell target). The
   // agents.id is what offers.agent_id stores.

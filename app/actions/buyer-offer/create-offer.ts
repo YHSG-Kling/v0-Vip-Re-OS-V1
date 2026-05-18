@@ -7,6 +7,7 @@
  * Creates buyer offer draft with multi-offer governance
  */
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkFinancialVerification } from "@/lib/buyer-lifecycle"
 import { isValidUUID } from "@/lib/validations"
@@ -27,7 +28,7 @@ export interface CreateOfferParams {
   buyerContactId?: string
   propertyAddress: string
   propertyMlsId?: string
-  userId: string
+  userId?: string  // ignored — derived from session
   expirationHours?: number // Default 72
 }
 
@@ -44,12 +45,25 @@ export interface CreateOfferResult {
 export async function createBuyerOffer(
   params: CreateOfferParams
 ): Promise<CreateOfferResult> {
-  // Accept either buyerId (legacy) or buyerContactId (preferred). Both
-  // resolve to the CRM contact ID — see contacts.id.
-  const buyerContactId = params.buyerContactId ?? params.buyerId
-  const { propertyAddress, propertyMlsId, userId, expirationHours = 72 } = params
+  // Auth gate — previously trusted params.userId for the agent attribution,
+  // letting any caller forge offers under any agent's identity.
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized", errorCode: "unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return { success: false, error: "Unauthorized", errorCode: "unauthorized" }
+  }
+  const userId = authUser.id
+  const callerBrokerageId = callerRow.brokerage_id
 
-  // Validate inputs
+  const buyerContactId = params.buyerContactId ?? params.buyerId
+  const { propertyAddress, propertyMlsId, expirationHours = 72 } = params
+
   if (!isValidUUID(buyerContactId)) {
     return { success: false, error: "Invalid buyer contact ID", errorCode: "invalid_buyer_id" }
   }
@@ -60,12 +74,16 @@ export async function createBuyerOffer(
 
   const supabase = createServiceClient()
 
-  // Check buyer exists and is active
+  // Check buyer exists, is active, AND belongs to caller's brokerage
   const { data: buyer, error: buyerError } = await supabase
     .from("contacts")
-    .select("id, name, status")
+    .select("id, name, status, brokerage_id")
     .eq("id", buyerContactId)
     .single()
+
+  if (buyer && buyer.brokerage_id !== callerBrokerageId) {
+    return { success: false, error: "Forbidden", errorCode: "forbidden" }
+  }
 
   if (buyerError || !buyer) {
     return { success: false, error: "Buyer not found", errorCode: "buyer_not_found" }
@@ -162,16 +180,9 @@ export async function createBuyerOffer(
   // Generate offer ID
   const offerId = crypto.randomUUID()
 
-  // Resolve brokerage_id for the agent
-  const { data: agentBrokerage } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", userId)
-    .maybeSingle()
-
-  // Emit buyer.offer.draft.created event
+  // Emit buyer.offer.draft.created event — brokerage from session
   const { error: eventError } = await supabase.from("activities").insert({
-    brokerage_id: agentBrokerage?.brokerage_id ?? null,
+    brokerage_id: callerBrokerageId,
     agent_id: userId,
     contact_id: buyerContactId,
     activity_type: "buyer.offer.draft.created",
