@@ -71,23 +71,33 @@ export interface GapAnalysisPersistResult {
  * ranking always reflects the current pipeline.
  */
 export async function computeAndPersistGapAction(params?: {
-  agentId?:     string  // superadmin / cron override
-  brokerageId?: string  // superadmin / cron override
+  agentId?:     string  // superadmin override (still requires auth)
+  brokerageId?: string  // superadmin override (still requires auth)
 }): Promise<
   | { ok: true; result: GapAnalysisPersistResult }
   | { ok: false; error: string }
 > {
-  let agentId:     string
-  let brokerageId: string
+  // CRITICAL: previous override path accepted caller-supplied agentId +
+  // brokerageId with no auth check, letting any caller compute + persist
+  // gap analysis on any agent's income forecast (data poisoning +
+  // potentially overwriting another agent's recommended_actions).
+  // Always resolve the calling session first.
+  const ctx = await resolveAgentContext()
+  if (!ctx.ok) return ctx
 
+  let agentId:     string = ctx.agentId
+  let brokerageId: string = ctx.brokerageId
+
+  // Honor override only for superadmin AND only when both ids are passed.
   if (params?.agentId && params?.brokerageId) {
+    const supabase = await createClient()
+    const { data: profile } = await supabase
+      .from("users").select("user_type").eq("id", ctx.userId).maybeSingle()
+    if (!["superadmin", "super_admin"].includes(profile?.user_type ?? "")) {
+      return { ok: false, error: "Forbidden: only superadmin may override agentId/brokerageId" }
+    }
     agentId     = params.agentId
     brokerageId = params.brokerageId
-  } else {
-    const ctx = await resolveAgentContext()
-    if (!ctx.ok) return ctx
-    agentId     = ctx.agentId
-    brokerageId = ctx.brokerageId
   }
 
   // Resolve userId for the agent — income_forecast_snapshots.agent_id FKs users(id)
