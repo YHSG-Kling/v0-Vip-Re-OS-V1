@@ -6,10 +6,35 @@
  * All writes go to tours, tour_stops, showings, buyer_behavior_log, lifecycle_events.
  */
 
+import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { emitLifecycleTransition } from '@/lib/buyer-lifecycle/lifecycle-logger'
 import { updateBuyerPreferences } from '@/lib/behavior-learning'
 import { isValidUUID } from '@/lib/validations'
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+//
+// Every tour mutation previously trusted caller-supplied agentUserId /
+// brokerageId / contactId. Any signed-in user could create tours under a
+// different brokerage, confirm/finalize/complete other agents' tours, and
+// pollute buyer behavior signals. Reads were equally open. This helper
+// resolves the caller's identity once; all functions then ignore the
+// caller-supplied IDs and use the session-derived values.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: 'Unauthorized' }
+  const { data: u } = await supabase
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: 'Unauthorized' }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -134,7 +159,16 @@ function addMinutes(timeStr: string, minutes: number): string {
 export async function getSavedPropertiesForTour(contactId: string) {
   if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from('contacts').select('brokerage_id').eq('id', contactId).maybeSingle()
+  if (!contact) return { success: false, error: 'Contact not found' }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
 
   // saved_properties stores address data directly on the row — no FK to listings.
   // The listings join always returns null, so we select only real columns.
@@ -159,6 +193,7 @@ export async function getSavedPropertiesForTour(contactId: string) {
       primary_photo_url
     `)
     .eq('contact_id', contactId)
+    .eq('brokerage_id', auth.brokerageId)
     .eq('dismissed', false)
     .order('ai_match_score', { ascending: false })
 
@@ -171,7 +206,16 @@ export async function getSavedPropertiesForTour(contactId: string) {
 export async function getBuyerTours(contactId: string) {
   if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from('contacts').select('brokerage_id').eq('id', contactId).maybeSingle()
+  if (!contact) return { success: false, error: 'Contact not found' }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
 
   const { data, error } = await supabase
     .from('tours')
@@ -192,6 +236,7 @@ export async function getBuyerTours(contactId: string) {
       )
     `)
     .eq('contact_id', contactId)
+    .eq('brokerage_id', auth.brokerageId)
     .order('tour_date', { ascending: false })
 
   if (error) return { success: false, error: error.message }
@@ -202,18 +247,30 @@ export async function getBuyerTours(contactId: string) {
 
 export async function createTourPlan(params: CreateTourParams) {
   const {
-    contactId, agentUserId, brokerageId,
+    contactId,
     tourDate, startTime, startAddress, stops,
     aiPlanNarrative, notes,
     totalDurationMinutes, totalDriveTimeMinutes,
   } = params
 
-  if (!isValidUUID(contactId) || !isValidUUID(agentUserId) || !isValidUUID(brokerageId)) {
-    return { success: false, error: 'Invalid ID' }
-  }
+  if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
   if (!stops.length) return { success: false, error: 'No stops provided' }
 
+  // Auth gate — ignore caller-supplied agentUserId / brokerageId; derive
+  // from session so a hostile caller can't create a tour under a different
+  // agent / brokerage.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
+
   const supabase = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from('contacts').select('brokerage_id').eq('id', contactId).maybeSingle()
+  if (!contact) return { success: false, error: 'Contact not found' }
+  if (contact.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
 
   // ── Financial verification gate (System J3.1) — buyer must be verified
   //    before tours can be created. Previously this gate was UI-only.
@@ -404,13 +461,16 @@ export async function createTourPlan(params: CreateTourParams) {
 //   - Direct reply that the agent records via confirmTourStop()
 export async function scheduleTourStops(params: {
   tourId:      string
-  agentUserId: string
-  brokerageId: string
+  agentUserId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
 }): Promise<{ success: boolean; error?: string; dispatched?: number }> {
-  const { tourId, agentUserId, brokerageId } = params
-  if (!isValidUUID(tourId) || !isValidUUID(agentUserId)) {
-    return { success: false, error: 'Invalid ID' }
-  }
+  const { tourId } = params
+  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
 
@@ -468,8 +528,8 @@ export async function scheduleTourStops(params: {
 //   - Final report sent to buyer (portal + optionally email/SMS)
 export async function finalizeTour(params: {
   tourId:       string
-  agentUserId:  string
-  brokerageId:  string
+  agentUserId?:  string  // ignored — derived from session
+  brokerageId?:  string  // ignored — derived from session
   /** Channels to send the final report through */
   reportChannels: Array<'portal' | 'email' | 'sms'>
   /** Optional URL to a generated report PDF */
@@ -478,10 +538,13 @@ export async function finalizeTour(params: {
   editedNotes?: string
   editedNarrative?: string
 }): Promise<{ success: boolean; error?: string; calendarEventCount?: number }> {
-  const { tourId, agentUserId, brokerageId, reportChannels, reportUrl, editedNotes, editedNarrative } = params
-  if (!isValidUUID(tourId) || !isValidUUID(agentUserId)) {
-    return { success: false, error: 'Invalid ID' }
-  }
+  const { tourId, reportChannels, reportUrl, editedNotes, editedNarrative } = params
+  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
 
@@ -619,10 +682,29 @@ export async function confirmTourStop(params: ConfirmStopParams) {
     tourStopId, showingId, tourId,
     confirmedTime, accessMethod, accessCode, accessInstructions,
     listingAgentName, listingAgentPhone, listingAgentCompany,
-    schedulingReference, brokerageId, contactId, agentUserId,
+    schedulingReference,
   } = params
 
+  if (!isValidUUID(tourStopId) || !isValidUUID(tourId)) {
+    return { success: false, error: 'Invalid ID' }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
+
   const supabase = createServiceClient()
+
+  // Verify tour stop belongs to caller's brokerage
+  const { data: stopRow } = await supabase
+    .from('tour_stops')
+    .select('id, tour_id, brokerage_id')
+    .eq('id', tourStopId)
+    .maybeSingle()
+  if (!stopRow) return { success: false, error: 'Tour stop not found' }
+  if (stopRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
+  if (stopRow.tour_id !== tourId) return { success: false, error: 'Tour ID mismatch' }
 
   const { error: stopError } = await supabase
     .from('tour_stops')
@@ -638,6 +720,7 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       is_confirmed:           true,
     })
     .eq('id', tourStopId)
+    .eq('brokerage_id', brokerageId)
 
   if (stopError) return { success: false, error: stopError.message }
 
@@ -713,29 +796,34 @@ export async function confirmTourStop(params: ConfirmStopParams) {
 
 export async function confirmTour(params: {
   tourId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   contactId: string
-  agentUserId: string
+  agentUserId?: string  // ignored — derived from session
   departureTime?: string
   agentNotes?: string
   reportChannels?: Array<'portal' | 'email' | 'sms'>
 }) {
+  if (!isValidUUID(params.tourId) || !isValidUUID(params.contactId)) {
+    return { success: false, error: 'Invalid ID' }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const result = await finalizeTour({
     tourId:         params.tourId,
-    agentUserId:    params.agentUserId,
-    brokerageId:    params.brokerageId,
     reportChannels: params.reportChannels ?? ['portal'],
     editedNotes:    params.agentNotes,
   })
   if (!result.success) return result
 
   // Maintain pre-canonical behaviour: agent notification of "tour confirmed"
-  // (resolved via agents.id → users.id since agentUserId is auth uid here).
+  // + buyer-lifecycle event. Both scoped to caller's session brokerage.
   const supabase = createServiceClient()
   try {
     await supabase.from('notifications').insert({
-      user_id:      params.agentUserId,
-      brokerage_id: params.brokerageId,
+      user_id:      auth.userId,
+      brokerage_id: auth.brokerageId,
       type:         'tour.confirmed',
       title:        'Tour confirmed',
       body:         'Your tour is confirmed and calendar events have been created.',
@@ -747,11 +835,11 @@ export async function confirmTour(params: {
   } catch { /* non-critical */ }
 
   await supabase.from('lifecycle_events').insert({
-    brokerage_id:  params.brokerageId,
+    brokerage_id:  auth.brokerageId,
     entity_type:   'buyer_lifecycle',
     entity_id:     params.contactId,
     event_type:    'tour.confirmed',
-    actor_user_id: params.agentUserId,
+    actor_user_id: auth.userId,
     metadata:      { tour_id: params.tourId, departure_time: params.departureTime },
   }).then(() => null, () => null)
 
@@ -761,21 +849,42 @@ export async function confirmTour(params: {
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
 
 export async function rateTourStop(params: RateStopParams) {
-  const { tourStopId, showingId, contactId, brokerageId, agentUserId,
+  const { tourStopId, showingId, contactId,
     listingId, propertyAddress, listPrice, city, zip, interestLevel, note } = params
 
+  if (!isValidUUID(tourStopId) || !isValidUUID(contactId)) {
+    return { success: false, error: 'Invalid ID' }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
+
   const supabase = createServiceClient()
+
+  // Verify tour stop belongs to caller's brokerage and contact
+  const { data: stopRow } = await supabase
+    .from('tour_stops')
+    .select('brokerage_id, contact_id')
+    .eq('id', tourStopId)
+    .maybeSingle()
+  if (!stopRow) return { success: false, error: 'Tour stop not found' }
+  if (stopRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
+  if (stopRow.contact_id !== contactId) return { success: false, error: 'Contact ID mismatch' }
 
   await supabase
     .from('tour_stops')
     .update({ buyer_interest_level: interestLevel, buyer_note: note ?? null })
     .eq('id', tourStopId)
+    .eq('brokerage_id', brokerageId)
 
   if (showingId && isValidUUID(showingId)) {
     await supabase
       .from('showings')
       .update({ buyer_interest_level: interestLevel, feedback: note ?? null })
       .eq('id', showingId)
+      .eq('brokerage_id', brokerageId)
   }
 
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
@@ -800,16 +909,38 @@ export async function rateTourStop(params: RateStopParams) {
 // ─── 6. Complete the tour ─────────────────────────────────────────────────────
 
 export async function completeTour(params: CompleteTourParams) {
-  const { tourId, contactId, brokerageId, agentUserId, agentNote, stopRatings } = params
+  const { tourId, contactId, agentNote, stopRatings } = params
+
+  if (!isValidUUID(tourId) || !isValidUUID(contactId)) {
+    return { success: false, error: 'Invalid ID' }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const agentUserId = auth.userId
+  const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
 
-  // Batch-update tour_stops
+  // Verify tour belongs to caller's brokerage and contact
+  const { data: tourRow } = await supabase
+    .from('tours')
+    .select('brokerage_id, contact_id')
+    .eq('id', tourId)
+    .maybeSingle()
+  if (!tourRow) return { success: false, error: 'Tour not found' }
+  if (tourRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
+  if (tourRow.contact_id !== contactId) return { success: false, error: 'Contact ID mismatch' }
+
+  // Batch-update tour_stops — scope each by brokerage_id + tour_id
   for (const r of stopRatings) {
+    if (!isValidUUID(r.tourStopId)) continue
     await supabase
       .from('tour_stops')
       .update({ buyer_interest_level: r.interestLevel, buyer_note: r.note ?? null })
       .eq('id', r.tourStopId)
+      .eq('tour_id', tourId)
+      .eq('brokerage_id', brokerageId)
 
     if (r.showingId && isValidUUID(r.showingId)) {
       await supabase
@@ -821,6 +952,7 @@ export async function completeTour(params: CompleteTourParams) {
           completed_at:         new Date().toISOString(),
         })
         .eq('id', r.showingId)
+        .eq('brokerage_id', brokerageId)
     }
   }
 
@@ -829,6 +961,7 @@ export async function completeTour(params: CompleteTourParams) {
     .from('tours')
     .update({ status: 'completed', notes: agentNote ?? null })
     .eq('id', tourId)
+    .eq('brokerage_id', brokerageId)
 
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
   const logInserts = stopRatings.map(r => ({
@@ -878,11 +1011,25 @@ export async function completeTour(params: CompleteTourParams) {
 
 export async function generateTourNarrative(params: {
   contactId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   stops: TourStop[]
   buyerName: string
 }) {
-  const { contactId, brokerageId, stops, buyerName } = params
+  const { contactId, stops, buyerName } = params
+
+  if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
+
+  // Auth gate — burns paid AI inference. Was previously open: any caller
+  // could trigger Claude Opus calls under our API key.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // Verify contact belongs to caller's brokerage
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from('contacts').select('brokerage_id').eq('id', contactId).maybeSingle()
+  if (!contact) return { success: false, error: 'Contact not found' }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
 
   try {
     const { generateText, Output } = await import('ai')
@@ -919,10 +1066,26 @@ export async function updateTourStopOrder(
 ): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
-  const updates = orderedStopIds.map((id, idx) =>
-    supabase.from('tour_stops').update({ order_index: idx }).eq('id', id).eq('tour_id', tourId)
-  )
+
+  // Verify tour belongs to caller's brokerage
+  const { data: tourRow } = await supabase
+    .from('tours').select('brokerage_id').eq('id', tourId).maybeSingle()
+  if (!tourRow) return { success: false, error: 'Tour not found' }
+  if (tourRow.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
+
+  const updates = orderedStopIds
+    .filter(id => isValidUUID(id))
+    .map((id, idx) =>
+      supabase.from('tour_stops')
+        .update({ order_index: idx })
+        .eq('id', id)
+        .eq('tour_id', tourId)
+        .eq('brokerage_id', auth.brokerageId)
+    )
   const results = await Promise.all(updates)
   const failed = results.find(r => r.error)
   if (failed?.error) return { success: false, error: failed.error.message }

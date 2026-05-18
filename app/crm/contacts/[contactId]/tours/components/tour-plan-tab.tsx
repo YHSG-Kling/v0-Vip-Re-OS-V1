@@ -176,7 +176,7 @@ export function TourPlanTab({
     if (!orderedStops.length) return
     setNarrativeLoading(true)
     const res = await generateTourNarrative({ contactId, brokerageId, stops: orderedStops, buyerName })
-    setNarrative(res.narrative)
+    if (res.success && res.narrative) setNarrative(res.narrative)
     setNarrativeLoading(false)
   }
 
