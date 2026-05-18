@@ -102,7 +102,7 @@ export async function uploadListingMedia(params: {
   // violate MLS rules if they auto-drafted into branded social posts.
   if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
     try {
-      const { emitEventFromCron } = await import("@/app/actions/orchestrator")
+      const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
       await emitEventFromCron({
         brokerage_id: params.brokerageId,
         user_id:      user.id,

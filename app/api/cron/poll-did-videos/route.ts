@@ -23,7 +23,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
-import { emitEventFromCron } from "@/app/actions/orchestrator"
+import { emitEventFromCron } from "@/lib/orchestrator/internal"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 const DID_API_BASE = "https://api.d-id.com"

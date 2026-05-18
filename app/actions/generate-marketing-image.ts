@@ -263,7 +263,7 @@ export async function generateMarketingImage(
   // post drafts, contact message drafts, listing landing page, and any
   // marketing-campaign assets sharing the same umbrella.
   try {
-    const { emitEventFromCron } = await import("@/app/actions/orchestrator")
+    const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
     await emitEventFromCron({
       brokerage_id: ctx.brokerageId,
       user_id:      ctx.userId ?? undefined,
