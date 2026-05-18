@@ -3,6 +3,12 @@
 // app/actions/portal-education.ts
 // Server actions for portal education hub.
 // Handles lesson feed retrieval and marking lessons as read.
+//
+// Previously getLessonFeed / markLessonRead / getLessonByKey ran with no
+// auth check at all — any caller could enumerate the lesson feed for any
+// contact and mark lessons "completed" on any contact's learning
+// assignments. resolveEducationContext is a library helper that doesn't
+// enforce caller access.
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -11,6 +17,43 @@ import { getEducationPlan, type EducationLesson, type AgeSegment } from "@/lib/k
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { PortalView } from "@/lib/kernel/portal"
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+async function requireContactAccess(contactId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
+  | { ok: false }
+> {
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { ok: false }
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("brokerage_id, contact_user_id, email")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact || !contact.brokerage_id) return { ok: false }
+  const isContactSelf =
+    contact.contact_user_id === authUser.id ||
+    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
+  if (isContactSelf) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
+  }
+  const { data: callerRow } = await svc
+    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
+  }
+  return { ok: false }
+}
+
+const EMPTY_FEED: LessonFeedResult = {
+  spotlight: null,
+  lessons: [],
+  completedCount: 0,
+  totalCount: 0,
+  categories: [],
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -125,9 +168,13 @@ function getCategoryOrder(portalView: PortalView): string[] {
 // ─── GET LESSON FEED ──────────────────────────────────────────────────────────
 
 export async function getLessonFeed(contactId: string): Promise<LessonFeedResult> {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return EMPTY_FEED
 
-  // Resolve education context
+  const supabase = createServiceClient()
+
+  // Resolve education context (lib helper — assumes caller has already
+  // verified access, which we just did above)
   const context = await resolveEducationContext(supabase, contactId)
 
   // Map portal view to journey type
@@ -207,26 +254,18 @@ export interface MarkLessonReadParams {
 
 export async function markLessonRead(params: MarkLessonReadParams): Promise<{ success: boolean; error?: string }> {
   const { contactId, lessonKey: moduleId } = params
-  const supabase = await createClient()
+
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { success: false, error: "Forbidden" }
+
   const service = createServiceClient()
-
-  // Validate access - contact must exist
-  const { data: contact, error: contactError } = await service
-    .from("contacts")
-    .select("id, agent_id, brokerage_id")
-    .eq("id", contactId)
-    .single()
-
-  if (contactError || !contact) {
-    return { success: false, error: "Contact not found" }
-  }
 
   // Post-1043: completion lives on learning_assignments.
   try {
     const { error: upsertError } = await service
       .from("learning_assignments")
       .upsert({
-        brokerage_id:   contact.brokerage_id,
+        brokerage_id:   access.brokerageId,
         module_id:      moduleId,
         contact_id:     contactId,
         signal_source:  "self:portal_read",
@@ -251,7 +290,7 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
     event: KernelEvent.PORTAL_EDUCATION_VIEWED,
     entityType: "contact",
     entityId: contactId,
-    brokerageId: contact.brokerage_id,
+    brokerageId: access.brokerageId,
   }).catch(err => {
     console.error("[PortalEducation] Error emitting kernel event:", err)
   })
