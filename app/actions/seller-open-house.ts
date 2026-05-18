@@ -8,23 +8,93 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 function isValidUUID(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LOAD PAGE DATA
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Resolve identity from the authenticated session. Every CRM-facing action in
+ * this file must call this — the previous version trusted brokerageId / agentId
+ * / userId as caller-supplied params, which let any signed-in user forge writes
+ * for any brokerage.
+ *
+ * Returns the caller's brokerage_id, user_id, and (when present) the
+ * canonical agents.id for that user. agentId is null for non-agent staff
+ * (admins, brokers) — callers should fall back to userId in that case.
+ */
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  const { data: a } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
+}
+
+/** Verify a listing belongs to the caller's brokerage. */
+async function verifyListingOwnership(
+  listingId: string,
+  brokerageId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isValidUUID(listingId)) return { ok: false, error: "Invalid listing ID" }
+  const svc = createServiceClient()
+  const { data: listing } = await svc
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing) return { ok: false, error: "Listing not found" }
+  if (listing.brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
+  return { ok: true }
+}
+
+/** Verify an open-house event belongs to the caller's brokerage; returns the event. */
+async function verifyEventOwnership(
+  eventId: string,
+  brokerageId: string
+): Promise<
+  | { ok: true; event: { id: string; brokerage_id: string; listing_id: string; agent_id: string | null } }
+  | { ok: false; error: string }
+> {
+  if (!isValidUUID(eventId)) return { ok: false, error: "Invalid event ID" }
+  const svc = createServiceClient()
+  const { data: event } = await svc
+    .from("open_house_events")
+    .select("id, brokerage_id, listing_id, agent_id")
+    .eq("id", eventId)
+    .maybeSingle()
+  if (!event) return { ok: false, error: "Event not found" }
+  if (event.brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
+  return { ok: true, event }
+}
+
+// ─── LOAD PAGE DATA ───────────────────────────────────────────────────────────
 
 export async function getOpenHouseDashboard(listingId: string) {
   if (!isValidUUID(listingId)) return null
+
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+  const own = await verifyListingOwnership(listingId, auth.brokerageId)
+  if (!own.ok) return null
+
   const supabase = await createClient()
 
-  const [{ data: listing }, { data: events }, { data: posts }, { data: invitations }] =
+  const [{ data: listing }, { data: events }, { data: posts }] =
     await Promise.all([
       supabase
         .from("listings")
@@ -42,15 +112,6 @@ export async function getOpenHouseDashboard(listingId: string) {
         .eq("listing_id", listingId)
         .in("post_type", ["open_house_announcement", "open_house_reminder", "coming_soon"])
         .order("scheduled_for", { ascending: true }),
-      supabase
-        .from("open_house_invitations")
-        .select("id, contact_id, status, channel, rsvp_response, sent_at")
-        .in(
-          "event_id",
-          // sub-select all event ids for this listing — resolved below
-          ["00000000-0000-0000-0000-000000000000"]
-        )
-        .limit(0), // placeholder; real fetch done per-event below
     ])
 
   // Fetch attendees for each event
@@ -63,7 +124,6 @@ export async function getOpenHouseDashboard(listingId: string) {
         .order("check_in_time", { ascending: false })
     : { data: [] }
 
-  // Fetch invitations properly
   const { data: realInvitations } = eventIds.length
     ? await supabase
         .from("open_house_invitations")
@@ -71,7 +131,6 @@ export async function getOpenHouseDashboard(listingId: string) {
         .in("event_id", eventIds)
     : { data: [] }
 
-  // Fetch packet jobs
   const { data: packetJobs } = await supabase
     .from("listing_packet_jobs")
     .select("id, job_type, status, output_url, completed_at")
@@ -90,45 +149,39 @@ export async function getOpenHouseDashboard(listingId: string) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TAB 1 — MARKETING: INVITE CONTACTS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TAB 1 — MARKETING: INVITE CONTACTS ──────────────────────────────────────
 
 export async function inviteFarmContacts(params: {
   eventId: string
   listingId: string
-  brokerageId: string
-  agentId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
   zip: string
   channel: "email" | "sms" | "both"
 }) {
-  if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
+  if (!evOwn.ok) return { success: false, error: evOwn.error }
+
   const supabase = await createClient()
 
-  // Load farm contacts by zip
+  // Load farm contacts by zip — strictly scoped to caller's brokerage
   const { data: contacts, error: contactErr } = await supabase
     .from("contacts")
     .select("id, first_name, last_name, email, phone, dnc_status, tcpa_consent")
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .eq("zip", params.zip)
     .eq("dnc_status", false)
-    .not("deleted_at", "is", null)
     .is("deleted_at", null)
 
   if (contactErr) return { success: false, error: contactErr.message }
   if (!contacts?.length) return { success: false, error: "No farm contacts found for this zip" }
 
-  // Load event for context
-  const { data: event } = await supabase
-    .from("open_house_events")
-    .select("event_date, start_time, end_time")
-    .eq("id", params.eventId)
-    .maybeSingle()
-
   const channels: Array<"email" | "sms"> =
     params.channel === "both" ? ["email", "sms"] : [params.channel]
 
-  // Build invitation rows — one per contact per channel, dedup on conflict
   const invitationRows = contacts.flatMap((contact) =>
     channels
       .filter((ch) => {
@@ -139,7 +192,7 @@ export async function inviteFarmContacts(params: {
       .map((ch) => ({
         event_id: params.eventId,
         contact_id: contact.id,
-        brokerage_id: params.brokerageId,
+        brokerage_id: auth.brokerageId,
         channel: ch,
         invitation_type: "open_house",
         status: "invited",
@@ -151,14 +204,12 @@ export async function inviteFarmContacts(params: {
     return { success: false, error: "No eligible contacts after channel/consent filtering" }
   }
 
-  // INSERT invitations (ignore duplicates)
   const { error: invErr } = await supabase
     .from("open_house_invitations")
     .upsert(invitationRows, { onConflict: "event_id,contact_id,channel", ignoreDuplicates: true })
 
   if (invErr) return { success: false, error: invErr.message }
 
-  // INSERT rsvp_tracking rows (status='invited')
   const rsvpRows = contacts.map((contact) => ({
     event_id: params.eventId,
     contact_id: contact.id,
@@ -175,9 +226,7 @@ export async function inviteFarmContacts(params: {
   return { success: true, invited: invitationRows.length }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TAB 1 — UPDATE RSVP
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TAB 1 — UPDATE RSVP ─────────────────────────────────────────────────────
 
 export async function updateRsvp(params: {
   eventId: string
@@ -185,8 +234,15 @@ export async function updateRsvp(params: {
   listingId: string
   rsvpResponse: "yes" | "maybe" | "no"
 }) {
-  if (!isValidUUID(params.eventId) || !isValidUUID(params.contactId))
+  if (!isValidUUID(params.eventId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
+  if (!evOwn.ok) return { success: false, error: evOwn.error }
 
   const supabase = await createClient()
 
@@ -195,6 +251,7 @@ export async function updateRsvp(params: {
     .update({ rsvp_response: params.rsvpResponse, rsvp_updated_at: new Date().toISOString() })
     .eq("event_id", params.eventId)
     .eq("contact_id", params.contactId)
+    .eq("brokerage_id", auth.brokerageId)
 
   await supabase
     .from("open_house_rsvp_tracking")
@@ -212,17 +269,20 @@ export async function updateRsvp(params: {
   return { success: true }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TAB 2 — CREATE QR CODE FOR EVENT
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TAB 2 — CREATE QR CODE FOR EVENT ────────────────────────────────────────
 
 export async function createQrCodeForEvent(params: {
   eventId: string
   listingId: string
-  brokerageId: string
-  agentId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
 }) {
-  if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
+  if (!evOwn.ok) return { success: false, error: evOwn.error }
+
   const supabase = await createClient()
 
   const slug = `oh-${params.eventId.slice(0, 8)}`
@@ -232,8 +292,8 @@ export async function createQrCodeForEvent(params: {
     .from("qr_codes")
     .upsert(
       {
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId,
+        brokerage_id: auth.brokerageId,
+        agent_id: evOwn.event.agent_id ?? auth.agentId,
         label: `Open House Sign-In — ${params.eventId.slice(0, 8)}`,
         slug,
         target_url: targetUrl,
@@ -249,51 +309,52 @@ export async function createQrCodeForEvent(params: {
   if (error) return { success: false, error: error.message }
   if (!qr) return { success: false, error: "Failed to upsert QR code" }
 
-  // Link QR code to event
   await supabase
     .from("open_house_events")
     .update({ qr_code_id: qr.id })
     .eq("id", params.eventId)
+    .eq("brokerage_id", auth.brokerageId)
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, qr }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TAB 2 — END EVENT
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TAB 2 — END EVENT ───────────────────────────────────────────────────────
 
 export async function endOpenHouseEvent(params: {
   eventId: string
   listingId: string
-  brokerageId: string
-  agentId: string
-  userId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
+  userId?: string  // ignored — derived from session
 }) {
-  if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
+  if (!evOwn.ok) return { success: false, error: evOwn.error }
+
   const supabase = await createClient()
   const serviceClient = createServiceClient()
 
-  // 1. Mark event completed
   const { error: updateErr } = await supabase
     .from("open_house_events")
     .update({ status: "completed" })
     .eq("id", params.eventId)
+    .eq("brokerage_id", auth.brokerageId)
 
   if (updateErr) return { success: false, error: updateErr.message }
 
-  // 2. Load attendees for AI scoring
   const { data: attendees } = await supabase
     .from("open_house_attendees")
     .select("id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
     .eq("event_id", params.eventId)
+    .eq("brokerage_id", auth.brokerageId)
 
-  // 3. AI score each attendee and update
   if (attendees?.length) {
     for (const attendee of attendees) {
       let score = 0
 
-      // Time in home estimate (check_in_time vs event end)
       if (attendee.check_in_time) {
         const minsAgo = (Date.now() - new Date(attendee.check_in_time).getTime()) / 60000
         if (minsAgo > 45) score += 20
@@ -302,7 +363,6 @@ export async function endOpenHouseEvent(params: {
         else score += 5
       }
 
-      // Interest level
       const interestMap: Record<string, number> = {
         hot: 40,
         warm: 25,
@@ -310,7 +370,6 @@ export async function endOpenHouseEvent(params: {
       }
       score += interestMap[attendee.interest_level ?? ""] ?? 0
 
-      // Not working with agent → higher prospect value
       if (!attendee.working_with_agent) score += 15
 
       const finalScore = Math.min(score, 100)
@@ -321,42 +380,35 @@ export async function endOpenHouseEvent(params: {
         .from("open_house_attendees")
         .update({ ai_lead_score: finalScore, interest_level: interestLevel })
         .eq("id", attendee.id)
+        .eq("brokerage_id", auth.brokerageId)
     }
 
-    // 4. Auto-enroll hot leads — fire kernel event per hot lead attendee
-    const hotLeads = attendees.filter((_, idx) => {
-      // re-derive score inline to avoid stale closure
-      return true // filtered after update; just fire event for all, let sequence handle it
-    })
-
-    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each unscored attendee not yet processed
+    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each scored attendee — session-derived identity
     for (const attendee of attendees) {
       await serviceClient.from("lifecycle_events").insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: auth.brokerageId,
         entity_type: "listing",
         entity_id: params.listingId,
         event_type: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-        actor_user_id: params.userId,
+        actor_user_id: auth.userId,
         metadata: { attendee_id: attendee.id, scored_at_event_end: true },
       })
     }
   }
 
-  // 5. Call markOpenHouseCompleted from execution-engine (fires LISTING_OPEN_HOUSE_COMPLETED)
   await markOpenHouseCompleted({
     listingId: params.listingId,
-    brokerageId: params.brokerageId,
-    userId: params.userId,
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
     attendeeCount: attendees?.length ?? 0,
   })
 
-  // 6. lifecycle_events sub-event
   await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type: "listing_stage_machine",
     entity_id: params.listingId,
     event_type: "listing.open_house.completed",
-    actor_user_id: params.userId,
+    actor_user_id: auth.userId,
     metadata: { event_id: params.eventId, attendee_count: attendees?.length ?? 0 },
   })
 
@@ -364,12 +416,16 @@ export async function endOpenHouseEvent(params: {
   return { success: true }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TAB 3 — ANALYTICS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TAB 3 — ANALYTICS ───────────────────────────────────────────────────────
 
 export async function getOpenHouseAnalytics(listingId: string) {
   if (!isValidUUID(listingId)) return null
+
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+  const own = await verifyListingOwnership(listingId, auth.brokerageId)
+  if (!own.ok) return null
+
   const supabase = await createClient()
 
   const { data: events } = await supabase
@@ -406,7 +462,6 @@ export async function getOpenHouseAnalytics(listingId: string) {
         : 0,
   }
 
-  // Per-event breakdown
   const perEvent = events.map((ev) => {
     const evInvites = invitations?.filter((i) => i.event_id === ev.id) ?? []
     const evAttendees = attendees?.filter((a) => a.event_id === ev.id) ?? []
@@ -422,33 +477,34 @@ export async function getOpenHouseAnalytics(listingId: string) {
   return { events: perEvent, totals }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CREATE OPEN HOUSE EVENT
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── CREATE OPEN HOUSE EVENT ─────────────────────────────────────────────────
 
 export async function createOpenHouseEvent(params: {
   listingId: string
-  brokerageId: string
-  agentId: string
-  userId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
+  userId?: string  // ignored — derived from session
   eventDate: string
   startTime: string
   endTime: string
   description?: string
   maxAttendees?: number
 }) {
-  if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = await createClient()
+  const own = await verifyListingOwnership(params.listingId, auth.brokerageId)
+  if (!own.ok) return { success: false, error: own.error }
+
   const serviceClient = createServiceClient()
 
   const { data: event, error } = await serviceClient
     .from("open_house_events")
     .insert({
       listing_id: params.listingId,
-      brokerage_id: params.brokerageId,
-      agent_id: params.agentId,
-      created_by: params.userId,
+      brokerage_id: auth.brokerageId,
+      agent_id: auth.agentId ?? auth.userId,
+      created_by: auth.userId,
       event_date: params.eventDate,
       start_time: params.startTime,
       end_time: params.endTime,
@@ -463,13 +519,12 @@ export async function createOpenHouseEvent(params: {
   if (error) return { success: false, error: error.message }
   if (!event) return { success: false, error: "Failed to create event" }
 
-  // Emit OPEN_HOUSE_SCHEDULED kernel event
   await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type: "listing",
     entity_id: params.listingId,
     event_type: KernelEvent.OPEN_HOUSE_SCHEDULED,
-    actor_user_id: params.userId,
+    actor_user_id: auth.userId,
     metadata: { event_id: event.id, event_date: params.eventDate },
   })
 
@@ -477,9 +532,7 @@ export async function createOpenHouseEvent(params: {
   return { success: true, event }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// KIOSK: CHECK IN ATTENDEE (public — no auth)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── KIOSK: CHECK IN ATTENDEE (public — no auth, scoped via eventId lookup) ──
 
 export async function checkInAttendee(params: {
   eventId: string
@@ -492,22 +545,25 @@ export async function checkInAttendee(params: {
   if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
   if (!params.tcpaConsent) return { success: false, error: "TCPA consent is required" }
 
-  // Use service client — this is a public endpoint with no auth context
+  // Public kiosk endpoint — no caller auth. Brokerage is derived from the
+  // event itself, so an attacker can only create attendees against an event
+  // they know the UUID of (and only stamps the attendee with that event's
+  // brokerage). They cannot forge cross-tenant data.
   const serviceClient = createServiceClient()
 
-  // Load event to get brokerage_id
   const { data: event } = await serviceClient
     .from("open_house_events")
-    .select("id, brokerage_id, listing_id, agent_id")
+    .select("id, brokerage_id, listing_id, agent_id, status")
     .eq("id", params.eventId)
     .maybeSingle()
 
   if (!event) return { success: false, error: "Event not found" }
+  if (event.status === "completed" || event.status === "cancelled") {
+    return { success: false, error: "Event is not accepting check-ins" }
+  }
 
-  // TCPA rule: only store phone if consent given
   const safePhone = params.tcpaConsent ? (params.phone ?? null) : null
 
-  // Check for duplicate check-in (same email + same event)
   if (params.email) {
     const { data: existing } = await serviceClient
       .from("open_house_attendees")
@@ -521,7 +577,6 @@ export async function checkInAttendee(params: {
     }
   }
 
-  // Insert attendee row
   const { data: attendee, error } = await serviceClient
     .from("open_house_attendees")
     .insert({
@@ -542,7 +597,6 @@ export async function checkInAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  // Emit kernel event
   await serviceClient.from("lifecycle_events").insert({
     brokerage_id: event.brokerage_id,
     entity_type: "listing",
@@ -557,7 +611,6 @@ export async function checkInAttendee(params: {
     },
   })
 
-  // Record TCPA consent event
   if (params.email || safePhone) {
     await serviceClient.from("contact_consent_events").insert({
       brokerage_id: event.brokerage_id,
@@ -572,43 +625,42 @@ export async function checkInAttendee(params: {
   return { success: true, attendeeId: attendee?.id, duplicate: false }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST-EVENT: CONVERT ATTENDEE TO CONTACT
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── POST-EVENT: CONVERT ATTENDEE TO CONTACT ─────────────────────────────────
 
 export async function convertAttendeeToContact(params: {
   attendeeId: string
   listingId: string
-  brokerageId: string
-  agentId: string
-  userId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
+  userId?: string  // ignored — derived from session
 }) {
   if (!isValidUUID(params.attendeeId)) return { success: false, error: "Invalid attendee ID" }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
   const serviceClient = createServiceClient()
 
-  // Load attendee
   const { data: attendee } = await supabase
     .from("open_house_attendees")
-    .select("id, name, email, phone, tcpa_consent, contact_id, event_id")
+    .select("id, name, email, phone, tcpa_consent, contact_id, event_id, brokerage_id")
     .eq("id", params.attendeeId)
     .maybeSingle()
 
   if (!attendee) return { success: false, error: "Attendee not found" }
+  if (attendee.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
   if (attendee.contact_id) return { success: false, error: "Already converted to contact" }
   if (!attendee.email) return { success: false, error: "Attendee has no email address" }
 
-  // Parse name
   const nameParts = (attendee.name ?? "").trim().split(/\s+/)
   const firstName = nameParts[0] ?? "Open House"
   const lastName = nameParts.slice(1).join(" ") || "Attendee"
 
-  // Check if contact already exists (by email + brokerage)
   const { data: existingContact } = await supabase
     .from("contacts")
     .select("id")
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .eq("email", attendee.email)
     .is("deleted_at", null)
     .maybeSingle()
@@ -618,12 +670,11 @@ export async function convertAttendeeToContact(params: {
   if (existingContact) {
     contactId = existingContact.id
   } else {
-    // Create new contact
     const { data: newContact, error: contactErr } = await serviceClient
       .from("contacts")
       .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId,
+        brokerage_id: auth.brokerageId,
+        agent_id: auth.agentId,
         first_name: firstName,
         last_name: lastName,
         email: attendee.email,
@@ -641,46 +692,58 @@ export async function convertAttendeeToContact(params: {
     if (contactErr || !newContact) return { success: false, error: contactErr?.message ?? "Failed to create contact" }
     contactId = newContact.id
 
-    // Emit kernel event
     await serviceClient.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       entity_type: "contact",
       entity_id: contactId,
       event_type: KernelEvent.CONTACT_CREATED,
-      actor_user_id: params.userId,
+      actor_user_id: auth.userId,
       metadata: { source: "open_house", attendee_id: params.attendeeId, listing_id: params.listingId },
     })
   }
 
-  // Link attendee → contact
   await supabase
     .from("open_house_attendees")
     .update({ contact_id: contactId })
     .eq("id", params.attendeeId)
+    .eq("brokerage_id", auth.brokerageId)
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, contactId, isNew: !existingContact }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST-EVENT: SCHEDULE SHOWING FROM ATTENDEE
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── POST-EVENT: SCHEDULE SHOWING FROM ATTENDEE ──────────────────────────────
 
 export async function scheduleShowingFromAttendee(params: {
   attendeeId: string
   contactId: string
   listingId: string
-  brokerageId: string
-  agentId: string
-  userId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
+  userId?: string  // ignored — derived from session
 }) {
-  if (!isValidUUID(params.attendeeId) || !isValidUUID(params.contactId))
+  if (!isValidUUID(params.attendeeId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
+  }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // Verify both the contact and the listing belong to caller's brokerage
   const supabase = await createClient()
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact || contact.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+  const lstOwn = await verifyListingOwnership(params.listingId, auth.brokerageId)
+  if (!lstOwn.ok) return { success: false, error: lstOwn.error }
+
   const serviceClient = createServiceClient()
 
-  // Create a showing_request
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
   const requestedDate = tomorrow.toISOString().slice(0, 10)
@@ -689,7 +752,7 @@ export async function scheduleShowingFromAttendee(params: {
     .from("showing_requests")
     .insert({
       listing_id: params.listingId,
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       contact_id: params.contactId,
       requested_date: requestedDate,
       requested_start_time: "10:00",
@@ -702,13 +765,12 @@ export async function scheduleShowingFromAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  // Emit kernel event
   await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type: "listing",
     entity_id: params.listingId,
     event_type: KernelEvent.SHOWING_REQUESTED,
-    actor_user_id: params.userId,
+    actor_user_id: auth.userId,
     metadata: {
       source: "open_house_post_event",
       attendee_id: params.attendeeId,
@@ -721,26 +783,37 @@ export async function scheduleShowingFromAttendee(params: {
   return { success: true, showingRequestId: showingReq?.id }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST-EVENT: REQUEST FEEDBACK FROM ATTENDEE
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── POST-EVENT: REQUEST FEEDBACK FROM ATTENDEE ──────────────────────────────
 
 export async function requestFeedbackFromAttendee(params: {
   attendeeId: string
   eventId: string
   listingId: string
-  brokerageId: string
-  agentId: string
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
 }) {
   if (!isValidUUID(params.attendeeId)) return { success: false, error: "Invalid attendee ID" }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
-  // Mark feedback as requested via departure_time update + feedback_collected_at
+  // Verify attendee belongs to caller's brokerage
+  const { data: attendee } = await supabase
+    .from("open_house_attendees")
+    .select("brokerage_id")
+    .eq("id", params.attendeeId)
+    .maybeSingle()
+  if (!attendee || attendee.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
   const { error } = await supabase
     .from("open_house_attendees")
     .update({ feedback_collected_at: new Date().toISOString() })
     .eq("id", params.attendeeId)
+    .eq("brokerage_id", auth.brokerageId)
     .is("feedback_collected_at", null)
 
   if (error) return { success: false, error: error.message }
@@ -749,16 +822,18 @@ export async function requestFeedbackFromAttendee(params: {
   return { success: true }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST-EVENT: GENERATE AI SUMMARY
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── POST-EVENT: GENERATE AI SUMMARY ─────────────────────────────────────────
 
 export async function generateOpenHouseAISummary(params: {
   eventId: string
   listingId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
 }) {
-  if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
+  if (!evOwn.ok) return { success: false, error: evOwn.error }
 
   const supabase = await createClient()
 
@@ -766,21 +841,15 @@ export async function generateOpenHouseAISummary(params: {
     .from("open_house_attendees")
     .select("name, email, phone, working_with_agent, interest_level, ai_lead_score, notes")
     .eq("event_id", params.eventId)
+    .eq("brokerage_id", auth.brokerageId)
 
   if (!attendees?.length) {
     return { success: true, summary: "No attendees recorded for this open house event." }
   }
 
-  const { data: event } = await supabase
-    .from("open_house_events")
-    .select("event_date, description")
-    .eq("id", params.eventId)
-    .maybeSingle()
-
   const hotProspects = attendees.filter((a) => (a.ai_lead_score ?? 0) >= 70 || a.interest_level === "hot")
   const noAgent = attendees.filter((a) => !a.working_with_agent)
 
-  // Build contextual summary from real data
   const lines: string[] = []
   lines.push(`${attendees.length} attendee${attendees.length !== 1 ? "s" : ""} checked in.`)
 
@@ -808,9 +877,7 @@ export async function generateOpenHouseAISummary(params: {
   return { success: true, summary }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// KIOSK: LOAD EVENT INFO (public — no auth)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── KIOSK: LOAD EVENT INFO (public — no auth) ───────────────────────────────
 
 export async function getOpenHouseEventPublic(eventId: string) {
   if (!isValidUUID(eventId)) return null
@@ -833,12 +900,15 @@ export async function getOpenHouseEventPublic(eventId: string) {
   return event
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INTELLIGENCE TAB: LOAD POST-EVENT DATA
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── INTELLIGENCE TAB: LOAD POST-EVENT DATA ──────────────────────────────────
 
 export async function getPostEventIntelligence(listingId: string) {
   if (!isValidUUID(listingId)) return null
+
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+  const own = await verifyListingOwnership(listingId, auth.brokerageId)
+  if (!own.ok) return null
 
   const supabase = await createClient()
 
