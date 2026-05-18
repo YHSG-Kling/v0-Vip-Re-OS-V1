@@ -495,10 +495,30 @@ export async function resolvePriceTrendAlert(
   alertId: string
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+  // Verify the alert belongs to caller's brokerage before resolving
+  const { data: existing } = await supabase
+    .from("price_trend_alerts")
+    .select("brokerage_id")
+    .eq("id", alertId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Alert not found" }
+  if (existing.brokerage_id !== u.brokerage_id) return { success: false, error: "Forbidden" }
+
   const { error } = await supabase
     .from("price_trend_alerts")
     .update({ is_resolved: true, resolved_at: new Date().toISOString() })
     .eq("id", alertId)
+    .eq("brokerage_id", u.brokerage_id)
 
   return { success: !error, error: error?.message }
 }
