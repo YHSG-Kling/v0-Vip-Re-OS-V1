@@ -112,11 +112,36 @@ export async function getAgentPortalStream(params: {
   limit?:    number
 }): Promise<{ success: boolean; error?: string; rows?: PortalStreamRow[] }> {
   if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact id" }
+
+  // Auth gate — agent stream contains both agent_copy + customer_copy
+  // (full event detail, suggested actions, etc.) Was previously
+  // unauthenticated; any signed-in user could pull any contact's stream.
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
+
   const { data, error } = await supabase
     .from("portal_event_stream")
     .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
     .eq("contact_id", params.contactId)
+    .eq("brokerage_id", callerRow.brokerage_id)
     .order("occurred_at", { ascending: false })
     .limit(params.limit ?? 50)
   if (error) return { success: false, error: error.message }
@@ -128,10 +153,22 @@ export async function getAgentPortalStream(params: {
 export async function getOpenAgentActions(params?: {
   limit?: number
 }): Promise<{ success: boolean; error?: string; rows?: PortalStreamRow[] }> {
+  // Auth gate — brokerage-wide action queue. Was previously open; any
+  // signed-in user could read every brokerage's unresolved agent actions.
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   const { data, error } = await supabase
     .from("portal_event_stream")
     .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
+    .eq("brokerage_id", callerRow.brokerage_id)
     .eq("agent_action_required", true)
     .eq("agent_action_status", "open")
     .order("severity", { ascending: false })
@@ -139,7 +176,7 @@ export async function getOpenAgentActions(params?: {
     .limit(params?.limit ?? 20)
   if (error) return { success: false, error: error.message }
 
-  // Hydrate contact names for the queue UI
+  // Hydrate contact names for the queue UI — also scoped to caller's brokerage
   const contactIds = Array.from(new Set((data ?? []).map((r) => (r as RawRow).contact_id)))
   const nameMap = new Map<string, string>()
   if (contactIds.length > 0) {
@@ -147,6 +184,7 @@ export async function getOpenAgentActions(params?: {
       .from("contacts")
       .select("id, first_name, last_name")
       .in("id", contactIds)
+      .eq("brokerage_id", callerRow.brokerage_id)
     for (const c of (contacts ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
       const name = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim()
       if (name) nameMap.set(c.id, name)
