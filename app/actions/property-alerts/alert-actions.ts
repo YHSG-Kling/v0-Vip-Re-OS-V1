@@ -5,17 +5,121 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { runAlert } from "@/lib/property-alerts/alert-engine"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 
-// ── Auth helper ───────────────────────────────────────────────────────────────
-async function getAuthUser() {
+// ── Auth helpers ─────────────────────────────────────────────────────────────
+//
+// Property alerts have two distinct caller types:
+//   1. Agents — work inside the CRM dashboard, scoped by brokerage_id
+//   2. Buyers (contacts) — log in via /api/auth/contact-login, scoped by
+//      contacts.contact_user_id = auth.uid()
+//
+// Previous version of this file: most functions had no auth, and the
+// callers that did have auth still trusted caller-supplied brokerageId /
+// contactId, which is an IDOR vulnerability.
+
+async function requireAgent(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  return user
+  if (!user) return { ok: false, error: "unauthenticated" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "unauthenticated" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+// Verify the caller can access the named alert: either the agent (same
+// brokerage) or the buyer the alert is for (contact.contact_user_id matches
+// auth.uid() OR contact.email matches user.email).
+async function requireAlertAccess(alertId: string): Promise<
+  | { ok: true; alert: { id: string; contact_id: string; brokerage_id: string; agent_user_id: string | null } }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "unauthenticated" }
+
+  const svc = createServiceClient()
+  const { data: alert } = await svc
+    .from("property_alerts")
+    .select("id, contact_id, brokerage_id, agent_user_id")
+    .eq("id", alertId)
+    .maybeSingle()
+  if (!alert) return { ok: false, error: "alert not found" }
+
+  // Agent / staff path: same brokerage
+  const { data: u } = await svc
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (u?.brokerage_id && u.brokerage_id === alert.brokerage_id) {
+    return { ok: true, alert }
+  }
+
+  // Buyer path: the contact this alert is for is the logged-in user
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("id, contact_user_id, email")
+    .eq("id", alert.contact_id)
+    .maybeSingle()
+  if (
+    contact &&
+    (contact.contact_user_id === user.id ||
+      (contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase()))
+  ) {
+    return { ok: true, alert }
+  }
+
+  return { ok: false, error: "forbidden" }
+}
+
+// Buyer-only access: enforce that the logged-in user is the contact.
+async function requireBuyerAccess(contactId: string): Promise<
+  | { ok: true; userId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "unauthenticated" }
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("id, contact_user_id, email, brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact) return { ok: false, error: "contact not found" }
+
+  // Either: the buyer logged in as themselves
+  if (
+    contact.contact_user_id === user.id ||
+    (contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase())
+  ) {
+    return { ok: true, userId: user.id }
+  }
+
+  // OR: the caller is an agent in the same brokerage acting on the buyer's behalf
+  const { data: u } = await svc
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (u?.brokerage_id && u.brokerage_id === contact.brokerage_id) {
+    return { ok: true, userId: user.id }
+  }
+
+  return { ok: false, error: "forbidden" }
 }
 
 // ── createPropertyAlert ──────────────────────────────────────────────────────
 export async function createPropertyAlert(params: {
   contactId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — stamped from session
   alertName?: string
   minPrice?: number
   maxPrice?: number
@@ -38,46 +142,55 @@ export async function createPropertyAlert(params: {
   deliveryChannels?: string[]
   maxResultsPerAlert?: number
 }) {
-  const user = await getAuthUser()
-  if (!user) return { success: false, error: "unauthenticated" }
+  const auth = await requireAgent()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = createServiceClient()
-  const { data, error } = await supabase
+  const svc = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage before creating an alert for them
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "contact not found" }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "forbidden" }
+
+  const { data, error } = await svc
     .from("property_alerts")
     .insert({
-      brokerage_id:               params.brokerageId,
-      contact_id:                 params.contactId,
-      agent_user_id:              user.id,
-      alert_name:                 params.alertName ?? "Property Alert",
-      source:                     "agent_created",
-      min_price:                  params.minPrice ?? null,
-      max_price:                  params.maxPrice ?? null,
-      bedrooms_min:               params.bedroomsMin ?? null,
-      bathrooms_min:              params.bathroomsMin ?? null,
-      property_types:             params.propertyTypes ?? [],
-      cities:                     params.cities ?? [],
-      zip_codes:                  params.zipCodes ?? [],
-      min_sqft:                   params.minSqft ?? null,
-      max_sqft:                   params.maxSqft ?? null,
-      year_built_min:             params.yearBuiltMin ?? null,
-      must_have_features:         params.mustHaveFeatures ?? [],
-      keywords:                   params.keywords ?? null,
-      max_days_on_market:         params.maxDaysOnMarket ?? null,
-      new_listings_only:          params.newListingsOnly ?? true,
-      include_coming_soon:        params.includeComingSoon ?? true,
-      include_price_reductions:   params.includePriceReductions ?? true,
+      brokerage_id:                auth.brokerageId,  // from session, not params
+      contact_id:                  params.contactId,
+      agent_user_id:               auth.userId,
+      alert_name:                  params.alertName ?? "Property Alert",
+      source:                      "agent_created",
+      min_price:                   params.minPrice ?? null,
+      max_price:                   params.maxPrice ?? null,
+      bedrooms_min:                params.bedroomsMin ?? null,
+      bathrooms_min:               params.bathroomsMin ?? null,
+      property_types:              params.propertyTypes ?? [],
+      cities:                      params.cities ?? [],
+      zip_codes:                   params.zipCodes ?? [],
+      min_sqft:                    params.minSqft ?? null,
+      max_sqft:                    params.maxSqft ?? null,
+      year_built_min:              params.yearBuiltMin ?? null,
+      must_have_features:          params.mustHaveFeatures ?? [],
+      keywords:                    params.keywords ?? null,
+      max_days_on_market:          params.maxDaysOnMarket ?? null,
+      new_listings_only:           params.newListingsOnly ?? true,
+      include_coming_soon:         params.includeComingSoon ?? true,
+      include_price_reductions:    params.includePriceReductions ?? true,
       price_reduction_min_percent: params.priceReductionMinPercent ?? 2,
-      frequency:                  params.frequency ?? "daily",
-      delivery_channels:          params.deliveryChannels ?? ["email", "in_app"],
-      max_results_per_alert:      params.maxResultsPerAlert ?? 10,
-      is_active:                  true,
+      frequency:                   params.frequency ?? "daily",
+      delivery_channels:           params.deliveryChannels ?? ["email", "in_app"],
+      max_results_per_alert:       params.maxResultsPerAlert ?? 10,
+      is_active:                   true,
     })
     .select("id")
     .single()
 
   if (error) return { success: false, error: error.message }
 
-  // Instant frequency → run immediately
   if (params.frequency === "instant") {
     await runAlert(data.id)
   }
@@ -90,18 +203,22 @@ export async function updatePropertyAlert(
   alertId: string,
   updates: Record<string, any>
 ) {
-  const user = await getAuthUser()
-  if (!user) return { success: false, error: "unauthenticated" }
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
-  const supabase = createServiceClient()
-  const { error } = await supabase
+  // Block re-parenting attacks: callers can't move alerts between brokerages
+  // or rewrite ownership via the updates blob.
+  const { brokerage_id: _b, contact_id: _c, agent_user_id: _a, id: _i, ...safeUpdates } = updates
+
+  const svc = createServiceClient()
+  const { error } = await svc
     .from("property_alerts")
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update({ ...safeUpdates, updated_at: new Date().toISOString() })
     .eq("id", alertId)
+    .eq("brokerage_id", gate.alert.brokerage_id)
 
   if (error) return { success: false, error: error.message }
 
-  // Reactivating → run immediately
   if (updates.is_active === true) {
     await runAlert(alertId)
   }
@@ -110,22 +227,34 @@ export async function updatePropertyAlert(
 }
 
 // ── pausePropertyAlert ────────────────────────────────────────────────────────
-export async function pausePropertyAlert(alertId: string, pausedBy: string) {
-  const supabase = createServiceClient()
-  const { error } = await supabase
+export async function pausePropertyAlert(alertId: string, _pausedBy?: string) {
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const svc = createServiceClient()
+  const { error } = await svc
     .from("property_alerts")
-    .update({ is_active: false, paused_by: pausedBy, updated_at: new Date().toISOString() })
+    .update({
+      is_active: false,
+      paused_by: gate.alert.agent_user_id,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", alertId)
+    .eq("brokerage_id", gate.alert.brokerage_id)
   return error ? { success: false, error: error.message } : { success: true }
 }
 
 // ── resumePropertyAlert ───────────────────────────────────────────────────────
 export async function resumePropertyAlert(alertId: string) {
-  const supabase = createServiceClient()
-  const { error } = await supabase
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const svc = createServiceClient()
+  const { error } = await svc
     .from("property_alerts")
     .update({ is_active: true, paused_by: null, paused_reason: null, updated_at: new Date().toISOString() })
     .eq("id", alertId)
+    .eq("brokerage_id", gate.alert.brokerage_id)
   if (error) return { success: false, error: error.message }
   await runAlert(alertId)
   return { success: true }
@@ -133,8 +262,15 @@ export async function resumePropertyAlert(alertId: string) {
 
 // ── deletePropertyAlert ───────────────────────────────────────────────────────
 export async function deletePropertyAlert(alertId: string) {
-  const supabase = createServiceClient()
-  const { error } = await supabase.from("property_alerts").delete().eq("id", alertId)
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const svc = createServiceClient()
+  const { error } = await svc
+    .from("property_alerts")
+    .delete()
+    .eq("id", alertId)
+    .eq("brokerage_id", gate.alert.brokerage_id)
   return error ? { success: false, error: error.message } : { success: true }
 }
 
@@ -143,8 +279,11 @@ export async function getAlertResults(
   alertId: string,
   options?: { filter?: "all" | "new_listings" | "price_reductions" | "not_viewed"; limit?: number }
 ) {
-  const supabase = createServiceClient()
-  let query = supabase
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error, results: [] }
+
+  const svc = createServiceClient()
+  let query = svc
     .from("property_alert_results")
     .select("*")
     .eq("alert_id", alertId)
@@ -158,7 +297,7 @@ export async function getAlertResults(
   const { data, error } = await query
   if (error) return { success: false, error: error.message, results: [] }
 
-  const { count: unviewedCount } = await supabase
+  const { count: unviewedCount } = await svc
     .from("property_alert_results")
     .select("id", { count: "exact", head: true })
     .eq("alert_id", alertId)
@@ -169,8 +308,11 @@ export async function getAlertResults(
 
 // ── getBuyerAlertSummary ──────────────────────────────────────────────────────
 export async function getBuyerAlertSummary(contactId: string) {
-  const supabase = createServiceClient()
-  const { data: alerts, error } = await supabase
+  const gate = await requireBuyerAccess(contactId)
+  if (!gate.ok) return { success: false, error: gate.error, alerts: [] }
+
+  const svc = createServiceClient()
+  const { data: alerts, error } = await svc
     .from("property_alerts")
     .select("*")
     .eq("contact_id", contactId)
@@ -178,10 +320,9 @@ export async function getBuyerAlertSummary(contactId: string) {
 
   if (error) return { success: false, error: error.message, alerts: [] }
 
-  // Fetch unviewed count per alert
   const enriched = await Promise.all(
     (alerts ?? []).map(async alert => {
-      const { count } = await supabase
+      const { count } = await svc
         .from("property_alert_results")
         .select("id", { count: "exact", head: true })
         .eq("alert_id", alert.id)
@@ -195,8 +336,11 @@ export async function getBuyerAlertSummary(contactId: string) {
 
 // ── markResultViewed ──────────────────────────────────────────────────────────
 export async function markResultViewed(resultId: string, contactId: string) {
-  const supabase = createServiceClient()
-  const { error } = await supabase
+  const gate = await requireBuyerAccess(contactId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const svc = createServiceClient()
+  const { error } = await svc
     .from("property_alert_results")
     .update({ buyer_viewed: true, buyer_viewed_at: new Date().toISOString() })
     .eq("id", resultId)
@@ -211,30 +355,40 @@ export async function buyerAdjustAlert(
   contactId: string,
   updates: { frequency?: string; delivery_channels?: string[]; is_active?: boolean }
 ) {
+  const gate = await requireBuyerAccess(contactId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
   const allowed: Record<string, any> = {}
   if (updates.frequency         != null) allowed.frequency          = updates.frequency
   if (updates.delivery_channels != null) allowed.delivery_channels  = updates.delivery_channels
   if (updates.is_active         != null) allowed.is_active          = updates.is_active
 
-  const supabase = createServiceClient()
-  const { error } = await supabase
+  const svc = createServiceClient()
+  const { error } = await svc
     .from("property_alerts")
     .update({ ...allowed, updated_at: new Date().toISOString() })
     .eq("id", alertId)
-    .eq("contact_id", contactId) // scope to buyer
+    .eq("contact_id", contactId)
   return error ? { success: false, error: error.message } : { success: true }
 }
 
 // ── runAlertNow ───────────────────────────────────────────────────────────────
 export async function runAlertNow(alertId: string) {
+  const gate = await requireAlertAccess(alertId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
   const result = await runAlert(alertId)
   return { success: result.success, matchCount: result.propertiesMatched, error: result.error }
 }
 
 // ── testIdxConnection ─────────────────────────────────────────────────────────
-export async function testIdxConnection(brokerageId: string) {
+export async function testIdxConnection(brokerageId?: string) {
+  const auth = await requireAgent()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // Ignore caller-supplied brokerageId — always use session's
   try {
-    const client = await IDXBrokerClient.forBrokerage(brokerageId)
+    const client = await IDXBrokerClient.forBrokerage(auth.brokerageId)
     if (!client.isConfigured()) {
       return { success: false, error: "No API key configured for this brokerage" }
     }
@@ -246,15 +400,18 @@ export async function testIdxConnection(brokerageId: string) {
 }
 
 // ── previewAlertCriteria ──────────────────────────────────────────────────────
-// Test search without creating — returns match count
 export async function previewAlertCriteria(
   criteria: Record<string, any>,
-  brokerageId: string
+  brokerageId?: string
 ) {
+  const auth = await requireAgent()
+  if (!auth.ok) return { success: false, matchCount: 0, error: auth.error }
+
   try {
     const { searchIDXForAlert } = await import("@/lib/property-alerts/idx-alert-search")
     const { scorePropertyForAlert } = await import("@/lib/property-alerts/alert-matcher")
-    const result = await searchIDXForAlert("preview", criteria, brokerageId)
+    // Always use session brokerage
+    const result = await searchIDXForAlert("preview", criteria, auth.brokerageId)
     const matched = result.results.filter(p => scorePropertyForAlert(p, criteria).qualifies).length
     return { success: true, matchCount: matched, configured: result.api_called, error: result.error }
   } catch (err: any) {
@@ -264,8 +421,11 @@ export async function previewAlertCriteria(
 
 // ── prefillFromProfile ────────────────────────────────────────────────────────
 export async function prefillFromProfile(contactId: string) {
-  const supabase = createServiceClient()
-  const { data } = await supabase
+  const gate = await requireBuyerAccess(contactId)
+  if (!gate.ok) return { success: false, error: gate.error, profile: null }
+
+  const svc = createServiceClient()
+  const { data } = await svc
     .from("property_interests")
     .select("*")
     .eq("contact_id", contactId)

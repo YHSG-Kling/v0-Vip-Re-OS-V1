@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 // generateObjectRouted replaces direct `generateText` from "ai" — keeps
 // brokerage routing + fallback + gateway wrapping for structured outputs.
 import { generateObjectRouted } from "@/lib/ai/models"
@@ -520,13 +521,19 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 // ============================================
 export async function submitCompleteOffer(params: OfferCreationParams) {
   try {
-    if (!isValidUUID(params.agentId) || !isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
+    // Resolve identity from session — ignore caller-supplied agentId
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    if (!isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
       return { success: false, error: "Invalid IDs provided" }
     }
 
     const supabase = await createClient()
 
-    // Get listing details
+    // Get listing details — RLS handles cross-brokerage visibility for buyer-side offers
     const { data: listing } = await supabase
       .from("listings")
       .select("*, agent_id, seller_id, address, state")
@@ -537,11 +544,24 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       return { success: false, error: "Listing not found" }
     }
 
-    // Create transaction record
+    // Verify the buyer belongs to the caller's brokerage
+    const { data: buyer } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.buyerId)
+      .maybeSingle()
+    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const effectiveAgentId = ctx.agentId ?? ctx.userId
+
+    // Create transaction record — agent/brokerage from session, not params
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
-        agent_id: params.agentId,
+        agent_id: effectiveAgentId,
+        brokerage_id: ctx.brokerageId,
         buyer_id: params.buyerId,
         listing_id: params.listingId,
         deal_type: "buyer_side",
@@ -580,7 +600,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     // Create Dotloop
     const dotloopResult = await createOfferDotloop({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       buyerId: params.buyerId,
       propertyAddress: listing.address,
       transactionId: transaction.id,
@@ -634,6 +654,13 @@ export async function runCompleteOfferWorkflow(params: {
   whyThisHome?: string
 }) {
   try {
+    // Auth gate — workflow chain makes paid AI calls
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const effectiveAgentId = ctx.agentId ?? ctx.userId
+
     const supabase = await createClient()
 
     // Get listing details
@@ -647,16 +674,19 @@ export async function runCompleteOfferWorkflow(params: {
       return { success: false, error: "Listing not found" }
     }
 
-    // Get buyer details
+    // Buyer must belong to caller's brokerage
     const { data: buyer } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.buyerId)
       .single()
+    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // Step 1: AI Strategy
     const strategyResult = await aiOfferStrategyAdvisor({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       buyerId: params.buyerId,
       listingId: params.listingId,
       listPrice: listing.price,
@@ -696,7 +726,7 @@ export async function runCompleteOfferWorkflow(params: {
       params.whyThisHome
     ) {
       letterResult = await aiGenerateBuyerLetter({
-        agentId: params.agentId,
+        agentId: effectiveAgentId,
         buyerFirstName: buyer?.first_name || "Buyer",
         buyerStory: params.buyerStory,
         propertyAddress: listing.address,

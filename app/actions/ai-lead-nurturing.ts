@@ -15,6 +15,25 @@ import { z } from "zod"
 // Smart drip campaigns, engagement scoring, and automated follow-ups
 // ============================================================================
 
+// Auth gate — all AI functions in this file run paid AI inference and write
+// to contacts/leads/campaigns. Without an explicit auth check, callers could
+// burn money + write to rows whose access is only governed by RLS.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 /**
  * AI-powered lead scoring with behavioral analysis
  */
@@ -22,6 +41,9 @@ export async function aiCalculateLeadScore(params: {
   contactId: string
   agentId: string
 }): Promise<{ success: boolean; score?: number; factors?: any; recommendations?: string[]; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs provided" }
   }
@@ -29,11 +51,13 @@ export async function aiCalculateLeadScore(params: {
   const supabase = await createClient()
 
   try {
-    // Get contact data
+    // Get contact data — scope to caller's brokerage to prevent burning AI $$$
+    // on cross-tenant probing.
     const { data: contact } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     if (!contact) {
@@ -153,6 +177,9 @@ export async function aiGenerateDripCampaign(params: {
   campaignType: "buyer_nurture" | "seller_nurture" | "lifetime_customer" | "sphere" | "investor" | "relocation"
   duration: "30_days" | "60_days" | "90_days" | "6_months" | "12_months"
 }): Promise<{ success: boolean; campaign?: any; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs provided" }
   }
@@ -160,17 +187,19 @@ export async function aiGenerateDripCampaign(params: {
   const supabase = await createClient()
 
   try {
-    // Get contact and agent info
+    // Scope contact + agent to caller's brokerage
     const { data: contact } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     const { data: agent } = await supabase
       .from("agents")
       .select("*")
       .eq("id", params.agentId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     if (!contact) {
@@ -226,12 +255,13 @@ Include market updates, educational content, and soft check-ins.
 Make content warm and personal, not salesy.`,
     })
 
-    // Save campaign
+    // Save campaign — stamp brokerage_id from session
     const { data: savedCampaign, error } = await supabase
       .from("campaign_sequences")
       .insert({
         agent_id: params.agentId,
         contact_id: params.contactId,
+        brokerage_id: auth.brokerageId,
         campaign_type: params.campaignType,
         campaign_name: campaign.campaignName,
         description: campaign.description,
@@ -261,6 +291,9 @@ export async function aiSuggestFollowUp(params: {
   contactId: string
   agentId: string
 }): Promise<{ success: boolean; suggestions?: any[]; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs provided" }
   }
@@ -268,11 +301,12 @@ export async function aiSuggestFollowUp(params: {
   const supabase = await createClient()
 
   try {
-    // Get contact with recent activity
+    // Scope contact lookup to caller's brokerage
     const { data: contact } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     const { data: recentInteractions } = await supabase
@@ -340,6 +374,9 @@ export async function aiDistributeLead(params: {
   leadId: string
   teamId: string
 }): Promise<{ success: boolean; assignedTo?: string; reason?: string; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.leadId) || !isValidUUID(params.teamId)) {
     return { success: false, error: "Invalid IDs provided" }
   }
@@ -347,11 +384,12 @@ export async function aiDistributeLead(params: {
   const supabase = await createClient()
 
   try {
-    // Get lead info
+    // Scope lead lookup to caller's brokerage
     const { data: lead } = await supabase
       .from("leads")
       .select("*")
       .eq("id", params.leadId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     // Get team agents
@@ -420,7 +458,7 @@ ${agentMetrics.map((a) => `
 Consider: agent expertise, workload balance, location match, and lead type fit.`,
     })
 
-    // Assign lead
+    // Assign lead — scoped to caller's brokerage
     await supabase
       .from("leads")
       .update({
@@ -429,6 +467,7 @@ Consider: agent expertise, workload balance, location match, and lead type fit.`
         ai_assignment_reason: assignment.reason,
       })
       .eq("id", params.leadId)
+      .eq("brokerage_id", auth.brokerageId)
 
     revalidatePath("/leads")
     return {
@@ -450,6 +489,9 @@ export async function aiBatchReengagement(params: {
   daysInactive: number
   maxLeads?: number
 }): Promise<{ success: boolean; reengagementPlan?: any; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -460,11 +502,12 @@ export async function aiBatchReengagement(params: {
   try {
     const inactiveDate = new Date(Date.now() - params.daysInactive * 24 * 60 * 60 * 1000).toISOString()
 
-    // Get cold leads
+    // Get cold leads — scoped to caller's brokerage
     const { data: coldLeads } = await supabase
       .from("contacts")
       .select("*")
       .eq("agent_id", params.agentId)
+      .eq("brokerage_id", auth.brokerageId)
       .lt("last_contact_date", inactiveDate)
       .in("status", ["contacted", "qualified", "nurturing"])
       .limit(maxLeads)
@@ -515,6 +558,9 @@ Include a mix of email and SMS templates.`,
 export async function aiPredictConversion(params: {
   contactId: string
 }): Promise<{ success: boolean; prediction?: any; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid contact ID" }
   }
@@ -526,6 +572,7 @@ export async function aiPredictConversion(params: {
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
 
     const { data: interactions } = await supabase
@@ -567,7 +614,7 @@ ${JSON.stringify(propertyViews?.slice(0, 20), null, 2)}
 Analyze engagement patterns, timeline, and behavior to predict conversion likelihood.`,
     })
 
-    // Update contact with prediction
+    // Update contact with prediction — scoped to caller's brokerage
     await supabase
       .from("contacts")
       .update({
@@ -575,6 +622,7 @@ Analyze engagement patterns, timeline, and behavior to predict conversion likeli
         ai_predicted_close_date: prediction.predictedCloseDate,
       })
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
 
     return { success: true, prediction }
   } catch (error) {

@@ -673,19 +673,36 @@ Provide a 1-2 sentence recommendation for the agent.`,
 // ============================================
 export async function createListing(params: ListingIntakeData) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Resolve identity from session — never trust caller-supplied agentId/brokerageId
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const supabase = await createClient()
+
+    // If the request supplies a sellerId, verify it belongs to the caller's brokerage
+    const sellerId = params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null
+    if (sellerId) {
+      const { data: sellerContact } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", sellerId)
+        .maybeSingle()
+      if (sellerContact && sellerContact.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
+    const ownerAgentId = ctx.agentId ?? ctx.userId
 
     // Create the listing — use live schema column names only
     const { data: listing, error } = await supabase
       .from("listings")
       .insert({
-        agent_id:          params.agentId,
-        brokerage_id:      params.brokerageId,
-        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
+        agent_id:          ownerAgentId,
+        brokerage_id:      ctx.brokerageId,
+        seller_contact_id: sellerId,
         address:           params.propertyAddress,
         city:              params.city,
         state:             params.state,
@@ -704,13 +721,13 @@ export async function createListing(params: ListingIntakeData) {
 
     if (error || !listing) throw error ?? new Error("Failed to create listing")
 
-    // Create transaction record — seller_contact_id is the FK in transactions
+    // Create transaction record — stamped from session identity
     const { data: transaction } = await supabase
       .from("transactions")
       .insert({
-        agent_id:          params.agentId,
-        brokerage_id:      params.brokerageId,
-        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
+        agent_id:          ownerAgentId,
+        brokerage_id:      ctx.brokerageId,
+        seller_contact_id: sellerId,
         listing_id:        listing.id,
         transaction_type:  "seller_side",
         status:            "pre_listing",
@@ -721,10 +738,10 @@ export async function createListing(params: ListingIntakeData) {
 
     // Create Dotloop loop
     const dotloopResult = await createOrPullDotloop({
-      agentId: params.agentId,
+      agentId: ownerAgentId,
       listingId: listing.id,
       propertyAddress: params.propertyAddress,
-      sellerId: params.sellerId ?? "",
+      sellerId: sellerId ?? "",
       transactionType: "listing",
     })
 
@@ -755,10 +772,23 @@ export async function createListing(params: ListingIntakeData) {
 // ============================================
 // 9. AI PHOTO ORDERING OPTIMIZER
 // ============================================
-export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId: string }) {
+export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId?: string }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — AI calls cost real $$$, fail fast on unauth
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    // Verify the listing belongs to the caller's brokerage
+    const supabase = await createClient()
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
     }
 
     const { object: optimization } = await generateObject({
@@ -805,11 +835,15 @@ export async function runCompleteListingIntake(params: {
 }) {
   try {
     const agentCtx = await getAgentContext()
+    if (!agentCtx.isAuthenticated || !agentCtx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
     const brokerageId = agentCtx.brokerageId
-    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    // Identity is session-derived; ignore caller-supplied agentId
+    const effectiveAgentId = agentCtx.agentId ?? agentCtx.userId
 
     // Step 1: Enrich property data
-    const enrichResult = await aiEnrichPropertyData(params.address, params.agentId)
+    const enrichResult = await aiEnrichPropertyData(params.address, effectiveAgentId)
     if (!enrichResult.success) return enrichResult
 
     // Step 2: Get required forms
@@ -825,27 +859,27 @@ export async function runCompleteListingIntake(params: {
 
     // Step 3: Generate listing description
     const descResult = await aiGenerateListingDescription({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       propertyData: enrichResult.data,
       style: "family",
     })
 
     // Step 4: Get pricing recommendation
     const pricingResult = await aiSuggestListPrice({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       propertyData: enrichResult.data,
     })
 
     // Step 5: Check compliance
     const complianceResult = await aiCheckListingCompliance({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       description: descResult.success ? descResult.descriptions?.mlsDescription || "" : "",
       state: params.state,
     })
 
     // Step 6: Create the listing
     const listingResult = await createListing({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       brokerageId,
       propertyAddress: params.address,
       city: params.city,
