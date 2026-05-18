@@ -9,6 +9,34 @@ import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 
+// Previously every function in this file (except `trackBehavior`, which is
+// a legitimate public visitor-tracking pixel) was unauthenticated. Some
+// returned brokerage-scoped lead intelligence (unified_lead_profile,
+// social_intelligence) cross-tenant; others ran paid scrapers (ZenRows,
+// BatchData) on caller-supplied locations, draining budget.
+//
+// trackBehavior + scrapeSocialSignalsWithZenRows / scrapeExternalBehavior /
+// fetchMotivatedSellers / analyzeGoogleSearchIntent / enrichPropertyIntelligence
+// (cron / system data-augmentation functions) need only an auth gate to
+// prevent unauthenticated triggering. The dashboard-facing reads also need
+// brokerage scoping on the two tables that carry a brokerage_id column
+// (unified_lead_profile, social_intelligence).
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 export async function trackBehavior(sessionData: {
   visitor_id: string
   page_visited: string
@@ -167,6 +195,9 @@ export async function getUnifiedLeadProfiles(filters?: {
   ready_for_outreach?: boolean
   contact_id?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, profiles: [] }
+
   try {
     const supabase = createServiceClient()
 
@@ -176,6 +207,7 @@ export async function getUnifiedLeadProfiles(filters?: {
         *,
         contact:contacts(id, first_name, last_name, email, phone)
       `)
+      .eq("brokerage_id", auth.brokerageId)
       .order("confidence_score", { ascending: false })
 
     if (filters?.contact_id) {
@@ -210,6 +242,12 @@ export async function getMotivatedSellers(filters?: {
   timeframe?: string
   location?: string
 }) {
+  // batchdata_motivated_sellers_raw is platform-wide (no brokerage_id), but
+  // it's not visitor-trackable data — at minimum require an authenticated
+  // brokerage user.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, sellers: [] }
+
   try {
     const supabase = createServiceClient()
 
@@ -242,12 +280,16 @@ export async function getSocialIntelligence(filters?: {
   min_score?: number
   urgency?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, signals: [] }
+
   try {
     const supabase = createServiceClient()
 
     let query = supabase
       .from("social_intelligence")
       .select("*")
+      .eq("brokerage_id", auth.brokerageId)
       .order("ai_intent_score", { ascending: false })
       .limit(100)
 
@@ -273,17 +315,27 @@ export async function getSocialIntelligence(filters?: {
 }
 
 export async function getIntelligenceDashboardStats() {
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return {
+      success: false,
+      error: auth.error,
+      stats: { totalLeads: 0, hotLeads: 0, readyForOutreach: 0, motivatedSellers: 0 },
+    }
+  }
+
   try {
     const supabase = createServiceClient()
 
-    // Get counts for dashboard
+    // Get counts for dashboard — scoped to caller's brokerage on tables that have brokerage_id
     const [{ count: totalLeads }, { count: hotLeads }, { count: readyForOutreach }, { count: motivatedSellers }] =
       await Promise.all([
-        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }),
-        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("temperature", "hot"),
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("brokerage_id", auth.brokerageId),
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("brokerage_id", auth.brokerageId).eq("temperature", "hot"),
         supabase
           .from("unified_lead_profile")
           .select("*", { count: "exact", head: true })
+          .eq("brokerage_id", auth.brokerageId)
           .eq("ready_for_outreach", true),
         supabase
           .from("batchdata_motivated_sellers_raw")
@@ -315,6 +367,10 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   state: string
   zip?: string
 }) {
+  // Paid scraper — requires auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, signals: [], count: 0 }
+
   try {
     const supabase = createServiceClient()
 
@@ -422,6 +478,10 @@ export async function enrichPropertyIntelligence(propertyData: {
   state: string
   zip: string
 }) {
+  // Calls paid BatchData API; require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   try {
     const supabase = createServiceClient()
 
@@ -1044,12 +1104,16 @@ export async function updateLeadProfile(profileId: string, updates: any) {
 }
 
 export async function getAgentWorkloadStats() {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, workload: {} }
+
   try {
     const supabase = createServiceClient()
 
     const { data, error } = await supabase
       .from("unified_lead_profile")
       .select("assigned_agent_id, temperature, ready_for_outreach")
+      .eq("brokerage_id", auth.brokerageId)
 
     if (error) throw error
 
@@ -1087,6 +1151,10 @@ export async function getAgentWorkloadStats() {
 // ============================================
 
 export async function analyzeGoogleSearchIntent(targetLocation: { id: string; city: string; state: string; zip?: string }) {
+  // Paid ZenRows scraping — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
 
@@ -1132,15 +1200,20 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
 // ============================================
 
 export async function createUnifiedLeadProfile(leadData: { source: string; email?: string; phone?: string }) {
+  // Inserts to a brokerage-scoped table — require auth and stamp brokerage_id
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { generateAIJSON } = await import("./ai-generate")
 
-  let profile = await findExistingProfile(leadData)
+  let profile = await findExistingProfile(leadData, auth.brokerageId)
 
   if (!profile) {
     const { data: newProfile } = await supabase
       .from("unified_lead_profile")
       .insert({
+        brokerage_id: auth.brokerageId,
         lead_source: leadData.source,
         confidence_score: 0,
         intent_type: "unknown",
@@ -1190,6 +1263,7 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
         temperature: intelligenceAny.confidence_score > 70 ? "hot" : intelligenceAny.confidence_score > 40 ? "warm" : "cold",
       })
       .eq("id", profile.id)
+      .eq("brokerage_id", auth.brokerageId)
 
     return { success: true, profile, intelligence }
   } catch (error) {
@@ -1198,11 +1272,16 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
   }
 }
 
-async function findExistingProfile(leadData: any) {
+async function findExistingProfile(leadData: any, brokerageId: string) {
   const supabase = createServiceClient()
 
   if (leadData.email) {
-    const { data } = await supabase.from("unified_lead_profile").select("*").eq("contact_email", leadData.email).maybeSingle()
+    const { data } = await supabase
+      .from("unified_lead_profile")
+      .select("*")
+      .eq("contact_email", leadData.email)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
     if (data) return data
   }
 
@@ -1227,6 +1306,10 @@ async function getAllSignalsForProfile(profileId: string) {
 // ============================================
 
 export async function resolveIdentity(behavioralSignalId: string) {
+  // Reads contact PII via email match — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   const { data: signal } = await supabase.from("behavioral_signals").select("*").eq("id", behavioralSignalId).single()
@@ -1235,7 +1318,13 @@ export async function resolveIdentity(behavioralSignalId: string) {
 
   try {
     if (signal.email_captured) {
-      const { data: contact } = await supabase.from("contacts").select("*").eq("email", signal.email_captured).maybeSingle()
+      // Only match within caller's brokerage
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("email", signal.email_captured)
+        .eq("brokerage_id", auth.brokerageId)
+        .maybeSingle()
 
       if (contact) {
         await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
@@ -1255,10 +1344,19 @@ export async function resolveIdentity(behavioralSignalId: string) {
 // ============================================
 
 export async function deliverIntelligentValue(leadProfileId: string) {
+  // Paid AI inference + writes to outreach log — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { generateAIJSON } = await import("./ai-generate")
 
-  const { data: profile } = await supabase.from("unified_lead_profile").select("*").eq("id", leadProfileId).single()
+  const { data: profile } = await supabase
+    .from("unified_lead_profile")
+    .select("*")
+    .eq("id", leadProfileId)
+    .eq("brokerage_id", auth.brokerageId)
+    .single()
 
   if (!profile || !profile.contact_email) {
     return { success: false, error: "No email available" }
@@ -1305,6 +1403,10 @@ Timeline: ${profile.estimated_timeline}
 // ============================================
 
 export async function scrapeExternalBehavior(targetLocation: { city: string; state: string; zip?: string }) {
+  // Paid Apify + BatchData scrapers — require auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { ApifyClient } = await import("@/lib/apify-client")
   const { BatchDataClient } = await import("@/lib/batchdata-client")
@@ -1374,6 +1476,11 @@ export async function trackExternalActivity(data: {
   searchCriteria?: any
   location: string
 }) {
+  // Behavioral signal write — require auth. Visitors don't call this directly;
+  // it's called from authenticated server flows that know a visitor's UUID.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   try {
@@ -1419,6 +1526,10 @@ export async function trackExternalActivity(data: {
 // ============================================
 
 export async function fetchMotivatedSellers(targetLocation: { city: string; state: string }) {
+  // Paid OSINT + Apify + BatchData scrapers — require auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const osint = new OSINTClient()
   const { ApifyClient } = await import("@/lib/apify-client")
