@@ -23,6 +23,29 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * AI Inside Sales Agent (ISA) System
  * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
  */
+
+// Auth gate — every dashboard-facing function in this file reads/mutates
+// campaign + engagement data and triggers paid outbound (email, SMS, phone,
+// video, direct mail). Previous version accepted brokerageId as a caller
+// param, which let any signed-in user enumerate / mutate ANY brokerage's ISA
+// data simply by passing that brokerage's UUID. Now: brokerage is resolved
+// from the session, params.brokerageId is ignored.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 async function runAiIsaComplianceCheck(params: {
   userId: string
   brokerageId: string
@@ -166,21 +189,22 @@ export interface ISACampaignStats {
   conversionRate: number
 }
 
-/** Fetch all campaigns for a brokerage */
-export async function listISACampaigns(brokerageId: string): Promise<{
+/** Fetch all campaigns for the caller's brokerage */
+export async function listISACampaigns(_brokerageId?: string): Promise<{
   success: boolean
   campaigns: ISACampaignRow[]
   stats: ISACampaignStats
   error?: string
 }> {
-  if (!isValidUUID(brokerageId)) {
-    return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: "Invalid brokerage ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: auth.error }
   }
   const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("ai_isa_campaigns")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: error.message }
@@ -199,23 +223,22 @@ export async function listISACampaigns(brokerageId: string): Promise<{
   }
 }
 
-/** Create a new ISA campaign */
+/** Create a new ISA campaign — brokerage from session, never params */
 export async function createISACampaign(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   name: string
   campaignType: CampaignType
   channels: string[]
   targetSegment?: Record<string, unknown>
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthenticated" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const service = createServiceClient()
   const { data, error } = await service
     .from("ai_isa_campaigns")
     .insert({
-      brokerage_id:   params.brokerageId,
+      brokerage_id:   auth.brokerageId,
       name:           params.name,
       campaign_type:  params.campaignType.toLowerCase() as CampaignType,
       channels:       params.channels,
@@ -233,13 +256,13 @@ export async function createISACampaign(params: {
   if (error) return { success: false, error: error.message }
 
   await service.from("lifecycle_events").insert({
-  event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
-  entity_type:   "campaign",
-  entity_id:     data.id,
-  brokerage_id:  params.brokerageId,
-  actor_user_id: user.id,
-  metadata: { campaignType: params.campaignType, channels: params.channels },
-  created_at:    new Date().toISOString(),
+    event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
+    entity_type:   "campaign",
+    entity_id:     data.id,
+    brokerage_id:  auth.brokerageId,
+    actor_user_id: auth.userId,
+    metadata: { campaignType: params.campaignType, channels: params.channels },
+    created_at:    new Date().toISOString(),
   })
 
   return { success: true, campaignId: data.id }
