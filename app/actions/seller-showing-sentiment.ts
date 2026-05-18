@@ -207,12 +207,24 @@ export async function buildShowingSentimentSummary(
 /** On-demand fetch from the listing detail page (auth + brokerage scoped). */
 export async function getShowingSentimentSummaryAction(listingId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "unauthorized" }
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "unauthorized" }
+
   const { data: listing } = await supabase
     .from("listings")
     .select("brokerage_id")
     .eq("id", listingId)
     .maybeSingle()
   if (!listing) return { success: false, error: "not_found" }
+  if (listing.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "forbidden" }
+  }
 
   const summary = await buildShowingSentimentSummary(listingId)
   return { success: true, summary }

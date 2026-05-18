@@ -1,19 +1,31 @@
 'use server';
 
+import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 
 export async function listIntegrationCredentials() {
-  const supabase = createServiceClient();
-  
-  const { data, error } = await supabase
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data: u } = await supabase
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle();
+  if (!u?.brokerage_id) return [];
+
+  const svc = createServiceClient();
+  const { data, error } = await svc
     .from('integration_credentials')
     .select('id, provider_name, webhook_url, is_active, created_at, updated_at')
-    .order('created_at', { ascending: false});
-    
+    .eq('brokerage_id', u.brokerage_id)
+    .order('created_at', { ascending: false });
+
   if (error) {
-    console.error('[v0] Error fetching integration credentials:', error);
-    throw new Error('Failed to fetch integration credentials');
+    console.error('[settings] Error fetching integration credentials:', error);
+    return [];
   }
-  
+
   return data || [];
 }

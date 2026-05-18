@@ -245,12 +245,32 @@ export async function setMilestonePortalVisibility(
   visible: boolean
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
 
-  // Find the most recent event for this stage
+  // Verify the listing belongs to caller's brokerage before changing portal visibility
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing) return { success: false, error: "Listing not found" }
+  if (listing.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  // Find the most recent event for this stage — scoped to caller's brokerage
   const { data: evt, error: fetchError } = await supabase
     .from("lifecycle_events")
     .select("id, metadata")
     .eq("listing_id", listingId)
+    .eq("brokerage_id", callerRow.brokerage_id)
     .eq("metadata->>to_state", stage)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -266,6 +286,7 @@ export async function setMilestonePortalVisibility(
     .from("lifecycle_events")
     .update({ metadata: updatedMetadata })
     .eq("id", evt.id)
+    .eq("brokerage_id", callerRow.brokerage_id)
 
   if (updateError) {
     return { success: false, error: updateError.message }

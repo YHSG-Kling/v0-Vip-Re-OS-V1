@@ -200,10 +200,29 @@ export async function getNegotiationStrategyForOfferAction(
   side?:   "buyer" | "seller",
 ): Promise<{ ok: true; strategy: NegotiationStrategyView | null } | { ok: false; error: string }> {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+
+  // Verify the offer belongs to caller's brokerage before reading strategy
+  const { data: offerRow } = await supabase
+    .from("offers")
+    .select("brokerage_id")
+    .eq("id", offerId)
+    .maybeSingle()
+  if (!offerRow) return { ok: false, error: "Offer not found" }
+  if (offerRow.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
+
   let q = supabase
     .from("negotiation_strategies")
     .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
     .eq("offer_id", offerId)
+    .eq("brokerage_id", u.brokerage_id)
     .order("created_at", { ascending: false })
     .limit(1)
   if (side) q = q.eq("side", side)
@@ -273,10 +292,29 @@ export async function getNegotiationStrategyForContactAction(
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contactRow } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contactRow) return { ok: false, error: "Contact not found" }
+  if (contactRow.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
+
   const { data, error } = await supabase
     .from("negotiation_strategies")
     .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", u.brokerage_id)
     .eq("status", "open")
     .order("created_at", { ascending: false })
     .limit(1)
