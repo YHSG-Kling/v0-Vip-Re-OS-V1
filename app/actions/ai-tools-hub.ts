@@ -168,7 +168,7 @@ async function compareProperties(propertyIds: string[], userId: string) {
   const supabase = await createClient()
   
   const { data: properties } = await supabase
-    .from("properties")
+    .from("listings")
     .select("*")
     .in("id", propertyIds)
   
