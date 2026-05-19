@@ -3,6 +3,43 @@ import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { NotFoundError } from "@/lib/errors"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEAD APPLICATION SERVICE — business model
+//
+// Three tables make up the inbound-lead pipeline. This file operates on the
+// middle stage (`leads`) for the brokerage-admin CRM view at /app/leads.
+//
+//   1. raw_scraped_leads — platform-owned. Every new piece of raw lead data
+//      (scrapers, CSV imports, vendor feeds) lands here FIRST. Has no
+//      lead_id / contact_id at this point. Stored as `raw_data` (jsonb).
+//      The lead-pipeline processor (lib/lead-pipeline/pipeline-processor.ts)
+//      runs the gates: territory → identity → pre-dedup → enrich →
+//      post-dedup → promotion. Only platform admin + the brokerage's AI-ISA
+//      system actor can read this table (RLS migration 035).
+//
+//   2. leads — brokerage-assigned. Emerges from the pipeline when a raw row
+//      passes every gate. lead_id is born here. The AI-ISA qualifies it and
+//      drives outreach (email/direct-mail are allowed unconsented; phone/SMS
+//      are TCPA-gated). Brokerage admins manage this list; agents do NOT
+//      see it directly (RLS migration 034).
+//
+//   3. contacts — agent-assigned. Created when a lead is qualified AND
+//      consents, then handed off to an agent. Agents work contacts; lead
+//      lineage is reachable via the contact_lead_history view (migration 039).
+//
+// Function map below:
+//   • serviceGetLeads / serviceGetLead — query `leads` for the admin CRM view.
+//   • serviceEnrichLead              — flag a `leads` row as enriched
+//                                      (sets enrichment_status / confidence).
+//   • serviceConvertLeadToContact    — promote `leads` → `contacts` (step 2→3).
+//   • serviceRejectLead              — mark a `leads` row rejected with reason
+//                                      in notes (no dedicated columns).
+//   • serviceImportLeads             — bulk import lands in `raw_scraped_leads`
+//                                      so dedup/enrich/gating run before
+//                                      anything reaches `leads`. NEVER bypass.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Types inlined here — canonical home for lead domain types (no upward imports)
 export type LeadScore = 'hot' | 'warm' | 'cold' | 'unqualified'
 export type LeadIntent = 'buying' | 'selling' | 'both' | 'renting' | 'investing' | 'unknown'
@@ -207,6 +244,14 @@ export async function serviceRejectLead(
   return data
 }
 
+// Bulk-import N records into the pipeline. Every record lands in
+// `raw_scraped_leads` so the dedup / enrich / gate pipeline runs before
+// anything reaches `leads`. Bypassing the pipeline (writing straight to
+// `leads`) would let duplicates and unverified data through — the whole
+// reason raw_scraped_leads exists is to be the gated entry point.
+//
+// Returns the number of raw rows queued. Promotion to `leads` happens
+// asynchronously via lib/lead-pipeline/pipeline-processor.ts.
 export async function serviceImportLeads(
   agentId: string,
   brokerageId: string,
@@ -214,21 +259,40 @@ export async function serviceImportLeads(
 ) {
   const supabase = await createClient()
 
-  const leadsToInsert = leads.map((lead) => ({
-    ...lead,
-    agent_id: agentId,
+  if (!leads?.length) return 0
+
+  const rawRows = leads.map((lead) => ({
     brokerage_id: brokerageId,
-    status: lead.status || "new",
-    lead_score: lead.lead_score || lead.ai_score || 3,
-    source: lead.source || "manual",
+    source: lead.source ?? "admin_csv_import",
+    // CHECK constraints: source_family ∈ {raw, lead, contact_direct},
+    // source_origin ∈ {platform, brokerage}.
+    source_family: "raw",
+    source_origin: "brokerage",
+    raw_data: lead as Record<string, unknown>,
+    // normalized_preview lets the pipeline carry forward the recognizable
+    // fields without re-parsing raw_data.
+    normalized_preview: {
+      first_name: lead.first_name ?? null,
+      last_name: lead.last_name ?? null,
+      email: lead.email ?? null,
+      phone: lead.phone ?? null,
+      source: lead.source ?? "admin_csv_import",
+      lead_type: (lead as Record<string, unknown>).lead_type ?? null,
+      lead_score: (lead as Record<string, unknown>).lead_score ?? null,
+      imported_by_agent_id: agentId,
+    },
+    processing_status: "pending",
   }))
 
-  const { data, error } = await supabase.from("leads").insert(leadsToInsert).select()
+  const { data, error } = await supabase
+    .from("raw_scraped_leads")
+    .insert(rawRows)
+    .select("id")
 
   if (error) throw error
 
   revalidatePath("/leads")
-  return data?.length || 0
+  return data?.length ?? 0
 }
 
 // ============================================
