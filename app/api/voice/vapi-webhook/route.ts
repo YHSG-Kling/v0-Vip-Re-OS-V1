@@ -74,6 +74,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(req.url)
   const brokerageId: string | null = searchParams.get("brokerage_id") ?? null
 
+  // contacts.brokerage_id is NOT NULL; voice_calls.brokerage_id is NOT NULL.
+  // Without the query param the entire flow would silently write NULL into
+  // those columns and fail constraints — fail fast with a 400 instead so
+  // VAPI's retry/alerting surfaces the misconfiguration.
+  if (!brokerageId) {
+    console.warn("[vapi-webhook] missing brokerage_id query param — rejecting")
+    return NextResponse.json(
+      { error: "Missing brokerage_id query param" },
+      { status: 400 },
+    )
+  }
+
   const supabase = createServiceClient()
 
   // ── EVENT: call-started ───────────────────────────────────────────────────
@@ -216,7 +228,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
         } else {
           // 3. Unknown caller — calling is consent; create a contact record immediately
-          const { data: newContact } = await supabase
+          const { data: newContact, error: newContactError } = await supabase
             .from("contacts")
             .insert({
               brokerage_id: brokerageId,
@@ -233,7 +245,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .select("id")
             .single()
 
-          if (newContact?.id) {
+          if (newContactError || !newContact?.id) {
+            // Don't fail-silent: log the INSERT failure so it surfaces in
+            // ops. The downstream voice_calls write tolerates NULL
+            // contact_id, but losing visibility on contact creation
+            // failures hides upstream config bugs (RLS / FK / brokerage).
+            console.error(
+              "[vapi-webhook] failed to create inbound-call contact",
+              { brokerageId, callerPhone, error: newContactError?.message },
+            )
+          } else {
             resolvedContactId = newContact.id
             // Queue enrichment for the new contact
             await supabase.from("contact_enrichment_queue").insert({
