@@ -21,6 +21,13 @@ export interface SendEmailParams {
   from?: string
   replyTo?: string
   metadata?: any
+  /** Optional audit context. Required to land a row in
+   *  message_provider_logs (brokerage_id is NOT NULL there). If neither
+   *  is supplied, the email still sends — the audit log is just skipped. */
+  brokerageId?: string
+  contactId?: string
+  /** agents.id — recorded but not strictly required. */
+  agentId?: string
 }
 
 export interface SendSMSParams {
@@ -28,6 +35,9 @@ export interface SendSMSParams {
   message: string
   from?: string
   metadata?: any
+  brokerageId?: string
+  contactId?: string
+  agentId?: string
 }
 
 export interface LogCommunicationParams {
@@ -40,13 +50,31 @@ export interface LogCommunicationParams {
   metadata?: any
 }
 
+// Resolve brokerage_id from explicit param, falling back to a contact lookup.
+// Returns null when neither path yields a brokerage; callers MUST skip the
+// audit-log INSERT in that case (message_provider_logs.brokerage_id NOT NULL).
+async function resolveAuditBrokerageId(
+  supabase: any,
+  brokerageId?: string,
+  contactId?: string,
+): Promise<string | null> {
+  if (brokerageId) return brokerageId
+  if (!contactId) return null
+  const { data } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  return data?.brokerage_id ?? null
+}
+
 /**
- * Send email via your email provider (SendGrid, Resend, etc.)
- * Currently logs to database - integrate with actual provider
+ * Send email through the configured provider chain (personal email →
+ * SendGrid) and append a message_provider_logs row when brokerage context
+ * is supplied. The send itself runs regardless; audit is best-effort.
  */
 export async function sendEmail(params: SendEmailParams) {
   try {
-    // Delegate to lib/providers/messaging (SendGrid)
     const result = await providerSendEmail({
       to: params.to,
       subject: params.subject,
@@ -55,17 +83,25 @@ export async function sendEmail(params: SendEmailParams) {
       from: params.from,
     })
 
-    // Log to communications table regardless of provider outcome
+    // Audit. Skip entirely if we can't resolve a brokerage — the table's
+    // brokerage_id is NOT NULL and fabricating a value would corrupt
+    // tenancy. The provider send already happened above.
     const supabase = await createClient()
-    await supabase.from("communications_log").insert({
-      recipient: params.to,
-      type: "email",
-      subject: params.subject,
-      content: params.htmlBody,
-      status: result.success ? "sent" : "failed",
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
+    const brokerageId = await resolveAuditBrokerageId(
+      supabase, params.brokerageId, params.contactId,
+    )
+    if (brokerageId) {
+      await supabase.from("message_provider_logs").insert({
+        brokerage_id: brokerageId,
+        channel: "email",
+        direction: "outbound",
+        provider_key: result.provider ?? "sendgrid",
+        provider_status: result.success ? "sent" : "failed",
+        error_message: result.success ? null : (result.error ?? null),
+        sent_at: result.success ? new Date().toISOString() : null,
+        provider_response: { recipient: params.to, subject: params.subject, ...(params.metadata ?? {}) },
+      })
+    }
 
     return result
   } catch (error) {
@@ -75,27 +111,33 @@ export async function sendEmail(params: SendEmailParams) {
 }
 
 /**
- * Send SMS via your SMS provider (Twilio, GHL, etc.)
- * Currently logs to database - integrate with actual provider
+ * Send SMS through the configured provider chain. Audit-logs to
+ * message_provider_logs when brokerage context can be resolved.
  */
 export async function sendSMS(params: SendSMSParams) {
   try {
-    // Delegate to lib/providers/messaging (Twilio)
     const result = await providerSendSMS({
       to: params.to,
       message: params.message,
     })
 
-    // Log to communications table regardless of provider outcome
     const supabase = await createClient()
-    await supabase.from("communications_log").insert({
-      recipient: params.to,
-      type: "sms",
-      content: params.message,
-      status: result.success ? "sent" : "failed",
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
+    const brokerageId = await resolveAuditBrokerageId(
+      supabase, params.brokerageId, params.contactId,
+    )
+    if (brokerageId) {
+      const providerKey = ((result as any)?.provider as string | undefined) ?? "twilio"
+      await supabase.from("message_provider_logs").insert({
+        brokerage_id: brokerageId,
+        channel: "sms",
+        direction: "outbound",
+        provider_key: providerKey,
+        provider_status: result.success ? "sent" : "failed",
+        error_message: result.success ? null : (result.error ?? null),
+        sent_at: result.success ? new Date().toISOString() : null,
+        provider_response: { recipient: params.to, message_excerpt: params.message.slice(0, 200), ...(params.metadata ?? {}) },
+      })
+    }
 
     return result
   } catch (error) {
@@ -119,7 +161,7 @@ export async function sendViaGHL(params: {
     // Get GHL contact ID
     const { data: contact } = await supabase
       .from("contacts")
-      .select("ghl_contact_id, email, phone")
+      .select("ghl_contact_id, email, phone, brokerage_id")
       .eq("id", params.contactId)
       .single()
 
@@ -145,17 +187,25 @@ export async function sendViaGHL(params: {
     })
     */
 
-    // Log the communication
-    await supabase.from("communications_log").insert({
-      contact_id: params.contactId,
-      recipient: params.type === "email" ? contact.email : contact.phone,
-      type: params.type,
-      subject: params.subject,
-      content: params.message,
-      status: "sent",
-      sent_at: new Date().toISOString(),
-      provider: "gohighlevel",
-    })
+    // Audit to message_provider_logs (provider_key='gohighlevel'). Look
+    // up brokerage from the contact since this helper takes contactId.
+    const brokerageId = contact.brokerage_id ?? null
+    if (brokerageId) {
+      await supabase.from("message_provider_logs").insert({
+        brokerage_id: brokerageId,
+        channel: params.type,
+        direction: "outbound",
+        provider_key: "gohighlevel",
+        provider_status: "sent",
+        sent_at: new Date().toISOString(),
+        provider_response: {
+          contact_id: params.contactId,
+          recipient: params.type === "email" ? contact.email : contact.phone,
+          subject: params.subject ?? null,
+          message_excerpt: params.message.slice(0, 200),
+        },
+      })
+    }
 
     return { success: true }
   } catch (error) {
@@ -170,26 +220,43 @@ export async function logCommunication(params: LogCommunicationParams) {
   try {
     const supabase = await createClient()
 
-    await supabase.from("communications_log").insert({
-      contact_id: params.contactId || null,
-      agent_id: params.agentId || null,
-      type: params.communicationType,
-      subject: params.subject,
-      content: params.content,
-      status: params.status,
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
-
-    // Also log as an activity (canonical communication-event log) if a
-    // contact is specified. activities.agent_id and brokerage_id are
-    // NOT NULL; look them up from the contact when not supplied directly.
+    // Write to communication_audit_log (the canonical communication content
+    // audit table — carries subject/body_snippet/channel/compliance state).
+    // brokerage_id is NOT NULL there; look it up from the contact when the
+    // caller didn't supply it.
+    let auditBrokerageId: string | null = null
+    let contactRow: { agent_id: string | null; brokerage_id: string | null } | null = null
     if (params.contactId && isValidUUID(params.contactId)) {
-      const { data: contactRow } = await supabase
+      const { data } = await supabase
         .from("contacts")
         .select("agent_id, brokerage_id")
         .eq("id", params.contactId)
         .maybeSingle()
+      contactRow = data ?? null
+      auditBrokerageId = contactRow?.brokerage_id ?? null
+    }
+
+    if (auditBrokerageId) {
+      const channel =
+        params.communicationType === "email" ? "email" :
+        params.communicationType === "sms"   ? "sms" :
+        "notification"
+      await supabase.from("communication_audit_log").insert({
+        brokerage_id: auditBrokerageId,
+        contact_id: params.contactId ?? null,
+        agent_id: params.agentId ?? contactRow?.agent_id ?? null,
+        communication_type: params.communicationType,
+        channel,
+        subject: params.subject ?? null,
+        body_snippet: params.content.slice(0, 500),
+        compliance_passed: params.status === "sent" ? true : null,
+        sent_at: params.status === "sent" ? new Date().toISOString() : null,
+      })
+    }
+
+    // Also log as an activity (the agent-facing communication-event log)
+    // when both agent_id and brokerage_id can be resolved from the contact.
+    if (params.contactId && isValidUUID(params.contactId)) {
 
       const agentId = (params.agentId && isValidUUID(params.agentId))
         ? params.agentId
