@@ -181,15 +181,37 @@ export async function logCommunication(params: LogCommunicationParams) {
       metadata: params.metadata,
     })
 
-    // Also log as interaction if contact is specified
+    // Also log as an activity (canonical communication-event log) if a
+    // contact is specified. activities.agent_id and brokerage_id are
+    // NOT NULL; look them up from the contact when not supplied directly.
     if (params.contactId && isValidUUID(params.contactId)) {
-      await supabase.from("interactions").insert({
-        contact_id: params.contactId,
-        interaction_type: params.communicationType === "email" ? "email" : "sms",
-        interaction_date: new Date().toISOString(),
-        notes: params.subject || params.content.substring(0, 100),
-        outcome: params.status === "sent" ? "completed" : "failed",
-      })
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("agent_id, brokerage_id")
+        .eq("id", params.contactId)
+        .maybeSingle()
+
+      const agentId = (params.agentId && isValidUUID(params.agentId))
+        ? params.agentId
+        : contactRow?.agent_id ?? null
+      const brokerageId = contactRow?.brokerage_id ?? null
+      const channel = params.communicationType === "email" ? "email" : "sms"
+      const notes = params.subject || params.content.substring(0, 100)
+
+      if (agentId && brokerageId) {
+        await supabase.from("activities").insert({
+          contact_id: params.contactId,
+          agent_id: agentId,
+          brokerage_id: brokerageId,
+          entity_type: "contact",
+          activity_type: `communication_${channel}`,
+          channel,
+          title: notes,
+          notes,
+          outcome: params.status === "sent" ? "completed" : "failed",
+          status: params.status === "sent" ? "completed" : "failed",
+        })
+      }
     }
 
     return { success: true }

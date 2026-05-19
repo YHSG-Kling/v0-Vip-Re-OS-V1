@@ -79,14 +79,24 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
       // Log email send (integrate with your email service)
 
       
-      // Store communication record
-      await supabase.from("interactions").insert({
-        contact_id: params.contactId,
-        interaction_type: "email",
-        interaction_date: new Date().toISOString(),
-        notes: `Open house invitation sent for ${property.address}`,
-        outcome: "completed",
-      })
+      // Store communication record. `activities` is the canonical
+      // communication-event log; `interactions` was a legacy name that
+      // never existed as a real table. contact.agent_id is agents.id,
+      // matching activities.agent_id FK.
+      if (contact.agent_id && contact.brokerage_id) {
+        await supabase.from("activities").insert({
+          contact_id: params.contactId,
+          agent_id: contact.agent_id,
+          brokerage_id: contact.brokerage_id,
+          entity_type: "contact",
+          activity_type: "open_house_invitation_email",
+          channel: "email",
+          title: `Open house invitation sent for ${property.address}`,
+          notes: `Open house invitation sent for ${property.address}`,
+          outcome: "completed",
+          status: "completed",
+        })
+      }
     }
 
     // Send SMS if requested
@@ -98,14 +108,21 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
 
 
 
-      // Store communication record
-      await supabase.from("interactions").insert({
-        contact_id: params.contactId,
-        interaction_type: "sms",
-        interaction_date: new Date().toISOString(),
-        notes: `Open house SMS invitation sent for ${property.address}`,
-        outcome: "completed",
-      })
+      // Store communication record (see comment above for canonical table choice)
+      if (contact.agent_id && contact.brokerage_id) {
+        await supabase.from("activities").insert({
+          contact_id: params.contactId,
+          agent_id: contact.agent_id,
+          brokerage_id: contact.brokerage_id,
+          entity_type: "contact",
+          activity_type: "open_house_invitation_sms",
+          channel: "sms",
+          title: `Open house SMS invitation sent for ${property.address}`,
+          notes: `Open house SMS invitation sent for ${property.address}`,
+          outcome: "completed",
+          status: "completed",
+        })
+      }
     }
 
     return { success: true }
@@ -153,13 +170,20 @@ export async function sendOpenHouseReminder(params: SendReminderParams) {
 
 
 
-    await supabase.from("interactions").insert({
-      contact_id: params.contactId,
-      interaction_type: "sms",
-      interaction_date: new Date().toISOString(),
-      notes: `Open house ${params.reminderType} reminder sent`,
-      outcome: "completed",
-    })
+    if (contact.agent_id && contact.brokerage_id) {
+      await supabase.from("activities").insert({
+        contact_id: params.contactId,
+        agent_id: contact.agent_id,
+        brokerage_id: contact.brokerage_id,
+        entity_type: "contact",
+        activity_type: "open_house_reminder",
+        channel: "sms",
+        title: `Open house ${params.reminderType} reminder sent`,
+        notes: `Open house ${params.reminderType} reminder sent`,
+        outcome: "completed",
+        status: "completed",
+      })
+    }
 
     return { success: true }
   } catch (error) {
@@ -210,13 +234,20 @@ export async function sendFeedbackRequest(params: SendFeedbackRequestParams) {
       message: `Hi ${contact.first_name}! Thanks for visiting ${property.address}. We'd love your feedback: ${params.feedbackUrl}`,
     }
 
-    await supabase.from("interactions").insert({
-      contact_id: params.contactId,
-      interaction_type: "email",
-      interaction_date: new Date().toISOString(),
-      notes: `Feedback request sent for open house at ${property.address}`,
-      outcome: "completed",
-    })
+    if (contact.agent_id && contact.brokerage_id) {
+      await supabase.from("activities").insert({
+        contact_id: params.contactId,
+        agent_id: contact.agent_id,
+        brokerage_id: contact.brokerage_id,
+        entity_type: "contact",
+        activity_type: "open_house_feedback_request",
+        channel: "email",
+        title: `Feedback request sent for open house at ${property.address}`,
+        notes: `Feedback request sent for open house at ${property.address}`,
+        outcome: "completed",
+        status: "completed",
+      })
+    }
 
     return { success: true }
   } catch (error) {
