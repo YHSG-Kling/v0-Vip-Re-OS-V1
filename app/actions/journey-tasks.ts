@@ -56,7 +56,7 @@ export async function completeTask(data: {
       await supabase.from("client_portal_activity").insert({
         contact_id: data.contactId,
         activity_type: "task_completed",
-        activity_data: {
+        metadata: {
           task_id: data.taskId,
           task_name: data.taskName,
           form_data: data.formData,
@@ -154,7 +154,7 @@ export async function submitTaskForm(data: {
       await supabase.from("client_portal_activity").insert({
         contact_id: data.contactId,
         activity_type: "task_form_submitted",
-        activity_data: {
+        metadata: {
           task_id: data.taskId,
           task_name: data.taskName,
           task_type: data.taskType,

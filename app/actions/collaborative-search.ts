@@ -438,7 +438,7 @@ export async function trackPortalActivity(
   const { error } = await supabase.from("client_portal_activity").insert({
     contact_id: contactId,
     activity_type: activityType,
-    activity_data: activityData || {},
+    metadata: activityData || {},
     property_id: propertyId,
   })
 

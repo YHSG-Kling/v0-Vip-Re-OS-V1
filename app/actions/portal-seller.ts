@@ -453,7 +453,7 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
       contact_id: contactId,
       brokerage_id: access.brokerageId,
       activity_type: "portal_module_viewed",
-      activity_data: { module: moduleName, viewed_at: new Date().toISOString() },
+      metadata: { module: moduleName, viewed_at: new Date().toISOString() },
     }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
   }
 

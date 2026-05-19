@@ -163,7 +163,7 @@ export async function requestShowing(data: {
       await supabase.from("client_portal_activity").insert({
         contact_id:    data.contactId,
         activity_type: "request_showing",
-        activity_data: {
+        metadata: {
           property_address:   data.propertyAddress,
           mls_number:         data.mlsNumber ?? null,
           listing_id:         data.listingId ?? null,
