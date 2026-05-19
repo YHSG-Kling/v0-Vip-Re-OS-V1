@@ -57,19 +57,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Step 3: captureContact (dedup → merge/create → enrich queue → score) ─
-    // qr_codes.agent_id is agents.id; resolve to users.id for captureContact
-    // which expects an auth user uid as agentUserId.
-    let agentUserId: string | null = null
-    if (qr.agent_id) {
-      const { data: a } = await supabase
-        .from('agents').select('user_id').eq('id', qr.agent_id).maybeSingle()
-      agentUserId = a?.user_id ?? null
-    }
+    // qr_codes.agent_id is agents.id — pass it through directly. captureContact
+    // routes through resolveAgentForContact() so the brokerage's assignment
+    // rules apply when no QR is agent-tagged.
+    const ownerAgentId: string | null = qr.agent_id ?? null
 
     const now = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId: qr.brokerage_id,
-      agentUserId,
+      ownerAgentId,
       source: 'qr_scan',
       first_name: first_name || null,
       last_name: last_name || null,
@@ -129,8 +125,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           entityType:  'contact',
           entityId:    contactId,
           contactId,
-          agentUserId: agentUserId ?? undefined,
-          metadata:    { source: 'qr_scan', slug, qrCodeId },
+          agentUserId: undefined,
+          metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
         })
       } catch { /* non-blocking */ }
     }

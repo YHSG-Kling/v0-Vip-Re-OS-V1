@@ -88,15 +88,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  let agentUserId: string | null = null
-  if (resolvedAgentId) {
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("user_id")
-      .eq("id", resolvedAgentId)
-      .maybeSingle()
-    agentUserId = agent?.user_id ?? null
-  }
+  // resolvedAgentId is agents.id (embed_widgets.agent_id FK → agents). Pass
+  // it through directly; captureContact handles agents.id correctly.
 
   // ── Capture (dedupe + create + score + enrich + emit kernel event) ──────
   // Visitors providing info on an embed are explicitly opting in — that's
@@ -105,7 +98,7 @@ export async function POST(request: NextRequest) {
   try {
     result = await captureContact({
       brokerageId: widget.brokerage_id,
-      agentUserId,
+      ownerAgentId: resolvedAgentId ?? null,
       source: "widget",
       first_name: body.first_name?.trim() ?? null,
       last_name: body.last_name?.trim() ?? null,

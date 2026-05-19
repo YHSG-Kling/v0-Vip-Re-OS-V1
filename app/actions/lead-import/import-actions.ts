@@ -21,6 +21,9 @@ export async function processImportRows(params: {
     return { created: 0, merged: 0, failed: params.rows.length }
   }
   const brokerageId = ctx.brokerageId
+  // ctx.agentId is agents.id from the auth context — the importer's owner
+  // hint. resolveAgentForContact uses it as the precedence-1 ownerAgentId.
+  const importerAgentId = ctx.agentId ?? null
   const agentUserId = ctx.userId
 
   const supabase = createServiceClient()
@@ -45,7 +48,7 @@ export async function processImportRows(params: {
     try {
       const { action } = await captureContact({
         brokerageId: brokerageId,
-        agentUserId: agentUserId,
+        ownerAgentId: importerAgentId,
         source: 'import',
         first_name: typeof r.first_name === 'string' ? r.first_name : null,
         last_name: typeof r.last_name === 'string' ? r.last_name : null,
@@ -157,7 +160,6 @@ export async function runImport(params: {
 
   return processImportRows({
     brokerageId,
-    agentUserId: user.id,
     importId: params.importId,
     rows: remapped,
   })

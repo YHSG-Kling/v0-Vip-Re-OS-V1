@@ -161,10 +161,12 @@ export async function uploadBusinessCard(params: {
     return { scanId: scan!.id, contactId: null, viable: false }
   }
 
-  // 6) Viable → captureContact (tcpa_consent=false always for business cards)
+  // 6) Viable → captureContact (tcpa_consent=false always for business cards).
+  // Owner agent resolves via brokerage assignment rules — the scanner doesn't
+  // own the contact just because they scanned it.
   const { contactId } = await captureContact({
     brokerageId: brokerageId,
-    agentUserId: null,
+    ownerAgentId: null,
     source: "business_card",
     first_name: extracted.first_name ?? null,
     last_name: extracted.last_name ?? null,
