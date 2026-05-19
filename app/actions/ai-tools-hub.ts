@@ -166,9 +166,22 @@ Explain:
 
 async function compareProperties(propertyIds: string[], userId: string) {
   const supabase = await createClient()
-  
+
+  // BROKEN — DO NOT USE without fixing the full flow:
+  //   1. There is no `properties` table in this schema. `listings` is the
+  //      closest analog but uses different column names: `list_price`
+  //      (not `price`), `bedrooms`/`bathrooms` (not `beds`/`baths`), and
+  //      has no `year_built` or `property_type` columns at all.
+  //   2. The UI form at /dashboard/ai-tools collects address strings
+  //      (`property1`, `property2`, `buyerCriteria`) not UUIDs. With the
+  //      current executor signature `propertyIds` is always undefined.
+  //   3. Buyer-side property comparison should likely read from IDX/MLS
+  //      data (e.g. `saved_properties` keyed by `property_address`),
+  //      not the brokerage's own active listings.
+  // Leaving the original `.from("properties")` call so the missing-table
+  // error keeps surfacing instead of silently returning empty rows.
   const { data: properties } = await supabase
-    .from("listings")
+    .from("properties")
     .select("*")
     .in("id", propertyIds)
   
