@@ -67,13 +67,21 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
     try {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
+      // activities has `agent_user_id` (not `user_id`); no `entity_id`
+      // column either — contact_id is the canonical entity ref. Both
+      // brokerage_id and agent_id are NOT NULL on activities; the agent's
+      // session populates them from the surrounding contact row.
       const { error } = await supabase.from("activities").insert({
+        contact_id: contact.id,
+        brokerage_id: contact.brokerage_id,
+        agent_id: contact.agent_id ?? agentId,
+        agent_user_id: user?.id ?? null,
         entity_type: "contact",
-        entity_id: contact.id,
-        user_id: user?.id ?? agentId,
         activity_type: "note",
+        title: "Note added",
+        notes: note.trim(),
         status: "completed",
-        metadata: { note: note.trim(), source: "contact_detail_modal" },
+        metadata: { source: "contact_detail_modal" },
       })
       if (error) throw error
       toast.success("Note saved")
