@@ -75,6 +75,10 @@ const nextConfig: NextConfig = {
   },
   reactStrictMode: true,
   poweredByHeader: false,
+  // Next 16 makes Turbopack the default builder; acknowledge it explicitly
+  // so the `webpack` block below (used only for the legacy dev watch path)
+  // doesn't promote a warning to a build error.
+  turbopack: {},
   // Reduce aggressive file watching to prevent duplicate dev server spawns
   webpack: (config, { isServer }) => {
     if (!isServer) {

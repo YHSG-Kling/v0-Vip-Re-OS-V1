@@ -22,6 +22,7 @@ import { generateText } from "ai"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 
@@ -98,6 +99,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .maybeSingle()
 
       if (existingContact) {
+        // Resolve the per-brokerage AI-ISA system actor — replaces the
+        // previous literal "system" string which violated the UUID type on
+        // actor_user_id and silently broke audit writes (migration 037+).
+        const isaActorId = await getIsaSystemUserIdCached(supabase, brokerageId)
+
         // Known contact — update record to reflect inbound call, stamp TCPA consent
         // (the act of calling in IS consent for that communication)
         await supabase
@@ -113,7 +119,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Block if DNC / call_stop_flag / restricted state that has opted out
         const complianceResult = await evaluateKernelOutbound({
   actorContext: {
-    userId: "system",
+    userId: isaActorId ?? "system",
     brokerageId,
     role: "isa",
   },
@@ -139,7 +145,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           violations,
           blocked_reason: violations[0] ?? null,
           actor_role: "isa",
-          actor_user_id: "system",
+          actor_user_id: isaActorId,
           entity_type: "contact",
           entity_id: existingContact.id,
           message_type: "phone",
@@ -150,7 +156,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             brokerage_id: brokerageId,
             vapi_call_id: callId,
             direction,
-            call_type: "isa_ai",
+            call_type: "ai_isa_call",
             contact_id: existingContact.id,
             phone_from: callerPhone,
             phone_to: phoneTo,
@@ -191,7 +197,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               brokerage_id: brokerageId,
               vapi_call_id: callId,
               direction,
-              call_type: "isa_ai",
+              call_type: "ai_isa_call",
               lead_id: resolvedLeadId,
               contact_id: resolvedContactId,
               phone_from: callerPhone,
@@ -246,7 +252,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       brokerage_id: brokerageId,
       vapi_call_id: callId,
       direction,
-      call_type: "isa_ai",
+      call_type: "ai_isa_call",
       contact_id: resolvedContactId,
       lead_id: resolvedLeadId ?? null,
       phone_from: direction === "inbound" ? callerPhone : phoneTo,
@@ -495,10 +501,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (isPositiveOutcome) {
           // Positive: assign agent + convert lead to contact for further follow-up
           const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")
+          const handoffActorId = await getIsaSystemUserIdCached(supabase, voiceCall.brokerage_id ?? null)
           await acceptAIISAHandoff({
             leadId: voiceCall.lead_id,
             brokerageId: voiceCall.brokerage_id ?? "",
-            actorUserId: "system",
+            actorUserId: handoffActorId ?? "system",
           }).catch(() => {})
         } else if (isNegativeOutcome) {
           // Negative: notes only, block phone + SMS, do NOT convert to contact

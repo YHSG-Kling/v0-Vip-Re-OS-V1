@@ -487,7 +487,7 @@ async function dispatchToChannel(
         agent_id:    lead.agent_id ?? null,
         vapi_call_id: vapiResponse.id,
         direction:   'outbound',
-        call_type:   'isa_ai',
+        call_type:   'ai_isa_call',
         status:      'initiated',
         started_at:  new Date().toISOString(),
       })

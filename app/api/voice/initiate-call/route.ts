@@ -246,7 +246,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       lead_id: resolvedLeadId ?? null,
       direction: "outbound",
       status: "initiated",
-      call_type: "isa_ai",
+      call_type: "ai_isa_call",
       phone_to: phoneNumber,
       vapi_call_id: vapiResponse.id,
     })
