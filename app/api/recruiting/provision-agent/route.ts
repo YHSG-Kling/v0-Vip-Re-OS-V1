@@ -10,12 +10,14 @@ export async function POST(req: Request) {
 
     const { data: profile } = await supabase
       .from("users")
-      .select("user_type, role, brokerage_id")
+      .select("user_type, brokerage_id, platform_role")
       .eq("id", user.id)
       .maybeSingle()
 
-    const resolvedType = profile?.user_type ?? profile?.role ?? ""
-    if (!["broker", "admin", "superadmin"].includes(resolvedType)) {
+    const resolvedType = profile?.user_type ?? ""
+    const isPlatformAdmin = profile?.platform_role === "superadmin" || resolvedType === "superadmin"
+    const isBrokerageAdmin = ["broker", "broker_owner", "admin"].includes(resolvedType)
+    if (!isPlatformAdmin && !isBrokerageAdmin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
@@ -24,15 +26,36 @@ export async function POST(req: Request) {
 
     const service = createServiceClient()
 
-    // Fetch recruit — must belong to same brokerage and be status=joined
-    const { data: recruit } = await service
+    // Fetch recruit. Brokerage admins are scoped to their own brokerage;
+    // platform admin may provision across brokerages.
+    let recruitQuery = service
       .from("recruits")
       .select("id, first_name, last_name, email, brokerage_id, status, provisioned, years_experience, license_state")
       .eq("id", recruitId)
-      .eq("brokerage_id", profile!.brokerage_id!)
-      .maybeSingle()
+
+    if (!isPlatformAdmin) {
+      recruitQuery = recruitQuery.eq("brokerage_id", profile!.brokerage_id!)
+    }
+
+    const { data: recruit } = await recruitQuery.maybeSingle()
 
     if (!recruit) return NextResponse.json({ error: "Recruit not found" }, { status: 404 })
+
+    // Cross-brokerage provisioning is reserved for platform admins. Even
+    // after RLS scopes the recruit lookup, double-check here so the audit
+    // log captures attempted boundary crossings.
+    if (!isPlatformAdmin && recruit.brokerage_id !== profile!.brokerage_id) {
+      await service.from("tenant_transition_log").insert({
+        actor_user_id: user.id,
+        action: "provision_recruit_denied_cross_brokerage",
+        entity_type: "recruit",
+        entity_id: recruit.id,
+        from_brokerage_id: recruit.brokerage_id,
+        to_brokerage_id: profile!.brokerage_id,
+        metadata: { reason: "caller_not_platform_admin" },
+      }).then(() => {}, () => {})
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
     if (recruit.provisioned) return NextResponse.json({ error: "Already provisioned" }, { status: 409 })
     if (recruit.status !== "joined") {
       return NextResponse.json({ error: "Recruit must be in 'joined' status before provisioning" }, { status: 422 })
@@ -62,7 +85,8 @@ export async function POST(req: Request) {
       newUserId = inviteData?.user?.id ?? null
     }
 
-    // Upsert users row
+    // Upsert users row (user_type is the canonical role column; the
+    // legacy `role` column is no longer written — migration 036+).
     const { data: upsertedUser } = await service
       .from("users")
       .upsert(
@@ -71,7 +95,6 @@ export async function POST(req: Request) {
           first_name: recruit.first_name,
           last_name: recruit.last_name,
           user_type: "agent",
-          role: "agent",
           brokerage_id: recruit.brokerage_id,
           is_contact: false,
           created_at: new Date().toISOString(),
@@ -155,6 +178,22 @@ export async function POST(req: Request) {
       notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+    }).then(() => {}, () => {})
+
+    // Tenant transition audit (immutable cross-tenant log — migration 038)
+    await service.from("tenant_transition_log").insert({
+      actor_user_id: user.id,
+      action: "provision_recruit",
+      entity_type: "recruit",
+      entity_id: recruit.id,
+      from_brokerage_id: null,
+      to_brokerage_id: recruit.brokerage_id,
+      row_count_moved: 1,
+      metadata: {
+        new_user_id: resolvedUserId,
+        agent_id: agentId,
+        email: recruit.email,
+      },
     }).then(() => {}, () => {})
 
     return NextResponse.json({
