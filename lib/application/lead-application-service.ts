@@ -48,7 +48,7 @@ export async function serviceGetLeads(
   const offset = (page - 1) * limit
 
   let query = supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*", { count: "exact" })
     .eq("brokerage_id", brokerageId)
 
@@ -62,8 +62,8 @@ export async function serviceGetLeads(
       `first_name.ilike.%${params.search}%,last_name.ilike.%${params.search}%,email.ilike.%${params.search}%,phone.ilike.%${params.search}%`
     )
   }
-  if (params?.score) query = query.eq("ai_score", params.score)
-  if (params?.intent) query = query.eq("intent", params.intent)
+  if (params?.score) query = query.eq("lead_score", params.score)
+  if (params?.intent) query = query.eq("lead_type", params.intent)
   if (params?.status) query = query.eq("status", params.status)
   if (params?.source) query = query.eq("source", params.source)
 
@@ -88,7 +88,7 @@ export async function serviceGetLead(agentId: string, brokerageId: string, id: s
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*")
     .eq("id", id)
     .eq("agent_id", agentId)
@@ -103,7 +103,7 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   const supabase = await createClient()
 
   const { data: lead, error: leadError } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*")
     .eq("id", leadId)
     .eq("agent_id", agentId)
@@ -113,21 +113,12 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   if (leadError) throw leadError
 
   // TODO: Call AI enrichment service (email validation, phone lookup, social profiles)
-  const enrichedData = {
-    email_verified: true,
-    phone_verified: true,
-    linkedin_profile: null,
-    facebook_profile: null,
-    estimated_income: null,
-    homeowner_status: null,
-    enriched_at: new Date().toISOString(),
-  }
-
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .update({
-      status: "enriched",
-      enriched_data: enrichedData,
+      enrichment_status: "enriched",
+      last_enriched_at: new Date().toISOString(),
+      enrichment_confidence: 0.8,
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
@@ -144,7 +135,7 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
   const supabase = await createClient()
 
   const { data: lead, error: leadError } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*")
     .eq("id", leadId)
     .eq("agent_id", agentId)
@@ -162,10 +153,11 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
       last_name: lead.last_name || "Lead",
       email: lead.email,
       phone: lead.phone,
-      lead_source: `scraped_${lead.source}`,
-      buyer_seller_status: lead.intent === "selling" ? "seller" : lead.intent === "buying" ? "buyer" : "both",
-      lead_stage: "new",
-      tags: [lead.intent, `score_${lead.ai_score}`].filter(Boolean),
+      // contacts schema: source/contact_type/status; tags live in metadata.
+      source: `lead_${lead.source ?? "unknown"}`,
+      contact_type: lead.lead_type === "selling" ? "seller" : lead.lead_type === "buying" ? "buyer" : "both",
+      status: "new",
+      metadata: { tags: [lead.lead_type, `score_${lead.lead_score}`].filter(Boolean) },
     })
     .select()
     .single()
@@ -173,10 +165,10 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
   if (contactError) throw contactError
 
   await supabase
-    .from("scraped_leads")
+    .from("leads")
     .update({
       status: "converted",
-      converted_contact_id: contact.id,
+      contact_id: contact.id,
       converted_at: new Date().toISOString(),
     })
     .eq("id", leadId)
@@ -195,11 +187,13 @@ export async function serviceRejectLead(
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .update({
       status: "rejected",
-      rejection_reason: reason,
-      rejected_at: new Date().toISOString(),
+      // leads has no dedicated rejection_reason / rejected_at columns; record
+      // the reason in notes and rely on updated_at for the timestamp.
+      notes: reason ? `Rejected: ${reason}` : "Rejected",
+      updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
     .eq("agent_id", agentId)
@@ -225,11 +219,11 @@ export async function serviceImportLeads(
     agent_id: agentId,
     brokerage_id: brokerageId,
     status: lead.status || "new",
-    ai_score: lead.ai_score || 3,
+    lead_score: lead.lead_score || lead.ai_score || 3,
     source: lead.source || "manual",
   }))
 
-  const { data, error } = await supabase.from("scraped_leads").insert(leadsToInsert).select()
+  const { data, error } = await supabase.from("leads").insert(leadsToInsert).select()
 
   if (error) throw error
 
@@ -238,9 +232,9 @@ export async function serviceImportLeads(
 }
 
 // ============================================
-// LEADS TABLE SERVICE FUNCTIONS
-// Operate on the `leads` table (external scraped data not yet in system)
-// The functions above operate on `scraped_leads` (a separate pipeline)
+// LEADS-WIDE SERVICE FUNCTIONS
+// Lower-level helpers on the same `leads` table. Distinguished from the
+// CRM-flow functions above by carrying extra scraping/enrichment context.
 // ============================================
 
 export async function serviceCreateLead(leadData: {
