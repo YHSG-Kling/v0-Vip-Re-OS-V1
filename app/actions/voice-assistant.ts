@@ -1,11 +1,17 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * Voice Assistant System - Hands-free AI for agents on the go
  * Like Alexa/Siri for real estate - voice commands while driving
+ *
+ * SECURITY: all entry points derive agentId from the authenticated session.
+ * Caller-supplied agentId values are ignored — voice config and command
+ * history are per-agent data and must be scoped to the calling agent.
  */
 
 interface VoiceIntent {
@@ -14,18 +20,78 @@ interface VoiceIntent {
   confidence: number
 }
 
+/**
+ * Resolve the calling user's agents.id from the session.
+ * Falls back to a direct lookup if getAgentContext returns null (e.g. broker
+ * with an agents row but no role assignment yet).
+ */
+async function resolveCallerAgentId(): Promise<{
+  agentId: string | null
+  brokerageId: string | null
+  userId: string
+  isAuthenticated: boolean
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { agentId: null, brokerageId: null, userId: "", isAuthenticated: false }
+  }
+  if (ctx.agentId) {
+    return {
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      isAuthenticated: true,
+    }
+  }
+  // Fallback: agents.id WHERE user_id = ctx.userId
+  const svc = createServiceClient()
+  const { data: agentRow } = await svc
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", ctx.userId)
+    .maybeSingle()
+  return {
+    agentId: agentRow?.id ?? null,
+    brokerageId: ctx.brokerageId ?? agentRow?.brokerage_id ?? null,
+    userId: ctx.userId,
+    isAuthenticated: true,
+  }
+}
+
 // Process voice command from agent
 export async function processVoiceCommand(params: {
-  agentId: string
+  agentId?: string // ignored — derived from session
   contactId?: string
   commandText: string
   context?: any
   sessionId?: string
 }) {
-  const { agentId, contactId, commandText, context, sessionId } = params
+  const { commandText, context, sessionId } = params
+  let { contactId } = params
 
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
+  }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+  const agentId = caller.agentId
+
+  // If caller passed a contactId, verify it belongs to this agent's brokerage
+  if (contactId) {
+    if (!isValidUUID(contactId)) {
+      return { success: false, error: "Invalid contact ID" }
+    }
+    const svc = createServiceClient()
+    const { data: contactRow } = await svc
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    if (!contactRow || contactRow.brokerage_id !== caller.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
   }
 
   const supabase = await createClient()
@@ -157,9 +223,14 @@ export async function processVoiceCommand(params: {
 }
 
 // Start a new voice assistant session
-export async function startVoiceSession(agentId: string, context?: any) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+export async function startVoiceSession(_agentId?: string, context?: any) {
+  // _agentId ignored — derived from session
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
+  }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
   }
 
   const supabase = await createClient()
@@ -167,7 +238,7 @@ export async function startVoiceSession(agentId: string, context?: any) {
   const { data, error } = await supabase
     .from("voice_assistant_sessions")
     .insert({
-      agent_id: agentId,
+      agent_id: caller.agentId,
       session_start: new Date().toISOString(),
       context: context || {},
     })
@@ -188,6 +259,25 @@ export async function endVoiceSession(sessionId: string) {
     return { success: false, error: "Invalid session ID" }
   }
 
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
+  }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+
+  // Verify the session belongs to this agent before mutating
+  const svc = createServiceClient()
+  const { data: session } = await svc
+    .from("voice_assistant_sessions")
+    .select("agent_id")
+    .eq("id", sessionId)
+    .maybeSingle()
+  if (!session || session.agent_id !== caller.agentId) {
+    return { success: false, error: "Forbidden" }
+  }
+
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -204,10 +294,16 @@ export async function endVoiceSession(sessionId: string) {
 }
 
 // Get or create voice assistant config for agent
-export async function getVoiceConfig(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+export async function getVoiceConfig(_agentId?: string) {
+  // _agentId ignored — derived from session
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
   }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+  const agentId = caller.agentId
 
   const supabase = await createClient()
 
@@ -244,10 +340,16 @@ export async function getVoiceConfig(agentId: string) {
 }
 
 // Update voice assistant config
-export async function updateVoiceConfig(agentId: string, updates: any) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+export async function updateVoiceConfig(_agentId: string | undefined, updates: any) {
+  // _agentId ignored — derived from session
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
   }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+  const agentId = caller.agentId
 
   const supabase = await createClient()
 
@@ -267,10 +369,16 @@ export async function updateVoiceConfig(agentId: string, updates: any) {
 }
 
 // Get recent voice commands for agent
-export async function getVoiceCommandHistory(agentId: string, limit = 50) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+export async function getVoiceCommandHistory(_agentId?: string, limit = 50) {
+  // _agentId ignored — derived from session
+  const caller = await resolveCallerAgentId()
+  if (!caller.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
   }
+  if (!caller.agentId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+  const agentId = caller.agentId
 
   const supabase = await createClient()
 

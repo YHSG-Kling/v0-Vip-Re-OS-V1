@@ -4,41 +4,81 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 
-export async function getContactDetails(contactId: string) {
-  const supabase = await createClient()
+// Every read in this file is a contact PII surface: contact record itself,
+// credit accounts, transactions, message threads, documents, video engagement,
+// portal activity. Previously NONE of them verified that the caller had access
+// to the contact — any signed-in user could pull this data for any contactId
+// they could guess (UUIDs but enumerable from URL leaks, etc.). IDOR across
+// every brokerage.
+//
+// Fix: every function now resolves brokerage_id from the session and verifies
+// the contact's brokerage_id matches before returning anything.
 
-  // Get contact data
+async function authorizeContactAccess(contactId: string): Promise<
+  | { ok: true; brokerageId: string; contact: { id: string; brokerage_id: string } }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+
+  const svc = createServiceClient()
+  const { data: u } = await svc
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("id, brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact) return { ok: false, error: "Contact not found" }
+  if (contact.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
+
+  return { ok: true, brokerageId: u.brokerage_id, contact: { id: contact.id, brokerage_id: contact.brokerage_id } }
+}
+
+export async function getContactDetails(contactId: string) {
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { contact: null, error: gate.error }
+
+  const supabase = await createClient()
   const { data: contact, error } = await supabase
     .from("contacts")
     .select("*")
     .eq("id", contactId)
+    .eq("brokerage_id", gate.brokerageId)
     .single()
 
   if (error) {
-    console.error("[getContactDetails] Error:", error)
     return { contact: null, error: error.message }
   }
 
-  // Get conversations separately
   const { data: conversations } = await supabase
     .from("conversations")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", gate.brokerageId)
     .order("created_at", { ascending: false })
     .limit(10)
 
-  return { 
+  return {
     contact: {
       ...contact,
       conversations: conversations || []
-    }, 
-    error: null 
+    },
+    error: null
   }
 }
 
 export async function getContactCreditAccounts(contactId: string) {
-  const supabase = await createClient()
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { accounts: [], error: gate.error }
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("credit_accounts")
     .select("*")
@@ -49,8 +89,10 @@ export async function getContactCreditAccounts(contactId: string) {
 }
 
 export async function getContactVideoEngagement(contactId: string) {
-  const supabase = await createClient()
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { videos: [], error: gate.error }
 
+  const supabase = await createClient()
   const { data: events } = await supabase
     .from("video_engagement_events")
     .select("video_asset_id, event_type, timestamp")
@@ -64,12 +106,14 @@ export async function getContactVideoEngagement(contactId: string) {
   const [{ data: perf }, { data: projects }] = await Promise.all([
     supabase
       .from("video_performance_tracking")
-      .select("video_asset_id, total_views, average_completion_rate, last_event_at")
-      .in("video_asset_id", assetIds),
+      .select("video_asset_id, total_views, average_completion_rate, last_event_at, brokerage_id")
+      .in("video_asset_id", assetIds)
+      .eq("brokerage_id", gate.brokerageId),
     supabase
       .from("ai_video_projects")
-      .select("id, title, created_at")
-      .in("id", assetIds),
+      .select("id, title, created_at, brokerage_id")
+      .in("id", assetIds)
+      .eq("brokerage_id", gate.brokerageId),
   ])
 
   const videos = assetIds.map((id: string) => {
@@ -90,10 +134,10 @@ export async function getContactVideoEngagement(contactId: string) {
 }
 
 export async function getContactTransactions(contactId: string) {
-  const supabase = await createClient()
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { transactions: [], error: gate.error }
 
-  // Transactions are created from accepted offers via createTransactionFromCompliantAcceptedOffer().
-  // They carry their own property data and are self-contained — no join to listings needed.
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("transactions")
     .select(
@@ -102,6 +146,7 @@ export async function getContactTransactions(contactId: string) {
       "closing_date, earnest_money, transaction_type, created_at, updated_at"
     )
     .eq("contact_id", contactId)
+    .eq("brokerage_id", gate.brokerageId)
     .order("created_at", { ascending: false })
 
   return { transactions: data || [], error }
@@ -123,6 +168,16 @@ export async function getContactCopilotSuggestions(contactId: string) {
     return { suggestions: [], error: null }
   }
 
+  // Pre-check that the contact belongs to caller's brokerage
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact || contact.brokerage_id !== brokerageId) {
+    return { suggestions: [], error: null }
+  }
+
   let query = supabase
     .from("smart_assistant_suggestions")
     .select("*")
@@ -141,10 +196,13 @@ export async function getContactCopilotSuggestions(contactId: string) {
 }
 
 export async function getContactActivity(contactId: string) {
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { activity: [], error: gate.error }
+
   const supabase = await createClient()
 
-  // Fetch all activity types
-  const [conversations, messages, tasks, activities] = await Promise.all([
+  // All activity tables are scoped to the verified contact
+  const [conversations, messages, tasks, activities, portalActivity] = await Promise.all([
     supabase
       .from("conversations")
       .select("*")
@@ -168,30 +226,41 @@ export async function getContactActivity(contactId: string) {
       .select("*")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("client_portal_activity")
+      .select("id, contact_id, activity_type, metadata, created_at")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
       .limit(50)
   ])
 
-  // Combine and sort by date
   const activity = [
-    ...(conversations.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "conversation", 
-      activity_date: item.created_at 
+    ...(conversations.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "conversation",
+      activity_date: item.created_at
     })),
-    ...(messages.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "message", 
-      activity_date: item.created_at 
+    ...(messages.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "message",
+      activity_date: item.created_at
     })),
-    ...(tasks.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "task", 
-      activity_date: item.created_at 
+    ...(tasks.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "task",
+      activity_date: item.created_at
     })),
-    ...(activities.data || []).map((item: any) => ({ 
-      ...item, 
-      activity_type: "activity", 
-      activity_date: item.created_at 
+    ...(activities.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "activity",
+      activity_date: item.created_at
+    })),
+    ...(portalActivity.data || []).map((item: any) => ({
+      ...item,
+      activity_type: item.activity_type ?? "portal_view",
+      activity_date: item.created_at,
+      notes: item.metadata ? JSON.stringify(item.metadata) : "Portal activity",
     }))
   ].sort((a, b) => new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime())
 
@@ -199,24 +268,30 @@ export async function getContactActivity(contactId: string) {
 }
 
 export async function getContactDocuments(contactId: string) {
-  const supabase = await createClient()
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { documents: [], error: gate.error }
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("transaction_documents")
     .select("*, uploaded_by_agent:agents!transaction_documents_uploaded_by_fkey(first_name, last_name)")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", gate.brokerageId)
     .order("uploaded_at", { ascending: false })
 
   return { documents: data || [], error }
 }
 
 export async function getContactInteractions(contactId: string) {
-  const supabase = await createClient()
+  const gate = await authorizeContactAccess(contactId)
+  if (!gate.ok) return { interactions: [], error: gate.error }
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("conversations")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", gate.brokerageId)
     .order("created_at", { ascending: false })
 
   return { interactions: data || [], error }

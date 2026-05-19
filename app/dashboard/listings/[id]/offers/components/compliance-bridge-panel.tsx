@@ -59,30 +59,27 @@ interface ComplianceBridgePanelProps {
   onAccepted?:    (transactionId: string) => void
 }
 
-// ─── Server action wrappers (imported dynamically to stay client-safe) ─────────
+// ─── Server-action wrappers ───────────────────────────────────────────────────
+// Imported via dynamic import → "use server" RPC stubs. Keeps kernel/* +
+// compliance-gate (server-only chains) out of the client bundle.
 
 async function runAcceptOfferConditionally(params: {
   offerId: string; listingId: string; brokerageId: string; agentUserId: string
 }) {
-  const { acceptOfferConditionally } = await import("@/lib/kernel/transactions")
-  return acceptOfferConditionally({
-    offerId:     params.offerId,
-    agentId:     params.agentUserId,
-    brokerageId: params.brokerageId,
-    listingId:   params.listingId,
-  })
+  const { acceptOfferConditionallyAction } = await import("@/app/actions/compliance-bridge-actions")
+  return acceptOfferConditionallyAction(params)
 }
 
 async function runEmitCompliancePassed(params: {
   offerId: string; userId: string
 }) {
-  const { emitCompliancePassed } = await import("@/lib/buyer-offer/compliance-gate")
-  return emitCompliancePassed({ offerId: params.offerId, userId: params.userId })
+  const { emitCompliancePassedAction } = await import("@/app/actions/compliance-bridge-actions")
+  return emitCompliancePassedAction(params)
 }
 
 async function reloadBridgeStatus(offerId: string) {
-  const { loadComplianceBridgeStatus } = await import("@/lib/kernel/transactions")
-  return loadComplianceBridgeStatus(offerId)
+  const { loadComplianceBridgeStatusAction } = await import("@/app/actions/compliance-bridge-actions")
+  return loadComplianceBridgeStatusAction(offerId)
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────

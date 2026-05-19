@@ -1,5 +1,37 @@
 "use server"
 
+/**
+ * @deprecated MONOLITHIC ONBOARDING FILE (919 lines, 9 functions).
+ * Modular replacements live in `app/actions/onboarding/*`.
+ *
+ * MIGRATION MAP — each function moves to its target module:
+ *
+ *   startAgentOnboarding       → app/actions/onboarding/progress.ts
+ *   getOnboardingStatus        → merge with progress.ts:getAgentProgress
+ *                                AND agent-onboarding-actions.ts:fetchMyOnboardingDashboard
+ *                                (likely keep one canonical reader)
+ *   completeAISessionStep      → merge with agent-onboarding-actions.ts:completeMyOnboardingStep
+ *   matchMentor                → NEW app/actions/onboarding/mentorship.ts
+ *   verifyAgentLicense         → app/actions/onboarding/license.ts
+ *                                (overlaps with submitLicenseDetails — pick canonical)
+ *   generateWelcomeMessage     → app/actions/onboarding/assistant.ts
+ *   askOnboardingBuddy         → app/actions/onboarding/assistant.ts
+ *   submitQuizAttempt          → app/actions/onboarding/onboarding-quiz-actions.ts
+ *   certifyAgent               → app/actions/onboarding/progress.ts
+ *                                (overlaps with claimCertification — pick canonical)
+ *   getOnboardingAnalytics     → NEW app/actions/onboarding/analytics.ts
+ *                                OR fold into onboarding-steps-admin-actions.ts
+ *
+ * Until the migration ships:
+ *   - This file remains active. Existing callers continue to work.
+ *   - Do NOT add new functions here. Add them to the target module instead.
+ *   - The single direct caller is `app/dashboard/onboarding/mentorship/
+ *     mentorship-client.tsx` (matchMentor) — to be updated when that
+ *     function moves to mentorship.ts.
+ *   - app/actions/index.ts re-exports from this file; that re-export will
+ *     be redirected to the modular files as each function migrates.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateObject } from "@/lib/ai/generate"

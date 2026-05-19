@@ -109,7 +109,7 @@ export function AgentStaleContactsPanel({ agentId, brokerageId }: Props) {
               {contacts.length}
             </Badge>
           </CardTitle>
-          <Link href="/dashboard/contacts">
+          <Link href="/crm/contacts">
             <Button variant="ghost" size="sm" className="h-6 text-xs gap-1">
               All <ArrowRight className="h-3 w-3" />
             </Button>
@@ -121,7 +121,7 @@ export function AgentStaleContactsPanel({ agentId, brokerageId }: Props) {
         {contacts.map((c) => {
           const days = daysSince(c.last_contacted_at)
           return (
-            <Link key={c.id} href={`/dashboard/contacts/${c.id}`}>
+            <Link key={c.id} href={`/crm/contacts/${c.id}`}>
               <div className="flex items-center gap-2.5 p-2 rounded-md hover:bg-muted/50 transition-colors cursor-pointer group">
                 <Avatar className="h-7 w-7 shrink-0">
                   <AvatarFallback className="text-[10px]">

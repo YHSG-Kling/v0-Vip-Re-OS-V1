@@ -8,7 +8,6 @@ export interface OfferForAnalysis {
   offer_number: string | null
   offer_price: number
   earnest_money: number | null
-  earnest_money_amount: number | null
   closing_date: string | null
   financing_type: string | null
   down_payment_percent: number | null

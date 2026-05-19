@@ -4,14 +4,38 @@ import { createServerClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // =====================================================
-// EVENT HANDLERS - Called by orchestrator
+// EVENT HANDLERS — exposed as server actions but no UI currently invokes them.
+// They originally had zero auth and would accept arbitrary payloads (any
+// authenticated user could delegate any task to anyone, log queries as any
+// user, etc.). Hardened: caller must own the relevant user_id, OR be admin.
 // =====================================================
 
-export async function handleAssistantQuery(payload: any) {
-  const supabase = await createServerClient()
-  const { user_id, query, context } = payload
+const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
-  // Log query for analytics
+async function authorizeForUser(targetUserId: string | undefined | null): Promise<
+  | { ok: true }
+  | { ok: false; error: string }
+> {
+  const supabase = await createServerClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  if (targetUserId && targetUserId === user.id) return { ok: true }
+
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (userRow && ADMIN_ROLES.has((userRow.user_type ?? "") as string)) return { ok: true }
+  return { ok: false, error: "Forbidden: must be the user or an admin" }
+}
+
+export async function handleAssistantQuery(payload: any) {
+  const { user_id, query, context } = payload
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
   await supabase.from("assistant_queries").insert({
     user_id,
     query,
@@ -23,16 +47,29 @@ export async function handleAssistantQuery(payload: any) {
 }
 
 export async function handleTaskDelegated(payload: any) {
-  const supabase = await createServerClient()
   const { task_id, from_user_id, to_user_id, task_title } = payload
+  // Caller must be the delegator (from_user_id) or an admin. Without this
+  // any agent could reassign any task to any user.
+  const auth = await authorizeForUser(from_user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  // Update task assignment
+  const supabase = await createServerClient()
+  // Verify the task actually belongs to the delegator before reassigning.
+  const { data: task } = await supabase
+    .from("tasks")
+    .select("id, assigned_to, created_by")
+    .eq("id", task_id)
+    .maybeSingle()
+  if (!task) return { success: false, error: "Task not found" }
+  if (task.assigned_to !== from_user_id && task.created_by !== from_user_id) {
+    return { success: false, error: "Forbidden: not your task to delegate" }
+  }
+
   await supabase
     .from("tasks")
     .update({ assigned_to: to_user_id, delegated_by: from_user_id })
     .eq("id", task_id)
 
-  // Notify assignee
   await supabase.from("notifications").insert({
     recipient_id: to_user_id,
     notification_type: "task_delegated",
@@ -46,10 +83,11 @@ export async function handleTaskDelegated(payload: any) {
 }
 
 export async function handleAutomationTriggered(payload: any) {
-  const supabase = await createServerClient()
   const { automation_id, trigger_type, user_id, result } = payload
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  // Log automation execution
+  const supabase = await createServerClient()
   await supabase.from("automation_logs").insert({
     automation_id,
     user_id,

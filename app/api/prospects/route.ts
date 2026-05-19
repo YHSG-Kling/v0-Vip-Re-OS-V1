@@ -1,7 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabase } from "@/services/supabase"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { data, error } = await supabase
       .from("prospects")
@@ -12,23 +17,31 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error("[v0] Error fetching prospects:", error)
+    console.error("[prospects] Error fetching prospects:", error)
     return NextResponse.json({ error: "Failed to fetch prospects" }, { status: 500 })
   }
 }
 
 export async function POST(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const body = await request.json()
     const { name, email, phone } = body
 
-    const { data, error } = await supabase.from("prospects").insert({ name, email, phone }).select().single()
+    const { data, error } = await supabase
+      .from("prospects")
+      .insert({ name, email, phone })
+      .select()
+      .single()
 
     if (error) throw error
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error("[v0] Error creating prospect:", error)
+    console.error("[prospects] Error creating prospect:", error)
     return NextResponse.json({ error: "Failed to create prospect" }, { status: 500 })
   }
 }

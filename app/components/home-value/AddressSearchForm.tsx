@@ -185,7 +185,7 @@ export function AddressSearchForm({
       })
 
       if (result.success && result.requestId) {
-        router.push(`/home-value/${result.requestId}`)
+        router.push(`/home-value/result/${result.requestId}`)
       } else {
         setError(result.error || "Something went wrong. Please try again.")
       }

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -264,7 +265,7 @@ Business Diagnosis Data:
                           </p>
                         </div>
                       </div>
-                      <Link href={`/crm?contactId=${candidate.contact_id || candidate.id}`}>
+                      <Link href={`/crm?contact=${candidate.contact_id || candidate.id}`}>
                         <Button variant="outline" size="sm" className="gap-1">
                           Open Contact
                           <ArrowRight className="h-3 w-3" />
@@ -336,7 +337,7 @@ Business Diagnosis Data:
                               className={
                                 opp.type === "sphere"
                                   ? "bg-blue-100 text-blue-700 border-blue-200"
-                                  : opp.type === "past_client"
+                                  : opp.type === LIFETIME_CUSTOMER_TYPE
                                     ? "bg-purple-100 text-purple-700 border-purple-200"
                                     : opp.type === "referral"
                                       ? "bg-amber-100 text-amber-700 border-amber-200"
@@ -360,9 +361,9 @@ Business Diagnosis Data:
                           href={
                             opp.type === "referral"
                               ? "/referrals"
-                              : opp.type === "past_client"
-                                ? "/past-clients"
-                                : `/crm?contactId=${opp.contact_id || opp.id}`
+                              : opp.type === LIFETIME_CUSTOMER_TYPE
+                                ? "/lifetime-customers"
+                                : `/crm?contact=${opp.contact_id || opp.id}`
                           }
                         >
                           <Button size="sm" className="gap-1">
@@ -439,7 +440,7 @@ Business Diagnosis Data:
                                 Last contact: {contact.last_contact || "Unknown"} • {contact.churn_signal || "No recent engagement"}
                               </p>
                             </div>
-                            <Link href={`/crm?contactId=${contact.id}`}>
+                            <Link href={`/crm?contact=${contact.id}`}>
                               <Button variant="outline" size="sm" className="text-red-700 border-red-200">
                                 Re-engage
                               </Button>

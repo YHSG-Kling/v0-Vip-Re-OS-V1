@@ -1,4 +1,5 @@
 export { LaunchStateStrip } from "./launch-state-strip"
+export { LaunchReadinessChecklist } from "./launch-readiness-checklist"
 export { MediaReadinessCard } from "./media-readiness-card"
 export { PublishReadinessCard } from "./publish-readiness-card"
 export { MarketingTierReadinessCard } from "./marketing-tier-readiness-card"

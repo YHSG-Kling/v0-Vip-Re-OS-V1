@@ -56,6 +56,7 @@ import { toast } from "sonner"
 import { upload } from "@vercel/blob/client"
 import { scheduleSocialPost, updateSocialPost } from "@/app/actions/social-media-automation"
 import { generateSocialPostContent, suggestHashtags } from "@/app/actions/social/generate-social-post"
+import { GenerateImageButton } from "@/app/components/ai-image/generate-image-button"
 
 // ── Platform config ──────────────────────────────────────────────────────────
 
@@ -590,6 +591,22 @@ export function PostComposerDialog({
                 className="hidden"
                 onChange={e => handleFileSelect(e.target.files)}
               />
+              <div className="flex items-center justify-between gap-2 -mt-1">
+                <p className="text-[11px] text-muted-foreground">
+                  Or generate one with AI — brand-aware, fair-housing compliant
+                </p>
+                <GenerateImageButton
+                  purpose="social_post"
+                  defaultPrompt={content?.slice(0, 200) || ""}
+                  tags={["social_post"]}
+                  variant="outline"
+                  label="Generate with AI"
+                  onGenerated={(url) => {
+                    setMediaUrls(prev => [...prev, url])
+                    toast.success("AI image added to post")
+                  }}
+                />
+              </div>
               {mediaUrls.length > 0 && (
                 <div className="grid grid-cols-3 gap-2">
                   {mediaUrls.map((url, i) => (

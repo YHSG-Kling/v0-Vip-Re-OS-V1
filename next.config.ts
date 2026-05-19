@@ -33,6 +33,34 @@ const nextConfig: NextConfig = {
       },
     ]
   },
+  async redirects() {
+    return [
+      // Unified CRM: every contact lives under /crm/contacts/[id]. Old URLs
+      // (saved bookmarks, voice-cockpit email links sent before the cutover,
+      // /dashboard/contacts legacy links) redirect permanently to the new
+      // canonical path so nothing 404s.
+      {
+        source:      '/contacts',
+        destination: '/crm',
+        permanent:   true,
+      },
+      {
+        source:      '/contacts/:path*',
+        destination: '/crm/contacts/:path*',
+        permanent:   true,
+      },
+      {
+        source:      '/dashboard/contacts',
+        destination: '/crm',
+        permanent:   true,
+      },
+      {
+        source:      '/dashboard/contacts/:path*',
+        destination: '/crm/contacts/:path*',
+        permanent:   true,
+      },
+    ]
+  },
   images: {
     unoptimized: true,
     remotePatterns: [

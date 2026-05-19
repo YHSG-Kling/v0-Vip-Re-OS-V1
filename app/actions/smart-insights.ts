@@ -482,6 +482,14 @@ export async function getSmartInsights(propertyId: string, contactId: string) {
 
 // ==================== SHOWING REQUESTS ====================
 
+/**
+ * Legacy positional-args wrapper around the canonical requestShowing in
+ * app/actions/showings.ts. The previous implementation here wrote to columns
+ * that don't exist on showing_requests (property_id, property_data,
+ * preferred_dates, client_notes) and silently failed every call from the
+ * portal. Routes through the canonical action so all surfaces land the same
+ * shape.
+ */
 export async function requestShowing(
   contactId: string,
   propertyId: string,
@@ -490,28 +498,32 @@ export async function requestShowing(
   preferredDates: { date: string; time: string }[],
   notes?: string,
 ) {
-  const supabase = await createClient()
+  const { requestShowing: canonicalRequestShowing } = await import("./showings")
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const isUuid = uuidRe.test(propertyId)
 
-  const { data, error } = await supabase
-    .from("showing_requests")
-    .insert({
-      contact_id: contactId,
-      property_id: propertyId,
-      property_address: propertyAddress,
-      property_data: propertyData,
-      preferred_dates: preferredDates,
-      client_notes: notes,
-      status: "pending",
-    })
-    .select()
-    .single()
+  const result = await canonicalRequestShowing({
+    contactId,
+    listingId:         isUuid ? propertyId : undefined,
+    propertyAddress,
+    propertyCity:      propertyData.city ?? propertyData.property_city,
+    propertyState:     propertyData.state ?? propertyData.property_state,
+    propertyZip:       propertyData.zip ?? propertyData.property_zip,
+    mlsNumber:         isUuid ? undefined : propertyId,
+    listPrice:         propertyData.list_price ?? propertyData.price,
+    primaryPhotoUrl:   propertyData.primary_photo_url ?? propertyData.photo_url,
+    listingAgentName:  propertyData.listing_agent_name,
+    listingAgentPhone: propertyData.listing_agent_phone,
+    listingAgentEmail: propertyData.listing_agent_email,
+    listingAgentCompany: propertyData.listing_agent_company,
+    source:            'buyer_portal',
+    preferredDates,
+    clientNotes:       notes,
+  })
 
-  if (error) {
-    console.error("[v0] Error creating showing request:", error)
-    return { error: error.message }
-  }
-
-  return { data }
+  // Map the canonical { success, error } shape onto the legacy { data, error } shape
+  if (!result.success) return { error: result.error }
+  return { data: result.data }
 }
 
 export async function getShowingRequests(contactId: string) {
@@ -560,6 +572,12 @@ export async function updateShowingFeedback(
 
 // ==================== PROPERTY SAVING ====================
 
+/**
+ * Legacy positional-arg wrapper around the canonical saveProperty in
+ * app/actions/idx-search.ts. Previous implementation here wrote to columns
+ * that don't exist on saved_properties (property_id, property_data) and
+ * silently failed every call from the portal.
+ */
 export async function saveProperty(data: {
   contactId: string
   propertyId: string
@@ -567,34 +585,31 @@ export async function saveProperty(data: {
   propertyData?: Record<string, any>
   notes?: string
 }) {
-  const supabase = await createClient()
+  const { saveProperty: canonicalSaveProperty } = await import("./idx-search")
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const isUuid = uuidRe.test(data.propertyId)
+  const pd = data.propertyData ?? {}
 
-  // Check if already saved
-  const { data: existing } = await supabase
-    .from("saved_properties")
-    .select("id")
-    .eq("contact_id", data.contactId)
-    .eq("property_id", data.propertyId)
-    .maybeSingle()
-
-  if (existing) {
-    return { success: true, message: "Property already saved", alreadySaved: true }
-  }
-
-  const { error } = await supabase.from("saved_properties").insert({
-    contact_id: data.contactId,
-    property_id: data.propertyId,
-    property_address: data.propertyAddress,
-    property_data: data.propertyData || {},
-    notes: data.notes,
+  return canonicalSaveProperty({
+    contactId:          data.contactId,
+    listingId:          isUuid ? data.propertyId : undefined,
+    mlsNumber:          isUuid ? undefined : data.propertyId,
+    externalPropertyId: isUuid ? undefined : data.propertyId,
+    source:             pd.source ?? (isUuid ? "brokerage_listing" : "idx"),
+    propertyData: {
+      address:          data.propertyAddress,
+      price:            pd.price ?? pd.list_price,
+      bedrooms:         pd.bedrooms ?? pd.beds,
+      bathrooms:        pd.bathrooms ?? pd.baths,
+      sqft:             pd.sqft,
+      propertyType:     pd.propertyType ?? pd.property_type,
+      primaryPhotoUrl:  pd.primaryPhotoUrl ?? pd.primary_photo_url ?? pd.photo_url,
+      url:              pd.url ?? pd.listing_url,
+      city:             pd.city,
+      state:            pd.state,
+      brokerageId:      pd.brokerageId,
+    },
   })
-
-  if (error) {
-    console.error("[v0] Error saving property:", error)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true }
 }
 
 export async function unsaveProperty(contactId: string, propertyId: string) {

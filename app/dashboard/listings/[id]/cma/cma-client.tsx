@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { CMA_DISCLAIMER } from "@/app/actions/cma-presentation/cma-generator"
+import { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 import { CMAReportTab } from "./tabs/cma-report-tab"
 import { NetSheetTab } from "./tabs/net-sheet-tab"
 import { PricingIntelligenceTab } from "./tabs/pricing-intelligence-tab"

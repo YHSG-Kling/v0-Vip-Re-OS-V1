@@ -1,36 +1,32 @@
 import { NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const searchParams = request.nextUrl.searchParams
-    const brokerage_id = searchParams.get("brokerage_id")
     const vendor_name = searchParams.get("vendor_name")
     const start_date = searchParams.get("start_date")
     const end_date = searchParams.get("end_date")
 
-    if (!brokerage_id) {
-      return NextResponse.json(
-        { error: "Missing brokerage_id parameter" },
-        { status: 400 }
-      )
-    }
+    const svc = createServiceClient()
 
-    const supabase = createServiceClient()
-
-    let query = supabase
+    let query = svc
       .from("vendor_usage_tracking")
       .select("*")
-      .eq("brokerage_id", brokerage_id)
+      .eq("brokerage_id", auth.brokerageId)  // always scope to caller's brokerage
 
     if (vendor_name) {
       query = query.eq("vendor_name", vendor_name)
     }
-
     if (start_date) {
       query = query.gte("created_at", start_date)
     }
-
     if (end_date) {
       query = query.lte("created_at", end_date)
     }
@@ -38,11 +34,10 @@ export async function GET(request: NextRequest) {
     const { data, error } = await query.order("created_at", { ascending: false })
 
     if (error) {
-      console.error("[v0] Error fetching vendor costs:", error)
+      console.error("[vendor-costs] Error fetching vendor costs:", error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Calculate totals
     const totals = data.reduce(
       (acc, record) => {
         const vendor = record.vendor_name
@@ -58,16 +53,9 @@ export async function GET(request: NextRequest) {
       { byVendor: {} as Record<string, any>, grand_total: 0 }
     )
 
-    return NextResponse.json({
-      data,
-      summary: totals,
-      count: data.length,
-    })
+    return NextResponse.json({ data, summary: totals, count: data.length })
   } catch (error) {
-    console.error("[v0] Unexpected error in vendor costs API:", error)
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    )
+    console.error("[vendor-costs] Unexpected error:", error)
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

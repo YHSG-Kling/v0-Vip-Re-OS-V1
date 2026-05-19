@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,10 @@ import {
   Home,
   Clock,
   Loader2,
+  TrendingUp,
+  Brain,
+  Flame,
+  Gauge,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -39,6 +43,8 @@ import {
 } from "./components/os"
 import { generateWeeklyCoachingReport } from "@/lib/intelligence/coaching-engine"
 import { createClient } from "@/lib/supabase/client"
+import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
+import { getAgentCoachingInsights } from "@/app/actions/ai-predictions"
 
 interface WeeklyReport {
   id: string
@@ -277,6 +283,36 @@ export function CoachingDashboardClient({
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [executingId, setExecutingId] = useState<string | null>(null)
 
+  // Goal Coaching tab state
+  const [goalCoaching, setGoalCoaching] = useState<any>(null)
+  const [goalCoachingLoading, setGoalCoachingLoading] = useState(false)
+  const [goalCoachingLoaded, setGoalCoachingLoaded] = useState(false)
+
+  // AI Insights tab state
+  const [aiInsights, setAiInsights] = useState<any>(null)
+  const [aiInsightsLoading, setAiInsightsLoading] = useState(false)
+  const [aiInsightsLoaded, setAiInsightsLoaded] = useState(false)
+
+  function loadGoalCoaching() {
+    if (goalCoachingLoaded) return
+    setGoalCoachingLoading(true)
+    aiCoachGoalProgress({ agentId, brokerageId }).then((res) => {
+      setGoalCoaching((res as any).success ? (res as any).data : null)
+      setGoalCoachingLoaded(true)
+      setGoalCoachingLoading(false)
+    })
+  }
+
+  function loadAiInsights() {
+    if (aiInsightsLoaded) return
+    setAiInsightsLoading(true)
+    getAgentCoachingInsights(agentId).then((res) => {
+      setAiInsights(res ?? null)
+      setAiInsightsLoaded(true)
+      setAiInsightsLoading(false)
+    })
+  }
+
   const handleGenerateReport = async () => {
     setIsGenerating(true)
     try {
@@ -463,14 +499,22 @@ export function CoachingDashboardClient({
             </CardHeader>
             <CardContent>
               <Tabs defaultValue="buyers">
-                <TabsList className="mb-4 w-full">
-                  <TabsTrigger value="buyers" className="flex-1">
-                    <Users className="mr-2 h-4 w-4" />
+                <TabsList className="mb-4 w-full grid grid-cols-4">
+                  <TabsTrigger value="buyers" className="text-xs gap-1">
+                    <Users className="h-3.5 w-3.5" />
                     Buyers ({buyerCoaching.length})
                   </TabsTrigger>
-                  <TabsTrigger value="sellers" className="flex-1">
-                    <Home className="mr-2 h-4 w-4" />
+                  <TabsTrigger value="sellers" className="text-xs gap-1">
+                    <Home className="h-3.5 w-3.5" />
                     Sellers ({sellerCoaching.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="goals" className="text-xs gap-1" onClick={loadGoalCoaching}>
+                    <TrendingUp className="h-3.5 w-3.5" />
+                    Goal Coaching
+                  </TabsTrigger>
+                  <TabsTrigger value="insights" className="text-xs gap-1" onClick={loadAiInsights}>
+                    <Brain className="h-3.5 w-3.5" />
+                    AI Insights
                   </TabsTrigger>
                 </TabsList>
 
@@ -509,6 +553,161 @@ export function CoachingDashboardClient({
                         type="seller"
                       />
                     ))
+                  )}
+                </TabsContent>
+
+                {/* Goal Coaching Tab */}
+                <TabsContent value="goals" className="max-h-[600px] overflow-y-auto space-y-4">
+                  {goalCoachingLoading ? (
+                    <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Analyzing your goal progress…
+                    </div>
+                  ) : !goalCoaching ? (
+                    <div className="py-12 text-center space-y-3">
+                      <TrendingUp className="mx-auto h-12 w-12 text-muted-foreground/40" />
+                      <p className="text-muted-foreground text-sm">No goals set for this year yet.</p>
+                      <Button size="sm" variant="outline" onClick={loadGoalCoaching}>
+                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                        Analyze Goals
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Overall status */}
+                      <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-0.5">Overall Status</p>
+                          <p className="font-semibold capitalize text-sm">{goalCoaching.overallStatus?.replace(/_/g, " ")}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Gauge className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-2xl font-bold tabular-nums">{goalCoaching.overallScore}</span>
+                          <span className="text-xs text-muted-foreground">/100</span>
+                        </div>
+                      </div>
+
+                      {/* Per-goal breakdown */}
+                      {goalCoaching.byGoal && goalCoaching.byGoal.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">By Goal</p>
+                          {goalCoaching.byGoal.map((g: any, i: number) => {
+                            const statusColor = g.status === "ahead" ? "text-emerald-700" : g.status === "on_track" ? "text-blue-700" : "text-amber-700"
+                            return (
+                              <div key={i} className="p-3 rounded-lg border space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-medium capitalize">{g.goal_type?.replace(/_/g, " ")}</p>
+                                  <span className={`text-xs font-medium ${statusColor}`}>{g.status?.replace(/_/g, " ")}</span>
+                                </div>
+                                <p className="text-xs text-muted-foreground">{g.coaching}</p>
+                                {g.paceNeeded > 0 && (
+                                  <p className="text-xs text-muted-foreground">Pace needed: <span className="font-medium">{g.paceNeeded}/month</span></p>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                      {/* Weekly actions */}
+                      {goalCoaching.weeklyActions && goalCoaching.weeklyActions.length > 0 && (
+                        <div>
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">This Week's Actions</p>
+                          <ul className="space-y-1.5">
+                            {goalCoaching.weeklyActions.map((a: string, i: number) => (
+                              <li key={i} className="flex items-start gap-2 text-sm">
+                                <Badge variant="outline" className="text-[10px] mt-0.5 shrink-0">{i + 1}</Badge>
+                                <span>{a}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Motivational message */}
+                      {goalCoaching.motivationalMessage && (
+                        <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                          <p className="text-sm italic text-muted-foreground">{goalCoaching.motivationalMessage}</p>
+                        </div>
+                      )}
+
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setGoalCoachingLoaded(false); loadGoalCoaching() }}>
+                        <RefreshCw className="h-3 w-3 mr-1.5" />
+                        Refresh
+                      </Button>
+                    </>
+                  )}
+                </TabsContent>
+
+                {/* AI Insights Tab */}
+                <TabsContent value="insights" className="max-h-[600px] overflow-y-auto space-y-4">
+                  {aiInsightsLoading ? (
+                    <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading conversation insights…
+                    </div>
+                  ) : !aiInsights ? (
+                    <div className="py-12 text-center space-y-3">
+                      <Brain className="mx-auto h-12 w-12 text-muted-foreground/40" />
+                      <p className="text-muted-foreground text-sm">No conversation intelligence yet.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Avg them-first score */}
+                      <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-0.5">Avg "Them First" Score</p>
+                          <p className="text-xs text-muted-foreground">Across {aiInsights.conversations?.length ?? 0} recent conversations</p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Flame className="h-4 w-4 text-orange-500" />
+                          <span className="text-2xl font-bold tabular-nums">{aiInsights.averageThemFirstScore ?? "—"}</span>
+                          <span className="text-xs text-muted-foreground">/100</span>
+                        </div>
+                      </div>
+
+                      {/* Improvement areas */}
+                      {aiInsights.improvementAreas && aiInsights.improvementAreas.length > 0 && (
+                        <div>
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">Top Improvement Areas</p>
+                          <ul className="space-y-1.5">
+                            {aiInsights.improvementAreas.map((area: string, i: number) => (
+                              <li key={i} className="flex items-start gap-2 text-sm">
+                                <ChevronRight className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                                <span>{area}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Per-conversation list */}
+                      {aiInsights.conversations && aiInsights.conversations.length > 0 && (
+                        <div>
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">Recent Conversations</p>
+                          <ul className="space-y-2">
+                            {aiInsights.conversations.map((c: any, i: number) => {
+                              const score = c.them_first_score ?? 0
+                              const color = score >= 70 ? "text-emerald-700" : score >= 50 ? "text-amber-700" : "text-red-700"
+                              return (
+                                <li key={i} className="flex items-center justify-between text-sm border rounded-lg px-3 py-2">
+                                  <div className="min-w-0">
+                                    <p className="text-xs text-muted-foreground capitalize">{c.conversation_type?.replace(/_/g, " ") ?? "Conversation"}</p>
+                                    <p className="text-xs text-muted-foreground">{c.analyzed_at ? new Date(c.analyzed_at).toLocaleDateString() : "—"}</p>
+                                  </div>
+                                  <span className={`font-semibold tabular-nums ${color}`}>{score}</span>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        </div>
+                      )}
+
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setAiInsightsLoaded(false); loadAiInsights() }}>
+                        <RefreshCw className="h-3 w-3 mr-1.5" />
+                        Refresh
+                      </Button>
+                    </>
                   )}
                 </TabsContent>
               </Tabs>

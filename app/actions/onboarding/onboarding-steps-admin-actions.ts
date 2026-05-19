@@ -12,10 +12,19 @@ import {
 } from "@/lib/kernel"
 import type { OnboardingStepRow } from "@/lib/kernel"
 
-async function getAuthenticatedUserId(): Promise<string> {
+// Onboarding steps are brokerage-wide templates — only admins/brokers
+// should be able to create / update / delete them. Previously the gate
+// was just auth.getUser() with no role check, so any agent could
+// rewrite the onboarding flow for their entire brokerage.
+async function getAuthenticatedAdminUserId(): Promise<string> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) throw new Error("Unauthorized")
+  const { data: profile } = await supabase
+    .from("users").select("user_type").eq("id", user.id).maybeSingle()
+  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+    .includes(profile?.user_type ?? "")
+  if (!isAdmin) throw new Error("Forbidden: brokerage admin only")
   return user.id
 }
 
@@ -32,7 +41,7 @@ export async function createBrokerageStep(
     instructions?: string | null
   }
 ): Promise<{ id: string }> {
-  const userId = await getAuthenticatedUserId()
+  const userId = await getAuthenticatedAdminUserId()
   return createOnboardingStepForBrokerage({ userId, step: input })
 }
 
@@ -53,11 +62,11 @@ export async function updateBrokerageStep(
     >
   >
 ): Promise<void> {
-  const userId = await getAuthenticatedUserId()
+  const userId = await getAuthenticatedAdminUserId()
   return updateOnboardingStepForBrokerage({ userId, stepId, updates })
 }
 
 export async function deleteBrokerageStep(stepId: string): Promise<void> {
-  const userId = await getAuthenticatedUserId()
+  const userId = await getAuthenticatedAdminUserId()
   return deleteOnboardingStepForBrokerage({ userId, stepId })
 }

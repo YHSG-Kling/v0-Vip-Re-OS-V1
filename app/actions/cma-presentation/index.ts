@@ -1,5 +1,3 @@
-"use server"
-
 /**
  * System 5.3: CMA & Listing Presentation Engine
  * Main Export File
@@ -17,12 +15,8 @@
  * ❌ DOES NOT store journey/lifecycle state
  */
 
-export { 
-  generateCMA,
-  CMA_DISCLAIMER,
-  type CMAGenerationInput,
-  type CMAResult
-} from "./cma-generator"
+export { generateCMA, type CMAGenerationInput, type CMAResult } from "./cma-generator"
+export { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 
 export {
   generateNetSheet,

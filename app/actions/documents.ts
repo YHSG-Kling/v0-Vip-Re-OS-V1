@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import { put, del } from "@vercel/blob"
 import { generateObject } from "@/lib/ai/generate"
@@ -11,11 +13,37 @@ import { handleError } from "@/lib/errors"
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {
+    // AUTH GATE — was returning any caller-supplied contact/transaction docs
+    // without scoping by brokerage. Multi-tenant leak.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
-    
+    const svc = createServiceClient()
+
+    // If the caller targets a specific contact or transaction, verify it
+    // belongs to their brokerage before returning any rows.
+    if (params?.contactId) {
+      const { data: c } = await svc
+        .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+      if (!c || c.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+    if (params?.transactionId) {
+      const { data: t } = await svc
+        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+      if (!t || t.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
     let query = supabase
       .from("transaction_documents")
       .select("*, uploaded_by_agent:agents!documents_uploaded_by_fkey(first_name, last_name)")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("uploaded_at", { ascending: false })
 
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
@@ -67,8 +95,14 @@ export async function deleteDocument(documentId: string) {
 
 export async function analyzeDocument(documentId: string) {
   try {
+    // AUTH GATE — previously kicked off paid AI analysis on any document id.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
-    
+
     const { data: document, error } = await supabase
       .from("transaction_documents")
       .select("*")
@@ -76,6 +110,11 @@ export async function analyzeDocument(documentId: string) {
       .maybeSingle()
 
     if (error || !document) throw error ?? new Error("Document not found")
+
+    // Cross-tenant scope check before burning AI tokens.
+    if (document.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // AI document analysis
     const { object: analysis } = await generateObject({
@@ -140,9 +179,35 @@ export async function uploadDocument(
   file: { name: string; type: string; size: number; base64: string },
   contactId: string,
   transactionId?: string,
-  userId?: string // For agent uploads
+  _userId?: string // ignored — derived from session
 ) {
+  // AUTH GATE — previously accepted spoofed userId + arbitrary contactId,
+  // letting any caller upload docs into any tenant's contact folder.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const userId = ctx.userId
+
   const supabase = await createClient()
+  const svc = createServiceClient()
+
+  // Verify the contact belongs to the caller's brokerage
+  if (contactId) {
+    const { data: c } = await svc
+      .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+    if (!c || c.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: contact not in your brokerage" }
+    }
+  }
+  // Verify the transaction (if provided) belongs to the caller's brokerage
+  if (transactionId) {
+    const { data: t } = await svc
+      .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+    if (!t || t.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden: transaction not in your brokerage" }
+    }
+  }
 
   const filePath = transactionId
     ? `transactions/${transactionId}/${Date.now()}_${file.name}`
@@ -177,6 +242,7 @@ export async function uploadDocument(
   const { data: document, error: docError } = await supabase
     .from("client_documents")
     .insert({
+      brokerage_id: ctx.brokerageId,
       contact_id: contactId || null,
       transaction_id: transactionId || null,
       document_name: file.name,
@@ -309,6 +375,234 @@ Use simple language, avoid jargon, and be reassuring.`,
       })
       .eq("id", documentId)
 
+    // Step 7: For contract document types — run state-specific signature compliance scan
+    // Plan FIX 0B/J10: when any contract is uploaded, scan for signature/initial completeness per state requirements
+    const CONTRACT_TYPES = ["purchase_agreement", "listing_agreement", "addendum", "disclosure_form"]
+    let signatureScan: any = null
+    if (CONTRACT_TYPES.includes(classification.document_type)) {
+      try {
+        // Resolve state from brokerage
+        let brokerageState: string | null = null
+        if (docRecord?.brokerage_id) {
+          const { data: brokerage } = await supabase
+            .from("brokerages")
+            .select("state")
+            .eq("id", docRecord.brokerage_id)
+            .maybeSingle()
+          brokerageState = brokerage?.state ?? null
+        }
+
+        // Pull state requirements
+        const { data: stateReqs } = brokerageState
+          ? await supabase
+              .from("state_compliance_requirements")
+              .select("requirement_name, description, document_type, severity")
+              .eq("state", brokerageState)
+              .eq("document_type", classification.document_type)
+          : { data: null }
+
+        const reqList = stateReqs?.length
+          ? stateReqs.map((r: any) => `- ${r.requirement_name}: ${r.description}`).join("\n")
+          : "Standard state requirements apply."
+
+        const scanResult = await generateText({
+          model: "openai/gpt-4o",
+          messages: [
+            {
+              role: "user",
+              content: ([
+                {
+                  type: "text",
+                  text: `You are a real estate compliance reviewer. Examine this ${classification.document_type} for ${brokerageState ?? "the applicable state"} and return ONLY valid JSON — no markdown.
+
+Check:
+1. Are all required signature blocks signed?
+2. Are all required initials initialed?
+3. Does it meet these state-specific requirements?
+${reqList}
+
+Return this exact structure:
+{
+  "signatureCompleteness": {
+    "allRequiredSignaturesPresent": boolean,
+    "allRequiredInitialsPresent": boolean,
+    "missingSignatures": [{ "page": number|null, "location": string, "signer_role": "buyer|seller|agent|broker|witness|notary", "severity": "critical|warning|info" }],
+    "missingInitials": [{ "page": number|null, "location": string, "signer_role": string }]
+  },
+  "stateComplianceIssues": [{ "requirement": string, "status": "pass|fail|unclear", "note": string }],
+  "overallStatus": "pass|warnings|blocking_issues"
+}
+
+Set overallStatus to "blocking_issues" only if missing signatures would invalidate the contract.`,
+                },
+                { type: "image", image: fileUrl },
+              ] as any),
+            },
+          ],
+        })
+
+        let scan: any = null
+        try {
+          const cleaned = scanResult.text.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim()
+          scan = JSON.parse(cleaned)
+        } catch (parseErr) {
+          console.error("[v0] Failed to parse signature scan JSON:", parseErr)
+          scan = {
+            signatureCompleteness: {
+              allRequiredSignaturesPresent: false,
+              allRequiredInitialsPresent: false,
+              missingSignatures: [],
+              missingInitials: [],
+            },
+            stateComplianceIssues: [],
+            overallStatus: "warnings",
+          }
+        }
+        signatureScan = scan
+
+        // Persist scan as a row in compliance_checks (table created by migration 565)
+        // Schema: id, contract_review_id (nullable), check_type, status, findings JSONB
+        await supabase
+          .from("compliance_checks")
+          .insert({
+            check_type: "signature_completeness",
+            status: scan.overallStatus,
+            findings: {
+              ...scan,
+              document_id: documentId,
+              brokerage_id: docRecord?.brokerage_id ?? null,
+              state: brokerageState,
+              source: "client_document_upload",
+            } as any,
+          })
+          .then(() => {}, (err) => console.error("[v0] compliance_checks insert error:", err))
+
+        // Activity log entry — surfaces issues to agent
+        const issueCount =
+          scan.signatureCompleteness.missingSignatures.length +
+          scan.signatureCompleteness.missingInitials.length +
+          scan.stateComplianceIssues.filter((i: any) => i.status === "fail").length
+        supabase
+          .from("activities")
+          .insert({
+            brokerage_id: docRecord?.brokerage_id ?? null,
+            agent_id: docRecord?.brokerage_id ?? null,
+            contact_id: docRecord?.contact_id ?? null,
+            activity_type: "compliance_scan",
+            title:
+              scan.overallStatus === "pass"
+                ? `Compliance scan passed: ${classification.document_type}`
+                : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
+            description: `State-specific signature/initial scan ran on uploaded document.`,
+            notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
+            status: scan.overallStatus === "pass" ? "completed" : "needs_review",
+            entity_type: "document",
+          })
+          .then(() => {}, () => {})
+      } catch (scanErr) {
+        console.error("[v0] Signature compliance scan error:", scanErr)
+      }
+    }
+
+    // Step 8: For purchase agreements — extract terms and auto-populate transaction
+    if (classification.document_type === "purchase_agreement" && classification.key_fields) {
+      try {
+        // Find an open transaction for this contact (most recent)
+        if (docRecord?.contact_id) {
+          const { data: tx } = await supabase
+            .from("transactions")
+            .select("id, status")
+            .eq("contact_id", docRecord.contact_id)
+            .in("status", ["pending", "under_contract", "active"])
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+          if (tx?.id) {
+            const { applyContractExtraction } = await import("./ai-contract-review")
+            const k = classification.key_fields
+            await applyContractExtraction({
+              transactionId: tx.id,
+              agentId: docRecord.brokerage_id ?? "",
+              extracted: {
+                purchasePrice: typeof k.purchase_price === "number" ? k.purchase_price : null,
+                earnestMoneyAmount: typeof k.earnest_money === "number" ? k.earnest_money : null,
+                inspectionDeadline: k.inspection_deadline ?? null,
+                appraisalDeadline: k.appraisal_deadline ?? null,
+                financingDeadline: k.financing_deadline ?? null,
+                closingDate: k.closing_date ?? null,
+                buyerName: k.buyer_name ?? null,
+                sellerName: k.seller_name ?? null,
+                propertyAddress: k.property_address ?? null,
+              },
+            })
+          }
+        }
+      } catch (applyErr) {
+        console.error("[v0] applyContractExtraction error:", applyErr)
+      }
+    }
+
+    // Step 9: Trigger compliance-pass workflow chains when scan PASSES on
+    // a contract document. Each chain self-decides whether to act on its
+    // trigger event (e.g. listing-agreement → auto-create listing,
+    // executed purchase-agreement → auto-create transaction).
+    if (signatureScan?.overallStatus === "pass" && docRecord?.brokerage_id) {
+      try {
+        const { triggerChainsForEvent } = await import("./workflow-orchestrator")
+
+        const baseExtracted = {
+          propertyAddress: classification.key_fields?.property_address ?? null,
+          listPrice: classification.key_fields?.list_price ?? classification.key_fields?.listing_price ?? null,
+          listDate: classification.key_fields?.list_date ?? null,
+          expirationDate: classification.key_fields?.expiration_date ?? null,
+          commissionRate: classification.key_fields?.commission_rate ?? null,
+          purchasePrice: classification.key_fields?.purchase_price ?? null,
+          earnestMoneyAmount: classification.key_fields?.earnest_money ?? null,
+          inspectionDeadline: classification.key_fields?.inspection_deadline ?? null,
+          appraisalDeadline: classification.key_fields?.appraisal_deadline ?? null,
+          financingDeadline: classification.key_fields?.financing_deadline ?? null,
+          closingDate: classification.key_fields?.closing_date ?? null,
+          contractDate: classification.key_fields?.contract_date ?? null,
+          buyerName: classification.key_fields?.buyer_name ?? null,
+          sellerName: classification.key_fields?.seller_name ?? null,
+          city: classification.key_fields?.city ?? null,
+          state: classification.key_fields?.state ?? null,
+          zipCode: classification.key_fields?.zip_code ?? null,
+        }
+
+        if (classification.document_type === "listing_agreement") {
+          await triggerChainsForEvent({
+            eventType: "compliance.listing_agreement_passed",
+            brokerageId: docRecord.brokerage_id,
+            contactId: docRecord.contact_id ?? null,
+            metadata: {
+              document_id: docRecord.id,
+              extracted: baseExtracted,
+              signature_scan: signatureScan,
+            },
+          })
+        } else if (classification.document_type === "purchase_agreement") {
+          // Only auto-create transaction when there is an offer record but
+          // no transaction yet; otherwise existing applyContractExtraction
+          // path above updates the existing transaction.
+          await triggerChainsForEvent({
+            eventType: "compliance.executed_offer_passed",
+            brokerageId: docRecord.brokerage_id,
+            contactId: docRecord.contact_id ?? null,
+            metadata: {
+              document_id: docRecord.id,
+              offer_id: classification.key_fields?.offer_id ?? null,
+              extracted: baseExtracted,
+              signature_scan: signatureScan,
+            },
+          })
+        }
+      } catch (chainErr) {
+        console.error("[v0] Compliance-pass chain trigger failed:", chainErr)
+      }
+    }
+
     // Log activity (fire-and-forget)
     supabase.from("activities").insert({
       brokerage_id: docRecord?.brokerage_id ?? null,
@@ -322,7 +616,7 @@ Use simple language, avoid jargon, and be reassuring.`,
       entity_type: "contact",
     }).then(() => {}, () => {})
 
-    return { success: true, classification, explanation: explanationResult.text }
+    return { success: true, classification, explanation: explanationResult.text, signatureScan }
   } catch (error) {
     console.error("AI processing error:", error)
     return { success: false, error }
@@ -369,12 +663,26 @@ async function validateDocumentFields(
 // ============================================
 
 export async function getContactDocuments(contactId: string) {
-  const supabase = await createClient()
+  // AUTH GATE — previously returned every document for any caller-supplied
+  // contact id with no tenant scope.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return []
+  }
 
+  const svc = createServiceClient()
+  const { data: c } = await svc
+    .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+  if (!c || c.brokerage_id !== ctx.brokerageId) {
+    return []
+  }
+
+  const supabase = await createClient()
   const { data: documents } = await supabase
     .from("client_documents")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   return documents || []

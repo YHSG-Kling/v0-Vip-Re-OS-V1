@@ -6,14 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
 import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
-import { ListingCreateSheet } from "@/app/components/dashboard/listings/listing-create-sheet"
+import { ListingsNewButton } from "@/app/dashboard/listings/listings-new-button"
 import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
 import { MassCMAButton } from "@/app/components/dashboard/listings/mass-cma-button"
-import { 
-  Plus, 
-  Home, 
-  DollarSign, 
-  Clock, 
+import {
+  Home,
+  DollarSign,
+  Clock,
   TrendingUp,
   Eye,
   Share2,
@@ -21,6 +20,7 @@ import {
   MapPin,
   Sparkles,
   ArrowRight,
+  Plus,
 } from "lucide-react"
 
 export const dynamic = "force-dynamic"
@@ -35,21 +35,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
   coming_soon: { label: "Coming Soon", color: "text-purple-700", bgColor: "bg-purple-100" },
 }
 
-export default async function ListingsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{
-    action?: string
-    firstName?: string
-    lastName?: string
-    email?: string
-    phone?: string
-    contactId?: string
-  }>
-}) {
-  const resolvedSearchParams = await searchParams
-  const showCreateSheet = resolvedSearchParams?.action === "new"
-
+export default async function ListingsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -57,7 +43,7 @@ export default async function ListingsPage({
     redirect("/login")
   }
 
-  // Load agent record + user profile for sheet pre-fill (agent_id = agents.id, not users.id)
+  // Load agent record + user profile
   const [{ data: agentRecord }, { data: userProfile }] = await Promise.all([
     supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
     supabase.from("users").select("first_name, last_name, brokerage_id").eq("id", user.id).maybeSingle(),
@@ -66,21 +52,6 @@ export default async function ListingsPage({
   // Build query — if no agent record found, fall back to user.id for brokers/admins
   const agentId = agentRecord?.id ?? user.id
   const brokerageId = userProfile?.brokerage_id ?? ""
-  const agentName = [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(" ")
-  const agentEmail = user.email ?? ""
-
-  // Contact prefill values passed from CRM quick-action links
-  const prefillContact = showCreateSheet ? {
-    firstName:   resolvedSearchParams?.firstName  ?? "",
-    lastName:    resolvedSearchParams?.lastName   ?? "",
-    email:       resolvedSearchParams?.email      ?? "",
-    phone:       resolvedSearchParams?.phone      ?? "",
-    contactId:   resolvedSearchParams?.contactId  ?? "",
-    agentUserId: user.id,
-    agentName,
-    agentEmail,
-    brokerageId,
-  } : undefined
 
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
@@ -127,12 +98,7 @@ export default async function ListingsPage({
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/dashboard/listings?action=new">
-          <Button size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
-            <Plus className="h-4 w-4" />
-            New Listing
-          </Button>
-        </Link>
+        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} />
         <Link href="/dashboard/listings/analytics">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />
@@ -358,8 +324,6 @@ export default async function ListingsPage({
         })()}
       </div>
 
-      {/* Listing create sheet — opened by ?action=new, optionally prefilled from CRM */}
-      <ListingCreateSheet open={showCreateSheet} prefillContact={prefillContact as any} />
     </div>
   )
 }

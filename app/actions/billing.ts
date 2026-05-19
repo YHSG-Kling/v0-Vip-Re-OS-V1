@@ -1,7 +1,10 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+
+const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
 
 // ─── GET SUBSCRIPTION TIERS ──────────────────────────────────────────────────
 export async function getSubscriptionTiers() {
@@ -18,7 +21,13 @@ export async function getSubscriptionTiers() {
 }
 
 // ─── GET CURRENT SUBSCRIPTION ────────────────────────────────────────────────
-export async function getCurrentSubscription(brokerageId: string) {
+export async function getCurrentSubscription(_brokerageId?: string) {
+  // AUTH GATE — was returning any brokerage's subscription by id.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return null
+  }
+
   const supabase = await createClient()
 
   const { data: subscription, error } = await supabase
@@ -27,7 +36,7 @@ export async function getCurrentSubscription(brokerageId: string) {
       *,
       subscription_tiers:tier_id(*)
     `)
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .in("status", ["active", "trialing", "past_due"])
     .order("created_at", { ascending: false })
     .limit(1)
@@ -38,13 +47,16 @@ export async function getCurrentSubscription(brokerageId: string) {
 }
 
 // ─── GET BILLING USAGE ───────────────────────────────────────────────────────
-export async function getBillingUsage(brokerageId: string) {
+export async function getBillingUsage(_brokerageId?: string) {
+  // AUTH GATE — was returning any brokerage's billing usage.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return null
   const supabase = await createClient()
 
   const { data: usage, error } = await supabase
     .from("billing_usage")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("recorded_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -54,13 +66,17 @@ export async function getBillingUsage(brokerageId: string) {
 }
 
 // ─── GET INVOICE HISTORY ─────────────────────────────────────────────────────
-export async function getInvoiceHistory(brokerageId: string, year?: number) {
+export async function getInvoiceHistory(_brokerageId?: string, year?: number) {
+  // AUTH GATE — was returning any brokerage's invoice history (PII +
+  // financial data).
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
   const supabase = await createClient()
 
   let query = supabase
     .from("billing_invoices")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("invoice_date", { ascending: false })
 
   if (year) {
@@ -77,11 +93,31 @@ export async function getInvoiceHistory(brokerageId: string, year?: number) {
 
 // ─── START SUBSCRIPTION CHECKOUT ─────────────────────────────────────────────
 export async function startSubscriptionCheckout(
-  brokerageId: string,
+  _brokerageId: string, // ignored — derived from session
   tierId: string,
   billingCycle: "monthly" | "annual"
 ) {
+  // AUTH GATE — was creating Stripe checkout sessions on any brokerage id,
+  // letting a caller initiate paid subscription changes for tenants they
+  // don't belong to. Now scoped to caller's brokerage + admin role only.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    throw new Error("Unauthorized")
+  }
+
   const supabase = await createClient()
+
+  const { data: u } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", ctx.userId)
+    .maybeSingle()
+  const userType = u?.user_type ?? ctx.userType
+  if (!BILLING_ADMIN_ROLES.has(userType)) {
+    throw new Error("Forbidden: admin only")
+  }
+
+  const brokerageId = ctx.brokerageId
 
   // Get the tier
   const { data: tier, error: tierError } = await supabase
@@ -170,13 +206,24 @@ export async function startSubscriptionCheckout(
 
 // ─── CANCEL SUBSCRIPTION ─────────────────────────────────────────────────────
 export async function cancelSubscription(subscriptionId: string) {
+  // CRITICAL: was previously open — any caller could cancel any
+  // brokerage's Stripe subscription by passing its id. Require admin
+  // role + verify the subscription belongs to caller's brokerage.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) throw new Error("Unauthorized")
   const supabase = await createClient()
+  const { data: u } = await supabase
+    .from("users").select("user_type").eq("id", ctx.userId).maybeSingle()
+  if (!BILLING_ADMIN_ROLES.has(u?.user_type ?? ctx.userType)) {
+    throw new Error("Forbidden: billing admin only")
+  }
 
-  // Get the subscription
+  // Get the subscription — scoped to caller's brokerage
   const { data: subscription, error } = await supabase
     .from("subscriptions")
-    .select("stripe_subscription_id")
+    .select("stripe_subscription_id, brokerage_id")
     .eq("id", subscriptionId)
+    .eq("brokerage_id", ctx.brokerageId)
     .single()
 
   if (error || !subscription?.stripe_subscription_id) {
@@ -189,7 +236,7 @@ export async function cancelSubscription(subscriptionId: string) {
     cancel_at_period_end: true,
   })
 
-  // Update local record
+  // Update local record — scoped
   const { error: updateError } = await supabase
     .from("subscriptions")
     .update({
@@ -197,6 +244,7 @@ export async function cancelSubscription(subscriptionId: string) {
       updated_at: new Date().toISOString(),
     })
     .eq("id", subscriptionId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (updateError) throw updateError
 
@@ -207,9 +255,17 @@ export async function cancelSubscription(subscriptionId: string) {
   return { success: true }
 }
 
-// ─── GET ALL BROKERAGES BILLING (ADMIN) ──────────────────────────────────────
+// ─── GET ALL BROKERAGES BILLING (SUPERADMIN) ─────────────────────────────────
 export async function getAllBrokeragesBilling() {
+  // SUPERADMIN gate — cross-tenant aggregate. Previously open.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return []
   const supabase = await createClient()
+  const { data: u } = await supabase
+    .from("users").select("user_type, role").eq("id", ctx.userId).maybeSingle()
+  if (!["superadmin", "super_admin"].includes(u?.user_type ?? u?.role ?? "")) {
+    return []
+  }
 
   const { data: brokerages, error } = await supabase
     .from("brokerages")
@@ -230,9 +286,17 @@ export async function getAllBrokeragesBilling() {
   return brokerages || []
 }
 
-// ─── GET DELINQUENT ACCOUNTS (ADMIN) ─────────────────────────────────────────
+// ─── GET DELINQUENT ACCOUNTS (SUPERADMIN) ────────────────────────────────────
 export async function getDelinquentAccounts() {
+  // SUPERADMIN gate — cross-tenant financial data.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return []
   const supabase = await createClient()
+  const { data: u } = await supabase
+    .from("users").select("user_type, role").eq("id", ctx.userId).maybeSingle()
+  if (!["superadmin", "super_admin"].includes(u?.user_type ?? u?.role ?? "")) {
+    return []
+  }
 
   const { data: delinquent, error } = await supabase
     .from("subscriptions")
@@ -273,6 +337,13 @@ export async function manualTierOverride(
     throw new Error("Unauthorized: superadmin only")
   }
 
+  // Look up the brokerage_id BEFORE updating so we can sync plan_tier after.
+  const { data: subRow } = await supabase
+    .from("subscriptions")
+    .select("brokerage_id")
+    .eq("id", subscriptionId)
+    .maybeSingle()
+
   // Update subscription tier
   const { error } = await supabase
     .from("subscriptions")
@@ -283,6 +354,14 @@ export async function manualTierOverride(
     .eq("id", subscriptionId)
 
   if (error) throw error
+
+  // Sync brokerages.plan_tier so cap-enforcement reflects the new tier
+  // immediately. Without this, checkUsageCap would still gate on the old
+  // tier's limits until the next Stripe webhook fires.
+  if (subRow?.brokerage_id) {
+    const { syncBrokeragePlanTier } = await import("@/lib/billing/sync-plan-tier")
+    await syncBrokeragePlanTier(subRow.brokerage_id)
+  }
 
   // Log the override in audit_log
   await supabase.from("audit_log").insert({

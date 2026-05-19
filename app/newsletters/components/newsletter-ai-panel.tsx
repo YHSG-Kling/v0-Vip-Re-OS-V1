@@ -42,7 +42,7 @@ interface NewsletterAIPanelProps {
 export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelProps) {
   // Subject lines
   const [slTopic, setSlTopic] = useState("")
-  const [slAudience, setSlAudience] = useState<"all" | "buyers" | "sellers" | "investors" | "past_clients">("all")
+  const [slAudience, setSlAudience] = useState<"all" | "buyers" | "sellers" | "investors" | "lifetime_customers">("all")
   const [slTone, setSlTone] = useState<"professional" | "friendly" | "urgent" | "curious">("friendly")
   const [slLoading, setSlLoading] = useState(false)
   const [subjectLines, setSubjectLines] = useState<string[]>([])
@@ -170,7 +170,7 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                   <SelectItem value="buyers">Buyers</SelectItem>
                   <SelectItem value="sellers">Sellers</SelectItem>
                   <SelectItem value="investors">Investors</SelectItem>
-                  <SelectItem value="past_clients">Past clients</SelectItem>
+                  <SelectItem value="lifetime_customers">Lifetime Customers</SelectItem>
                 </SelectContent>
               </Select>
             </div>

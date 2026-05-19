@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
@@ -7,38 +8,49 @@ import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 interface HandleOfferResponseParams {
   offerId: string
   response: "accepted" | "rejected" | "countered"
-  userId: string
+  userId?: string  // ignored — derived from session (was a forgery vector)
   counterTerms?: Record<string, any>
   rejectionReason?: string
 }
 
 export async function handleOfferResponse(params: HandleOfferResponseParams) {
-  const { offerId, response, userId, counterTerms, rejectionReason } = params
+  const { offerId, response, counterTerms, rejectionReason } = params
 
-  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(offerId)) {
+    return { success: false, error: "Invalid offer ID" }
   }
+
+  // CRITICAL auth gate — was previously trusting caller-supplied userId
+  // for all audit attribution AND fetched the offer by id with no
+  // brokerage scope. Any signed-in user could accept/reject/counter any
+  // tenant's offer (legally binding state transitions that create
+  // transactions). The brokerage_id used downstream came from looking
+  // up the caller-supplied userId's brokerage — so attackers also
+  // controlled which tenant the transaction got created under.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const userId = user.id
+  const brokerageId = callerRow.brokerage_id
 
   const supabase = createServiceClient()
 
-  // Get offer and validate
+  // Get offer and validate ownership against caller's brokerage
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, contact_id, listing_id, transaction_id")
+    .select("id, contact_id, listing_id, transaction_id, brokerage_id")
     .eq("id", offerId)
     .single()
 
   if (offerError || !offer) {
     return { success: false, error: "Offer not found" }
   }
-
-  // Resolve brokerage_id once for all inserts
-  const { data: agentRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", userId)
-    .maybeSingle()
-  const brokerageId = agentRow?.brokerage_id ?? null
+  if (offer.brokerage_id !== brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   // finalTransactionId is set during the accepted path and used in the return value
   let finalTransactionId: string | null = null
@@ -129,11 +141,12 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
       if (!txErr && newTransaction) {
         finalTransactionId = newTransaction.id
 
-        // Back-link the offer to the new transaction
+        // Back-link the offer to the new transaction — scoped by brokerage
         await supabase
           .from("offers")
           .update({ transaction_id: finalTransactionId })
           .eq("id", offerId)
+          .eq("brokerage_id", brokerageId)
 
         // Seed default milestones from the brokerage template if one exists
         const { data: template } = await supabase

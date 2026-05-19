@@ -7,6 +7,19 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
+// Most actions in this file used to trust caller-supplied userId/userRole.
+// Now: every action derives identity from the session via getAgentContext.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; userType: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? "agent" }
+}
+
 function parseAIJsonResponse(text: string) {
   // Strip markdown code blocks if present
   let cleanText = text.trim()
@@ -20,12 +33,15 @@ function parseAIJsonResponse(text: string) {
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER"]
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "superadmin", "super_admin", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 
 // Generate AI Content Ideas based on trends and persona
-export async function generateContentIdeas(persona?: string, userId?: string, userRole?: string) {
+export async function generateContentIdeas(persona?: string, _userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   try {
@@ -48,9 +64,7 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
 
     const ideas = parseAIJsonResponse(text)
 
-    const validUserId = userId && isValidUUID(userId) ? userId : null
-
-    // Save to database using actual schema
+    // Save to database — stamp brokerage_id + created_by from session
     const { data } = await supabase
       .from("content_ideas")
       .insert(
@@ -59,7 +73,8 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
           description: idea.description,
           content_type: idea.type,
           status: "idea",
-          created_by: validUserId, // Only insert if valid UUID
+          brokerage_id: auth.brokerageId,
+          created_by: auth.userId,
         })),
       )
       .select()
@@ -75,9 +90,10 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
 // Research Keywords for SEO
 // Delegates to discoverKeywordsAI which resolves territory from brokerages table
 // and incorporates tracked competitors from the competitors table
-export async function researchKeywords(topic: string, userId?: string) {
-  const { brokerageId } = await getAgentContext()
-  if (!brokerageId) return { success: false, error: "No brokerage context" }
+export async function researchKeywords(topic: string, _userId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
 
@@ -90,7 +106,7 @@ export async function researchKeywords(topic: string, userId?: string) {
 
   // Delegate to the full keyword discovery engine (territory auto-resolved from brokerages table)
   const { discoverKeywordsAI } = await import("@/app/actions/blog")
-  const result = await discoverKeywordsAI(userId ?? "", {
+  const result = await discoverKeywordsAI(auth.userId, {
     brokerageId,
     competitorNames: competitorNames.length ? competitorNames : undefined,
     focusArea: topic,
@@ -115,14 +131,22 @@ export async function researchKeywords(topic: string, userId?: string) {
 }
 
 // Get Content Ideas
-export async function getContentIdeas(userId?: string, userRole?: string) {
+export async function getContentIdeas(_userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
   const supabase = createServiceClient()
 
   try {
-    let query = supabase.from("content_ideas").select("*").order("created_at", { ascending: false }).limit(50)
+    let query = supabase
+      .from("content_ideas")
+      .select("*")
+      .eq("brokerage_id", auth.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(50)
 
-    if (userId && shouldFilterByUser(userRole || "") && isValidUUID(userId)) {
-      query = query.eq("created_by", userId)
+    if (shouldFilterByUser(auth.userType)) {
+      query = query.eq("created_by", auth.userId)
     }
 
     const { data, error } = await query
@@ -140,15 +164,17 @@ export async function getContentIdeas(userId?: string, userRole?: string) {
 }
 
 // Get Competitor Content — uses tracked competitors from the competitors table
-export async function getCompetitorContent(userId?: string, userRole?: string) {
-  const { brokerageId } = await getAgentContext()
+export async function getCompetitorContent(_userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
   const supabase = createServiceClient()
 
   // Fetch the brokerage's tracked competitors for context-specific analysis
   const { data: competitorRows } = await supabase
     .from("competitors")
     .select("competitor_name, competitor_url")
-    .eq("brokerage_id", brokerageId ?? "")
+    .eq("brokerage_id", auth.brokerageId)
     .limit(10)
 
   const competitorList =
@@ -180,8 +206,9 @@ export async function getCompetitorContent(userId?: string, userRole?: string) {
 
 // Add Competitor to Monitor
 export async function addCompetitor(name: string, url?: string) {
-  const { brokerageId } = await getAgentContext()
-  if (!brokerageId) return { error: "No brokerage context" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { error: auth.error }
+  const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
 
@@ -214,18 +241,22 @@ export async function addCompetitor(name: string, url?: string) {
 }
 
 // Get Content Calendar - using content_ideas table as substitute
-export async function getContentCalendar(userId?: string, userRole?: string) {
+export async function getContentCalendar(_userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
   const supabase = createServiceClient()
 
   let query = supabase
     .from("content_ideas")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .eq("status", "in_progress")
     .order("created_at", { ascending: false })
     .limit(30)
 
-  if (userId && shouldFilterByUser(userRole || "") && isValidUUID(userId)) {
-    query = query.eq("created_by", userId)
+  if (shouldFilterByUser(auth.userType)) {
+    query = query.eq("created_by", auth.userId)
   }
 
   const { data, error } = await query
@@ -246,7 +277,11 @@ export async function scheduleContent(params: {
   platform?: string
   notes?: string
 }) {
-  const { brokerageId, agentId } = await getAgentContext()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const brokerageId = auth.brokerageId
+  const ctx = await getAgentContext()
+  const agentId = ctx.agentId
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
@@ -274,13 +309,21 @@ export async function scheduleContent(params: {
 }
 
 // Get Publishing Stats
-export async function getPublishingStats(userId?: string, userRole?: string) {
+export async function getPublishingStats(_userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return { totalPosts: 0, published: 0, scheduled: 0, drafts: 0, totalEngagement: 0 }
+  }
+
   const supabase = createServiceClient()
 
-  let query = supabase.from("content_ideas").select("status, content_type")
+  let query = supabase
+    .from("content_ideas")
+    .select("status, content_type")
+    .eq("brokerage_id", auth.brokerageId)
 
-  if (userId && shouldFilterByUser(userRole || "") && isValidUUID(userId)) {
-    query = query.eq("created_by", userId)
+  if (shouldFilterByUser(auth.userType)) {
+    query = query.eq("created_by", auth.userId)
   }
 
   const { data, error } = await query
@@ -309,6 +352,9 @@ export async function getPublishingStats(userId?: string, userRole?: string) {
 
 // Save Content Idea
 export async function saveContentIdea(idea: string, contentType: string, persona?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
@@ -318,6 +364,8 @@ export async function saveContentIdea(idea: string, contentType: string, persona
       description: `Target persona: ${persona || "general"}`,
       content_type: contentType,
       status: "idea",
+      brokerage_id: auth.brokerageId,
+      created_by: auth.userId,
     })
     .select()
     .maybeSingle()
@@ -329,18 +377,22 @@ export async function saveContentIdea(idea: string, contentType: string, persona
 }
 
 // Get Saved Ideas
-export async function getSavedIdeas(userId?: string, userRole?: string) {
+export async function getSavedIdeas(_userId?: string, _userRole?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
   const supabase = createServiceClient()
 
   let query = supabase
     .from("content_ideas")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .eq("status", "idea")
     .order("created_at", { ascending: false })
     .limit(20)
 
-  if (userId && shouldFilterByUser(userRole || "") && isValidUUID(userId)) {
-    query = query.eq("created_by", userId)
+  if (shouldFilterByUser(auth.userType)) {
+    query = query.eq("created_by", auth.userId)
   }
 
   const { data, error } = await query

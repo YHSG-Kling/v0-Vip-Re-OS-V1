@@ -99,7 +99,7 @@ export function QualificationOutcomes({ outcomes, stats, chartData }: Props) {
                 <>
                   <tr key={row.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3 font-medium text-foreground">
-                      <a href={`/contacts/${row.contact_id}`} className="hover:underline">
+                      <a href={`/crm/contacts/${row.contact_id}`} className="hover:underline">
                         {name}
                       </a>
                     </td>

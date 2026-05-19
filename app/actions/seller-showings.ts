@@ -8,6 +8,25 @@ import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
+// Auth gate — write actions in this file stamp brokerage_id / agent_user_id
+// onto lifecycle_events and listing-stage mutations. Without a session-derived
+// identity, callers could forge those fields.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 // ─── ROUTING: detect ShowingTime config ──────────────────────────────────────
 
 export async function resolveShowingMode(params: {
@@ -46,20 +65,37 @@ export async function resolveShowingMode(params: {
 
 export async function syncShowingTimeShowings(params: {
   listingId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   credentialId: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing ID" }
 
   const supabase = await createClient()
 
+  // Verify listing belongs to caller's brokerage
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", params.listingId)
+    .maybeSingle()
+  if (!listing || listing.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  // Verify credential belongs to caller's brokerage too
   const { data: cred } = await supabase
     .from("platform_credentials")
-    .select("api_key, api_url, account_id")
+    .select("api_key, api_url, account_id, brokerage_id")
     .eq("id", params.credentialId)
     .single()
 
   if (!cred?.api_key) return { success: false, error: "ShowingTime credentials not configured" }
+  if (cred.brokerage_id && cred.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await fetch(
@@ -103,22 +139,33 @@ export async function syncShowingTimeShowings(params: {
 // ─── SHOWINGTIME MODE: per-showing actions ────────────────────────────────────
 
 export async function showingTimeConfirm(params: { showingId: string; credentialId: string }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
   const { data: cred } = await supabase
     .from("platform_credentials")
-    .select("api_key, api_url")
+    .select("api_key, api_url, brokerage_id")
     .eq("id", params.credentialId)
     .single()
 
   if (!cred?.api_key) return { success: false, error: "ShowingTime credentials not configured" }
+  if (cred.brokerage_id && cred.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
+  // Verify showing belongs to caller's brokerage via listing
   const { data: showing } = await supabase
     .from("showings")
-    .select("showingtime_id")
+    .select("showingtime_id, listing_id, listings!inner(brokerage_id)")
     .eq("id", params.showingId)
     .single()
 
   if (!showing?.showingtime_id) return { success: false, error: "No ShowingTime reference on this showing" }
+  const showingBrokerageId = (showing.listings as any)?.brokerage_id
+  if (showingBrokerageId !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/confirm`, {
@@ -142,22 +189,32 @@ export async function showingTimeReschedule(params: {
   proposedTimes: string[]
   reason: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
   const { data: cred } = await supabase
     .from("platform_credentials")
-    .select("api_key, api_url")
+    .select("api_key, api_url, brokerage_id")
     .eq("id", params.credentialId)
     .single()
 
   if (!cred?.api_key) return { success: false, error: "ShowingTime credentials not configured" }
+  if (cred.brokerage_id && cred.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const { data: showing } = await supabase
     .from("showings")
-    .select("showingtime_id")
+    .select("showingtime_id, listing_id, listings!inner(brokerage_id)")
     .eq("id", params.showingId)
     .single()
 
   if (!showing?.showingtime_id) return { success: false, error: "No ShowingTime reference" }
+  const showingBrokerageId = (showing.listings as any)?.brokerage_id
+  if (showingBrokerageId !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/reschedule`, {
@@ -181,24 +238,34 @@ export async function showingTimeDecline(params: {
   credentialId: string
   reason: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!params.reason?.trim()) return { success: false, error: "Decline reason is required" }
 
   const supabase = await createClient()
   const { data: cred } = await supabase
     .from("platform_credentials")
-    .select("api_key, api_url")
+    .select("api_key, api_url, brokerage_id")
     .eq("id", params.credentialId)
     .single()
 
   if (!cred?.api_key) return { success: false, error: "ShowingTime credentials not configured" }
+  if (cred.brokerage_id && cred.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const { data: showing } = await supabase
     .from("showings")
-    .select("showingtime_id")
+    .select("showingtime_id, listing_id, listings!inner(brokerage_id)")
     .eq("id", params.showingId)
     .single()
 
   if (!showing?.showingtime_id) return { success: false, error: "No ShowingTime reference" }
+  const showingBrokerageId = (showing.listings as any)?.brokerage_id
+  if (showingBrokerageId !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/decline`, {
@@ -254,15 +321,28 @@ export async function getListingShowings(listingId: string) {
 export async function approveShowingRequest(params: {
   requestId: string
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
   contactId?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.requestId) || !isValidUUID(params.listingId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
   const supabase = await createClient()
+
+  // Verify listing belongs to caller's brokerage
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", params.listingId)
+    .maybeSingle()
+  if (!listing || listing.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const { data: req, error: reqErr } = await supabase
     .from("showing_requests")
@@ -288,13 +368,13 @@ export async function approveShowingRequest(params: {
     `${req.requested_date}T${req.requested_start_time}`
   ).toISOString()
 
-  // INSERT showings
+  // INSERT showings — agent from session, not params
   const { data: showing, error: showErr } = await supabase
     .from("showings")
     .insert({
       listing_id:         params.listingId,
       contact_id:         params.contactId ?? req.contact_id ?? "00000000-0000-0000-0000-000000000000",
-      agent_id:           params.agentUserId,
+      agent_id:           auth.userId,
       scheduled_at:       scheduledAt,
       scheduled_date:     req.requested_date,
       scheduled_time:     req.requested_start_time,
@@ -316,19 +396,19 @@ export async function approveShowingRequest(params: {
     .update({ converted_showing_id: showing.id })
     .eq("id", params.requestId)
 
-  // Kernel sub-event
+  // Kernel sub-event — brokerage_id / actor from session, not params
   await supabase.from("lifecycle_events").insert({
-    brokerage_id:   params.brokerageId,
+    brokerage_id:   auth.brokerageId,
     entity_type:    "listing_stage_machine",
     entity_id:      params.listingId,
     event_type:     "listing.showing.confirmed",
-    actor_user_id:  params.agentUserId,
+    actor_user_id:  auth.userId,
     metadata: { showing_id: showing.id, request_id: params.requestId },
   })
 
   await processKernelEvent({
     event:      KernelEvent.SHOWING_SCHEDULED,
-    brokerageId: params.brokerageId,
+    brokerageId: auth.brokerageId,
     entityType: "listing_stage_machine",
     entityId:   params.listingId,
   }).catch(() => {})
@@ -343,9 +423,24 @@ export async function suggestAlternativeTime(params: {
   listingId: string
   proposedTimes: Array<{ date: string; start_time: string; end_time: string }>
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.requestId)) return { success: false, error: "Invalid request ID" }
 
   const supabase = await createClient()
+
+  // Verify the request's listing belongs to caller's brokerage
+  const { data: req } = await supabase
+    .from("showing_requests")
+    .select("listing_id, listings!inner(brokerage_id)")
+    .eq("id", params.requestId)
+    .maybeSingle()
+  if (!req) return { success: false, error: "Request not found" }
+  if ((req.listings as any)?.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
   const { error } = await supabase
     .from("showing_requests")
     .update({
@@ -366,9 +461,24 @@ export async function denyShowingRequest(params: {
   listingId: string
   reason?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.requestId)) return { success: false, error: "Invalid request ID" }
 
   const supabase = await createClient()
+
+  // Verify the request's listing belongs to caller's brokerage
+  const { data: req } = await supabase
+    .from("showing_requests")
+    .select("listing_id, listings!inner(brokerage_id)")
+    .eq("id", params.requestId)
+    .maybeSingle()
+  if (!req) return { success: false, error: "Request not found" }
+  if ((req.listings as any)?.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
   const { error } = await supabase
     .from("showing_requests")
     .update({
@@ -388,18 +498,26 @@ export async function denyShowingRequest(params: {
 export async function markShowingCompleted(params: {
   showingId: string
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.showingId)) return { success: false, error: "Invalid showing ID" }
 
   const supabase = await createClient()
 
   const { data: showing } = await supabase
     .from("showings")
-    .select("buyer_agent_email, buyer_agent_name")
+    .select("buyer_agent_email, buyer_agent_name, listing_id, listings!inner(brokerage_id)")
     .eq("id", params.showingId)
     .single()
+
+  if (!showing) return { success: false, error: "Showing not found" }
+  if ((showing.listings as any)?.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   // UPDATE showings.status
   await supabase
@@ -407,11 +525,11 @@ export async function markShowingCompleted(params: {
     .update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
 
-  // INSERT showing_feedback_requests (token generated by DB default)
+  // INSERT showing_feedback_requests — brokerage from session
   const { data: feedbackReq } = await supabase
     .from("showing_feedback_requests")
     .insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       showing_id:   params.showingId,
       sent_to_email: showing?.buyer_agent_email ?? null,
       sent_at:      new Date().toISOString(),
@@ -425,26 +543,26 @@ export async function markShowingCompleted(params: {
   await supabase
     .from("showing_feedback")
     .insert({
-      brokerage_id:   params.brokerageId,
+      brokerage_id:   auth.brokerageId,
       showing_id:     params.showingId,
       feedback_token: feedbackReq.feedback_token,
       request_id:     feedbackReq.id,
     })
 
-  // Direct lifecycle_events insert (sub-event, no state change)
+  // Direct lifecycle_events insert — session-derived identity
   await supabase.from("lifecycle_events").insert({
-    brokerage_id:   params.brokerageId,
+    brokerage_id:   auth.brokerageId,
     entity_type:    "listing_stage_machine",
     entity_id:      params.listingId,
     event_type:     "listing.showing.completed",
-    actor_user_id:  params.agentUserId,
+    actor_user_id:  auth.userId,
     metadata: { showing_id: params.showingId, feedback_token: feedbackReq.feedback_token },
   })
 
   // Kernel notification (non-blocking)
   await processKernelEvent({
     event:       KernelEvent.SHOWING_FEEDBACK_RECEIVED,
-    brokerageId: params.brokerageId,
+    brokerageId: auth.brokerageId,
     entityType:  "listing_stage_machine",
     entityId:    params.listingId,
   }).catch(() => {})

@@ -288,6 +288,36 @@ export async function advanceStage(params: {
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
     }
+
+    // 5. Auto-schedule review request draft (5 days post-close)
+    // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
+    void (async () => {
+      try {
+        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
+        await aiGenerateReviewRequest({
+          transactionId: params.transactionId,
+          agentId: params.userId,
+          platform: "google",
+          channel: "email",
+        })
+
+        // Schedule an agent notification 5 days from now to send the review
+        const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
+        await supabase.from("activities").insert({
+          brokerage_id: params.brokerageId,
+          agent_id: params.userId,
+          activity_type: "review_request_scheduled",
+          title: "Review request ready to send",
+          notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
+          entity_type: "transaction",
+          entity_id: params.transactionId,
+          status: "pending",
+          scheduled_at: sendDate.toISOString(),
+        })
+      } catch {
+        // Non-blocking — review request draft failure doesn't affect close
+      }
+    })()
   }
 
   return {

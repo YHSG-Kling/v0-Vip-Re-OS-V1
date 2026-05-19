@@ -311,10 +311,11 @@ async function dispatchContactChannel(
       bodySnippet: finalBody.substring(0, 500),
     })
 
-    // Write to unified inbox messages table
+    // Write to unified inbox messages table — stamped with brokerage
     await supabase.from('messages').insert({
       contact_id: contact.id,
       agent_id: contact.agent_id ?? null,
+      brokerage_id: brokerageId,
       type: 'email',
       direction: 'outbound',
       subject,

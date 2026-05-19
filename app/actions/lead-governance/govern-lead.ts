@@ -2,9 +2,9 @@
 
 /**
  * LEAD GOVERNANCE & SCORING ORCHESTRATOR
- * 
+ *
  * This is the AUTHORITATIVE DECISION ENGINE for all lead lifecycle decisions.
- * 
+ *
  * RESPONSIBILITIES:
  * 1. Calculate multi-factor lead score (AUTHORITATIVE)
  * 2. Explain score components
@@ -13,11 +13,18 @@
  * 5. Monitor SLA compliance
  * 6. Signal promotion readiness
  * 7. Log all decisions to activities table
- * 
+ *
  * This system operates on leads ONLY (pre-relationship).
  * Contacts are handled by separate systems.
+ *
+ * AUTH: previously trusted caller-supplied brokerageId/actorAgentId — any
+ * signed-in user could trigger governance on any lead in any brokerage,
+ * which could forcibly reassign the lead to a different agent. Now: caller
+ * must be authenticated AND the lead's brokerage must match the caller's
+ * session brokerage. Cron callers must use the lib-level engine directly.
  */
 
+import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import {
   calculateLeadScore,
@@ -43,13 +50,38 @@ export interface GovernanceResult {
 /**
  * Execute full governance cycle for a lead
  */
-export async function governLead(leadId: string, brokerageId?: string, actorAgentId?: string): Promise<GovernanceResult> {
+export async function governLead(leadId: string, _brokerageId?: string, _actorAgentId?: string): Promise<GovernanceResult> {
+  // Auth gate — was previously trusting caller-supplied identity
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) {
+    return {
+      success: false, leadId, score: 0, scoreExplanation: '',
+      routingDecision: 'hold_for_review', agentAssigned: null,
+      slaStatus: 'unknown', promotionReady: false, message: 'Unauthorized',
+    }
+  }
+  const { data: callerRow } = await authClient
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return {
+      success: false, leadId, score: 0, scoreExplanation: '',
+      routingDecision: 'hold_for_review', agentAssigned: null,
+      slaStatus: 'unknown', promotionReady: false, message: 'Unauthorized',
+    }
+  }
+  const brokerageId = callerRow.brokerage_id
+  const actorAgentId = user.id
+
   const supabase = createServiceClient()
 
   try {
     console.log(`[LeadGovernance] Starting governance cycle for lead ${leadId}`)
 
-    // STEP 1: FETCH LEAD DATA
+    // STEP 1: FETCH LEAD DATA — verify it belongs to caller's brokerage
     const { data: lead, error: fetchError } = await supabase
       .from('leads')
       .select('*')
@@ -60,11 +92,15 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
       throw new Error(`Lead ${leadId} not found`)
     }
 
+    if (lead.brokerage_id !== brokerageId) {
+      throw new Error('Forbidden: lead belongs to a different brokerage')
+    }
+
     // STEP 2: CALCULATE AUTHORITATIVE SCORE
     const scoringResult = calculateLeadScore(lead)
     console.log(`[LeadGovernance] Score calculated: ${scoringResult.finalScore}/100`)
 
-    // STEP 3: UPDATE LEAD WITH SCORE
+    // STEP 3: UPDATE LEAD WITH SCORE — scoped to caller's brokerage
     await supabase
       .from('leads')
       .update({
@@ -72,6 +108,7 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
         updated_at: new Date().toISOString(),
       })
       .eq('id', leadId)
+      .eq('brokerage_id', brokerageId)
 
     // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     let agentAssigned: string | null = null
@@ -114,6 +151,7 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
             updated_at: new Date().toISOString(),
           })
           .eq('id', leadId)
+          .eq('brokerage_id', brokerageId)
 
         agentAssigned = agentSelection.selectedAgentId
 

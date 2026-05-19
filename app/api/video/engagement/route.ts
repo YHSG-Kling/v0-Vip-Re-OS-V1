@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
@@ -35,16 +36,19 @@ const PERFORMANCE_THRESHOLDS = {
   },
 }
 
-// GET: Fetch video engagement events and performance tracking
-export async function GET(request: Request) {
+// GET: Fetch video engagement events and performance tracking (requires auth)
+export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { searchParams } = new URL(request.url)
     const videoAssetId = searchParams.get("videoAssetId")
     const videoProjectId = searchParams.get("videoProjectId")
     const contactId = searchParams.get("contactId")
-    const brokerageId = searchParams.get("brokerageId")
-
-    const supabase = await createClient()
+    // Always use session-resolved brokerage — never trust caller-supplied value
+    const brokerageId = auth.brokerageId
 
     // If specific video asset requested, return its engagement events
     if (videoAssetId) {

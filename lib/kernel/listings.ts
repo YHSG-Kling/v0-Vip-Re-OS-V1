@@ -298,12 +298,12 @@ export async function loadListingWorkspace(input: {
 
     if (!listingResult.data) return { success: false, error: "Listing not found" }
 
-    // Derive current stage from most recent lifecycle_event or listing.current_stage
+    // Derive current stage from most recent lifecycle_event or listings.lifecycle_stage
     const latestEvent = (timelineResult.data ?? []).find(
       (e: any) => e.event_type?.startsWith("listing_stage")
     )
     const currentStage = (latestEvent as any)?.metadata?.stage
-      ?? (listingResult.data as any)?.current_stage
+      ?? (listingResult.data as any)?.lifecycle_stage
       ?? "LEAD"
 
     return {

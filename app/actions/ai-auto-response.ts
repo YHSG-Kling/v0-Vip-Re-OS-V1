@@ -221,7 +221,17 @@ export async function trackBehavioralEvent(params: {
   return { success: true }
 }
 
-// Calculate and update lead score
+/**
+ * LEGACY local scorer (auto-response context).
+ *
+ * @deprecated New callers should use `calculateLeadScore` from
+ * `lib/services/lead-management.service.ts` (the orchestrator wrapping the
+ * canonical Layer 1 multi-factor scorer). This local function predates the
+ * canonical layering and remains only for the auto-response flow until that
+ * caller is migrated. Do NOT add new callers.
+ *
+ * See `lib/lead-scoring/LAYERING.md` for full layering rules.
+ */
 export async function calculateLeadScore(contactId: string) {
   const supabase = await createClient()
 

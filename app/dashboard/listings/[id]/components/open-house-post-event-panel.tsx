@@ -242,7 +242,7 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
                       {/* Open CRM */}
                       {resolvedContactId && (
                         <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-                          <Link href={`/crm?contactId=${resolvedContactId}`}>
+                          <Link href={`/crm?contact=${resolvedContactId}`}>
                             <ExternalLink className="h-3 w-3 mr-1" />
                             Open CRM
                           </Link>

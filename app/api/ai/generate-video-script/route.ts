@@ -475,15 +475,15 @@ Return ONLY the script text.`
           const corrected = await generateAIResponse({
             prompt: correctionPrompt,
             temperature: 0.3,
-            maxOutputTokens: 2000,
-            metadata: { userId: agent_id, brokerageId: brokerage_id, feature: "brand_correction" },
+            maxTokens: 2000,
+            metadata: { userId: agent_id ?? "", brokerageId: brokerage_id, feature: "brand_correction" },
           })
           generatedScript = corrected.text
 
           // Re-check after correction
           const recheck = await applyBrandVoice({
             brokerageId: brokerage_id,
-            actorUserId: agent_id,
+            actorUserId: agent_id ?? undefined,
             actorRole: "agent",
             journeyType: script_type.includes("buyer") ? "buyer" : "seller",
             persona: contactInfo.persona ?? "default",

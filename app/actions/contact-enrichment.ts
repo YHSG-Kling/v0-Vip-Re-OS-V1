@@ -428,8 +428,10 @@ export async function markLifeChangeNotified(changeId: string): Promise<{ succes
   return { success: true }
 }
 
-// Alias for backward compatibility
-export const enrichContactData = enrichContact
+// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
+export async function enrichContactData(...args: Parameters<typeof enrichContact>) {
+  return enrichContact(...args)
+}
 
 /**
  * Get enrichment insights for a contact including enrichment data and recent life changes

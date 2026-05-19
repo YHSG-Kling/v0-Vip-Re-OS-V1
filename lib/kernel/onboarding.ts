@@ -278,12 +278,22 @@ export async function loadOnboardingWorkspace(params: {
     .eq("user_id", userId)
     .maybeSingle()
 
-  // Load steps — brokerage-specific first, then platform defaults
-  const { data: steps } = await service
+  // Load steps — brokerage-specific first, then platform defaults.
+  // Migration 1049 added target_role[] for role-specific staff/admin
+  // curricula. A step matches when:
+  //   * target_role IS NULL (legacy / universal step), OR
+  //   * userType is in target_role[]
+  // This gives each role its own ordered curriculum from one steps table.
+  const normalizedRole = (userType ?? "agent").toLowerCase()
+  const { data: stepsRaw } = await service
     .from("onboarding_steps")
-    .select("id, step_key, step_name, category, required, step_order, estimated_minutes, video_url, instructions")
+    .select("id, step_key, step_name, category, required, step_order, estimated_minutes, video_url, instructions, target_role")
     .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .order("step_order", { ascending: true })
+  const steps = (stepsRaw ?? []).filter((s: { target_role: string[] | null }) => {
+    const tr = s.target_role
+    return !tr || tr.length === 0 || tr.includes(normalizedRole)
+  })
 
   // Load completions
   const { data: completions } = agentId

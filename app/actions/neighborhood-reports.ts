@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateAIText } from "@/lib/ai"
+import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 
 // Types
 export interface NeighborhoodReport {
@@ -171,9 +172,23 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
     }
   }
 
-  // Try HouseCanary API if key is set
-  const houseCanaryKey = process.env.HOUSECANARY_API_KEY
+  // Step 1: Free OSINT data (OpenStreetMap amenities + Census median home value)
+  // Always runs — provides real amenities and Census data with no API key required.
+  const osint = await fetchOSINTNeighborhoodData(listing.address, listing.city, listing.state, listing.zip)
+
   let reportData: Partial<NeighborhoodReport> = {}
+
+  // Seed report with OSINT data where available
+  if (osint.dataSource !== "none") {
+    reportData.amenities_json = osint.amenities
+    reportData.data_source = osint.dataSource
+    if (osint.censusMedianHomeValue) {
+      reportData.median_home_price = osint.censusMedianHomeValue
+    }
+  }
+
+  // Step 2: Try HouseCanary API if key is set (enriches / overrides OSINT data)
+  const houseCanaryKey = process.env.HOUSECANARY_API_KEY
 
   if (houseCanaryKey) {
     try {
@@ -213,9 +228,10 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
     }
   }
 
-  // If HouseCanary returned no structured data, ask AI to fill it in
-  const houseCanaryHadData = Object.keys(reportData).length > 0
-  if (!houseCanaryHadData) {
+  // If HouseCanary returned no market stats, ask AI to fill in the numeric fields.
+  // We preserve OSINT amenities — AI only fills missing numeric/market fields.
+  const hasMarketStats = reportData.price_per_sqft != null || reportData.avg_days_on_market != null
+  if (!hasMarketStats) {
     try {
       const { text: rawStructured } = await generateAIText(
         `You are a real estate data assistant. Provide realistic neighborhood market data for this property. Return ONLY valid JSON — no markdown, no explanation.
@@ -240,8 +256,9 @@ Return this exact JSON structure:
       )
       const aiStructured = JSON.parse(rawStructured.trim())
 
+      // Merge: OSINT amenities take precedence; AI fills missing numeric fields
       reportData = {
-        median_home_price: aiStructured.median_home_price,
+        median_home_price: reportData.median_home_price ?? aiStructured.median_home_price,
         price_per_sqft: aiStructured.price_per_sqft,
         avg_days_on_market: aiStructured.avg_days_on_market,
         list_to_sale_ratio: aiStructured.list_to_sale_ratio,
@@ -250,7 +267,9 @@ Return this exact JSON structure:
         crime_index: aiStructured.crime_index,
         market_trend: aiStructured.market_trend,
         school_ratings: aiStructured.school_ratings,
-        data_source: "AI-estimated",
+        // Preserve OSINT amenities if available, otherwise AI doesn't provide them
+        amenities_json: reportData.amenities_json ?? null,
+        data_source: osint.dataSource !== "none" ? `${osint.dataSource}+AI-estimated` : "AI-estimated",
       }
     } catch (err) {
       console.error("[v0] AI structured neighborhood data error:", err)

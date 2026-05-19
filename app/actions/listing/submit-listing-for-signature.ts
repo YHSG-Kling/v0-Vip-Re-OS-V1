@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
@@ -7,7 +8,7 @@ import { logEventAndTrigger } from "@/lib/events/event-helpers"
 
 interface SubmitListingForSignatureParams {
   listingId: string
-  userId: string
+  userId?: string  // ignored — derived from session
   signers: Array<{
     name: string
     email: string
@@ -16,11 +17,25 @@ interface SubmitListingForSignatureParams {
 }
 
 export async function submitListingForSignature(params: SubmitListingForSignatureParams) {
-  const { listingId, userId, signers } = params
+  const { listingId, signers } = params
 
-  if (!isValidUUID(listingId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(listingId)) {
+    return { success: false, error: "Invalid listing ID" }
   }
+
+  // Auth gate — was previously trusting caller-supplied userId; any signed-in
+  // user could trigger a legal signature request on any listing in any
+  // brokerage.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const userId = user.id
 
   const supabase = createServiceClient()
 
@@ -34,6 +49,10 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
 
   if (listingError || !listing) {
     return { success: false, error: "Listing not found" }
+  }
+
+  if (listing.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
   }
 
   // Emit signature request event using schema-correct columns

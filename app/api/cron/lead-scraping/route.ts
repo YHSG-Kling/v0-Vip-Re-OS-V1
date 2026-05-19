@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
@@ -9,6 +10,7 @@ import {
   isViableRecord,
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import * as cheerio from "cheerio"
 import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
@@ -25,11 +27,9 @@ export const dynamic = "force-dynamic"
 // Runs every 6 hours to scrape leads from all configured sources.
 // Kernel OS: cron_execution_logs are opened at entry and closed at every exit path.
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const serviceClient = createServiceClient()
   const cronStartedAt = Date.now()

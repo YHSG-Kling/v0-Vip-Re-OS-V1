@@ -1,7 +1,24 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { NextResponse } from "next/server"
+import { cascadeApprove } from "@/lib/kernel/approval-queue-aggregator"
 
+/**
+ * Approve endpoint — cascades to the right source table based on the
+ * prefixed id from the unified queue (/api/approvals/pending).
+ *
+ * Prefix → table:
+ *   nl:    newsletter_campaigns
+ *   em:    email_campaigns
+ *   acv:   ad_creative_variations
+ *   vsn:   video_snippets
+ *   bp:    blog_posts
+ *   <bare> approval_items (legacy)
+ *
+ * Authority: agents may approve only their own items (per-table scope key
+ * varies — newsletter/email use agents.id, blog/video use users.id; cascade
+ * handles both). Brokers / admins may approve any item in their brokerage.
+ */
 export async function POST(request: Request) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
@@ -9,56 +26,30 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json()
-    // agent_id is NOT accepted from the body — it was an authorization bypass.
-    // The caller only supplies the approval item id and optional notes.
     const { id, notes } = body
 
-    if (!id) {
+    if (!id || typeof id !== "string") {
+      return NextResponse.json({ error: "Missing required field: id" }, { status: 400 })
+    }
+
+    const agentScopeId =
+      auth.userType === "agent" && auth.agentId ? auth.agentId : null
+
+    const result = await cascadeApprove(id, {
+      brokerageId: auth.brokerageId,
+      agentScopeId,
+      reviewerUserId: auth.userId,
+      notes,
+    })
+
+    if (!result.success) {
       return NextResponse.json(
-        { error: "Missing required field: id" },
-        { status: 400 }
+        { error: result.error ?? "Failed to approve item" },
+        { status: 400 },
       )
     }
 
-    // Fetch the approval item scoped to the caller's brokerage.
-    // Brokers/admins may approve any item in their brokerage.
-    // Agents may only approve items assigned to themselves.
-    let fetchQuery = supabase
-      .from("approval_items")
-      .select("id, agent_id, brokerage_id, status")
-      .eq("id", id)
-      .eq("brokerage_id", auth.brokerageId)
-
-    if (auth.userType === "agent" && auth.agentId) {
-      fetchQuery = fetchQuery.eq("agent_id", auth.agentId)
-    }
-
-    const { data: existingItem, error: fetchError } = await fetchQuery.maybeSingle()
-
-    if (fetchError || !existingItem) {
-      return NextResponse.json(
-        { error: "Approval item not found or access denied" },
-        { status: 404 }
-      )
-    }
-
-    const { error: updateError } = await supabase
-      .from("approval_items")
-      .update({
-        status:      "approved",
-        reviewed_by: auth.userId,
-        reviewed_at: new Date().toISOString(),
-        review_notes: notes ?? null,
-      })
-      .eq("id", id)
-      .eq("brokerage_id", auth.brokerageId)
-
-    if (updateError) {
-      console.error("[Approvals Approve] DB error:", updateError)
-      return NextResponse.json({ error: "Failed to approve item" }, { status: 500 })
-    }
-
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, type: result.type, target_id: result.targetId })
   } catch (error) {
     console.error("[Approvals Approve] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

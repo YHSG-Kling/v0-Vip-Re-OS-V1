@@ -9,7 +9,7 @@
  */
 
 import { cn }       from "@/lib/utils"
-import type { OfferRow } from "@/lib/kernel/offers"
+import type { OfferRow } from "@/lib/kernel/offer-types"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,10 +91,10 @@ function HistoryRow({
           <dt className="text-xs text-muted-foreground">Offer Price</dt>
           <dd className="text-sm font-semibold text-foreground">{formatCurrency(row.offer_price)}</dd>
         </div>
-        {row.earnest_money !== null || row.earnest_money_amount !== null ? (
+        {row.earnest_money !== null ? (
           <div>
             <dt className="text-xs text-muted-foreground">Earnest Money</dt>
-            <dd className="text-sm font-medium">{formatCurrency(row.earnest_money ?? row.earnest_money_amount)}</dd>
+            <dd className="text-sm font-medium">{formatCurrency(row.earnest_money)}</dd>
           </div>
         ) : null}
         {row.closing_date && (

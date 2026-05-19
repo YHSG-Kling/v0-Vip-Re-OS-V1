@@ -1485,7 +1485,7 @@ export default function LeadsPage() {
                             {/* Converted badge */}
                             {convertedIds.has(lead.id) && convertSuccessMap[lead.id] ? (
                               <a
-                                href={`/crm?contactId=${convertSuccessMap[lead.id]}`}
+                                href={`/crm?contact=${convertSuccessMap[lead.id]}`}
                                 className="flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 hover:bg-emerald-100"
                               >
                                 <UserPlus className="h-3 w-3" />

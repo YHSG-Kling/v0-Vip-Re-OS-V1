@@ -5,8 +5,14 @@
  * Domain 2: Dotloop Loop Creation
  *
  * Creates Dotloop loop for buyer offer with proper state package
+ *
+ * Previously trusted caller-supplied brokerageId/agentId/userId without
+ * any auth check. Any signed-in caller could create Dotloop loops on
+ * the global DOTLOOP_PROFILE_ID with forged audit attribution; the
+ * loop name + property_address would leak into Dotloop logs.
  */
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { logActivity } from "@/app/actions/activities"
@@ -18,11 +24,9 @@ export interface CreateDotloopLoopParams {
   buyerId: string
   propertyAddress: string
   state: string // e.g. "CA", "TX"
-  userId: string
-  /** Required by logActivity — must come from contacts row, not user.id */
-  brokerageId: string
-  /** Agent who initiated the offer flow */
-  agentId: string
+  userId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string  // ignored — derived from session
   transactionId?: string
 }
 
@@ -39,27 +43,42 @@ export interface CreateDotloopLoopResult {
 export async function createDotloopLoopForOffer(
   params: CreateDotloopLoopParams
 ): Promise<CreateDotloopLoopResult> {
-  const {
-    offerId,
-    buyerId,
-    propertyAddress,
-    state,
-    userId,
-    brokerageId,
-    agentId,
-    transactionId,
-  } = params
+  const { offerId, buyerId, propertyAddress, state, transactionId } = params
 
-  // Validate inputs
   if (!isValidUUID(buyerId)) {
     return { success: false, error: "Invalid buyer ID", errorCode: "invalid_buyer_id" }
   }
-  if (!brokerageId) {
-    return { success: false, error: "brokerageId is required", errorCode: "missing_brokerage_id" }
+
+  // Auth gate — verify caller + that the buyer (contact) belongs to
+  // caller's brokerage before billing the global Dotloop account.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized", errorCode: "unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return { success: false, error: "Unauthorized", errorCode: "unauthorized" }
   }
-  if (!agentId) {
-    return { success: false, error: "agentId is required", errorCode: "missing_agent_id" }
+
+  const svc = createServiceClient()
+  const { data: buyerContact } = await svc
+    .from("contacts").select("brokerage_id").eq("id", buyerId).maybeSingle()
+  if (!buyerContact || buyerContact.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden", errorCode: "forbidden_buyer" }
   }
+
+  // If transactionId provided, verify ownership
+  if (transactionId && isValidUUID(transactionId)) {
+    const { data: tx } = await svc
+      .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+    if (!tx || tx.brokerage_id !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden", errorCode: "forbidden_transaction" }
+    }
+  }
+
+  const brokerageId = callerRow.brokerage_id
+  const agentId = user.id  // audit attribution from session, not param
+  const userId = user.id
 
   const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
   const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
@@ -228,12 +247,26 @@ export async function getDotloopLoopIdForOffer(
   offerId: string,
   buyerId: string
 ): Promise<string | null> {
+  // Auth gate — was open, leaked Dotloop loop ids by contactId.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return null
+  const { data: callerRow } = await authClient
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return null
+
   const supabase = createServiceClient()
+
+  // Verify the buyer contact is in caller's brokerage
+  const { data: buyerContact } = await supabase
+    .from("contacts").select("brokerage_id").eq("id", buyerId).maybeSingle()
+  if (!buyerContact || buyerContact.brokerage_id !== callerRow.brokerage_id) return null
 
   const { data } = await supabase
     .from("activities")
     .select("notes")
     .eq("contact_id", buyerId)
+    .eq("brokerage_id", callerRow.brokerage_id)
     .eq("entity_type", "transaction")
     .eq("activity_type", "dotloop_loop_created")
     .order("created_at", { ascending: false })

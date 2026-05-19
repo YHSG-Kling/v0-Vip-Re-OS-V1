@@ -39,7 +39,10 @@ import {
   Sparkles,
   Filter,
   Share2,
+  Kanban,
+  BarChart3,
 } from "lucide-react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
@@ -313,17 +316,42 @@ function VideoLibraryContent() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto py-8 px-4">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-bold text-foreground">Script Library</h1>
+            <h1 className="text-3xl font-bold text-foreground">My Videos</h1>
             <p className="text-muted-foreground mt-1">
-              Manage your AI-generated video scripts
+              Manage your scripts, pipeline, and video analytics
             </p>
           </div>
           <Button onClick={() => router.push("/dashboard/videos/create")}>
             <Plus className="h-4 w-4 mr-2" />
-            Create Script
+            Create Video
           </Button>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex gap-1 border-b mb-8">
+          <Link
+            href="/dashboard/videos/library"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-primary text-primary"
+          >
+            <FileText className="h-4 w-4" />
+            Scripts
+          </Link>
+          <Link
+            href="/dashboard/videos/board"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Kanban className="h-4 w-4" />
+            Pipeline
+          </Link>
+          <Link
+            href="/dashboard/videos/analytics"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <BarChart3 className="h-4 w-4" />
+            Analytics
+          </Link>
         </div>
 
         {/* Stats */}

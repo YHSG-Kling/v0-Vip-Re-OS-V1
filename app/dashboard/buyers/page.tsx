@@ -109,7 +109,7 @@ export default async function BuyersPage() {
         <div className="flex flex-wrap items-center gap-3 p-4 bg-muted/30 border border-border rounded-lg">
           <span className="text-sm font-semibold text-foreground">Buyer Operations</span>
           <div className="flex gap-2 flex-wrap">
-            <Link href="/contacts/new?type=buyer">
+            <Link href="/crm/contacts/new?type=buyer">
               <Button size="sm" variant="default" className="text-xs gap-1">
                 <UserPlus className="h-3 w-3" />
                 Add Buyer

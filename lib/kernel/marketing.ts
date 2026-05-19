@@ -838,6 +838,13 @@ export interface CreateVideoProjectInput {
   videoType:    "listing" | "market_update" | "testimonial" | "educational" | "brand"
   listingId?:   string
   templateId?:  string
+  /**
+   * 'in_house' (default for internal training; brand voice only) vs
+   * 'customer_facing' (DNC/TCPA/fair-housing compliance gate applies on
+   * distribute). The publisher infers this from the campaign's audience
+   * but the kernel command lets the caller override.
+   */
+  audienceType?: "in_house" | "customer_facing"
 }
 
 export async function createVideoProject(
@@ -851,19 +858,69 @@ export async function createVideoProject(
   if (!access.allowed) return { success: false, error: access.reason ?? "Video generation access denied" }
 
   const supabase = await createServiceClient()
+
+  // Migration 1051: fold brokerage about_text + bio_text + brand voice into
+  // brand_voice_context jsonb so HeyGen prompts (and the admin reviewer)
+  // see what voice flavor the AI generation should carry.
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("name, about_text, bio_text")
+    .eq("id", ctx.brokerageId)
+    .maybeSingle()
+  let brandVoiceTone: string | null = null
+  try {
+    const { data: bv } = await supabase
+      .from("brand_voice_profile")
+      .select("tone")
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    brandVoiceTone = (bv?.tone as string | null) ?? null
+  } catch {
+    // brand_voice_profile lookup is best-effort
+  }
+  const brandVoiceContext = {
+    brokerage_name:  (brokerage?.name       as string | null) ?? null,
+    brokerage_about: (brokerage?.about_text as string | null) ?? null,
+    brokerage_bio:   (brokerage?.bio_text   as string | null) ?? null,
+    brand_voice_tone: brandVoiceTone,
+    applied_at:      new Date().toISOString(),
+  }
+
+  // Migration 1052: resolve the actual provider (D-ID default, agent
+  // voice profile override, brokerage global setting override). Was
+  // hardcoded 'heygen' which was wrong — D-ID is the platform primary.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider     = await resolveVideoProvider(supabase, {
+    brokerageId: ctx.brokerageId,
+    agentUserId: ctx.userId ?? null,
+  })
+  const providerCols = initialProviderColumns(provider)
+
+  // audience_type: caller passes explicitly when known; otherwise default
+  // to 'customer_facing' (safer — over-restrict by default).
+  const audienceType = input.audienceType ?? "customer_facing"
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
-      brokerage_id:   ctx.brokerageId,
-      agent_id:       ctx.agentId ?? null,
-      title:          input.title.trim(),
-      script_content: input.scriptContent.trim(),
-      video_type:     input.videoType,
-      listing_id:     input.listingId    ?? null,
-      heygen_template_id: input.templateId ?? null,
-      status:         "draft",
-      heygen_status:  "pending",
-      created_at:     new Date().toISOString(),
+      brokerage_id:        ctx.brokerageId,
+      agent_id:            ctx.agentId ?? null,
+      title:               input.title.trim(),
+      script_content:      input.scriptContent.trim(),
+      video_type:          input.videoType,
+      listing_id:          input.listingId    ?? null,
+      heygen_template_id:  input.templateId ?? null,
+      status:              "draft",
+      video_provider:      provider,
+      ...providerCols,
+      // Migration 1051: AI videos await admin approval before publish
+      approval_status:     "pending_review",
+      is_ai_generated:     true,
+      audience_type:       audienceType,
+      brand_voice_context: brandVoiceContext,
+      created_at:          new Date().toISOString(),
     })
     .select("id")
     .single()
@@ -936,7 +993,7 @@ export async function distributeVideoAsset(params: {
 
   const { data: project } = await supabase
     .from("ai_video_projects")
-    .select("status, video_url, title")
+    .select("status, video_url, title, approval_status, marketing_campaign_id, listing_id, audience_type, script_content, video_provider")
     .eq("id", params.projectId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
@@ -947,6 +1004,54 @@ export async function distributeVideoAsset(params: {
   }
   if (project.status !== "completed") {
     return { success: false, error: `Video is not yet completed (current: ${project.status}).` }
+  }
+  // Migration 1051: AI-generated videos can't distribute until admin
+  // approves. Reject pending_review / rejected.
+  if (project.approval_status && project.approval_status !== "approved" && project.approval_status !== "published") {
+    return { success: false, error: `Video is not yet approved (current: ${project.approval_status}).` }
+  }
+
+  // Migration 1052: customer-facing videos must pass the kernel's
+  // outbound-communication compliance gate (DNC/TCPA/fair-housing). In-
+  // house training videos (audience_type='in_house') skip this — they're
+  // agent/staff/team education and don't go to external contacts.
+  if (project.audience_type === "customer_facing") {
+    try {
+      const { evaluateKernelOutbound, isComplianceBlocked } = await import("@/lib/kernel/adapters/compliance")
+      const compliance = await evaluateKernelOutbound({
+        actorContext: {
+          userId: params.userId,
+          role: "agent",
+          brokerageId: params.brokerageId,
+        },
+        journeyType: "buyer",         // resolver normalizes
+        persona: "other",
+        messageType: "social",         // closest video-channel kind in the kernel enum
+        content: (project.script_content as string | null) ?? "",
+        contact: undefined,
+      })
+      if (isComplianceBlocked(compliance)) {
+        await supabase.from("ai_video_projects").update({
+          compliance_status:     "failed",
+          compliance_violations: compliance.violations ?? [],
+          compliance_evaluated_at: new Date().toISOString(),
+        }).eq("id", params.projectId)
+        return { success: false, error: `Compliance blocked distribution: ${compliance.blockedReason ?? "review required"}` }
+      }
+      await supabase.from("ai_video_projects").update({
+        compliance_status:     "passed",
+        compliance_violations: [],
+        compliance_evaluated_at: new Date().toISOString(),
+      }).eq("id", params.projectId)
+    } catch (err) {
+      // Compliance adapter failure → mark needs_review, refuse to distribute
+      await supabase.from("ai_video_projects").update({
+        compliance_status:     "needs_review",
+        compliance_violations: [{ error: err instanceof Error ? err.message : String(err) }],
+        compliance_evaluated_at: new Date().toISOString(),
+      }).eq("id", params.projectId)
+      return { success: false, error: "Compliance evaluator unavailable; refusing to distribute customer-facing video." }
+    }
   }
 
   const insertRows = params.platforms.map((platform) => ({
@@ -965,6 +1070,42 @@ export async function distributeVideoAsset(params: {
 
   const { error } = await supabase.from("repurposed_content_log").insert(insertRows)
   if (error) return { success: false, error: error.message }
+
+  // Migration 1051: when this video is tied to a marketing_campaigns row,
+  // distributing it counts as touchpoints for every audience contact.
+  // Fire-and-forget; failures isolated. Skip when no campaign linkage.
+  if (project.marketing_campaign_id) {
+    try {
+      const { recordCampaignTouchpointsBulkSafe } = await import("@/lib/marketing/touchpoint-recorder")
+      const { resolveCampaignAudience } = await import("@/lib/marketing/audience-resolver")
+      const { data: campaign } = await supabase
+        .from("marketing_campaigns")
+        .select("brokerage_id, audience_personas, audience_generations, audience_age_segs, audience_lead_source_tags, audience_buyer_stages, audience_contact_ids")
+        .eq("id", project.marketing_campaign_id)
+        .maybeSingle()
+      if (campaign) {
+        const audience = await resolveCampaignAudience(supabase, campaign.brokerage_id as string, {
+          personas:       (campaign.audience_personas       as string[] | null) ?? [],
+          generations:    (campaign.audience_generations    as string[] | null) ?? [],
+          ageSegs:        (campaign.audience_age_segs       as string[] | null) ?? [],
+          leadSourceTags: (campaign.audience_lead_source_tags as string[] | null) ?? [],
+          buyerStages:    (campaign.audience_buyer_stages   as string[] | null) ?? [],
+          contactIds:     (campaign.audience_contact_ids    as string[] | null) ?? undefined,
+        })
+        if (audience.contactIds.length > 0) {
+          void recordCampaignTouchpointsBulkSafe(
+            campaign.brokerage_id as string,
+            project.marketing_campaign_id as string,
+            audience.contactIds,
+            "video",
+            "manual",
+          )
+        }
+      }
+    } catch (err) {
+      console.error("[distributeVideoAsset] touchpoint record failed:", err)
+    }
+  }
 
   return { success: true }
 }

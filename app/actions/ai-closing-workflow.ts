@@ -87,18 +87,26 @@ Generate a comprehensive, ordered closing checklist covering:
 - Compliance items`,
     })
 
-    // Upsert items into closing_checklist_items
-    const rows = checklist.items.map((item) => ({
-      transaction_id: params.transactionId,
-      brokerage_id:   params.brokerageId,
-      item_name:      item.item_name,
-      category:       item.category,
-      sequence:       item.sequence,
-      required:       item.required,
-      notes:          [item.notes, `Owner: ${item.owner}`, `Due: ${item.due_offset_days}d before close`]
-                        .filter(Boolean).join(" | "),
-      completed:      false,
-    }))
+    // Map AI output to actual DB columns (closing_checklist_items schema)
+    const closeDate = transaction.close_date ? new Date(transaction.close_date) : null
+    const rows = checklist.items.map((item) => {
+      let dueDate: string | null = null
+      if (closeDate && item.due_offset_days) {
+        const d = new Date(closeDate)
+        d.setDate(d.getDate() + item.due_offset_days)
+        dueDate = d.toISOString().split("T")[0]
+      }
+      return {
+        transaction_id:  params.transactionId,
+        brokerage_id:    params.brokerageId,
+        agent_user_id:   params.agentId,
+        phase:           item.category,
+        item_label:      item.item_name,
+        owner:           item.owner,
+        due_date:        dueDate,
+        completed:       false,
+      }
+    })
 
     const { error: insertError } = await supabase
       .from("closing_checklist_items")

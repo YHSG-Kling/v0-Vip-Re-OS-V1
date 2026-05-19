@@ -32,9 +32,28 @@ export interface LeadScoringResult {
 }
 
 /**
- * Calculate comprehensive lead score
- * Works for BOTH contacts table AND leads table
- * Consolidates scoring logic from multiple files
+ * CANONICAL LEAD SCORE ORCHESTRATOR — sole writer of `lead_score` column.
+ *
+ * Pipeline:
+ *   1. Fetch record + relations from contacts/leads
+ *   2. Run Layer 1 (multi-factor deterministic scorer) for the canonical
+ *      baseline — `lib/lead-governance/multi-factor-scorer.ts`
+ *   3. Layer in behavioral signals (engagement, recency, intent, fit,
+ *      responsiveness) as a refinement on top of the baseline
+ *   4. Persist the combined score to `lead_score` + temperature + history
+ *
+ * EVERY write to `contacts.lead_score` and `leads.lead_score` MUST go through
+ * this function. Layer 2 (AI scoring) refines AI-nuanced columns only and
+ * does not bypass this. Layer 3 (signal extensions) only pushes UP via
+ * `applySignalDelta`. See `lib/lead-scoring/LAYERING.md`.
+ *
+ * Combination formula (deterministic):
+ *   final_score = clamp(0, 100, multi_factor_baseline × 0.7 + behavioral × 0.3)
+ *
+ * The 70/30 split keeps the multi-factor baseline as the dominant signal —
+ * static lead data is more reliable than behavioral inference. Behavioral
+ * refinement bumps the score for high-engagement contacts and dampens for
+ * stale ones, but cannot single-handedly invert the baseline.
  */
 export async function calculateLeadScore(params: LeadScoringParams): Promise<LeadScoringResult> {
   try {
@@ -42,15 +61,12 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       throw new ValidationError("Invalid ID")
     }
 
-    const table = params.table || "contacts" // Default to contacts for backward compatibility
-    console.log(`[v0] Calculating lead score for ${table}:`, params.id)
-
+    const table = params.table || "contacts"
     const supabase = await createClient()
 
     let record: any
     let error: any
 
-    // Fetch from appropriate table
     if (table === "contacts") {
       const result = await supabase
         .from("contacts")
@@ -85,22 +101,29 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       throw new NotFoundError(`${table === "contacts" ? "Contact" : "Lead"} not found`)
     }
 
-    // Calculate individual scoring factors
+    // ── Layer 1: Multi-factor deterministic baseline ────────────────────
+    // Single source of truth for the static-data score. Returns 0-100.
+    const { calculateLeadScore: multiFactorScorer } = await import(
+      "@/lib/lead-governance/multi-factor-scorer"
+    )
+    const multiFactorResult = multiFactorScorer(record)
+    const baselineScore = multiFactorResult.finalScore
+
+    // ── Behavioral refinement (additive layer on the baseline) ─────────
+    // These factors capture in-app behavior that multi-factor doesn't see.
     const engagementScore = calculateEngagementScore(record, table)
     const recencyScore = calculateRecencyScore(record)
     const intentScore = calculateIntentScore(record, table)
     const fitScore = calculateFitScore(record, table)
     const responsivenessScore = calculateResponsivenessScore(record)
-
-    // Weighted average
-    const totalScore = Math.round(
+    const behavioralScore = Math.round(
       engagementScore * 0.25 + recencyScore * 0.2 + intentScore * 0.3 + fitScore * 0.15 + responsivenessScore * 0.1
     )
 
-    // Determine temperature
-    const temperature = determineTemperature(totalScore)
+    // ── Combined final score (70% baseline + 30% behavioral refinement) ─
+    const totalScore = Math.max(0, Math.min(100, Math.round(baselineScore * 0.7 + behavioralScore * 0.3)))
 
-    // Generate recommendations
+    const temperature = determineTemperature(totalScore)
     const recommendations = generateLeadRecommendations(record, {
       engagement: engagementScore,
       recency: recencyScore,

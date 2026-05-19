@@ -7,24 +7,20 @@ import { StagePipeline }       from "@/app/components/dashboard/listings/lifecyc
 import { TasksPanel }           from "@/app/components/dashboard/listings/lifecycle/tasks-panel"
 import { StageTimeline }        from "@/app/components/dashboard/listings/lifecycle/stage-timeline"
 import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
+import { ListingHealthRadarPanel } from "@/app/components/features/listings/listing-health-radar-panel"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import {
-  LaunchStateStrip,
-  MediaReadinessCard,
-  PublishReadinessCard,
-  MarketingTierReadinessCard,
-  SellerUpdateReadinessCard,
-  OpenHouseReadinessCard,
-  NeighborhoodStoryCard,
+  LaunchReadinessChecklist,
   LaunchActionsPanel,
 } from "../components/launch"
-import { ListingAgreementStatusCard } from "@/app/components/dashboard/listings/lifecycle/listing-agreement-status-card"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
+import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
+import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { CheckCircle } from "lucide-react"
@@ -116,6 +112,34 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
 
   const mediaApproved = !!mediaApprovedResult.data
   const transactionId = transactionResult.data?.id ?? null
+
+  // Listing Health Radar data — runs in parallel with the launch-readiness
+  // fetches below. All three queries are gated by RLS to this brokerage.
+  const [healthScoreRes, openInterventionsRes, scoreHistoryRes] = await Promise.all([
+    supabase
+      .from("listing_health_scores")
+      .select("id, overall_score, risk_level, flags, ai_narrative, previous_score, score_delta, days_on_market, scored_at, recommended_actions")
+      .eq("listing_id", listingId)
+      .order("scored_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("listing_health_interventions")
+      .select("id, issue_detected, severity, ai_recommendation, category, created_at")
+      .eq("listing_id", listingId)
+      .eq("resolved", false)
+      .order("created_at", { ascending: false })
+      .limit(10),
+    supabase
+      .from("listing_health_scores")
+      .select("overall_score, risk_level, scored_at")
+      .eq("listing_id", listingId)
+      .order("scored_at", { ascending: false })
+      .limit(7),
+  ])
+  const healthScore = healthScoreRes.data ?? null
+  const openInterventions = openInterventionsRes.data ?? []
+  const scoreHistory = scoreHistoryRes.data ?? []
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -280,75 +304,55 @@ const { data: listingVendorBookings } = await supabase
             <div className="flex gap-2 mt-3 flex-wrap">
               {sellerContact?.id && (
                 <Button size="sm" asChild>
-                  <Link href={`/crm?contactId=${sellerContact.id}`}>
+                  <Link href={`/crm?contact=${sellerContact.id}`}>
                     View in CRM as Lifetime
                   </Link>
                 </Button>
               )}
               <Button size="sm" variant="outline" asChild>
-                <Link href="/past-clients">Past Clients Dashboard</Link>
+                <Link href="/lifetime-customers">Lifetime Customers</Link>
               </Button>
             </div>
           </div>
         )}
 
-        {/* Launch State Strip */}
-        <div className="mb-6">
-          <LaunchStateStrip
+        {/* Listing Health Radar — daily-scored health for this active listing */}
+        <div className="mb-4">
+          <ListingHealthRadarPanel
             listingId={listingId}
-            currentStage={currentStage}
-            mediaReady={mediaReady}
-            publishReady={publishReady}
-            marketingReady={marketingReady}
-            blockers={blockers}
+            healthScore={healthScore as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["healthScore"]}
+            openInterventions={openInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["openInterventions"]}
+            scoreHistory={scoreHistory as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["scoreHistory"]}
           />
         </div>
 
-        {/* Readiness Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-          <MediaReadinessCard
+        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
+        <div className="mb-6">
+          <LaunchReadinessChecklist
             listingId={listingId}
+            currentStage={currentStage}
             photoCount={photoCount}
             videoCount={videoCount}
             hasBranded={media.some((m: any) => m.is_branded)}
             hasUnbranded={media.some((m: any) => !m.is_branded)}
-          />
-          <PublishReadinessCard
-            listingId={listingId}
             requiredFields={requiredFields}
             complianceBlockers={[]}
             packetReady={packetReady}
-          />
-          <MarketingTierReadinessCard
-            listingId={listingId}
             currentTier={currentTier}
-            campaignReady={!!currentTier}
-            assetsCreated={media.length}
-            assetsRequired={10}
             isSuperAdmin={isSuperAdmin}
-          />
-          <SellerUpdateReadinessCard
-            listingId={listingId}
-            agentId={user.id}
-            hasPendingDraft={false}
-          />
-          <OpenHouseReadinessCard
-            listingId={listingId}
-            scheduledEvent={scheduledEvent}
-            promotionStatus={openHousePromotionStatus}
-            rsvpCount={rsvpCount}
-          />
-          <NeighborhoodStoryCard
-            listingId={listingId}
-            hasReport={hasNeighborhoodReport}
+            sellerUpdateHasPendingDraft={false}
+            openHouseEvent={scheduledEvent}
+            openHousePromotionStatus={openHousePromotionStatus}
+            openHouseRsvpCount={rsvpCount}
+            hasNeighborhoodReport={hasNeighborhoodReport}
             neighborhoodName={neighborhoodReport?.neighborhood_name}
             pricingNarrativeReady={pricingNarrativeReady}
-            marketTrend={neighborhoodReport?.market_trend}
-            medianPrice={neighborhoodReport?.median_home_price}
-          />
-          <ListingAgreementStatusCard
-            listingId={listingId}
-            agreement={listingAgreement ?? null}
+            hasListingAgreement={!!listingAgreement}
+            agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
+            mediaReady={mediaReady}
+            publishReady={publishReady}
+            marketingReady={marketingReady}
+            blockers={blockers}
           />
         </div>
 
@@ -413,6 +417,18 @@ const { data: listingVendorBookings } = await supabase
           </div>
         )}
 
+        {/* Pre-listing workflow panel — shown for pre-active stages */}
+        <PreListingWorkflowPanel
+          listingId={listingId}
+          currentStage={currentStage}
+          vendorBookings={(listingVendorBookings ?? []).map((b: any) => ({
+            service_type: b.service_type,
+            status: b.status,
+          }))}
+          tasks={(tasks ?? []).map((t: any) => ({ title: t.title, status: t.status }))}
+          goLiveDate={listing.go_live_date ?? null}
+        />
+
         <DecisionHistoryPanel listingId={listingId} />
 
         <div className="mb-6">
@@ -442,6 +458,14 @@ const { data: listingVendorBookings } = await supabase
           canLaunch={mediaReady && publishReady && marketingReady}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
+        />
+        <PriceReductionSheet
+          listingId={listingId}
+          currentPrice={listing.list_price ?? 0}
+          listingAddress={`${listing.address}, ${listing.city}`}
+          agentId={user.id}
+          brokerageId={userRow.brokerage_id}
+          status={(listing as any).status ?? null}
         />
         <StageTimeline
           listing={listing}

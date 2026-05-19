@@ -1,4 +1,5 @@
-import { type NextRequest, NextResponse } from "next/server"
+import {
+type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { trackCertificationExpiration, monitorTRIDCompliance } from "@/app/actions/compliance-monitoring"
 import {
@@ -7,17 +8,16 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Run daily to check compliance
 export async function GET(request: NextRequest) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "compliance-monitoring",

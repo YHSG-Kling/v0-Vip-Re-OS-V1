@@ -46,12 +46,12 @@ export async function checkTransactionDeadlines() {
       .eq("transaction_id", txn.id)
       .eq("brokerage_id", txn.brokerage_id)
       .eq("status", "pending")
-      .not("milestone_date", "is", null)
+      .not("target_date", "is", null)
     
     if (!milestones) continue
     
     for (const milestone of milestones) {
-      const milestoneDate = new Date(milestone.milestone_date)
+      const milestoneDate = new Date(milestone.target_date)
       const hoursUntil = (milestoneDate.getTime() - now.getTime()) / (1000 * 60 * 60)
       
       // Check if overdue
@@ -92,7 +92,7 @@ async function handleOverdue(
     actorUserId: "",
     actorRole:   "agent",
     eventType:   "milestone.overdue",
-    metadata:    { milestone_name: milestone.milestone_name, milestone_date: milestone.milestone_date, stage: txn.stage },
+    metadata:    { milestone_name: milestone.milestone_name, target_date: milestone.target_date, stage: txn.stage },
   })
   
   // Create urgent activity for agent + TC
@@ -146,7 +146,7 @@ async function sendWarning(
     actorUserId: "",
     actorRole:   "agent",
     eventType:   "milestone.warning",
-    metadata:    { milestone_name: milestone.milestone_name, milestone_date: milestone.milestone_date, hours_until: Math.round(hoursUntil) },
+    metadata:    { milestone_name: milestone.milestone_name, target_date: milestone.target_date, hours_until: Math.round(hoursUntil) },
   })
   
   // Notify agent + TC
@@ -156,7 +156,7 @@ async function sendWarning(
     agentId: txn.agent_id,
     milestoneName: milestone.milestone_name,
     propertyAddress: txn.id,
-    dueDate: milestone.milestone_date,
+    dueDate: milestone.target_date,
     hoursUntilDue: Math.round(hoursUntil),
   })
 }

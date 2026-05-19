@@ -12,9 +12,10 @@ import { useState, useTransition } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { CounterOfferHistory } from "./counteroffer-history"
+import { NegotiationCoPilotPanel } from "./negotiation-copilot-panel"
 import { NetSheetView }        from "./net-sheet-view"
 import { OfferDocumentPanel }  from "./offer-document-panel"
-import type { OfferRow }       from "@/lib/kernel/offers"
+import type { OfferRow }       from "@/lib/kernel/offer-types"
 
 // ─── Local helpers ────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ interface OfferWorkspaceProps {
   history:  OfferRow[]
   agentId:  string
   brokerageId: string
-  buyerPath: string   // e.g. /dashboard/buyers/{id}
+  buyerPath: string   // e.g. /crm/contacts/{id}
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ export function OfferWorkspace({
   brokerageId,
   buyerPath,
 }: OfferWorkspaceProps) {
-  const [activeTab, setActiveTab] = useState<"details" | "net-sheet" | "history" | "documents">("details")
+  const [activeTab, setActiveTab] = useState<"details" | "net-sheet" | "history" | "documents" | "copilot">("details")
   const [isPending, startTrans]   = useTransition()
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
@@ -84,8 +85,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { acceptOffer } = await import("@/lib/kernel/offers")
-      const res = await acceptOffer({ offerId: offer.id, agentId, brokerageId })
+      const { acceptOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await acceptOfferAction({ offerId: offer.id, agentId, brokerageId })
       if (res.success) {
         setActionMsg("Offer accepted. All other pending offers have been rejected.")
         window.location.reload()
@@ -99,8 +100,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { rejectOffer } = await import("@/lib/kernel/offers")
-      const res = await rejectOffer({ offerId: offer.id, agentId, brokerageId, reason })
+      const { rejectOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await rejectOfferAction({ offerId: offer.id, agentId, brokerageId, reason })
       if (res.success) {
         setActionMsg("Offer rejected.")
         window.location.reload()
@@ -114,8 +115,8 @@ export function OfferWorkspace({
     setActionMsg(null)
     setActionErr(null)
     startTrans(async () => {
-      const { withdrawOffer } = await import("@/lib/kernel/offers")
-      const res = await withdrawOffer({ offerId: offer.id, agentId, brokerageId })
+      const { withdrawOfferAction } = await import("@/app/actions/offer-kernel-actions")
+      const res = await withdrawOfferAction({ offerId: offer.id, agentId, brokerageId })
       if (res.success) {
         setActionMsg("Offer withdrawn.")
         window.location.reload()
@@ -127,6 +128,7 @@ export function OfferWorkspace({
 
   const tabs = [
     { id: "details",   label: "Details" },
+    { id: "copilot",   label: "🧠 Co-Pilot" },
     { id: "net-sheet", label: "Net Sheet" },
     { id: "history",   label: `History (${history.length})` },
     { id: "documents", label: "Documents" },
@@ -242,7 +244,7 @@ export function OfferWorkspace({
               <dl className="space-y-2">
                 {[
                   ["Offer Price",        fmt(offer.offer_price)],
-                  ["Earnest Money",      fmt(offer.earnest_money ?? offer.earnest_money_amount)],
+                  ["Earnest Money",      fmt(offer.earnest_money)],
                   ["Down Payment",       offer.down_payment_percent != null ? `${offer.down_payment_percent}%` : "—"],
                   ["Financing",          offer.financing_type ?? "—"],
                   ["Closing Date",       fmtDate(offer.closing_date)],
@@ -369,8 +371,39 @@ export function OfferWorkspace({
               offerPrice={offer.offer_price}
               listPrice={listing?.list_price ?? null}
               closingCostContribution={offer.closing_cost_contribution ?? null}
-              earnestMoney={offer.earnest_money ?? offer.earnest_money_amount ?? null}
+              earnestMoney={offer.earnest_money ?? null}
               sellerNetEstimate={offer.seller_net_estimate ?? null}
+            />
+          </div>
+        )}
+
+        {activeTab === "copilot" && (
+          <div className="px-6 py-5">
+            {/* Buyer-side Negotiation Co-Pilot — we represent the BUYER on
+                this surface. When seller has countered, the panel ingests
+                their counter and recommends accept / counter-back / walk.
+                sellerCounter pulled from the most recent counter row in
+                history if present, otherwise list_price as a sensible
+                starting frame. */}
+            <NegotiationCoPilotPanel
+              offerId={offer.id}
+              side="buyer"
+              sellerCounter={
+                (() => {
+                  // The current counter amount lives on the offer row itself
+                  // when status is 'countered'. Fall back to the most recent
+                  // counter entry in history, then list price.
+                  const offerWithCounter = offer as unknown as {
+                    counter_amount?: number | null
+                    status?: string | null
+                  }
+                  if (offerWithCounter.counter_amount && offerWithCounter.counter_amount > 0) {
+                    return Number(offerWithCounter.counter_amount)
+                  }
+                  return listing?.list_price ?? offer.offer_price
+                })()
+              }
+              buyerMaxBudget={offer.offer_price * 1.1}
             />
           </div>
         )}

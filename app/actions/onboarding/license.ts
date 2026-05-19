@@ -69,7 +69,21 @@ export async function getAgentLicenseStatus(
       return { data: null, error: "Unauthorized" }
     }
 
-    // Get agent's brokerage
+    // Get caller's brokerage + role
+    const { data: caller } = await supabase
+      .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+    if (!caller?.brokerage_id) return { data: null, error: "Unauthorized" }
+    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+      .includes(caller.user_type ?? "")
+
+    // Caller-supplied agentId — allow only self OR admin in same brokerage.
+    // Previously any caller could view any agent's license/E&O/contract
+    // status across tenants (PII + compliance status leak).
+    if (agentId !== user.id && !isAdmin) {
+      return { data: null, error: "Forbidden" }
+    }
+
+    // Get agent's brokerage and verify it matches caller's
     const { data: agent, error: agentError } = await supabase
       .from("users")
       .select("brokerage_id")
@@ -79,6 +93,9 @@ export async function getAgentLicenseStatus(
     if (agentError || !agent) {
       console.error("[L11-License] Agent not found:", agentError)
       return { data: null, error: "Agent not found" }
+    }
+    if (agent.brokerage_id !== caller.brokerage_id) {
+      return { data: null, error: "Forbidden" }
     }
 
     // Get or create onboarding record
@@ -421,7 +438,7 @@ export async function submitEOInsurance(
 
 export async function sendContractForSignature(
   agentId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — verified against caller's session
 ): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
     const supabase = await createClient()
@@ -432,18 +449,27 @@ export async function sendContractForSignature(
       return { success: false, error: "Unauthorized" }
     }
 
-    // Verify the requesting user matches the agent or is admin
-    if (user.id !== agentId) {
-      const { data: requestingUser } = await supabase
-        .from("users")
-        .select("platform_role")
-        .eq("id", user.id)
-        .single()
-
-      if (!requestingUser || !["admin", "broker", "superadmin"].includes(requestingUser.platform_role || "")) {
-        return { success: false, error: "Unauthorized to send contract for this agent" }
-      }
+    // Get caller's brokerage + role (the previous role check used
+    // platform_role which doesn't exist as a column; the right field
+    // is user_type)
+    const { data: caller } = await supabase
+      .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+    if (!caller?.brokerage_id) {
+      return { success: false, error: "Unauthorized" }
     }
+    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+      .includes(caller.user_type ?? "")
+    if (user.id !== agentId && !isAdmin) {
+      return { success: false, error: "Unauthorized to send contract for this agent" }
+    }
+
+    // Verify target agent is in caller's brokerage; ignore caller-supplied brokerageId
+    const { data: targetAgent } = await supabase
+      .from("users").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (!targetAgent || targetAgent.brokerage_id !== caller.brokerage_id) {
+      return { success: false, error: "Forbidden: agent not in your brokerage" }
+    }
+    const brokerageId = caller.brokerage_id
 
     // Resolve e-sign provider
     const provider = await resolveProvider({

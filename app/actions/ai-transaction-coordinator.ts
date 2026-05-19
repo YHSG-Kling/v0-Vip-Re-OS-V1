@@ -709,5 +709,7 @@ Create a comprehensive plan including:
   }
 }
 
-// Backward compatibility alias
-export const getClosingPrep = prepareForClosing
+// Backward compatibility alias — wrapped because "use server" rejects `const = fn`
+export async function getClosingPrep(...args: Parameters<typeof prepareForClosing>) {
+  return prepareForClosing(...args)
+}

@@ -11,6 +11,31 @@ import type { EducationFormat, JourneyPhase, Persona } from "./types"
 
 export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
 
+// ─── GENERATIONAL COHORT ──────────────────────────────────────────────────────
+// Companion routing axis. Same person can be 50-65 ageSeg + 'boomer' OR
+// 'gen_x' depending on which side of 1965 they were born. Tone differs:
+// boomers respond to "your home" framing; gen_x to "your equity"; millennials
+// to "your stage in life"; gen_z to "starting out". Marketing + education
+// modules tag against the cohort the broker wants to reach.
+
+export type GenerationalCohort =
+  | "gen_z"        // born 1997-2012 (~age 14-29 in 2026)
+  | "millennial"   // born 1981-1996 (~age 30-45)
+  | "gen_x"        // born 1965-1980 (~age 46-61)
+  | "boomer"       // born 1946-1964 (~age 62-80)
+  | "silent"       // pre-1946 (~age 80+)
+  | "unknown"
+
+/** Derive cohort from a numeric age. Pure utility, no DB access. */
+export function generationalCohortFromAge(age: number | null | undefined): GenerationalCohort {
+  if (age == null || age <= 0 || !Number.isFinite(age)) return "unknown"
+  if (age < 30)  return "gen_z"
+  if (age < 46)  return "millennial"
+  if (age < 62)  return "gen_x"
+  if (age < 80)  return "boomer"
+  return "silent"
+}
+
 // ─── DELIVERY CONFIG ──────────────────────────────────────────────────────────
 
 export interface DeliveryConfig {
@@ -563,7 +588,7 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
         .select("milestone_name")
         .eq("transaction_id", tx.id)
         .eq("status", "pending")
-        .order("milestone_date", { ascending: true })
+        .order("target_date", { ascending: true })
         .limit(1)
         .maybeSingle()
 
@@ -640,17 +665,28 @@ export async function createEducationalResource(
   supabase: any,
   input: CreateEducationalResourceInput
 ): Promise<CreateEducationalResourceOutput> {
+  const channels = (() => {
+    switch (input.contentType) {
+      case "video":         return ["video"]
+      case "article":       return ["article"]
+      case "interactive":   return ["quiz"]
+      case "assessment":    return ["quiz"]
+      default:              return ["article"]
+    }
+  })()
+
   const { data, error } = await supabase
-    .from("educational_moments")
+    .from("learning_modules")
     .insert({
-      title: input.title,
-      description: input.description,
-      content_type: input.contentType,
-      content: input.content,
-      estimated_minutes: input.estimatedMinutes,
-      created_by: input.createdBy,
-      brokerage_id: input.brokerageId,
-      created_at: new Date().toISOString(),
+      brokerage_id:        input.brokerageId,
+      authored_by:         input.createdBy,
+      title:               input.title,
+      summary:             input.description,
+      body:                input.content,
+      estimated_minutes:   input.estimatedMinutes,
+      channels,
+      status:              "published",
+      published_at:        new Date().toISOString(),
     })
     .select("id, created_at")
     .maybeSingle()
@@ -661,7 +697,7 @@ export async function createEducationalResource(
 
   return {
     resourceId: data.id,
-    success: true,
+    success:    true,
     createdAt: data.created_at,
   }
 }
@@ -683,15 +719,19 @@ export async function assignResource(
   supabase: any,
   input: AssignResourceInput
 ): Promise<AssignResourceOutput> {
+  // Post-1043: customer assignments live in learning_assignments keyed
+  // by (contact_id, module_id). resourceId is now a learning_modules.id (uuid).
   const { data, error } = await supabase
-    .from("contact_education_progress")
+    .from("learning_assignments")
     .insert({
-      contact_id: input.contactId,
-      lesson_key: input.resourceId,
-      brokerage_id: input.brokerageId,
-      // Note: completed_at is only set when lesson is marked complete
+      brokerage_id:   input.brokerageId,
+      module_id:      input.resourceId,
+      contact_id:     input.contactId,
+      signal_source:  "manual:assign_resource",
+      priority_score: 60,
+      status:         "open",
     })
-    .select("id")
+    .select("id, created_at")
     .maybeSingle()
 
   if (error || !data) {
@@ -700,8 +740,8 @@ export async function assignResource(
 
   return {
     assignmentId: data.id,
-    success: true,
-    assignedAt: new Date().toISOString(),
+    success:      true,
+    assignedAt:   data.created_at,
   }
 }
 
@@ -723,13 +763,19 @@ export async function recordCompletion(
   supabase: any,
   input: RecordCompletionInput
 ): Promise<RecordCompletionOutput> {
+  // Upsert the customer's assignment row to completed. Pre-1043 used
+  // contact_education_progress.lesson_key; now we identify by module_id.
   const { data, error } = await supabase
-    .from("contact_education_progress")
-    .update({
-      completed_at: input.completedAt,
-    })
-    .eq("contact_id", input.contactId)
-    .eq("lesson_key", input.resourceId)
+    .from("learning_assignments")
+    .upsert({
+      brokerage_id:   input.brokerageId,
+      contact_id:     input.contactId,
+      module_id:      input.resourceId,
+      signal_source:  "self:completed",
+      priority_score: 50,
+      status:         "completed",
+      completed_at:   input.completedAt,
+    }, { onConflict: "contact_id,module_id" })
     .select("id")
     .maybeSingle()
 
@@ -737,19 +783,18 @@ export async function recordCompletion(
     throw new Error(`Failed to record completion: ${error?.message}`)
   }
 
-  // Record lifecycle event for audit
   await supabase.from("lifecycle_events").insert({
     contact_id: input.contactId,
     event_type: "education_completed",
     metadata: {
-      lessonKey: input.resourceId,
+      module_id: input.resourceId,
     },
     created_at: new Date().toISOString(),
   })
 
   return {
     progressId: data.id,
-    success: true,
+    success:    true,
   }
 }
 
@@ -768,20 +813,18 @@ export async function getPersonalizedLearningPath(
   supabase: any,
   input: GetPersonalizedLearningPathInput
 ): Promise<GetPersonalizedLearningPathOutput> {
-  // Get completed lessons
+  // Post-1043: completed modules come from learning_assignments.
   const { data: progress } = await supabase
-    .from("contact_education_progress")
-    .select("lesson_key")
+    .from("learning_assignments")
+    .select("module_id")
     .eq("contact_id", input.contactId)
-    .not("completed_at", "is", null)
+    .eq("status", "completed")
 
-  const completedKeys = new Set(progress?.map((p: { lesson_key: string }) => p.lesson_key) || [])
+  const completedIds = new Set(progress?.map((p: { module_id: string }) => p.module_id) || [])
 
-  // Get next uncompleted lesson from kernel education plan
-  // (Portal uses lesson feed which already filters completed lessons)
   return {
     nextResource: undefined,
-    completionPercentage: completedKeys.size,
+    completionPercentage:   completedIds.size,
     estimatedTimeRemaining: 0,
   }
 }
@@ -792,30 +835,113 @@ export interface GenerateAIEducationInput {
   tone: "professional" | "conversational"
   brokerageId: string
   createdBy: string
+  /** Optional team scope. When set, team.bio_text + per-team brand voice
+   *  override the brokerage defaults. */
+  teamId?: string
+  /** Optional milestone the lesson teaches; surfaces it in the
+   *  milestone-gated panel + drives the customer's portal stream. */
+  milestoneKey?: string
+  /** Optional audience targeting (passed through to learning_modules). */
+  audiencePersonas?: string[]
+  audienceRoles?:    string[]
+  stageTags?:        string[]
 }
 
 export interface GenerateAIEducationOutput {
   resourceId: string
   success: boolean
+  /** Always 'pending_review' after migration 1049 — admin must approve. */
+  status:    "pending_review"
+  /** Brand-voice signals folded into the body draft. */
+  brandVoiceApplied: {
+    brokerageAbout: boolean
+    brokerageBio:   boolean
+    teamBio:        boolean
+    brandVoice:     boolean
+  }
 }
 
 export async function generateAIEducation(
   supabase: any,
   input: GenerateAIEducationInput
 ): Promise<GenerateAIEducationOutput> {
-  // Store generated content as educational moment
+  // Resolve brand-voice context: brokerage about + bio, team bio, brand voice profile
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("name, about_text, bio_text")
+    .eq("id", input.brokerageId)
+    .maybeSingle()
+
+  let teamBio: string | null = null
+  if (input.teamId) {
+    const { data: team } = await supabase
+      .from("teams")
+      .select("name, bio_text")
+      .eq("id", input.teamId)
+      .maybeSingle()
+    teamBio = (team?.bio_text as string | null) ?? null
+  }
+
+  // Brand voice profile lookup — prefer team > brokerage scope (post-1049
+  // schema fix; brokerage_id + team_id columns now exist).
+  let brandVoiceTone:      string | null = null
+  let brandVoiceKeywords:  string[]      = []
+  try {
+    const { data: bv } = await supabase
+      .from("brand_voice_profile")
+      .select("tone, key_messages, prohibited_words")
+      .or(`team_id.eq.${input.teamId ?? "00000000-0000-0000-0000-000000000000"},brokerage_id.eq.${input.brokerageId}`)
+      .order("team_id", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    brandVoiceTone     = (bv?.tone as string | null) ?? null
+    brandVoiceKeywords = ((bv?.key_messages as string[] | null) ?? []) as string[]
+  } catch {
+    // brand_voice_profile lookup is best-effort; failures don't block generation
+  }
+
+  const brokerageAbout = (brokerage?.about_text as string | null) ?? null
+  const brokerageBio   = (brokerage?.bio_text   as string | null) ?? null
+  const brokerageName  = (brokerage?.name       as string | null) ?? null
+
+  // Fold brand-voice context into the draft body so an admin reviewer can
+  // see what was used. Real AI generation upgrades this later — for now
+  // we store the prompt context + a placeholder body that's brand-flavored.
+  const contextBlock = [
+    brokerageName  ? `Brokerage: ${brokerageName}`              : null,
+    brokerageAbout ? `About: ${brokerageAbout}`                 : null,
+    brokerageBio   ? `Bio: ${brokerageBio}`                     : null,
+    teamBio        ? `Team bio: ${teamBio}`                     : null,
+    brandVoiceTone ? `Brand voice: ${brandVoiceTone} tone`      : null,
+    brandVoiceKeywords.length > 0 ? `Key messages: ${brandVoiceKeywords.join(", ")}` : null,
+  ].filter(Boolean).join("\n")
+
+  const placeholderBody = [
+    `# ${input.topic}`,
+    "",
+    contextBlock ? `> Brand voice context applied during generation:\n> ${contextBlock.replace(/\n/g, "\n> ")}` : "",
+    "",
+    "AI-generated content — admin review required before publishing.",
+  ].filter(Boolean).join("\n")
+
+  const channels = input.contentType.includes("video") ? ["video"] : ["article"]
   const { data, error } = await supabase
-    .from("educational_moments")
+    .from("learning_modules")
     .insert({
-      title: `AI: ${input.topic}`,
-      description: "Generated by AI education engine",
-      content_type: input.contentType.includes("video") ? "video" : "article",
-      content: "AI-generated content",
+      brokerage_id:      input.brokerageId,
+      team_id:           input.teamId ?? null,
+      authored_by:       input.createdBy,
+      title:             `AI: ${input.topic}`,
+      summary:           `Generated by AI education engine (${input.tone} tone)`,
+      body:              placeholderBody,
       estimated_minutes: 5,
-      created_by: input.createdBy,
-      brokerage_id: input.brokerageId,
-      is_ai_generated: true,
-      created_at: new Date().toISOString(),
+      channels,
+      audience_roles:    input.audienceRoles ?? [],
+      audience_personas: input.audiencePersonas ?? [],
+      stage_tags:        input.stageTags ?? [],
+      milestone_key:     input.milestoneKey ?? null,
+      is_ai_generated:   true,
+      status:            "pending_review",   // post-1049: admin must approve
     })
     .select("id")
     .maybeSingle()
@@ -826,7 +952,14 @@ export async function generateAIEducation(
 
   return {
     resourceId: data.id,
-    success: true,
+    success:    true,
+    status:     "pending_review",
+    brandVoiceApplied: {
+      brokerageAbout: !!brokerageAbout,
+      brokerageBio:   !!brokerageBio,
+      teamBio:        !!teamBio,
+      brandVoice:     !!brandVoiceTone || brandVoiceKeywords.length > 0,
+    },
   }
 }
 
@@ -851,12 +984,13 @@ export async function getProgressDashboard(
 
   const totalEnrolled = contacts?.length || 0
 
-  // Count records with completed_at timestamp
+  // Post-1043: completion comes from learning_assignments where contact_id set.
   const { data: completions } = await supabase
-    .from("contact_education_progress")
+    .from("learning_assignments")
     .select("id")
     .eq("brokerage_id", input.brokerageId)
-    .not("completed_at", "is", null)
+    .not("contact_id", "is", null)
+    .eq("status", "completed")
 
   const completionRate = totalEnrolled > 0 ? Math.round(((completions?.length || 0) / totalEnrolled) * 100) : 0
 
@@ -882,21 +1016,27 @@ export async function bulkAssignResources(
   supabase: any,
   input: BulkAssignResourcesInput
 ): Promise<BulkAssignResourcesOutput> {
+  // Post-1043: bulk-assign creates learning_assignments rows.
+  // resourceIds are learning_modules.id values.
   const assignments = input.contactIds.flatMap((contactId) =>
-    input.resourceIds.map((lessonKey) => ({
-      contact_id: contactId,
-      lesson_key: lessonKey,
-      brokerage_id: input.brokerageId,
-      // Note: completed_at is only set when lesson is actually completed
-      // This insert prepares the record; completion is tracked by completed_at timestamp
+    input.resourceIds.map((moduleId) => ({
+      brokerage_id:   input.brokerageId,
+      module_id:      moduleId,
+      contact_id:     contactId,
+      signal_source:  "bulk:assign",
+      priority_score: 60,
+      status:         "open",
     }))
   )
 
-  const { error } = await supabase.from("contact_education_progress").insert(assignments)
+  // ON CONFLICT (contact_id, module_id) DO NOTHING — idempotent
+  const { error } = await supabase
+    .from("learning_assignments")
+    .upsert(assignments, { onConflict: "contact_id,module_id", ignoreDuplicates: true })
 
   return {
     assignedCount: error ? 0 : assignments.length,
-    success: !error,
+    success:       !error,
   }
 }
 
@@ -915,19 +1055,18 @@ export async function getResourceUsageAnalytics(
   supabase: any,
   input: GetResourceUsageAnalyticsInput
 ): Promise<GetResourceUsageAnalyticsOutput> {
-  // Get progress records for this resource across the brokerage
+  // Post-1043: analytics come from learning_assignments per module.
   const { data: progress } = await supabase
-    .from("contact_education_progress")
-    .select("*")
-    .eq("lesson_key", input.resourceId)
+    .from("learning_assignments")
+    .select("status, completed_at")
+    .eq("module_id", input.resourceId)
     .eq("brokerage_id", input.brokerageId)
 
-  // Count total views (all progress records exist) and completions (have completed_at timestamp)
-  const completed = progress?.filter((p: { completed_at: string | null }) => p.completed_at) || []
+  const completed = progress?.filter((p: { status: string }) => p.status === "completed") || []
 
   return {
-    viewCount: progress?.length || 0,
-    completionCount: completed.length,
-    avgCompletionTime: 0, // Schema doesn't track time spent, will use estimated_minutes from lessons
+    viewCount:         progress?.length || 0,
+    completionCount:   completed.length,
+    avgCompletionTime: 0,
   }
 }

@@ -34,7 +34,7 @@ export async function deliverAlertResults(
 
   const n = properties.length
   const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/portal/alerts/${alert.id}`
-  const agentScheduleUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/dashboard/buyers/${alert.contact_id}/tours`
+  const agentScheduleUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm/contacts/${alert.contact_id}/tours`
 
   // ── Email ─────────────────────────────────────────────────────────────────
   if (channels.includes("email") && contact.email) {

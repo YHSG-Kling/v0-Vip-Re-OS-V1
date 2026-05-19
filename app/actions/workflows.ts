@@ -1,7 +1,31 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+
+/**
+ * SECURITY: every entry point that mutates per-tenant data verifies the
+ * target row (contact/listing/transaction/campaign/etc.) belongs to the
+ * authenticated brokerage BEFORE performing any write. Caller-supplied
+ * brokerage_id / user_id values are never trusted — they are always derived
+ * from getAgentContext().
+ */
+
+// Helper: assert a row from `table` with `id` belongs to `brokerageId`.
+// Returns the row when valid; returns null on missing/forbidden so the caller
+// can short-circuit. Uses the service client so RLS doesn't mask the check.
+async function assertOwnership(
+  table: string,
+  id: string,
+  brokerageId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const svc = createServiceClient()
+  const { data } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
+  if (!data) return { ok: false, error: `${table} not found` }
+  if (data.brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
+  return { ok: true }
+}
 
 /**
  * Execute AI-powered tool for workflow automation.
@@ -33,15 +57,16 @@ export async function executeAITool(toolName: string, inputData: any, context: a
  * Check message content for fair housing compliance violations.
  */
 export async function checkFairHousingCompliance(
-  userId: string,
+  _userId: string | undefined, // ignored — derived from session
   contentType: string,
   text: string
 ): Promise<{ success: boolean; compliant: boolean; violations?: string[] }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, compliant: false }
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, compliant: false }
+    const brokerageId = ctx.brokerageId
 
     // Fair Housing compliance check patterns
     const fairHousingViolations = [
@@ -62,7 +87,7 @@ export async function checkFairHousingCompliance(
     })
 
     // Log compliance check
-    if (violations.length > 0 && brokerageId) {
+    if (violations.length > 0) {
       await supabase.from("activities").insert({
         brokerage_id: brokerageId,
         entity_type: "compliance",
@@ -89,14 +114,20 @@ export async function checkFairHousingCompliance(
  */
 export async function generateCopilotPlan(
   contactId: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; plan?: any; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!brokerageId) return { success: false, error: "No brokerage context" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify contact ownership
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     // Get contact info
     const { data: contact } = await supabase
@@ -173,14 +204,20 @@ Generate a specific 7-day plan with daily actions.`,
 export async function startSmartDrip(
   contactId: string,
   drip_type: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; dripId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!brokerageId) return { success: false, error: "No brokerage context" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify contact ownership
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: drip } = await supabase
       .from("drip_campaigns")
@@ -207,13 +244,20 @@ export async function sendMessage(
   contactId: string,
   message: string,
   channel: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify contact ownership
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: msg } = await supabase
       .from("messages")
@@ -237,12 +281,17 @@ export async function sendMessage(
 /**
  * Calculate real estate listing metrics.
  */
-export async function calculateListingMetrics(listingId: string, params: any = {}) {
+export async function calculateListingMetrics(listingId: string, _params: any = {}) {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+
+    // Verify listing ownership
+    const own = await assertOwnership("listings", listingId, ctx.brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: listing } = await supabase
       .from("listings")
@@ -270,13 +319,20 @@ export async function calculateListingMetrics(listingId: string, params: any = {
  */
 export async function triggerCMAPackage(
   propertyId: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; packageId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify property/listing ownership (CMA packages target listings)
+    const own = await assertOwnership("listings", propertyId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: pkg } = await supabase
       .from("cma_packages")
@@ -301,13 +357,20 @@ export async function triggerCMAPackage(
 export async function grantPortalAccess(
   contactId: string,
   accessType: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; accessId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify contact ownership
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: access } = await supabase
       .from("portal_access")
@@ -332,13 +395,20 @@ export async function grantPortalAccess(
  */
 export async function triggerComplianceChecklist(
   transactionId: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; checklistId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify transaction ownership
+    const own = await assertOwnership("transactions", transactionId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
 
     const { data: checklist } = await supabase
       .from("compliance_checklists")
@@ -363,13 +433,16 @@ export async function triggerComplianceChecklist(
 export async function generateScriptContent(
   scriptType: string,
   context: any,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; content?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
 
     const { generateText } = await import("ai")
     const { anthropic } = await import("@ai-sdk/anthropic")
@@ -399,21 +472,28 @@ export async function generateScriptContent(
  */
 export async function sendNewsletterCampaign(
   campaignId: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; sentCount?: number; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
 
-    const { data: campaign } = await supabase
+    // newsletter_campaigns has no brokerage_id column — scope ownership via
+    // created_by = caller's user id. Brokerage-wide visibility isn't modelled
+    // on this table yet; this prevents cross-tenant send commands.
+    const svc = createServiceClient()
+    const { data: campaign } = await svc
       .from("newsletter_campaigns")
       .select("*")
       .eq("id", campaignId)
-      .single()
-
+      .maybeSingle()
     if (!campaign) return { success: false, error: "Campaign not found" }
+    if (campaign.created_by && campaign.created_by !== ctx.userId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // Mark campaign as sent
     await supabase
@@ -432,13 +512,32 @@ export async function sendNewsletterCampaign(
  */
 export async function retryFailedWorkflow(
   workflowId: string,
-  agentId: string
+  _agentId?: string // ignored — derived from session
 ): Promise<{ success: boolean; retryId?: string; error?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId, isAuthenticated } = await getAgentContext()
+    const ctx = await getAgentContext()
 
-    if (!isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId
+
+    // Verify workflow ownership — the prior execution row holds brokerage_id.
+    // workflowId here is the workflow_executions.workflow_id text key; look up
+    // the most recent execution for that workflow in this brokerage to confirm
+    // the caller has the right to retry it.
+    const svc = createServiceClient()
+    const { data: priorExec } = await svc
+      .from("workflow_executions")
+      .select("brokerage_id")
+      .eq("workflow_id", workflowId)
+      .eq("brokerage_id", brokerageId)
+      .limit(1)
+      .maybeSingle()
+    if (!priorExec) {
+      return { success: false, error: "Forbidden" }
+    }
 
     const { data: retry } = await supabase
       .from("workflow_executions")
@@ -461,19 +560,21 @@ export async function retryFailedWorkflow(
  * Log user activity for audit trail.
  */
 export async function logUserActivity(
-  userId: string,
+  _userId: string | undefined, // ignored — derived from session
   activity: string,
   details: any = {}
 ): Promise<{ success: boolean; activityId?: string }> {
   try {
     const supabase = await createClient()
-    const { brokerageId } = await getAgentContext()
+    const ctx = await getAgentContext()
+
+    if (!ctx.isAuthenticated) return { success: true } // silently no-op for unauth
 
     const { data: log } = await supabase
       .from("audit_log")
       .insert({
-        user_id: userId,
-        brokerage_id: brokerageId,
+        user_id: ctx.userId,
+        brokerage_id: ctx.brokerageId,
         action: activity,
         details,
         created_at: new Date().toISOString(),

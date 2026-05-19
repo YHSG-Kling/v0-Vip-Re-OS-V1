@@ -418,8 +418,8 @@ export default function UnifiedPortalDashboard({
                         <div>
                           <p className="font-medium text-sm">{milestone.name || milestone.milestone_name}</p>
                           <p className="text-xs text-muted-foreground">
-                            {milestone.milestone_date || milestone.due_date
-                              ? `Due: ${new Date(milestone.milestone_date || milestone.due_date).toLocaleDateString()}`
+                            {milestone.target_date || milestone.due_date
+                              ? `Due: ${new Date(milestone.target_date || milestone.due_date).toLocaleDateString()}`
                               : "Date TBD"}
                           </p>
                         </div>
@@ -655,10 +655,10 @@ export default function UnifiedPortalDashboard({
                         <p className="text-sm text-muted-foreground mt-1">
                           {milestone.description || "Complete this step to move forward in your journey."}
                         </p>
-                        {(milestone.milestone_date || milestone.due_date) && (
+                        {(milestone.target_date || milestone.due_date) && (
                           <p className="text-xs text-muted-foreground mt-2">
                             <Clock className="w-3 h-3 inline mr-1" />
-                            Due: {new Date(milestone.milestone_date || milestone.due_date).toLocaleDateString()}
+                            Due: {new Date(milestone.target_date || milestone.due_date).toLocaleDateString()}
                           </p>
                         )}
                       </div>

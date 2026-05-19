@@ -109,6 +109,8 @@ export async function initiateVoiceCall(
       vapiResponse = await initiateCall({
         phoneNumber,
         assistantId: process.env.VAPI_ISA_ASSISTANT_ID,
+        contactId:   metadata.contactId,
+        brokerageId: contact.brokerage_id,
       })
     } catch (err: any) {
       console.error('[v0] [VOICE ENGINE] VAPI initiateCall failed:', err.message)

@@ -69,7 +69,7 @@ export function RootCommandPreview() {
                 title: `Follow up with ${lead.name || 'Hot Lead'}`,
                 description: lead.reason || 'High engagement detected',
                 urgency: 'high',
-                route: lead.contact_id ? `/contacts/${lead.contact_id}` : '/crm',
+                route: lead.contact_id ? `/crm/contacts/${lead.contact_id}` : '/crm',
                 contact_name: lead.name,
               })
             })

@@ -13,6 +13,7 @@ import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
 import PortalChatLauncher from "@/app/components/features/portal/ai/PortalChatLauncher"
+import { PortalNotificationBell } from "./components/PortalNotificationBell"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -65,7 +66,7 @@ export default async function PortalLayout({
     redirect("/portal?error=contact_not_found")
   }
 
-  // ── Access gate: 4 rules ─────────────────────────────────────────
+  // ── Access gate: 5 rules ─────────────────────────────────────────
   let accessGranted = false
 
   if (user) {
@@ -74,7 +75,7 @@ export default async function PortalLayout({
       accessGranted = true
     }
 
-    // Rule 2: Assigned agent
+    // Rule 2: Assigned agent — match on agents.id (canonical FK)
     if (!accessGranted && contact.agent_id) {
       const { data: ag } = await supabase
         .from("agents")
@@ -85,20 +86,27 @@ export default async function PortalLayout({
       if (ag) accessGranted = true
     }
 
-    // Rule 3: Admin/broker of same brokerage
+    // Rule 2b: Same-brokerage staff fallback — many agent users live only in
+    // `users` (no `agents` row), so Rule 2 misses them. Allow any agent /
+    // team_lead / TC / admin / broker / superadmin in the same brokerage to
+    // preview their org's contact portal. This is the canonical preview path.
     if (!accessGranted) {
       const { data: ur } = await supabase
         .from("users")
         .select("user_type, brokerage_id")
         .eq("id", user.id)
         .maybeSingle()
+      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
       if (
         ur?.brokerage_id === contact.brokerage_id &&
-        ["admin", "broker", "superadmin"].includes(ur?.user_type ?? "")
+        STAFF_TYPES.includes(ur?.user_type ?? "")
       ) {
         accessGranted = true
       }
     }
+
+    // Rule 3 (legacy): kept for compatibility — same logic as 2b for non-agent staff
+    // if it didn't match above (e.g. cross-brokerage admin). No-op when 2b passes.
 
     // Rule 4: Accepted portal invite for this contact
     if (!accessGranted) {
@@ -161,20 +169,34 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode
+  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode.
+  // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
+  // migrations). Previously this select silently returned null and the DID
+  // chat widget never lit up.
+  // Prefer the trained did_avatar_id (presenter id from D-ID — reusable) when
+  // set; the photo/video URLs are the source assets used by talks/clips fallback.
   let agentHasDIDAvatar = false
   let agentDIDPhotoUrl: string | null = null
   let agentDIDVideoUrl: string | null = null
+  let agentDIDAvatarId: string | null = null
   if (contact?.agent_id) {
     const { data: voiceProfile } = await supabase
       .from("agent_voice_profiles")
-      .select("did_photo_url, did_video_url")
-      .eq("user_id", contact.agent_id)
+      .select("did_photo_url, did_video_url, did_avatar_id")
+      .eq("agent_id", contact.agent_id)
       .maybeSingle()
     agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
     agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
-    agentHasDIDAvatar = !!(agentDIDPhotoUrl || agentDIDVideoUrl)
+    agentDIDAvatarId = voiceProfile?.did_avatar_id ?? null
+    agentHasDIDAvatar = !!(agentDIDAvatarId || agentDIDPhotoUrl || agentDIDVideoUrl)
   }
+
+  // Unread notification count for bell badge
+  const { count: unreadNotifications } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("contact_id", contactId)
+    .eq("is_read", false)
 
   // Kernel-driven portal view determination — use normalized contract objects
   const viewOutput = await determinePortalView(supabase, { contactId })
@@ -215,7 +237,13 @@ export default async function PortalLayout({
               Your agent: {agentName}
             </p>
           </div>
-          <PortalUserMenu contact={contact} contactId={contactId} />
+          <div className="flex items-center gap-2">
+            <PortalNotificationBell
+              contactId={contactId}
+              initialUnread={unreadNotifications ?? 0}
+            />
+            <PortalUserMenu contact={contact} contactId={contactId} />
+          </div>
         </div>
       </header>
 
@@ -231,11 +259,8 @@ export default async function PortalLayout({
         isBuyer={isBuyer}
         isSeller={isSeller}
         persona={persona}
-        agentName={agentName}
-        agentFirstName={agentData?.first_name ?? agentName}
+        agentFirstName={agentData?.full_name?.split(" ")[0] ?? agentName}
         agentHasDIDAvatar={agentHasDIDAvatar}
-        agentDIDPhotoUrl={agentDIDPhotoUrl}
-        agentDIDVideoUrl={agentDIDVideoUrl}
       />
     </div>
   )

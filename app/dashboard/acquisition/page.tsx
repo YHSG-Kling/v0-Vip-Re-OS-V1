@@ -191,7 +191,7 @@ export default async function AcquisitionPage() {
                         </span>
                         {scan.contact_id && (
                           <Link
-                            href={`/contacts/${scan.contact_id}`}
+                            href={`/crm/contacts/${scan.contact_id}`}
                             className="text-xs text-primary underline underline-offset-2"
                           >
                             View

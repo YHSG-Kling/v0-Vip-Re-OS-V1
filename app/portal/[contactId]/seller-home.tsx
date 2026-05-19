@@ -17,12 +17,17 @@ import {
   getShowingInsights,
 } from "@/app/actions/portal-seller"
 import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
 import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -118,6 +123,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     agentResult,
     messagesResult,
     educationResult,
+    recentUpdatesResult,
   ] = await Promise.all([
     // Showing stats
     context.listing
@@ -139,9 +145,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     context.transactionId
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
           .eq("transaction_id", context.transactionId)
-          .order("milestone_date", { ascending: true, nullsFirst: false })
+          .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Deal team members
     context.transactionId
@@ -165,11 +171,21 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - completed lessons from contact_education_progress
+    // Post-1043: completed customer modules from learning_assignments.
     supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
-      .eq("contact_id", contactId),
+      .from("learning_assignments")
+      .select("module_id, completed_at")
+      .eq("contact_id", contactId)
+      .eq("status", "completed"),
+    // Recent transparency updates — kernel fan-out writes here when
+    // listing milestones fire (LISTING_PUBLISHED, OFFER_ACCEPTED, etc.)
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .eq("contact_id", contactId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ])
 
   // Filter milestones to client-visible only
@@ -180,22 +196,17 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentResult.data
   const messages = messagesResult.data ?? []
-  const completedLessonKeys = educationResult.data?.map((p: any) => p.lesson_key) ?? []
+  const completedLessonKeys = educationResult.data?.map((p: any) => p.module_id) ?? []
+  const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
 
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
 
-  // Derived values — use already-fetched context and offerSummary (no duplicate DB call)
-  const daysOnMarket: number | null =
-    context.listing?.dom ??
-    (context.listing?.listing_date
-      ? Math.floor(
-          (Date.now() - new Date(context.listing.listing_date).getTime()) /
-            (1000 * 60 * 60 * 24)
-        )
-      : null)
+  // Derived values — use already-fetched context (DOM is pre-computed from
+  // go_live_date by resolveSellerContext; this is just the read).
+  const daysOnMarket: number | null = context.listing?.dom ?? null
   const dashboardOfferCount: number = offerSummary?.total ?? 0
 
   // Derived values from getShowingInsights
@@ -217,6 +228,21 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     <div className="space-y-6">
       {/* Analytics: fires once on the client after mount — never during SSR/prefetch */}
       <SellerPortalViewTracker contactId={contactId} page="seller_home" />
+
+      {/* Sprint 8 — Negotiation mirror: when a strategy exists for an
+          offer on this seller's listing, the customer-mirror panel
+          renders here. Hides on empty. */}
+      <NegotiationMirrorPanel contactId={contactId} />
+
+      {/* Milestone-gated education for sellers. Lessons unlock as the
+          listing moves through stages (listing_live → first_showing →
+          offer_received → under_contract → closing_prep). Hides on empty. */}
+      <MilestoneEducationPanel contactId={contactId} />
+
+      {/* 0. WHAT'S NEW — kernel fan-out feeds milestones from listing
+           transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).
+           Hidden when nothing client-visible yet. */}
+      <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
 
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard
@@ -502,13 +528,19 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </CardContent>
         </Card>
 
-        {/* 10. VENDORS PREVIEW */}
+        {/* 10a. PRE-LISTING TOOLKIT — persona+stage-filtered marketplace
+                  preview surfaces stagers, photographers, cleaners, and
+                  prep pros the agent has curated for sellers. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="seller" />
+
+        {/* 10b. ACTIVE VENDOR ASSIGNMENTS — pros already engaged on this
+                  listing/transaction (assignment-status focused). */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <Briefcase className="h-4 w-4" />
-                Vendors
+                Active Vendor Team
               </CardTitle>
               <Button variant="ghost" size="sm" asChild>
                 <Link href={`/portal/${contactId}/vendors`}>
@@ -572,7 +604,13 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         </CardContent>
       </Card>
 
-      {/* NOTE: AlertTriangle available for future price-reduction-recommended banner */}
+      {/* 12. SHARE MY HOME — social posts about this listing pushed by agent */}
+      {context.listing?.id && (
+        <ShareMyHomeCard
+          listingId={context.listing.id}
+          listingAddress={context.listing.address ?? "your home"}
+        />
+      )}
     </div>
   )
 }

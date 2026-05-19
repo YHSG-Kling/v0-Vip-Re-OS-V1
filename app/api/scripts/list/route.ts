@@ -1,16 +1,30 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabaseService } from "@/services/supabaseService"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { searchParams } = new URL(request.url)
     const status = searchParams.get("status") || undefined
 
-    console.log("[v0] API /api/scripts/list called with status:", status)
+    const svc = createServiceClient()
+    let query = svc
+      .from("scripts")
+      .select("*")
+      .eq("created_by", auth.userId)
+      .order("created_at", { ascending: false })
 
-    const scripts = await supabaseService.getScripts(status)
+    if (status) {
+      query = query.eq("status", status)
+    }
 
-    console.log("[v0] API fetched scripts:", scripts?.length || 0)
+    const { data: scripts, error } = await query
+    if (error) throw error
 
     return NextResponse.json({
       success: true,
@@ -20,10 +34,7 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("[Scripts List API] Error:", error)
     return NextResponse.json(
-      {
-        success: false,
-        error: error.message || "Internal server error",
-      },
+      { success: false, error: error.message || "Internal server error" },
       { status: 500 },
     )
   }

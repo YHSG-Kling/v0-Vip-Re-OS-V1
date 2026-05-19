@@ -9,7 +9,18 @@ import {
 } from '@/lib/ai-isa/isa-outreach-logger'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail } from '@/lib/providers/dispatch'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
+/**
+ * initiateAIISAContactEngagement
+ *
+ * AUTH: Permitted callers are
+ *   1. UI/session-authed server actions (verify ctx.brokerageId matches the
+ *      contact row's brokerage_id).
+ *   2. Internal trusted callers (cron stale-contact-monitor — already auth'd
+ *      via verifyCronAuth at the route layer — and ghost-reengagement which
+ *      runs inside cron). CRON_SECRET must be set in env to permit this.
+ */
 export async function initiateAIISAContactEngagement(contactId: string): Promise<{
   success: boolean
   emailSent?: boolean
@@ -20,15 +31,31 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
   const supabase = createServiceClient()
 
   try {
+    // ── AUTH GATE ────────────────────────────────────────────────────────
+    const ctx = await getAgentContext()
+    const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
+    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    if (!hasSession && !isTrustedInternal) {
+      return { success: false, reason: 'Unauthorized' }
+    }
+
     // Load contact record — this is NOT a lead. Nurture runs on the contact.
-    const { data: contact, error: contactError } = await supabase
+    let contactQuery = supabase
       .from('contacts')
       .select('id, first_name, last_name, email, agent_id, brokerage_id, status, dnc_status, isa_reengage_allowed, tcpa_consent, contact_type, engagement_score')
       .eq('id', contactId)
-      .maybeSingle()
+    if (hasSession && ctx.brokerageId) {
+      contactQuery = contactQuery.eq('brokerage_id', ctx.brokerageId)
+    }
+    const { data: contact, error: contactError } = await contactQuery.maybeSingle()
 
     if (contactError || !contact) {
       return { success: false, reason: 'Contact not found' }
+    }
+
+    // Defense in depth: even in system mode, verify the row resolved.
+    if (hasSession && ctx.brokerageId && contact.brokerage_id !== ctx.brokerageId) {
+      return { success: false, reason: 'Forbidden' }
     }
 
     // GATE A: Must have an assigned agent (converted contacts have agent_id)

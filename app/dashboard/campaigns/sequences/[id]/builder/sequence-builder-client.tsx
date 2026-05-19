@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, lazy, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,10 +9,16 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save, Mail, MessageSquare, Phone, Clock, Loader2, Sparkles, Wand2, AlertTriangle, List, Network } from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import Link from "next/link"
-import { saveSequenceSteps, type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/app/actions/campaign-sequences"
+import { saveSequenceSteps } from "@/app/actions/campaign-sequences"
+import { type SequenceBuilderStep as SequenceStep, type CampaignSequence } from "@/lib/campaigns/sequence-constants"
+import { composeSequenceStepCopy } from "@/app/actions/sequence-step-ai"
 import { useToast } from "@/hooks/use-toast"
+
+// React Flow canvas — lazy-loaded so @xyflow/react bundle doesn't bloat the initial page
+const WorkflowCanvas = lazy(() => import("./workflow-canvas"))
 
 interface Props {
   sequence: CampaignSequence
@@ -22,14 +28,26 @@ interface Props {
   role: string | null
 }
 
-const STEP_TYPES = [
-  { value: "email", label: "Email", icon: Mail, color: "bg-blue-100 text-blue-700 border-blue-200" },
-  { value: "sms", label: "SMS", icon: MessageSquare, color: "bg-green-100 text-green-700 border-green-200" },
-  { value: "voice_drop", label: "Voice Drop", icon: Phone, color: "bg-purple-100 text-purple-700 border-purple-200" },
-  { value: "ai_call", label: "AI Call", icon: Sparkles, color: "bg-amber-100 text-amber-700 border-amber-200" },
-  { value: "wait", label: "Wait", icon: Clock, color: "bg-slate-100 text-slate-600 border-slate-200" },
-  { value: "direct_mail", label: "Direct Mail", icon: Mail, color: "bg-orange-100 text-orange-700 border-orange-200" },
-] as const
+const STEP_TYPES: Array<{ value: string; label: string; icon: any; color: string }> = [
+  { value: "email",               label: "Email",               icon: Mail,         color: "bg-blue-100 text-blue-700 border-blue-200" },
+  { value: "sms",                 label: "SMS",                 icon: MessageSquare,color: "bg-green-100 text-green-700 border-green-200" },
+  { value: "voice_drop",          label: "Voice Drop",          icon: Phone,        color: "bg-purple-100 text-purple-700 border-purple-200" },
+  { value: "ai_call",             label: "AI Call",             icon: Sparkles,     color: "bg-amber-100 text-amber-700 border-amber-200" },
+  { value: "wait",                label: "Wait",                icon: Clock,        color: "bg-slate-100 text-slate-600 border-slate-200" },
+  { value: "direct_mail",         label: "Direct Mail",         icon: Mail,         color: "bg-orange-100 text-orange-700 border-orange-200" },
+  { value: "ai_image",            label: "AI Image",            icon: Wand2,        color: "bg-pink-100 text-pink-700 border-pink-200" },
+  { value: "video",               label: "Video",               icon: Sparkles,     color: "bg-violet-100 text-violet-700 border-violet-200" },
+  { value: "newsletter",          label: "Newsletter",          icon: Mail,         color: "bg-teal-100 text-teal-700 border-teal-200" },
+  { value: "social_post",         label: "Social Post",         icon: Sparkles,     color: "bg-sky-100 text-sky-700 border-sky-200" },
+  { value: "assign_task",         label: "Assign Task",         icon: Sparkles,     color: "bg-yellow-100 text-yellow-700 border-yellow-200" },
+  { value: "draft_document",      label: "Draft Document",      icon: Sparkles,     color: "bg-stone-100 text-stone-700 border-stone-200" },
+  { value: "schedule_showing",    label: "Schedule Showing",    icon: Sparkles,     color: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  { value: "schedule_tour",       label: "Schedule Tour",       icon: Sparkles,     color: "bg-cyan-100 text-cyan-700 border-cyan-200" },
+  { value: "avm_cma",             label: "AVM / CMA Report",    icon: Sparkles,     color: "bg-indigo-100 text-indigo-700 border-indigo-200" },
+  { value: "ad_campaign",         label: "Ad Campaign",         icon: Sparkles,     color: "bg-rose-100 text-rose-700 border-rose-200" },
+  { value: "in_app",              label: "In-App Message",      icon: MessageSquare,color: "bg-lime-100 text-lime-700 border-lime-200" },
+  { value: "condition",           label: "Condition",           icon: Sparkles,     color: "bg-neutral-100 text-neutral-600 border-neutral-200" },
+]
 
 function newStep(type: SequenceStep["step_type"], index: number): SequenceStep {
   return { id: crypto.randomUUID(), step_number: index + 1, step_name: type, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: "", subject: type === "email" ? "" : null, is_active: true }
@@ -39,8 +57,62 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
   const [steps, setSteps] = useState<SequenceStep[]>(initialSteps.length > 0 ? initialSteps : [])
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [canvasView, setCanvasView] = useState(false)
   const { toast } = useToast()
   const router = useRouter()
+
+  // AI compose state
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [composeGoal, setComposeGoal] = useState("")
+  const [composeAudience, setComposeAudience] = useState("")
+  const [composeTone, setComposeTone] = useState("")
+  const [composing, setComposing] = useState(false)
+  const [composeViolations, setComposeViolations] = useState<string[]>([])
+  const [composeNotes, setComposeNotes] = useState<string[]>([])
+
+  function openCompose() {
+    setComposeGoal("")
+    setComposeAudience("")
+    setComposeTone("")
+    setComposeViolations([])
+    setComposeNotes([])
+    setComposeOpen(true)
+  }
+
+  async function runCompose() {
+    if (selectedIdx === null) return
+    const step = steps[selectedIdx]
+    if (step.step_type === "wait") return
+    if (!composeGoal.trim()) {
+      toast({ title: "Describe what this step should accomplish", variant: "destructive" })
+      return
+    }
+    setComposing(true)
+    try {
+      const result = await composeSequenceStepCopy({
+        stepType: step.step_type,
+        goal: composeGoal,
+        audience: composeAudience,
+        tone: composeTone,
+        existingBody: step.body,
+      })
+      if (!result.success) {
+        toast({ title: result.error ?? "AI compose failed", variant: "destructive" })
+        return
+      }
+      const patch: Partial<SequenceStep> = { body: result.text ?? "" }
+      if (step.step_type === "email" && result.subject) patch.subject = result.subject
+      updateStep(selectedIdx, patch)
+      setComposeViolations(result.violations ?? [])
+      setComposeNotes(result.notes ?? [])
+      if ((result.violations ?? []).length === 0) {
+        toast({ title: "Draft inserted into the step body" })
+        setComposeOpen(false)
+      }
+    } finally {
+      setComposing(false)
+    }
+  }
 
   const addStep = (type: SequenceStep["step_type"]) => {
     setSteps((prev) => {
@@ -97,10 +169,29 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
             <p className="text-xs text-muted-foreground">{steps.length} steps · {Math.ceil(totalDuration)} day sequence</p>
           </div>
         </div>
-        <Button onClick={handleSave} disabled={isPending} className="gap-2">
-          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Sequence
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* View toggle: List vs Canvas */}
+          <div className="flex rounded-lg border overflow-hidden">
+            <button
+              onClick={() => setCanvasView(false)}
+              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${!canvasView ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+            >
+              <List className="h-3 w-3" />
+              List
+            </button>
+            <button
+              onClick={() => setCanvasView(true)}
+              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${canvasView ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+            >
+              <Network className="h-3 w-3" />
+              Canvas
+            </button>
+          </div>
+          <Button onClick={handleSave} disabled={isPending} className="gap-2">
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save Sequence
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-12 gap-0 h-[calc(100vh-73px)]">
@@ -119,7 +210,23 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
           ))}
         </div>
 
-        {/* Center: Timeline */}
+        {/* Center: Timeline (List) or Canvas (React Flow) */}
+        {canvasView ? (
+          <div className="col-span-5 border-r flex flex-col h-full">
+            <div className="px-6 py-3 border-b bg-background">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Workflow Canvas</p>
+            </div>
+            <div className="flex-1 relative">
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
+                <WorkflowCanvas
+                  steps={steps}
+                  selectedIdx={selectedIdx}
+                  onSelectStep={setSelectedIdx}
+                />
+              </Suspense>
+            </div>
+          </div>
+        ) : (
         <div className="col-span-5 border-r bg-muted/10 p-6 overflow-y-auto">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">Sequence Timeline</p>
           {steps.length === 0 && (
@@ -181,6 +288,7 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
             })}
           </div>
         </div>
+        )}
 
         {/* Right: Step Editor */}
         <div className="col-span-5 p-6 overflow-y-auto">
@@ -243,11 +351,23 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
                       </div>
                     )}
                     <div>
-                      <Label className="text-xs">
-                        {selected.step_type === "email" ? "Email Body" : selected.step_type === "sms" ? "SMS Message" : selected.step_type === "voice_drop" ? "Voice Script" : selected.step_type === "ai_call" ? "Call Script Outline" : "Mail Copy"}
-                      </Label>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs">
+                          {selected.step_type === "email" ? "Email Body" : selected.step_type === "sms" ? "SMS Message" : selected.step_type === "voice_drop" ? "Voice Script" : selected.step_type === "ai_call" ? "Call Script Outline" : "Mail Copy"}
+                        </Label>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={openCompose}
+                          className="h-7 gap-1.5 text-xs"
+                        >
+                          <Wand2 className="h-3 w-3" />
+                          Compose with AI
+                        </Button>
+                      </div>
                       <Textarea
-                        placeholder={`Write your ${selected.step_type === "sms" ? "SMS message" : "content"} here...`}
+                        placeholder={`Write your ${selected.step_type === "sms" ? "SMS message" : "content"} here, or click Compose with AI...`}
                         value={selected.body}
                         onChange={(e) => updateStep(selectedIdx!, { body: e.target.value })}
                         rows={8}
@@ -264,6 +384,96 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
           )}
         </div>
       </div>
+
+      {/* AI compose dialog */}
+      <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wand2 className="h-4 w-4 text-primary" />
+              Compose with AI
+            </DialogTitle>
+            <DialogDescription>
+              Describe the goal of this step. The model uses your brand voice and runs a compliance check before inserting the draft.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">What should this step accomplish?</Label>
+              <Textarea
+                value={composeGoal}
+                onChange={(e) => setComposeGoal(e.target.value)}
+                rows={3}
+                placeholder='e.g. "Re-engage a buyer who has gone quiet for 14 days; offer to send 3 fresh listings."'
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Audience (optional)</Label>
+                <Input
+                  value={composeAudience}
+                  onChange={(e) => setComposeAudience(e.target.value)}
+                  placeholder="first-time buyer, sphere, etc."
+                  className="h-8"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Tone (optional)</Label>
+                <Input
+                  value={composeTone}
+                  onChange={(e) => setComposeTone(e.target.value)}
+                  placeholder="warm, casual, urgent…"
+                  className="h-8"
+                />
+              </div>
+            </div>
+
+            {composeViolations.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-1">
+                <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3" /> Brand voice / compliance flags
+                </p>
+                <ul className="list-disc pl-5 text-xs text-amber-900 space-y-0.5">
+                  {composeViolations.map((v, i) => (
+                    <li key={i}>{v}</li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-amber-800 mt-1">
+                  Draft was inserted into the step body. Review and edit before saving.
+                </p>
+              </div>
+            )}
+            {composeNotes.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3">
+                <p className="text-xs font-semibold text-blue-900 mb-1">Brand voice notes</p>
+                <ul className="list-disc pl-5 text-xs text-blue-900 space-y-0.5">
+                  {composeNotes.map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setComposeOpen(false)} disabled={composing}>
+              Cancel
+            </Button>
+            <Button onClick={runCompose} disabled={composing || !composeGoal.trim()}>
+              {composing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Composing…
+                </>
+              ) : (
+                <>
+                  <Wand2 className="h-4 w-4 mr-2" />
+                  Generate draft
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

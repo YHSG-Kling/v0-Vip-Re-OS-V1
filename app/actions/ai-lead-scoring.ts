@@ -5,13 +5,35 @@ import { handleError } from "@/lib/errors"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 /**
- * AI-Powered Lead Scoring System
- * Analyzes lead behavior, engagement, and intent to provide actionable scores
+ * LAYER 2 — AI Scoring (nuance refinement of conversational/behavioral signals).
+ *
+ * Refines the AI-nuanced score columns (`engagement_score`, `intent_score`,
+ * `qualification_score`, `motivation_score`, `readiness_level`). When called
+ * via explicit agent UI action ("Run AI Score" button on the CRM), this also
+ * overrides `lead_score` — that's the documented agent-driven override.
+ *
+ * Background / cron callers should NOT overwrite `lead_score` (Layer 1 owns
+ * the deterministic baseline). A future commit will add a `mode: 'override'
+ * | 'refine'` parameter so background callers can opt into refine-only.
+ *
+ * See `lib/lead-scoring/LAYERING.md` for full layering rules and the four
+ * scoring systems that touch these columns.
  */
-
 export async function scoreLeadWithAI(params: {
   contactId: string
   agentId: string
+  /**
+   * Write mode (default 'refine'):
+   *   - 'refine'   — write only AI-nuanced columns (engagement_score,
+   *                  intent_score, qualification_score, motivation_score,
+   *                  readiness_level). DOES NOT touch lead_score baseline.
+   *                  Use for background/cron callers.
+   *   - 'override' — same as refine PLUS overwrite lead_score with the AI
+   *                  overall score. Use ONLY when an agent explicitly
+   *                  triggers this from the UI ("Run AI Score" button on
+   *                  the CRM contact card). Never from background work.
+   */
+  mode?: "refine" | "override"
 }) {
   try {
     const supabase = await createClient()
@@ -72,17 +94,23 @@ Provide a JSON response with:
     const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : analysis
     const scores = JSON.parse(jsonText.trim())
 
-    // Update contact with scores
+    // Update contact with scores. Write boundaries per layering rules:
+    //   - 'override' mode (explicit agent action): writes lead_score baseline
+    //   - 'refine' mode (background, default): only AI-nuanced columns
+    const mode = params.mode ?? "refine"
+    const updates: Record<string, unknown> = {
+      engagement_score: scores.engagement,
+      intent_score: scores.intent,
+      qualification_score: scores.qualification,
+      motivation_score: scores.motivation,
+      readiness_level: scores.readiness,
+    }
+    if (mode === "override") {
+      updates.lead_score = scores.overallScore
+    }
     await supabase
       .from("contacts")
-      .update({
-        lead_score: scores.overallScore,
-        engagement_score: scores.engagement,
-        intent_score: scores.intent,
-        qualification_score: scores.qualification,
-        motivation_score: scores.motivation,
-        readiness_level: scores.readiness,
-      })
+      .update(updates)
       .eq("id", params.contactId)
 
     // Log scoring event

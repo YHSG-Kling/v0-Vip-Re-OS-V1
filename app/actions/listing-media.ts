@@ -31,10 +31,37 @@ export async function uploadListingMedia(params: {
   tags?: string[]
   isPrimary?: boolean
   approvalRequired?: boolean
+  /**
+   * Where this asset will be used:
+   *   - 'mls' — submitted to the MLS feed. MLS rules forbid agent/brokerage
+   *             branding so this asset must NOT carry attribution. Skips
+   *             the marketing fan-out so it doesn't end up auto-drafted
+   *             into social posts.
+   *   - 'public_marketing' (default) — used on the agent's landing page,
+   *             social media, postcards, etc. Brokerage attribution is
+   *             REQUIRED by state real-estate advertising law.
+   *   - 'both' — agent will hand-curate two cuts (clean MLS + branded
+   *             marketing). Treated as public_marketing for the upload row.
+   */
+  usageIntent?: "mls" | "public_marketing" | "both"
+  /**
+   * Optional: caller asserts the uploaded file already carries the legal
+   * brokerage attribution (logo, license #, EHO) — typical for photographer-
+   * produced photos that have the brokerage info embedded in the frame.
+   * Ignored when usageIntent='mls'.
+   */
+  hasEmbeddedAttribution?: boolean
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
+
+  const usageIntent = params.usageIntent ?? "public_marketing"
+  const isMlsBound = usageIntent === "mls"
+
+  // Attribution flags default to false — MLS-bound uploads MUST be false
+  // regardless of what the caller asserted (MLS rules override agent intent).
+  const attributionAsserted = !isMlsBound && params.hasEmbeddedAttribution === true
 
   const { data, error } = await supabase
     .from("listing_media")
@@ -51,6 +78,10 @@ export async function uploadListingMedia(params: {
       approval_required:  params.approvalRequired ?? true,
       is_approved:        false,
       kernel_compliance_passed: false,
+      usage_intent:              usageIntent,
+      has_logo_overlay:          attributionAsserted,
+      has_brokerage_attribution: attributionAsserted,
+      has_eho_mark:              attributionAsserted,
       uploaded_by:        user.id,
       sort_order:         0,
     })
@@ -65,6 +96,35 @@ export async function uploadListingMedia(params: {
     contentId:   data.id,
     brokerageId: params.brokerageId,
   })
+
+  // Hero-photo fan-out — ONLY when the asset is public-marketing-bound.
+  // MLS-bound uploads stay attached to the listing only; they would
+  // violate MLS rules if they auto-drafted into branded social posts.
+  if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
+    try {
+      const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
+      await emitEventFromCron({
+        brokerage_id: params.brokerageId,
+        user_id:      user.id,
+        event_type:   "image.generated",
+        source:       "system",
+        dedupe_key:   `image.generated:listing_media:${data.id}`,
+        payload: {
+          image_id:        data.id,
+          image_type:      "listing_marketing",
+          image_url:       params.fileUrl,
+          thumbnail_url:   params.thumbnailUrl ?? null,
+          caption:         params.caption ?? null,
+          listing_id:      params.listingId,
+          agent_user_id:   user.id,
+          // Already in listing_media — handler skips the listing-attach branch.
+          skip_listing_attach: true,
+        },
+      })
+    } catch (eventErr) {
+      console.error("[uploadListingMedia] image.generated fan-out failed:", eventErr)
+    }
+  }
 
   return { data: { ...data, compliance }, error: null }
 }
@@ -177,6 +237,16 @@ export async function createVideoProject(params: {
     .maybeSingle()
   if (!agent?.id) return { data: null, error: "No agent record found" }
 
+  // Migration 1052: resolve the actual provider (D-ID default, with agent
+  // + brokerage overrides). Listing videos are customer-facing by default
+  // and must pass compliance at distribute time.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider = await resolveVideoProvider(supabase, {
+    brokerageId: params.brokerageId,
+    agentUserId: user.id,
+  })
+  const providerCols = initialProviderColumns(provider)
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
@@ -186,8 +256,10 @@ export async function createVideoProject(params: {
       title:               params.title,
       script_content:      params.scriptContent,
       video_type:          params.videoType,
-      video_provider:      "heygen",
+      video_provider:      provider,
+      ...providerCols,
       status:              "planning",
+      audience_type:       "customer_facing",
       heygen_avatar_id:    params.heygenAvatarId ?? null,
       heygen_voice_id:     params.heygenVoiceId ?? null,
       heygen_template_id:  params.heygenTemplateId ?? null,

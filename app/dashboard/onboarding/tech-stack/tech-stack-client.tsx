@@ -43,6 +43,9 @@ import {
   ExternalLink,
   Link2,
   Share2,
+  Mic2,
+  ArrowRight,
+  ClipboardList,
 } from "lucide-react"
 import {
   getIntegrationStatus,
@@ -75,6 +78,7 @@ const PROVIDER_TYPE_ICONS: Record<string, React.ElementType> = {
   sms: Phone,
   email: Mail,
   esign: FileSignature,
+  transaction: ClipboardList,
   video: Video,
   crm: Users,
   calendar: Calendar,
@@ -146,15 +150,17 @@ export function TechStackClient({
     }
   )
 
-  // Calculate progress
+  // Calculate progress — need SMS + Email + e-sign (3 required types)
   const progressPercent = useMemo(() => {
     if (!status) return 0
-    const required = ["twilio", "sendgrid", "docusign", "dotloop"]
-    const connectedRequired = status.providers.filter(
-      p => required.includes(p.provider) && p.status === "connected"
-    ).length
-    // Need 3 of 4 (SMS + Email + one of DocuSign/DotLoop)
-    return Math.min((connectedRequired / 3) * 100, 100)
+    const typeConnected = new Set(
+      status.providers
+        .filter(p => p.status === "connected")
+        .map(p => p.providerType)
+    )
+    const requiredTypes = ["sms", "email", "esign"]
+    const met = requiredTypes.filter(t => typeConnected.has(t)).length
+    return Math.min((met / requiredTypes.length) * 100, 100)
   }, [status])
 
   // Group providers
@@ -489,6 +495,10 @@ export function TechStackClient({
         {/* Social Media Accounts — uses dedicated /api/social/oauth route */}
         <SocialAccountsSection />
 
+        {/* Avatar & Voice Clone Setup — platform provides D-ID + ElevenLabs;
+            agents configure their personal headshot/voice in Twin Studio */}
+        <AvatarVoiceSetupCard brokerageId={brokerageId} />
+
         {/* Continue Button */}
         <div className="mt-8 flex justify-end">
           <Button
@@ -662,6 +672,45 @@ export function TechStackClient({
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// ─── Avatar & Voice Clone Setup Card ──────────────────────────────────────────
+// Avatar video and voice cloning run on platform-managed AI infrastructure —
+// the underlying provider keys live at the platform layer, never in the
+// subscriber's settings. Each agent personalises their own headshot/video
+// clip and voice sample inside Twin Studio.
+
+function AvatarVoiceSetupCard({ brokerageId }: { brokerageId: string }) {
+  return (
+    <Card className="mt-2 border-indigo-200 bg-indigo-50/40">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium flex items-center gap-2">
+          <Mic2 className="h-4 w-4 text-indigo-600" />
+          Avatar &amp; Voice Clone Setup
+          <Badge className="text-xs ml-1 bg-indigo-100 text-indigo-700 border-indigo-200">
+            Platform Provided
+          </Badge>
+        </CardTitle>
+        <CardDescription className="text-xs">
+          AI avatar video and voice cloning are built into the platform — no API keys to enter
+          here. Each agent uploads their own headshot or short video clip and records a voice
+          sample so the AI assistant and auto-generated marketing videos sound and look like them.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button
+          variant="outline"
+          size="sm"
+          className="border-indigo-300 text-indigo-700 hover:bg-indigo-100 gap-1"
+          onClick={() => { window.location.href = "/dashboard/settings/twin-studio" }}
+        >
+          <Video className="h-3 w-3" />
+          Set Up My Avatar &amp; Voice
+          <ArrowRight className="h-3 w-3 ml-1" />
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
 

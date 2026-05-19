@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { CheckCircle2, MessageSquare, Loader2 } from "lucide-react"
-import { updateTitleStatus, sendTitleMessageToAgent, TITLE_STATUS_OPTIONS, type TitleStatus } from "@/app/actions/title-portal"
+import { updateTitleStatus, sendTitleMessageToAgent } from "@/app/actions/title-portal"
+import { TITLE_STATUS_OPTIONS, type TitleStatus } from "@/lib/title-portal/constants"
 import { useRouter } from "next/navigation"
 
 export function TitleActions({

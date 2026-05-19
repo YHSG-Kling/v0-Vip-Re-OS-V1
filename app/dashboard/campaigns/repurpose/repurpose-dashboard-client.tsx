@@ -66,6 +66,7 @@ import {
   Sparkles,
   Copy,
   History,
+  Wand2,
 } from "lucide-react"
 import {
   executePipeline,
@@ -76,6 +77,7 @@ import {
 import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 import { toast } from "sonner"
+import { SnippetWizardPanel } from "./components/snippet-wizard-panel"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -183,7 +185,7 @@ export function RepurposeDashboardClient({
   const [history, setHistory] = useState(initialHistory)
   
   // UI State
-  const [activeTab, setActiveTab] = useState<"pipelines" | "execute" | "history">("execute")
+  const [activeTab, setActiveTab] = useState<"pipelines" | "execute" | "history" | "wizard">("execute")
   const [isLoading, setIsLoading] = useState(false)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   
@@ -403,6 +405,10 @@ export function RepurposeDashboardClient({
           <TabsTrigger value="history">
             <History className="h-4 w-4 mr-2" />
             History ({history.length})
+          </TabsTrigger>
+          <TabsTrigger value="wizard">
+            <Wand2 className="h-4 w-4 mr-2" />
+            Snippet Wizard
           </TabsTrigger>
         </TabsList>
 
@@ -779,6 +785,13 @@ export function RepurposeDashboardClient({
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        {/* SNIPPET WIZARD TAB                                                  */}
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        <TabsContent value="wizard">
+          <SnippetWizardPanel brokerageId={brokerageId} userId={userId} />
         </TabsContent>
       </Tabs>
 

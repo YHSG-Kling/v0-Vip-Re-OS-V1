@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
@@ -51,17 +52,38 @@ export async function initiateAIISAEngagement(
   const supabase = createServiceClient()
 
   try {
+    // ── AUTH GATE ────────────────────────────────────────────────────────
+    // Permitted callers:
+    //   1. Session-authenticated server actions (UI) — verify ctx.brokerageId
+    //      matches the lead row's brokerage_id.
+    //   2. Internal trusted callers (cron, internal server-action chain like
+    //      app/actions/leads.ts post-create). CRON_SECRET must be set so an
+    //      unconfigured deploy does not silently become an open endpoint.
+    const ctx = await getAgentContext()
+    const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
+    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    if (!hasSession && !isTrustedInternal) {
+      return { success: false, reason: 'Unauthorized' }
+    }
+
     // ── Fetch lead with channel fields ──────────────────────────────────────
-    const { data: lead, error: leadError } = await supabase
+    let leadQuery = supabase
       .from('leads')
       .select(
         `*, preferred_channel, call_stop_flag, contact_id`
       )
       .eq('id', leadId)
-      .maybeSingle()
+    if (hasSession && ctx.brokerageId) {
+      leadQuery = leadQuery.eq('brokerage_id', ctx.brokerageId)
+    }
+    const { data: lead, error: leadError } = await leadQuery.maybeSingle()
 
     if (leadError || !lead) {
       throw new Error(`Lead not found: ${leadId}`)
+    }
+
+    if (hasSession && ctx.brokerageId && lead.brokerage_id !== ctx.brokerageId) {
+      return { success: false, reason: 'Forbidden' }
     }
 
     if (lead.agent_id) {
@@ -352,9 +374,10 @@ async function dispatchToChannel(
       bodySnippet: finalEmailBody.substring(0, 500),
     })
 
-    // Unified inbox row
+    // Unified inbox row — stamped with brokerage for billing rollups
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'email',
       direction: 'outbound',
       subject,
@@ -429,6 +452,9 @@ async function dispatchToChannel(
       vapiResponse = await initiateCall({
         phoneNumber:  phone,
         assistantId:  vapiAssistantId,
+        contactId:    contactRow.id,
+        brokerageId:  lead.brokerage_id,
+        initiatedBy:  lead.agent_id ?? null,
         assistantOverrides: {
           name:         callContext.assistantName,
           firstMessage: callContext.firstMessage,
@@ -547,6 +573,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'sms',
       direction: 'outbound',
       body: smsBody,
@@ -583,6 +610,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'direct_mail',
       direction: 'outbound',
       body: 'Direct mail campaign initiated',
@@ -613,6 +641,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'social',
       direction: 'outbound',
       body: socialBody,

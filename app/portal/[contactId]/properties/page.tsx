@@ -44,16 +44,17 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
   // Fetch property alerts
   const { data: propertyAlerts } = await supabase
     .from("property_alerts")
-    .select("id, search_criteria, frequency, is_active, created_at")
+    .select("id, alert_name, frequency, is_active, created_at, min_price, max_price, bedrooms_min, bathrooms_min, cities")
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
-  // Fetch property interests
+  // Saved + dismissed listings — `saved_properties` is the canonical table
+  // (NOT `property_interests`, which holds search criteria, not properties).
   const { data: propertyInterests } = await supabase
-    .from("property_interests")
-    .select("id, property_address, interest_level, notes, created_at")
+    .from("saved_properties")
+    .select("id, listing_id, property_address, list_price, bedrooms, bathrooms, primary_photo_url, dismissed, dismissed_reason, notes, saved_at")
     .eq("contact_id", contactId)
-    .order("created_at", { ascending: false })
+    .order("saved_at", { ascending: false })
 
   // Fetch coming soon listings from the brokerage — these are agent-managed listings
   // not yet on the MLS, surfaced to buyers as an exclusive preview

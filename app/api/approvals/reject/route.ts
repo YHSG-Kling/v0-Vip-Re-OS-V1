@@ -1,7 +1,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { NextResponse } from "next/server"
+import { cascadeReject } from "@/lib/kernel/approval-queue-aggregator"
 
+/**
+ * Reject endpoint — cascades to the right source table based on the
+ * prefixed id. Same routing as /approve; flips approval_status to
+ * 'rejected' on the source row (or publish_status='rejected' for blog).
+ */
 export async function POST(request: Request) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
@@ -9,55 +15,30 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json()
-    // agent_id is NOT accepted from the body — it was an authorization bypass.
     const { id, reason } = body
 
-    if (!id) {
+    if (!id || typeof id !== "string") {
+      return NextResponse.json({ error: "Missing required field: id" }, { status: 400 })
+    }
+
+    const agentScopeId =
+      auth.userType === "agent" && auth.agentId ? auth.agentId : null
+
+    const result = await cascadeReject(id, {
+      brokerageId: auth.brokerageId,
+      agentScopeId,
+      reviewerUserId: auth.userId,
+      notes: reason,
+    })
+
+    if (!result.success) {
       return NextResponse.json(
-        { error: "Missing required field: id" },
-        { status: 400 }
+        { error: result.error ?? "Failed to reject item" },
+        { status: 400 },
       )
     }
 
-    // Fetch the approval item scoped to the caller's brokerage.
-    // Brokers/admins may reject any item in their brokerage.
-    // Agents may only act on items assigned to themselves.
-    let fetchQuery = supabase
-      .from("approval_items")
-      .select("id, agent_id, brokerage_id, status")
-      .eq("id", id)
-      .eq("brokerage_id", auth.brokerageId)
-
-    if (auth.userType === "agent" && auth.agentId) {
-      fetchQuery = fetchQuery.eq("agent_id", auth.agentId)
-    }
-
-    const { data: existingItem, error: fetchError } = await fetchQuery.maybeSingle()
-
-    if (fetchError || !existingItem) {
-      return NextResponse.json(
-        { error: "Approval item not found or access denied" },
-        { status: 404 }
-      )
-    }
-
-    const { error: updateError } = await supabase
-      .from("approval_items")
-      .update({
-        status:       "rejected",
-        reviewed_by:  auth.userId,
-        reviewed_at:  new Date().toISOString(),
-        review_notes: reason ?? null,
-      })
-      .eq("id", id)
-      .eq("brokerage_id", auth.brokerageId)
-
-    if (updateError) {
-      console.error("[Approvals Reject] DB error:", updateError)
-      return NextResponse.json({ error: "Failed to reject item" }, { status: 500 })
-    }
-
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, type: result.type, target_id: result.targetId })
   } catch (error) {
     console.error("[Approvals Reject] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

@@ -130,8 +130,10 @@ ${addressList}`,
   }
 }
 
-// Alias for backward compatibility
-export const aiOptimizeTourRoute = optimizeTourRoute
+// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
+export async function aiOptimizeTourRoute(...args: Parameters<typeof optimizeTourRoute>) {
+  return optimizeTourRoute(...args)
+}
 
 interface ShowingRequest {
   propertyId: string

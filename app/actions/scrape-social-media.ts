@@ -5,6 +5,7 @@ import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { analyzeLead } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 const FACEBOOK_GROUP_TEMPLATES = [
   '{city} Homeowners',
@@ -38,13 +39,32 @@ const SEARCH_KEYWORDS = [
 ]
 
 export async function scrapeSocialMedia(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   targetCity: string
   targetState: string
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+
   const supabase = await createClient()
-  const { brokerageId, targetCity, targetState } = params
-  
+
+  // Admin-only: social-media scraping burns AI + scraper credits.
+  const { data: u } = await supabase
+    .from('users')
+    .select('user_type')
+    .eq('id', ctx.userId)
+    .maybeSingle()
+  const isAdmin = ['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(
+    u?.user_type ?? ''
+  )
+  if (!isAdmin) return { success: false, error: 'Forbidden: admin only' }
+
+  const brokerageId = ctx.brokerageId
+  const { targetCity, targetState } = params
+
   const results = {
     facebookPosts: 0,
     redditPosts: 0,
@@ -60,7 +80,7 @@ export async function scrapeSocialMedia(params: {
   for (const groupName of facebookGroups) {
     try {
       const groupUrl = `https://www.facebook.com/groups/${groupName.toLowerCase().replace(/\s/g, '')}`
-      
+
       const fbResult = await scrapeFacebookGroupPosts({
         groupUrl,
         keywords: SEARCH_KEYWORDS,
@@ -97,7 +117,7 @@ export async function scrapeSocialMedia(params: {
 
         if (rawRecord?.id) {
           const pipelineResult = await processRawRecord(rawRecord.id, brokerageId)
-          
+
           if (pipelineResult.action === 'created') {
             results.leadsCreated++
           }
@@ -164,7 +184,7 @@ export async function scrapeSocialMedia(params: {
 
       if (rawRecord?.id) {
         const pipelineResult = await processRawRecord(rawRecord.id, brokerageId)
-        
+
         if (pipelineResult.action === 'created') {
           results.leadsCreated++
         }

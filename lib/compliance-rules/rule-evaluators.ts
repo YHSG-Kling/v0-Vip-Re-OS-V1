@@ -25,6 +25,10 @@ export interface ComplianceContentInput {
   raw_content: string
   source_inputs?: Record<string, any>
   intended_audience?: string
+  /** Brokerage that owns the content — used to load state-specific protected classes. */
+  brokerage_id?: string
+  /** Two-letter US state code. If provided directly, overrides brokerage_id lookup. */
+  state_code?: string
   context?: {
     listing_id?: string
     transaction_id?: string

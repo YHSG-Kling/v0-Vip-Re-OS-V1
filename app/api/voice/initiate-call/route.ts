@@ -15,6 +15,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
+import {
+  checkQuietHours,
+  withRecordingDisclosure,
+} from "@/lib/communication/call-compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -119,6 +123,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── 1b. TCPA quiet-hours: outbound auto-dial calls must be 8am-9pm in
+  // the recipient's local time. Resolves area code → state → timezone.
+  const quietHoursCheck = checkQuietHours(phoneNumber)
+  if (!quietHoursCheck.allowed) {
+    return NextResponse.json(
+      {
+        blocked: true,
+        reason: quietHoursCheck.reason ?? "Outside TCPA-allowed calling hours",
+        recipientLocalHour: quietHoursCheck.recipientLocalHour,
+        recipientTimezone: quietHoursCheck.recipientTimezone,
+      },
+      { status: 403 }
+    )
+  }
+
   // ── 2. Build brokerage-branded call context via buildCallContext() ───────────
   // This returns the assistant name, system prompt, and first message derived
   // from ai_identity_profiles (brokerage → team → agent hierarchy).
@@ -161,11 +180,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
   try {
+    // Prepend state-compliant recording disclosure to the first message.
+    // Default behavior plays disclosure ALWAYS (zero-risk, ~3s overhead);
+    // 12 two-party-consent states require it by law.
+    const firstMessageWithDisclosure = withRecordingDisclosure(
+      callCtx.firstMessage,
+      phoneNumber
+    )
+
     const vapiBody: Record<string, unknown> = {
       phoneNumberId,
       customer: { number: phoneNumber },
       assistant: {
-        firstMessage: callCtx.firstMessage,
+        firstMessage: firstMessageWithDisclosure,
         transcriber: { provider: "deepgram" },
         model: {
           provider: "anthropic",

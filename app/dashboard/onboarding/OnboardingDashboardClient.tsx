@@ -672,6 +672,28 @@ export function OnboardingDashboardClient({
               </CardContent>
             </Card>
 
+            {/* Mentorship */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Mentorship
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Get paired with an experienced agent for guidance during your first 90 days.
+                </p>
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => router.push('/dashboard/onboarding/mentorship')}
+                >
+                  Find My Mentor
+                </Button>
+              </CardContent>
+            </Card>
+
             {/* Admin Quick Stats */}
             {isAdmin && (
               <Card>
@@ -682,8 +704,8 @@ export function OnboardingDashboardClient({
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     className="w-full"
                     onClick={() => router.push('/dashboard/onboarding/admin/agents')}
                   >

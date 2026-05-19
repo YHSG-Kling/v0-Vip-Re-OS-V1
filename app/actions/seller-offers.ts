@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -12,9 +13,48 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+// Every seller-side offer action (accept / counter / reject / portal-link /
+// AI comparison) previously trusted caller-supplied brokerageId +
+// agentUserId without authentication and never verified the listing they
+// were operating on belonged to that brokerage. Any signed-in user could
+// accept/reject/counter offers on any listing in the database — these are
+// legally binding state transitions that create transactions.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+// Verify the listing belongs to the caller's brokerage. Returns the
+// listing's stored brokerage_id (== caller's) when allowed, or null.
+async function verifyListingInCallerBrokerage(
+  listingId: string,
+  brokerageId: string,
+): Promise<boolean> {
+  if (!isValidUUID(listingId)) return false
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
+  return !!data && data.brokerage_id === brokerageId
+}
+
 // ── LOAD OFFERS FOR LISTING ───────────────────────────────────────────────────
 export async function getOffersForListing(listingId: string) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, offers: [] }
+  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
+    return { success: false, error: "Forbidden", offers: [] }
+  }
+
+  const supabase = createServiceClient()
 
   const { data: offers, error } = await supabase
     .from("offers")
@@ -23,7 +63,6 @@ export async function getOffersForListing(listingId: string) {
       offer_number,
       offer_price,
       earnest_money,
-      earnest_money_amount,
       closing_date,
       financing_type,
       down_payment_amount,
@@ -51,7 +90,6 @@ export async function getOffersForListing(listingId: string) {
       parent_offer_id,
       current_round,
       is_winning_offer,
-      winning_offer,
       submitted_at,
       response_deadline,
       seller_viewed_at,
@@ -60,6 +98,7 @@ export async function getOffersForListing(listingId: string) {
       brokerage_id
     `)
     .eq("listing_id", listingId)
+    .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", '("rejected")')
     .order("submitted_at", { ascending: false })
 
@@ -71,14 +110,38 @@ export async function getOffersForListing(listingId: string) {
 export async function acceptOffer(params: {
   offerId: string
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
-  const { offerId, listingId, brokerageId, agentUserId } = params
+  const { offerId, listingId } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(listingId)) {
     return { success: false, error: "Invalid ID" }
+  }
+
+  // CRITICAL auth gate — accepting an offer is a legally binding state
+  // transition. The previous version trusted caller-supplied brokerageId
+  // + agentUserId, so any signed-in user could accept an offer on any
+  // listing in the database, creating a transaction under spoofed identity.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+  const agentUserId = auth.userId
+
+  if (!await verifyListingInCallerBrokerage(listingId, brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
+
+  // Also verify the offer belongs to this listing AND this brokerage
+  const { data: offerRow } = await supabase
+    .from("offers")
+    .select("brokerage_id, listing_id")
+    .eq("id", offerId)
+    .maybeSingle()
+  if (!offerRow || offerRow.brokerage_id !== brokerageId || offerRow.listing_id !== listingId) {
+    return { success: false, error: "Forbidden" }
   }
 
   // ── COMPLIANCE GATE (System 7.1B — ABSOLUTE) ─────────────────────────────
@@ -92,17 +155,17 @@ export async function acceptOffer(params: {
     }
   }
 
-  // Mark this offer as winner; set all others to not winning
+  // Mark this offer as winner; set all others to not winning — scoped
   const { error: winnerError } = await supabase
     .from("offers")
     .update({
       is_winning_offer: true,
-      winning_offer:    true,
       status:           "accepted",
       responded_at:     new Date().toISOString(),
       updated_at:       new Date().toISOString(),
     })
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
 
   if (winnerError) return { success: false, error: winnerError.message }
 
@@ -111,6 +174,7 @@ export async function acceptOffer(params: {
     .from("offers")
     .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
     .eq("listing_id", listingId)
+    .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
 
   // lifecycle_events + kernel event
@@ -149,16 +213,18 @@ export async function acceptOffer(params: {
   // happened, so we also revert it before returning).
   const { data: acceptedOffer } = await supabase
     .from("offers")
-    .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount, contact_id")
+    .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, contact_id")
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
     .single()
 
   if (!acceptedOffer) {
     // Revert: clear winning status so offer is not stranded
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
       .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
     return { success: false, error: "[acceptOffer] Could not load offer data — acceptance rolled back." }
   }
 
@@ -192,13 +258,15 @@ export async function acceptOffer(params: {
     console.error("[acceptOffer] createTransactionFromOffer HARD FAIL — reverting offer:", err)
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
       .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
     // Also clear winning_offer flag on sibling offers we may have cleared
     await supabase
       .from("offers")
-      .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
       .eq("listing_id", listingId)
+      .eq("brokerage_id", brokerageId)
     return {
       success: false,
       error: `[acceptOffer] Transaction creation failed — offer acceptance rolled back. ${err instanceof Error ? err.message : String(err)}`,
@@ -214,27 +282,44 @@ export async function acceptOffer(params: {
 export async function sendCounterOffer(params: {
   parentOfferId: string
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
   counterPrice: number
   responseDeadline: string            // ISO string
   notes?: string
   contingencyChanges?: string[]
 }) {
-  const supabase = await createClient()
   const {
-    parentOfferId, listingId, brokerageId, agentUserId,
+    parentOfferId, listingId,
     counterPrice, responseDeadline, notes, contingencyChanges,
   } = params
 
-  // Fetch parent offer to derive contact + current_round
+  if (!isValidUUID(parentOfferId) || !isValidUUID(listingId)) {
+    return { success: false, error: "Invalid ID" }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+  const agentUserId = auth.userId
+
+  if (!await verifyListingInCallerBrokerage(listingId, brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
+
+  // Fetch parent offer to derive contact + current_round; verify ownership
   const { data: parent } = await supabase
     .from("offers")
-    .select("contact_id, current_round, contingencies")
+    .select("contact_id, current_round, contingencies, brokerage_id, listing_id")
     .eq("id", parentOfferId)
     .single()
 
   if (!parent) return { success: false, error: "Parent offer not found" }
+  if (parent.brokerage_id !== brokerageId || parent.listing_id !== listingId) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const nextRound = (parent.current_round ?? 1) + 1
 
@@ -264,11 +349,12 @@ export async function sendCounterOffer(params: {
 
   if (insertError || !counter) return { success: false, error: insertError?.message ?? "Insert failed" }
 
-  // Mark parent as countered
+  // Mark parent as countered — scoped
   await supabase
     .from("offers")
     .update({ status: "countered", updated_at: new Date().toISOString() })
     .eq("id", parentOfferId)
+    .eq("brokerage_id", brokerageId)
 
   // lifecycle_events + kernel event
   await supabase.from("lifecycle_events").insert({
@@ -300,12 +386,26 @@ export async function sendCounterOffer(params: {
 export async function rejectOffer(params: {
   offerId: string
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
   reason?: string
 }) {
-  const supabase = await createClient()
-  const { offerId, listingId, brokerageId, agentUserId, reason } = params
+  const { offerId, listingId, reason } = params
+
+  if (!isValidUUID(offerId) || !isValidUUID(listingId)) {
+    return { success: false, error: "Invalid ID" }
+  }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+  const agentUserId = auth.userId
+
+  if (!await verifyListingInCallerBrokerage(listingId, brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from("offers")
@@ -316,6 +416,8 @@ export async function rejectOffer(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
 
   if (error) return { success: false, error: error.message }
 
@@ -344,22 +446,31 @@ export async function rejectOffer(params: {
 // and returns the shareable URL. Seller views only — no accept/reject actions.
 export async function generateSellerPortalLink(params: {
   listingId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
   const { listingId } = params
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
+
+  // Auth gate — was previously open, so any caller could mint a 7-day
+  // seller-view token bound to another tenant's listing and stamp it
+  // onto their offers' ai_extracted_data blobs.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
 
   const token = crypto.randomBytes(32).toString("hex")
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Store token on the listing row (transaction_provider_ref repurposed as portal token)
-  // Use a dedicated listings column if available, otherwise store in ai_extracted_data on all offers
-  // The live listings schema has no portal_token column — store in listings metadata approach:
-  // We write to each active offer's ai_extracted_data merging portal token
+  // Write to each active offer's ai_extracted_data merging portal token — scoped
   const { data: activeOffers } = await supabase
     .from("offers")
     .select("id, ai_extracted_data")
     .eq("listing_id", listingId)
+    .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", '("rejected")')
 
   for (const offer of activeOffers ?? []) {
@@ -372,6 +483,7 @@ export async function generateSellerPortalLink(params: {
       .from("offers")
       .update({ ai_extracted_data: merged, updated_at: new Date().toISOString() })
       .eq("id", offer.id)
+      .eq("brokerage_id", auth.brokerageId)
   }
 
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/seller/offers/${listingId}?token=${token}`
@@ -379,14 +491,53 @@ export async function generateSellerPortalLink(params: {
 }
 
 // ── RECORD SELLER VIEW ────────────────────────────────────────────────────────
+// Called from the seller portal when a seller views the offer-comparison page.
+// The legitimate caller is either:
+//   - The seller themselves (portal session), OR
+//   - The agent (when previewing)
+// Previously fully open — any caller could stamp seller_viewed_at on any
+// listing's offers. We require auth and verify the listing belongs to
+// either the caller's brokerage (agent path) or the caller's seller
+// contact (portal path).
 export async function recordSellerView(listingId: string) {
-  const supabase = await createClient()
-  const now = new Date().toISOString()
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
 
-  await supabase
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const svc = createServiceClient()
+
+  // Try agent path: caller is in same brokerage as listing
+  const { data: callerRow } = await svc
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  const { data: listingRow } = await svc
+    .from("listings").select("brokerage_id, seller_contact_id").eq("id", listingId).maybeSingle()
+  if (!listingRow) return { success: false, error: "Listing not found" }
+
+  const isAgentInBrokerage = !!callerRow?.brokerage_id && callerRow.brokerage_id === listingRow.brokerage_id
+
+  // Try seller-self path
+  let isSellerSelf = false
+  if (listingRow.seller_contact_id) {
+    const { data: sellerContact } = await svc
+      .from("contacts").select("contact_user_id, email").eq("id", listingRow.seller_contact_id).maybeSingle()
+    isSellerSelf =
+      !!sellerContact &&
+      (sellerContact.contact_user_id === user.id ||
+        !!(sellerContact.email && user.email && sellerContact.email.toLowerCase() === user.email.toLowerCase()))
+  }
+
+  if (!isAgentInBrokerage && !isSellerSelf) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const now = new Date().toISOString()
+  await svc
     .from("offers")
     .update({ seller_viewed_at: now, updated_at: now })
     .eq("listing_id", listingId)
+    .eq("brokerage_id", listingRow.brokerage_id)
     .is("seller_viewed_at", null)
 
   return { success: true }
@@ -395,34 +546,42 @@ export async function recordSellerView(listingId: string) {
 // ── TRIGGER AI COMPARISON ─────────────────────────────────────────────────────
 export async function triggerOfferComparison(params: {
   listingId: string
-  brokerageId: string
-  agentUserId: string
+  brokerageId?: string  // ignored — derived from session
+  agentUserId?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
-  const { listingId, brokerageId, agentUserId } = params
+  const { listingId } = params
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
+
+  // Auth gate — burns paid AI inference and reads sensitive offer data.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+  const agentUserId = auth.userId
+
+  if (!await verifyListingInCallerBrokerage(listingId, brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
 
   const { data: listing } = await supabase
     .from("listings")
     .select("list_price")
     .eq("id", listingId)
-    .single()
-
-  const { data: agentRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", agentUserId)
+    .eq("brokerage_id", brokerageId)
     .single()
 
   const { data: offersRaw } = await supabase
     .from("offers")
     .select(`
-      id, offer_number, offer_price, earnest_money, earnest_money_amount,
+      id, offer_number, offer_price, earnest_money,
       closing_date, financing_type, down_payment_amount, down_payment_percent,
       appraisal_contingency_days, financing_contingency_days, inspection_period_days,
       escalation_clause, escalation_cap, appraisal_gap, closing_cost_contribution,
       possession_terms, contingencies, seller_net_estimate
     `)
     .eq("listing_id", listingId)
+    .eq("brokerage_id", brokerageId)
     .not("status", "in", '("rejected","countered")')
 
   if (!offersRaw || offersRaw.length < 2) {
@@ -449,12 +608,18 @@ export async function getTransactionByListingId(listingId: string): Promise<{
   status: string | null
 } | null> {
   if (!isValidUUID(listingId)) return null
-  const supabase = await createClient()
+
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) return null
+
+  const supabase = createServiceClient()
   const { data } = await supabase
     .from("transactions")
     // contract_price does NOT exist — live column is purchase_price
     .select("id, property_address, purchase_price, status")
     .eq("listing_id", listingId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -477,7 +642,19 @@ export async function getRepairNegotiationItems(transactionId: string): Promise<
   error?: string
 }> {
   if (!isValidUUID(transactionId)) return { success: false, items: [], error: "Invalid transaction ID" }
-  const supabase = await createClient()
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, items: [], error: auth.error }
+
+  const supabase = createServiceClient()
+
+  // Verify transaction belongs to caller's brokerage
+  const { data: tx } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+  if (!tx || tx.brokerage_id !== auth.brokerageId) {
+    return { success: false, items: [], error: "Forbidden" }
+  }
+
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
     .select("id, item_description, estimated_cost, actual_cost, status, priority, requested_by")
@@ -491,7 +668,17 @@ export async function getRepairNegotiationItems(transactionId: string): Promise<
 // Buyers don't have listings — their properties are matched via property_alert_results.
 export async function getMlsNumberByAddress(contactId: string, propertyAddress: string): Promise<string | null> {
   if (!isValidUUID(contactId) || !propertyAddress) return null
-  const supabase = await createClient()
+
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+
+  const supabase = createServiceClient()
+
+  // Verify contact is in caller's brokerage
+  const { data: contact } = await supabase
+    .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+  if (!contact || contact.brokerage_id !== auth.brokerageId) return null
+
   const { data } = await supabase
     .from("property_alert_results")
     .select("mls_number, list_price")
@@ -529,16 +716,23 @@ async function resolveCommissionRate(userId: string): Promise<{
   return { brokerageId, totalRate }
 }
 
-export async function analyzeOffer(offerId: string, userId: string) {
-  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
-  const supabase = await createClient()
+export async function analyzeOffer(offerId: string, _userId?: string) {
+  if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
+
+  // Auth gate — burns paid AI inference and writes ai_analysis onto the offer.
+  // Was previously taking caller-supplied userId for both usage tracking
+  // and the commission lookup that determines net-to-seller math.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const userId = auth.userId
+
+  const supabase = createServiceClient()
 
   const { data: offer } = await supabase
     .from("offers")
     .select(`*, listing:listings(id, address, list_price, seller_contact_id), buyer:contacts(id, first_name, last_name)`)
     .eq("id", offerId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
 
   if (!offer) return { success: false, error: "Offer not found" }
@@ -601,6 +795,7 @@ REASONING: [2-3 sentences]`,
       ai_recommendation: analysis.substring(0, 500),
     })
     .eq("id", offerId)
+    .eq("brokerage_id", auth.brokerageId)
 
   return {
     success:   true,
@@ -609,16 +804,25 @@ REASONING: [2-3 sentences]`,
   }
 }
 
-export async function analyzeMultipleOffers(listingId: string, userId: string) {
-  if (!isValidUUID(listingId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
+export async function analyzeMultipleOffers(listingId: string, _userId?: string) {
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
+
+  // Auth gate — burns paid AI inference + inserts a comparison row.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const userId = auth.userId
+
+  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
+    return { success: false, error: "Forbidden" }
   }
-  const supabase = await createClient()
+
+  const supabase = createServiceClient()
 
   const { data: offers } = await supabase
     .from("offers")
     .select(`*, buyer:contacts(id, first_name, last_name)`)
     .eq("listing_id", listingId)
+    .eq("brokerage_id", auth.brokerageId)
     .in("status", ["pending", "countered"])
 
   if (!offers || offers.length === 0) {

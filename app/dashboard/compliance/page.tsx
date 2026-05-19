@@ -16,6 +16,9 @@ import ViolationsDashboard from "@/app/components/shared/compliance/violations-d
 import ApprovedContentLibrary from "@/app/components/shared/compliance/approved-content-library"
 import { TransactionComplianceTab } from "@/app/components/compliance/transaction-compliance-tab"
 import { FairHousingScanner } from "@/app/components/compliance/FairHousingScanner"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 import {
   ComplianceCommandStrip,
   ComplianceRiskRadar,
@@ -25,6 +28,7 @@ import {
   AuditFeedPanel,
   AIComplianceReviewPanel,
   PolicyReportingPanel,
+  CdaReviewPanel,
 } from "./components/os"
 
 export default async function ComplianceDashboardPage() {
@@ -47,6 +51,25 @@ export default async function ComplianceDashboardPage() {
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
     user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
   ])
+
+  // Resolve brokerage for the AI brief
+  let brokerageId: string | null = null
+  if (user) {
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    brokerageId = userRow?.brokerage_id ?? null
+  }
+
+  const complianceBrief = user
+    ? await generateUserTypeBrief({
+        userType: "compliance_officer",
+        userId: user.id,
+        brokerageId,
+      })
+    : null
 
   const complianceRate =
     monthlyReport.totalCommunications > 0
@@ -104,6 +127,14 @@ export default async function ComplianceDashboardPage() {
           </p>
         </div>
       </div>
+
+      {/* Today's Focus — AI Brief */}
+      {complianceBrief && <TodaysFocusCard brief={complianceBrief} />}
+
+      {/* Sprint 7 — Learning router for compliance_officer:
+          unresolved_compliance_events, open_tenant_safety_findings,
+          staff_onboarding. Hides when no module qualifies. */}
+      {user && <LearnThisWeekCard actorKind="staff" actorId={user.id} />}
 
       {/* OS Command Strip - Priority Action */}
       <ComplianceCommandStrip
@@ -194,10 +225,11 @@ export default async function ComplianceDashboardPage() {
           <FlaggedFilesPanel flaggedFiles={flaggedFiles} />
         </div>
 
-        {/* Center Column: Missing Disclosures + Exception Review */}
+        {/* Center Column: Missing Disclosures + Exception Review + CDA Approval Queue */}
         <div className="space-y-6">
           <MissingDisclosuresPanel missingDisclosures={missingDisclosures} />
           <ExceptionReviewPanelWrapper exceptions={exceptions} />
+          <CdaReviewPanel />
         </div>
 
         {/* Right Column: Audit Feed + AI Review + Reporting */}

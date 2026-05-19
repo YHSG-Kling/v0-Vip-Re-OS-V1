@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { getTitleTransactionDetail, TITLE_VISIBLE_MILESTONES } from "@/app/actions/title-portal"
+import { getTitleTransactionDetail } from "@/app/actions/title-portal"
+import { TITLE_VISIBLE_MILESTONES } from "@/lib/title-portal/constants"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -275,9 +276,9 @@ export default async function TitleTransactionDetailPage({
                             <p className="font-medium capitalize">
                               {milestone.milestone_name.replace(/_/g, " ")}
                             </p>
-                            {milestone.milestone_date && (
+                            {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.milestone_date)}
+                                {formatDate(milestone.target_date)}
                               </p>
                             )}
                           </div>

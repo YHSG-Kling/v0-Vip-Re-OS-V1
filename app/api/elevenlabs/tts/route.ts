@@ -10,6 +10,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { checkUsageCap } from "@/lib/usage/check-cap"
+import { logMediaUsage } from "@/lib/usage/log-media-usage"
 
 const EL_API_BASE = "https://api.elevenlabs.io/v1"
 const DEFAULT_MODEL = "eleven_turbo_v2_5"
@@ -32,6 +34,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing required fields: text, voice_id" }, { status: 400 })
     }
 
+    // ─── Usage cap on TTS characters ────────────────────────────────────────
+    const charCount = text.length
+    const cap = await checkUsageCap({
+      brokerageId: auth.brokerageId,
+      metric: "tts_characters",
+      addQuantity: charCount,
+    })
+    if (!cap.allowed) {
+      return NextResponse.json({ error: cap.message, capExceeded: true }, { status: 429 })
+    }
+
     const elRes = await fetch(`${EL_API_BASE}/text-to-speech/${voice_id}`, {
       method: "POST",
       headers: {
@@ -52,6 +65,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ElevenLabs TTS failed" }, { status: 500 })
     }
 
+    // ─── Log TTS character usage on success ─────────────────────────────────
+    logMediaUsage({
+      brokerageId: auth.brokerageId,
+      metric: "tts_characters",
+      quantity: charCount,
+      agentId: auth.agentId,
+      userId: auth.userId,
+      sessionRef: voice_id,
+      feature: "elevenlabs_tts",
+    }).catch(() => {})
+
     if (!upload_to_storage) {
       // Stream audio directly back to client
       const audioBuffer = await elRes.arrayBuffer()
@@ -66,7 +90,7 @@ export async function POST(request: NextRequest) {
     // Upload to Supabase Storage for use in D-ID / listing voiceover pipeline
     const audioBuffer = await elRes.arrayBuffer()
     const fileName = `tts/${auth.brokerageId}/${Date.now()}.mp3`
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from("video-assets")
       .upload(fileName, audioBuffer, { contentType: "audio/mpeg", upsert: false })
 

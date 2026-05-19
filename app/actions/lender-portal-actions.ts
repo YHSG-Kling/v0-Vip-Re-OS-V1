@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
+import { requireLenderActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 
 const LENDER_VISIBLE_MILESTONES = [
   "appraisal_ordered",
@@ -14,31 +15,34 @@ const LENDER_VISIBLE_MILESTONES = [
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, lenderId: string) {
+  // Auth gate — requireLenderActor verifies the session user is mapped
+  // to this lender_portal_users row. Without this, any caller could
+  // enumerate transaction detail for any lender (loan amount, buyer
+  // contact info, agent contact info, milestones, documents).
+  let actor
+  try {
+    actor = await requireLenderActor(lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
-  // Auth: lender is authorized if they are directly assigned to this transaction
-  // via lender_portal_users.transaction_id OR via transactions.lender_id
-  // lender_portal_users has no transaction_id column; authorization is checked via transactions.lender_id below
-  const isDirectlyAssigned = false
-
+  // Verify this lender is actually assigned to this transaction AND the
+  // transaction is in the actor's brokerage scope.
   const { data: txnLenderCheck } = await supabase
     .from("transactions")
-    .select("lender_id")
+    .select("lender_id, brokerage_id")
     .eq("id", transactionId)
     .maybeSingle()
 
-  const isTransactionLender = txnLenderCheck?.lender_id === lenderId
-
-  if (!isDirectlyAssigned && !isTransactionLender) {
+  if (!txnLenderCheck) throw new Error("Transaction not found")
+  if (txnLenderCheck.lender_id !== actor.lenderId) {
     throw new Error("Unauthorized: Lender not assigned to this transaction")
+  }
+  if (txnLenderCheck.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
   }
 
   // Get lender details from transaction_lenders for loan specifics
@@ -70,10 +74,10 @@ export async function getLenderTransactionDetail(transactionId: string, lenderId
 
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+    .select("id, milestone_name, milestone_type, target_date, completed_date, status")
     .eq("transaction_id", transactionId)
     .in("milestone_name", [...LENDER_VISIBLE_MILESTONES])
-    .order("milestone_date", { ascending: true, nullsFirst: false })
+    .order("target_date", { ascending: true, nullsFirst: false })
 
   const { data: documents } = await supabase
     .from("transaction_documents")
@@ -106,27 +110,39 @@ export async function uploadLenderDocument(data: {
   fileName: string
   fileUrl: string
 }) {
+  // Auth gate — closing_disclosure docs are CD-3-day-rule sensitive
+  // (wire-fraud / TRID compliance vector). Previously any caller could
+  // upload to any transaction by passing the right ids.
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, email")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
+  // Verify the lender is assigned to this transaction + brokerage scope
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("lender_id, brokerage_id")
+    .eq("id", data.transactionId)
+    .maybeSingle()
+  if (!tx) throw new Error("Transaction not found")
+  if (tx.lender_id !== actor.lenderId || tx.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: lender not assigned to this transaction")
+  }
 
   const { data: document, error } = await supabase
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       doc_type: data.documentType,
       doc_label: data.fileName,
       storage_url: data.fileUrl,
-      uploaded_by: user.id,
+      uploaded_by: actor.userId,
       status: "pending_review",
     })
     .select()
@@ -143,26 +159,30 @@ export async function issueClearToClose(data: {
   transactionId: string
   lenderId: string
 }) {
+  // CRITICAL auth gate — Clear to Close is a legally binding lending
+  // milestone that triggers closing scheduling, buyer notifications,
+  // and downstream funding workflows. Previously any caller could
+  // issue CTC on any transaction by passing the right ids.
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, email, company_name")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
 
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id")
+    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id, lender_id")
     .eq("id", data.transactionId)
     .single()
 
   if (!transaction) throw new Error("Transaction not found")
+  if (transaction.lender_id !== actor.lenderId || transaction.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: lender not assigned to this transaction")
+  }
 
   const { error: milestoneError } = await supabase
     .from("transaction_milestones")
@@ -171,11 +191,13 @@ export async function issueClearToClose(data: {
       completed_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
     .in("milestone_name", ["clear_to_close", "clear_to_close_received"])
 
   if (milestoneError) {
     await supabase.from("transaction_milestones").insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       milestone_name: "clear_to_close_received",
       milestone_type: "lender",
       status: "completed",
@@ -183,34 +205,42 @@ export async function issueClearToClose(data: {
     })
   }
 
-  // Update transaction_lenders by transaction_id (no lender_email column)
+  // Update transaction_lenders by transaction_id — scoped by brokerage
   await supabase
     .from("transaction_lenders")
     .update({ underwriting_status: "approved", clear_to_close_date: new Date().toISOString().split("T")[0] })
     .eq("transaction_id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
 
   if (transaction.buyer_contact_id) {
     await supabase.from("client_portal_messages").insert({
+      brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
       direction: "outbound",
       channel: "portal",
-      body: `Great news! ${lender.company_name || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
     })
   }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: transaction.brokerage_id,
-    event_type: KernelEvent.MILESTONE_COMPLETED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      milestone_name: "clear_to_close_received",
-      issued_by_lender_id: lender.id,
-      issued_by_type: "lender",
-    },
-    created_at: new Date().toISOString(),
-  })
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:        KernelEvent.MILESTONE_COMPLETED,
+      brokerageId:  actor.brokerageId,
+      entityId:     data.transactionId,
+      actorUserId:  actor.userId,
+      metadata: {
+        milestone_name:      "clear_to_close_received",
+        financing_event:     "clear_to_close",
+        issued_by_lender_id: actor.lenderId,
+        issued_by_type:      "lender",
+        lender_company:      actor.lenderCompany ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[lenderPortal:CTC] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
@@ -221,55 +251,59 @@ export async function flagLenderIssue(data: {
   transactionId: string
   lenderId: string
   issueDescription: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
   const { data: transaction } = await supabase
     .from("transactions")
     .select("id, property_address, agent_id, brokerage_id")
     .eq("id", data.transactionId)
-    .single()
+    .eq("brokerage_id", actor.brokerageId) // scope to actor brokerage
+    .maybeSingle()
 
-  if (!transaction) throw new Error("Transaction not found")
+  if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
 
   const { error: messageError } = await supabase.from("client_portal_messages").insert({
     contact_id: transaction.agent_id,
     direction: "outbound",
     channel: "portal",
-    body: `[LENDER ISSUE] ${lender.lender_company || "Lender"} has flagged an issue for ${transaction.property_address || "transaction"}:\n\n${data.issueDescription}`,
+    body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
     metadata: {
-      type: "lender_issue",
-      lender_id: data.lenderId,
+      type:           "lender_issue",
+      lender_id:      actor.lenderId,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
   })
 
-  if (messageError) throw messageError
+  if (messageError) return { success: false, error: messageError.message }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: transaction.brokerage_id,
-    event_type: KernelEvent.PORTAL_MODULE_VIEWED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      module: "lender_issue",
-      issued_by_lender_id: lender.id,
-      issue_description: data.issueDescription,
-    },
-    created_at: new Date().toISOString(),
-  })
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.JOURNEY_STAGE_UPDATED,
+      brokerageId: actor.brokerageId,
+      entityId:    data.transactionId,
+      actorUserId: actor.userId,
+      metadata: {
+        actor_role:           "lender",
+        update_type:          "issue_flagged",
+        lender_company:       actor.lenderCompany,
+        issued_by_lender_id:  actor.lenderId,
+        issue_description:    data.issueDescription,
+        severity:             "high",
+      },
+    })
+  } catch (err) {
+    console.error("[flagLenderIssue] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
@@ -280,18 +314,20 @@ export async function updateLenderLoanStatus(data: {
   transactionId: string
   lenderId: string
   newStatus: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireLenderActor(data.lenderId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
 
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company")
-    .eq("id", data.lenderId)
-    .single()
-
-  if (!lender) throw new Error("Lender not found")
-
-  // transaction_lenders has no lender_email — update by transaction_id only
+  // transaction_lenders has no lender_email — update by transaction_id only,
+  // but scope to the actor's brokerage so a lender can't mutate another
+  // brokerage's deal via a brokerage_id mismatch.
   const { error } = await supabase
     .from("transaction_lenders")
     .update({
@@ -300,7 +336,28 @@ export async function updateLenderLoanStatus(data: {
     })
     .eq("transaction_id", data.transactionId)
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
+
+  // Fan-out via the transaction kernel so the agent dashboard, buyer +
+  // seller portals, and title portal all see the loan-status change.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.JOURNEY_STAGE_UPDATED,
+      brokerageId: actor.brokerageId,
+      entityId:    data.transactionId,
+      actorUserId: actor.userId,
+      metadata: {
+        actor_role:       "lender",
+        lender_company:   actor.lenderCompany,
+        loan_status:      data.newStatus,
+        updated_by_type:  "lender",
+        update_type:      "loan_status",
+      },
+    })
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] fan-out failed (non-blocking)", err)
+  }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }

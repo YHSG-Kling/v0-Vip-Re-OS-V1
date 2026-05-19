@@ -1,5 +1,51 @@
 "use server"
 
+/**
+ * ⚠️ SCHEMA-DRIFT WARNING
+ *
+ * This file writes "AI chat" data into the WRONG tables. The platform has
+ * two distinct conversation models:
+ *
+ *   1. messages + conversations  — email/SMS inbox conversations with
+ *      external contacts (see app/actions/ai-communication-hub.ts).
+ *      conversations cols: id, contact_id, agent_id, type, status,
+ *      message_count, last_message_at, unread_count, sentiment,
+ *      urgency_score, brokerage_id, intent_primary, ...
+ *      messages cols: id, conversation_id, contact_id, agent_id, type,
+ *      direction, subject, body, status, attachment_urls, ...
+ *
+ *   2. chat_sessions + chat_messages — in-app AI agent chat sessions.
+ *      chat_sessions cols: id, lead_id, contact_id, session_type,
+ *      metadata, brokerage_id, agent_id, source,
+ *      widget_session_token, visitor_fingerprint, capture_state, status
+ *      chat_messages cols: id, session_id, role, content, metadata,
+ *      created_at
+ *
+ * This file targets model #1 (conversations/messages) but uses model
+ * #2's column names (session_id, sender_type, message_content,
+ * them_first_analysis, etc.) — every write fails silently at runtime.
+ *
+ * Additionally it reads from tables that may not exist:
+ *   - ai_suggestions, lead_conversation_history, chat_templates,
+ *     agent_chat_preferences, message_access_control,
+ *     prohibited_phrases. Whether each exists vs. is also drift needs
+ *     case-by-case verification.
+ *
+ * RESOLUTION (future work, not in this commit):
+ *   - createChatSession / sendChatMessage / generateAiResponse should
+ *     write to chat_sessions + chat_messages, not conversations +
+ *     messages.
+ *   - getChatSession / getAgentChatSessions / endChatSession likewise.
+ *   - Column names need renaming: sender_type → role, message_content
+ *     → content, session_type / session_status / etc. stay but live on
+ *     chat_sessions.
+ *
+ * In the meantime: this file has no functional callers from any client
+ * UI we've audited so far (the actual AI chat surfaces use other
+ * action files). The audit value here is documenting the drift so the
+ * next developer doesn't ship features on top of it.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"

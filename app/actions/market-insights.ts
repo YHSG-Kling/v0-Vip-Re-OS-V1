@@ -3,6 +3,7 @@
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted } from "@/lib/ai/models"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,10 +58,12 @@ export async function generateMarketInsights(): Promise<{
 
     const [activeListingsResult, soldListingsResult, transactionsResult, buyerContactsResult] =
       await Promise.allSettled([
-        // Active listings: avg list price, avg days on market, count
+        // Active listings: avg list price + go_live_date (DOM computed below).
+        // The `days_on_market` column does NOT exist on listings — DOM is
+        // derived from go_live_date via lib/listings/compute-dom.
         supabase
           .from("listings")
-          .select("id, list_price, days_on_market, status")
+          .select("id, list_price, go_live_date, status")
           .eq("agent_id", agentId)
           .eq("status", "active"),
 
@@ -148,7 +151,7 @@ export async function generateMarketInsights(): Promise<{
         : null
 
     const domValues = (activeListings ?? [])
-      .map((l) => l.days_on_market)
+      .map((l) => computeDaysOnMarket(l.go_live_date))
       .filter((d): d is number => typeof d === "number" && d >= 0)
 
     const avgDaysOnMarket =

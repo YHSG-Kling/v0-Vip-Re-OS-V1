@@ -146,7 +146,7 @@ export function AppointmentCoachingPanel({
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <Link
-                      href={`/contacts/${issue.contact_id}`}
+                      href={`/crm/contacts/${issue.contact_id}`}
                       className="text-sm font-medium hover:underline"
                     >
                       {issue.contact_name}
@@ -162,7 +162,7 @@ export function AppointmentCoachingPanel({
                   </div>
                 </div>
                 <Button variant="outline" size="sm" asChild>
-                  <Link href={`/contacts/${issue.contact_id}`}>
+                  <Link href={`/crm/contacts/${issue.contact_id}`}>
                     <UserCheck className="mr-1 h-4 w-4" />
                     Confirm
                   </Link>

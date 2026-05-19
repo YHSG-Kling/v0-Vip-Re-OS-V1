@@ -143,14 +143,14 @@ export async function POST(request: Request) {
       .limit(1)
       .maybeSingle()
 
-    let visibleMilestones: { title: string; status: string; milestone_date: string | null; description: string | null }[] = []
+    let visibleMilestones: { title: string; status: string; target_date: string | null; description: string | null }[] = []
     if (activeTransaction?.id) {
       const { data: milestones } = await supabase
         .from('transaction_milestones')
-        .select('title, status, milestone_date, description')
+        .select('title, status, target_date, description')
         .eq('transaction_id', activeTransaction.id)
         .eq('is_client_visible', true)        // GATE: never expose hidden milestones
-        .order('milestone_date', { ascending: true })
+        .order('target_date', { ascending: true })
 
       visibleMilestones = milestones ?? []
     }
@@ -252,7 +252,7 @@ export async function POST(request: Request) {
         'VISIBLE MILESTONES (these are the only milestones you know about):',
         visibleMilestones.length
           ? visibleMilestones.map(m =>
-              `  - ${m.title}: ${m.status}${m.milestone_date ? ' (' + m.milestone_date + ')' : ''}${m.description ? ' — ' + m.description : ''}`
+              `  - ${m.title}: ${m.status}${m.target_date ? ' (' + m.target_date + ')' : ''}${m.description ? ' — ' + m.description : ''}`
             ).join('\n')
           : '  No milestones available yet.',
       ].filter(Boolean).join('\n') : 'No active transaction found.',

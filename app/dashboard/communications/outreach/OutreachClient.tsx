@@ -76,7 +76,7 @@ const CAMPAIGN_TYPES = [
   { value: "cold_outreach",  label: "Cold Outreach" },
   { value: "warm_nurture",   label: "Warm Nurture" },
   { value: "re_engagement",  label: "Re-Engagement" },
-  { value: "past_client",    label: "Past Client" },
+  { value: "lifetime_customer",    label: "Lifetime Customer" },
 ] as const
 
 const CHANNELS = ["email", "sms", "voice", "direct_mail"] as const

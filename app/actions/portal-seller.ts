@@ -2,9 +2,20 @@
 
 // app/actions/portal-seller.ts
 // Server actions for seller portal data fetching.
-// All queries scoped to contactId for security.
+//
+// Previously every function in this file was unauthenticated — any caller
+// could pass an arbitrary contactId and pull a seller's listing details,
+// market position, offers, showing feedback, vendor assignments, and
+// client documents. The contactId was treated as the scope key but never
+// verified against the caller's identity.
+//
+// All functions now go through requireContactAccess() which allows EITHER:
+//   - The contact themselves (portal session — contact_user_id matches
+//     auth.uid OR contact.email matches authed user's email)
+//   - An agent / admin in the contact's brokerage (dashboard session)
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
@@ -17,9 +28,60 @@ import {
   type OfferData,
 } from "@/lib/portal/resolve-seller-context"
 
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+// Returns ok=true only if the authed caller is either the contact themselves
+// or an agent/admin in the contact's brokerage. Also returns the contact's
+// brokerage_id so downstream queries can scope safely.
+async function requireContactAccess(contactId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
+  | { ok: false }
+> {
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { ok: false }
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("brokerage_id, contact_user_id, email")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact || !contact.brokerage_id) return { ok: false }
+
+  const isContactSelf =
+    contact.contact_user_id === authUser.id ||
+    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
+
+  if (isContactSelf) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
+  }
+
+  // Otherwise must be an agent/admin in the same brokerage
+  const { data: callerRow } = await svc
+    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
+  }
+
+  return { ok: false }
+}
+
 // ─── SELLER CONTEXT ───────────────────────────────────────────────────────────
 
 export async function getSellerDashboardData(contactId: string) {
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    return {
+      listing: null,
+      transaction: null,
+      contact: null,
+      agent: null,
+      showingStats: { thisWeek: 0, total: 0, avgRating: null },
+      recentFeedback: [],
+      offerSummary: { total: 0, highest: null, accepted: null, pending: 0 },
+    }
+  }
+
   const supabase = await createClient()
 
   // Get base seller context
@@ -52,9 +114,15 @@ export async function getSellerDashboardData(contactId: string) {
 // ─── LISTING DATA ─────────────────────────────────────────────────────────────
 
 export async function getListingDetails(contactId: string) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    return { listing: null, metrics: null, engagement: [], priceHistory: [] }
+  }
 
-  // Get listing with all details
+  const supabase = createServiceClient()
+
+  // Get listing with all details — scoped to caller's brokerage to defend
+  // against contact_id collisions across tenants
   const { data: listings } = await supabase
     .from("listings")
     .select(`
@@ -63,6 +131,7 @@ export async function getListingDetails(contactId: string) {
       lot_size, year_built, property_type, listing_type
     `)
     .eq("seller_contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -103,13 +172,24 @@ export async function getListingDetails(contactId: string) {
 // ─── SHOWING DATA ─────────────────────────────────────────────────────────────
 
 export async function getShowingInsights(contactId: string) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    return {
+      showings: [],
+      feedback: [],
+      weeklyStats: [],
+      sentimentBreakdown: { positive: 0, neutral: 0, negative: 0 },
+    }
+  }
 
-  // Get listing first
+  const supabase = createServiceClient()
+
+  // Get listing first — scoped to caller's brokerage
   const { data: listings } = await supabase
     .from("listings")
     .select("id")
     .eq("seller_contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -187,13 +267,17 @@ export async function getShowingInsights(contactId: string) {
 // ─── OFFER DATA ───────────────────────────────────────────────────────────────
 
 export async function getSellerOffers(contactId: string) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { offers: [], listPrice: null }
 
-  // Get listing first
+  const supabase = createServiceClient()
+
+  // Get listing first — scoped to caller's brokerage
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
     .eq("seller_contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -223,13 +307,17 @@ export async function getSellerOffers(contactId: string) {
 // ─── MARKET DATA ──────────────────────────────────────────────────────────────
 
 export async function getMarketPosition(contactId: string) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { report: null, comparison: null }
 
-  // Get listing first
+  const supabase = createServiceClient()
+
+  // Get listing first — scoped to caller's brokerage
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
     .eq("seller_contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -262,9 +350,31 @@ export async function getMarketPosition(contactId: string) {
 // ─── VENDOR DATA ──────────────────────────────────────────────────────────────
 
 export async function getSellerVendors(contactId: string, transactionId: string | null) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { assignments: [] }
 
   if (!transactionId) {
+    return { assignments: [] }
+  }
+
+  const supabase = createServiceClient()
+
+  // Verify the transaction belongs to caller's brokerage AND involves this contact
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  if (!tx || tx.brokerage_id !== access.brokerageId) {
+    return { assignments: [] }
+  }
+  const contactOnTx =
+    tx.buyer_contact_id === contactId ||
+    tx.seller_contact_id === contactId ||
+    tx.contact_id === contactId
+  // If caller is the contact themselves, require contact-on-transaction.
+  // Agents in the same brokerage can already see the transaction.
+  if (access.isContactSelf && !contactOnTx) {
     return { assignments: [] }
   }
 
@@ -275,6 +385,7 @@ export async function getSellerVendors(contactId: string, transactionId: string 
       vendor:vendors(id, business_name, vendor_type, phone, email, rating_avg)
     `)
     .eq("transaction_id", transactionId)
+    .eq("brokerage_id", access.brokerageId)
 
   return { assignments: assignments ?? [] }
 }
@@ -282,25 +393,44 @@ export async function getSellerVendors(contactId: string, transactionId: string 
 // ─── DOCUMENT DATA ────────────────────────────────────────────────────────────
 
 export async function getSellerDocuments(contactId: string, transactionId: string | null) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { clientDocuments: [], transactionDocuments: [] }
 
-  // Get client documents
+  const supabase = createServiceClient()
+
+  // Get client documents — scoped to caller's brokerage
   const { data: clientDocs } = await supabase
     .from("client_documents")
     .select("id, document_type, file_name, file_url, created_at, status")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
 
-  // Get transaction documents if we have a transaction
+  // Get transaction documents if we have a transaction; verify ownership first
   let transactionDocs: any[] = []
   if (transactionId) {
-    const { data: txDocs } = await supabase
-      .from("transaction_documents")
-      .select("id, document_type, file_name, file_url, created_at, status")
-      .eq("transaction_id", transactionId)
-      .order("created_at", { ascending: false })
+    const { data: tx } = await supabase
+      .from("transactions")
+      .select("brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
+      .eq("id", transactionId)
+      .maybeSingle()
+    const txValid =
+      !!tx &&
+      tx.brokerage_id === access.brokerageId &&
+      (!access.isContactSelf ||
+        tx.buyer_contact_id === contactId ||
+        tx.seller_contact_id === contactId ||
+        tx.contact_id === contactId)
+    if (txValid) {
+      const { data: txDocs } = await supabase
+        .from("transaction_documents")
+        .select("id, document_type, file_name, file_url, created_at, status")
+        .eq("transaction_id", transactionId)
+        .eq("brokerage_id", access.brokerageId)
+        .order("created_at", { ascending: false })
 
-    transactionDocs = txDocs ?? []
+      transactionDocs = txDocs ?? []
+    }
   }
 
   return {
@@ -312,20 +442,16 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 // ─── KERNEL EVENT EMISSION ────────────────────────────────────────────────────
 
 export async function emitSellerPortalViewed(contactId: string, moduleName?: string) {
-  const supabase = await createClient()
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return
 
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("brokerage_id")
-    .eq("id", contactId)
-    .maybeSingle()
-  const brokerageId = contact?.brokerage_id
-  if (!brokerageId) return
+  const supabase = createServiceClient()
 
   // Track which module was viewed in client_portal_activity for analytics
   if (moduleName) {
     supabase.from("client_portal_activity").insert({
       contact_id: contactId,
+      brokerage_id: access.brokerageId,
       activity_type: "portal_module_viewed",
       activity_data: { module: moduleName, viewed_at: new Date().toISOString() },
     }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
@@ -333,7 +459,7 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
 
   await processKernelEvent({
     event: KernelEvent.PORTAL_MODULE_VIEWED,
-    brokerageId,
+    brokerageId: access.brokerageId,
     entityType: "contact",
     entityId: contactId,
   }).then(() => {}, (err) => { console.error("[portal-seller] kernel event failed:", err) })

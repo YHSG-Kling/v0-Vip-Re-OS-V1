@@ -8,6 +8,8 @@ import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
 import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
@@ -25,6 +27,7 @@ import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 import { predictDeadlineRisks } from "@/app/actions/multi-persona"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -179,13 +182,13 @@ export default async function CoordinatorDashboard({
         .select("*, transactions(property_address)")
         .in("transaction_id", transactionIds)
         .in("status", ["pending", "in_progress"])
-        .order("milestone_date")
+        .order("target_date")
     : { data: [] }
 
   // Calculate overdue milestones
   const overdueMilestones = incompleteMilestones?.filter((m) => {
-    if (!m.milestone_date) return false
-    return new Date(m.milestone_date) < new Date()
+    if (!m.target_date) return false
+    return new Date(m.target_date) < new Date()
   })
 
   // Enrich transactions with health scores
@@ -231,6 +234,13 @@ export default async function CoordinatorDashboard({
     }
   })
 
+  // Today's AI brief — closings, at-risk deals, missing docs, interventions
+  const tcBrief = await generateUserTypeBrief({
+    userType: "TC",
+    userId: user.id,
+    brokerageId: brokerageId ?? null,
+  })
+
   return (
     <div className="min-h-screen bg-background p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -253,6 +263,13 @@ export default async function CoordinatorDashboard({
           </Badge>
         </div>
       </div>
+
+      {/* Today's Focus — AI Brief */}
+      <TodaysFocusCard brief={tcBrief} />
+
+      {/* Sprint 7 — Learning router for TC: tc_workload_spike,
+          tc_closing_backlog, staff_onboarding. Hides when no module qualifies. */}
+      <LearnThisWeekCard actorKind="staff" actorId={user.id} />
 
       {/* Deadline Risk Alert Banner */}
       {atRiskCount > 0 && (

@@ -23,6 +23,9 @@ import type {
   UploadDocumentRequest,
   UploadDocumentResponse,
   ProviderDocument,
+  ListFormsRequest,
+  ListFormsResponse,
+  ProviderForm,
 } from "./transaction-provider.interface"
 
 const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
@@ -385,4 +388,54 @@ export class DotloopProvider implements ITransactionProvider {
       }
     }
   }
+
+  async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
+    try {
+      const credentials = this.getCredentials()
+      if (!credentials) return { success: true, forms: [] }
+
+      const { apiKey, profileId } = credentials
+
+      // Dotloop exposes the brokerage form library under /profile/{id}/loop-template
+      // and /profile/{id}/form. We use the form endpoint which returns the
+      // forms available to this profile (state association + brokerage custom).
+      const params = new URLSearchParams()
+      if (request.stateCode) params.set("state", request.stateCode)
+      if (request.query)     params.set("q", request.query)
+      params.set("page_size", String(request.pageSize ?? 100))
+
+      const response = await fetch(
+        `${DOTLOOP_API_BASE}/profile/${profileId}/form?${params.toString()}`,
+        { headers: this.getHeaders(apiKey) }
+      )
+      if (!response.ok) {
+        return { success: false, error: `Dotloop listForms ${response.status}: ${response.statusText}` }
+      }
+      const data = await response.json()
+      const forms: ProviderForm[] = (data.data ?? data ?? []).map((f: any) => ({
+        formId:    String(f.form_id ?? f.id),
+        name:      f.name ?? f.title ?? "Form",
+        issuer:    f.association ?? f.issuer,
+        stateCode: f.state ?? f.state_code,
+        category:  mapDotloopCategory(f.category ?? f.type),
+        version:   f.version,
+        previewUrl: f.preview_url ?? f.url,
+      }))
+      return { success: true, forms }
+    } catch (err: any) {
+      console.error("[v0] Dotloop listForms error:", err)
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+function mapDotloopCategory(c: string | undefined): ProviderForm["category"] {
+  const s = (c ?? "").toString().toLowerCase()
+  if (s.includes("listing"))     return "listing"
+  if (s.includes("purchase"))    return "offer"
+  if (s.includes("offer"))       return "offer"
+  if (s.includes("addendum"))    return "addendum"
+  if (s.includes("disclosure"))  return "disclosure"
+  if (s.includes("agency"))      return "agency"
+  return "other"
 }

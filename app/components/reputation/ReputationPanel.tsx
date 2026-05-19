@@ -66,6 +66,7 @@ import {
   loadGiftHistoryAction,
   createReviewRequestAction,
 } from "@/app/actions/reputation-kernel"
+import { getReputationPreferences, saveReputationPreferences } from "@/app/actions/settings/reputation-preferences"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -133,6 +134,32 @@ export function ReputationPanel({
 
   // ── Shared ──────────────────────────────────────────
   const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  // J8 Gap 8.2 — review filters + auto-respond preferences
+  const [reviewFilterPlatform, setReviewFilterPlatform] = useState<"all" | "google" | "zillow" | "realtor" | "yelp" | "facebook">("all")
+  const [reviewFilterRange, setReviewFilterRange] = useState<"30d" | "90d" | "all">("all")
+  const [autoRespondMode, setAutoRespondMode] = useState<"off" | "review" | "auto">("off")
+  const [autoRespondApprovalHours, setAutoRespondApprovalHours] = useState<number>(24)
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
+
+  // Load preferences on mount
+  useEffect(() => {
+    if (!agentId || prefsLoaded) return
+    getReputationPreferences(agentId).then((prefs) => {
+      setAutoRespondMode(prefs.autoRespondMode)
+      setAutoRespondApprovalHours(prefs.autoRespondApprovalHours)
+      setPrefsLoaded(true)
+    })
+  }, [agentId, prefsLoaded])
+
+  // Persist auto-respond mode change
+  const handleAutoRespondModeChange = useCallback((mode: "off" | "review" | "auto") => {
+    setAutoRespondMode(mode)
+    if (agentId) {
+      saveReputationPreferences(agentId, { autoRespondMode: mode, autoRespondApprovalHours })
+        .then((res) => { if (!res.success) toast.error("Failed to save preference") })
+    }
+  }, [agentId, autoRespondApprovalHours])
 
   function copy(text: string, id: string) {
     navigator.clipboard.writeText(text)
@@ -433,7 +460,7 @@ export function ReputationPanel({
           { label: "Total Reviews",  value: totalReviews,           icon: Star,         bg: "bg-yellow-50", color: "text-yellow-500" },
           { label: "Avg Rating",     value: avgRating,              icon: ThumbsUp,     bg: "bg-green-50",  color: "text-green-500"  },
           { label: "Review Ready",   value: reviewReadyClients.length, icon: MessageSquare, bg: "bg-blue-50", color: "text-blue-500" },
-          { label: "Past Clients",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-500"   },
+          { label: "Lifetime Customers",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-500"   },
         ].map(({ label, value, icon: Icon, bg, color }) => (
           <Card key={label}>
             <CardContent className="p-4 flex items-center justify-between">
@@ -509,17 +536,63 @@ export function ReputationPanel({
 
           {/* Recent Reviews */}
           <Card>
-            <CardHeader>
+            <CardHeader className="space-y-3">
               <CardTitle className="text-sm flex items-center gap-2">
                 <ThumbsUp className="w-4 h-4 text-green-500" /> Recent Reviews
               </CardTitle>
+              {/* J8 Gap 8.2 — platform + date filters */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Platform:</span>
+                {(["all", "google", "zillow", "realtor", "yelp", "facebook"] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setReviewFilterPlatform(p)}
+                    className={`px-2 py-0.5 rounded-full border capitalize ${
+                      reviewFilterPlatform === p
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background border-muted-foreground/20 hover:border-primary/50"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+                <span className="text-muted-foreground ml-2">Range:</span>
+                {(["30d", "90d", "all"] as const).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setReviewFilterRange(r)}
+                    className={`px-2 py-0.5 rounded-full border ${
+                      reviewFilterRange === r
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background border-muted-foreground/20 hover:border-primary/50"
+                    }`}
+                  >
+                    {r === "30d" ? "30 days" : r === "90d" ? "90 days" : "All time"}
+                  </button>
+                ))}
+              </div>
             </CardHeader>
             <CardContent>
-              {reviews.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No reviews yet</p>
-              ) : (
+              {(() => {
+                const cutoff =
+                  reviewFilterRange === "all"
+                    ? null
+                    : Date.now() - (reviewFilterRange === "30d" ? 30 : 90) * 24 * 60 * 60 * 1000
+                const filteredReviews = reviews.filter((r: any) => {
+                  if (reviewFilterPlatform !== "all" && r.platform !== reviewFilterPlatform) return false
+                  if (cutoff && new Date(r.created_at).getTime() < cutoff) return false
+                  return true
+                })
+                if (filteredReviews.length === 0) {
+                  return (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      No reviews match the current filter.
+                    </p>
+                  )
+                }
+                return (
                 <div className="space-y-3">
-                  {reviews.slice(0, 5).map((r: any) => (
+                  {filteredReviews.slice(0, 10).map((r: any) => (
                     <div key={r.id} className="p-3 rounded-lg border space-y-1">
                       <div className="flex items-center justify-between">
                         <p className="font-medium text-sm">{r.reviewer_name || "Anonymous"}</p>
@@ -533,6 +606,58 @@ export function ReputationPanel({
                       <p className="text-xs text-muted-foreground capitalize">{r.platform} &mdash; {new Date(r.created_at).toLocaleDateString()}</p>
                     </div>
                   ))}
+                </div>
+                )
+              })()}
+            </CardContent>
+          </Card>
+
+          {/* J8 Gap 8.2 — Auto-respond preferences */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-violet-500" /> Auto-respond
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              <p className="text-muted-foreground">
+                When a new review arrives, AI can draft a persona-aware response (matched to the
+                reviewer's age group when known) and either queue it for your review or publish it
+                automatically.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {(["off", "review", "auto"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => handleAutoRespondModeChange(m)}
+                    className={`px-2.5 py-1 rounded-full border ${
+                      autoRespondMode === m
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background border-muted-foreground/20 hover:border-primary/50"
+                    }`}
+                  >
+                    {m === "off" ? "Off" : m === "review" ? "Review then publish" : "Fully automatic"}
+                  </button>
+                ))}
+              </div>
+              {autoRespondMode === "review" && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-muted-foreground">Approval window:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={168}
+                    value={autoRespondApprovalHours}
+                    onChange={(e) => setAutoRespondApprovalHours(Math.max(1, Number(e.target.value) || 24))}
+                    onBlur={(e) => {
+                      const hours = Math.max(1, Number(e.target.value) || 24)
+                      if (agentId) {
+                        saveReputationPreferences(agentId, { autoRespondMode, autoRespondApprovalHours: hours })
+                      }
+                    }}
+                    className="w-16 h-7 rounded border px-2 text-xs"
+                  />
+                  <span className="text-muted-foreground">hours</span>
                 </div>
               )}
             </CardContent>
@@ -589,7 +714,7 @@ export function ReputationPanel({
                     <div className="min-w-0">
                       <p className="font-medium text-sm truncate">{client.first_name} {client.last_name}</p>
                       <p className="text-xs text-muted-foreground truncate">
-                        {client.transactions?.[0]?.property_address || "Past Client"}
+                        {client.transactions?.[0]?.property_address || "Lifetime Customer"}
                       </p>
                     </div>
                     <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>

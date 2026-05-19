@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/stripe"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import Stripe from "stripe"
 
 // Stripe webhook handler
@@ -28,7 +29,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
 
-  const supabase = await createClient()
+  // Webhook is authenticated by Stripe signature verification above. There is
+  // no user session in this request, so the RLS-enforced server client would
+  // block every upsert (current_user_brokerage_id() returns null → the
+  // billing_invoices_tenant_* and subscriptions_tenant_* policies reject the
+  // row). Use the service client.
+  const supabase = createServiceClient()
 
   try {
     switch (event.type) {
@@ -158,6 +164,11 @@ export async function POST(request: NextRequest) {
         if (error) {
           console.error("[Billing Webhook] Failed to update subscription:", error)
         }
+
+        // Keep brokerages.plan_tier in sync with the active subscription so
+        // cap-enforcement reflects upgrades/downgrades immediately. Failure
+        // here is logged but doesn't fail the webhook.
+        await syncBrokeragePlanTier(brokerageId)
         break
       }
 
@@ -185,6 +196,11 @@ export async function POST(request: NextRequest) {
           console.error("[Billing Webhook] Failed to cancel subscription:", error)
         }
 
+        // Cap-enforcement: with no active subscription the brokerage falls
+        // back to the entry-level tier. Caps tighten immediately so we can't
+        // burn paid features on a cancelled account.
+        await syncBrokeragePlanTier(brokerageId)
+
         // Notify brokerage
         await supabase.from("notifications").insert({
           brokerage_id: brokerageId,
@@ -197,8 +213,19 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      // ─── STRIPE CONNECT: ACCOUNT UPDATED (onboarding complete) ───────────────
+      case "account.updated": {
+        const account = event.data.object as Stripe.Account
+        if (account.details_submitted && account.charges_enabled) {
+          await supabase
+            .from("vendor_marketplace_profiles")
+            .update({ stripe_onboarding_complete: true })
+            .eq("stripe_account_id", account.id)
+        }
+        break
+      }
+
       default:
-        // Unhandled event type
         console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
     }
 

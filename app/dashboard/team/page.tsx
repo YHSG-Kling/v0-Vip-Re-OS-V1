@@ -281,7 +281,7 @@ export default async function TeamDashboard() {
               icon: Users,
               color: "text-blue-500",
               bg: "bg-blue-500/10",
-              href: "/dashboard/contacts",
+              href: "/crm/contacts",
             },
             {
               label: "Active Transactions",
@@ -305,7 +305,7 @@ export default async function TeamDashboard() {
               icon: Clock,
               color: "text-amber-500",
               bg: "bg-amber-500/10",
-              href: "/dashboard/contacts",
+              href: "/crm/contacts",
             },
             {
               label: "Handoff Required",
@@ -570,7 +570,7 @@ export default async function TeamDashboard() {
                 ) : (
                   <div className="space-y-2">
                     {staleContacts.slice(0, 6).map((c) => (
-                      <Link key={c.id} href={`/dashboard/contacts/${c.id}`}>
+                      <Link key={c.id} href={`/crm/contacts/${c.id}`}>
                         <div className="flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 cursor-pointer">
                           <Avatar className="h-6 w-6 shrink-0">
                             <AvatarFallback className="text-[10px]">
@@ -590,7 +590,7 @@ export default async function TeamDashboard() {
                         </div>
                       </Link>
                     ))}
-                    <Link href="/dashboard/contacts">
+                    <Link href="/crm/contacts">
                       <Button variant="outline" size="sm" className="w-full text-xs mt-1">
                         Work Stale Queue
                       </Button>

@@ -181,6 +181,7 @@ export enum KernelEvent {
 
   // ── TRANSACTION ORCHESTRATION (Layer 6) ──────────────────────────────────
   TRANSACTION_STAGE_CHANGED           = 'transaction_stage_changed',
+  TRANSACTION_CLOSED                  = 'transaction_closed',
   INSPECTION_ORDERED                  = 'inspection_ordered',
   INSPECTION_QUOTE_REQUESTED          = 'inspection_quote_requested',
   INSPECTION_QUOTE_APPROVED           = 'inspection_quote_approved',
@@ -216,6 +217,7 @@ export enum KernelEvent {
 
   // ── Layer 8.2 — Video Generation Engine ────────────────────────────────
   VIDEO_GENERATION_REQUESTED     = 'video_generation_requested',
+  VIDEO_GENERATION_COMPLETED     = 'video_generation_completed',
   VIDEO_PREVIEW_READY            = 'video_preview_ready',
   VIDEO_PUBLISHED                = 'video_published',
   VIDEO_GENERATION_FAILED        = 'video_generation_failed',
@@ -334,6 +336,8 @@ export enum KernelEvent {
   DAILY_BRIEFING_GENERATED           = 'daily_briefing_generated',
   DEAL_HEALTH_SCORE_UPDATED          = 'deal_health_score_updated',
   DEAL_AT_RISK_DETECTED              = 'deal_at_risk_detected',
+  LISTING_HEALTH_SCORE_UPDATED       = 'listing_health_score_updated',
+  LISTING_AT_RISK_DETECTED           = 'listing_at_risk_detected',
   INTENT_CLASSIFIED                  = 'intent_classified',
   COACHING_REPORT_GENERATED          = 'coaching_report_generated',
   PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
@@ -396,7 +400,7 @@ export enum KernelEvent {
   CRON_FAILED                        = 'cron_failed',
 
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
-  PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
+  LIFETIME_CUSTOMER_TOUCHPOINT_SENT  = 'lifetime_customer_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
   MARKET_UPDATE_SENT                 = 'market_update_sent',
   REFERRAL_ASK_SENT                  = 'referral_ask_sent',

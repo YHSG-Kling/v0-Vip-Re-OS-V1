@@ -45,13 +45,17 @@ const RESTRICTED_STATES = new Set([
 // ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // 1. Validate webhook secret
+  // 1. Validate webhook secret. REQUIRED — without it, any caller can trigger
+  // the voice-call-bridge handlers below. An unconfigured deploy (no env var)
+  // must reject all webhooks rather than fall through to "no check".
   const secret = process.env.VAPI_WEBHOOK_SECRET
-  if (secret) {
-    const incoming = req.headers.get("x-vapi-secret")
-    if (incoming !== secret) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  if (!secret) {
+    console.warn("[vapi-webhook] VAPI_WEBHOOK_SECRET not set — rejecting request")
+    return NextResponse.json({ error: "Webhook secret not configured" }, { status: 401 })
+  }
+  const incoming = req.headers.get("x-vapi-secret")
+  if (incoming !== secret) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   let payload: Record<string, any>

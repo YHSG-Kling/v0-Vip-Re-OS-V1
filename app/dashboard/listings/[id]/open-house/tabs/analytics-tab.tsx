@@ -401,7 +401,7 @@ export function AnalyticsTab({ listingId }: Props) {
                         {hotProspects.map((f, i) => (
                           <Link
                             key={i}
-                            href={`/crm?contactId=${f.contact_id}`}
+                            href={`/crm?contact=${f.contact_id}`}
                             className="text-xs text-amber-800 underline underline-offset-2 hover:text-amber-900"
                           >
                             View contact {f.contact_id.slice(0, 8)}...

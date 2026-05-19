@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { determinePortalView } from "@/lib/kernel/portal"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // ─── SELLER CONTEXT TYPES ─────────────────────────────────────────────────────
 
@@ -18,6 +19,10 @@ export interface ListingData {
   status: string | null
   listing_status: string | null
   listing_date: string | null
+  go_live_date: string | null
+  /** Computed DOM (days on market) — derived from go_live_date when this
+   *  row is hydrated. Materialized here so consumers can read it directly
+   *  without re-computing. NULL when go_live_date is unset. */
   dom: number | null
   bedrooms: number | null
   bathrooms: number | null
@@ -150,15 +155,20 @@ export async function resolveSellerContext(
 
   const contactName = contact?.first_name || contact?.name || "there"
 
-  // Get active or most recent listing for this seller
+  // Get active or most recent listing for this seller. The `dom` column
+  // does NOT exist in the live schema — we select `go_live_date` and
+  // compute DOM via the canonical helper.
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, seller_contact_id, address, property_address, city, state, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .select("id, seller_contact_id, address, property_address, city, state, list_price, status, listing_status, listing_date, go_live_date, bedrooms, bathrooms, square_feet, description, primary_photo_url")
     .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
-  const listing: ListingData | null = listings?.[0] ?? null
+  const rawListing = listings?.[0] ?? null
+  const listing: ListingData | null = rawListing
+    ? { ...rawListing, dom: computeDaysOnMarket(rawListing.go_live_date) }
+    : null
 
   // Get listing metrics if listing exists
   let metrics: ListingMetrics | null = null
@@ -197,13 +207,14 @@ export async function resolveSellerContext(
 }
 
 /**
- * Calculates days on market from listing date.
+ * Calculates days on market from listings.go_live_date.
+ *
+ * Delegates to the canonical `lib/listings/compute-dom.ts`. Parameter
+ * name preserved as `listingDate` for caller back-compat — but the value
+ * MUST be `go_live_date`, NOT the listing agreement signature date.
  */
 export function calculateDOM(listingDate: string | null): number {
-  if (!listingDate) return 0
-  const start = new Date(listingDate)
-  const today = new Date()
-  return Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+  return computeDaysOnMarket(listingDate) ?? 0
 }
 
 /**

@@ -1,18 +1,22 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
-import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2 } from "lucide-react"
+import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2, Scissors, Code2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/app/components/ui/dialog"
 import { Input } from "@/app/components/ui/input"
 import { Label } from "@/app/components/ui/label"
 import { Textarea } from "@/app/components/ui/textarea"
 import { EpisodesTab } from "./components/episodes-tab"
-import { TemplatesTab } from "./components/templates-tab"
-import { DistributionChannelsTab } from "./components/distribution-channels-tab"
 import { CreateEpisodeDialog } from "./components/create-episode-dialog"
+import { AnalyticsTab } from "./components/analytics-tab"
+import { RepurposeTab } from "./components/repurpose-tab"
+import { MyShowTab } from "./components/my-show-tab"
+import { SetupTab } from "./components/setup-tab"
+import { EmbedWidgetTab } from "./components/embed-widget-tab"
 import {
   getPodcastEpisodes,
   getPodcastTemplates,
@@ -57,6 +61,7 @@ interface PodcastDashboardProps {
   initialEpisodes?: Episode[]
   totalPlays?: number
   userType?: string
+  hasVoiceClone?: boolean
 }
 
 export function PodcastDashboard({
@@ -65,6 +70,7 @@ export function PodcastDashboard({
   initialEpisodes = [],
   totalPlays = 0,
   userType = "agent",
+  hasVoiceClone = false,
 }: PodcastDashboardProps) {
   const isAdmin = userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin"
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes)
@@ -76,7 +82,22 @@ export function PodcastDashboard({
   const [newTemplateName, setNewTemplateName] = useState("")
   const [newTemplateDesc, setNewTemplateDesc] = useState("")
   const [creatingTemplate, setCreatingTemplate] = useState(false)
-  const [activeTab, setActiveTab] = useState("episodes")
+  const [activeTab, setActiveTab] = useState("my-show")
+
+  // Wire `?episode=<uuid>` from voice/Copilot stage_podcast_episode tool.
+  // EpisodesTab opens that episode's details sheet on mount; we just need
+  // to switch the active tab so the user lands on it.
+  const searchParams = useSearchParams()
+  const episodeFromUrl = searchParams?.get("episode") ?? null
+  const validEpisodeId =
+    episodeFromUrl &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(episodeFromUrl)
+      ? episodeFromUrl
+      : null
+
+  useEffect(() => {
+    if (validEpisodeId) setActiveTab("episodes")
+  }, [validEpisodeId])
 
   useEffect(() => {
     loadData()
@@ -241,45 +262,71 @@ export function PodcastDashboard({
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
           <div className="px-6 pt-4 border-b border-gray-200 bg-white">
             <TabsList>
+              <TabsTrigger value="my-show" className="gap-2">
+                <Mic className="h-4 w-4" />
+                My Show
+              </TabsTrigger>
               <TabsTrigger value="episodes" className="gap-2">
                 <Radio className="h-4 w-4" />
                 Episodes
               </TabsTrigger>
-              <TabsTrigger value="templates" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Templates
+              <TabsTrigger value="analytics" className="gap-2">
+                <BarChart2 className="h-4 w-4" />
+                Analytics
               </TabsTrigger>
-              <TabsTrigger value="distribution" className="gap-2">
-                <Mic className="h-4 w-4" />
-                Distribution Channels
+              <TabsTrigger value="repurpose" className="gap-2">
+                <Scissors className="h-4 w-4" />
+                Repurpose
+              </TabsTrigger>
+              <TabsTrigger value="setup" className="gap-2">
+                <Settings className="h-4 w-4" />
+                Setup
+              </TabsTrigger>
+              <TabsTrigger value="embed" className="gap-2">
+                <Code2 className="h-4 w-4" />
+                Embed Widget
               </TabsTrigger>
             </TabsList>
           </div>
 
           <div className="flex-1 overflow-auto p-6 bg-gray-50">
+            <TabsContent value="my-show" className="mt-0 h-full">
+              <MyShowTab channels={channels} hasVoiceClone={hasVoiceClone} />
+            </TabsContent>
+
             <TabsContent value="episodes" className="mt-0 h-full">
               <EpisodesTab
                 episodes={episodes}
                 loading={loading}
                 onRefresh={loadData}
                 channels={channels}
+                initialEpisodeId={validEpisodeId}
               />
             </TabsContent>
 
-            <TabsContent value="templates" className="mt-0 h-full">
-              <TemplatesTab
+            <TabsContent value="analytics" className="mt-0 h-full">
+              <AnalyticsTab />
+            </TabsContent>
+
+            <TabsContent value="repurpose" className="mt-0 h-full">
+              <RepurposeTab episodes={episodes} />
+            </TabsContent>
+
+            <TabsContent value="setup" className="mt-0 h-full">
+              <SetupTab
                 templates={templates}
-                loading={loading}
-                onUpdate={handleTemplateUpdated}
-              />
-            </TabsContent>
-
-            <TabsContent value="distribution" className="mt-0 h-full">
-              <DistributionChannelsTab
                 channels={channels}
                 loading={loading}
-                onUpdate={handleChannelUpdated}
                 isAdmin={isAdmin}
+                onTemplatesUpdate={handleTemplateUpdated}
+                onChannelsUpdate={handleChannelUpdated}
+              />
+            </TabsContent>
+
+            <TabsContent value="embed" className="mt-0 h-full">
+              <EmbedWidgetTab
+                episodes={episodes.map((e) => ({ id: e.id, title: e.title, status: e.status, audio_url: e.audio_url }))}
+                agentId={agentId}
               />
             </TabsContent>
           </div>
@@ -293,6 +340,7 @@ export function PodcastDashboard({
         templates={templates}
         channels={channels}
         onCreated={handleEpisodeCreated}
+        hasVoiceClone={hasVoiceClone}
       />
 
       {/* Create Template Dialog */}

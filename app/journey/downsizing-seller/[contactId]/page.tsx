@@ -92,7 +92,7 @@ const DOWNSIZING_SELLER_STAGES = [
   },
 ]
 
-export default function DownsizingSellerJourneyPage({ params }: { params: { contactId: string } }) {
+export default function DownsizingSellerJourneyPage({ params }: { params: Promise<{ contactId: string }> }) {
   const [currentStage, setCurrentStage] = useState(2)
   const progress = (currentStage / DOWNSIZING_SELLER_STAGES.length) * 100
 

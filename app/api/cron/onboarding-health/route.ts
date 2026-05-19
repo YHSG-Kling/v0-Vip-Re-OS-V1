@@ -3,7 +3,8 @@
 // Cron job to detect stalled onboarding and create smart assistant suggestions
 // Schedule: Daily via Vercel Cron
 
-import { NextRequest, NextResponse } from 'next/server'
+import {
+NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel/notification-engine'
@@ -13,6 +14,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 // Vercel Cron config
 export const runtime = 'nodejs'
@@ -23,11 +25,9 @@ export const maxDuration = 60
 const STALLED_DAYS_THRESHOLD = 7
 
 export async function GET(request: NextRequest) {
-  // Verify cron secret
-  const authHeader = request.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: 'onboarding-health',

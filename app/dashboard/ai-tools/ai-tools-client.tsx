@@ -186,7 +186,7 @@ const TOOLS = [
     icon: Reply,
     inputs: [
       { name: "lastMessage", type: "textarea", label: "Last received message", placeholder: "Paste the message you received..." },
-      { name: "relationshipType", type: "select", label: "Relationship type", options: ["buyer-lead", "seller-lead", "active-buyer", "active-seller", "past-client", "sphere"] },
+      { name: "relationshipType", type: "select", label: "Relationship type", options: ["buyer-lead", "seller-lead", "active-buyer", "active-seller", "lifetime-customer", "sphere"] },
     ],
   },
   // BUSINESS INTELLIGENCE TOOLS (green)

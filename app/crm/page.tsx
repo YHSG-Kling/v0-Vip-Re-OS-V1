@@ -4,10 +4,25 @@ import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
+import {
+  getContactCreditAccounts,
+  getContactVideoEngagement,
+  getContactTransactions,
+  getContactActivity,
+} from "@/app/actions/contact-details"
+import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@/app/actions/contact-intelligence"
+import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
+import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
+import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
+import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
+import { ContactHeaderCard } from "@/app/crm/components/contact-header-card"
+import { getActiveAutoPilotPlans, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
+import { getUnifiedLeadProfiles, getSocialIntelligence } from "@/app/actions/lead-intelligence"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { listCampaignSequences, enrollContactInSequence } from "@/app/actions/campaign-sequences"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
@@ -16,11 +31,12 @@ import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
-import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
+import { sendSMS, scheduleAppointment } from "@/app/actions/communications"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -39,6 +55,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
+import SendBuyerIntakeButton from "@/app/crm/components/workflow-actions/send-buyer-intake-button"
 import {
   Users,
   Search,
@@ -67,25 +84,30 @@ import {
   MessageCircle,
   CalendarPlus,
   Workflow,
+  CreditCard,
+  Video,
+  Activity,
+  DollarSign,
+  CheckSquare,
 } from "lucide-react"
 import Link from "next/link"
-import { format } from "date-fns"
+import { format, formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 
 // Import all 10 Contact OS components
 import {
-  ContactCommandStrip,
-  RelationshipRadar,
+  ContactPulsePanel,
   CommunicationHealthPanel,
   NextBestActionPanel,
   ValueDeliveredPanel,
-  ReferralLikelihoodPanel,
   TimelineContextPanel,
   RelationshipAiChatPanel,
   SmartNoteComposer,
   BuyerMatchPanel,
+  QualificationSummaryCard,
+  type IsaHandoffBriefShape,
 } from "./components/os"
 
 interface Contact {
@@ -133,99 +155,16 @@ const TYPE_COLORS: Record<string, string> = {
   buyer: "bg-blue-50 text-blue-700",
   seller: "bg-green-50 text-green-700",
   investor: "bg-purple-50 text-purple-700",
+  lifetime_customer: "bg-emerald-50 text-emerald-700",
   other: "bg-gray-50 text-gray-600",
 }
 
-function ContactOSSummary({
-  contact,
-  copilotPlan,
-  portalStatus,
-  lastTouch,
-  onMessageClick,
-}: {
-  contact: Contact
-  copilotPlan: any
-  portalStatus?: string | null
-  lastTouch?: string | null
-  onMessageClick: () => void
-}) {
-  const daysSince =
-    lastTouch != null
-      ? Math.floor((Date.now() - new Date(lastTouch).getTime()) / 86400000)
-      : null
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b bg-muted/30 rounded-t-md">
-      {contact.contact_persona && (
-        <Badge variant="outline" className="capitalize text-xs">
-          {contact.contact_persona.replace(/_/g, " ")}
-        </Badge>
-      )}
-
-      {contact.status && (
-        <Badge
-          className={cn(
-            "text-xs border-0",
-            contact.status === "active" || contact.status === "lifetime_customer"
-              ? "bg-green-100 text-green-800"
-              : contact.status === "nurture" || contact.status === "contacted"
-              ? "bg-blue-100 text-blue-800"
-              : "bg-gray-100 text-gray-700"
-          )}
-        >
-          {contact.status.replace(/_/g, " ")}
-        </Badge>
-      )}
-
-      {portalStatus && (
-        <Badge variant="outline" className="text-xs">
-          Portal: {portalStatus}
-        </Badge>
-      )}
-
-      {daysSince !== null && (
-        <span
-          className={cn(
-            "text-xs",
-            daysSince > 30
-              ? "text-red-600 font-medium"
-              : daysSince > 14
-              ? "text-amber-600"
-              : "text-muted-foreground"
-          )}
-        >
-          {daysSince === 0
-            ? "Touched today"
-            : daysSince === 1
-            ? "Last touch: yesterday"
-            : `Last touch: ${daysSince}d ago`}
-        </span>
-      )}
-
-      {copilotPlan?.next_action && (
-        <span className="text-xs text-indigo-700 truncate max-w-[220px]">
-          AI Plan: {copilotPlan.next_action.slice(0, 60)}
-          {copilotPlan.next_action.length > 60 ? "…" : ""}
-        </span>
-      )}
-
-      <div className="ml-auto flex gap-1.5 shrink-0">
-        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" asChild>
-          <Link href={`/portal/${contact.id}`} target="_blank">
-            Portal
-          </Link>
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs"
-          onClick={onMessageClick}
-        >
-          Message
-        </Button>
-      </div>
-    </div>
-  )
+const TYPE_AVATAR_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  buyer:             { bg: "bg-blue-100",    text: "text-blue-700",    border: "border-l-blue-400" },
+  seller:            { bg: "bg-green-100",   text: "text-green-700",   border: "border-l-green-400" },
+  investor:          { bg: "bg-purple-100",  text: "text-purple-700",  border: "border-l-purple-400" },
+  lifetime_customer: { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-l-emerald-400" },
+  other:             { bg: "bg-gray-100",    text: "text-gray-600",    border: "border-l-gray-300" },
 }
 
 export default function CRMPage() {
@@ -238,7 +177,7 @@ export default function CRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
-  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor">("all")
+  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor" | "lifetime_customer">("all")
   const [loading, setLoading] = useState(true)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -247,12 +186,21 @@ export default function CRMPage() {
   const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
-  // Selected contact detail state
+  // Selected contact detail state.
+  // Reader accepts BOTH ?contact= (canonical, preferred) AND ?contactId= (legacy alias).
+  // 18 writers across the app previously used the longer form; the alias here keeps
+  // every old URL, bookmark, and email-deeplink working while writers migrate.
   const [selectedContactId, setSelectedContactId] = useState<string | null>(
-    searchParams.get("contact")
+    searchParams.get("contact") ?? searchParams.get("contactId")
   )
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+
+  // Brief-driven action: when the morning brief deep-links here with
+  // ?action=draft_followup or ?action=schedule_appointment, auto-open the
+  // matching sheet so the agent can act in one click.
+  const briefAction = searchParams.get("action")
+  const [pendingBriefAction, setPendingBriefAction] = useState<string | null>(briefAction)
 
   // Agent context (resolved from agents table, not users table)
   // contacts.agent_id = agents.id — must resolve via agents.user_id = auth user.id
@@ -277,6 +225,16 @@ export default function CRMPage() {
   // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
   const [contactActivities, setContactActivities] = useState<any[]>([])
   const [callAnalyses, setCallAnalyses] = useState<Record<string, any>>({})
+
+  // Contact-detail data for the Credit / Videos / Transactions / Activity tabs
+  // (these tabs were previously only available on the deprecated /crm/contacts/[id] route)
+  const [creditAccounts, setCreditAccounts] = useState<any[]>([])
+  const [contactVideos, setContactVideos] = useState<any[]>([])
+  const [contactTransactions, setContactTransactions] = useState<any[]>([])
+  const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
+  const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
+  const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
+  const [socialSignals, setSocialSignals] = useState<any[]>([])
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
@@ -293,7 +251,6 @@ export default function CRMPage() {
   const [apptSending, setApptSending] = useState(false)
   const [autoDialogOpen, setAutoDialogOpen] = useState(false)
   const [autoWorkflowId, setAutoWorkflowId] = useState("")
-  const [autoEventName, setAutoEventName] = useState("")
   const [autoSending, setAutoSending] = useState(false)
 
   // Suggested follow-up actions for the selected contact
@@ -334,6 +291,13 @@ export default function CRMPage() {
 
   // Active CRM tab
   const [activeTab, setActiveTab] = useState("overview")
+
+  // Bulk select + Enroll in Campaign
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set())
+  const [enrollDialogOpen, setEnrollDialogOpen] = useState(false)
+  const [availableSequences, setAvailableSequences] = useState<{ id: string; name: string; sequence_type: string }[]>([])
+  const [selectedSequenceId, setSelectedSequenceId] = useState<string>("")
+  const [enrolling, setEnrolling] = useState(false)
 
   // AI Copilot Plan state (copilotPlan and loadingPlan already declared above)
   const [generatingPlan, setGeneratingPlan] = useState(false)
@@ -410,15 +374,49 @@ export default function CRMPage() {
       setBuyerInsights(null)
       setFatigueData(null)
       try {
-        // Core data loads — contact + churn + autopilot + followup + conv intel in parallel
-        const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
-          await Promise.all([
-            getContactById(contactId),
-            detectClientChurn(contactId).catch(() => null),
-            getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
-            aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
-            getConversationIntelligence(contactId).catch(() => null),
-          ])
+        // Core data loads — contact + churn + autopilot + followup + conv intel + tab data in parallel
+        const [
+          contactResult,
+          churnResult,
+          autopilotResult,
+          followUpResult,
+          convIntelResult,
+          creditResult,
+          videosResult,
+          transactionsResult,
+          activityResult,
+        ] = await Promise.all([
+          getContactById(contactId),
+          detectClientChurn(contactId).catch(() => null),
+          getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
+          aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
+          getConversationIntelligence(contactId).catch(() => null),
+          getContactCreditAccounts(contactId).catch(() => ({ accounts: [] })),
+          getContactVideoEngagement(contactId).catch(() => ({ videos: [] })),
+          getContactTransactions(contactId).catch(() => ({ transactions: [] })),
+          getContactActivity(contactId).catch(() => ({ activity: [] })),
+        ])
+
+        setCreditAccounts(creditResult?.accounts ?? [])
+        setContactVideos(videosResult?.videos ?? [])
+        setContactTransactions(transactionsResult?.transactions ?? [])
+        setContactActivityTimeline(activityResult?.activity ?? [])
+
+        // Intelligence loads independently — non-blocking
+        getContactIntelligence(contactId)
+          .then((res) => {
+            if (res.success && res.intelligence) setContactIntelligence(res.intelligence)
+            else setContactIntelligence(null)
+          })
+          .catch(() => setContactIntelligence(null))
+
+        // Unified lead profile + social intelligence signals — non-blocking
+        getUnifiedLeadProfiles({ contact_id: contactId })
+          .then((res) => setUnifiedLeadProfile(res.profiles?.[0] ?? null))
+          .catch(() => setUnifiedLeadProfile(null))
+        getSocialIntelligence()
+          .then((res) => setSocialSignals(res.signals ?? []))
+          .catch(() => setSocialSignals([]))
 
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
@@ -492,6 +490,22 @@ export default function CRMPage() {
   useEffect(() => {
     if (selectedContactId) {
       loadContactDetail(selectedContactId)
+      // Brief-driven action handling: when the morning brief deep-linked the
+      // agent here with ?action=draft_followup or ?action=schedule_appointment,
+      // jump to the right tab + surface a guiding toast so the agent acts
+      // in one click.
+      if (pendingBriefAction) {
+        const actionMap: Record<string, { tab: string; message: string }> = {
+          draft_followup: { tab: "comms", message: "Morning brief: draft a follow-up message" },
+          schedule_appointment: { tab: "comms", message: "Morning brief: schedule an appointment" },
+        }
+        const handler = actionMap[pendingBriefAction]
+        if (handler) {
+          setActiveTab(handler.tab)
+          toast.info(handler.message, { duration: 4000 })
+        }
+        setPendingBriefAction(null)
+      }
     }
   }, [selectedContactId, loadContactDetail])
 
@@ -686,23 +700,33 @@ export default function CRMPage() {
 
     const supabase = createClient()
 
-    // For sellers, load their listing
-    if (selectedContact.contact_persona === "Listing Seller") {
+    // Load related listing for any seller-type contact (was previously gated on
+    // exact persona "Listing Seller" which most sellers don't have).
+    // Schema: listings.zip (NOT zipcode) — old query failed silently.
+    const isSellerType =
+      (selectedContact.contact_type ?? "").toLowerCase().includes("seller") ||
+      (selectedContact.contact_persona ?? "").toLowerCase().includes("seller")
+
+    if (isSellerType) {
       supabase
         .from("listings")
-        .select("id, address, city, state, zipcode, status, list_price")
+        .select("id, address, city, state, zip, status, list_price")
         .eq("seller_contact_id", selectedContactId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
         .then(({ data }: { data: any | null }) => setRelatedListing(data ?? null))
         .catch(() => setRelatedListing(null))
+    } else {
+      setRelatedListing(null)
     }
 
-    // For all contacts, check for transactions
+    // Related transaction — buyer or seller side.
+    // Schema: transactions.purchase_price + close_date (NOT total_value /
+    // expected_close_date — old query failed silently and always set null).
     supabase
       .from("transactions")
-      .select("id, property_address, stage, total_value, expected_close_date")
+      .select("id, property_address, stage, status, purchase_price, close_date")
       .or(`buyer_contact_id.eq.${selectedContactId},seller_contact_id.eq.${selectedContactId}`)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -794,48 +818,13 @@ export default function CRMPage() {
     }
   }
 
-  // Handlers for OS components
-  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive"): Promise<void> => {
-    if (!selectedContactId || !agentId) return
-    const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-    if (result?.success) {
-      toast.success(result.message ?? "AI Autopilot enabled")
-      const [plans] = await Promise.all([
-        getActiveAutoPilotPlans(agentId).catch(() => []),
-      ])
-      setAutopilotPlans(Array.isArray(plans) ? plans : [])
-      const supabase = createClient()
-      const { data: updatedPlan } = await supabase
-        .from("copilot_plans")
-        .select("id, plan_name, status, next_action, next_action_date, updated_at")
-        .eq("contact_id", selectedContactId)
-        .eq("status", "active")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      setCopilotPlan(updatedPlan ?? null)
-    } else {
-      toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
-    }
-  }
+  // Note: legacy handleEnableAutopilot / handleToggleAutopilot were removed.
+  // AI engagement is now controlled exclusively through AIPilotControl ->
+  // setContactAIPilot(), which writes contacts.ai_autopilot_level (single
+  // source of truth). The old enableAIPilot() action wrote to a separate
+  // ai_autopilot_plans table that never synced and always returned
+  // Unauthorized due to a user.id vs agents.id comparison mismatch.
 
-  const handleToggleAutopilot = async (planId: string, pause: boolean) => {
-    startTransition(async () => {
-      const result = await toggleAutoPilot(planId, pause)
-      if (!(result as any).success) {
-        toast.error((result as any).error ?? "Failed to update autopilot")
-        return
-      }
-      if (pause) {
-        setAutopilotPlans(prev => prev.filter(p => p.id !== planId))
-      }
-      if (agentId) {
-        const plans = await getActiveAutoPilotPlans(agentId)
-        setAutopilotPlans(Array.isArray(plans) ? plans : [])
-      }
-      toast.success(pause ? "AI Autopilot paused" : "AI Autopilot resumed")
-    })
-  }
 
   const handleShareSocialPost = async () => {
     if (!selectedContactId) return
@@ -987,12 +976,56 @@ export default function CRMPage() {
       selectedContact.contact_type?.toLowerCase().includes("buyer") ||
       !!selectedContact.buyer_stage
 
+    // A contact is a candidate for a listing consultation if they are a seller
+    // OR a generic 'contact' (no specific type assigned yet) — not a confirmed
+    // buyer. The plan keeps this scheduler on the contact card because no
+    // listing record exists yet at this stage.
+    const ct = selectedContact.contact_type?.toLowerCase() ?? ""
+    const isListingCandidate =
+      ct.includes("seller") ||
+      ct === "" ||
+      ct === "contact" ||
+      ct === "lead" ||
+      ct === "both"
+
     const daysSinceContact = selectedContact.last_contacted_at
       ? Math.floor(
           (Date.now() - new Date(selectedContact.last_contacted_at).getTime()) /
             (1000 * 60 * 60 * 24)
         )
       : null
+
+    // Derived: message temperature from conversation sentiment for RelationshipRadar
+    const messageTemperature: "hot" | "warm" | "cold" | null =
+      conversationIntelligence?.sentiment_score != null
+        ? conversationIntelligence.sentiment_score >= 0.6
+          ? "hot"
+          : conversationIntelligence.sentiment_score >= 0.4
+          ? "warm"
+          : "cold"
+        : null
+
+    // Derived: value metrics from contact activities for ValueDeliveredPanel
+    const valueMetrics = {
+      milestonesCompleted: contactActivities.filter(
+        (a: any) =>
+          a.activity_type === "milestone_completed" ||
+          a.activity_type === "transaction_closed"
+      ).length,
+      contentSent: contactActivities.filter(
+        (a: any) =>
+          a.activity_type === "video_sent" ||
+          a.activity_type === "email_sent" ||
+          a.activity_type === "content_shared"
+      ).length,
+      showingsArranged: contactActivities.filter(
+        (a: any) => a.activity_type === "showing" || a.activity_type === "showing_scheduled"
+      ).length,
+      offersSubmitted: contactActivities.filter(
+        (a: any) => a.activity_type === "offer_submitted"
+      ).length,
+      trustCapitalScore: selectedContact.engagement_score ?? undefined,
+    }
 
     return (
       <div className="flex flex-col h-full min-h-0">
@@ -1010,112 +1043,66 @@ export default function CRMPage() {
           </div>
         ) : (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            {/* Contact Command Strip — full width */}
+            {/* Consolidated Contact Header — replaces the old gradient
+                ContactCommandStrip and absorbs the redundant sidebar identity
+                area. Single home for: identity, contact info, source/last touch,
+                action buttons (Call/SMS/Email/Portal/Note), AI Pilot dropdown,
+                channel suppression toggles. */}
             <div className="shrink-0 px-4 pt-3">
-              <ContactCommandStrip
+              <ContactHeaderCard
                 contact={selectedContact}
-                churnRisk={churnRisk}
-                autopilotPlans={autopilotPlans}
                 agentId={agentId || ""}
                 brokerageId={brokerageId || ""}
-                onEnableAutopilot={handleEnableAutopilot}
-                onToggleAutopilot={handleToggleAutopilot}
-                onShareSocialPost={handleShareSocialPost}
-                onChannelToggled={() => { if (selectedContactId) loadContactDetail(selectedContactId) }}
+                daysSinceContact={daysSinceContact}
+                churnRisk={churnRisk}
+                aiPilotLevel={
+                  ((contactIntelligence as any)?.ai_autopilot_level ?? null) ||
+                  (contactIntelligence?.ai_isa_enabled ? "moderate" : "off")
+                }
+                onAIPilotChange={(level) => {
+                  setContactIntelligence((prev: any) =>
+                    prev
+                      ? { ...prev, ai_autopilot_level: level, ai_isa_enabled: level !== "off" }
+                      : prev
+                  )
+                }}
                 onAddNote={() => setActiveTab("comms")}
-                loading={isPending}
+                onSendSMS={() => { setSmsText(""); setSmsDialogOpen(true) }}
+                onSendEmail={() => setActiveTab("comms")}
+                onShareSocialPost={handleShareSocialPost}
+                onChannelToggle={async (channel, optOut) => {
+                  const supabase = createClient()
+                  const col =
+                    channel === "email"       ? "email_opt_out" :
+                    channel === "sms"         ? "sms_opt_out" :
+                    channel === "phone"       ? "phone_opt_out" :
+                                                "direct_mail_opt_out"
+                  await supabase.from("contacts").update({ [col]: optOut }).eq("id", selectedContactId)
+                  if (selectedContactId) loadContactDetail(selectedContactId)
+                }}
               />
             </div>
 
             {/* Two-panel body: sticky sidebar + scrollable tab area */}
             <div className="flex flex-1 min-h-0 overflow-hidden mt-4">
 
-              {/* ── LEFT SIDEBAR — sticky identity panel ── */}
+              {/* ── LEFT SIDEBAR — slim deep-link rail.
+                   Identity, contact info, portal link, AI Pilot, channel toggles,
+                   and the Call/SMS/Email/Note buttons all live in the
+                   ContactHeaderCard above. This sidebar only holds:
+                     - Active Deal (related listing/transaction)
+                     - Quick deep-links that open dialogs or other routes
+                ── */}
               <aside className="w-64 shrink-0 border-r bg-muted/20 flex flex-col overflow-y-auto px-4 py-4 gap-4">
-                {/* Avatar + name */}
-                <div className="flex flex-col items-center text-center gap-2">
-                  <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary">
-                    {selectedContact.first_name?.[0]?.toUpperCase()}
-                    {selectedContact.last_name?.[0]?.toUpperCase()}
+                {/* Portal invite status — small banner at top */}
+                {portalInviteData?.status && (
+                  <div className="rounded-md border bg-background px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Portal</p>
+                    <p className="text-xs font-medium capitalize text-foreground">
+                      {portalInviteData.status === "not_invited" ? "Not invited yet" : portalInviteData.status}
+                    </p>
                   </div>
-                  <div>
-                    <p className="font-semibold text-sm leading-tight">
-                      {selectedContact.first_name} {selectedContact.last_name}
-                    </p>
-                    {selectedContact.contact_persona && (
-                      <p className="text-xs text-muted-foreground capitalize mt-0.5">
-                        {selectedContact.contact_persona.replace(/_/g, " ")}
-                      </p>
-                    )}
-                  </div>
-                  {/* Status + type badges */}
-                  <div className="flex flex-wrap justify-center gap-1">
-                    {selectedContact.contact_type && (
-                      <Badge className={cn("text-xs border-0", TYPE_COLORS[selectedContact.contact_type] ?? TYPE_COLORS.other)}>
-                        {selectedContact.contact_type}
-                      </Badge>
-                    )}
-                    {selectedContact.status && (
-                      <Badge className={cn("text-xs border-0", STATUS_COLORS[selectedContact.status] ?? "bg-gray-100 text-gray-700")}>
-                        {selectedContact.status.replace(/_/g, " ")}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-
-                <Separator />
-
-                {/* Contact details */}
-                <div className="space-y-2 text-xs">
-                  {selectedContact.email && (
-                    <a href={`mailto:${selectedContact.email}`} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors truncate">
-                      <Mail className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{selectedContact.email}</span>
-                    </a>
-                  )}
-                  {selectedContact.phone && (
-                    <a href={`tel:${selectedContact.phone}`} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
-                      <Phone className="h-3.5 w-3.5 shrink-0" />
-                      <span>{selectedContact.phone}</span>
-                    </a>
-                  )}
-                  {(selectedContact.city || selectedContact.state) && (
-                    <p className="flex items-center gap-2 text-muted-foreground">
-                      <MapPin className="h-3.5 w-3.5 shrink-0" />
-                      <span>{[selectedContact.city, selectedContact.state].filter(Boolean).join(", ")}</span>
-                    </p>
-                  )}
-                  {daysSinceContact !== null && (
-                    <p className={cn("text-xs mt-1 font-medium",
-                      daysSinceContact > 30 ? "text-red-600" :
-                      daysSinceContact > 14 ? "text-amber-600" :
-                      "text-muted-foreground"
-                    )}>
-                      {daysSinceContact === 0 ? "Touched today" :
-                       daysSinceContact === 1 ? "Last touch: yesterday" :
-                       `Last touch: ${daysSinceContact}d ago`}
-                    </p>
-                  )}
-                </div>
-
-                <Separator />
-
-                {/* Portal shortcut — always visible */}
-                <div className="space-y-1.5">
-                  <Link href={`/portal/${selectedContactId}`} target="_blank">
-                    <Button size="sm" variant="default" className="w-full gap-1.5 text-xs">
-                      <Globe className="h-3.5 w-3.5" />
-                      Open Client Portal
-                    </Button>
-                  </Link>
-                  {portalInviteData?.status && (
-                    <p className="text-xs text-center text-muted-foreground capitalize">
-                      Portal: {portalInviteData.status}
-                    </p>
-                  )}
-                </div>
-
-                <Separator />
+                )}
 
                 {/* Quick Actions */}
                 <div className="space-y-1.5">
@@ -1155,7 +1142,7 @@ export default function CRMPage() {
                   <Link href={`/dashboard/inbox?contact=${selectedContactId}`}>
                     <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
                       <MessageSquare className="h-3.5 w-3.5" />
-                      Open Inbox
+                      Full Inbox
                     </Button>
                   </Link>
                   <Button
@@ -1164,7 +1151,8 @@ export default function CRMPage() {
                     className="w-full gap-1.5 text-xs justify-start"
                     onClick={async () => {
                       if (!selectedContactId || !user) return
-                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id })
+                      // Agent-triggered scoring: mode='override' lets AI overwrite the lead_score baseline
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id, mode: "override" })
                       if (result.success && (result as any).scores) {
                         const overall = (result as any).scores.overallScore ?? 0
                         setLeadScores(prev => ({
@@ -1221,15 +1209,6 @@ export default function CRMPage() {
                     size="sm"
                     variant="outline"
                     className="w-full gap-1.5 text-xs justify-start"
-                    onClick={() => { setSmsText(""); setSmsDialogOpen(true) }}
-                  >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    Send SMS
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full gap-1.5 text-xs justify-start"
                     onClick={() => { setApptTitle(""); setApptDate(""); setApptTime(""); setApptDialogOpen(true) }}
                   >
                     <CalendarPlus className="h-3.5 w-3.5" />
@@ -1239,10 +1218,23 @@ export default function CRMPage() {
                     size="sm"
                     variant="outline"
                     className="w-full gap-1.5 text-xs justify-start"
-                    onClick={() => { setAutoWorkflowId(""); setAutoEventName(""); setAutoDialogOpen(true) }}
+                    onClick={async () => {
+                      // Lazy-load sequences only when the agent opens the dialog
+                      if (availableSequences.length === 0 && brokerageId) {
+                        const res = await listCampaignSequences(brokerageId)
+                        if (res.sequences) {
+                          setAvailableSequences(res.sequences.map((s: any) => ({
+                            id: s.id,
+                            name: s.name,
+                            sequence_type: s.sequence_type,
+                          })))
+                        }
+                      }
+                      setAutoDialogOpen(true)
+                    }}
                   >
                     <Workflow className="h-3.5 w-3.5" />
-                    Trigger Automation
+                    Enroll in Workflow
                   </Button>
                 </div>
 
@@ -1331,41 +1323,79 @@ export default function CRMPage() {
                   </DialogContent>
                 </Dialog>
 
-                {/* Trigger Automation Dialog */}
+                {/* Enroll in Workflow Dialog — picks an existing campaign sequence
+                    built in the Workflow Builder and enrolls THIS contact. Replaces
+                    the old free-text "GHL Workflow ID" dialog (legacy code; we no
+                    longer trigger GHL workflows from the contact card). */}
                 <Dialog open={autoDialogOpen} onOpenChange={setAutoDialogOpen}>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Trigger Automation</DialogTitle>
+                      <DialogTitle>Enroll in Workflow</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-3">
-                      <div>
-                        <Label className="text-xs">GHL Workflow ID</Label>
-                        <Input value={autoWorkflowId} onChange={e => setAutoWorkflowId(e.target.value)} placeholder="workflow_abc123" className="mt-1" />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Event Name (optional)</Label>
-                        <Input value={autoEventName} onChange={e => setAutoEventName(e.target.value)} placeholder="nurture_sequence" className="mt-1" />
-                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Pick a workflow built in the Workflow Builder. The contact will be
+                        enrolled and start receiving its first step.
+                      </p>
+                      {availableSequences.length === 0 ? (
+                        <div className="rounded-lg border bg-muted/30 px-3 py-4 text-center space-y-2">
+                          <p className="text-sm text-muted-foreground">
+                            No workflows built yet for this brokerage.
+                          </p>
+                          <Link href="/dashboard/campaigns/workflows" target="_blank">
+                            <Button size="sm" variant="outline" className="gap-1.5">
+                              <Workflow className="h-3.5 w-3.5" />
+                              Open Workflow Builder
+                            </Button>
+                          </Link>
+                        </div>
+                      ) : (
+                        <Select value={autoWorkflowId} onValueChange={setAutoWorkflowId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose a workflow" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableSequences.map((s: any) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}
+                                {s.sequence_type ? ` · ${s.sequence_type}` : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                     </div>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>Cancel</Button>
+                    <DialogFooter className="gap-2 flex-wrap">
+                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Link href="/dashboard/campaigns/workflows" target="_blank">
+                        <Button variant="ghost" size="sm" className="gap-1.5">
+                          <Workflow className="h-3.5 w-3.5" />
+                          Build new workflow
+                        </Button>
+                      </Link>
                       <Button
-                        disabled={!autoWorkflowId.trim() || autoSending}
+                        disabled={!autoWorkflowId || autoSending || availableSequences.length === 0}
                         onClick={async () => {
-                          if (!selectedContactId) return
+                          if (!selectedContactId || !autoWorkflowId) return
                           setAutoSending(true)
-                          const result = await triggerAutomation({
+                          const result = await enrollContactInSequence({
                             contactId: selectedContactId,
-                            workflowId: autoWorkflowId,
-                            eventName: autoEventName || undefined,
+                            sequenceId: autoWorkflowId,
                           })
                           setAutoSending(false)
-                          if (result.success) { toast.success("Automation triggered"); setAutoDialogOpen(false) }
-                          else toast.error((result as any).error ?? "Failed")
+                          if (result.enrollment) {
+                            toast.success("Contact enrolled in workflow")
+                            setAutoDialogOpen(false)
+                            setAutoWorkflowId("")
+                          } else {
+                            toast.error((result as any).error ?? "Enrollment failed")
+                          }
                         }}
                       >
                         {autoSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-                        Trigger
+                        Enroll
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -1411,6 +1441,20 @@ export default function CRMPage() {
 
               {/* ── RIGHT AREA — tabbed content ── */}
               <main className="flex-1 min-w-0 overflow-y-auto px-4 py-4">
+                {/* AI ISA Handoff Brief — shown when this contact was qualified
+                    and assigned by the AI ISA. Pulled from contacts.isa_handoff_brief. */}
+                {(selectedContact as { isa_handoff_brief?: IsaHandoffBriefShape | null })?.isa_handoff_brief && (
+                  <div className="mb-4">
+                    <QualificationSummaryCard
+                      brief={(selectedContact as { isa_handoff_brief?: IsaHandoffBriefShape | null }).isa_handoff_brief}
+                      contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || "Contact"}
+                      handoffAt={(selectedContact as { isa_handoff_at?: string | null }).isa_handoff_at ?? null}
+                      onSchedule={() => setActiveTab("comms")}
+                      onSendMessage={() => setActiveTab("comms")}
+                      onViewFullProfile={() => setActiveTab("overview")}
+                    />
+                  </div>
+                )}
                 <Tabs
                   value={activeTab}
                   onValueChange={(tab) => {
@@ -1441,116 +1485,144 @@ export default function CRMPage() {
                       <Globe className="h-3.5 w-3.5" />
                       Portal
                     </TabsTrigger>
+                    <TabsTrigger value="credit" className="text-xs gap-1.5">
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Credit
+                    </TabsTrigger>
+                    <TabsTrigger value="videos" className="text-xs gap-1.5">
+                      <Video className="h-3.5 w-3.5" />
+                      Videos
+                    </TabsTrigger>
+                    <TabsTrigger value="transactions" className="text-xs gap-1.5">
+                      <FileText className="h-3.5 w-3.5" />
+                      Transactions
+                    </TabsTrigger>
+                    {isBuyerContact && (
+                      <TabsTrigger value="properties" className="text-xs gap-1.5">
+                        <Home className="h-3.5 w-3.5" />
+                        Properties
+                      </TabsTrigger>
+                    )}
+                    <TabsTrigger value="activity" className="text-xs gap-1.5">
+                      <Activity className="h-3.5 w-3.5" />
+                      Activity
+                    </TabsTrigger>
+                    <TabsTrigger value="intelligence" className="text-xs gap-1.5">
+                      <Brain className="h-3.5 w-3.5" />
+                      Intelligence
+                    </TabsTrigger>
+                    {isBuyerContact && (
+                      <TabsTrigger value="finance" className="text-xs gap-1.5">
+                        <DollarSign className="h-3.5 w-3.5" />
+                        Finance
+                      </TabsTrigger>
+                    )}
+                    <TabsTrigger value="closing" className="text-xs gap-1.5">
+                      <CheckSquare className="h-3.5 w-3.5" />
+                      Closing
+                    </TabsTrigger>
                   </TabsList>
 
                   {/* ── OVERVIEW TAB ── */}
                   <TabsContent value="overview" className="space-y-4 mt-0">
-                    {/* ContactOSSummary strip */}
-                    <ContactOSSummary
-                      contact={selectedContact}
-                      copilotPlan={copilotPlan}
-                      portalStatus={portalInviteStatus}
-                      lastTouch={selectedContact.last_contacted_at ?? null}
-                      onMessageClick={() =>
+                    {/* Workflow OS quick actions — buyer intake link, etc.
+                        Renders as a compact row above existing pulse panel. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <SendBuyerIntakeButton
+                        contactId={selectedContact.id}
+                        contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || null}
+                        contactEmail={selectedContact.email ?? null}
+                      />
+                    </div>
+                    {/* Pulse — single consolidated relationship-health card */}
+                    <ContactPulsePanel
+                      engagementScore={selectedContact.engagement_score}
+                      daysSinceContact={daysSinceContact}
+                      messageTemperature={messageTemperature}
+                      referralPotential={selectedContact.referral_potential}
+                      openThreadCount={conversations.length}
+                      lastContactedAt={selectedContact.last_contacted_at ?? null}
+                      onGenerateReferralAsk={handleGenerateReferralAsk}
+                      generatingReferralAsk={referralGenerating}
+                      onOpenInbox={() =>
                         router.push(`/dashboard/inbox?contact=${selectedContactId}`)
                       }
                     />
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <RelationshipRadar
-                        contactId={selectedContactId}
-                        engagementScore={selectedContact.engagement_score}
-                        daysSinceContact={daysSinceContact}
-                        messageTemperature={null}
-                        referralPotential={selectedContact.referral_potential}
-                        openThreadCount={conversations.length}
-                      />
-                      <NextBestActionPanel
-                        suggestedActions={suggestedActions}
-                        contactId={selectedContactId}
-                        contactPhone={selectedContact.phone}
-                        contactEmail={selectedContact.email}
-                        onSendMessage={(channel) =>
-                          router.push(`/dashboard/inbox?contact=${selectedContactId}&channel=${channel}`)
-                        }
-                        onLogActivity={() =>
-                          router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
-                        }
-                        onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
-                        onCreateOffer={() => setOfferWizardOpen(true)}
-                      />
-                    </div>
+                    {/* Listing consultation CTA when applicable */}
+                    {isListingCandidate && agentId && brokerageId && (
+                      <div className="flex flex-wrap gap-2">
+                        <ListingConsultationScheduler
+                          contactId={selectedContactId}
+                          contactName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim()}
+                          agentId={agentId}
+                          brokerageId={brokerageId}
+                        />
+                      </div>
+                    )}
 
+                    {/* Buyer readiness signals — only when relevant */}
+                    {isBuyerContact && (buyerInsights || fatigueData) && (
+                      <div className="rounded-lg border bg-blue-50/50 px-3 py-2 space-y-1">
+                        {fatigueData && (
+                          <div className={cn("rounded px-2 py-1 text-xs",
+                            fatigueData.risk_level === "critical" ? "bg-red-100 text-red-800" :
+                            fatigueData.risk_level === "high"     ? "bg-orange-100 text-orange-800" :
+                            fatigueData.risk_level === "moderate" ? "bg-amber-100 text-amber-800" :
+                                                                    "bg-green-100 text-green-800"
+                          )}>
+                            <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
+                            <p className="mt-0.5">
+                              Score: {fatigueData.fatigue_score}/100 &middot; {fatigueData.days_searching}d searching &middot; {fatigueData.total_showings} showings
+                            </p>
+                          </div>
+                        )}
+                        {buyerInsights?.prediction && (
+                          <div className="space-y-0.5 text-xs">
+                            {buyerInsights.prediction.predicted_ready_to_offer && (
+                              <p className="text-green-700 font-medium">Ready to make an offer</p>
+                            )}
+                            {buyerInsights.prediction.predicted_next_action && (
+                              <p className="text-blue-700">Predicted next: {buyerInsights.prediction.predicted_next_action}</p>
+                            )}
+                            {buyerInsights.prediction.engagement_velocity && (
+                              <p className="text-muted-foreground capitalize">Engagement: {buyerInsights.prediction.engagement_velocity}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Next Best Actions — sole authority for suggested actions */}
+                    <NextBestActionPanel
+                      suggestedActions={suggestedActions}
+                      contactId={selectedContactId}
+                      contactPhone={selectedContact.phone}
+                      contactEmail={selectedContact.email}
+                      onSendMessage={(channel) =>
+                        router.push(`/dashboard/inbox?contact=${selectedContactId}&channel=${channel}`)
+                      }
+                      onLogActivity={() =>
+                        router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
+                      }
+                      onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
+                      onCreateOffer={() => setOfferWizardOpen(true)}
+                    />
+
+                    {/* Value delivered + Timeline context — combined into a single grid */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                       <ValueDeliveredPanel
                         contactId={selectedContactId}
                         agentId={agentId || ""}
-                        valueMetrics={null}
+                        valueMetrics={valueMetrics}
                       />
-                      <ReferralLikelihoodPanel
+                      <TimelineContextPanel
                         contactId={selectedContactId}
-                        agentId={agentId || ""}
-                        referralPotential={selectedContact.referral_potential}
-                        onGenerateAsk={handleGenerateReferralAsk}
-                        generating={referralGenerating}
+                        originalLeadSource={selectedContact.lead_source}
+                        createdAt={selectedContact.created_at}
+                        isaHandoffContext={isaHandoffContext}
                       />
                     </div>
-
-                    {/* Buyer Intelligence — merged from former "Full Buyer Profile" button */}
-                    {isBuyerContact && (buyerInsights || fatigueData) && (
-                      <Card className="border-blue-200">
-                        <CardHeader className="pb-2">
-                          <CardTitle className="text-sm flex items-center gap-2">
-                            <UserCircle className="h-4 w-4 text-blue-600" />
-                            Buyer Intelligence
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-3">
-                          {fatigueData && (
-                            <div className={cn("rounded p-2 text-sm",
-                              fatigueData.risk_level === "critical" ? "bg-red-50 text-red-800" :
-                              fatigueData.risk_level === "high"     ? "bg-orange-50 text-orange-800" :
-                              fatigueData.risk_level === "moderate" ? "bg-amber-50 text-amber-800" :
-                                                                      "bg-green-50 text-green-800"
-                            )}>
-                              <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
-                              <p className="text-xs mt-0.5">
-                                Score: {fatigueData.fatigue_score}/100 &middot; {fatigueData.days_searching} days searching &middot; {fatigueData.total_showings} showings
-                              </p>
-                            </div>
-                          )}
-                          {buyerInsights?.prediction && (
-                            <div className="space-y-1 text-xs">
-                              {buyerInsights.prediction.predicted_ready_to_offer && (
-                                <p className="text-green-700 font-medium">Ready to make an offer</p>
-                              )}
-                              {buyerInsights.prediction.predicted_next_action && (
-                                <p className="text-blue-700">Next predicted action: {buyerInsights.prediction.predicted_next_action}</p>
-                              )}
-                              {buyerInsights.prediction.engagement_velocity && (
-                                <p className="text-muted-foreground capitalize">Engagement: {buyerInsights.prediction.engagement_velocity}</p>
-                              )}
-                            </div>
-                          )}
-                          {isBuyerContact && (
-                            <BuyerMatchPanel
-                              contactId={selectedContactId}
-                              agentId={agentId || ""}
-                              isBuyerContact={isBuyerContact}
-                              buyerStage={selectedContact.buyer_stage}
-                              contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
-                            />
-                          )}
-                        </CardContent>
-                      </Card>
-                    )}
-
-                    <TimelineContextPanel
-                      contactId={selectedContactId}
-                      originalLeadSource={selectedContact.lead_source}
-                      createdAt={selectedContact.created_at}
-                      isaHandoffContext={isaHandoffContext}
-                    />
                   </TabsContent>
 
                   {/* ── JOURNEY & TEAM TAB ── */}
@@ -1892,13 +1964,15 @@ export default function CRMPage() {
                       </CardContent>
                     </Card>
 
-                    {/* AI-ISA stale contact takeover */}
+                    {/* AI-ISA stale contact takeover — uses unified pilot control */}
                     {(() => {
                       const daysSince = selectedContact.last_contacted_at
                         ? Math.floor((Date.now() - new Date(selectedContact.last_contacted_at).getTime()) / (1000 * 60 * 60 * 24))
                         : null
                       if (daysSince == null || daysSince <= 14) return null
-                      const currentPlan = copilotPlan ?? autopilotPlans.find((p: any) => p.contact_id === selectedContactId)
+                      const currentLevel: any =
+                        (contactIntelligence as any)?.ai_autopilot_level ??
+                        (contactIntelligence?.ai_isa_enabled ? "moderate" : "off")
                       return (
                         <Card className="border-orange-200 bg-orange-50">
                           <CardHeader className="pb-2">
@@ -1912,17 +1986,21 @@ export default function CRMPage() {
                               This contact has not been touched in {daysSince} day{daysSince !== 1 ? "s" : ""}.
                             </p>
                             <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-orange-800">Enable AI-ISA Follow-up</span>
-                              <Switch
-                                checked={!!currentPlan}
-                                disabled={isPending}
-                                onCheckedChange={(checked) => {
-                                  if (checked) { handleEnableAutopilot("moderate") }
-                                  else if (currentPlan) { handleToggleAutopilot(currentPlan.id, true) }
+                              <span className="text-sm font-medium text-orange-800">Enable AI follow-up</span>
+                              <AIPilotControl
+                                contactId={selectedContactId}
+                                initialLevel={currentLevel}
+                                compact
+                                onChange={(level) => {
+                                  setContactIntelligence((prev: any) =>
+                                    prev
+                                      ? { ...prev, ai_autopilot_level: level, ai_isa_enabled: level !== "off" }
+                                      : prev
+                                  )
                                 }}
                               />
                             </div>
-                            {currentPlan && <p className="text-xs text-orange-600">AI-ISA is active on this contact</p>}
+                            {currentLevel !== "off" && <p className="text-xs text-orange-600">AI follow-up is active on this contact</p>}
                           </CardContent>
                         </Card>
                       )
@@ -2107,6 +2185,452 @@ export default function CRMPage() {
                     </Card>
                   </TabsContent>
 
+                  {/* ── CREDIT TAB ── */}
+                  <TabsContent value="credit" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Credit Pipeline Status</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {creditAccounts.length === 0 ? (
+                          <div className="p-4 border rounded-lg text-center">
+                            <p className="text-sm text-muted-foreground mb-2">No active credit accounts</p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => router.push(`/dashboard/credit-pipeline?contactId=${selectedContactId}`)}
+                            >
+                              Add to Credit Pipeline
+                            </Button>
+                          </div>
+                        ) : (
+                          creditAccounts.map((account: any) => (
+                            <div key={account.id} className="rounded-lg border p-3 flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">{account.lender_name || "Lender"}</p>
+                                <p className="text-xs text-muted-foreground capitalize">
+                                  {(account.credit_pipeline_stage || "Lead").replace(/_/g, " ")}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-semibold text-sm">
+                                  ${Number(account.loan_amount || 0).toLocaleString()}
+                                </p>
+                                <Badge variant="secondary" className="text-xs">
+                                  {account.status || "active"}
+                                </Badge>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── VIDEOS TAB ── */}
+                  <TabsContent value="videos" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Video Engagement</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {contactVideos.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">No videos sent yet</p>
+                        ) : (
+                          contactVideos.map((video: any) => (
+                            <div key={video.id} className="rounded-lg border p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="font-medium text-sm">{video.script_title || "Video"}</p>
+                                <span className="text-xs text-muted-foreground">
+                                  Sent {new Date(video.created_at).toLocaleDateString()}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                                <div>
+                                  <span className="block font-semibold text-foreground">{video.view_count || 0}</span>
+                                  views
+                                </div>
+                                <div>
+                                  <span className="block font-semibold text-foreground">
+                                    {Math.round((video.avg_completion_rate || 0) * 100)}%
+                                  </span>
+                                  completion
+                                </div>
+                                <div>
+                                  <span className="block font-semibold text-foreground">
+                                    {video.last_viewed_at
+                                      ? new Date(video.last_viewed_at).toLocaleDateString()
+                                      : "Never"}
+                                  </span>
+                                  last viewed
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── TRANSACTIONS TAB ── */}
+                  <TabsContent value="transactions" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Transaction History</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {contactTransactions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">No transactions yet</p>
+                        ) : (
+                          contactTransactions.map((t: any) => (
+                            <div key={t.id} className="rounded-lg border p-3 flex items-center justify-between">
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium text-sm truncate">
+                                  {t.property_address
+                                    ? `${t.property_address}${t.city ? `, ${t.city}` : ""}`
+                                    : "Property"}
+                                </p>
+                                <p className="text-xs text-muted-foreground capitalize">
+                                  {(t.transaction_type || "Active").replace(/_/g, " ")}
+                                </p>
+                              </div>
+                              <Badge variant="secondary" className="text-xs capitalize">
+                                {(t.status || "pending").replace(/_/g, " ")}
+                              </Badge>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── PROPERTIES TAB (buyers only) ── */}
+                  {isBuyerContact && (
+                    <TabsContent value="properties" className="space-y-4 mt-0">
+                      {/* Search criteria summary row */}
+                      {((selectedContact as any).preferred_location || (selectedContact as any).budget_min) && (
+                        <div className="rounded-lg border bg-muted/30 px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          {(selectedContact as any).preferred_location && (
+                            <div><span className="text-muted-foreground block">Location</span><span className="font-medium">{(selectedContact as any).preferred_location}</span></div>
+                          )}
+                          {(selectedContact as any).budget_min && (selectedContact as any).budget_max && (
+                            <div><span className="text-muted-foreground block">Budget</span><span className="font-medium">${Number((selectedContact as any).budget_min).toLocaleString()} – ${Number((selectedContact as any).budget_max).toLocaleString()}</span></div>
+                          )}
+                          {(selectedContact as any).preferred_bedrooms && (
+                            <div><span className="text-muted-foreground block">Beds</span><span className="font-medium">{(selectedContact as any).preferred_bedrooms}+</span></div>
+                          )}
+                          {(selectedContact as any).move_timeline && (
+                            <div><span className="text-muted-foreground block">Timeline</span><span className="font-medium">{(selectedContact as any).move_timeline}</span></div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* AI property matching — full BuyerMatchPanel with PropertyAlertsPanel inside */}
+                      <BuyerMatchPanel
+                        contactId={selectedContactId}
+                        agentId={agentId || ""}
+                        brokerageId={brokerageId || ""}
+                        isBuyerContact={isBuyerContact}
+                        buyerStage={selectedContact.buyer_stage}
+                        contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
+                      />
+                    </TabsContent>
+                  )}
+
+                  {/* ── ACTIVITY TIMELINE TAB ── */}
+                  <TabsContent value="activity" className="space-y-4 mt-0">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Activity Timeline</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {contactActivityTimeline.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-8">
+                            No activity recorded yet
+                          </p>
+                        ) : (
+                          <div className="space-y-4">
+                            {contactActivityTimeline.map((item: any, idx: number) => (
+                              <div
+                                key={`${item.activity_type}-${item.id ?? idx}`}
+                                className="flex gap-3 pb-4 border-b last:border-0"
+                              >
+                                <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                                <div className="flex-1 space-y-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-medium text-sm capitalize">
+                                      {(item.activity_type || "event").replace(/_/g, " ")}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground shrink-0">
+                                      {item.activity_date
+                                        ? new Date(item.activity_date).toLocaleDateString()
+                                        : ""}
+                                    </span>
+                                  </div>
+                                  {(item.notes || item.body || item.title || item.subject) && (
+                                    <p className="text-sm text-muted-foreground line-clamp-2">
+                                      {item.notes || item.body || item.title || item.subject}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ── INTELLIGENCE TAB ── */}
+                  <TabsContent value="intelligence" className="space-y-4 mt-0">
+
+                    {/* Unified lead profile — intent badge, confidence bar, urgency, motivation */}
+                    {unifiedLeadProfile && (
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            Lead Profile
+                            {unifiedLeadProfile.intent_type && (
+                              <Badge className={cn(
+                                "text-xs capitalize",
+                                unifiedLeadProfile.intent_type === "buyer" ? "bg-blue-100 text-blue-700" :
+                                unifiedLeadProfile.intent_type === "seller" ? "bg-amber-100 text-amber-700" :
+                                "bg-purple-100 text-purple-700"
+                              )}>
+                                {unifiedLeadProfile.intent_type}
+                              </Badge>
+                            )}
+                            {unifiedLeadProfile.temperature && (
+                              <Badge className={cn(
+                                "text-xs capitalize",
+                                unifiedLeadProfile.temperature === "hot" ? "bg-red-100 text-red-700" :
+                                unifiedLeadProfile.temperature === "warm" ? "bg-orange-100 text-orange-700" :
+                                "bg-sky-100 text-sky-700"
+                              )}>
+                                {unifiedLeadProfile.temperature}
+                              </Badge>
+                            )}
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          {unifiedLeadProfile.confidence_score != null && (
+                            <div>
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="text-muted-foreground">Confidence</span>
+                                <span className="font-medium">{Math.round(Number(unifiedLeadProfile.confidence_score) * 100)}%</span>
+                              </div>
+                              <Progress value={Number(unifiedLeadProfile.confidence_score) * 100} className="h-1.5" />
+                            </div>
+                          )}
+                          <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
+                            {unifiedLeadProfile.urgency_level && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Timeline urgency</span>
+                                <span className="font-medium capitalize">{unifiedLeadProfile.urgency_level}</span>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.motivation_signals && (
+                              <div className="col-span-2">
+                                <p className="text-muted-foreground mb-1">Motivation signals</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {(Array.isArray(unifiedLeadProfile.motivation_signals)
+                                    ? unifiedLeadProfile.motivation_signals
+                                    : [unifiedLeadProfile.motivation_signals]
+                                  ).map((sig: string, i: number) => (
+                                    <Badge key={i} variant="outline" className="text-xs">{sig}</Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.enrichment_source && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Enrichment source</span>
+                                <Badge variant="outline" className="text-xs">{unifiedLeadProfile.enrichment_source}</Badge>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.ready_for_outreach != null && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Ready for outreach</span>
+                                <span className={cn("text-xs font-medium", unifiedLeadProfile.ready_for_outreach ? "text-emerald-600" : "text-muted-foreground")}>
+                                  {unifiedLeadProfile.ready_for_outreach ? "Yes" : "No"}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          {socialSignals.length > 0 && (
+                            <div>
+                              <p className="text-xs text-muted-foreground mb-1.5">Market social signals</p>
+                              <div className="space-y-1">
+                                {socialSignals.slice(0, 3).map((s: any) => (
+                                  <div key={s.id} className="flex items-center justify-between text-xs rounded border px-2 py-1">
+                                    <span className="truncate max-w-[180px]">{s.signal_text || s.source}</span>
+                                    {s.ai_intent_score != null && (
+                                      <span className="text-muted-foreground ml-2 shrink-0">Score {Math.round(s.ai_intent_score * 100)}%</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {!contactIntelligence && !unifiedLeadProfile && (
+                      <Card>
+                        <CardContent className="p-6 text-sm text-muted-foreground text-center">
+                          Loading intelligence…
+                        </CardContent>
+                      </Card>
+                    )}
+                    {contactIntelligence && (
+                      <>
+                        {/* Score grid */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Lead intelligence scores</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <ScoreCell label="Confidence" value={contactIntelligence.confidence_score} suffix="%" />
+                              <ScoreCell label="Intent" value={contactIntelligence.intent_score} suffix="%" />
+                              <ScoreCell label="Engagement" value={contactIntelligence.engagement_score} suffix="%" />
+                              <ScoreCell
+                                label="Latest lead score"
+                                value={contactIntelligence.latest_lead_score}
+                                subText={
+                                  contactIntelligence.latest_score_ai_confidence != null
+                                    ? `AI conf: ${Math.round(Number(contactIntelligence.latest_score_ai_confidence) * 100)}%`
+                                    : undefined
+                                }
+                              />
+                            </div>
+                            {contactIntelligence.latest_scored_at && (
+                              <p className="text-xs text-muted-foreground mt-3">
+                                Last scored {new Date(contactIntelligence.latest_scored_at).toLocaleString()}
+                              </p>
+                            )}
+                          </CardContent>
+                        </Card>
+
+                        {/* Source / origin */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Lead origin & enrichment</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                              <KV label="Source" value={contactIntelligence.source} />
+                              <KV label="Source channel" value={contactIntelligence.source_channel} />
+                              <KV label="Source family" value={contactIntelligence.source_family} />
+                              <KV label="Source subtype" value={contactIntelligence.source_subtype} />
+                              <KV label="Data source" value={contactIntelligence.data_source} />
+                              <KV label="Enrichment source" value={contactIntelligence.enrichment_source} />
+                              <KV
+                                label="Enrichment confidence"
+                                value={
+                                  contactIntelligence.enrichment_confidence != null
+                                    ? `${Math.round(Number(contactIntelligence.enrichment_confidence) * 100)}%`
+                                    : null
+                                }
+                              />
+                              <KV
+                                label="Last enriched"
+                                value={
+                                  contactIntelligence.last_enriched_at
+                                    ? new Date(contactIntelligence.last_enriched_at).toLocaleString()
+                                    : contactIntelligence.enriched_at
+                                    ? new Date(contactIntelligence.enriched_at).toLocaleString()
+                                    : null
+                                }
+                              />
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        {/* Compliance & contact-ability */}
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Contact-ability & compliance</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                              <Flag
+                                label="Email verified"
+                                ok={contactIntelligence.email_verified === true}
+                              />
+                              <Flag
+                                label="Email opt-out"
+                                ok={!contactIntelligence.email_opt_out && !contactIntelligence.email_unsubscribed}
+                                negativeLabel={contactIntelligence.email_unsubscribed ? "Unsubscribed" : "Opted out"}
+                              />
+                              <Flag
+                                label="Direct mail opt-out"
+                                ok={!contactIntelligence.direct_mail_opt_out}
+                                negativeLabel="Opted out"
+                              />
+                              <Flag
+                                label="TCPA consent"
+                                ok={!!contactIntelligence.tcpa_consent_source}
+                                negativeLabel="No consent"
+                                positiveLabel={contactIntelligence.tcpa_consent_source ?? "OK"}
+                              />
+                              <Flag
+                                label="AI outreach paused"
+                                ok={!contactIntelligence.ai_outreach_paused}
+                                negativeLabel="Paused"
+                              />
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        {/* Score factors */}
+                        {contactIntelligence.latest_score_factors && typeof contactIntelligence.latest_score_factors === "object" && (
+                          <Card>
+                            <CardHeader className="pb-3">
+                              <CardTitle className="text-sm">Score factors</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
+                                {Object.entries(contactIntelligence.latest_score_factors as Record<string, unknown>)
+                                  .filter(([, v]) => v !== null && v !== undefined && v !== "")
+                                  .map(([k, v]) => (
+                                    <div key={k} className="flex justify-between gap-2">
+                                      <span className="text-muted-foreground capitalize">{k.replace(/_/g, " ")}</span>
+                                      <span className="font-medium text-right max-w-[140px] truncate">
+                                        {typeof v === "boolean" ? (v ? "Yes" : "No") : String(v)}
+                                      </span>
+                                    </div>
+                                  ))}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        )}
+                      </>
+                    )}
+                  </TabsContent>
+
+                  {/* ── FINANCE TAB (buyers only) ── */}
+                  {isBuyerContact && (
+                    <TabsContent value="finance" className="space-y-4 mt-0">
+                      <FinancialVerificationPanel
+                        contactId={selectedContactId}
+                        brokerageId={brokerageId ?? ""}
+                        agentUserId={agentId ?? ""}
+                        buyerName={`${selectedContact.first_name ?? ""} ${selectedContact.last_name ?? ""}`.trim() || undefined}
+                      />
+                    </TabsContent>
+                  )}
+
+                  {/* ── CLOSING WORKFLOW TAB ── */}
+                  <TabsContent value="closing" className="space-y-4 mt-0">
+                    <ClosingWorkflowTab
+                      contactId={selectedContactId}
+                      agentId={agentId ?? ""}
+                      brokerageId={brokerageId ?? ""}
+                    />
+                  </TabsContent>
+
                 </Tabs>
               </main>
 
@@ -2116,6 +2640,19 @@ export default function CRMPage() {
       </div>
     )
   }
+
+  // Apply contact-type filter from the type tabs (Buyer / Seller / Investor / Lifetime)
+  const displayedContacts =
+    typeFilter === "all"
+      ? filtered
+      : filtered.filter((c) => {
+          const t = (c.contact_type ?? "").toLowerCase()
+          const p = (c.contact_persona ?? "").toLowerCase()
+          if (typeFilter === "lifetime_customer") {
+            return t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE
+          }
+          return t.includes(typeFilter) || p.includes(typeFilter)
+        })
 
   // Contact List View
   return (
@@ -2127,7 +2664,7 @@ export default function CRMPage() {
           <p className="text-sm text-gray-500 mt-1">
             {loading
               ? "Loading..."
-              : `${filtered.length} contact${filtered.length !== 1 ? "s" : ""}`}
+              : `${displayedContacts.length} contact${displayedContacts.length !== 1 ? "s" : ""}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -2169,19 +2706,21 @@ export default function CRMPage() {
 
       {/* Contact type filter tabs */}
       <div className="flex gap-1 border-b">
-        {(["all", "buyer", "seller", "investor"] as const).map((t) => (
+        {(["all", "buyer", "seller", "investor", "lifetime_customer"] as const).map((t) => (
           <button
             key={t}
             type="button"
             onClick={() => setTypeFilter(t)}
             className={cn(
-              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px",
+              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px whitespace-nowrap",
               typeFilter === t
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             )}
           >
-            {t === "all" ? "All Contacts" : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
+            {t === "all" ? "All Contacts"
+              : t === "lifetime_customer" ? "Lifetime Customers"
+              : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
           </button>
         ))}
       </div>
@@ -2334,84 +2873,249 @@ export default function CRMPage() {
         </div>
       )}
 
-      {/* Contact list */}
-      {!loading && filtered.length > 0 && (
-        <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
-          {filtered.map((contact) => (
-            <Card
-              key={contact.id}
-              className="hover:shadow-md transition-shadow cursor-pointer"
-              onClick={() => handleSelectContact(contact.id)}
-            >
-              <CardContent className="p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <h3 className="font-semibold text-gray-900 truncate">
-                        {contact.first_name} {contact.last_name}
-                      </h3>
-                      {contact.contact_type && (
-                        <Badge
-                          className={`text-xs ${
-                            TYPE_COLORS[contact.contact_type] ?? TYPE_COLORS.other
-                          }`}
-                        >
-                          {contact.contact_type}
-                        </Badge>
-                      )}
-                      {contact.status && (
-                        <Badge
-                          className={`text-xs ${
-                            STATUS_COLORS[contact.status] ??
-                            "bg-gray-100 text-gray-600"
-                          }`}
-                        >
-                          {contact.status.replace(/_/g, " ")}
-                        </Badge>
-                      )}
-                      {leadScores[contact.id] && (
-                        <Badge
-                          className={`text-xs ${
-                            leadScores[contact.id].label === "High"
-                              ? "bg-green-100 text-green-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
-                          title={`Conversion probability: ${leadScores[contact.id].score}%`}
-                        >
-                          <TrendingUp className="h-3 w-3 mr-1" />
-                          {leadScores[contact.id].label} Conversion
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
-                      {contact.email && (
-                        <span className="flex items-center gap-1">
-                          <Mail className="h-3.5 w-3.5" />
-                          {contact.email}
-                        </span>
-                      )}
-                      {contact.phone && (
-                        <span className="flex items-center gap-1">
-                          <Phone className="h-3.5 w-3.5" />
-                          {contact.phone}
-                        </span>
-                      )}
-                      {(contact.city || contact.state) && (
-                        <span className="flex items-center gap-1">
-                          <MapPin className="h-3.5 w-3.5" />
-                          {[contact.city, contact.state]
-                            .filter(Boolean)
-                            .join(", ")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+      {/* Empty state for active type filter when underlying list is non-empty */}
+      {!loading && filtered.length > 0 && displayedContacts.length === 0 && (
+        <div className="text-center py-8 text-sm text-muted-foreground">
+          No {typeFilter === "lifetime_customer" ? "lifetime customer" : typeFilter} contacts.{" "}
+          <button className="underline text-primary" onClick={() => setTypeFilter("all")}>
+            Show all
+          </button>
         </div>
       )}
+
+      {/* Bulk action bar */}
+      {selectedContactIds.size > 0 && (
+        <div className="sticky top-0 z-10 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-2.5 text-sm">
+          <span className="font-medium text-primary">{selectedContactIds.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 h-7"
+            onClick={async () => {
+              if (availableSequences.length === 0 && brokerageId) {
+                const res = await listCampaignSequences(brokerageId)
+                if (res.sequences) setAvailableSequences(res.sequences.map((s: any) => ({ id: s.id, name: s.name, sequence_type: s.sequence_type })))
+              }
+              setEnrollDialogOpen(true)
+            }}
+          >
+            <Workflow className="h-3.5 w-3.5" />
+            Enroll in Campaign
+          </Button>
+          <button
+            className="ml-auto text-xs text-muted-foreground underline"
+            onClick={() => setSelectedContactIds(new Set())}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
+      {/* Contact list */}
+      {!loading && displayedContacts.length > 0 && (
+        <div className={cn("space-y-2", searchLoading && "opacity-60 pointer-events-none")}>
+          {displayedContacts.map((contact) => {
+            const score = leadScores[contact.id]
+            const initials = [contact.first_name?.[0], contact.last_name?.[0]]
+              .filter(Boolean).join("").toUpperCase() || "?"
+            const typeKey = (contact.contact_type ?? "other").toLowerCase()
+            const avatarColors = TYPE_AVATAR_COLORS[typeKey] ?? TYPE_AVATAR_COLORS.other
+            const isSelected = selectedContactIds.has(contact.id)
+
+            let lastActivityLabel: string | null = null
+            if (contact.last_contacted_at) {
+              try {
+                lastActivityLabel = "Last contact: " + formatDistanceToNow(
+                  new Date(contact.last_contacted_at), { addSuffix: true }
+                )
+              } catch {}
+            } else if (contact.created_at) {
+              try {
+                lastActivityLabel = "Added " + formatDistanceToNow(
+                  new Date(contact.created_at), { addSuffix: true }
+                )
+              } catch {}
+            }
+
+            const scoreValue = score?.score
+            const scoreLabel = score?.label
+            const engScore = contact.engagement_score
+
+            return (
+              <div
+                key={contact.id}
+                className={cn(
+                  "group relative flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 cursor-pointer",
+                  "border-l-4 hover:shadow-md hover:border-primary/30 transition-all duration-150",
+                  avatarColors.border,
+                  isSelected && "border-primary ring-1 ring-primary bg-primary/5"
+                )}
+                onClick={() => handleSelectContact(contact.id)}
+              >
+                {/* Checkbox */}
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={(checked) => {
+                    const next = new Set(selectedContactIds)
+                    if (checked) next.add(contact.id)
+                    else next.delete(contact.id)
+                    setSelectedContactIds(next)
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0"
+                />
+
+                {/* Avatar */}
+                <div
+                  className={cn(
+                    "shrink-0 h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold select-none",
+                    avatarColors.bg, avatarColors.text
+                  )}
+                >
+                  {initials}
+                </div>
+
+                {/* Main info */}
+                <div className="flex-1 min-w-0">
+                  {/* Name + badges */}
+                  <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                    <span className="font-semibold text-sm truncate max-w-[170px]">
+                      {contact.first_name} {contact.last_name}
+                    </span>
+                    {contact.contact_type && (
+                      <Badge className={cn("text-[10px] px-1.5 py-0 h-[18px] leading-none", TYPE_COLORS[typeKey] ?? TYPE_COLORS.other)}>
+                        {contact.contact_type === "lifetime_customer" ? "Lifetime" : contact.contact_type}
+                      </Badge>
+                    )}
+                    {contact.status && (
+                      <Badge className={cn("text-[10px] px-1.5 py-0 h-[18px] leading-none", STATUS_COLORS[contact.status] ?? "bg-gray-100 text-gray-600")}>
+                        {contact.status.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                    {(contact as any).ai_isa_enabled && (
+                      <Badge className="text-[10px] px-1.5 py-0 h-[18px] leading-none bg-emerald-100 text-emerald-700">
+                        AI
+                      </Badge>
+                    )}
+                    {contact.dnc_status && (
+                      <Badge className="text-[10px] px-1.5 py-0 h-[18px] leading-none bg-red-100 text-red-700">DNC</Badge>
+                    )}
+                  </div>
+
+                  {/* Contact details */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0 text-xs text-muted-foreground">
+                    {contact.email && (
+                      <span className="flex items-center gap-0.5 truncate max-w-[150px]">
+                        <Mail className="h-3 w-3 shrink-0" />
+                        {contact.email}
+                      </span>
+                    )}
+                    {contact.phone && (
+                      <span className="flex items-center gap-0.5">
+                        <Phone className="h-3 w-3 shrink-0" />
+                        {contact.phone}
+                      </span>
+                    )}
+                    {(contact.city || contact.state) && (
+                      <span className="flex items-center gap-0.5">
+                        <MapPin className="h-3 w-3 shrink-0" />
+                        {[contact.city, contact.state].filter(Boolean).join(", ")}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Last activity */}
+                  {lastActivityLabel && (
+                    <p className="mt-0.5 text-[10px] text-muted-foreground/70">{lastActivityLabel}</p>
+                  )}
+                </div>
+
+                {/* Right rail: score + quick actions */}
+                <div className="shrink-0 flex flex-col items-end gap-1.5">
+                  {/* Score circle — AI lead score takes priority over engagement */}
+                  {(scoreValue != null || engScore != null) && (
+                    <div
+                      className={cn(
+                        "h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 shrink-0",
+                        scoreLabel === "High" || (engScore ?? 0) >= 70
+                          ? "border-green-500 text-green-700 bg-green-50"
+                          : scoreLabel === "Medium" || (engScore ?? 0) >= 40
+                          ? "border-amber-400 text-amber-700 bg-amber-50"
+                          : "border-gray-300 text-gray-500 bg-gray-50"
+                      )}
+                      title={
+                        scoreValue != null
+                          ? `Lead score: ${scoreValue}% conversion probability`
+                          : `Engagement: ${engScore}`
+                      }
+                    >
+                      {scoreValue ?? engScore}
+                    </div>
+                  )}
+
+                  {/* Quick actions — fade in on hover */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {contact.phone && !contact.phone_opt_out && (
+                      <button
+                        type="button"
+                        title="Call"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-green-600 hover:border-green-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); window.location.href = `tel:${contact.phone}` }}
+                      >
+                        <Phone className="h-3 w-3" />
+                      </button>
+                    )}
+                    {contact.email && !contact.email_opt_out && (
+                      <button
+                        type="button"
+                        title="Email"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-blue-600 hover:border-blue-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleSelectContact(contact.id) }}
+                      >
+                        <Mail className="h-3 w-3" />
+                      </button>
+                    )}
+                    {contact.phone && !contact.sms_opt_out && (
+                      <button
+                        type="button"
+                        title="SMS"
+                        className="h-6 w-6 rounded-full border bg-background flex items-center justify-center text-muted-foreground hover:text-purple-600 hover:border-purple-400 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleSelectContact(contact.id) }}
+                      >
+                        <MessageCircle className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ── Enroll in Campaign Dialog ──────────────────────────────────────── */}
+      <EnrollCampaignDialog
+        open={enrollDialogOpen}
+        onOpenChange={setEnrollDialogOpen}
+        selectedCount={selectedContactIds.size}
+        sequences={availableSequences}
+        selectedSequenceId={selectedSequenceId}
+        onSequenceChange={setSelectedSequenceId}
+        enrolling={enrolling}
+        onEnroll={async () => {
+          if (!selectedSequenceId) return
+          setEnrolling(true)
+          let successCount = 0
+          for (const contactId of Array.from(selectedContactIds)) {
+            const result = await enrollContactInSequence({ contactId, sequenceId: selectedSequenceId })
+            if (result.enrollment) successCount++
+          }
+          setEnrolling(false)
+          setEnrollDialogOpen(false)
+          setSelectedContactIds(new Set())
+          setSelectedSequenceId("")
+        }}
+      />
 
       {/* ── Add Contact Dialog ──────────────────────────────────────────────── */}
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
@@ -2572,13 +3276,140 @@ export default function CRMPage() {
       {selectedContact && brokerageId && (
         <FormWizard
           mode="offer"
-          contact={selectedContact}
+          contact={selectedContact as any}
           brokerageId={brokerageId}
-          agentUserId={selectedContact.agent_id ?? ""}
+          agentUserId={(selectedContact as any).agent_id ?? agentId ?? ""}
           open={offerWizardOpen}
           onClose={() => setOfferWizardOpen(false)}
         />
       )}
+    </div>
+  )
+}
+
+// ─── Enroll in Campaign Dialog ───────────────────────────────────────────────
+
+function EnrollCampaignDialog({
+  open,
+  onOpenChange,
+  selectedCount,
+  sequences,
+  selectedSequenceId,
+  onSequenceChange,
+  enrolling,
+  onEnroll,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  selectedCount: number
+  sequences: { id: string; name: string; sequence_type: string }[]
+  selectedSequenceId: string
+  onSequenceChange: (id: string) => void
+  enrolling: boolean
+  onEnroll: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Enroll {selectedCount} Contact{selectedCount !== 1 ? "s" : ""} in Campaign</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          {sequences.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No sequences found. Create sequences in the Campaign Sequences library first.</p>
+          ) : (
+            <div className="space-y-1.5">
+              <Label>Select Campaign Sequence</Label>
+              <Select value={selectedSequenceId} onValueChange={onSequenceChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a sequence..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {sequences.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      <span className="font-medium">{s.name}</span>
+                      {s.sequence_type && (
+                        <span className="ml-2 text-xs text-muted-foreground capitalize">{s.sequence_type.replace(/_/g, " ")}</span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={enrolling}>Cancel</Button>
+          <Button onClick={onEnroll} disabled={enrolling || !selectedSequenceId || sequences.length === 0}>
+            {enrolling ? "Enrolling..." : `Enroll ${selectedCount} Contact${selectedCount !== 1 ? "s" : ""}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Intelligence-tab helper components ──────────────────────────────────────
+
+function ScoreCell({
+  label,
+  value,
+  suffix,
+  subText,
+}: {
+  label: string
+  value: number | null
+  suffix?: string
+  subText?: string
+}) {
+  return (
+    <div className="rounded-lg border p-3">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="text-2xl font-semibold tabular-nums">
+        {value != null ? `${value}${suffix ?? ""}` : <span className="text-muted-foreground/50 text-base">—</span>}
+      </p>
+      {subText && <p className="text-[10px] text-muted-foreground mt-0.5">{subText}</p>}
+    </div>
+  )
+}
+
+function KV({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2 border-b last:border-0 py-1.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-right truncate">
+        {value ?? <span className="text-muted-foreground/50">—</span>}
+      </span>
+    </div>
+  )
+}
+
+function Flag({
+  label,
+  ok,
+  positiveLabel,
+  negativeLabel,
+  neutral,
+}: {
+  label: string
+  ok: boolean
+  positiveLabel?: string
+  negativeLabel?: string
+  neutral?: boolean
+}) {
+  const variantClass = neutral
+    ? ok
+      ? "bg-blue-50 text-blue-900 border-blue-200"
+      : "bg-gray-50 text-gray-700 border-gray-200"
+    : ok
+    ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+    : "bg-amber-50 text-amber-900 border-amber-200"
+  return (
+    <div className={`rounded-md border p-2 text-xs ${variantClass}`}>
+      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+      <p className="font-semibold mt-0.5">
+        {ok ? positiveLabel ?? "OK" : negativeLabel ?? "Issue"}
+      </p>
     </div>
   )
 }

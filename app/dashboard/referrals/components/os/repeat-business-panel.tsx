@@ -141,7 +141,7 @@ export function RepeatBusinessPanel({
                 <span className="text-xs text-red-600">At Risk</span>
               </div>
             </div>
-            <Link href="/past-clients" className="flex items-center justify-center gap-1 text-sm text-primary mt-3 hover:underline">
+            <Link href="/lifetime-customers" className="flex items-center justify-center gap-1 text-sm text-primary mt-3 hover:underline">
               View Full Sphere <ChevronRight className="h-3 w-3" />
             </Link>
           </div>

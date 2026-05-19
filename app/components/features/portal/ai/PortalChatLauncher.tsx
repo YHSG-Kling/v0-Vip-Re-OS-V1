@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
 import PortalAIAssistant from "./PortalAIAssistant"
-import { AvatarChatWidget } from "@/app/components/features/ai-avatar-chat/AvatarChatWidget"
+import { AgentsWidget } from "@/app/components/features/ai-avatar-chat/AgentsWidget"
 
 interface Contact {
   id: string
@@ -23,11 +23,10 @@ interface PortalChatLauncherProps {
   isBuyer: boolean
   isSeller: boolean
   persona: string
-  agentName: string
   agentFirstName: string
+  /** True when the assigned agent has an avatar set up (gates the Live button).
+   *  The widget itself resolves presenter/voice server-side via /api/did/agents/session. */
   agentHasDIDAvatar: boolean
-  agentDIDPhotoUrl?: string | null
-  agentDIDVideoUrl?: string | null
 }
 
 export default function PortalChatLauncher({
@@ -36,11 +35,8 @@ export default function PortalChatLauncher({
   isBuyer,
   isSeller,
   persona,
-  agentName,
   agentFirstName,
   agentHasDIDAvatar,
-  agentDIDPhotoUrl,
-  agentDIDVideoUrl,
 }: PortalChatLauncherProps) {
   const [liveAgentOpen, setLiveAgentOpen] = useState(false)
   const [callbackSent, setCallbackSent] = useState(false)
@@ -119,12 +115,9 @@ export default function PortalChatLauncher({
               </button>
             </div>
             <CardContent className="p-0">
-              <AvatarChatWidget
+              <AgentsWidget
                 contactId={contactId}
-                agentName={agentName}
                 agentFirstName={agentFirstName}
-                didPhotoUrl={agentDIDPhotoUrl ?? null}
-                didVideoUrl={agentDIDVideoUrl ?? null}
                 onFallbackToText={() => setLiveAgentOpen(false)}
               />
             </CardContent>

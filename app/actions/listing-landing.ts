@@ -24,6 +24,7 @@ interface ListingDetails {
   description: string | null
   status: string
   listing_date: string | null
+  go_live_date: string | null
   mls_number: string | null
   agent: {
     id: string
@@ -91,6 +92,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
       description,
       status,
       listing_date,
+      go_live_date,
       mls_number,
       agent_id,
       brokerage_id
@@ -171,6 +173,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     description: listing.description,
     status: listing.status,
     listing_date: listing.listing_date,
+    go_live_date: listing.go_live_date,
     mls_number: listing.mls_number,
     agent,
     brokerage_name,

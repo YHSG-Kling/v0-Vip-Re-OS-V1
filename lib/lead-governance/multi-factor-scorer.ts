@@ -29,6 +29,18 @@ export interface ScoringResult {
   scoredAt: string
 }
 
+/**
+ * LAYER 1 — Multi-Factor Deterministic Scorer (canonical baseline).
+ *
+ * Sole owner of `contacts.lead_score` baseline writes. Synchronous, pure,
+ * explainable. Returns a ScoringResult; persistence is done by the caller
+ * (typically `lib/services/lead-management.service.ts` or
+ * `lib/contact-pipeline/contact-capture.ts`).
+ *
+ * See `lib/lead-scoring/LAYERING.md` for the full canonical layering of all
+ * four scoring systems. Do NOT add a fifth scorer — extend this one with
+ * more factors, or add an additive signal in `signal-extensions.ts`.
+ */
 export function calculateLeadScore(lead: any): ScoringResult {
   const factors: LeadScoringFactors = {
     intentScore: calculateIntentScore(lead),

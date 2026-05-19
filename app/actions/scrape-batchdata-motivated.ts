@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { fetchMotivatedSellers } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { processRawRecord } from '@/lib/lead-pipeline'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 const MOTIVATION_TYPES = [
   'probate',
@@ -15,13 +16,32 @@ const MOTIVATION_TYPES = [
 ]
 
 export async function scrapeBatchDataMotivated(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   states: string[]
   limitPerType?: number
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+
   const supabase = await createClient()
-  const { brokerageId, states, limitPerType = 100 } = params
-  
+
+  // Admin-only: scraping burns money and writes raw lead data.
+  const { data: u } = await supabase
+    .from('users')
+    .select('user_type')
+    .eq('id', ctx.userId)
+    .maybeSingle()
+  const isAdmin = ['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(
+    u?.user_type ?? ''
+  )
+  if (!isAdmin) return { success: false, error: 'Forbidden: admin only' }
+
+  const brokerageId = ctx.brokerageId
+  const { states, limitPerType = 100 } = params
+
   const results = {
     totalRecords: 0,
     leadsCreated: 0,

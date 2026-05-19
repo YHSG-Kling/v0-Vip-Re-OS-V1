@@ -6,6 +6,10 @@ import {
   markBriefingOpened,
   type DailyBriefing,
 } from "@/lib/intelligence/daily-briefing-generator"
+import {
+  generateUserTypeBrief,
+  type UserTypeBrief,
+} from "@/lib/intelligence/user-type-briefs"
 import { createClient } from "@/lib/supabase/server"
 
 // Helper to validate UUID is not null/undefined/"null"/"undefined"
@@ -72,6 +76,33 @@ export async function generateBriefing(
   } catch (err) {
     console.error("[BriefingActions] generateBriefing failed:", err)
     return { briefing: null, error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+// ─── Get UserTypeBrief (TodaysFocusCard data) ────────────────────────────────
+// Returns the role-aware brief shape consumed by <TodaysFocusCard>. Used by
+// the agent dashboard (client component) which can't call generateUserTypeBrief
+// directly. Other staff dashboards (broker, TC, compliance, lender, vendor)
+// are server components and call generateUserTypeBrief inline.
+
+export async function getUserTypeBrief(input?: {
+  userType?: "agent" | "broker" | "TC" | "compliance" | "lender" | "vendor" | "superadmin"
+}): Promise<{ brief: UserTypeBrief | null; error?: string }> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.userId || !isValidUUID(context.userId)) {
+      return { brief: null, error: "Not authenticated" }
+    }
+    const userType = input?.userType ?? "agent"
+    const brief = await generateUserTypeBrief({
+      userType,
+      userId: context.userId,
+      brokerageId: context.brokerageId ?? null,
+    })
+    return { brief }
+  } catch (err) {
+    console.error("[BriefingActions] getUserTypeBrief failed:", err)
+    return { brief: null, error: err instanceof Error ? err.message : "Unknown error" }
   }
 }
 

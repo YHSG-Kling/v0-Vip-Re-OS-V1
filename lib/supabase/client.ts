@@ -19,7 +19,15 @@ function getClientInstance() {
   return clientInstance
 }
 
-export const supabase = getClientInstance()
+// Lazy proxy — resolves the real client only when a property is accessed.
+// Keeps `next build` static page collection working without env vars set.
+export const supabase = new Proxy({} as ReturnType<typeof createBrowserClient>, {
+  get(_target, prop) {
+    const inst = getClientInstance() as any
+    const v = inst[prop]
+    return typeof v === 'function' ? v.bind(inst) : v
+  },
+})
 
 export { supabase as default }
 

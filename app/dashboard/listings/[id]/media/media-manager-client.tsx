@@ -24,6 +24,7 @@ interface MediaManagerClientProps {
   brokerageId: string
   agentId: string
   userRole: string | null
+  sellerContactId?: string | null
   initialMedia: any[]
   initialVideos: any[]
   initialPosts: any[]
@@ -37,6 +38,7 @@ export function MediaManagerClient({
   brokerageId,
   agentId,
   userRole,
+  sellerContactId,
   initialMedia,
   initialVideos,
   initialPosts,
@@ -170,6 +172,7 @@ export function MediaManagerClient({
             listingId={listingId}
             brokerageId={brokerageId}
             agentId={agentId}
+            sellerContactId={sellerContactId}
             posts={posts}
             accounts={socialAccounts}
             canApprove={canApprove}

@@ -8,10 +8,18 @@ import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
+import { PageContextAssistant } from '@/app/components/shared/page-context-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
+import { ShellProvider, useShell } from './shell-context'
+import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
+import { FloatingVoiceFAB } from './floating-voice-fab'
+import { FloatingChatFAB } from './floating-chat-fab'
+import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
+import type { NavigationConfig } from '@/app/types/navigation'
+import type { UserContext } from '@/app/types/roles'
 
 const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -140,35 +148,117 @@ export function AppShell({ children }: AppShellProps) {
   const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
 
   return (
-    <div className="flex h-screen bg-white">
-      <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
-        <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
-      </div>
+    <ShellProvider>
+      <div className="flex h-screen bg-white">
+        {/* Desktop sidebar — hidden below lg breakpoint */}
+        <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
+          <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
+        </div>
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header navigation={navigation} userContext={safeUserContext} />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <Header navigation={navigation} userContext={safeUserContext} />
 
-        <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
-          <div className="h-full">{children}</div>
-        </main>
+          <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
+            <div className="h-full">{children}</div>
+          </main>
 
-        {!hideBottomNav && (
-          <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
-            <MobileBottomNav items={navigation.mobileBottomNav} />
-          </div>
-        )}
-      </div>
+          {!hideBottomNav && (
+            <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
+              <MobileBottomNav items={navigation.mobileBottomNav} />
+            </div>
+          )}
+        </div>
 
-      {/* Internal AI Assistant — staff roles only */}
-      {showAIAssistant && (
-        <InternalAIAssistant
-          role={primaryRole}
-          userId={safeUserContext.id}
+        {/* Mobile sidebar drawer — slide-in from left, toggled by hamburger */}
+        <MobileSidebarDrawer
+          navigation={navigation}
+          userContext={safeUserContext}
+          badgeCounts={badgeCounts}
         />
-      )}
 
-      {/* Cmd+K Command Palette — available to all authenticated users */}
-      <CommandPalette />
+        {/* Internal AI Assistant — staff roles only.
+            PageContextAssistant derives { contactId, listingId, transactionId, offerId }
+            from the URL so the copilot is always context-aware. */}
+        {showAIAssistant && (
+          <PageContextAssistant
+            role={primaryRole}
+            userId={safeUserContext.id}
+          />
+        )}
+
+        {/* Cmd+K Command Palette — available to all authenticated users */}
+        <CommandPalette />
+
+        {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
+        <ShellInboxOutlet />
+
+        {/* Floating voice mic on every staff page */}
+        {showAIAssistant && <FloatingVoiceFAB />}
+
+        {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
+        {showAIAssistant && <VoiceAssistantOverlay />}
+
+        {/* Text-only AI chat FAB (Track C).
+            The visual D-ID avatar widget intentionally does NOT mount here —
+            the agent doesn't want to see/hear their own clone (uncanny valley).
+            Customers see the avatar in their portal via PortalChatLauncher.
+            The agent-side FAB toggles the existing typed InternalAIAssistant
+            panel via a window event. */}
+        {showAIAssistant && <FloatingChatFAB />}
+      </div>
+    </ShellProvider>
+  )
+}
+
+function ShellInboxOutlet() {
+  const { inboxOpen, setInboxOpen } = useShell()
+  return <UnifiedInboxSlideOut open={inboxOpen} onOpenChange={setInboxOpen} />
+}
+
+interface MobileSidebarDrawerProps {
+  navigation: NavigationConfig
+  userContext: UserContext
+  badgeCounts?: Partial<BadgeCounts>
+}
+
+function MobileSidebarDrawer({ navigation, userContext, badgeCounts }: MobileSidebarDrawerProps) {
+  const { mobileSidebarOpen, setMobileSidebarOpen } = useShell()
+  const pathname = usePathname()
+
+  // Close drawer on navigation
+  useEffect(() => {
+    setMobileSidebarOpen(false)
+  }, [pathname, setMobileSidebarOpen])
+
+  if (!mobileSidebarOpen) return null
+
+  return (
+    // Backdrop
+    <div
+      className="fixed inset-0 z-50 lg:hidden"
+      onClick={() => setMobileSidebarOpen(false)}
+    >
+      {/* Dim overlay */}
+      <div className="absolute inset-0 bg-black/40" />
+
+      {/* Drawer panel — stop click propagation so clicks inside don't close */}
+      <div
+        className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-end p-3 border-b">
+          <button
+            onClick={() => setMobileSidebarOpen(false)}
+            className="p-1.5 rounded hover:bg-gray-100 transition-colors"
+            aria-label="Close navigation"
+          >
+            <X className="w-5 h-5 text-gray-600" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <Sidebar navigation={navigation} userContext={userContext} badgeCounts={badgeCounts} />
+        </div>
+      </div>
     </div>
   )
 }

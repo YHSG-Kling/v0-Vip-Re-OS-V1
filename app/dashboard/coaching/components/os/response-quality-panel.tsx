@@ -120,7 +120,7 @@ export function ResponseQualityPanel({
                   </div>
                   {opp.example_contacts.length > 0 && (
                     <Button variant="ghost" size="sm" asChild>
-                      <Link href={`/contacts/${opp.example_contacts[0]}`}>
+                      <Link href={`/crm/contacts/${opp.example_contacts[0]}`}>
                         Example
                       </Link>
                     </Button>

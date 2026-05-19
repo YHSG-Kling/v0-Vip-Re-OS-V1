@@ -1,26 +1,34 @@
 /**
  * Provider Resolver
- * 
- * Registry-based resolver for transaction providers.
- * Defaults to Dotloop if provider unknown or not configured.
+ *
+ * Registry-based resolver for transaction / e-sign providers. Each provider
+ * has a factory that constructs a real ITransactionProvider with whatever
+ * credentials the caller has resolved from platform_credentials.
+ *
+ * Adding a new provider = drop a class in /providers, add a row here.
  */
 
 import type { ITransactionProvider } from "./transaction-provider.interface"
-import { DotloopProvider } from "./dotloop-provider"
+import { DotloopProvider }      from "./dotloop-provider"
+import { DocusignProvider }     from "./docusign-provider"
+import { SkyslopeProvider }     from "./skyslope-provider"
+import { AuthentisignProvider } from "./authentisign-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
 
 // ── Provider registry ────────────────────────────────────────────────────────
-// Add new providers here. Factory accepts optional injected credentials.
+// Every provider supported by resolveESignProviderForActor MUST appear here.
+// Brokerages choose one in Settings → Integrations; we instantiate from
+// platform_credentials at dispatch time.
 
-export type ProviderName = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
+export type ProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
-type ProviderCredentials = { apiKey: string; profileId: string }
+type ProviderCredentials = { apiKey: string; profileId: string; baseUri?: string }
 
 const PROVIDER_REGISTRY: Record<ProviderName, (creds?: ProviderCredentials) => ITransactionProvider> = {
-  dotloop:         (creds) => new DotloopProvider(creds),
-  skyslope:        () => { throw new Error("SkySlope provider not yet implemented") },
-  formsimplicity:  () => { throw new Error("FormSimplicity provider not yet implemented") },
-  brokermint:      () => { throw new Error("BrokerMint provider not yet implemented") },
+  dotloop:      (creds) => new DotloopProvider(creds),
+  docusign:     (creds) => new DocusignProvider(creds as ProviderCredentials),
+  skyslope:     (creds) => new SkyslopeProvider(creds as ProviderCredentials),
+  authentisign: (creds) => new AuthentisignProvider(creds as ProviderCredentials),
 }
 
 /**
@@ -31,19 +39,12 @@ export async function getTransactionProvider(
   brokerageId: string
 ): Promise<ITransactionProvider> {
   const providerName = await getProviderName(brokerageId)
-  
-  switch (providerName) {
-    case "dotloop":
-      return new DotloopProvider()
-    case "skyslope":
-      throw new Error("SkySlope provider not yet implemented")
-    case "formsimplicity":
-      throw new Error("FormSimplicity provider not yet implemented")
-    case "brokermint":
-      throw new Error("BrokerMint provider not yet implemented")
-    default:
-      throw new Error(`Unknown transaction provider: ${providerName}`)
+  const normalized   = String(providerName ?? "").toLowerCase() as ProviderName
+  const factory      = PROVIDER_REGISTRY[normalized]
+  if (!factory) {
+    throw new Error(`Unknown transaction provider: ${providerName}`)
   }
+  return factory()
 }
 
 /**

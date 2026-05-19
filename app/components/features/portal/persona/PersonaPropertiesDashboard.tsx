@@ -317,11 +317,15 @@ export default function PersonaPropertiesDashboard({
       try {
         const result = await requestShowing({
           contactId,
-          propertyId: selectedProperty.mlsNumber,
-          propertyAddress: selectedProperty.address,
-          propertyData: selectedProperty,
-          preferredDates: [{ date: showingDate, time: showingTime }],
-          clientNotes: showingNotes,
+          mlsNumber:        selectedProperty.mlsNumber,
+          propertyAddress:  selectedProperty.address,
+          propertyCity:     (selectedProperty as any).city,
+          propertyState:    (selectedProperty as any).state,
+          listPrice:        (selectedProperty as any).list_price ?? (selectedProperty as any).price,
+          primaryPhotoUrl:  (selectedProperty as any).primary_photo_url ?? (selectedProperty as any).photo_url,
+          source:           'buyer_portal',
+          preferredDates:   [{ date: showingDate, time: showingTime }],
+          clientNotes:      showingNotes,
         })
         
         if (result.success) {

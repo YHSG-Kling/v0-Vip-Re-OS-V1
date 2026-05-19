@@ -229,12 +229,13 @@ export async function launchListingAction(params: {
           // Base URL not configured — skip QR generation but continue action
         } else {
         const targetUrl = `${baseUrl}/listings/${listing.id}`
-        const slug = `listing-${listing.id.slice(0, 8)}`
+        // qr_codes.slug is globally unique — suffix with base36 timestamp.
+        const slug = `listing-${listing.id.slice(0, 8)}-${Date.now().toString(36)}`
         const { data: existing } = await svc
           .from("qr_codes")
           .select("id")
           .eq("listing_id", params.listingId)
-          .eq("purpose", "listing_inquiry")
+          .eq("purpose", "listing")
           .maybeSingle()
 
         if (!existing) {
@@ -242,10 +243,13 @@ export async function launchListingAction(params: {
             brokerage_id: listing.brokerage_id,
             agent_id:     listing.agent_id,
             listing_id:   params.listingId,
-            label:        `Listing Inquiry — ${listing.property_address}`,
+            label:        `Listing — ${listing.property_address}`,
             slug,
             target_url:   targetUrl,
-            purpose:      "listing_inquiry",
+            // qr_codes.purpose CHECK only allows: listing, open_house, event,
+            // business_card, general. 'listing_inquiry' was invalid and the
+            // insert would fail the constraint.
+            purpose:      "listing",
             scan_count:   0,
             lead_count:   0,
             is_active:    true,
@@ -397,6 +401,26 @@ export async function loadListingWorkspaceAction(listingId: string) {
 export async function updateListingStatus(listingId: string, status: string) {
   const supabase = await createClient()
   try {
+    // Auth + ownership check — was previously open IDOR
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    const { data: callerRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+    const { data: listingRow } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", listingId)
+      .maybeSingle()
+    if (!listingRow) return { success: false, error: "Listing not found" }
+    if (listingRow.brokerage_id !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden" }
+    }
+
     const { data, error } = await supabase
       .from("listings")
       .update({
@@ -406,6 +430,7 @@ export async function updateListingStatus(listingId: string, status: string) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", listingId)
+      .eq("brokerage_id", callerRow.brokerage_id)
       .select()
       .single()
 

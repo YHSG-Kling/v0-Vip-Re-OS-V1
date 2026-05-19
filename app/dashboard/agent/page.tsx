@@ -5,8 +5,10 @@ import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
 import { generateDailyGameplan } from "@/app/actions/copilot"
-import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions } from "@/app/actions/briefing-actions"
-import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
+import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
+import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
@@ -15,6 +17,7 @@ import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
+import ReactMarkdown from "react-markdown"
 // Components
 import { AgentCommandStrip } from "./components/agent-command-strip"
 import { AgentOperatingRadar } from "./components/agent-operating-radar"
@@ -23,14 +26,37 @@ import { AgentNextBestActions } from "./components/agent-next-best-actions"
 import { AgentDealIntelligence } from "./components/agent-deal-intelligence"
 import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-customers-panel"
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
+import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
+import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
-import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { PredictiveListingCard } from "./components/predictive-listing-card"
+import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
+import { DealRiskWidget } from "./components/deal-risk-widget"
+import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
+import { ListingRiskWidget } from "./components/listing-risk-widget"
+import { getAgentAtRiskListings, type AgentListingRisk } from "@/app/actions/listing-risk-agent"
+import { ListingApptPrepWidget } from "./components/listing-appt-prep-widget"
+import { getAgentUpcomingListingApptPreps, type ListingApptPrepRow } from "@/app/actions/listing-appointment-copilot"
+import { RevenueProtectionHero } from "./components/revenue-protection-hero"
+import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/actions/revenue-protection"
+import { IncomeForecastCard } from "./components/income-forecast-card"
+import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
+import { OpenActionsCard } from "./components/open-actions-card"
+import { AgentActionQueueCard } from "./components/agent-action-queue-card"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
+import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
+import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance-card"
+import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
+import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
+import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
+import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
+import { NegotiationCoPilotCard } from "@/app/components/negotiation/negotiation-copilot-card"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -47,6 +73,8 @@ export default function AgentDashboard() {
     upcomingShowings: 0
   })
   const [briefing, setBriefing] = useState<any>(null)
+  const [userTypeBrief, setUserTypeBrief] = useState<UserTypeBrief | null>(null)
+  const [briefRefreshing, setBriefRefreshing] = useState(false)
   const [showings, setShowings] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [anniversaries, setAnniversaries] = useState<any[]>([])
@@ -54,6 +82,22 @@ export default function AgentDashboard() {
   const [commissions, setCommissions] = useState<any[]>([])
   const [monthlyExpenses, setMonthlyExpenses] = useState<any[]>([])
   const [hotLeads, setHotLeads] = useState<any[]>([])
+  const [predictedSellers, setPredictedSellers] = useState<PredictiveSellerRow[]>([])
+  const [queuedAutoTouches, setQueuedAutoTouches] = useState<Array<{
+    id: string
+    contactId: string
+    contactName: string
+    channel: string | null
+    scheduledSendAt: string | null
+    triggeringPlsScore: number | null
+    triggeringSignals: Array<{ key: string; label: string }> | null
+  }>>([])
+  const [userId, setUserId] = useState("")
+  const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
+  const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
+  const [upcomingListingPreps, setUpcomingListingPreps] = useState<ListingApptPrepRow[]>([])
+  const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
+  const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -94,6 +138,61 @@ export default function AgentDashboard() {
         if (agentRow) {
           setAgentId(agentRow.id)
           setBrokerageId(agentRow.brokerage_id)
+          setUserId(user.id)
+
+          // Predictive Listing Score — top 5 likely sellers + queued auto-touches
+          getTopPredictiveSellers({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setPredictedSellers)
+            .catch(() => setPredictedSellers([]))
+
+          listQueuedAutoTouches({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+          })
+            .then(setQueuedAutoTouches)
+            .catch(() => setQueuedAutoTouches([]))
+
+          // Deal Risk Radar — at-risk + critical transactions for this agent
+          getAgentAtRiskTransactions({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskTxns)
+            .catch(() => setAtRiskTxns([]))
+
+          // Listing Risk Radar — at-risk + critical active listings for this agent
+          getAgentAtRiskListings({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskListings)
+            .catch(() => setAtRiskListings([]))
+
+          // Listing Appointment Co-Pilot — upcoming preps (running or completed in last 7d)
+          // `agentId` here is the auth user id, since workflow_runs.agent_user_id
+          // is the users(id) reference (not agents.id).
+          getAgentUpcomingListingApptPreps({
+            agentId: user.id,
+            limit: 5,
+          })
+            .then(setUpcomingListingPreps)
+            .catch(() => setUpcomingListingPreps([]))
+
+          // Revenue Protection Score — latest quarterly snapshot for this agent
+          getAgentRevenueProtection({ agentId: user.id })
+            .then((r) => setRevenueProtection(r.data ?? null))
+            .catch(() => setRevenueProtection(null))
+
+          // Income Forecast — latest 30/60/90 projection + sphere referral expected
+          getAgentIncomeForecast({ agentId: user.id })
+            .then((r) => setIncomeForecast(r.data ?? null))
+            .catch(() => setIncomeForecast(null))
         }
 
         // 4. Calculate month start
@@ -124,6 +223,7 @@ export default function AgentDashboard() {
           getHotLeads(10),
           getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
           getMotivatedSellers({ min_score: 60 }).catch(() => null),
+          getUserTypeBrief({ userType: "agent" }),
         ])
 
         // 7. Unpack results
@@ -184,6 +284,13 @@ export default function AgentDashboard() {
           setMotivatedSellers(sellersResult?.sellers ?? [])
         }
 
+        // UserTypeBrief — feeds TodaysFocusCard with the play-aloud button.
+        // Parallel to the legacy DailyBriefing loaded above.
+        if (results[10].status === 'fulfilled' && results[10].value) {
+          const briefResult = results[10].value as { brief?: UserTypeBrief | null }
+          setUserTypeBrief(briefResult.brief ?? null)
+        }
+
       } catch (error) {
         console.error("[v0] Error loading agent dashboard:", error)
       } finally {
@@ -224,6 +331,18 @@ export default function AgentDashboard() {
     setRefreshing(false)
   }, [])
 
+  // Refresh the UserTypeBrief that drives TodaysFocusCard (play-aloud).
+  const handleRefreshUserTypeBrief = useCallback(async () => {
+    setBriefRefreshing(true)
+    try {
+      const result = await getUserTypeBrief({ userType: "agent" })
+      if (result.brief) setUserTypeBrief(result.brief)
+    } catch (error) {
+      console.error("[v0] Error refreshing user-type brief:", error)
+    }
+    setBriefRefreshing(false)
+  }, [])
+
   const handleWhisperBridge = useCallback(async (contactId: string, context: string) => {
     setCallingId(contactId + 'whisper')
     try {
@@ -257,6 +376,16 @@ export default function AgentDashboard() {
 
         <ApprovalsBanner />
 
+        {/* Today's Focus — the "voice-read brief" card. Tap the speaker icon
+            to hear the 3 priorities read aloud in the agent's cloned voice. */}
+        {userTypeBrief && (
+          <TodaysFocusCard
+            brief={userTypeBrief}
+            onRefresh={handleRefreshUserTypeBrief}
+            refreshing={briefRefreshing}
+          />
+        )}
+
         <AgentCommandStrip
           agentName={agentName}
           briefing={briefing}
@@ -266,6 +395,14 @@ export default function AgentDashboard() {
         />
 
         <AgentOperatingRadar stats={stats} loading={loading} />
+
+        {/* Weekly Plan widget — sits above the gameplan to set the week context */}
+        {agentId && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <WeeklyPlanWidget agentId={agentId} />
+            <LicenseComplianceWidget agentId={agentId} />
+          </div>
+        )}
 
         {/* Today's Gameplan */}
         {(gameplan || gameplanLoading) && (
@@ -325,8 +462,8 @@ export default function AgentDashboard() {
                     </div>
                   )}
                   {gameplan.ai_summary && (
-                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground italic">
-                      {gameplan.ai_summary}
+                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground [&_strong]:font-semibold [&_strong]:text-foreground [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:my-1">
+                      <ReactMarkdown>{gameplan.ai_summary}</ReactMarkdown>
                     </div>
                   )}
                 </div>
@@ -335,6 +472,64 @@ export default function AgentDashboard() {
           </Card>
         )}
 
+        {brokerageId && userId && (predictedSellers.length > 0 || queuedAutoTouches.length > 0) && (
+          <PredictiveListingCard
+            brokerageId={brokerageId}
+            userId={userId}
+            predictedSellers={predictedSellers}
+            queuedAutoTouches={queuedAutoTouches}
+          />
+        )}
+
+        {brokerageId && userId && (
+          <RevenueProtectionHero
+            data={revenueProtection}
+            brokerageId={brokerageId}
+            agentUserId={userId}
+          />
+        )}
+
+        {/* Agent OS Action Queue — Sprint 6. THE morning starting point.
+            Composes deal-health, listing-health, NPV-due, and portal-event
+            actions into one priority-ranked list. Hidden when zero items. */}
+        <AgentActionQueueCard />
+
+        <OpenActionsCard />
+
+        {/* Sprint 8 — Negotiation Co-Pilot: persisted strategy recs per
+            open offer with the customer-mirror panel inline. Hides on empty. */}
+        <NegotiationCoPilotCard />
+
+        {/* Sprint 7 — Knowledge & Growth Router: surfaces the top
+            learning modules picked by the actor's gap_tags + tenure.
+            Hides on empty. */}
+        {userId && <LearnThisWeekCard actorKind="agent" actorId={userId} />}
+
+        {brokerageId && userId && (
+          <IncomeForecastCard
+            data={incomeForecast}
+            brokerageId={brokerageId}
+            agentUserId={userId}
+          />
+        )}
+
+        {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
+
+        {atRiskListings.length > 0 && <ListingRiskWidget atRisk={atRiskListings} />}
+
+        {upcomingListingPreps.length > 0 && <ListingApptPrepWidget preps={upcomingListingPreps} />}
+
+        {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
+            💎 Likely seller). Aggregates lead_score_history +
+            sphere_engagement_scores + contacts.last_contacted_at +
+            predictive_listing_scores. Promoted to top of contact area so
+            agents see one consolidated view first. */}
+        <SmartQueue />
+
+        {/* Hot Leads quick-call panel — kept alongside SmartQueue because it
+            has unique whisper-bridge + VAPI bot actions (one-tap call) that
+            SmartQueue's draft_followup doesn't. Future: fold these actions
+            into SmartQueue rows and retire this panel. */}
         {(hotLeads.length > 0 || loading) && (
           <AgentHotLeadsPanel
             hotLeads={hotLeads}
@@ -346,10 +541,28 @@ export default function AgentDashboard() {
           />
         )}
 
-        {/* Conversion Workspace - Qualified Handoffs */}
+        {/* Conversion Workspace — Qualified Handoffs.
+            Distinct concept from SmartQueue's "new" segment: this surfaces
+            lead→contact CONVERSION coaching (urgency_level, qualification
+            reason, next_action, ai_summary) — not just "created recently". */}
         {agentId && brokerageId && (
           <NewlyConvertedContactsPanel agentId={agentId} brokerageId={brokerageId} />
         )}
+
+        {/* Smarter-this-week digest — surfaces the AI improvement loop */}
+        <SmarterWidget />
+
+        {/* Predictive surfaces — Sphere Resonance + Wealth Advisor */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <SphereResonanceCard />
+          <WealthAdvisorCard />
+        </div>
+
+        {/* Listing presentations prepared by the daily cron — auto-hides when none */}
+        <PresentationReadyBanner />
+
+        {/* AI Coaching Insights — auto-hides when agent has fewer than 5 deals */}
+        <AgentInsightsWidget />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
@@ -423,10 +636,11 @@ export default function AgentDashboard() {
             )}
             <AgentSystemReadiness />
 
-            {/* Contacts Needing Touch */}
-            {agentId && brokerageId && (
-              <AgentStaleContactsPanel agentId={agentId} brokerageId={brokerageId} />
-            )}
+            {/* AgentStaleContactsPanel removed — superseded by SmartQueue's
+                at_risk segment which now includes the same
+                contacts.last_contacted_at >= 21d signal as a fallback when
+                sphere_engagement_scores is sparse. Component file kept for
+                back-compat in case any other surface mounts it. */}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

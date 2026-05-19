@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation"
 
-export default function DashboardCreditPipelinePage({
+export default async function DashboardCreditPipelinePage({
   searchParams,
 }: {
-  searchParams: { contactId?: string }
+  searchParams: Promise<{ contactId?: string }>
 }) {
-  const qs = searchParams.contactId ? `?contactId=${searchParams.contactId}` : ""
+  const sp = await searchParams
+  const qs = sp.contactId ? `?contactId=${sp.contactId}` : ""
   redirect(`/credit-pipeline${qs}`)
 }

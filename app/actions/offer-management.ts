@@ -37,7 +37,7 @@ export async function getOffersForListing(listingId: string) {
   const { data: offers, error } = await supabase
     .from("offers")
     .select(`
-      id, offer_number, offer_price, earnest_money, earnest_money_amount,
+      id, offer_number, offer_price, earnest_money,
       closing_date, financing_type, down_payment_amount, down_payment_percent,
       appraisal_contingency_days, financing_contingency_days, inspection_period_days,
       escalation_clause, escalation_cap, appraisal_gap, closing_cost_contribution,
@@ -45,7 +45,7 @@ export async function getOffersForListing(listingId: string) {
       seller_net_estimate, ai_recommendation, ai_analysis, ai_extraction_status,
       ai_extracted_data, offer_document_url, offer_document_name,
       status, offer_type, parent_offer_id, current_round, is_winning_offer,
-      winning_offer, submitted_at, response_deadline, seller_viewed_at,
+      submitted_at, response_deadline, seller_viewed_at,
       responded_at, contact_id, agent_id, brokerage_id
     `)
     .eq("listing_id", listingId)
@@ -435,6 +435,20 @@ export async function counterOffer(
 
 // ─── ACCEPT OFFER ─────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated DO NOT USE. Use acceptOffer() from `@/app/actions/seller-offers`
+ * (object signature) which is the canonical path:
+ *   - Runs the compliance gate (System 7.1B — required by spec)
+ *   - Calls createTransactionFromOffer() to populate seller_contact_id +
+ *     buyer_contact_id + listing_id + offer_id linkage
+ *   - Uses transitionLifecycle() to atomically update listings.lifecycle_stage
+ *   - Hard-rolls back the offer status if any step fails
+ *
+ * This legacy version skips the compliance gate, only updates the transaction
+ * if one is already linked (it does NOT create one), and was the source of
+ * silent state drift between the offer / listing / transaction / contact
+ * tables. No call sites use it (verified via grep).
+ */
 export async function acceptOffer(offerId: string, agentId: string) {
   const supabase = await createClient()
 

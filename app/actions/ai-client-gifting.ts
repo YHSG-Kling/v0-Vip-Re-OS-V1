@@ -6,6 +6,7 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 /**
  * AI Client Gifting System
@@ -147,7 +148,7 @@ export async function aiPlanBulkGifting(params: {
         transactions(sale_price, close_date)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", ["past_client", "sphere", "referral_partner"])
+      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { tiers: [], totalRecipients: 0 } }

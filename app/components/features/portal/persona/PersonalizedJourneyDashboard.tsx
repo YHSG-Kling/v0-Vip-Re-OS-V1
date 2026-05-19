@@ -26,7 +26,7 @@ interface Milestone {
   milestone_name?: string
   name?: string
   status: string
-  milestone_date?: string
+  target_date?: string
   due_date?: string
   completed_date?: string
   notes?: string
@@ -452,10 +452,10 @@ export default function PersonalizedJourneyDashboard({
                       <div className="flex-1 min-w-0">
                         <p className="font-medium">{milestone.milestone_name || milestone.name}</p>
                         <p className="text-sm text-muted-foreground">
-                          {milestone.milestone_date
+                          {milestone.target_date
                             ? milestone.status === "completed"
-                              ? `Completed: ${new Date(milestone.milestone_date).toLocaleDateString()}`
-                              : `Due: ${new Date(milestone.milestone_date).toLocaleDateString()}`
+                              ? `Completed: ${new Date(milestone.target_date).toLocaleDateString()}`
+                              : `Due: ${new Date(milestone.target_date).toLocaleDateString()}`
                             : "Date TBD"}
                         </p>
                         {(milestone.notes || milestone.description) && (

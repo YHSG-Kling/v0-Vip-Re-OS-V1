@@ -2,7 +2,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText as generateTextBase, Output } from "ai"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+// generateObjectRouted replaces direct `generateText` from "ai" — keeps
+// brokerage routing + fallback + gateway wrapping for structured outputs.
+import { generateObjectRouted } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
@@ -72,7 +75,7 @@ interface OfferCreationParams {
 // 1. AI OFFER STRATEGY ADVISOR
 // ============================================
 export async function aiOfferStrategyAdvisor(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerId: string
   listingId: string
   listPrice: number
@@ -83,13 +86,16 @@ export async function aiOfferStrategyAdvisor(params: {
   buyerMaxBudget: number
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid AI inference. Was previously open to any
+    // caller via a spoofed agentId param.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
-    const { experimental_output: strategy } = await generateTextBase({
-      model: resolveModel("openai/gpt-4o"),
-      experimental_output: Output.object({ schema: z.object({
+    const { object: strategy } = await generateObjectRouted({
+      feature: "offer_analysis",
+      schema: z.object({
         recommendedOfferPrice: z.number(),
         priceRangeLow: z.number(),
         priceRangeHigh: z.number(),
@@ -116,7 +122,7 @@ export async function aiOfferStrategyAdvisor(params: {
         closeDateStrategy: z.string(),
         personalLetterRecommendation: z.boolean(),
         additionalSuggestions: z.array(z.string()),
-      }) }),
+      }),
       prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.
 
 Listing Details:
@@ -156,9 +162,9 @@ export async function aiCalculateEscalation(params: {
   marketTrend: "appreciating" | "stable" | "declining"
 }) {
   try {
-    const { experimental_output: escalation } = await generateTextBase({
-      model: resolveModel("openai/gpt-4o-mini"),
-      experimental_output: Output.object({ schema: z.object({
+    const { object: escalation } = await generateObjectRouted({
+      feature: "offer_analysis",
+      schema: z.object({
         recommended: z.boolean(),
         startingOffer: z.number(),
         escalationIncrement: z.number(),
@@ -168,7 +174,7 @@ export async function aiCalculateEscalation(params: {
         reasoning: z.string(),
         riskAssessment: z.string(),
         sampleClauseText: z.string(),
-      }) }),
+      }),
       prompt: `Calculate optimal escalation clause parameters:
 
 List Price: $${params.listPrice.toLocaleString()}
@@ -258,15 +264,17 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
 // 4. AI BUYER LETTER GENERATOR
 // ============================================
 export async function aiGenerateBuyerLetter(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerFirstName: string
   buyerStory: string
   propertyAddress: string
   whyThisHome: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const { text: letter } = await generateText({
@@ -364,33 +372,42 @@ List only form names, one per line. If none needed, respond "NONE".`,
 // 6. CREATE DOTLOOP FOR OFFER
 // ============================================
 export async function createOfferDotloop(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   buyerId: string
   propertyAddress: string
   transactionId?: string
   existingLoopId?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // CRITICAL auth gate — previously took caller-supplied agentId,
+    // resolved it to a brokerage_id, then pulled THAT brokerage's Dotloop
+    // OAuth credentials and made API calls under them. Any signed-in user
+    // (or unauthenticated, since there was no auth.getUser() check) could
+    // create loops on any brokerage's Dotloop account with their tokens.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
     const supabase = await createClient()
 
-    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-    if (!agentRow?.brokerage_id) {
-      return { success: false, error: "Agent or brokerage not found" }
+    // Verify the transaction (if provided) belongs to caller's brokerage
+    // before we both link it and use the brokerage's Dotloop creds.
+    if (params.transactionId && isValidUUID(params.transactionId)) {
+      const { data: tx } = await supabase
+        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
+      if (!tx || tx.brokerage_id !== brokerageId) {
+        return { success: false, error: "Forbidden: transaction not in your brokerage" }
+      }
     }
+
+    // Resolve Dotloop credentials from caller's session brokerage only
     const serviceClient = createServiceClient()
     const { data: dotloopCred } = await serviceClient
       .from("platform_credentials")
       .select("access_token, account_id")
-      .eq("brokerage_id", agentRow.brokerage_id)
+      .eq("brokerage_id", brokerageId)
       .eq("platform", "dotloop")
       .eq("is_active", true)
       .maybeSingle()
@@ -404,13 +421,15 @@ export async function createOfferDotloop(params: {
     const DOTLOOP_API_KEY = dotloopCred.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
-    // If existing loop provided, link to it
+    // If existing loop provided, link to it (transaction ownership was
+    // already verified above)
     if (params.existingLoopId) {
       if (params.transactionId) {
         await supabase
           .from("transactions")
           .update({ dotloop_loop_id: params.existingLoopId })
           .eq("id", params.transactionId)
+          .eq("brokerage_id", brokerageId)
       }
 
       return {
@@ -446,9 +465,12 @@ export async function createOfferDotloop(params: {
     const result = await response.json()
     const loopId = result.data?.loop_id
 
-    // Update transaction
+    // Update transaction (ownership verified above)
     if (params.transactionId && loopId) {
-      await supabase.from("transactions").update({ dotloop_loop_id: loopId }).eq("id", params.transactionId)
+      await supabase.from("transactions")
+        .update({ dotloop_loop_id: loopId })
+        .eq("id", params.transactionId)
+        .eq("brokerage_id", brokerageId)
     }
 
     return {
@@ -518,13 +540,19 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 // ============================================
 export async function submitCompleteOffer(params: OfferCreationParams) {
   try {
-    if (!isValidUUID(params.agentId) || !isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
+    // Resolve identity from session — ignore caller-supplied agentId
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    if (!isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
       return { success: false, error: "Invalid IDs provided" }
     }
 
     const supabase = await createClient()
 
-    // Get listing details
+    // Get listing details — RLS handles cross-brokerage visibility for buyer-side offers
     const { data: listing } = await supabase
       .from("listings")
       .select("*, agent_id, seller_id, address, state")
@@ -535,11 +563,24 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       return { success: false, error: "Listing not found" }
     }
 
-    // Create transaction record
+    // Verify the buyer belongs to the caller's brokerage
+    const { data: buyer } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.buyerId)
+      .maybeSingle()
+    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const effectiveAgentId = ctx.agentId ?? ctx.userId
+
+    // Create transaction record — agent/brokerage from session, not params
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
-        agent_id: params.agentId,
+        agent_id: effectiveAgentId,
+        brokerage_id: ctx.brokerageId,
         buyer_id: params.buyerId,
         listing_id: params.listingId,
         deal_type: "buyer_side",
@@ -578,7 +619,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     // Create Dotloop
     const dotloopResult = await createOfferDotloop({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       buyerId: params.buyerId,
       propertyAddress: listing.address,
       transactionId: transaction.id,
@@ -610,9 +651,13 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
   }
 }
 
-// Backward compatibility aliases
-export const aiAnalyzeOfferStrategy = aiOfferStrategyAdvisor
-export const generateOfferLetter = aiGenerateBuyerLetter
+// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
+export async function aiAnalyzeOfferStrategy(...args: Parameters<typeof aiOfferStrategyAdvisor>) {
+  return aiOfferStrategyAdvisor(...args)
+}
+export async function generateOfferLetter(...args: Parameters<typeof aiGenerateBuyerLetter>) {
+  return aiGenerateBuyerLetter(...args)
+}
 
 // ============================================
 // 9. COMPLETE OFFER CREATION WORKFLOW
@@ -628,6 +673,13 @@ export async function runCompleteOfferWorkflow(params: {
   whyThisHome?: string
 }) {
   try {
+    // Auth gate — workflow chain makes paid AI calls
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const effectiveAgentId = ctx.agentId ?? ctx.userId
+
     const supabase = await createClient()
 
     // Get listing details
@@ -641,16 +693,19 @@ export async function runCompleteOfferWorkflow(params: {
       return { success: false, error: "Listing not found" }
     }
 
-    // Get buyer details
+    // Buyer must belong to caller's brokerage
     const { data: buyer } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.buyerId)
       .single()
+    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // Step 1: AI Strategy
     const strategyResult = await aiOfferStrategyAdvisor({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       buyerId: params.buyerId,
       listingId: params.listingId,
       listPrice: listing.price,
@@ -690,7 +745,7 @@ export async function runCompleteOfferWorkflow(params: {
       params.whyThisHome
     ) {
       letterResult = await aiGenerateBuyerLetter({
-        agentId: params.agentId,
+        agentId: effectiveAgentId,
         buyerFirstName: buyer?.first_name || "Buyer",
         buyerStory: params.buyerStory,
         propertyAddress: listing.address,
@@ -725,5 +780,182 @@ export async function runCompleteOfferWorkflow(params: {
   } catch (error) {
     console.error("[AI Offer Creation] Workflow error:", error)
     return handleError(error, "runCompleteOfferWorkflow")
+  }
+}
+
+// ============================================
+// WORKFLOW OS — generate offer draft document
+// ============================================
+/**
+ * Generates an AI-drafted purchase offer for a contact/listing combination.
+ * Called by the draft_document workflow adapter when document_type = "offer".
+ *
+ * Retrieves the contact's most relevant active search + the brokerage's state
+ * to select the correct state-specific forms, then produces a draft summary
+ * and stores it on the documents record.
+ */
+/**
+ * Stage an offer PACKET for an agent to complete in the FormWizard.
+ *
+ * An offer cannot be fully auto-generated by a workflow — it requires the
+ * buyer's legal full name (driver's license), the property address, and
+ * specific terms (price, EMD, contingencies, close date, financing) that
+ * the agent has to decide with the buyer.
+ *
+ * Instead, this action prepares an OFFER PACKET:
+ *   1. Pulls the state-specific required + addenda forms
+ *   2. Prefills the fields we DO know (buyer info, property, agent info)
+ *   3. Flags the fields the AGENT must complete (offer terms)
+ *   4. Stores the packet on the documents row with status='needs_agent_input'
+ *   5. Notifies the agent with a deep link into the offer FormWizard so they
+ *      can finalize. After they approve, they trigger the eSign step which
+ *      uses THEIR configured eSign provider (Dotloop / DocuSign / etc.).
+ *
+ * This is NOT marketing content — no brand-voice or them-first checks apply.
+ * It IS legal/financial paperwork that always needs human approval.
+ */
+export async function generateOfferDraft(params: {
+  brokerageId: string
+  contactId?: string | null
+  agentUserId?: string | null
+  /** 2-letter US state code from the PROPERTY ADDRESS — required, no default. */
+  state: string
+  documentId?: string | null
+  propertyAddress?: string
+  listingId?: string | null
+}): Promise<{ success: boolean; documentId?: string; error?: string }> {
+  try {
+    const supabase = await createClient()
+
+    const { getStateForms } = await import("@/lib/state-forms/registry")
+    const forms = getStateForms(params.state, "offer")
+    const state = params.state.trim().toUpperCase()
+
+    // ── Prefill what we know ─────────────────────────────────────────────
+    let buyerName: string | null = null
+    let buyerEmail: string | null = null
+    let buyerPhone: string | null = null
+    if (params.contactId) {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("first_name, last_name, email, phone")
+        .eq("id", params.contactId)
+        .maybeSingle()
+      if (c) {
+        buyerName  = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || null
+        buyerEmail = c.email ?? null
+        buyerPhone = c.phone ?? null
+      }
+    }
+
+    let agentName: string | null = null
+    let agentLicense: string | null = null
+    if (params.agentUserId) {
+      const { data: a } = await supabase
+        .from("agents")
+        .select("license_number, license_state, user_id")
+        .eq("user_id", params.agentUserId)
+        .maybeSingle()
+      if (a) agentLicense = a.license_number ?? null
+      const { data: u } = await supabase
+        .from("users")
+        .select("first_name, last_name")
+        .eq("id", params.agentUserId)
+        .maybeSingle()
+      if (u) agentName = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || null
+    }
+
+    let listingPrice: number | null = null
+    let listingAddress: string | null = params.propertyAddress ?? null
+    if (params.listingId) {
+      const { data: listing } = await supabase
+        .from("listings")
+        .select("address, city, state, zip, list_price")
+        .eq("id", params.listingId)
+        .maybeSingle()
+      if (listing) {
+        listingPrice   = listing.list_price ?? null
+        listingAddress = listing.address ?? listingAddress
+      }
+    }
+
+    // ── Build the packet ─────────────────────────────────────────────────
+    const packet = {
+      packet_type: "offer",
+      state,
+      created_at: new Date().toISOString(),
+      forms: {
+        required: forms.required,
+        addenda:  forms.addenda,
+        brokerage_representation: forms.brokerageRepresentation,
+      },
+      // Fields the workflow has prefilled — agent should verify
+      prefilled: {
+        buyer_legal_name: buyerName,
+        buyer_email:      buyerEmail,
+        buyer_phone:      buyerPhone,
+        agent_name:       agentName,
+        agent_license:    agentLicense,
+        property_address: listingAddress,
+        list_price:       listingPrice,
+      },
+      // Fields the AGENT must complete in the FormWizard
+      needs_agent_input: [
+        { field: "buyer_legal_name_verified",  reason: "Must match driver's license exactly", suggested: buyerName },
+        { field: "offer_price",                reason: "Strategy decision with buyer" },
+        { field: "earnest_money_amount",       reason: "Negotiated separately" },
+        { field: "down_payment_percent",       reason: "From buyer's lender or POF" },
+        { field: "financing_type",             reason: "conventional | fha | va | cash | usda | other" },
+        { field: "contingencies",              reason: "Inspection / appraisal / financing / sale-of-other-property" },
+        { field: "close_date",                 reason: "Coordinate with title + lender" },
+        { field: "escalation_clause",          reason: "Optional, set max + increment" },
+        { field: "additional_addenda",         reason: `Available for ${state}: ${forms.addenda.slice(0,3).join(", ")}…` },
+      ],
+      formwizard_url: params.contactId
+        ? `/crm?contact=${params.contactId}&action=new_offer`
+        : "/crm",
+    }
+
+    // ── Persist packet on documents row ──────────────────────────────────
+    if (params.documentId) {
+      await supabase
+        .from("documents")
+        .update({
+          content: JSON.stringify(packet, null, 2),
+          status: "needs_agent_input",         // NOT draft_ready — packet awaits human finalization
+          metadata: {
+            state,
+            packet_type: "offer",
+            required_forms: forms.required,
+            available_addenda: forms.addenda,
+            brokerage_representation_form: forms.brokerageRepresentation,
+            prefilled: packet.prefilled,
+            unknown_fields: packet.needs_agent_input.map(f => f.field),
+            formwizard_url: packet.formwizard_url,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", params.documentId)
+    }
+
+    // ── Notify agent that the packet is ready for review ─────────────────
+    if (params.agentUserId) {
+      void Promise.resolve(supabase.from("notifications").insert({
+        user_id: params.agentUserId,
+        brokerage_id: params.brokerageId,
+        type: "offer_packet_ready",
+        title: `Offer packet ready for ${buyerName ?? "buyer"}`,
+        body: `Required forms for ${state} are staged with prefilled fields. Open the offer FormWizard to complete terms and approve before sending for signature.`,
+        priority: "high",
+        entity_type: "document",
+        entity_id: params.documentId ?? null,
+        channel: "in_app",
+      })).catch(() => {})
+    }
+
+    return { success: true, documentId: params.documentId ?? undefined }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
   }
 }

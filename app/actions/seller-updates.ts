@@ -109,9 +109,9 @@ export async function generateSellerUpdateDraft({ listingId, agentId }: Generate
   if (transaction) {
     const { data: milestonesData } = await supabase
       .from("transaction_milestones")
-      .select("milestone_name, status, milestone_date, completed_at")
+      .select("milestone_name, status, target_date, completed_at")
       .eq("transaction_id", transaction.id)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
 
     milestones = milestonesData || []
   }
@@ -150,7 +150,7 @@ ${feedbackSummary.length > 0
 
 ${milestones.length > 0 ? `
 Transaction Milestones:
-${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.milestone_date})`).join("\n")}
+${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.target_date})`).join("\n")}
 ` : ""}
 `
 

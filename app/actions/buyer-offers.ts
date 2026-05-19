@@ -65,7 +65,6 @@ export interface OfferFormData {
   property_address_ai_filled?: boolean
   offer_price:                 number
   earnest_money:               number
-  earnest_money_amount:        number
   down_payment_amount?:        number
   down_payment_percent?:       number
   financing_type:              string
@@ -382,6 +381,25 @@ export async function createOffer(
 
   const supabase = createServiceClient()
 
+  // ── Financial verification gate (System J3.1 — buyer cannot make offers
+  //    until verified or explicitly bypassed by the agent). Previously this
+  //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
+  //    but no backend caller ever checked it, so any client could POST and
+  //    create an offer for an unverified buyer. Enforce here at the API
+  //    boundary.
+  const { data: finProfile } = await supabase
+    .from("buyer_financial_profiles")
+    .select("verified")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!finProfile?.verified) {
+    return {
+      success: false,
+      error: "Buyer is not financially verified. Complete the verification gate (proof of funds for cash, or pre-approval for financed) before submitting an offer.",
+    }
+  }
+
   // Resolve listing_id — required by NOT NULL constraint on offers.listing_id
   let resolvedListingId = form.listing_id
   if (!resolvedListingId) {
@@ -419,7 +437,6 @@ export async function createOffer(
       property_address_ai_filled:  form.property_address_ai_filled ?? false,
       offer_price:                 form.offer_price,
       earnest_money:               form.earnest_money,
-      earnest_money_amount:        form.earnest_money_amount,
       down_payment_amount:         form.down_payment_amount ?? null,
       down_payment_percent:        form.down_payment_percent ?? null,
       financing_type:              form.financing_type,

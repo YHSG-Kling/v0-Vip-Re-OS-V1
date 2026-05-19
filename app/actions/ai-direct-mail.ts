@@ -21,6 +21,16 @@ import {
   sendCampaign,
   logResponse,
 } from "@/app/actions/direct-mail"
+import { createQrCodeAction } from "@/app/actions/marketing-studio"
+
+// Direct mail piece types — matches the piece_type column on direct_mail_campaigns.
+export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
+
+// Build a public QR PNG URL using a free renderer service. The QR resolves to
+// /api/qr/scan?slug=<slug>, which records the scan and redirects to the landing.
+function buildQrImageUrl(absoluteScanUrl: string, size = 300) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(absoluteScanUrl)}`
+}
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -73,7 +83,7 @@ export async function aiWritePostcardCopy(params: {
     | "expired"
     | "divorce_probate"
     | "investors"
-    | "past_clients"
+    | "lifetime_customers"
     | "geographic_farm"
     | "new_movers"
   callToAction: "call" | "scan_qr" | "visit_website" | "text"
@@ -232,7 +242,7 @@ Consider:
 export async function aiSelectTargetAudience(params: {
   agentId: string
   brokerageId: string
-  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "past_clients"
+  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers"
   budget: number
   area: string
 }) {
@@ -413,16 +423,36 @@ export async function getDirectMailCampaigns(agentId: string) {
   }
 }
 
+/**
+ * AI-enhanced direct mail campaign creation.
+ *
+ * Delegates the actual `direct_mail_campaigns` insert to the canonical
+ * `createMailCampaign` in `app/actions/direct-mail.ts`. This function only
+ * layers AI-driven enhancements on top:
+ *   - Budget → quantity calculation (per-piece cost economics)
+ *   - Piece-type tagging (postcard | letter | brochure)
+ *   - QR-code generation + tracking link when tracking enabled
+ *
+ * The kernel event (DIRECT_MAIL_CAMPAIGN_CREATED) and feature gate are
+ * handled by `createMailCampaign`; this fn does NOT duplicate them.
+ *
+ * Use `createMailCampaign` directly for manual / non-AI flows. Do NOT
+ * introduce a third creator that bypasses both.
+ */
 export async function createDirectMailCampaign(params: {
   agentId: string
   brokerageId: string
   campaignName: string
   targetAudience: string
   mailingType: "postcard" | "letter" | "brochure"
+  pieceType?: DirectMailPieceType
   designTemplate?: string
   budget?: number
   sendDate?: string
   trackingEnabled?: boolean
+  /** Optional absolute origin (e.g. "https://app.example.com"); QR link defaults
+   *  to NEXT_PUBLIC_APP_URL or a relative path if not provided. */
+  appOrigin?: string
 }) {
   try {
     if (!isValidUUID(params.agentId)) {
@@ -443,8 +473,9 @@ export async function createDirectMailCampaign(params: {
       params.budget && quantity > 0
         ? Number((params.budget / quantity).toFixed(2))
         : 0.79
-// Generate QR code tracking URL if enabled
-    const trackingId = params.trackingEnabled ? `dm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` : null
+    const trackingId = params.trackingEnabled
+      ? `dm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      : null
 
     const campaignResult = await createMailCampaign({
       brokerageId: params.brokerageId,
@@ -452,9 +483,7 @@ export async function createDirectMailCampaign(params: {
       campaignName: params.campaignName,
       targetAudience: params.targetAudience,
       designUrl: params.designTemplate ?? undefined,
-      copyText: [params.campaignName, params.targetAudience]
-  .filter(Boolean)
-  .join(" "),
+      copyText: [params.campaignName, params.targetAudience].filter(Boolean).join(" "),
       quantity,
       mailingDate: params.sendDate ?? undefined,
       perPieceCost,
@@ -468,13 +497,71 @@ export async function createDirectMailCampaign(params: {
       }
     }
 
+    const campaign = campaignResult.campaign as { id: string } | null
+    const supabase = await createClient()
+    const pieceType: DirectMailPieceType = params.pieceType ?? "postcard"
+
+    // Persist piece type + tracking id on the campaign row regardless of QR.
+    if (campaign?.id) {
+      await supabase
+        .from("direct_mail_campaigns")
+        .update({ piece_type: pieceType, tracking_id: trackingId })
+        .eq("id", campaign.id)
+    }
+
+    // Generate the QR code + image URL when tracking is enabled.
+    let qrCodeId: string | null = null
+    let qrSlug: string | null = null
+    let qrImageUrl: string | null = null
+    let trackingUrl: string | null = null
+
+    if (params.trackingEnabled && trackingId && campaign?.id) {
+      const origin =
+        params.appOrigin ?? process.env.NEXT_PUBLIC_APP_URL ?? ""
+      // Pre-build the canonical scan URL; the QR slug will be embedded once
+      // createQrCodeAction returns it. We use the trackingId as a stable label.
+      const qrResult = await createQrCodeAction({
+        brokerageId: params.brokerageId,
+        agentId: params.agentId,
+        label: `${params.campaignName} (${trackingId})`,
+        targetUrl: `${origin}/api/qr/scan?slug=__placeholder__`,
+        purpose: "campaign",
+      })
+
+      if (qrResult.success && qrResult.qrCode) {
+        qrCodeId = qrResult.qrCode.id
+        qrSlug = qrResult.qrCode.slug
+        const scanUrl = `${origin}/api/qr/scan?slug=${qrResult.qrCode.slug}`
+
+        // Update qr_codes.target_url with the real scan URL now that we know the slug.
+        await supabase
+          .from("qr_codes")
+          .update({ target_url: scanUrl })
+          .eq("id", qrResult.qrCode.id)
+
+        // Link the QR to the campaign for scan attribution.
+        await supabase
+          .from("direct_mail_campaigns")
+          .update({ qr_code_id: qrResult.qrCode.id })
+          .eq("id", campaign.id)
+
+        trackingUrl = scanUrl
+        qrImageUrl = buildQrImageUrl(scanUrl)
+      }
+    }
+
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
-      campaign: campaignResult.campaign,
-      trackingUrl: null,
+      campaign: campaign
+        ? { ...campaign, piece_type: pieceType, qr_code_id: qrCodeId, tracking_id: trackingId }
+        : null,
+      trackingUrl,
+      qrImageUrl,
+      qrSlug,
+      pieceType,
     }
   } catch (error) {
     console.error("[AI Direct Mail] Create campaign error:", error)

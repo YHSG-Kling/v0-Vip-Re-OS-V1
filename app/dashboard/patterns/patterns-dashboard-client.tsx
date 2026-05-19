@@ -438,7 +438,7 @@ export function PatternsDashboardClient({
                               <Link
                                 href={
                                   pattern.entity_type === "contact"
-                                    ? `/contacts/${pattern.entity_id}`
+                                    ? `/crm/contacts/${pattern.entity_id}`
                                     : `/dashboard/listings/${pattern.entity_id}`
                                 }
                                 className="text-sm text-primary hover:underline"
@@ -649,7 +649,7 @@ export function PatternsDashboardClient({
                     <Link
                       href={
                         selectedPattern.entity_type === "contact"
-                          ? `/contacts/${selectedPattern.entity_id}`
+                          ? `/crm/contacts/${selectedPattern.entity_id}`
                           : `/dashboard/listings/${selectedPattern.entity_id}`
                       }
                     >

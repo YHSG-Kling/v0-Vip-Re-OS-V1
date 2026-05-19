@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { createSocialPost, approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
 import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
+import { shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import {
   PlusIcon,
   Share2Icon,
@@ -25,7 +26,9 @@ import {
   ShieldAlertIcon,
   CalendarIcon,
   Sparkles,
+  Send,
 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import { toast } from "@/hooks/use-toast"
 import { format } from "date-fns"
 
@@ -58,6 +61,7 @@ interface SocialPanelProps {
   listingId: string
   brokerageId: string
   agentId: string
+  sellerContactId?: string | null
   posts: SocialPost[]
   accounts: SocialAccount[]
   canApprove: boolean
@@ -93,10 +97,11 @@ function buildBrief(platform: string, postType: string): string {
   return typeMap[postType] ?? "Write a compelling real estate post"
 }
 
-export function SocialPanel({ listingId, brokerageId, agentId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
+export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [createOpen, setCreateOpen] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [pushToSellerPortal, setPushToSellerPortal] = useState(false)
   const [form, setForm] = useState({
     platform:        "instagram",
     postType:        "listing_announcement",
@@ -125,11 +130,20 @@ export function SocialPanel({ listingId, brokerageId, agentId, posts, accounts, 
         toast({ title: "Error creating post", description: result.error, variant: "destructive" })
         return
       }
+      if (pushToSellerPortal && sellerContactId) {
+        await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+      }
       const updated = await import("@/app/actions/listing-media").then(m => m.getSocialPosts(listingId))
       onPostsChange(updated.data ?? [])
       setCreateOpen(false)
+      setPushToSellerPortal(false)
       setForm({ platform: "instagram", postType: "listing_announcement", content: "", hashtags: "", mediaUrls: "", scheduledFor: "", socialAccountId: "" })
-      toast({ title: "Post created", description: "Brand compliance check queued." })
+      toast({
+        title: "Post created",
+        description: pushToSellerPortal && sellerContactId
+          ? "Brand compliance check queued. Seller has been notified via portal."
+          : "Brand compliance check queued.",
+      })
     })
   }
 
@@ -396,6 +410,16 @@ export function SocialPanel({ listingId, brokerageId, agentId, posts, accounts, 
               />
             </div>
           </div>
+          {sellerContactId && (
+            <div className="flex items-center gap-3 px-1 py-2 border rounded-lg bg-muted/20">
+              <Send className="h-4 w-4 text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">Push to Seller Portal</p>
+                <p className="text-xs text-muted-foreground">Notify seller so they can share on their channels</p>
+              </div>
+              <Switch checked={pushToSellerPortal} onCheckedChange={setPushToSellerPortal} />
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button

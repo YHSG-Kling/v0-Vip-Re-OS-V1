@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
+import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -46,7 +47,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = JSON.parse(rawBody)
-    const supabase = await createClient()
+    // Use service client — no user session in webhook; RLS would block writes
+    // to client_documents without current_user_brokerage_id.
+    const supabase = createServiceClient()
 
     if (body.event === "document.signed") {
       const { document_id, loop_id } = body.data
@@ -160,6 +163,12 @@ export async function POST(request: NextRequest) {
             dedupe_key: `listing-agreement-esign-complete-${matchedAgreement.id}`,
           } as any)
         }
+
+        // ── Esign completion: voice-cockpit staged artifacts ─────────────────
+        // Shared helper handles the documents + buyer_broker_agreements flip
+        // and kernel event emission. Every provider webhook calls this so the
+        // dispatch chain converges regardless of which provider the agent uses.
+        await finalizeVoiceCockpitPacket(supabase as any, loop_id, "dotloop")
       }
     }
 

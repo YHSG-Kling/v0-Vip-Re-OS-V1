@@ -48,6 +48,7 @@ export const EVENT_TYPES = {
   VIDEO_SCRIPT_APPROVED: "video.script_approved",
   VIDEO_PUBLISHED: "video.published",
   VIDEO_HIGH_ENGAGEMENT: "video.high_engagement",
+  IMAGE_GENERATED: "image.generated",
   AI_SUGGESTION_CREATED: "ai.suggestion_created",
   AI_SUGGESTION_ACTIONED: "ai.suggestion_actioned",
 } as const

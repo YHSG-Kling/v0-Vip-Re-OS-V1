@@ -49,8 +49,8 @@ export async function updateContactStage(params: {
       })
     }
 
-    revalidatePath("/contacts")
-    revalidatePath(`/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    revalidatePath(`/crm/contacts/${params.contactId}`)
     revalidatePath("/dashboard")
 
     return result
@@ -89,7 +89,33 @@ export async function createContact(contact: {
   })
 }
 
+/**
+ * Soft-delete a contact. Verifies ownership (agent_id) or admin role before
+ * delegating to the service layer (which uses the admin client and would
+ * otherwise blindly trust the IDs passed from the client).
+ */
+const CRM_ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+
 export async function deleteContact(contactId: string, agentId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  // Resolve who actually owns the contact + the caller's role.
+  const [{ data: contact }, { data: callerRow }, { data: callerAgent }] = await Promise.all([
+    supabase.from("contacts").select("id, agent_id, brokerage_id").eq("id", contactId).maybeSingle(),
+    supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle(),
+    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
+  ])
+  if (!contact) return { success: false, error: "Contact not found" }
+
+  const isAdmin = callerRow && CRM_ADMIN_ROLES.has((callerRow.user_type ?? "") as string)
+  const isOwner = callerAgent?.id && callerAgent.id === contact.agent_id
+  const sameBrokerage = callerRow?.brokerage_id === contact.brokerage_id
+
+  if (!sameBrokerage) return { success: false, error: "Forbidden: cross-brokerage" }
+  if (!isOwner && !isAdmin) return { success: false, error: "Forbidden: not your contact" }
+
   return deleteContactService(contactId, agentId)
 }
 

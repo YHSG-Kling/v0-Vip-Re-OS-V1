@@ -717,3 +717,62 @@ export async function sendCampaign(params: SendCampaignParams) {
     return handleError(error, "sendCampaign")
   }
 }
+
+// ─── QR SCAN ANALYTICS ────────────────────────────────────────────────────────
+
+export interface QrScanEvent {
+  id: string
+  qr_code_id: string
+  campaign_id: string | null
+  is_first_scan: boolean
+  scanned_at: string
+}
+
+/**
+ * Returns all QR scan events for a direct mail campaign,
+ * aggregated for the Tracking tab analytics section.
+ */
+export async function getCampaignQrScans(campaignId: string): Promise<{
+  success: boolean
+  scans?: QrScanEvent[]
+  totalScans?: number
+  firstScans?: number
+  repeatScans?: number
+  byDay?: { date: string; count: number }[]
+  error?: string
+}> {
+  try {
+    if (!isValidUUID(campaignId)) {
+      return { success: false, error: "Invalid campaign ID" }
+    }
+
+    const supabase = await createClient()
+
+    const { data, error } = await supabase
+      .from("qr_scan_events")
+      .select("id, qr_code_id, campaign_id, is_first_scan, scanned_at")
+      .eq("campaign_id", campaignId)
+      .order("scanned_at", { ascending: true })
+
+    if (error) throw error
+
+    const scans = (data ?? []) as QrScanEvent[]
+    const totalScans = scans.length
+    const firstScans = scans.filter((s) => s.is_first_scan).length
+    const repeatScans = totalScans - firstScans
+
+    // Aggregate by day (YYYY-MM-DD)
+    const dayMap: Record<string, number> = {}
+    for (const scan of scans) {
+      const day = scan.scanned_at.slice(0, 10)
+      dayMap[day] = (dayMap[day] || 0) + 1
+    }
+    const byDay = Object.entries(dayMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }))
+
+    return { success: true, scans, totalScans, firstScans, repeatScans, byDay }
+  } catch (error) {
+    return handleError(error, "getCampaignQrScans")
+  }
+}

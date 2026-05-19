@@ -1,10 +1,50 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+// markMessagesRead / getPortalMessages / generateAIDraft previously did an
+// auth.getUser() check but never verified the contactId belonged to the
+// caller. Any signed-in user could read/mutate/AI-draft messages for any
+// contact in the database. This helper enforces ownership the same way
+// sendPortalMessage already does — contact-self or agent in same brokerage.
+async function requireContactAccess(contactId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
+  | { ok: false; error: string }
+> {
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { ok: false, error: "Unauthorized" }
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts")
+    .select("brokerage_id, contact_user_id, email")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (!contact || !contact.brokerage_id) return { ok: false, error: "Contact not found" }
+
+  const isContactSelf =
+    contact.contact_user_id === authUser.id ||
+    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
+
+  if (isContactSelf) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
+  }
+
+  const { data: callerRow } = await svc
+    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
+  }
+
+  return { ok: false, error: "Forbidden" }
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -150,35 +190,20 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
   error?: string
 }> {
   try {
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
     const { contactId, direction } = params
 
-    // Resolve brokerage_id from contact record for kernel event scoping
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("brokerage_id")
-      .eq("id", contactId)
-      .maybeSingle()
-    const brokerageId = contact?.brokerage_id
-    if (!brokerageId) {
-      return { success: false, error: "Contact not found" }
-    }
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
 
-    // Update unread messages
+    const supabase = createServiceClient()
+
+    // Update unread messages — scoped by brokerage so a contact-id collision
+    // across tenants can't be exploited.
     const { data, error: updateError } = await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .eq("direction", direction)
       .eq("read", false)
       .select("id")
@@ -193,7 +218,7 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
       event: KernelEvent.PORTAL_MODULE_VIEWED,
       entityType: "contact",
       entityId: contactId,
-      brokerageId,
+      brokerageId: access.brokerageId,
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }
@@ -212,22 +237,17 @@ export async function getPortalMessages(contactId: string): Promise<{
   error?: string
 }> {
   try {
-    const supabase = await createClient()
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
 
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
+    const supabase = createServiceClient()
 
-    // Fetch messages
+    // Fetch messages — scoped by brokerage
     const { data: messages, error: fetchError } = await supabase
       .from("client_portal_messages")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .order("created_at", { ascending: true })
 
     if (fetchError) {
@@ -258,50 +278,55 @@ export async function generateAIDraft(params: {
   error?: string
 }> {
   try {
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
     const { contactId, transactionId } = params
 
-    // Get contact info — use maybeSingle() so missing rows return null instead of PGRST116
+    // Auth gate — burns paid Claude inference per call. Restricted to
+    // agents/admins in the contact's brokerage (not the contact themselves,
+    // who shouldn't be drafting "agent-side" replies).
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
+    if (access.isContactSelf) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const supabase = createServiceClient()
+
     const { data: contact } = await supabase
       .from("contacts")
       .select("first_name, contact_type, buyer_stage")
       .eq("id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .maybeSingle()
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
 
-    // Get last 3 messages for context
+    // Get last 3 messages for context — scoped to brokerage
     const { data: recentMessages } = await supabase
       .from("client_portal_messages")
       .select("body, direction, created_at")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .order("created_at", { ascending: false })
       .limit(3)
 
-    // Get transaction stage if available
+    // Get transaction stage if available — verify it belongs to brokerage
     let stageContext = ""
     if (transactionId) {
-      const { data: milestones } = await supabase
-        .from("transaction_milestones")
-        .select("milestone_name, status")
-        .eq("transaction_id", transactionId)
-        .order("created_at", { ascending: false })
-        .limit(1)
+      const { data: tx } = await supabase
+        .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+      if (tx && tx.brokerage_id === access.brokerageId) {
+        const { data: milestones } = await supabase
+          .from("transaction_milestones")
+          .select("milestone_name, status")
+          .eq("transaction_id", transactionId)
+          .order("created_at", { ascending: false })
+          .limit(1)
 
-      if (milestones?.[0]) {
-        stageContext = `Current transaction stage: ${milestones[0].milestone_name} (${milestones[0].status})`
+        if (milestones?.[0]) {
+          stageContext = `Current transaction stage: ${milestones[0].milestone_name} (${milestones[0].status})`
+        }
       }
     }
 

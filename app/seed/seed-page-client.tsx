@@ -58,7 +58,7 @@ export function SeedPageClient() {
     setContactsLoading(true)
     setError(null)
     try {
-      const response = await fetch("/api/seed/contacts", { method: "POST" })
+      const response = await fetch("/api/seed/crm/contacts", { method: "POST" })
       const data = await response.json()
       if (!response.ok) {
         throw new Error(data.error || "Failed to seed contacts")

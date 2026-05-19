@@ -125,7 +125,7 @@ export function HandoffCoachingPanel({
                     <div className="flex items-center gap-2">
                       <User className="h-4 w-4 text-muted-foreground" />
                       <Link
-                        href={`/contacts/${issue.contact_id}`}
+                        href={`/crm/contacts/${issue.contact_id}`}
                         className="text-sm font-medium hover:underline"
                       >
                         {issue.contact_name}
@@ -141,7 +141,7 @@ export function HandoffCoachingPanel({
                     </div>
                   </div>
                   <Button variant="outline" size="sm" asChild>
-                    <Link href={`/contacts/${issue.contact_id}`}>
+                    <Link href={`/crm/contacts/${issue.contact_id}`}>
                       Follow Up
                     </Link>
                   </Button>

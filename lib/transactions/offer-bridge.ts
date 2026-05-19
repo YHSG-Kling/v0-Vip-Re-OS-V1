@@ -2,6 +2,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
 import { ensureRequiredMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { populateInitialParticipants } from "./participant-populator"
 
 /**
  * Create transaction from accepted offer
@@ -44,20 +45,29 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Offer not found: ${params.offerId}`)
   }
 
-  // Resolve property address from listing if not on the offer directly
+  // Resolve property address + seller_contact_id from listing if available
   let resolvedAddress = (offer as any).property_address ?? null
-  if (!resolvedAddress && (offer as any).listing_id) {
+  let sellerContactId: string | null = null
+  if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, city, state")
+      .select("address, city, state, seller_contact_id")
       .eq("id", (offer as any).listing_id)
       .maybeSingle()
     if (listing) {
-      resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+      if (!resolvedAddress) {
+        resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+      }
+      sellerContactId = (listing as any).seller_contact_id ?? null
     }
   }
 
   // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
+  // deal_name is NOT NULL on transactions; default to property_address (or
+  // a synthetic name from offer id if address is somehow missing) so the
+  // chain never fails the insert.
+  const dealName = resolvedAddress
+    ?? `Transaction ${params.offerId.slice(0, 8)}`
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
@@ -65,10 +75,15 @@ export async function createTransactionFromOffer(params: {
       agent_id:             (offer as any).agent_id,
       contact_id:           (offer as any).contact_id,   // live FK (not buyer_id)
       buyer_contact_id:     (offer as any).contact_id,
+      seller_contact_id:    sellerContactId,             // resolved from listing → enables seller-side close logic
       listing_id:           (offer as any).listing_id ?? null,
       offer_id:             params.offerId,
+      deal_name:            dealName,
       property_address:     resolvedAddress,
-      deal_type:            "purchase",
+      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. Voice-cockpit + manual
+      // offers create the BUYER side of the transaction; "purchase" was the
+      // pre-existing value here and never matched the constraint.
+      deal_type:            "buyer",
       purchase_price:       (offer as any).offer_price,
       contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,
@@ -150,6 +165,18 @@ Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
     is_client_visible: true,
     created_at: new Date().toISOString()
   })
-  
+
+  // Auto-populate transaction_participants from offer + listing + brokerage
+  // preferred-vendor directory. Never inserts placeholders — only rows for
+  // which we can resolve real names/emails. Idempotent (skips when the
+  // transaction already has any participants).
+  try {
+    await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+  } catch (err: any) {
+    // Failure here must not roll back the transaction. The agent can still
+    // populate participants manually from the transaction UI.
+    console.error("[offer-bridge] populateInitialParticipants failed (non-fatal):", err?.message ?? err)
+  }
+
   return { success: true, transactionId: transaction.id }
 }

@@ -62,8 +62,8 @@ export default function SellerListingDashboard({
     shares: listing?.share_count || 34,
     showings: showings.length || 12,
     inquiries: 23,
-    daysOnMarket: listing?.list_date
-      ? Math.floor((Date.now() - new Date(listing.list_date).getTime()) / (1000 * 60 * 60 * 24))
+    daysOnMarket: listing?.go_live_date
+      ? Math.floor((Date.now() - new Date(listing.go_live_date).getTime()) / (1000 * 60 * 60 * 24))
       : 14,
   }
 

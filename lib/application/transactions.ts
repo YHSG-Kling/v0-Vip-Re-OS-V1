@@ -617,6 +617,38 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
 
   if (data?.transactions?.id) {
     await addTimelineEntry(data.transactions.id, "inspection_completed", `${data.inspection_type} inspection completed`)
+
+    // Fan-out to buyer + seller + lender + title portals — the event was
+    // previously only logged to the timeline. Use MILESTONE_COMPLETED with
+    // milestone_name='inspection_completed' since the enum doesn't have a
+    // dedicated INSPECTION_COMPLETED event yet.
+    try {
+      const supabaseSvc = await createClient()
+      const { data: { user } } = await supabaseSvc.auth.getUser()
+      const { data: tx } = await supabaseSvc
+        .from("transactions")
+        .select("brokerage_id")
+        .eq("id", data.transactions.id)
+        .maybeSingle()
+      if (tx?.brokerage_id && user?.id) {
+        const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await emitTransactionEvent({
+          event:        KernelEvent.MILESTONE_COMPLETED,
+          brokerageId:  tx.brokerage_id,
+          entityId:     data.transactions.id,
+          actorUserId:  user.id,
+          metadata: {
+            milestone_name:    "inspection_completed",
+            inspection_type:   data.inspection_type,
+            report_received:   !!reportUrl,
+            issues_found:      issuesFound ?? null,
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[completeInspection] fan-out failed (non-blocking)", err)
+    }
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -1619,61 +1651,71 @@ Return:
 // EDUCATIONAL CONTENT DELIVERY
 // ============================================
 
+/**
+ * Deliver stage-appropriate education to the contact tied to this transaction.
+ *
+ * Post-1042: instead of writing to the dropped `educational_moments` table,
+ * this resolves a published `learning_modules` row tagged with the matching
+ * stage_tag and creates a `learning_assignments` row for the buyer/seller
+ * contact. The customer portal feed surfaces it from there.
+ */
 export async function deliverEducationalContent(transactionId: string, stage: string) {
   const supabase = await createClient()
+
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
     .eq("id", transactionId)
     .maybeSingle()
-
   if (!transaction) throw new Error("Transaction not found")
 
-  const educationalContent: Record<string, any> = {
-    offer: {
-      title: "What Happens After Your Offer is Accepted",
-      topics: ["Understanding earnest money", "Inspection period explained", "Timeline from offer to close", "Your responsibilities vs ours"],
-      videoUrl: "/education/offer-accepted.mp4",
-    },
-    inspection: {
-      title: "Home Inspection: What to Expect",
-      topics: ["What inspectors look for", "Red flags vs normal wear", "How to negotiate repairs", "When to walk away"],
-      videoUrl: "/education/inspection-guide.mp4",
-    },
-    appraisal: {
-      title: "Understanding the Appraisal Process",
-      topics: ["What appraisers consider", "What if appraisal comes in low?", "Appraisal vs market value", "Timeline expectations"],
-      videoUrl: "/education/appraisal-explained.mp4",
-    },
-    clear_to_close: {
-      title: "Final Steps Before Closing",
-      topics: ["Final walkthrough checklist", "What to bring to closing", "Wire fraud prevention", "Closing day process"],
-      videoUrl: "/education/closing-prep.mp4",
-    },
-  }
+  const contactId =
+    (transaction.buyer_contact_id as string | null) ??
+    (transaction.seller_contact_id as string | null) ??
+    (transaction.contact_id as string | null)
+  if (!contactId)            return { success: false, message: "No contact tied to transaction" }
+  if (!transaction.brokerage_id) return { success: false, message: "No brokerage on transaction" }
 
-  const content = educationalContent[stage]
-  if (!content) return { success: false, message: "No educational content for this stage" }
+  // Map the legacy stage string to learning_modules.stage_tags vocabulary.
+  const stageTags: Record<string, string[]> = {
+    offer:           ["offer_accepted", "offer_submitted"],
+    inspection:      ["inspection_scheduled", "inspection_period"],
+    appraisal:       ["appraisal_ordered", "appraisal", "appraisal_completed"],
+    clear_to_close:  ["clear_to_close_received", "closing_prep"],
+  }
+  const tags = stageTags[stage] ?? [stage]
+
+  const { data: candidates } = await supabase
+    .from("learning_modules")
+    .select("id, title")
+    .eq("brokerage_id", transaction.brokerage_id)
+    .eq("status", "published")
+    .overlaps("stage_tags", tags)
+    .order("display_priority", { ascending: false })
+    .limit(1)
+
+  const moduleRow = (candidates ?? [])[0] as { id: string; title: string } | undefined
+  if (!moduleRow) return { success: false, message: `No learning module published for stage ${stage}` }
 
   const { data: existing } = await supabase
-    .from("educational_moments")
+    .from("learning_assignments")
     .select("id")
-    .eq("transaction_id", transactionId)
-    .eq("content_title", content.title)
+    .eq("contact_id", contactId)
+    .eq("module_id", moduleRow.id)
     .maybeSingle()
-
   if (existing) return { success: false, message: "Content already delivered" }
 
-  await supabase.from("educational_moments").insert({
-    transaction_id: transactionId,
-    current_stage: stage,
-    educational_content_type: "video",
-    content_title: content.title,
-    content_url: content.videoUrl,
-    delivered: true,
+  await supabase.from("learning_assignments").insert({
+    brokerage_id:    transaction.brokerage_id,
+    module_id:       moduleRow.id,
+    contact_id:      contactId,
+    signal_source:   `stage:${stage}`,
+    signal_metadata: { transaction_id: transactionId, stage },
+    priority_score:  70,
+    status:          "open",
   })
 
-  return { success: true, content, message: `Educational content delivered for ${stage} stage` }
+  return { success: true, content: moduleRow, message: `Educational content delivered for ${stage} stage` }
 }
 
 // ============================================
@@ -1880,7 +1922,15 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
   }
   
   const persona = transaction.contacts?.contact_persona || (transaction.deal_type === "seller" ? "seller" : "buyer")
-  
+
+  // The contact whose portal feed we're reading. Post-1042, learning
+  // assignments are keyed off contact_id, so resolve it once up front.
+  const portalContactId: string | null =
+    (transaction.buyer_contact_id as string | null) ??
+    (transaction.seller_contact_id as string | null) ??
+    (transaction.contact_id as string | null) ??
+    null
+
   // Fetch all client-visible data in parallel from real tables
   const [
     milestones,
@@ -1897,9 +1947,9 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     // Client-visible milestones
     supabase
       .from("transaction_milestones")
-      .select("id, milestone_name, milestone_date, status, completed_at, notes")
+      .select("id, milestone_name, target_date, status, completed_at, notes")
       .eq("transaction_id", transactionId)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
       .then(r => r.data || []),
     // Client-friendly updates
     supabase
@@ -1917,14 +1967,19 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       .order("created_at", { ascending: false })
       .limit(10)
       .then(r => r.data || []),
-    // Educational moments
-    supabase
-      .from("educational_moments")
-      .select("id, content_title, content_body, content_type, stage_context, delivered_at, read_at")
-      .eq("transaction_id", transactionId)
-      .order("delivered_at", { ascending: false })
-      .limit(5)
-      .then(r => r.data || []),
+    // Educational moments — post-1042, sourced from learning_assignments
+    // joined with learning_modules. transaction_id is recorded in
+    // signal_metadata when deliverEducationalContent() seeds the assignment.
+    portalContactId
+      ? supabase
+          .from("learning_assignments")
+          .select("id, signal_metadata, status, viewed_at, completed_at, created_at, module:module_id(title, body, channels)")
+          .eq("contact_id", portalContactId)
+          .contains("signal_metadata", { transaction_id: transactionId })
+          .order("created_at", { ascending: false })
+          .limit(5)
+          .then(r => r.data || [])
+      : Promise.resolve([]),
     // Timeline transparency (delays)
     supabase
       .from("timeline_transparency")
@@ -2034,7 +2089,7 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     timeline: milestones.map((m: any) => ({
       id: m.id,
       name: m.milestone_name,
-      date: m.milestone_date,
+      date: m.target_date,
       status: m.status,
       icon: getMilestoneIcon(m.milestone_name),
       description: m.notes || getDefaultMilestoneDescription(m.milestone_name),
@@ -2058,13 +2113,18 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       email: p.email,
       phone: p.phone,
     })),
-    educationalContent: educationalMoments.length > 0 
-      ? {
-          title: educationalMoments[0].content_title,
-          content: educationalMoments[0].content_body,
-          type: educationalMoments[0].content_type,
-          isRead: !!educationalMoments[0].read_at,
-        }
+    educationalContent: educationalMoments.length > 0
+      ? (() => {
+          // Supabase join returns module as an array; pick the first row.
+          const first  = educationalMoments[0] as { module?: Array<{ title?: string; body?: string | null; channels?: string[] | null }> | { title?: string; body?: string | null; channels?: string[] | null } | null; viewed_at?: string | null }
+          const mod    = Array.isArray(first.module) ? first.module[0] : first.module
+          return {
+            title:  mod?.title ?? "",
+            content: mod?.body ?? "",
+            type:   (mod?.channels ?? [])[0] ?? "article",
+            isRead: !!first.viewed_at,
+          }
+        })()
       : getPersonaEducation(persona, transaction.stage || transaction.status),
     personaTools: getPersonaSpecificTools(persona),
     contactAgent: {

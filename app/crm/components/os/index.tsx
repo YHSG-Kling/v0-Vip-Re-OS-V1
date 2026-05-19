@@ -1,12 +1,5 @@
-"use client"
-
-/**
- * Contact OS barrel — re-exports all 10 canonical panel implementations.
- * Each component lives in its own file; this file is the single import surface
- * for app/crm/page.tsx and any other consumer.
- */
-
 export { ContactCommandStrip } from "./contact-command-strip"
+export { ContactPulsePanel } from "./contact-pulse-panel"
 export { RelationshipRadar } from "./relationship-radar"
 export { CommunicationHealthPanel } from "./communication-health-panel"
 export { NextBestActionPanel } from "./next-best-action-panel"
@@ -16,3 +9,6 @@ export { TimelineContextPanel } from "./timeline-context-panel"
 export { RelationshipAiChatPanel } from "./relationship-ai-chat-panel"
 export { SmartNoteComposer } from "./smart-note-composer"
 export { BuyerMatchPanel } from "./buyer-match-panel"
+export { PropertyAlertsPanel } from "./property-alerts-panel"
+export { QualificationSummaryCard } from "./qualification-summary-card"
+export type { IsaHandoffBriefShape } from "./qualification-summary-card"

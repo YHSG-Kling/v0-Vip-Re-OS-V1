@@ -64,6 +64,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
+    // Mirror elevenlabs_voice_id to users table — podcast-generation.ts reads it from there.
+    if (elevenlabs_voice_id !== undefined && auth.userId) {
+      await supabase
+        .from("users")
+        .update({ elevenlabs_voice_id })
+        .eq("id", auth.userId)
+    }
+
     return NextResponse.json({ success: true })
   } catch (error: any) {
     console.error("[update-video-profile] Error:", error)

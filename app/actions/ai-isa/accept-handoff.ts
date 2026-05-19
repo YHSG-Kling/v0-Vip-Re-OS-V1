@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 export async function acceptAIISAHandoff(params: {
   leadId: string
@@ -11,14 +12,40 @@ export async function acceptAIISAHandoff(params: {
   const supabase = await createClient()
   const service = createServiceClient()
 
-  const { data: lead, error: leadErr } = await supabase
+  // ── AUTH GATE ────────────────────────────────────────────────────────────
+  // Two valid callers:
+  //   1. UI (session-authenticated agent/broker) — verify ctx.brokerageId
+  //   2. Trusted server-to-server (e.g. VAPI webhook route, already verified
+  //      via VAPI_WEBHOOK_SECRET) — actorUserId === 'system' AND CRON_SECRET
+  //      is configured (proves we're in a real deploy, not an open endpoint).
+  // In BOTH paths we re-verify the lead row's brokerage_id matches what the
+  // caller supplied so a forged param cannot reach cross-tenant data.
+  const ctx = await getAgentContext()
+  const isSystemCaller =
+    params.actorUserId === 'system' && !!process.env.CRON_SECRET
+  if (!isSystemCaller) {
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: 'Unauthorized' }
+    }
+    if (ctx.brokerageId !== params.brokerageId) {
+      return { success: false, error: 'Forbidden' }
+    }
+  }
+
+  const { data: lead, error: leadErr } = await service
     .from('leads')
     .select('id, brokerage_id, agent_id, contact_id, lifecycle_state')
     .eq('id', params.leadId)
+    .eq('brokerage_id', params.brokerageId)
     .maybeSingle()
 
   if (leadErr || !lead) {
     return { success: false, error: 'Lead not found' }
+  }
+
+  // Defense in depth: even if RLS/filter was bypassed, hard-fail on mismatch
+  if (lead.brokerage_id !== params.brokerageId) {
+    return { success: false, error: 'Forbidden' }
   }
 
   // Already has a contact — just open it

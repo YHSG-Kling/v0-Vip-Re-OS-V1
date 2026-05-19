@@ -89,7 +89,7 @@ const LUXURY_BUYER_STAGES = [
   },
 ]
 
-export default function LuxuryBuyerJourneyPage({ params }: { params: { contactId: string } }) {
+export default function LuxuryBuyerJourneyPage({ params }: { params: Promise<{ contactId: string }> }) {
   const [currentStage, setCurrentStage] = useState(1)
   const progress = (currentStage / LUXURY_BUYER_STAGES.length) * 100
 

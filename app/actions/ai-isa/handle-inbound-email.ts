@@ -22,25 +22,71 @@ import { dispatchEmail } from '@/lib/providers/dispatch'
 import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { buildISATools } from '@/lib/ai-isa/tools'
 import type { MessageType, Persona } from '@/lib/kernel/types'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
+/**
+ * processInboundEmail
+ *
+ * AUTH MODEL: This entry point has no in-tree caller — it is intended to be
+ * invoked either from an authenticated session (e.g. an "agent replies as
+ * AI" tool) or from a trusted server-to-server caller (an inbound-email
+ * webhook route that has already verified the provider signature, or an
+ * internal cron). Because no inbound-email webhook currently exists for
+ * this path, we require ONE of:
+ *
+ *   1. A valid authenticated session whose brokerage matches the lead.
+ *   2. A trusted internal call: process.env.CRON_SECRET is configured AND
+ *      the caller passes `internalSecret` matching it. Any future
+ *      webhook ingress should verify the provider signature at the route
+ *      layer and forward CRON_SECRET in `internalSecret`.
+ *
+ * In both modes we still load the lead row WITH a brokerage_id filter so a
+ * forged leadId cannot reach another tenant.
+ */
 export async function processInboundEmail(params: {
   leadId: string
   fromEmail: string
   subject: string
   body: string
   conversationId?: string
+  /** Set by trusted internal callers (webhook route after sig verify, cron). */
+  internalSecret?: string
 }) {
   const supabase = createServiceClient()
+
+  // ── AUTH GATE ──────────────────────────────────────────────────────────
+  const cronSecret = process.env.CRON_SECRET
+  const isTrustedInternal =
+    !!cronSecret &&
+    !!params.internalSecret &&
+    params.internalSecret === cronSecret
+
+  let callerBrokerageId: string | null = null
+  if (!isTrustedInternal) {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, responded: false, error: 'Unauthorized' }
+    }
+    callerBrokerageId = ctx.brokerageId
+  }
 
   // ── Guard 0: negative reply / opt-out detection ───────────────────────────
   // Must run FIRST before any DB fetch or AI call. If the lead says stop,
   // halt all engagement immediately, set DNC, and notify the agent.
-  const { data: leadForDnc } = await supabase
+  let leadForDncQuery = supabase
     .from('leads')
     .select('brokerage_id')
     .eq('id', params.leadId)
-    .maybeSingle()
+  if (callerBrokerageId) {
+    leadForDncQuery = leadForDncQuery.eq('brokerage_id', callerBrokerageId)
+  }
+  const { data: leadForDnc } = await leadForDncQuery.maybeSingle()
+
+  if (!leadForDnc) {
+    return { success: false, responded: false, error: 'Lead not found' }
+  }
 
   if (leadForDnc?.brokerage_id) {
     const halted = await haltEngagementForNegativeReply({
@@ -60,7 +106,9 @@ export async function processInboundEmail(params: {
   }
 
   // ── Fetch lead with all compliance-required fields ────────────────────────
-  const { data: lead } = await supabase
+  // Re-scope by caller brokerage when session-authed (defense in depth on
+  // top of Guard 0 lookup above).
+  let leadQuery = supabase
     .from('leads')
     .select(
       `id, first_name, last_name, email, brokerage_id, agent_id,
@@ -69,7 +117,10 @@ export async function processInboundEmail(params: {
        contact_id, preferred_channel, call_stop_flag`
     )
     .eq('id', params.leadId)
-    .maybeSingle()
+  if (callerBrokerageId) {
+    leadQuery = leadQuery.eq('brokerage_id', callerBrokerageId)
+  }
+  const { data: lead } = await leadQuery.maybeSingle()
 
   if (!lead) {
     return { success: false, responded: false, error: 'Lead not found' }
@@ -160,16 +211,35 @@ export async function processInboundEmail(params: {
     'If the lead seems highly motivated or mentions a specific timeline, reflect urgency back.',
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
-  ].join(' ')
+    '',
+    'You can take real CRM actions via tools:',
+    '- escalate_to_agent: when the lead asks for a human or needs urgent attention',
+    '- mark_qualification: when the lead reveals stronger or weaker buying signals',
+    '- request_appointment: when the lead asks to meet, call, or tour',
+    '- mark_do_not_contact: when the lead clearly opts out (TCPA — irreversible)',
+    'Call tools BEFORE generating your reply text. The reply should reflect any actions you took (e.g., "I just looped in your agent — they\'ll reach out shortly").',
+  ].join('\n')
 
   const systemPrompt = brandVoice.systemBlock
-    ? `${baseSystem} Brand voice guidance: ${brandVoice.systemBlock}`
+    ? `${baseSystem}\n\nBrand voice guidance: ${brandVoice.systemBlock}`
     : baseSystem
 
-  // ── Generate AI reply via AI SDK ──────────────────────────────────────────
+  // ── Generate AI reply via AI SDK with kernel-validated tools ──────────────
+  // Tools share a single context bound to (lead, brokerage, agent). Each
+  // tool re-checks brokerage_id; mark_do_not_contact reuses the existing
+  // TCPA halt path so the same notifications + sequence stops fire.
+  const isaTools = buildISATools({
+    leadId: lead.id,
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    inboundExcerpt: params.body.slice(0, 280),
+  })
+
   const { text: replyBody } = await generateText({
-    model: resolveModel('openai/gpt-4o-mini'),
+    feature: 'ai_isa_response',
     system: systemPrompt,
+    tools: isaTools,
+    maxSteps: 5,
     messages: [
       {
         role: 'user',
@@ -194,10 +264,11 @@ export async function processInboundEmail(params: {
     ],
   })
 
-  // ── Persist inbound message ───────────────────────────────────────────────
+  // ── Persist inbound message — stamped with brokerage for billing rollups ─
   await supabase.from('messages').insert({
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
+    brokerage_id: lead.brokerage_id,
     type: 'email',
     direction: 'inbound',
     subject: params.subject,
@@ -226,10 +297,11 @@ export async function processInboundEmail(params: {
     return { success: false, responded: false, error: `Dispatch failed: ${sendResult.error}` }
   }
 
-  // ── Persist outbound message (unified inbox row) ──────────────────────────
+  // ── Persist outbound message (unified inbox row) — stamped with brokerage ─
   await supabase.from('messages').insert({
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
+    brokerage_id: lead.brokerage_id,
     type: 'email',
     direction: 'outbound',
     subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,

@@ -4,95 +4,17 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-export interface CampaignSequence {
-  id: string
-  name: string
-  description: string | null
-  sequence_type: string
-  trigger_event: string | null
-  trigger_conditions: Record<string, unknown> | null
-  is_active: boolean
-  is_ab_test: boolean
-  ab_test_split_pct: number | null
-  compliance_gated: boolean
-  enrollments_total: number
-  completions_total: number
-  conversions_total: number
-  created_at: string
-  updated_at: string
-  brokerage_id: string
-  created_by: string | null
-  steps?: SequenceStep[]
-}
-
-export interface SequenceStep {
-  id: string
-  sequence_id: string
-  step_number: number
-  step_name: string
-  channel: string
-  delay_days: number
-  delay_hours: number
-  subject: string | null
-  body: string | null
-  send_time: string | null
-  is_active: boolean
-  ab_variant: string | null
-  condition_field: string | null
-  condition_operator: string | null
-  condition_value: string | null
-  video_template_id: string | null
-  direct_mail_template_id: string | null
-  personalization_tokens: Record<string, unknown> | null
-  sent_count: number
-  open_count: number
-  click_count: number
-  reply_count: number
-  created_at: string
-}
-
-export interface SequenceEnrollment {
-  id: string
-  sequence_id: string
-  contact_id: string | null
-  lead_id: string | null
-  status: string
-  current_step: number
-  enrolled_at: string
-  completed_at: string | null
-  converted_at: string | null
-  next_step_at: string | null
-  ab_variant: string | null
-  contact?: { first_name: string | null; last_name: string | null; email: string | null }
-}
-
-// ─── Valid step types ─────────────────────────────────────────────────────────
-
-export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"] as const)
-
-// ─── Sequence type categories ─────────────────────────────────────────────────
-
-export const MARKETING_SEQUENCE_TYPES = [
-  "listing_launch",
-  "price_reduction",
-  "just_sold",
-  "open_house",
-  "ad_campaign",
-] as const
-
-export const NURTURE_SEQUENCE_TYPES = [
-  "buyer_nurture",
-  "seller_nurture",
-  "lead_followup",
-  "post_close",
-  "sphere_touchpoint",
-  "credit_journey",
-] as const
-
-export type SequenceCategory = "marketing" | "nurture"
+import {
+  type CampaignSequence,
+  type SequenceStep,
+  type SequenceEnrollment,
+  type ChannelType,
+  type SequenceCategory,
+  type SequenceBuilderStep,
+  VALID_STEP_TYPES,
+  MARKETING_SEQUENCE_TYPES,
+  NURTURE_SEQUENCE_TYPES,
+} from "@/lib/campaigns/sequence-constants"
 
 // ─── List sequences ───────────────────────────────────────────────────────────
 
@@ -209,11 +131,27 @@ export async function updateCampaignSequence(
   sequenceId: string,
   updates: Partial<Pick<CampaignSequence, "name" | "description" | "is_active" | "trigger_event" | "compliance_gated" | "is_ab_test" | "ab_test_split_pct">>
 ): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before mutating.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+  const { data: existing } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   const { error } = await service
     .from("campaign_sequences")
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -224,11 +162,27 @@ export async function updateCampaignSequence(
 // ─── Delete sequence ──────────────────────────────────────────────────────────
 
 export async function deleteCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before deleting.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+  const { data: existing } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   const { error } = await service
     .from("campaign_sequences")
     .delete()
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -582,19 +536,7 @@ export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ su
   return { success: true, count: sequenceIds.length }
 }
 
-// ─── Sequence Step Builder ────────────────────────────────────────────────────
-
-export interface SequenceBuilderStep {
-  id?: string
-  step_number: number
-  step_name: string
-  step_type: "email" | "sms" | "voice_drop" | "wait" | "ai_call" | "direct_mail"
-  delay_days: number
-  delay_hours: number
-  subject?: string | null
-  body: string
-  is_active: boolean
-}
+// SequenceBuilderStep moved to @/lib/campaigns/sequence-constants
 
 export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
   try {
@@ -633,6 +575,30 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       subject: row.subject ?? null,
       body: row.body ?? "",
       is_active: row.is_active ?? true,
+      output_variable_name: row.output_variable_name ?? null,
+      qr_attached: row.qr_attached ?? false,
+      qr_target_url_pattern: row.qr_target_url_pattern ?? null,
+      image_prompt: row.image_prompt ?? null,
+      image_style: row.image_style ?? null,
+      image_aspect_ratio: row.image_aspect_ratio ?? null,
+      video_script: row.video_script ?? null,
+      video_voice_only: row.video_voice_only ?? false,
+      video_background_url: row.video_background_url ?? null,
+      voice_drop_script: row.voice_drop_script ?? null,
+      voice_drop_voice_id: row.voice_drop_voice_id ?? null,
+      social_platform: row.social_platform ?? null,
+      social_caption_prompt: row.social_caption_prompt ?? null,
+      task_assignee_type: row.task_assignee_type ?? null,
+      task_title: row.task_title ?? null,
+      task_due_offset_days: row.task_due_offset_days ?? 0,
+      document_type: row.document_type ?? null,
+      document_state: row.document_state ?? null,
+      avm_data_source: row.avm_data_source ?? null,
+      avm_report_type: row.avm_report_type ?? null,
+      avm_include_investor_adj: row.avm_include_investor_adj ?? false,
+      ad_platform: row.ad_platform ?? null,
+      ad_objective: row.ad_objective ?? null,
+      direct_mail_piece_type: row.direct_mail_piece_type ?? null,
     }))
     return { steps }
   } catch (e: any) {
@@ -683,19 +649,55 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
       const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
 
+      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => ({
+        sequence_id: sequenceId,
+        step_number: overrideIdx ?? steps.indexOf(s) + 1,
+        step_name: s.step_name || s.step_type,
+        channel: s.step_type,
+        delay_days: s.delay_days ?? 0,
+        delay_hours: s.delay_hours ?? 0,
+        subject: s.subject ?? null,
+        body: s.body || "",
+        is_active: s.is_active ?? true,
+        // Variable graph
+        output_variable_name: s.output_variable_name ?? null,
+        // QR modifier
+        qr_attached: s.qr_attached ?? false,
+        qr_target_url_pattern: s.qr_target_url_pattern ?? null,
+        // AI Image
+        image_prompt: s.image_prompt ?? null,
+        image_style: s.image_style ?? null,
+        image_aspect_ratio: s.image_aspect_ratio ?? null,
+        // Video
+        video_script: s.video_script ?? null,
+        video_voice_only: s.video_voice_only ?? false,
+        video_background_url: s.video_background_url ?? null,
+        // Voice Drop
+        voice_drop_script: s.voice_drop_script ?? null,
+        voice_drop_voice_id: s.voice_drop_voice_id ?? null,
+        // Social
+        social_platform: s.social_platform ?? null,
+        social_caption_prompt: s.social_caption_prompt ?? null,
+        // Task
+        task_assignee_type: s.task_assignee_type ?? null,
+        task_title: s.task_title ?? null,
+        task_due_offset_days: s.task_due_offset_days ?? 0,
+        // Document
+        document_type: s.document_type ?? null,
+        document_state: s.document_state ?? null,
+        // AVM/CMA
+        avm_data_source: s.avm_data_source ?? null,
+        avm_report_type: s.avm_report_type ?? null,
+        avm_include_investor_adj: s.avm_include_investor_adj ?? false,
+        // Ad
+        ad_platform: s.ad_platform ?? null,
+        ad_objective: s.ad_objective ?? null,
+        // Direct mail
+        direct_mail_piece_type: s.direct_mail_piece_type ?? null,
+      })
+
       if (toUpdate.length > 0) {
-        const updateRows = toUpdate.map((s, i) => ({
-          id: s.id,
-          sequence_id: sequenceId,
-          step_number: steps.indexOf(s) + 1,
-          step_name: s.step_name || s.step_type,
-          channel: s.step_type,
-          delay_days: s.delay_days ?? 0,
-          delay_hours: s.delay_hours ?? 0,
-          subject: s.subject ?? null,
-          body: s.body || "",
-          is_active: s.is_active ?? true,
-        }))
+        const updateRows = toUpdate.map((s) => ({ id: s.id, ...buildRow(s) }))
         const { error: upsertError } = await service
           .from("campaign_sequence_steps")
           .upsert(updateRows, { onConflict: "id" })
@@ -703,18 +705,7 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       }
 
       if (toInsert.length > 0) {
-        const insertRows = toInsert.map((s) => ({
-          // No id — DB generates a fresh UUID; prevents cross-sequence ID overwrite
-          sequence_id: sequenceId,
-          step_number: steps.indexOf(s) + 1,
-          step_name: s.step_name || s.step_type,
-          channel: s.step_type,
-          delay_days: s.delay_days ?? 0,
-          delay_hours: s.delay_hours ?? 0,
-          subject: s.subject ?? null,
-          body: s.body || "",
-          is_active: s.is_active ?? true,
-        }))
+        const insertRows = toInsert.map((s) => buildRow(s))
         const { error: insertError } = await service
           .from("campaign_sequence_steps")
           .insert(insertRows)

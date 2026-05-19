@@ -23,14 +23,16 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { toast } from "sonner"
-import { Loader2, TrendingUp, Palette, Users, FileText } from "lucide-react"
-import { createMailCampaign } from "@/app/actions/direct-mail"
+import { Loader2, TrendingUp, Palette, Users, FileText, QrCode } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import {
   aiWritePostcardCopy,
   aiSuggestDesign,
   aiSelectTargetAudience,
   aiPredictCampaignROI,
+  createDirectMailCampaign,
 } from "@/app/actions/ai-direct-mail"
+import { MailPiecePreview, type DirectMailPieceType } from "./mail-piece-preview"
 
 import { createClient } from "@/lib/supabase/client"
 
@@ -57,7 +59,7 @@ const TARGET_AUDIENCE_OPTIONS = [
   { value: "expired", label: "Expired Listings" },
   { value: "divorce_probate", label: "Divorce / Probate Prospects" },
   { value: "investors", label: "Investor Prospects" },
-  { value: "past_clients", label: "Past Clients (Sphere of Influence)" },
+  { value: "lifetime_customers", label: "Lifetime Customers (Sphere of Influence)" },
   { value: "geographic_farm", label: "Geographic Farm (Neighborhood)" },
   { value: "new_movers", label: "New Movers" },
 ]
@@ -69,7 +71,7 @@ export type AudienceSegment =
   | "expired"
   | "divorce_probate"
   | "investors"
-  | "past_clients"
+  | "lifetime_customers"
   | "geographic_farm"
   | "new_movers"
 
@@ -81,7 +83,7 @@ const AVG_COMMISSION_BY_SEGMENT: Record<AudienceSegment, number> = {
   expired: 16000,
   divorce_probate: 14000,
   investors: 12000,
-  past_clients: 15000,
+  lifetime_customers: 15000,
   geographic_farm: 13000,
   new_movers: 10000,
 }
@@ -94,7 +96,7 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   expired: 0.022,
   divorce_probate: 0.018,
   investors: 0.015,
-  past_clients: 0.035,
+  lifetime_customers: 0.035,
   geographic_farm: 0.01,
   new_movers: 0.014,
 }
@@ -132,11 +134,13 @@ export function CreateCampaignDialog({
     copyText: "",
     templateType: "just_listed",
     audienceSegment: "homeowners" as AudienceSegment,
+    pieceType: "postcard" as DirectMailPieceType,
+    trackingEnabled: true,
     designUrl: "",
     quantity: 500,
     mailingDate: "",
     perPieceCost: 0.79,
-    campaignGoal: "brand_awareness" as "listings" | "buyers" | "farming" | "brand_awareness" | "past_clients",
+    campaignGoal: "brand_awareness" as "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers",
     area: "",
     budget: 500,
   })
@@ -284,32 +288,31 @@ export function CreateCampaignDialog({
     }
     setCreating(true)
     try {
-      const result = await createMailCampaign({
+      const result = await createDirectMailCampaign({
         brokerageId,
         agentId,
         campaignName: formData.campaignName.trim(),
         targetAudience: formData.targetAudience.trim(),
-        designUrl: formData.designUrl || undefined,
-        copyText: formData.copyText || undefined,
-        quantity: formData.quantity,
-        mailingDate: formData.mailingDate || undefined,
-        perPieceCost: formData.perPieceCost,
-        createdBy: agentId,
+        mailingType: "postcard",
+        pieceType: formData.pieceType,
+        designTemplate: formData.designUrl || undefined,
+        budget: formData.budget,
+        sendDate: formData.mailingDate || undefined,
+        trackingEnabled: formData.trackingEnabled,
+        appOrigin: typeof window !== "undefined" ? window.location.origin : undefined,
       })
 
       if (result.success) {
-        const lobWarning = (result as any).lobWarning as string | undefined
-        if (lobWarning) {
-          toast.success(`Campaign saved — ${lobWarning}`)
-        } else {
-          toast.success("Campaign created")
-        }
+        const qrMsg = result.qrImageUrl ? " · QR tracking enabled" : ""
+        toast.success(`Campaign created${qrMsg}`)
         setFormData({
           campaignName: "",
           targetAudience: "",
           copyText: "",
           templateType: "just_listed",
           audienceSegment: "homeowners",
+          pieceType: "postcard",
+          trackingEnabled: true,
           designUrl: "",
           quantity: 500,
           mailingDate: "",
@@ -364,6 +367,35 @@ export function CreateCampaignDialog({
               />
             </div>
 
+            {/* Piece Type selector */}
+            <div className="grid gap-2">
+              <Label>Mail Piece Type</Label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(
+                  [
+                    { value: "postcard", label: "Postcard (4×6)", sub: "Highest deliverability" },
+                    { value: "letter", label: "Letter", sub: "#10 envelope" },
+                    { value: "handwritten_letter", label: "Handwritten", sub: "Personal feel" },
+                    { value: "thank_you_note", label: "Thank-You", sub: "Folded card" },
+                  ] as { value: DirectMailPieceType; label: string; sub: string }[]
+                ).map(({ value, label, sub }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, pieceType: value })}
+                    className={`rounded-lg border p-2 text-left text-xs transition-colors ${
+                      formData.pieceType === value
+                        ? "border-primary bg-primary/5 ring-1 ring-primary"
+                        : "border-border hover:border-muted-foreground"
+                    }`}
+                  >
+                    <p className="font-medium">{label}</p>
+                    <p className="text-muted-foreground text-[10px] mt-0.5">{sub}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Template Type + Audience Segment */}
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
@@ -400,6 +432,21 @@ export function CreateCampaignDialog({
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            {/* QR Tracking toggle */}
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="h-4 w-4 text-primary" />
+                <div>
+                  <p className="text-sm font-medium">Enable QR Tracking</p>
+                  <p className="text-xs text-muted-foreground">Generate a QR code to track responses from this campaign</p>
+                </div>
+              </div>
+              <Switch
+                checked={formData.trackingEnabled}
+                onCheckedChange={(v) => setFormData({ ...formData, trackingEnabled: v })}
+              />
             </div>
 
             <Separator />
@@ -496,62 +543,17 @@ export function CreateCampaignDialog({
               )}
             </div>
 
-            {/* Postcard Preview */}
-            {(formData.copyText || aiCopyGenerated || aiDesignSuggestion) && (
+            {/* Mail Piece Preview */}
+            {(formData.copyText || formData.campaignName) && (
               <div className="grid gap-2">
-                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Postcard Preview</Label>
-                <div className="rounded-lg border bg-muted/20 p-2">
-                  <div
-                    className="relative w-full rounded-md overflow-hidden flex"
-                    style={{ minHeight: 160, backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}
-                  >
-                    {/* Front — left 60% */}
-                    <div className="flex-1 p-4 flex flex-col justify-between" style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}>
-                      <div>
-                        <p className="text-white/60 text-[9px] uppercase tracking-widest mb-1">
-                          {formData.templateType?.replace(/_/g, " ") ?? "Direct Mail"}
-                        </p>
-                        <p className="text-white font-bold text-sm leading-tight line-clamp-2">
-                          {formData.campaignName || "Your Campaign Headline"}
-                        </p>
-                        {formData.copyText && (
-                          <p className="text-white/80 text-[10px] mt-1.5 line-clamp-3">
-                            {formData.copyText}
-                          </p>
-                        )}
-                      </div>
-                      <div className="mt-2">
-                        <span
-                          className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded"
-                          style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.accent ?? "#f59e0b"), color: "#fff" }}
-                        >
-                          Call or Scan QR →
-                        </span>
-                      </div>
-                    </div>
-                    {/* Back — right 40% */}
-                    <div className="w-2/5 bg-white/95 p-3 flex flex-col justify-between border-l border-white/20">
-                      <div>
-                        <div className="w-8 h-8 rounded bg-muted/40 mb-1.5 flex items-center justify-center">
-                          <span className="text-[8px] text-muted-foreground font-mono">QR</span>
-                        </div>
-                        <p className="text-[8px] text-muted-foreground leading-tight">Scan for details</p>
-                      </div>
-                      <div className="mt-auto">
-                        <div className="h-3 w-16 rounded bg-muted/60 mb-0.5" />
-                        <div className="h-2 w-24 rounded bg-muted/40 mb-0.5" />
-                        <div className="h-2 w-20 rounded bg-muted/40" />
-                        <p className="text-[8px] text-muted-foreground mt-1">Return Address</p>
-                        <div className="mt-1.5 border-t border-dashed border-muted pt-1">
-                          <div className="h-2 w-28 rounded bg-muted/50 mb-0.5" />
-                          <div className="h-2 w-20 rounded bg-muted/30" />
-                          <p className="text-[8px] text-muted-foreground mt-0.5">Recipient Address</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground text-center mt-1.5">4×6 postcard preview — design adjusts based on AI suggestions</p>
-                </div>
+                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Preview</Label>
+                <MailPiecePreview
+                  pieceType={formData.pieceType}
+                  headline={formData.campaignName || "Your Campaign Headline"}
+                  body={formData.copyText || "Body copy will appear here…"}
+                  cta="Scan to learn more"
+                  qrImageUrl={null}
+                />
               </div>
             )}
 
@@ -605,7 +607,7 @@ export function CreateCampaignDialog({
                       <SelectItem value="buyers">Find Buyers</SelectItem>
                       <SelectItem value="farming">Farming</SelectItem>
                       <SelectItem value="brand_awareness">Brand Awareness</SelectItem>
-                      <SelectItem value="past_clients">Past Clients</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime Customers</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
