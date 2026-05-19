@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { NotFoundError } from "@/lib/errors"
+import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD APPLICATION SERVICE — business model
@@ -31,18 +32,38 @@ import { NotFoundError } from "@/lib/errors"
 //     status indicates an active relationship (representation,
 //     active_transaction, under_contract) where outreach would be inappropriate.
 //
+// AGENT ASSIGNMENT (both lanes)
+//   Every contact requires an owner agent (agents.id, NOT users.id — per
+//   migration 111). Assignment runs through resolveAgentForContact in
+//   lib/lead-assignment/contact-assignment.ts with precedence:
+//     1. row's owner_agent_id (form-attached / agent-tagged paid social)
+//     2. solo-agent brokerages → the solo agent
+//     3. brokerage assignment_rules in priority order
+//     4. load-balance fallback on active brokerage agents
+//   The CRM (/crm) lists contacts only — leads live in admin lead-management
+//   at /app/leads until consent + assignment promotes them to contacts.
+//
+// AI-ISA AUTO-ENROLLMENT
+//   New contacts default to ai_isa_enabled=true so ISA outreach starts
+//   automatically. Contacts that already represent an active relationship
+//   (status ∈ representation / active_transaction / under_contract / client /
+//   lifetime_customer) default to ai_isa_enabled=false; the assigned agent
+//   can manually re-enable ISA per contact if they want it on.
+//
 // Function map below:
 //   • serviceGetLeads / serviceGetLead — query `leads` (Lane A, post-promotion)
 //                                        for the admin CRM view at /app/leads.
 //   • serviceEnrichLead               — flag a `leads` row as enriched
 //                                       (sets enrichment_status / confidence).
 //   • serviceConvertLeadToContact     — promote `leads` → `contacts` (lane A
-//                                       final step, after consent).
+//                                       final step, after consent). Runs
+//                                       resolveAgentForContact for the owner.
 //   • serviceRejectLead               — mark a `leads` row rejected with reason
 //                                       in notes (no dedicated columns).
 //   • serviceImportLeads              — Lane B entry point. Writes directly to
-//                                       `contacts` with consent stamped + dedup.
-//                                       NEVER bypass dedup; NEVER route Lane B
+//                                       `contacts` with consent stamped, dedup,
+//                                       and resolveAgentForContact. NEVER
+//                                       bypass dedup; NEVER route Lane B
 //                                       through raw_scraped_leads.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -174,6 +195,11 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   return data
 }
 
+// Lane A final step: lead → contact promotion. Per the product flow,
+// agent assignment runs at consent time using the brokerage's
+// assignment_rules (see resolveAgentForContact precedence). If the lead
+// already has an agent_id (e.g., the ISA already routed it), that agent
+// is honored — the explicit owner takes precedence over rules-re-run.
 export async function serviceConvertLeadToContact(agentId: string, brokerageId: string, leadId: string) {
   const supabase = await createClient()
 
@@ -181,16 +207,30 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
     .from("leads")
     .select("*")
     .eq("id", leadId)
-    .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
     .single()
 
   if (leadError) throw leadError
 
+  // Run the contact-assignment resolver. lead.agent_id (if set) plays the
+  // ownerAgentId role — same precedence rule used by Lane B imports.
+  const assignment = await resolveAgentForContact({
+    brokerageId,
+    ownerAgentId: lead.agent_id ?? null,
+    source: lead.source ?? null,
+    propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
+  })
+
+  if (!assignment.agentId) {
+    throw new Error(
+      `serviceConvertLeadToContact: no eligible agent in brokerage ${brokerageId} for lead ${leadId}`
+    )
+  }
+
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .insert({
-      agent_id: agentId,
+      agent_id: assignment.agentId, // agents.id
       brokerage_id: brokerageId,
       first_name: lead.first_name || "Unknown",
       last_name: lead.last_name || "Lead",
@@ -200,7 +240,17 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
       source: `lead_${lead.source ?? "unknown"}`,
       contact_type: lead.lead_type === "selling" ? "seller" : lead.lead_type === "buying" ? "buyer" : "both",
       status: "new",
-      metadata: { tags: [lead.lead_type, `score_${lead.lead_score}`].filter(Boolean) },
+      // Consent flows from the leads stage (set during ISA qualification).
+      tcpa_consent: lead.tcpa_consent ?? false,
+      tcpa_consent_at: lead.tcpa_consent_at ?? null,
+      tcpa_consent_source: lead.tcpa_consent_source ?? "lead_conversion",
+      ai_isa_enabled: true, // qualified+consented contact, ISA continues until agent toggles off
+      metadata: {
+        tags: [lead.lead_type, `score_${lead.lead_score}`].filter(Boolean),
+        assignment_method: assignment.method,
+        assignment_rule_id: assignment.ruleId ?? null,
+        promoted_from_lead_id: leadId,
+      },
     })
     .select()
     .single()
@@ -213,6 +263,7 @@ export async function serviceConvertLeadToContact(agentId: string, brokerageId: 
       status: "converted",
       contact_id: contact.id,
       converted_at: new Date().toISOString(),
+      agent_id: assignment.agentId,
     })
     .eq("id", leadId)
 
@@ -255,21 +306,28 @@ export async function serviceRejectLead(
 // `contacts` with tcpa_consent=true stamped, deduped against existing
 // contacts in the brokerage on email + phone_digits.
 //
+// Agent assignment per the user's product rules:
+//   - If the row carries an explicit owner agent (form attached to an
+//     agent's landing page, agent-tagged FB ad), that agent stays.
+//   - Solo-agent brokerage → assigned to the solo agent.
+//   - Otherwise → brokerage assignment rules, then load-balance fallback.
+//   See lib/lead-assignment/contact-assignment.ts.
+//
 // AI-ISA outreach is auto-enabled UNLESS the imported row carries a status
 // that signals an active client relationship — those rows would inherit
-// `ai_isa_enabled=false` and the existing compliance gates (authority rule
-// in lib/kernel/compliance.ts) would block them anyway.
+// `ai_isa_enabled=false` and the agent can re-enable it manually later if
+// they want ISA outreach despite the existing relationship.
 //
-// Returns { imported, deduped } counts. Enrichment runs asynchronously
-// through the existing contact-enrichment path (PeopleData skip-trace).
+// Returns { imported, deduped, unassigned } counts. Enrichment runs
+// asynchronously through the existing contact-enrichment path.
 export async function serviceImportLeads(
   agentId: string,
   brokerageId: string,
-  leads: Partial<Lead>[]
+  leads: Array<Partial<Lead> & { owner_agent_id?: string | null }>
 ) {
   const supabase = await createClient()
 
-  if (!leads?.length) return { imported: 0, deduped: 0 }
+  if (!leads?.length) return { imported: 0, deduped: 0, unassigned: 0 }
 
   // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
   // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
@@ -290,6 +348,7 @@ export async function serviceImportLeads(
 
   let imported = 0
   let deduped = 0
+  let unassigned = 0
 
   for (const lead of leads) {
     const email = lead.email?.trim().toLowerCase() ?? null
@@ -327,9 +386,29 @@ export async function serviceImportLeads(
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
     const sourceLabel = lead.source ?? "admin_import"
 
+    // Resolve the owner agent (agents.id) per the precedence in
+    // resolveAgentForContact. If no agent exists in the brokerage at all,
+    // count this as unassigned and skip — the contact can't be persisted
+    // without an owner (the CRM treats agent_id as required for routing).
+    const ownerAgentId = lead.owner_agent_id ?? null
+    const assignment = await resolveAgentForContact({
+      brokerageId,
+      ownerAgentId,
+      source: sourceLabel,
+      propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
+    })
+
+    if (!assignment.agentId) {
+      unassigned++
+      console.error(
+        `[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`
+      )
+      continue
+    }
+
     const { error: insertErr } = await supabase.from("contacts").insert({
       brokerage_id: brokerageId,
-      agent_id: agentId,
+      agent_id: assignment.agentId, // agents.id, not users.id
       first_name: lead.first_name ?? "Unknown",
       last_name: lead.last_name ?? "Contact",
       email,
@@ -350,6 +429,8 @@ export async function serviceImportLeads(
       metadata: {
         imported_via: "serviceImportLeads",
         imported_by_agent_id: agentId,
+        assignment_method: assignment.method,
+        assignment_rule_id: assignment.ruleId ?? null,
         original: lead as Record<string, unknown>,
       },
     })
@@ -365,7 +446,7 @@ export async function serviceImportLeads(
 
   revalidatePath("/leads")
   revalidatePath("/crm")
-  return { imported, deduped }
+  return { imported, deduped, unassigned }
 }
 
 // ============================================
