@@ -372,14 +372,18 @@ export async function grantPortalAccess(
     const own = await assertOwnership("contacts", contactId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
+    // portal_access_logs is the canonical portal-access-log table. Map the
+    // legacy access_type → action; the active/inactive flag lives in metadata
+    // since the real schema doesn't carry a `status` column.
     const { data: access } = await supabase
-      .from("portal_access")
+      .from("portal_access_logs")
       .insert({
         contact_id: contactId,
         agent_id: agentId,
         brokerage_id: brokerageId,
-        access_type: accessType,
-        status: "active",
+        module_key: "portal",
+        action: accessType,
+        metadata: { status: "active" },
       })
       .select()
       .single()
