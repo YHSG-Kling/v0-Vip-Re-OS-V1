@@ -78,7 +78,6 @@ export type { SendEmailParams, SendSMSParams, LogCommunicationParams } from "./c
 export {
   sendEmail,
   sendSMS,
-  sendViaGHL,
   logCommunication,
   sendCalculatorResults,
   sendCollaborativeSearchInvite,

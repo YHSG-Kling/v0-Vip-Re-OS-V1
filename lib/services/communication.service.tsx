@@ -42,8 +42,18 @@ export interface SendSMSParams {
 
 export interface LogCommunicationParams {
   contactId?: string
+  /** agents.id of the sending agent. OPTIONAL — outbound to a raw `lead`
+   *  has no assigned agent (ISA owns those); outbound to a `contact`
+   *  may have one. Audit row stores agent_id as nullable. */
   agentId?: string
-  communicationType: "email" | "sms" | "notification"
+  /** Communication channels supported in this product:
+   *  email, sms — transactional + agent ↔ contact
+   *  ai_social_dm — outbound AI DM on IG/FB/LinkedIn/Twitter
+   *  portal — agent ↔ client message in the client portal
+   *  notification — push-style in-app notification
+   *  GHL is intentionally NOT a channel — it's a one-way contact-data
+   *  sync target (push), not a message transport. */
+  communicationType: "email" | "sms" | "ai_social_dm" | "portal" | "notification"
   subject?: string
   content: string
   status: "sent" | "failed" | "queued"
@@ -146,72 +156,11 @@ export async function sendSMS(params: SendSMSParams) {
   }
 }
 
-/**
- * Send via GoHighLevel (if integrated)
- */
-export async function sendViaGHL(params: {
-  contactId: string
-  type: "email" | "sms"
-  message: string
-  subject?: string
-}) {
-  try {
-    const supabase = await createClient()
-
-    // Get GHL contact ID
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("ghl_contact_id, email, phone, brokerage_id")
-      .eq("id", params.contactId)
-      .single()
-
-    if (!contact) {
-      throw new Error("Contact not found")
-    }
-
-    console.log(`[v0] Sending ${params.type} via GHL to contact ${params.contactId}`)
-
-    // TODO: Replace with actual GHL API integration
-    /*
-    const ghlResponse = await fetch('https://rest.gohighlevel.com/v1/conversations/messages', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: params.type,
-        contactId: contact.ghl_contact_id,
-        message: params.message,
-      }),
-    })
-    */
-
-    // Audit to message_provider_logs (provider_key='gohighlevel'). Look
-    // up brokerage from the contact since this helper takes contactId.
-    const brokerageId = contact.brokerage_id ?? null
-    if (brokerageId) {
-      await supabase.from("message_provider_logs").insert({
-        brokerage_id: brokerageId,
-        channel: params.type,
-        direction: "outbound",
-        provider_key: "gohighlevel",
-        provider_status: "sent",
-        sent_at: new Date().toISOString(),
-        provider_response: {
-          contact_id: params.contactId,
-          recipient: params.type === "email" ? contact.email : contact.phone,
-          subject: params.subject ?? null,
-          message_excerpt: params.message.slice(0, 200),
-        },
-      })
-    }
-
-    return { success: true }
-  } catch (error) {
-    return handleError(error, "sendViaGHL")
-  }
-}
+// sendViaGHL was removed. GoHighLevel is NOT a message-send channel in
+// this product — it's a one-way contact-data sync target (push). Outbound
+// contact communication routes through email / sms / ai_social_dm / portal.
+// GHL sync is owned by lib/services/platform-sync.service.ts and
+// lib/ghl-integration.ts (PUT/POST contact updates to GHL's REST API).
 
 /**
  * Log communication to database and optionally to contact interactions
@@ -237,10 +186,11 @@ export async function logCommunication(params: LogCommunicationParams) {
     }
 
     if (auditBrokerageId) {
+      // channel column is free-text; pass the canonical value through.
+      // `notification` is mapped to in_app for transport consistency with
+      // message_provider_logs.channel CHECK.
       const channel =
-        params.communicationType === "email" ? "email" :
-        params.communicationType === "sms"   ? "sms" :
-        "notification"
+        params.communicationType === "notification" ? "in_app" : params.communicationType
       await supabase.from("communication_audit_log").insert({
         brokerage_id: auditBrokerageId,
         contact_id: params.contactId ?? null,
@@ -262,7 +212,8 @@ export async function logCommunication(params: LogCommunicationParams) {
         ? params.agentId
         : contactRow?.agent_id ?? null
       const brokerageId = contactRow?.brokerage_id ?? null
-      const channel = params.communicationType === "email" ? "email" : "sms"
+      const channel =
+        params.communicationType === "notification" ? "in_app" : params.communicationType
       const notes = params.subject || params.content.substring(0, 100)
 
       if (agentId && brokerageId) {
