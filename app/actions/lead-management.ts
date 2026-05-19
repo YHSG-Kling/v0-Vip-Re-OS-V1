@@ -103,12 +103,12 @@ export async function rejectLead(leadId: string, reason?: string) {
 
 export async function importLeads(leads: Partial<Lead>[]) {
   try {
-    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0 }
+    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0, deduped: 0 }
     const { agentId, brokerageId } = await getAgentContext()
-    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0 }
-    const imported = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
-    return { success: true, imported }
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0, deduped: 0 }
+    const result = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
+    return { success: true, imported: result.imported, deduped: result.deduped }
   } catch (error) {
-    return { success: false, error: String(error), imported: 0 }
+    return { success: false, error: String(error), imported: 0, deduped: 0 }
   }
 }

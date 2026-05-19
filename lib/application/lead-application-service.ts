@@ -7,37 +7,43 @@ import { NotFoundError } from "@/lib/errors"
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD APPLICATION SERVICE — business model
 //
-// Three tables make up the inbound-lead pipeline. This file operates on the
-// middle stage (`leads`) for the brokerage-admin CRM view at /app/leads.
+// Inbound data enters the system through TWO lanes, distinguished by whether
+// the source captured TCPA consent at acquisition time:
 //
-//   1. raw_scraped_leads — platform-owned. Every new piece of raw lead data
-//      (scrapers, CSV imports, vendor feeds) lands here FIRST. Has no
-//      lead_id / contact_id at this point. Stored as `raw_data` (jsonb).
-//      The lead-pipeline processor (lib/lead-pipeline/pipeline-processor.ts)
-//      runs the gates: territory → identity → pre-dedup → enrich →
-//      post-dedup → promotion. Only platform admin + the brokerage's AI-ISA
-//      system actor can read this table (RLS migration 035).
+//   LANE A — RAW SCRAPED (no consent at source)
+//     BatchData motivated sellers, ZenRows (Nextdoor, Google Search), Apify
+//     (Facebook groups, Reddit, public real-estate scrapes, Yelp, Maps), OSINT
+//     (LinkedIn, court records). These land in `raw_scraped_leads`
+//     (platform-owned RLS) and flow through the pipeline:
+//       territory → identity → pre-dedup → enrich → post-dedup → promotion.
+//     On promotion a `leads` row is created (brokerage-assigned, unconsented).
+//     AI-ISA may email + send direct mail (when mailing_address_verified) but
+//     phone/SMS are TCPA-gated. On qualification + consent, the lead is
+//     promoted to `contacts` (agent-assigned).
 //
-//   2. leads — brokerage-assigned. Emerges from the pipeline when a raw row
-//      passes every gate. lead_id is born here. The AI-ISA qualifies it and
-//      drives outreach (email/direct-mail are allowed unconsented; phone/SMS
-//      are TCPA-gated). Brokerage admins manage this list; agents do NOT
-//      see it directly (RLS migration 034).
-//
-//   3. contacts — agent-assigned. Created when a lead is qualified AND
-//      consents, then handed off to an agent. Agents work contacts; lead
-//      lineage is reachable via the contact_lead_history view (migration 039).
+//   LANE B — CONSENTED AT SOURCE (forms / Facebook ads / real-estate sites)
+//     Lead-capture forms, paid social opt-ins, Zillow/Realtor.com/etc.
+//     The source provider already captured TCPA consent, so these rows
+//     SKIP `raw_scraped_leads` and `leads` entirely and land directly in
+//     `contacts` with tcpa_consent=true stamped. They are deduped against
+//     existing contacts in the brokerage on email + phone_digits, enrichment
+//     is enqueued, and AI-ISA outreach is auto-enabled UNLESS the row's
+//     status indicates an active relationship (representation,
+//     active_transaction, under_contract) where outreach would be inappropriate.
 //
 // Function map below:
-//   • serviceGetLeads / serviceGetLead — query `leads` for the admin CRM view.
-//   • serviceEnrichLead              — flag a `leads` row as enriched
-//                                      (sets enrichment_status / confidence).
-//   • serviceConvertLeadToContact    — promote `leads` → `contacts` (step 2→3).
-//   • serviceRejectLead              — mark a `leads` row rejected with reason
-//                                      in notes (no dedicated columns).
-//   • serviceImportLeads             — bulk import lands in `raw_scraped_leads`
-//                                      so dedup/enrich/gating run before
-//                                      anything reaches `leads`. NEVER bypass.
+//   • serviceGetLeads / serviceGetLead — query `leads` (Lane A, post-promotion)
+//                                        for the admin CRM view at /app/leads.
+//   • serviceEnrichLead               — flag a `leads` row as enriched
+//                                       (sets enrichment_status / confidence).
+//   • serviceConvertLeadToContact     — promote `leads` → `contacts` (lane A
+//                                       final step, after consent).
+//   • serviceRejectLead               — mark a `leads` row rejected with reason
+//                                       in notes (no dedicated columns).
+//   • serviceImportLeads              — Lane B entry point. Writes directly to
+//                                       `contacts` with consent stamped + dedup.
+//                                       NEVER bypass dedup; NEVER route Lane B
+//                                       through raw_scraped_leads.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Types inlined here — canonical home for lead domain types (no upward imports)
@@ -244,14 +250,18 @@ export async function serviceRejectLead(
   return data
 }
 
-// Bulk-import N records into the pipeline. Every record lands in
-// `raw_scraped_leads` so the dedup / enrich / gate pipeline runs before
-// anything reaches `leads`. Bypassing the pipeline (writing straight to
-// `leads`) would let duplicates and unverified data through — the whole
-// reason raw_scraped_leads exists is to be the gated entry point.
+// Lane B import: forms / Facebook ads / real-estate-site exports land here.
+// The source captured TCPA consent already, so each row goes directly into
+// `contacts` with tcpa_consent=true stamped, deduped against existing
+// contacts in the brokerage on email + phone_digits.
 //
-// Returns the number of raw rows queued. Promotion to `leads` happens
-// asynchronously via lib/lead-pipeline/pipeline-processor.ts.
+// AI-ISA outreach is auto-enabled UNLESS the imported row carries a status
+// that signals an active client relationship — those rows would inherit
+// `ai_isa_enabled=false` and the existing compliance gates (authority rule
+// in lib/kernel/compliance.ts) would block them anyway.
+//
+// Returns { imported, deduped } counts. Enrichment runs asynchronously
+// through the existing contact-enrichment path (PeopleData skip-trace).
 export async function serviceImportLeads(
   agentId: string,
   brokerageId: string,
@@ -259,40 +269,103 @@ export async function serviceImportLeads(
 ) {
   const supabase = await createClient()
 
-  if (!leads?.length) return 0
+  if (!leads?.length) return { imported: 0, deduped: 0 }
 
-  const rawRows = leads.map((lead) => ({
-    brokerage_id: brokerageId,
-    source: lead.source ?? "admin_csv_import",
-    // CHECK constraints: source_family ∈ {raw, lead, contact_direct},
-    // source_origin ∈ {platform, brokerage}.
-    source_family: "raw",
-    source_origin: "brokerage",
-    raw_data: lead as Record<string, unknown>,
-    // normalized_preview lets the pipeline carry forward the recognizable
-    // fields without re-parsing raw_data.
-    normalized_preview: {
-      first_name: lead.first_name ?? null,
-      last_name: lead.last_name ?? null,
-      email: lead.email ?? null,
+  // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
+  // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
+  const RESTRICTED_STATUSES = new Set([
+    "representation",
+    "active_transaction",
+    "under_contract",
+    "client",
+    "lifetime_customer",
+  ])
+
+  // Mirror the generation expression on contacts.phone_digits
+  // (regexp_replace(phone, '\\D', '', 'g')) so our lookup matches the
+  // stored value exactly. Slicing to last-10 here would miss contacts
+  // saved with country code prefixes.
+  const normalizeDigits = (p?: string | null) =>
+    p ? p.replace(/\D/g, "") : null
+
+  let imported = 0
+  let deduped = 0
+
+  for (const lead of leads) {
+    const email = lead.email?.trim().toLowerCase() ?? null
+    const phoneDigits = normalizeDigits(lead.phone)
+
+    // Dedup: lookup any existing contact in this brokerage matching either
+    // email or phone_digits. No unique constraint exists on contacts(email),
+    // so this guard runs in application code.
+    let existingId: string | null = null
+    if (email || phoneDigits) {
+      let dedupQuery = supabase
+        .from("contacts")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .is("deleted_at", null)
+
+      if (email && phoneDigits) {
+        dedupQuery = dedupQuery.or(`email.eq.${email},phone_digits.eq.${phoneDigits}`)
+      } else if (email) {
+        dedupQuery = dedupQuery.eq("email", email)
+      } else if (phoneDigits) {
+        dedupQuery = dedupQuery.eq("phone_digits", phoneDigits)
+      }
+
+      const { data: existing } = await dedupQuery.limit(1).maybeSingle()
+      existingId = existing?.id ?? null
+    }
+
+    if (existingId) {
+      deduped++
+      continue
+    }
+
+    const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
+    const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+    const sourceLabel = lead.source ?? "admin_import"
+
+    const { error: insertErr } = await supabase.from("contacts").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      first_name: lead.first_name ?? "Unknown",
+      last_name: lead.last_name ?? "Contact",
+      email,
       phone: lead.phone ?? null,
-      source: lead.source ?? "admin_csv_import",
-      lead_type: (lead as Record<string, unknown>).lead_type ?? null,
-      lead_score: (lead as Record<string, unknown>).lead_score ?? null,
-      imported_by_agent_id: agentId,
-    },
-    processing_status: "pending",
-  }))
+      // phone_digits is a generated column derived from `phone` — do not set.
+      source: sourceLabel,
+      source_family: "contact_direct",
+      contact_type: "lead",
+      status: incomingStatus || "new",
+      // Lane B: consent was captured at source. Stamp it explicitly.
+      tcpa_consent: true,
+      tcpa_consent_at: new Date().toISOString(),
+      tcpa_consent_source: sourceLabel,
+      // Auto-enroll into AI-ISA unless restricted-status.
+      ai_isa_enabled: aiIsaEnabled,
+      // Enrichment runs through the existing PeopleData queue.
+      enrichment_source: null,
+      metadata: {
+        imported_via: "serviceImportLeads",
+        imported_by_agent_id: agentId,
+        original: lead as Record<string, unknown>,
+      },
+    })
 
-  const { data, error } = await supabase
-    .from("raw_scraped_leads")
-    .insert(rawRows)
-    .select("id")
+    if (insertErr) {
+      // Don't abort the batch on a single row failure — log and continue.
+      console.error("[serviceImportLeads] insert failed:", insertErr.message)
+      continue
+    }
 
-  if (error) throw error
+    imported++
+  }
 
   revalidatePath("/leads")
-  return data?.length ?? 0
+  revalidatePath("/crm")
+  return { imported, deduped }
 }
 
 // ============================================
