@@ -118,8 +118,8 @@ async function explainTerm(term: string, context: string, userType: string) {
   
   // Search knowledge base using text search (simplified without embeddings)
   const { data: relevantDocs, error } = await supabase
-    .from("knowledge_base")
-    .select("content, document_title")
+    .from("knowledge_articles")
+    .select("content, title")
     .textSearch("content", term)
     .limit(3)
   
@@ -156,7 +156,7 @@ Explain:
   return {
     term,
     explanation: text,
-    learn_more_docs: relevantDocs?.map((d: any) => d.document_title) || [],
+    learn_more_docs: relevantDocs?.map((d: any) => d.title) || [],
   }
 }
 

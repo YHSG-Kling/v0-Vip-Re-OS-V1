@@ -19,15 +19,22 @@ export async function logAuditEventService(params: {
 }) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("audit_logs").insert({
+  const { error } = await supabase.from("audit_log").insert({
     user_id: params.userId,
-    action_type: params.action,
+    action: params.action,
     entity_type: params.entityType,
     entity_id: params.entityId,
-    changes: params.changes,
-    ip_address: params.ipAddress,
-    user_agent: params.userAgent,
-    compliance_relevant: params.complianceRelevant || false,
+    // audit_log carries before/after JSONB. The legacy `audit_logs` callsite
+    // passed a single `changes` payload; we put it in `after` and fold the
+    // request-context (ip / UA / compliance flag) into the same JSONB so we
+    // don't lose the data on the schema unification.
+    before: null,
+    after: {
+      changes: params.changes ?? null,
+      ip_address: params.ipAddress ?? null,
+      user_agent: params.userAgent ?? null,
+      compliance_relevant: params.complianceRelevant ?? false,
+    },
   })
 
   if (error) {
@@ -394,11 +401,11 @@ export async function exportAuditTrailService(params: {
   const supabase = await createClient()
 
   let query = supabase
-    .from("audit_logs")
+    .from("audit_log")
     .select("*")
-    .gte("timestamp", params.startDate)
-    .lte("timestamp", params.endDate)
-    .order("timestamp", { ascending: false })
+    .gte("created_at", params.startDate)
+    .lte("created_at", params.endDate)
+    .order("created_at", { ascending: false })
 
   if (params.transactionId) {
     query = query.eq("entity_type", "transaction").eq("entity_id", params.transactionId)

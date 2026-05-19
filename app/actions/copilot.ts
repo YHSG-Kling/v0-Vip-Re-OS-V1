@@ -569,33 +569,50 @@ async function sendPropertyMatches(contactId: string) {
 
 async function requestShowingFeedback(showingId: string) {
   const supabase = await createClient()
-  
-  // Get showing details
+
+  // Get showing details — need brokerage_id since showing_feedback_requests
+  // is brokerage-scoped (NOT NULL).
   const { data: showing } = await supabase
     .from("showing_requests")
-    .select("*, contact_id, property_address")
+    .select("id, brokerage_id, contact_id, property_address")
     .eq("id", showingId)
     .single()
-  
+
   if (!showing) {
     return { success: false, error: "Showing not found" }
   }
-  
-  // Create feedback request
-  const { error } = await supabase.from("feedback_requests").insert({
+
+  if (!showing.brokerage_id) {
+    return { success: false, error: "Showing missing brokerage scope" }
+  }
+
+  // Resolve the contact's email so we can dispatch the feedback request.
+  // Without an email there is no recipient; fail explicitly rather than
+  // writing a row that can never be delivered.
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("email")
+    .eq("id", showing.contact_id)
+    .maybeSingle()
+
+  if (!contact?.email) {
+    return { success: false, error: "Contact has no email on file" }
+  }
+
+  const feedbackToken = crypto.randomUUID()
+  const { error } = await supabase.from("showing_feedback_requests").insert({
+    brokerage_id: showing.brokerage_id,
     showing_id: showingId,
-    contact_id: showing.contact_id,
-    property_address: showing.property_address,
-    request_type: "showing_feedback",
-    status: "pending",
+    feedback_token: feedbackToken,
+    sent_to_email: contact.email,
     sent_at: new Date().toISOString(),
   })
-  
+
   if (error) {
     console.error("[copilot] Failed to create feedback request:", error)
     return { success: false, error: "Failed to request feedback" }
   }
-  
+
   return { success: true, message: "Feedback requested" }
 }
 
