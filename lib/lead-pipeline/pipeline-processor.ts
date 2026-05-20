@@ -233,15 +233,20 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
 
+      // enrichment_status exists only on leads; contacts tracks confidence only.
+      const mergeUpdate: Record<string, unknown> = {
+        email:                 enriched.email || postEnrichDuplicate.email,
+        phone:                 enriched.phone || postEnrichDuplicate.phone,
+        enrichment_confidence: newConfidence,
+        updated_at:            new Date().toISOString(),
+      }
+      if (targetTable === 'leads') {
+        mergeUpdate.enrichment_status = 'completed'
+      }
+
       await supabase
         .from(targetTable)
-        .update({
-          email:                enriched.email  || postEnrichDuplicate.email,
-          phone:                enriched.phone  || postEnrichDuplicate.phone,
-          enrichment_status:    'completed',
-          enrichment_confidence: newConfidence,
-          updated_at:           new Date().toISOString(),
-        })
+        .update(mergeUpdate)
         .eq('id', postEnrichDuplicate.id)
 
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')

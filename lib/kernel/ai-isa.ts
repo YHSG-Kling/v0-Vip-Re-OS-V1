@@ -102,7 +102,7 @@ export interface AiIsaLeadRow {
   last_name: string | null
   email: string | null
   phone: string | null
-  lifecycle_stage: LeadLifecycleStage | null
+  lifecycle_state: LeadLifecycleStage | null
   ai_isa_owner: boolean
   ai_outreach_paused: boolean
   minimum_viable_for_isa: boolean
@@ -114,9 +114,10 @@ export interface AiIsaCallRow {
   id: string
   lead_id: string | null
   contact_id: string | null
-  call_outcome: string | null
+  ai_response_summary: string | null
   appointment_set: boolean
-  call_duration_seconds: number | null
+  appointment_datetime: string | null
+  lead_quality_score: number | null
   created_at: string
 }
 
@@ -294,7 +295,7 @@ export async function loadAiIsaWorkspace(
 
       supabase
         .from("leads")
-        .select("id, first_name, last_name, email, phone, lifecycle_stage, ai_isa_owner, ai_outreach_paused, minimum_viable_for_isa, last_activity_at, created_at")
+        .select("id, first_name, last_name, email, phone, lifecycle_state, ai_isa_owner, ai_outreach_paused, minimum_viable_for_isa, last_activity_at, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("ai_isa_owner", true)
         .eq("is_active", true)
@@ -303,7 +304,7 @@ export async function loadAiIsaWorkspace(
 
       supabase
         .from("ai_isa_calls")
-        .select("id, lead_id, contact_id, call_outcome, appointment_set, call_duration_seconds, created_at")
+        .select("id, lead_id, contact_id, appointment_set, appointment_datetime, lead_quality_score, ai_response_summary, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .order("created_at", { ascending: false })
         .limit(20),
@@ -367,12 +368,16 @@ export async function loadAiIsaWorkspace(
  *   ai_isa_qualifications (insert — record evaluation result)
  *
  * Business rules:
- *   BLOCKER 1 — lead.lifecycle_stage = "representation": AI ISA cannot act
- *   BLOCKER 2 — lead.tcpa_consent = false AND lead.consent_type IS NULL: no consent
- *   BLOCKER 3 — lead.dnc_status = true: DNC list — hard stop
- *   BLOCKER 4 — lead.ai_outreach_paused = true: manually paused, needs review
- *   BLOCKER 5 — lead.stop_ai_outreach = true: permanent opt-out
+ *   BLOCKER 1 — lead.lifecycle_state = "representation": AI ISA cannot act
+ *   BLOCKER 2 — lead.call_stop_flag = true: DNC / hard stop
+ *   BLOCKER 3 — lead.ai_outreach_paused = true: manually paused, needs review
+ *   BLOCKER 4 — lead.opted_out_at IS NOT NULL: permanent opt-out
  *   POSITIVE  — lead.minimum_viable_for_isa = true: enriched with enough data
+ *
+ *   NOTE: lack of TCPA consent is NOT a blocker. Leads are unconsented by
+ *   default; ISA may email + send verified-address direct mail without consent.
+ *   Phone/SMS consent is enforced per-channel downstream (resolveLeadChannel +
+ *   the compliance gate), not at the eligibility stage.
  *
  * UI behavior:
  *   - blockers[].length > 0 → qualification radar shows red stop icon + reason
@@ -388,8 +393,8 @@ export async function evaluateAiIsaEligibility(
     const { data: lead, error } = await supabase
       .from("leads")
       .select(`
-        id, lifecycle_stage, tcpa_consent, consent_type, dnc_status,
-        ai_outreach_paused, stop_ai_outreach, minimum_viable_for_isa,
+        id, lifecycle_state, tcpa_consent, tcpa_consent_source, call_stop_flag,
+        ai_outreach_paused, opted_out_at, minimum_viable_for_isa,
         first_name, last_name, email, phone, brokerage_id
       `)
       .eq("id", leadId)
@@ -404,27 +409,22 @@ export async function evaluateAiIsaEligibility(
     const reasons: string[] = []
 
     // BLOCKER 1: Representation stage — contract signed
-    if (lead.lifecycle_stage === "representation") {
+    if (lead.lifecycle_state === "representation") {
       blockers.push("Lead is under representation — AI ISA cannot act on represented leads")
     }
 
-    // BLOCKER 2: No consent
-    if (!lead.tcpa_consent && !lead.consent_type) {
-      blockers.push("No TCPA consent on file — obtain digital consent before ISA outreach")
-    }
-
-    // BLOCKER 3: DNC
-    if (lead.dnc_status) {
+    // BLOCKER 2: DNC / hard stop
+    if (lead.call_stop_flag) {
       blockers.push("Lead is on the Do Not Contact list — AI ISA is permanently blocked")
     }
 
-    // BLOCKER 4: Manually paused
+    // BLOCKER 3: Manually paused
     if (lead.ai_outreach_paused) {
       blockers.push("AI outreach is manually paused — resume before assigning ISA")
     }
 
-    // BLOCKER 5: Permanent opt-out
-    if (lead.stop_ai_outreach) {
+    // BLOCKER 4: Permanent opt-out
+    if (lead.opted_out_at) {
       blockers.push("Lead has opted out of AI outreach — cannot assign ISA")
     }
 
@@ -457,7 +457,7 @@ export async function evaluateAiIsaEligibility(
           blockers,
           reasons,
         },
-        stage: lead.lifecycle_stage ?? null,
+        stage: lead.lifecycle_state ?? null,
         qualified_at: new Date().toISOString(),
       })
 
@@ -467,7 +467,7 @@ export async function evaluateAiIsaEligibility(
         eligible,
         reasons,
         blockers,
-        leadStage: (lead.lifecycle_stage as LeadLifecycleStage) ?? null,
+        leadStage: (lead.lifecycle_state as LeadLifecycleStage) ?? null,
       },
     }
   } catch (err) {
@@ -486,12 +486,12 @@ export async function evaluateAiIsaEligibility(
  * Output: { success }
  *
  * Tables written:
- *   leads (update: ai_isa_owner = true, lifecycle_stage = 'isa_qualifying')
+ *   leads (update: ai_isa_owner = true, lifecycle_state = 'isa_qualifying')
  *   lifecycle_events (insert)
  *
  * Business rules:
  *   Rule 1: eligibility gate must pass first — call evaluateAiIsaEligibility before this.
- *   Rule 2: sets leads.ai_isa_owner = true, lifecycle_stage = 'isa_qualifying'.
+ *   Rule 2: sets leads.ai_isa_owner = true, lifecycle_state = 'isa_qualifying'.
  *   Rule 3: fires lifecycle_event AI_ISA_ASSIGNED.
  *
  * UI behavior:
@@ -508,7 +508,7 @@ export async function assignAiIsaToLeadAfterGate(
     // Re-check minimum_viable_for_isa — the gate must have been evaluated
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, dnc_status, stop_ai_outreach, lifecycle_stage")
+      .select("id, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
@@ -517,7 +517,7 @@ export async function assignAiIsaToLeadAfterGate(
       return { success: false, error: "Lead not found" }
     }
 
-    if (lead.dnc_status || lead.stop_ai_outreach) {
+    if (lead.call_stop_flag || lead.opted_out_at) {
       return {
         success: false,
         blocked: true,
@@ -525,7 +525,7 @@ export async function assignAiIsaToLeadAfterGate(
       }
     }
 
-    if (lead.lifecycle_stage === "representation") {
+    if (lead.lifecycle_state === "representation") {
       return {
         success: false,
         blocked: true,
@@ -537,7 +537,7 @@ export async function assignAiIsaToLeadAfterGate(
       .from("leads")
       .update({
         ai_isa_owner: true,
-        lifecycle_stage: "isa_qualifying",
+        lifecycle_state: "isa_qualifying",
         updated_at: new Date().toISOString(),
       })
       .eq("id", leadId)
@@ -598,7 +598,7 @@ export async function startAiIsaAutomation(
     // Verify lead is ISA-owned
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, ai_isa_owner, dnc_status, stop_ai_outreach, lifecycle_stage")
+      .select("id, ai_isa_owner, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
@@ -608,10 +608,10 @@ export async function startAiIsaAutomation(
     if (!lead.ai_isa_owner) {
       return { success: false, blocked: true, blockedReason: "Lead must be assigned to AI ISA first" }
     }
-    if (lead.dnc_status || lead.stop_ai_outreach) {
+    if (lead.call_stop_flag || lead.opted_out_at) {
       return { success: false, blocked: true, blockedReason: "Lead is on DNC or opted out" }
     }
-    if (lead.lifecycle_stage === "representation") {
+    if (lead.lifecycle_state === "representation") {
       return { success: false, blocked: true, blockedReason: "Lead is under representation" }
     }
 
@@ -628,7 +628,7 @@ export async function startAiIsaAutomation(
         activity_type: "automation_started",
         channel,
         summary: notes ?? null,
-        outcome: { actor_user_id: ctx.userId, campaign_id: campaignId ?? null },
+        qualifying_response: { actor_user_id: ctx.userId, campaign_id: campaignId ?? null },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -695,7 +695,7 @@ export async function pauseAiIsaAutomation(
         lead_id: leadId,
         activity_type: "automation_paused",
         summary: reason,
-        outcome: { actor_user_id: ctx.userId },
+        qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -745,16 +745,16 @@ export async function resumeAiIsaAutomation(
 
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, dnc_status, stop_ai_outreach, lifecycle_stage")
+      .select("id, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (fetchErr || !lead) return { success: false, error: "Lead not found" }
-    if (lead.dnc_status || lead.stop_ai_outreach) {
+    if (lead.call_stop_flag || lead.opted_out_at) {
       return { success: false, blocked: true, blockedReason: "Lead is on DNC or opted out — cannot resume" }
     }
-    if (lead.lifecycle_stage === "representation") {
+    if (lead.lifecycle_state === "representation") {
       return { success: false, blocked: true, blockedReason: "Lead is under representation — AI ISA permanently blocked" }
     }
 
@@ -770,7 +770,7 @@ export async function resumeAiIsaAutomation(
         lead_id: leadId,
         activity_type: "automation_resumed",
         summary: notes ?? null,
-        outcome: { actor_user_id: ctx.userId },
+        qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -887,13 +887,13 @@ export async function handoffToHumanAgent(
  *
  * Tables written:
  *   ai_isa_activities (insert: action = 'outcome_recorded')
- *   ai_isa_calls (update: call_outcome, appointment_set — if callId provided)
- *   leads (update: lifecycle_stage based on outcome)
+ *   ai_isa_calls (update: appointment_set, appointment_datetime — if callId provided)
+ *   leads (update: lifecycle_state based on outcome)
  *   lifecycle_events (insert)
  *
  * Business rules:
- *   - appointment_set: lifecycle_stage → 'appointment'
- *   - disqualified: ai_isa_owner = false, lifecycle_stage → 'raw'
+ *   - appointment_set: lifecycle_state → 'appointment'
+ *   - disqualified: ai_isa_owner = false, lifecycle_state → 'raw'
  *   - not_interested: ai_outreach_paused = true, needs human review
  *
  * UI behavior:
@@ -912,7 +912,7 @@ export async function recordAiIsaOutcome(
     // Determine lead state updates based on outcome
     const leadUpdate: Record<string, unknown> = { updated_at: now }
     if (outcome === "appointment_set") {
-      leadUpdate.lifecycle_stage = "appointment"
+      leadUpdate.lifecycle_state = "appointment"
     } else if (outcome === "qualified") {
       // Engine 2 trigger: setting lead_stage='qualified' lets the
       // assignment-engine fire on the next pass. handleConsentReceived
@@ -938,7 +938,7 @@ export async function recordAiIsaOutcome(
       leadUpdate.lifecycle_state = "long_term_nurture"
     } else if (outcome === "disqualified") {
       leadUpdate.ai_isa_owner = false
-      leadUpdate.lifecycle_stage = "raw"
+      leadUpdate.lifecycle_state = "raw"
     } else if (outcome === "not_interested") {
       leadUpdate.ai_outreach_paused = true
     }
@@ -950,28 +950,30 @@ export async function recordAiIsaOutcome(
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
 
-    // Insert activity. appointment_date and actor_user_id live in `outcome`
-    // jsonb (no dedicated columns in the live schema).
+    // Insert activity. `outcome` is a text column (the categorical result);
+    // structured context (actor, appointment date) lives in qualifying_response jsonb.
     await supabase.from("ai_isa_activities").insert({
       brokerage_id: ctx.brokerageId,
       lead_id: leadId,
       activity_type: "outcome_recorded",
       summary: notes ?? null,
-      outcome: {
-        result: outcome,
+      outcome,
+      qualifying_response: {
         actor_user_id: ctx.userId,
         appointment_date: appointmentDate ?? null,
       },
       created_at: now,
     })
 
-    // Update the call record if callId is provided
+    // Update the call record if callId is provided. ai_isa_calls has no
+    // categorical outcome column — the result is captured above; here we
+    // persist the appointment booking on the call row.
     if (callId) {
       await supabase
         .from("ai_isa_calls")
         .update({
-          call_outcome: outcome,
           appointment_set: outcome === "appointment_set",
+          appointment_datetime: outcome === "appointment_set" ? (appointmentDate ?? null) : null,
         })
         .eq("id", callId)
         .eq("brokerage_id", ctx.brokerageId)
@@ -1072,10 +1074,10 @@ export async function recordAiIsaOutcome(
  * Tables written:
  *   lifecycle_events (insert: ISA_REPLY_RECEIVED)
  *   contact_suppression_list (insert — if opt-out detected)
- *   leads (update: last_activity_at, stop_ai_outreach if opt-out detected)
+ *   leads (update: last_activity_at, opted_out_at if opt-out detected)
  *
  * Business rules:
- *   - STOP / UNSUBSCRIBE / REMOVE ME → stop_ai_outreach = true, suppress channel
+ *   - STOP / UNSUBSCRIBE / REMOVE ME → opted_out_at set, suppress channel
  *   - TCPA hard stop keywords (STOP, CANCEL, END, QUIT, UNSUBSCRIBE) → immediate suppress
  *   - Other keywords require human review (medium confidence)
  */
@@ -1100,11 +1102,16 @@ export async function routeHistoryToCanonicalEntity(
       },
     })
 
-    // Update last activity
+    // Update last activity. leads has last_activity_at; contacts tracks
+    // recency via last_contacted_at (no last_activity_at column).
     const updateTable = entityType === "contact" ? "contacts" : "leads"
+    const activityPatch =
+      entityType === "contact"
+        ? { last_contacted_at: now, updated_at: now }
+        : { last_activity_at: now, updated_at: now }
     await supabase
       .from(updateTable)
-      .update({ last_activity_at: now, updated_at: now } as Record<string, unknown>)
+      .update(activityPatch as Record<string, unknown>)
       .eq("id", entityId)
       .eq("brokerage_id", ctx.brokerageId)
 
@@ -1113,20 +1120,20 @@ export async function routeHistoryToCanonicalEntity(
     if (HARD_STOP.test(inboundText.trim())) {
       // Suppress the channel. Live schema is contact-keyed
       // (no entity_type/entity_id columns). For lead-stage suppressions
-      // we resolve to the converted contact if one exists; otherwise we
-      // leave contact_id null and rely on leads.stop_ai_outreach (set
-      // below) to enforce suppression upstream.
+      // we resolve to the converted contact via leads.contact_id if one
+      // exists; otherwise we leave contact_id null and rely on the lead
+      // opt-out flag (set below) to enforce suppression upstream.
       let suppressContactId: string | null = null
       if (entityType === "contact") {
         suppressContactId = entityId
       } else {
-        const { data: convertedContact } = await supabase
-          .from("contacts")
-          .select("id")
-          .eq("source_lead_id", entityId)
+        const { data: leadLink } = await supabase
+          .from("leads")
+          .select("contact_id")
+          .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
           .maybeSingle()
-        suppressContactId = convertedContact?.id ?? null
+        suppressContactId = leadLink?.contact_id ?? null
       }
       await supabase.from("contact_suppression_list").insert({
         brokerage_id: ctx.brokerageId,
@@ -1141,7 +1148,7 @@ export async function routeHistoryToCanonicalEntity(
       if (entityType === "lead") {
         await supabase
           .from("leads")
-          .update({ stop_ai_outreach: true, ai_outreach_paused: true, updated_at: now })
+          .update({ opted_out_at: now, ai_outreach_paused: true, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
       } else {
@@ -1167,7 +1174,7 @@ export async function routeHistoryToCanonicalEntity(
  * Output: { success, data: LeadChannelResult }
  *
  * Tables read:
- *   leads (phone, email, tcpa_consent, dnc_status, stop_ai_outreach)
+ *   leads (phone, email, tcpa_consent, call_stop_flag, opted_out_at)
  *
  * Business rules:
  *   - DNC / opt-out → blocked (no channel)
@@ -1187,17 +1194,17 @@ export async function resolveLeadChannel(
 
     const { data: lead, error } = await supabase
       .from("leads")
-      .select("phone, email, tcpa_consent, dnc_status, stop_ai_outreach")
+      .select("phone, email, tcpa_consent, call_stop_flag, opted_out_at")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (error || !lead) return { success: false, error: "Lead not found" }
 
-    if (lead.dnc_status) {
+    if (lead.call_stop_flag) {
       return { success: true, data: { channel: null, phoneNumber: null, email: null, blocked: true, blockReason: "DNC list" } }
     }
-    if (lead.stop_ai_outreach) {
+    if (lead.opted_out_at) {
       return { success: true, data: { channel: null, phoneNumber: null, email: null, blocked: true, blockReason: "Opted out of AI outreach" } }
     }
 

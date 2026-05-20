@@ -148,13 +148,13 @@ export async function generateAndStoreHandoffBrief(params: {
   const [{ data: activities }, { data: calls }] = await Promise.all([
     supabase
       .from("ai_isa_activities")
-      .select("action, outcome, notes, created_at")
+      .select("activity_type, outcome, summary, channel, created_at")
       .eq("lead_id", leadId)
       .order("created_at", { ascending: true })
       .limit(20),
     supabase
       .from("ai_isa_calls")
-      .select("call_outcome, call_duration_seconds, created_at")
+      .select("appointment_set, appointment_datetime, ai_response_summary, created_at")
       .eq("lead_id", leadId)
       .order("created_at", { ascending: true })
       .limit(10),
@@ -163,27 +163,35 @@ export async function generateAndStoreHandoffBrief(params: {
   // 4. Build conversation history
   const history: IsaHandoffBrief["conversationHistory"] = []
   for (const a of activities ?? []) {
-    const action = (a as { action: string | null }).action ?? ""
+    const row = a as {
+      activity_type: string | null
+      channel: string | null
+      summary: string | null
+      outcome: string | null
+      created_at: string
+    }
+    const activityType = row.activity_type ?? ""
+    const chanHint = `${row.channel ?? ""} ${activityType}`
     let channel: IsaHandoffBrief["conversationHistory"][number]["channel"] = "other"
-    if (action.includes("email")) channel = "email"
-    else if (action.includes("sms") || action.includes("text")) channel = "sms"
-    else if (action.includes("call")) channel = "call"
-    else if (action.includes("form")) channel = "form"
+    if (chanHint.includes("email")) channel = "email"
+    else if (chanHint.includes("sms") || chanHint.includes("text")) channel = "sms"
+    else if (chanHint.includes("call") || chanHint.includes("phone")) channel = "call"
+    else if (chanHint.includes("form")) channel = "form"
 
     history.push({
-      when: (a as { created_at: string }).created_at,
+      when: row.created_at,
       channel,
-      summary: action.replace(/_/g, " "),
-      outcome: (a as { outcome: string | null }).outcome ?? null,
+      summary: row.summary ?? activityType.replace(/_/g, " "),
+      outcome: row.outcome ?? null,
     })
   }
   for (const c of calls ?? []) {
-    const dur = (c as { call_duration_seconds: number | null }).call_duration_seconds ?? 0
+    const cc = c as { appointment_set: boolean; ai_response_summary: string | null; created_at: string }
     history.push({
-      when: (c as { created_at: string }).created_at,
+      when: cc.created_at,
       channel: "call",
-      summary: dur ? `${Math.floor(dur / 60)}m ${dur % 60}s call` : "Call",
-      outcome: (c as { call_outcome: string | null }).call_outcome ?? null,
+      summary: cc.ai_response_summary ?? "Call",
+      outcome: cc.appointment_set ? "appointment_set" : null,
     })
   }
   history.sort((a, b) => a.when.localeCompare(b.when))
