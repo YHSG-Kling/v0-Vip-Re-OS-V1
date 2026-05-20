@@ -557,7 +557,7 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
       event_id: params.eventId,
       contact_id: invitation.contact_id,
       rsvp_status: params.response,
-      accessed_at: new Date().toISOString(),
+      rsvp_updated_at: new Date().toISOString(),
     })
 
     revalidatePath("/dashboard/open-house")

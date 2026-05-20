@@ -247,7 +247,7 @@ Common required disclosures include:
       compliance_score: object.complianceScore,
       ai_recommendations: object.recommendations,
       updated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "transaction_id,checklist_type" })
 
     return { success: true, disclosureCheck: object }
   } catch (error) {

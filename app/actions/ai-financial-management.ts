@@ -601,12 +601,13 @@ async function syncExpenseToQuickBooks(expense: any) {
 
     // Log sync attempt (actual API call would go here)
     await supabase.from("quickbooks_sync_log").insert({
+      brokerage_id: expense.brokerage_id,
       agent_id: expense.agent_id,
-      entity_type: "expense",
-      entity_id: expense.id,
-      qb_data: qbExpense,
-      status: "pending",
-      created_at: new Date().toISOString(),
+      sync_type: "expense",
+      direction: "push",
+      status: "in_progress",
+      payload_summary: { entity_id: expense.id, qb_data: qbExpense },
+      started_at: new Date().toISOString(),
     })
 
     return { synced: true, qbData: qbExpense }
@@ -667,12 +668,13 @@ async function syncCommissionToQuickBooks(commission: any) {
 
     // Log sync attempt
     await supabase.from("quickbooks_sync_log").insert({
+      brokerage_id: commission.brokerage_id,
       agent_id: commission.agent_id,
-      entity_type: "commission",
-      entity_id: commission.id,
-      qb_data: qbInvoice,
-      status: "pending",
-      created_at: new Date().toISOString(),
+      sync_type: "commission",
+      direction: "push",
+      status: "in_progress",
+      payload_summary: { entity_id: commission.id, qb_data: qbInvoice },
+      started_at: new Date().toISOString(),
     })
 
     return { synced: true, qbData: qbInvoice }
