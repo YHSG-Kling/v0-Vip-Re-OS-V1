@@ -122,11 +122,14 @@ export interface AiIsaCallRow {
 
 export interface AiIsaHandoffRow {
   id: string
-  lead_id: string | null
-  contact_id: string | null
+  // Live schema uses an entity_type/entity_id discriminator instead of
+  // separate lead_id/contact_id columns; human_agent_id replaces the
+  // older assigned_agent_id.
+  entity_type: string
+  entity_id: string
   handoff_reason: string | null
   handoff_status: string
-  assigned_agent_id: string | null
+  human_agent_id: string | null
   created_at: string
 }
 
@@ -307,7 +310,7 @@ export async function loadAiIsaWorkspace(
 
       supabase
         .from("agent_handoffs")
-        .select("id, lead_id, contact_id, handoff_reason, handoff_status, assigned_agent_id, created_at")
+        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("handoff_status", "pending")
         .order("created_at", { ascending: false })
@@ -439,17 +442,23 @@ export async function evaluateAiIsaEligibility(
     const eligible = blockers.length === 0
 
     // Record evaluation in ai_isa_qualifications
+    // Live schema uses qualification_result/stage/qualified_at/qualification_signals
+    // (structured rationale). evaluator id + blockers + reasons go into signals jsonb.
     await supabase
       .from("ai_isa_qualifications")
       .insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
-        evaluated_by: ctx.userId,
-        eligible,
-        blockers,
-        reasons,
-        lead_stage: lead.lifecycle_stage ?? null,
-        evaluated_at: new Date().toISOString(),
+        // CHECK enum: qualified | not_qualified | needs_follow_up | appointment_set | no_response.
+        // Eligibility gate maps to qualified/not_qualified.
+        qualification_result: eligible ? "qualified" : "not_qualified",
+        qualification_signals: {
+          evaluated_by: ctx.userId,
+          blockers,
+          reasons,
+        },
+        stage: lead.lifecycle_stage ?? null,
+        qualified_at: new Date().toISOString(),
       })
 
     return {
@@ -616,11 +625,10 @@ export async function startAiIsaAutomation(
       supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
-        campaign_id: campaignId ?? null,
-        action: "automation_started",
+        activity_type: "automation_started",
         channel,
-        actor_user_id: ctx.userId,
-        notes: notes ?? null,
+        summary: notes ?? null,
+        outcome: { actor_user_id: ctx.userId, campaign_id: campaignId ?? null },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -685,9 +693,9 @@ export async function pauseAiIsaAutomation(
       supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
-        action: "automation_paused",
-        actor_user_id: ctx.userId,
-        notes: reason,
+        activity_type: "automation_paused",
+        summary: reason,
+        outcome: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -760,9 +768,9 @@ export async function resumeAiIsaAutomation(
       supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
-        action: "automation_resumed",
-        actor_user_id: ctx.userId,
-        notes: notes ?? null,
+        activity_type: "automation_resumed",
+        summary: notes ?? null,
+        outcome: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
       }),
     ])
@@ -823,12 +831,19 @@ export async function handoffToHumanAgent(
         .from("agent_handoffs")
         .insert({
           brokerage_id: ctx.brokerageId,
-          lead_id: leadId,
-          contact_id: contactId ?? null,
-          from_agent_id: ctx.userId,
-          assigned_agent_id: assignedAgentId ?? null,
+          // Live schema uses entity_type/entity_id discriminator instead of
+          // lead_id+contact_id columns. ISA handoffs always originate from
+          // a lead; if the lead has already converted, contactId is carried
+          // through in context_package for the receiving human agent.
+          entity_type: "lead",
+          entity_id: leadId,
+          // CHECK enum: isa_agent | tc_agent | coaching_agent | content_agent | router | human
+          from_agent_type: "isa_agent",
+          to_agent_type: "human",
+          human_agent_id: assignedAgentId ?? null,
           handoff_reason: handoffReason.trim(),
           handoff_status: "pending",
+          context_package: { from_user_id: ctx.userId, contact_id: contactId ?? null },
           created_at: new Date().toISOString(),
         })
         .select("id")
@@ -935,15 +950,18 @@ export async function recordAiIsaOutcome(
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
 
-    // Insert activity
+    // Insert activity. appointment_date and actor_user_id live in `outcome`
+    // jsonb (no dedicated columns in the live schema).
     await supabase.from("ai_isa_activities").insert({
       brokerage_id: ctx.brokerageId,
       lead_id: leadId,
-      action: "outcome_recorded",
-      actor_user_id: ctx.userId,
-      notes: notes ?? null,
-      outcome,
-      appointment_date: appointmentDate ?? null,
+      activity_type: "outcome_recorded",
+      summary: notes ?? null,
+      outcome: {
+        result: outcome,
+        actor_user_id: ctx.userId,
+        appointment_date: appointmentDate ?? null,
+      },
       created_at: now,
     })
 
@@ -1093,14 +1111,29 @@ export async function routeHistoryToCanonicalEntity(
     // Hard stop detection (TCPA keywords)
     const HARD_STOP = /^\s*(stop|cancel|end|quit|unsubscribe|remove me|opt out|optout)\s*$/i
     if (HARD_STOP.test(inboundText.trim())) {
-      // Suppress the channel
+      // Suppress the channel. Live schema is contact-keyed
+      // (no entity_type/entity_id columns). For lead-stage suppressions
+      // we resolve to the converted contact if one exists; otherwise we
+      // leave contact_id null and rely on leads.stop_ai_outreach (set
+      // below) to enforce suppression upstream.
+      let suppressContactId: string | null = null
+      if (entityType === "contact") {
+        suppressContactId = entityId
+      } else {
+        const { data: convertedContact } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("source_lead_id", entityId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .maybeSingle()
+        suppressContactId = convertedContact?.id ?? null
+      }
       await supabase.from("contact_suppression_list").insert({
         brokerage_id: ctx.brokerageId,
-        entity_type: entityType,
-        entity_id: entityId,
+        contact_id: suppressContactId,
         channel,
-        reason: "tcpa_opt_out",
-        raw_message: inboundText.slice(0, 200),
+        suppression_reason: "tcpa_opt_out",
+        source: inboundText.slice(0, 200),
         created_at: now,
       })
 

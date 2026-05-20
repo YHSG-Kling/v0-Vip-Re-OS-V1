@@ -378,18 +378,28 @@ export class GHLIntegration {
 
       const result = await response.json()
 
-      // Log the communication with compliance metadata
+      // Log the communication with compliance metadata.
+      // Live schema columns: brokerage_id, agent_id, user_id, contact_id,
+      // lead_id, communication_type, lead_temperature, was_approved_content,
+      // channel, subject, body_snippet, compliance_passed, sent_at, created_at.
+      // brokerage_id is required for tenant isolation — resolve from the contact.
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", data.contactId)
+        .maybeSingle()
       await supabase.from("communication_audit_log").insert({
+        brokerage_id: contactRow?.brokerage_id ?? null,
         user_id: data.complianceMetadata.userId,
         agent_id: data.complianceMetadata.agentId,
         contact_id: data.contactId,
         communication_type: "email",
-        content_id: data.complianceMetadata.contentId,
         was_approved_content: !!data.complianceMetadata.approvalId,
-        content_snapshot: data.body,
-        compliance_check_passed: true,
-        sent_via: "ghl",
-        ghl_message_id: result.messageId,
+        channel: "email",
+        subject: data.subject,
+        body_snippet: data.body?.slice(0, 500) ?? null,
+        compliance_passed: true,
+        sent_at: new Date().toISOString(),
       })
 
       return { success: true, messageId: result.messageId }
