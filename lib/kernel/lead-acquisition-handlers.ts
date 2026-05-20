@@ -77,7 +77,7 @@ export async function handleLeadCaptured(params: {
     status: 'pending',
     enrichment_type: 'skip_trace',
     trigger_type: 'lead_captured',
-    created_at: new Date().toISOString(),
+    queued_at: new Date().toISOString(),
   })
 
   const targetAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
