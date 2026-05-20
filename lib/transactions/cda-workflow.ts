@@ -31,6 +31,7 @@ export async function generateCDAPreview(params: {
     .insert({
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
+      agent_id: params.agentId,
       status: "pending",
       gross_commission: commissionResult.gross_commission,
       agent_net: commissionResult.net_to_agent,

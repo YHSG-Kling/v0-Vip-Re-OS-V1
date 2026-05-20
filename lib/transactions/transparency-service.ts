@@ -17,6 +17,7 @@ export class TransparencyService {
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
       update_type: params.eventType,
+      title: params.eventType.replace(/_/g, " "),
       message,
       metadata: params.metadata,
       created_at: new Date().toISOString()

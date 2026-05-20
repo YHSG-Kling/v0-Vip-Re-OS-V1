@@ -141,9 +141,7 @@ export function ClientDocumentsWidget({ contactId, compact = false }: ClientDocu
         contact_id: contactId,
         document_name: selectedFile.name,
         document_type: "client_upload",
-        file_url: publicUrl,
-        signature_status: "not_required",
-        uploaded_by: "client",
+        document_url: publicUrl,
       })
 
       if (insertError) throw insertError

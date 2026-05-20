@@ -162,7 +162,7 @@ export async function createTransactionFromOffer(params: {
 Earnest money due: ${params.contractTerms.earnestMoneyDue || 'TBD'}
 Inspection deadline: ${params.contractTerms.inspectionDeadline || 'TBD'}
 Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
-    is_client_visible: true,
+    is_visible_to_client: true,
     created_at: new Date().toISOString()
   })
 

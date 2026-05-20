@@ -418,18 +418,18 @@ export async function trackHashtagUsage(data: { agentId: string; hashtag: string
     .maybeSingle()
 
   if (existing) {
-    // Update existing
-    const newUsageCount = (existing.usage_count || 0) + 1
-    const newAvgEngagement =
-      ((existing.avg_engagement || 0) * (existing.usage_count || 0) + data.engagement) / newUsageCount
-    const newAvgReach = ((existing.avg_reach || 0) * (existing.usage_count || 0) + data.reach) / newUsageCount
+    // Update existing — engagement/reach hold running averages over posts_count.
+    const newPostsCount = (existing.posts_count || 0) + 1
+    const newEngagement =
+      ((existing.engagement || 0) * (existing.posts_count || 0) + data.engagement) / newPostsCount
+    const newReach = ((existing.reach || 0) * (existing.posts_count || 0) + data.reach) / newPostsCount
 
     const { error } = await supabase
       .from("hashtag_performance")
       .update({
-        usage_count: newUsageCount,
-        avg_engagement: newAvgEngagement,
-        avg_reach: newAvgReach,
+        posts_count: newPostsCount,
+        engagement: newEngagement,
+        reach: newReach,
         last_used_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
@@ -440,9 +440,10 @@ export async function trackHashtagUsage(data: { agentId: string; hashtag: string
     const { error } = await supabase.from("hashtag_performance").insert({
       agent_id: data.agentId,
       hashtag: data.hashtag,
-      usage_count: 1,
-      avg_engagement: data.engagement,
-      avg_reach: data.reach,
+      platform: "all",
+      posts_count: 1,
+      engagement: data.engagement,
+      reach: data.reach,
     })
 
     if (error) throw error
