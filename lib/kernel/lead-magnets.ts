@@ -438,21 +438,8 @@ export async function captureFormSubmission(
     return { success: false, error: subError?.message ?? "Failed to record submission" }
   }
 
-  // Increment submission count on form
-  await supabase.rpc("increment_submission_count" as any, { form_id: input.formId }).maybeSingle()
-  // Fallback: direct update if RPC not available
-  const { data: currentForm } = await supabase
-    .from("lead_capture_forms")
-    .select("submission_count")
-    .eq("id", input.formId)
-    .maybeSingle()
-
-  if (currentForm) {
-    await supabase
-      .from("lead_capture_forms")
-      .update({ submission_count: (currentForm.submission_count ?? 0) + 1 })
-      .eq("id", input.formId)
-  }
+  // Increment submission count on form (atomic — avoids read-modify-write races)
+  await supabase.rpc("increment_form_submission_count", { form_id_input: input.formId })
 
   // If it was a home valuation, create a valuation_request record
   if (data.property_address && contactId) {

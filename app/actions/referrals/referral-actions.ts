@@ -109,11 +109,16 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
   const { error: updateError } = await db.rpc("increment_referral_received", {
     p_partner_id: params.partnerId,
   })
-  // Non-fatal if RPC not yet deployed — fall back to manual update
+  // Non-fatal if RPC errors — fall back to a read-then-increment update
   if (updateError) {
+    const { data: partner } = await db
+      .from("referral_partners")
+      .select("total_referrals_received")
+      .eq("id", params.partnerId)
+      .maybeSingle()
     await db
       .from("referral_partners")
-      .update({ total_referrals_received: db.rpc("coalesce_increment", {}) })
+      .update({ total_referrals_received: (partner?.total_referrals_received ?? 0) + 1 })
       .eq("id", params.partnerId)
   }
 

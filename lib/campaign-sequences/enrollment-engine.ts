@@ -116,7 +116,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
 
   // Update total enrollments count on sequence (fire-and-forget)
   supabase
-    .rpc("increment_sequence_enrollments", { sequence_id: params.sequenceId })
+    .rpc("increment_sequence_enrollments", { seq_id: params.sequenceId })
 
   // Emit ISA_QUALIFICATION_STARTED kernel event (non-blocking)
   await processKernelEvent({

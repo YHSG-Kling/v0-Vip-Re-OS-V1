@@ -137,7 +137,7 @@ async function enrollMatchingSequences(
       }).then(() => null, () => null)
 
       // Bump the sequence's enrollments_total counter (best-effort).
-      await supabase.rpc("increment_sequence_enrollments", { p_sequence_id: seq.id })
+      await supabase.rpc("increment_sequence_enrollments", { seq_id: seq.id })
         .then(() => null, () => null)
     }
   }
