@@ -15,10 +15,11 @@ async function queueContactEnrichment(contactId: string, metadata: Record<string
     const supabase = createServiceClient()
     await supabase.from('lead_enrichment_queue').insert({
       contact_id: contactId,
-      source: metadata.source ?? 'ghl_sync',
-      metadata: JSON.stringify(metadata),
+      trigger_type: metadata.source ?? 'ghl_sync',
+      enrichment_type: 'skip_trace',
+      enrichment_results: metadata,
       status: 'pending',
-      created_at: new Date().toISOString(),
+      queued_at: new Date().toISOString(),
     })
   } catch (err) {
     console.error('[GHL] Failed to queue enrichment:', err)

@@ -744,7 +744,7 @@ export async function createManualTransaction(
         purchase_price:   input.purchasePrice ?? null,
         contact_id:       input.contactId     ?? null,
         close_date:       input.closeDate     ?? null,
-        deal_name:        input.dealName      ?? null,
+        deal_name:        input.dealName?.trim() || input.propertyAddress.trim(),
         commission_percentage: input.commissionPct ?? null,
         status:           "active",
         stage:            "UNDER_CONTRACT",
@@ -1171,7 +1171,7 @@ export async function closeTransactionCommand(params: {
       } catch {}
       await supabase
         .from("listings")
-        .update({ status: "closed", updated_at: nowIso })
+        .update({ status: "sold", updated_at: nowIso })
         .eq("id", txBefore.listing_id)
         .then(() => null, () => null)
     }
@@ -1269,18 +1269,19 @@ export async function closeTransactionCommand(params: {
       }
     } catch {}
 
-    // Schedule review request 5 days post-close (J8.1)
+    // Schedule review request post-close (J8.1). review_requests is contact-keyed
+    // (no transaction_id/send_after columns); link via the deal's contact.
     try {
-      const sendAfter = new Date()
-      sendAfter.setDate(sendAfter.getDate() + 5)
-      await supabase.from("review_requests").insert({
-        brokerage_id:   params.brokerageId,
-        agent_user_id:  params.agentId,
-        transaction_id: params.transactionId,
-        status:         "scheduled",
-        send_after:     sendAfter.toISOString(),
-        created_at:     nowIso,
-      }).then(() => null, () => null)
+      const reviewContactId = txBefore?.buyer_contact_id ?? txBefore?.contact_id ?? null
+      if (reviewContactId) {
+        await supabase.from("review_requests").insert({
+          brokerage_id: params.brokerageId,
+          agent_id:     params.agentId,
+          contact_id:   reviewContactId,
+          status:       "scheduled",
+          created_at:   nowIso,
+        }).then(() => null, () => null)
+      }
     } catch {
       // Non-critical — close success is not dependent on review scheduling
     }

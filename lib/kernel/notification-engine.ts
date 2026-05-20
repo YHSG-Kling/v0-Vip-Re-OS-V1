@@ -124,30 +124,31 @@ async function resolveRecipients(params: {
   ) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("assigned_agent_id")
+      .select("agent_id")
       .eq("id", params.entityId)
       .single()
 
-    if (contact?.assigned_agent_id) {
+    if (contact?.agent_id) {
       recipients.push({
-        user_id: contact.assigned_agent_id,
+        user_id: contact.agent_id,
         role: "agent",
       })
     }
   }
 
-  // TC assigned to transaction.
+  // Owning agent of the transaction (there is no separate assigned_tc_id column;
+  // the responsible party is transactions.agent_id).
   if (params.entityType === "transaction") {
     const { data: transaction } = await supabase
       .from("transactions")
-      .select("assigned_tc_id")
+      .select("agent_id")
       .eq("id", params.entityId)
       .single()
 
-    if (transaction?.assigned_tc_id) {
+    if (transaction?.agent_id) {
       recipients.push({
-        user_id: transaction.assigned_tc_id,
-        role: "TC",
+        user_id: transaction.agent_id,
+        role: "agent",
       })
     }
   }
@@ -157,24 +158,13 @@ async function resolveRecipients(params: {
   if (params.entityType === "listing_stage_machine") {
     const { data: listing } = await supabase
       .from("listings")
-      .select("assigned_agent_id, assigned_tc_id, brokerage_id")
+      .select("agent_id, brokerage_id")
       .eq("id", params.entityId)
       .single()
 
     // Agent always receives listing sub-event notifications
-    if (listing?.assigned_agent_id) {
-      recipients.push({ user_id: listing.assigned_agent_id, role: "agent" })
-    }
-
-    // TC routing — required for repair events and admin submission
-    const tcEvents: KernelEvent[] = [
-      KernelEvent.LISTING_REPAIR_REQUIRED,
-      KernelEvent.LISTING_REPAIR_COMPLETED,
-      KernelEvent.LISTING_REPAIR_FAILED,
-      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
-    ]
-    if (listing?.assigned_tc_id && tcEvents.includes(params.event)) {
-      recipients.push({ user_id: listing.assigned_tc_id, role: "TC" })
+    if (listing?.agent_id) {
+      recipients.push({ user_id: listing.agent_id, role: "agent" })
     }
 
     // Seller channel — only if brokerage policy allows it
