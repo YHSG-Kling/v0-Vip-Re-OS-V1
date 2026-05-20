@@ -38,9 +38,9 @@ export async function addMarketSource(params: {
       market_area: params.marketArea,
       city: params.city || null,
       state: params.state || null,
-      zip_code: params.zipCode || null,
+      zip_codes: params.zipCode ? [params.zipCode] : [],
       is_active: true,
-      source_type: "manual",
+      source_type: "manual_import",
     })
     .select("id")
     .single()

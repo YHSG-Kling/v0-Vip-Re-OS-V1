@@ -135,10 +135,10 @@ Output ONLY valid JSON with this exact structure:
 
     await supabase.from("property_search_log").insert({
       contact_id: data.contactId,
-      natural_query: data.naturalLanguageQuery,
+      query_text: data.naturalLanguageQuery,
       extracted_filters: filters,
-      results_count: searchResult.properties?.length || 0,
-      intent: filters.intent || "browsing",
+      result_count: searchResult.properties?.length || 0,
+      metadata: { intent: filters.intent || "browsing" },
     })
 
     return {

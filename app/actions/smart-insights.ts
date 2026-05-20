@@ -39,7 +39,7 @@ export async function generateSmartInsights(
 
   // Check if insights already exist and are not expired
   const { data: existing } = await supabase
-    .from("property_smart_insights")
+    .from("contact_property_insights")
     .select("*")
     .eq("property_id", propertyId)
     .eq("contact_id", contactId)
@@ -67,7 +67,7 @@ export async function generateSmartInsights(
 
   // Store in database
   const { data, error } = await supabase
-    .from("property_smart_insights")
+    .from("contact_property_insights")
     .upsert(
       {
         property_id: propertyId,
@@ -467,7 +467,7 @@ export async function getSmartInsights(propertyId: string, contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("property_smart_insights")
+    .from("contact_property_insights")
     .select("*")
     .eq("property_id", propertyId)
     .eq("contact_id", contactId)

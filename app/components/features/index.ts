@@ -7,8 +7,6 @@ export * from './content-generation'
 
 // Dashboard
 export * from './dashboard/agent'
-export * from './dashboard/coordinator'
-export * from './dashboard/brokerage'
 export * from './dashboard/lender'
 export * from './dashboard/cards'
 

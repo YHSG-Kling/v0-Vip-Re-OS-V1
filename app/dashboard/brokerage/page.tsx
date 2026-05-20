@@ -22,7 +22,7 @@ import {
   ArrowRight,
   BarChart3,
 } from "lucide-react"
-import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
