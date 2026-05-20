@@ -63,6 +63,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
           { id: 'workflow-builder', label: 'Workflow Builder', href: '/dashboard/campaigns/workflows' },
+          { id: 'workflow-reports', label: 'Workflow Reports', href: '/dashboard/campaigns/workflow-reports' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
@@ -380,6 +381,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
+      { id: 'lead-lineage', label: 'Lead Lineage', href: '/dashboard/admin/lead-lineage', icon: 'GitBranch' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
@@ -405,6 +407,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'education', label: 'Education Library', href: '/dashboard/education', icon: 'GraduationCap' },
       { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
+      { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
       { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
