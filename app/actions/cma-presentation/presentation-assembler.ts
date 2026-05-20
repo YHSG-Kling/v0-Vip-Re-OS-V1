@@ -101,10 +101,10 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
 
     // Emit presentation created event — Agent task (correct location, no changes) — type: seller.presentation.created, seller.decision.ready
     await supabase.from("activities").insert({
-      type: "seller.presentation.created",
+      activity_type: "seller.presentation.created",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      user_id: input.agentId,
+      agent_user_id: input.agentId,
       metadata: {
         presentation_id: presentationId,
         has_cma: hasCMA,
@@ -137,10 +137,10 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
     // Emit decision readiness signal if all artifacts complete
     if (readyForDecision) {
       await supabase.from("activities").insert({
-        type: "seller.decision.ready",
+        activity_type: "seller.decision.ready",
         listing_id: input.listingId,
         contact_id: input.contactId,
-        user_id: input.agentId,
+        agent_user_id: input.agentId,
         metadata: {
           presentation_id: presentationId,
           video_project_id: videoProjectId,
@@ -323,10 +323,10 @@ async function generatePresentationVideo(params: {
     if (videoResult.success && videoResult.projectId) {
       // Emit video generation event — Agent task (correct location, no changes) — type: seller.presentation.video_generated
       await supabase.from("activities").insert({
-        type: "seller.presentation.video_generated",
+        activity_type: "seller.presentation.video_generated",
         listing_id: params.listingId,
         contact_id: params.contactId,
-        user_id: params.agentId,
+        agent_user_id: params.agentId,
         metadata: {
           video_project_id: videoResult.projectId,
           video_status: videoResult.status

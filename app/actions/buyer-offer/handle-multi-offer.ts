@@ -221,8 +221,8 @@ export async function emitMultiOfferEvent(
       entity_type: "contact",
       entity_id: contactId,
       activity_type: "multi_offer_signal",
-      event_type: `buyer.offer.${eventType}`,
-      event_metadata: {
+      metadata: {
+        event_type: `buyer.offer.${eventType}`,
         ...metadata,
         timestamp: new Date().toISOString()
       }

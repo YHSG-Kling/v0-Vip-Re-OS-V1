@@ -114,10 +114,10 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     // Emit start event
     await supabase.from("activities").insert({
-      type: "seller.net_sheet.started",
+      activity_type: "seller.net_sheet.started",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      user_id: input.agentId,
+      agent_user_id: input.agentId,
       metadata: {
         sale_price: input.salePrice,
         alternate_price: input.alternatePrice
@@ -149,10 +149,10 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     // Emit completion event
     await supabase.from("activities").insert({
-      type: "seller.net_sheet.completed",
+      activity_type: "seller.net_sheet.completed",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      user_id: input.agentId,
+      agent_user_id: input.agentId,
       metadata: {
         net_sheet_id: netSheetId,
         scenario_count: scenarios.length,

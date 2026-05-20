@@ -36,10 +36,10 @@ export async function emitOfferLifecycleEvent(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.offer.lifecycle",
+      activity_type: "buyer.offer.lifecycle",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         offer_id: offerId,
         listing_id: listingId,
@@ -258,10 +258,10 @@ export async function emitOfferTerminalEvent(params: {
 
   // Agent task (correct location, no changes) — type: buyer.offer.terminal
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.offer.terminal",
+    activity_type: "buyer.offer.terminal",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       offer_id: offerId,
       listing_id: listingId,

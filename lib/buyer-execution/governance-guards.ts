@@ -204,10 +204,10 @@ export async function emitGovernanceBlockEvent(params: {
     : 'buyer.action.blocked.lifecycle_gate'
 
   const { error } = await supabase.from('activities').insert({
-    type: eventType,
+    activity_type: eventType,
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action_attempted: action,
       blocker_type: blockResult.blockerType,
@@ -243,10 +243,10 @@ export async function emitEligibilityCheckEvent(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from('activities').insert({
-    type: 'buyer.lifecycle.eligibility_checked',
+    activity_type: 'buyer.lifecycle.eligibility_checked',
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action: action,
       allowed: checkResult.allowed,

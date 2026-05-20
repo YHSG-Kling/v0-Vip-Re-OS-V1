@@ -59,7 +59,7 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
     .from("activities")
     .insert({
       activity_type: "maintenance.access",
-      user_id: user.id,
+      agent_user_id: user.id,
       metadata: {
         endpoint: "maintenance",
         timestamp: new Date().toISOString(),

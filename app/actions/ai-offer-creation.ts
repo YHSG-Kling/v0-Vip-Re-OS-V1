@@ -627,7 +627,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     // Notify listing agent
     await supabase.from("activities").insert({
-      user_id: listing.agent_id,
+      agent_user_id: listing.agent_id,
       activity_type: "offer_received",
       entity_type: "offer",
       entity_id: offer.id,

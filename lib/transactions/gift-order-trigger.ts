@@ -70,9 +70,9 @@ export async function checkAndTriggerGiftOrder(params: {
     title: 'Order Closing Gift',
     description: 'Financing conditional approval received. Order and coordinate closing gift for client.',
     priority: 'medium',
-    assigned_to: params.userId, // TC who completed milestone
-    due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
-    status: 'pending'
+    scheduled_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
+    status: 'pending',
+    metadata: { assigned_to: params.userId }, // TC who completed milestone
   })
 
   // Log lifecycle event via kernel

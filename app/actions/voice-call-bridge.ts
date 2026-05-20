@@ -108,7 +108,7 @@ export async function initiateWhisperBridge(params: {
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
     await supabase.from("activities").insert({
-      user_id: agentUserId,
+      agent_user_id: agentUserId,
       activity_type: "whisper_bridge_initiated",
       entity_type: "contact",
       entity_id: contactId,

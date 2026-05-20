@@ -85,7 +85,7 @@ export async function emitCompliancePassed(params: {
     entity_type: "offer",
     entity_id: offerId,
     activity_type: "buyer.offer.compliance.passed",
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       scan_results: scanResults,
       external_approval_id: externalApprovalId,

@@ -181,7 +181,7 @@ export async function dismissCoachingCard(
     entity_type:   "listing",
     entity_id:     listingId,
     brokerage_id:  callerRow.brokerage_id,
-    user_id:       user.id,  // session-derived, not caller-supplied
+    agent_user_id: user.id,  // session-derived, not caller-supplied
     activity_type: "coaching.dismissed",
     status:        "completed",
     metadata:      { source: "seller_coaching_card" },
