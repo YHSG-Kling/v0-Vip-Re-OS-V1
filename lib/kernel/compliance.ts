@@ -71,14 +71,15 @@ function calculatePronounRatio(content: string): number {
 // ─── RESTRICTED CONTACT STATES ────────────────────────────────────────────────
 // States where non-ISA actors are blocked from outbound messaging.
 
+// Stored lower-case only; callers MUST normalize contact.status with
+// .toLowerCase() before checking. A previous version listed mixed-case
+// variants but exact-case Set.has() still failed open for any casing not
+// explicitly enumerated (e.g. title-case "Representation" from a UI picker),
+// silently allowing outreach to a represented contact — a compliance breach.
 const RESTRICTED_STATES = new Set([
-  "REPRESENTATION",
-  "ACTIVE_TRANSACTION",
-  // Also handle lower-case variants stored in contacts.status
   "representation",
   "active_transaction",
   "under_contract",
-  "UNDER_CONTRACT",
 ])
 
 // ─── MAIN EXPORT ─────────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   // ═══��══════════════════════════════════���═══════════════════════════════════
 
   if (contact) {
-    const contactStatus: string = contact.status ?? ""
+    const contactStatus: string = (contact.status ?? "").toLowerCase()
 
     if (RESTRICTED_STATES.has(contactStatus)) {
       if (actorContext.role === "isa") {

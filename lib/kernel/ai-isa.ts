@@ -1206,14 +1206,17 @@ export async function resolveLeadChannel(
       return { success: true, data: { channel: "phone", phoneNumber: lead.phone, email: lead.email, blocked: false, blockReason: null } }
     }
 
-    // Fall back to email
+    // Fall back to email (no consent required for email outreach)
     if (lead.email) {
       return { success: true, data: { channel: "email", phoneNumber: lead.phone ?? null, email: lead.email, blocked: false, blockReason: null } }
     }
 
-    // Phone without TCPA consent — use SMS only
-    if (lead.phone) {
-      return { success: true, data: { channel: "sms", phoneNumber: lead.phone, email: null, blocked: false, blockReason: null } }
+    // Phone present but NO TCPA consent and no email: SMS is NOT an allowed
+    // fallback. TCPA covers texts as well as calls, so SMS to an unconsented
+    // number is a violation. (A consented phone already returned "phone"
+    // above, so this branch is always the unconsented case.) Block instead.
+    if (lead.phone && !lead.tcpa_consent) {
+      return { success: true, data: { channel: null, phoneNumber: null, email: null, blocked: true, blockReason: "Phone present but no TCPA consent; SMS/phone gated" } }
     }
 
     return { success: true, data: { channel: null, phoneNumber: null, email: null, blocked: true, blockReason: "No contact channel available" } }
