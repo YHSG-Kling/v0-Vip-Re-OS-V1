@@ -188,7 +188,7 @@ BEGIN
 
   -- 6. compliance_flags: compliance-monitoring cron shape (real cols, no dead keys)
   INSERT INTO public.compliance_flags (brokerage_id, contact_id, content_type, violation_type, flagged_content, severity, status, detected_at)
-  VALUES (v_brok, v_contact, 'sms', 'm064_smoke', 'm064 smoke', 'high', 'open', NOW());
+  VALUES (v_brok, v_contact, 'sms', 'm064_smoke', 'm064 smoke', 'high', 'flagged', NOW());
   RAISE NOTICE 'compliance_flags shape: PASS';
 
   -- 7. contact_suppression_list: contact_id FK now → contacts(id) (m063), suppression_reason col

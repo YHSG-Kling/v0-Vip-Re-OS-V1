@@ -107,7 +107,7 @@ export async function GET(request: NextRequest) {
         violation_type: "cold_lead_channel_violation",
         flagged_content: `Cold lead contacted via ${comm.communication_type} instead of email or print mail (audit_log_id=${comm.id})`,
         severity: "critical",
-        status: "open",
+        status: "flagged",
         detected_at: new Date().toISOString(),
       }))
 
@@ -134,7 +134,7 @@ export async function GET(request: NextRequest) {
         violation_type: "unapproved_content_violation",
         flagged_content: `Content sent without compliance approval (audit_log_id=${comm.id})`,
         severity: "high",
-        status: "open",
+        status: "flagged",
         detected_at: new Date().toISOString(),
       }))
 
