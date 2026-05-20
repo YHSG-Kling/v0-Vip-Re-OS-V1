@@ -439,7 +439,7 @@ export default async function PortalHomePage({
             </div>
             {/* Live event stream — every translated kernel event for this
                  contact. Surfaces on every persona's portal automatically. */}
-            <PortalLiveFeed contactId={contactId} limit={10} compact />
+            <PortalLiveFeed contactId={contactId} limit={10} compact hideWhenEmpty />
 
             {activeTransaction && milestones.length > 0 && (
               <div className="border-t pt-3">

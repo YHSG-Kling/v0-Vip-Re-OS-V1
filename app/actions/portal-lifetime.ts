@@ -41,8 +41,8 @@ async function requireContactAccess(contactId: string): Promise<
   }
 
   const { data: callerRow } = await svc
-    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
   }
 
@@ -247,12 +247,11 @@ export async function getReferralHistory(contactId: string) {
     .from("referrals")
     .select(`
       id,
-      referred_name,
-      referred_contact,
-      relationship,
-      referral_status,
-      created_at,
-      referred_contacts:referred_contact_id(id, first_name, last_name, buyer_stage)
+      referred_name:referral_name,
+      referred_contact:source_contact_name,
+      referral_status:status,
+      notes,
+      created_at
     `)
     .eq("referred_by", contactId)
     .eq("brokerage_id", access.brokerageId)
@@ -284,8 +283,8 @@ export async function getTransactionHistory(contactId: string) {
         id,
         milestone_name,
         status,
-        completed_date,
-        due_date
+        completed_at,
+        target_date
       )
     `)
     .eq("contact_id", contactId)
