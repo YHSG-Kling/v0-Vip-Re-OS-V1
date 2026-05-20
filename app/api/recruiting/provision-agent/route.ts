@@ -137,28 +137,28 @@ export async function POST(req: Request) {
             agent_id: agentId,
             brokerage_id: recruit.brokerage_id,
             split_percent: 70,
-            split_percentage: 70,
             structure_type: "split",
             is_active: true,
             created_at: new Date().toISOString(),
           },
           { onConflict: "agent_id" }
         ).then(() => {}, () => {})
-      }
 
-      // Onboarding state
-      await service.from("agent_onboarding").upsert(
-        {
-          user_id: resolvedUserId,
-          brokerage_id: recruit.brokerage_id,
-          status: "pending",
-          completion_percentage: 0,
-          current_day: 1,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      ).then(() => {}, () => {})
+        // Onboarding state — agent_onboarding is keyed on agent_id (NOT NULL).
+        await service.from("agent_onboarding").upsert(
+          {
+            agent_id: agentId,
+            user_id: resolvedUserId,
+            brokerage_id: recruit.brokerage_id,
+            status: "in_progress",
+            completion_percentage: 0,
+            current_day: 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "agent_id" }
+        ).then(() => {}, () => {})
+      }
     }
 
     // Mark recruit as provisioned
