@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
     errors.push(`Earnings rollup failed: ${err.message}`)
     void supabase
       .from("automation_errors")
-      .insert({ cron_job: "earnings-rollup", error_message: err.message, occurred_at: ranAt })
+      .insert({ workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

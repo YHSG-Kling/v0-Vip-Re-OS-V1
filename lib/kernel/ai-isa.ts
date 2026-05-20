@@ -87,12 +87,12 @@ export interface AiIsaWorkspaceData {
 
 export interface AiIsaCampaignRow {
   id: string
-  campaign_name: string
+  name: string
   campaign_type: string
   status: string
-  leads_count: number
-  calls_made: number
-  appointments_booked: number
+  leads_targeted: number
+  touches_sent: number
+  conversions: number
   created_at: string
 }
 
@@ -288,7 +288,7 @@ export async function loadAiIsaWorkspace(
     const [campaignsRes, queueRes, callsRes, handoffsRes] = await Promise.all([
       supabase
         .from("ai_isa_campaigns")
-        .select("id, campaign_name, campaign_type, status, leads_count, calls_made, appointments_booked, created_at")
+        .select("id, name, campaign_type, status, leads_targeted, touches_sent, conversions, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .order("created_at", { ascending: false })
         .limit(20),

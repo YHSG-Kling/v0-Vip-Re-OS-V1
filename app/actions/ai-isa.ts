@@ -442,21 +442,20 @@ export async function getEngagementFeed(params: {
       campaign_id,
       channel,
       event_type,
-      heygen_video_id,
-      lob_letter_id,
-      created_at,
+      metadata,
+      created_at:event_at,
       contacts (first_name, last_name),
       ai_isa_campaigns (name)
     `)
     .eq("brokerage_id", auth.brokerageId)
-    .order("created_at", { ascending: false })
+    .order("event_at", { ascending: false })
     .limit(params.limit ?? 100)
 
   if (params.campaignId) query = query.eq("campaign_id", params.campaignId)
   if (params.channel)    query = query.eq("channel", params.channel)
   if (params.eventType)  query = query.eq("event_type", params.eventType)
-  if (params.dateFrom)   query = query.gte("created_at", params.dateFrom)
-  if (params.dateTo)     query = query.lte("created_at", params.dateTo)
+  if (params.dateFrom)   query = query.gte("event_at", params.dateFrom)
+  if (params.dateTo)     query = query.lte("event_at", params.dateTo)
 
   const { data, error } = await query
   if (error) return { success: false, items: [], error: error.message }
@@ -470,8 +469,8 @@ export async function getEngagementFeed(params: {
     campaign_name:       row.ai_isa_campaigns?.name ?? null,
     channel:             row.channel,
     event_type:          row.event_type,
-    heygen_video_id:     row.heygen_video_id ?? null,
-    lob_letter_id:       row.lob_letter_id ?? null,
+    heygen_video_id:     row.metadata?.heygen_video_id ?? null,
+    lob_letter_id:       row.metadata?.lob_letter_id ?? null,
     created_at:          row.created_at,
   }))
 
@@ -521,19 +520,19 @@ export async function getQualificationOutcomes(_brokerageId?: string): Promise<{
     .select(`
       id,
       contact_id,
-      score,
+      qualification_score,
       qualification_result,
       qualification_signals,
       assigned_to_agent_id,
       assigned_at,
       notes,
-      created_at,
+      qualified_at,
       contacts (first_name, last_name),
       assigned_agent:users!assigned_to_agent_id (first_name, last_name)
     `)
     .eq("brokerage_id", auth.brokerageId)
-    .gte("created_at", thirtyDaysAgo)
-    .order("created_at", { ascending: false })
+    .gte("qualified_at", thirtyDaysAgo)
+    .order("qualified_at", { ascending: false })
 
   if (error) return { ...empty, error: error.message }
 
@@ -543,7 +542,7 @@ export async function getQualificationOutcomes(_brokerageId?: string): Promise<{
     contact_id:            r.contact_id,
     contact_first_name:    r.contacts?.first_name ?? null,
     contact_last_name:     r.contacts?.last_name ?? null,
-    score:                 r.score ?? null,
+    score:                 r.qualification_score ?? null,
     qualification_result:  r.qualification_result,
     qualification_signals: Array.isArray(r.qualification_signals) ? r.qualification_signals : [],
     assigned_agent_name:   r.assigned_agent
@@ -551,7 +550,7 @@ export async function getQualificationOutcomes(_brokerageId?: string): Promise<{
       : null,
     assigned_at:           r.assigned_at ?? null,
     notes:                 r.notes ?? null,
-    created_at:            r.created_at,
+    created_at:            r.qualified_at,
   }))
 
   const stats: QualificationStats = {
@@ -606,13 +605,13 @@ export async function getGhostRecoveryQueue(_brokerageId?: string): Promise<{
       campaign_id,
       channel,
       event_type,
-      created_at,
+      created_at:event_at,
       contacts (first_name, last_name),
       ai_isa_campaigns (name)
     `)
     .eq("brokerage_id", auth.brokerageId)
-    .lte("created_at", cutoff24h)
-    .order("created_at", { ascending: false })
+    .lte("event_at", cutoff24h)
+    .order("event_at", { ascending: false })
 
   if (error) return { success: false, ghosts: [], error: error.message }
 
@@ -723,7 +722,7 @@ export async function triggerGhostRecovery(params: {
     campaign_id:  params.campaignId,
     channel:      "email",
     event_type:   "sent",
-    created_at:   new Date().toISOString(),
+    event_at:     new Date().toISOString(),
   })
 
   return { success: true }
@@ -755,7 +754,7 @@ export async function skipGhostContact(params: {
     campaign_id:  params.campaignId,
     channel:      "email",
     event_type:   "unsubscribed",
-    created_at:   new Date().toISOString(),
+    event_at:     new Date().toISOString(),
   })
   if (error) return { success: false, error: error.message }
   return { success: true }
@@ -825,7 +824,7 @@ export async function retryGhostContact(params: {
     contact_id: params.contactId,
     channel: params.channel,
     event_type: "sent",
-    created_at: new Date().toISOString(),
+    event_at: new Date().toISOString(),
   })
 
   return { success: true }
@@ -855,7 +854,7 @@ export async function suppressGhostContact(params: {
     contact_id: params.contactId,
     channel: "system",
     event_type: "suppressed",
-    created_at: new Date().toISOString(),
+    event_at: new Date().toISOString(),
   })
   if (error) return { success: false, error: error.message }
   return { success: true }

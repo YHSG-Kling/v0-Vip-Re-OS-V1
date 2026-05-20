@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
     errors.push(`Engagement scores cron failed: ${err.message}`)
     void supabase
       .from("automation_errors")
-      .insert({ cron_job: "engagement-scores", error_message: err.message, occurred_at: ranAt })
+      .insert({ workflow_name: "engagement-scores", error_message: err.message, severity: "error", created_at: ranAt })
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 
