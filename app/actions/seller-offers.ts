@@ -172,7 +172,8 @@ export async function acceptOffer(params: {
   // Clear winning flag on all other offers for this listing
   await supabase
     .from("offers")
-    .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+    // Live column is is_winning_offer; the older winning_offer alias was never deployed.
+    .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)

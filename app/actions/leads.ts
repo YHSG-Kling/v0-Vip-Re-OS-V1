@@ -443,7 +443,8 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       brokerage_id: brokerageId,
       entity_type: "lead",
       entity_id: leadId,
-      from_agent_type: "ai_isa",
+      // CHECK enum: isa_agent | tc_agent | coaching_agent | content_agent | router | human
+      from_agent_type: "isa_agent",
       to_agent_type: "human",
       human_agent_id: resolvedAgentId,
       handoff_reason: "manual_handoff",

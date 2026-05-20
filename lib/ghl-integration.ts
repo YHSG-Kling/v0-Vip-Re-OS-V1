@@ -257,62 +257,22 @@ export class GHLIntegration {
    * Webhook handler for incoming GHL messages
    */
   async handleIncomingMessage(webhookData: any): Promise<{ success: boolean; error?: string }> {
-    try {
-      const supabase = createServiceClient()
-
-      // Find contact by GHL ID
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("ghl_contact_id", webhookData.contactId)
-        .single()
-
-      if (!contact) {
-        return { success: false, error: "Contact not found" }
-      }
-
-      // Find or create chat session
-      let sessionId: string
-
-      const { data: existingSession } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("contact_id", contact.id)
-        .eq("status", "active")
-        .single()
-
-      if (existingSession) {
-        sessionId = existingSession.id
-      } else {
-        const { data: newSession } = await supabase
-          .from("conversations")
-          .insert({
-            contact_id: contact.id,
-            agent_id: webhookData.agentId || null,
-            channel: "ghl",
-            status: "active",
-          })
-          .select()
-          .single()
-
-        sessionId = newSession.id
-      }
-
-      // Create message in database
-      await supabase.from("messages").insert({
-        session_id: sessionId,
-        sender_type: "contact",
-        message: webhookData.message,
-        channel: "ghl",
-        ghl_synced: true,
-        ghl_message_id: webhookData.messageId,
-      })
-
-      return { success: true }
-    } catch (error) {
-      console.error("[v0] GHL webhook error:", error)
-      return { success: false, error: String(error) }
-    }
+    // GHL is configured as ONE-WAY sync OUT for contact data — it is not an
+    // inbound message channel. Inbound conversations flow through email, sms,
+    // ai_social_dm, and portal channels only. Accepting GHL inbound webhooks
+    // here would duplicate the existing inbound channels and create
+    // cross-channel attribution drift. The previous implementation also
+    // wrote to conversations.channel and messages.session_id/sender_type/
+    // message/channel/ghl_synced/ghl_message_id — none of which exist on the
+    // live schema — so every call was a silent failure anyway.
+    //
+    // No-op: acknowledge receipt so GHL stops retrying the webhook, but do
+    // not persist anything. Log for observability.
+    console.warn(
+      "[ghl-integration] handleIncomingMessage no-op — GHL is one-way OUT only",
+      { contactId: webhookData?.contactId, messageId: webhookData?.messageId },
+    )
+    return { success: true }
   }
 
   /**

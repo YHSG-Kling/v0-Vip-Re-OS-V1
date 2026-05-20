@@ -101,7 +101,9 @@ export async function persistQualificationSignals(
       brokerage_id: lead.brokerage_id,
       qualification_score: qualificationScore,
       stage: signals.readinessForAgent ? 'qualified' : signals.confirmedIntent ? 'in_progress' : 'initial',
-      qualification_result: signals.readinessForAgent ? 'qualified' : 'pending',
+      // CHECK enum: qualified | not_qualified | needs_follow_up | appointment_set | no_response
+      // "pending" is not a valid value — needs_follow_up matches the AI-still-working semantic.
+      qualification_result: signals.readinessForAgent ? 'qualified' : 'needs_follow_up',
       qualification_signals: signals as unknown as Record<string, unknown>,
     })
     .select('id')
