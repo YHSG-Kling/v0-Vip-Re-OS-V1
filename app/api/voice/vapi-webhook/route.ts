@@ -28,6 +28,24 @@ import { dispatchEmail } from "@/lib/providers/dispatch"
 
 export const runtime = "nodejs"
 
+// Non-blocking write result logger. The webhook must stay resilient (VAPI
+// retries are noisy), so these post-call side-effect writes don't throw — but
+// silently discarding their result (the old `.then(() => {}, () => {})`
+// pattern) hid DNC / call_stop_flag compliance-write failures, a TCPA risk.
+// This surfaces failures in ops logs while keeping the handler non-blocking.
+// Usage: `await supabase.from(...).update(...).eq(...).then(...logWrite("contact DNC"))`
+function logWrite(
+  label: string,
+): readonly [(r: { error?: unknown } | null) => void, (e: unknown) => void] {
+  return [
+    (r) => {
+      if (r?.error) console.error(`[vapi-webhook] ${label} write failed:`, r.error)
+    },
+    (e) => console.error(`[vapi-webhook] ${label} write threw:`, e),
+  ] as const
+}
+
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function normalizePhone(phone: string): string {
@@ -299,7 +317,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           voice_call_id: voiceCallRow.id,
           script_used: "inbound",
           appointment_set: false,
-        }).then(() => {}, () => {})
+        }).then(...logWrite("ai_isa_calls insert (call-started)"))
       }
     }
 
@@ -475,7 +493,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             ...(appointmentSet ? { appointment_datetime: new Date().toISOString() } : {}),
           })
           .eq("id", isaCall.id)
-          .then(() => {}, () => {})
+          .then(...logWrite("ai_isa_calls update (quality)"))
 
         // Notify agent when lead is highly qualified but appointment not yet set
         if (!appointmentSet && qualScore >= 60 && voiceCall.contact_id && voiceCall.agent_id) {
@@ -487,7 +505,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             body:         `Score: ${qualScore}/100. Intent: ${intentPrimary?.replace(/_/g, " ")}.`,
             entity_type:  "contact",
             entity_id:    voiceCall.contact_id,
-          }).then(() => {}, () => {})
+          }).then(...logWrite("qualified-lead notification"))
         }
       }
 
@@ -539,7 +557,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.lead_id)
-            .then(() => {}, () => {})
+            .then(...logWrite("lead call_stop_flag"))
 
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
@@ -548,14 +566,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             title: "Lead requested no further contact via phone",
             description: callNoteSummary,
             status: "completed",
-          }).then(() => {}, () => {})
+          }).then(...logWrite("lead negative-outcome activity"))
         } else {
           // Neutral: add notes, keep lead in AI queue
           await supabase
             .from("leads")
             .update({ notes: callNoteSummary, updated_at: new Date().toISOString() })
             .eq("id", voiceCall.lead_id)
-            .then(() => {}, () => {})
+            .then(...logWrite("lead notes"))
         }
 
       } else if (voiceCall.contact_id) {
@@ -572,7 +590,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .then(() => {}, () => {})
+            .then(...logWrite("contact DNC/call_stop_flag"))
 
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
@@ -581,7 +599,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             title: "Contact requested no further phone/SMS contact",
             description: callNoteSummary,
             status: "completed",
-          }).then(() => {}, () => {})
+          }).then(...logWrite("contact negative-outcome activity"))
 
         } else {
           // Positive or neutral: update contact with call notes
@@ -592,7 +610,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .then(() => {}, () => {})
+            .then(...logWrite("contact last_contacted"))
 
           // Notify assigned agent on strong positive signal
           if (isPositiveOutcome && voiceCall.agent_id) {
@@ -604,7 +622,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               body: callNoteSummary,
               entity_type: "contact",
               entity_id: voiceCall.contact_id,
-            }).then(() => {}, () => {})
+            }).then(...logWrite("contact positive-outcome activity"))
           }
         }
       }
