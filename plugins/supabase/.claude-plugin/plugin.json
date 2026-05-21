@@ -1,0 +1,11 @@
+{
+  "name": "supabase",
+  "version": "0.1.0",
+  "description": "Supabase development toolkit for the VIP Real Estate OS: migrations, RLS governance, type generation, SSR client conventions, and the official Supabase MCP server.",
+  "author": {
+    "name": "The Kling Group"
+  },
+  "keywords": ["supabase", "postgres", "rls", "migrations", "nextjs", "ssr", "auth"],
+  "license": "UNLICENSED",
+  "mcpServers": "./.mcp.json"
+}
