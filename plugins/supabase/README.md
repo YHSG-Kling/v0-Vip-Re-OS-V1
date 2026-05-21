@@ -23,8 +23,8 @@ Supabase MCP server.
   model, env vars, query patterns, migrations, and type generation.
 
 ### MCP server
-- The official `@supabase/mcp-server-supabase` (read-only by default), letting
-  Claude inspect your project directly.
+- The official `@supabase/mcp-server-supabase`, letting Claude inspect and
+  modify your project directly (write access enabled).
 
 ## Required environment variables
 
@@ -37,8 +37,8 @@ MCP server (set these to enable it):
 - `SUPABASE_ACCESS_TOKEN` — personal access token from the Supabase dashboard.
 - `SUPABASE_PROJECT_REF` — your project ref (the subdomain of the project URL).
 
-The MCP server runs with `--read-only`. Remove that flag in `.mcp.json` only if
-you intentionally want Claude to be able to write to the project.
+The MCP server runs with write access. To restrict Claude to read-only
+operations, add `"--read-only"` to the `args` in `.mcp.json`.
 
 ## Installing
 
