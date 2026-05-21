@@ -22,5 +22,6 @@ fi
 cd "$CLAUDE_PROJECT_DIR"
 
 echo "[session-start] installing npm dependencies..."
+npm install -g @supabase/mcp-server-supabase >/dev/null 2>&1 || true
 npm install --no-audit --no-fund --prefer-offline 2>&1 | tail -20
 echo "[session-start] npm install complete."
