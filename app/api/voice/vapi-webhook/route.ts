@@ -559,9 +559,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .eq("id", voiceCall.lead_id)
             .then(...logWrite("lead call_stop_flag"))
 
+          // This is a LEAD, not a contact. activities.contact_id is a FK to
+          // contacts(id), so writing a lead UUID there violates the constraint
+          // and the insert silently fails. Attribute via the generic
+          // entity_type/entity_id pair instead.
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
-            contact_id: voiceCall.lead_id,
+            entity_type: "lead",
+            entity_id: voiceCall.lead_id,
             activity_type: "call_negative_outcome",
             title: "Lead requested no further contact via phone",
             description: callNoteSummary,

@@ -20,7 +20,7 @@ export class OSINTClient {
   }): Promise<{
     social_profiles: Array<{ platform: string; url: string; username?: string }>
     public_records: Array<{ type: string; source: string; data: any }>
-    court_records: Array<{ type: string; date: string; county?: string; case_number?: string }>
+    court_records: Array<{ type: string; date?: string; county?: string; case_number?: string }>
     property_records: Array<{ address: string; ownership_type: string; acquired_date?: string }>
     life_events: Array<{ event: string; date?: string; source: string }>
     confidence_score: number
@@ -28,7 +28,7 @@ export class OSINTClient {
     const results = {
       social_profiles: [] as Array<{ platform: string; url: string; username?: string }>,
       public_records: [] as Array<{ type: string; source: string; data: any }>,
-      court_records: [] as Array<{ type: string; date: string; county?: string; case_number?: string }>,
+      court_records: [] as Array<{ type: string; date?: string; county?: string; case_number?: string }>,
       property_records: [] as Array<{ address: string; ownership_type: string; acquired_date?: string }>,
       life_events: [] as Array<{ event: string; date?: string; source: string }>,
       confidence_score: 0,
@@ -134,8 +134,8 @@ export class OSINTClient {
   private async searchCourtRecords(
     name: string,
     state?: string,
-  ): Promise<Array<{ type: string; date: string; county?: string; case_number?: string }>> {
-    const courtRecords: Array<{ type: string; date: string; county?: string; case_number?: string }> = []
+  ): Promise<Array<{ type: string; date?: string; county?: string; case_number?: string }>> {
+    const courtRecords: Array<{ type: string; date?: string; county?: string; case_number?: string }> = []
 
     if (!state) return courtRecords
 
@@ -239,17 +239,17 @@ export class OSINTClient {
 
   private parseCourtRecordsHtml(
     html: string,
-  ): Array<{ type: string; date: string; county?: string; case_number?: string }> {
-    const records: Array<{ type: string; date: string; county?: string; case_number?: string }> = []
+  ): Array<{ type: string; date?: string; county?: string; case_number?: string }> {
+    const records: Array<{ type: string; date?: string; county?: string; case_number?: string }> = []
 
-    // Look for common court record types
+    // Look for common court record types. We do NOT have a real date extracted
+    // from the page, so we leave `date` undefined rather than stamping today's
+    // date — a fabricated "today" would make a stale or unknown court event look
+    // current and pollute recency-based motivation scoring downstream.
     const courtTypes = ["divorce", "bankruptcy", "foreclosure", "eviction", "lien", "judgment"]
     for (const type of courtTypes) {
       if (html.toLowerCase().includes(type)) {
-        records.push({
-          type,
-          date: new Date().toISOString().split("T")[0], // Would extract actual date from HTML
-        })
+        records.push({ type })
       }
     }
 
