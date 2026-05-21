@@ -138,7 +138,7 @@ export default async function PortalHomePage({
     // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, scheduled_at, status, listing:listings(address, property_address)")
+      .select("id, listing_id, scheduled_at, status, listing:listings(address)")
       .eq("contact_id", contactId)
       .order("scheduled_at", { ascending: true })
       .limit(5),

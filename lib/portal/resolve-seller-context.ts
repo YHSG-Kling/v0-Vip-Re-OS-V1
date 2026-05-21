@@ -12,7 +12,9 @@ export interface ListingData {
   id: string
   seller_contact_id: string
   address: string | null
-  property_address: string | null
+  /** Not a real listings column — kept optional for consumers that fall back
+   *  to it. Always absent from hydrated rows; `address` is canonical. */
+  property_address?: string | null
   city: string | null
   state: string | null
   list_price: number | null
@@ -160,7 +162,7 @@ export async function resolveSellerContext(
   // compute DOM via the canonical helper.
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, seller_contact_id, address, property_address, city, state, list_price, status, listing_status, listing_date, go_live_date, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .select("id, seller_contact_id, address, city, state, list_price, status, listing_status, listing_date, go_live_date, bedrooms, bathrooms, square_feet, description, primary_photo_url")
     .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)

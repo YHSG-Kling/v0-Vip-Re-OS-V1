@@ -130,9 +130,10 @@ async function resolveRecipients(params: {
     if (contact?.agent_id) {
       recipients.push({ user_id: contact.agent_id, role: "agent" })
     }
-    // Per-contact Transaction Coordinator (tc is NOT in the brokerage-level pool).
+    // Per-contact Transaction Coordinator (not in the brokerage-level pool).
+    // Role casing must match notification_rules.recipient_role CHECK ('TC').
     if (contact?.tc_user_id) {
-      recipients.push({ user_id: contact.tc_user_id, role: "tc" })
+      recipients.push({ user_id: contact.tc_user_id, role: "TC" })
     }
     // Named compliance officer for this contact (in addition to brokerage-wide).
     if (contact?.compliance_officer_id) {
@@ -234,7 +235,7 @@ function defaultRulesForEvent(event: KernelEvent): Array<{ recipient_role: strin
   const e = String(event).toLowerCase()
   const roles = new Set<string>(["agent"])
   if (/(transaction|contract|closing|inspection|financing|appraisal|walkthrough|cd_|deal_closed|offer)/.test(e)) {
-    roles.add("tc")
+    roles.add("TC")
   }
   if (e.includes("compliance")) {
     roles.add("compliance_officer")

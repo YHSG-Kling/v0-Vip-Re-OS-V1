@@ -124,11 +124,12 @@ export async function determinePortalView(
       }
     }
 
-    // Check for active listing
+    // Check for an active listing where THIS contact is the seller (not merely
+    // any listing owned by their agent — that misrouted buyers to the seller view).
     const { data: listings } = await supabase
       .from("listings")
       .select("id, status")
-      .eq("agent_id", contact.agent_id)
+      .eq("seller_contact_id", contactId)
       .in("status", ["active", "pending", "coming_soon"])
 
     if (listings && listings.length > 0) {
