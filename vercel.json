@@ -78,6 +78,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/refresh-market-rates",
+      "schedule": "30 6 * * *"
+    },
+    {
       "path": "/api/cron/wealth-opportunity-scan",
       "schedule": "0 7 * * *"
     },

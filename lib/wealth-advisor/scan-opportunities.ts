@@ -322,8 +322,13 @@ async function detectOpportunities(input: {
     currentMarketRateBps: marketRate.rate30yrFixedBps,
   }
 
-  // 1. Refinance opportunity — rate dropped 100+ bps from locked
-  if (estimatedLockedRateBps && estimatedLockedRateBps - marketRate.rate30yrFixedBps >= REFI_OPPORTUNITY_BPS_THRESHOLD) {
+  // 1. Refinance opportunity — rate dropped 100+ bps from locked.
+  // Only emit a dollar-savings claim when today's benchmark comes from a real
+  // rate feed. With the cold-start fallback (source 'seed_default') the benchmark
+  // is a placeholder, not a market quote — surfacing "$X/mo savings" off it would
+  // mislead the agent into a bad client conversation, so we suppress it.
+  const hasAuthoritativeRate = marketRate.source !== "seed_default"
+  if (hasAuthoritativeRate && estimatedLockedRateBps && estimatedLockedRateBps - marketRate.rate30yrFixedBps >= REFI_OPPORTUNITY_BPS_THRESHOLD) {
     const rateGap = estimatedLockedRateBps - marketRate.rate30yrFixedBps
     const remainingBalance = avm * (1 - equityPct)
     // Approximate monthly savings: balance × (gap_bps / 10000) / 12
@@ -563,15 +568,12 @@ async function getOrFetchTodaysMarketRate(): Promise<MarketRate | null> {
     }
   }
 
-  // Cold start — seed a reasonable default and let the next real fetch update
-  await supabase.from("market_rate_snapshots").insert({
-    rate_date: today,
-    rate_30yr_fixed_bps: 700,    // 7.00% — seed default; real cron updates
-    rate_15yr_fixed_bps: 625,
-    rate_5_1_arm_bps: 650,
-    rate_jumbo_30yr_bps: 720,
-    source: "seed_default",
-  })
+  // Cold start — no real snapshot exists yet. Return a non-authoritative
+  // fallback (source 'seed_default') WITHOUT persisting it: writing a fake row
+  // would make an unverified placeholder look like a real market quote on the
+  // next read. The refi dollar-claim is suppressed for this source (see
+  // detectOpportunities), and the real feed is populated by the
+  // refresh-market-rates cron.
   return {
     rate30yrFixedBps: 700,
     rate15yrFixedBps: 625,

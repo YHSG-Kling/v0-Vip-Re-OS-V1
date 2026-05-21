@@ -194,7 +194,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
   const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
-  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', supabase)
+  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', brokerageId, supabase)
 
   if (preEnrichDuplicate) {
     await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
@@ -224,7 +224,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone })
 
   // ── Post-enrichment deduplication ───────────────────────────────────────────
-  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', supabase)
+  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', brokerageId, supabase)
 
   if (postEnrichDuplicate) {
     const oldConfidence = postEnrichDuplicate.enrichment_confidence ?? 0
@@ -427,17 +427,23 @@ async function enrichWithPeopleData(fields: {
 async function findBestMatch(
   record: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   _stage: string,
+  brokerageId: string,
   supabase: Awaited<ReturnType<typeof createClient>>,
 ): Promise<{ id: string; type: 'lead' | 'contact'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
 
+  // Dedup must never reach across tenants: a brokerage's incoming lead can only
+  // match its own existing leads/contacts. Without this filter a fuzzy match
+  // could merge one brokerage's record into another's (PII cross-tenant leak).
   const { data: leads } = await supabase
     .from('leads')
     .select('id, first_name, last_name, email, phone, enrichment_confidence')
+    .eq('brokerage_id', brokerageId)
     .eq('is_active', true)
 
   const { data: contacts } = await supabase
     .from('contacts')
     .select('id, first_name, last_name, email, phone')
+    .eq('brokerage_id', brokerageId)
     .is('deleted_at', null)
 
   const allRecords = [
