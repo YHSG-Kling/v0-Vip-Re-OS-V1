@@ -40,6 +40,19 @@ MCP server (set these to enable it):
 The MCP server runs with write access. To restrict Claude to read-only
 operations, add `"--read-only"` to the `args` in `.mcp.json`.
 
+### How the server is launched
+
+`.mcp.json` invokes the `mcp-server-supabase` binary directly (not `npx`), so no
+package download happens at session start. The binary is pre-installed by the
+SessionStart hook at `.claude/hooks/session-start.sh`, which runs
+`npm install -g @supabase/mcp-server-supabase` in web sessions.
+
+For **local** development, install it once yourself so the binary is on PATH:
+
+```
+npm install -g @supabase/mcp-server-supabase
+```
+
 ## Installing
 
 This repo ships a marketplace at `.claude-plugin/marketplace.json`. Add it and

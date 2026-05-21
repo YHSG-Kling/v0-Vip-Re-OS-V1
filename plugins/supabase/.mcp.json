@@ -1,10 +1,8 @@
 {
   "mcpServers": {
     "supabase": {
-      "command": "npx",
+      "command": "mcp-server-supabase",
       "args": [
-        "-y",
-        "@supabase/mcp-server-supabase@latest",
         "--project-ref=${SUPABASE_PROJECT_REF}"
       ],
       "env": {
