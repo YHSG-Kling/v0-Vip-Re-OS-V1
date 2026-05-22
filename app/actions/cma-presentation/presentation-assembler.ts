@@ -10,7 +10,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { createVideoProject } from "@/lib/services/video-generation.service"
+import { createVideoProject } from "@/app/actions/video/create-video-project"
 
 export interface PresentationInput {
   listingId: string
@@ -310,30 +310,37 @@ async function generatePresentationVideo(params: {
     // Generate video script from presentation
     const videoScript = generateVideoScript(listing, params.presentationContent)
 
-    // Create video project using existing service
+    // Create a real video project on the canonical path (ai_video_projects;
+    // provider resolved by resolveVideoProvider — D-ID default). The project is
+    // created in 'draft' so the agent can confirm avatar/voice and submit; this
+    // replaces the former stub that wrote dead columns and a fake 'processing'.
     const videoResult = await createVideoProject({
+      brokerageId: listing.brokerage_id,
       agentId: params.agentId,
-      projectType: "listing_tour",
-      listingId: params.listingId,
+      title: `Listing Tour — ${listing.address ?? "Property"}`,
       script: videoScript,
-      duration: 120, // 2 minutes
-      style: "professional"
+      videoType: "listing_tour",
+      backgroundType: "property",
+      format: "horizontal",
+      durationSeconds: 120,
+      captionsEnabled: true,
+      listingId: params.listingId,
     })
 
-    if (videoResult.success && videoResult.projectId) {
-      // Emit video generation event — Agent task (correct location, no changes) — type: seller.presentation.video_generated
+    if (videoResult.success && videoResult.project) {
+      // Emit video generation event — type: seller.presentation.video_generated
       await supabase.from("activities").insert({
         activity_type: "seller.presentation.video_generated",
         listing_id: params.listingId,
         contact_id: params.contactId,
         agent_user_id: params.agentId,
         metadata: {
-          video_project_id: videoResult.projectId,
-          video_status: videoResult.status
+          video_project_id: videoResult.project.id,
+          video_status: videoResult.project.status
         }
       })
 
-      return { success: true, projectId: videoResult.projectId }
+      return { success: true, projectId: videoResult.project.id }
     }
 
     return { success: false }

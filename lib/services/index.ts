@@ -63,16 +63,6 @@ export {
   calculateTransactionCommission,
 } from "./transaction-management.service"
 
-// ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
-export type { VideoProjectParams, VideoGenerationResult } from "./video-generation.service"
-export {
-  createVideoProject,
-  getVideoProjectStatus,
-  generateListingVideoPackage,
-  getListingVideos,
-  deleteVideoProject,
-} from "./video-generation.service"
-
 // ─── COMMUNICATION ────────────────────────────────────────────────────────────
 export type { SendEmailParams, SendSMSParams, LogCommunicationParams } from "./communication.service"
 export {
