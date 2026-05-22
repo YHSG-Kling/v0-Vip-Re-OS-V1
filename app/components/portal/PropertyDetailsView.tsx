@@ -65,61 +65,35 @@ export function PropertyDetailsView({
   const [showingNotes, setShowingNotes] = useState("")
   const [activeImageIndex, setActiveImageIndex] = useState(0)
 
-  // Mock property data - in production this would come from IDX API or database
-  const property = savedProperty?.property_data || {
-    id: propertyId,
-    mlsNumber: propertyId,
-    address: "123 Main Street",
-    city: "Austin",
-    state: "TX",
-    zip: "78701",
-    price: 450000,
-    beds: 3,
-    baths: 2,
-    sqft: 1850,
-    yearBuilt: 2018,
-    lotSize: "0.25 acres",
-    garage: 2,
-    propertyType: "Single Family",
-    status: "Active",
-    daysOnMarket: 12,
-    description: "Beautiful modern home in the heart of Austin. Features include an open floor plan, updated kitchen with granite countertops and stainless steel appliances, hardwood floors throughout, and a spacious backyard perfect for entertaining. Close to downtown, restaurants, and parks.",
-    features: [
-      "Open Floor Plan",
-      "Granite Countertops",
-      "Stainless Steel Appliances",
-      "Hardwood Floors",
-      "Central A/C",
-      "Attached Garage",
-      "Fenced Backyard",
-      "Updated Bathrooms",
-    ],
-    photos: [
-      "/placeholder.svg?height=600&width=800&query=modern+home+exterior",
-      "/placeholder.svg?height=600&width=800&query=modern+kitchen+interior",
-      "/placeholder.svg?height=600&width=800&query=living+room+interior",
-      "/placeholder.svg?height=600&width=800&query=master+bedroom+interior",
-      "/placeholder.svg?height=600&width=800&query=backyard+patio",
-    ],
-    taxInfo: {
-      annualTax: 8500,
-      assessedValue: 420000,
-    },
-    hoa: {
-      fee: 150,
-      frequency: "monthly",
-    },
-    schools: [
-      { name: "Austin Elementary", type: "Elementary", rating: 8, distance: "0.5 mi" },
-      { name: "Central Middle School", type: "Middle", rating: 7, distance: "1.2 mi" },
-      { name: "Austin High School", type: "High", rating: 9, distance: "2.1 mi" },
-    ],
-    agent: {
-      name: "Sarah Johnson",
-      phone: "(512) 555-1234",
-      email: "sarah@realestate.com",
-      photo: "/placeholder.svg?height=100&width=100&query=real+estate+agent+professional",
-    },
+  // Real property facts come from the saved_properties row (flat columns).
+  // Fields the schema does not carry (description, features, schools, tax, HOA,
+  // year built, lot size, garage, multi-photo gallery) are intentionally left
+  // empty and their UI sections degrade gracefully rather than show placeholders.
+  const property = {
+    id: savedProperty?.id ?? propertyId,
+    mlsNumber: savedProperty?.mls_number ?? null,
+    address: savedProperty?.property_address ?? "",
+    city: savedProperty?.city ?? "",
+    state: savedProperty?.state ?? "",
+    zip: "",
+    price: savedProperty?.list_price ?? null,
+    beds: savedProperty?.bedrooms ?? null,
+    baths: savedProperty?.bathrooms ?? null,
+    sqft: savedProperty?.sqft ?? null,
+    propertyType: savedProperty?.property_type ?? null,
+    listingUrl: savedProperty?.listing_url ?? null,
+    matchScore: savedProperty?.ai_match_score ?? null,
+    matchReasons: (savedProperty?.match_reasons as string[] | null) ?? [],
+    photos: savedProperty?.primary_photo_url ? [savedProperty.primary_photo_url] : [],
+    yearBuilt: null as number | null,
+    lotSize: null as string | null,
+    garage: null as number | null,
+    description: null as string | null,
+    features: [] as string[],
+    schools: [] as { name: string; type: string; rating: number; distance: string }[],
+    taxInfo: null as { annualTax: number; assessedValue: number } | null,
+    hoa: null as { fee: number; frequency: string } | null,
+    agent: null as { name: string; phone?: string; email?: string; photo?: string } | null,
   }
 
   const handleSaveProperty = () => {
@@ -171,15 +145,16 @@ export function PropertyDetailsView({
     })
   }
 
-  // Calculate monthly payment estimate
-  const calculateMonthlyPayment = () => {
-    const principal = property.price * 0.8 // 20% down
-    const rate = 0.065 / 12 // 6.5% annual rate
-    const n = 360 // 30 year mortgage
+  // Principal & interest estimate from the real list price (20% down, 6.5%, 30y).
+  // Returns null when we have no price so the UI hides the estimate rather than
+  // showing a fabricated number.
+  const calculateMonthlyPayment = (): number | null => {
+    if (!property.price || property.price <= 0) return null
+    const principal = property.price * 0.8
+    const rate = 0.065 / 12
+    const n = 360
     const payment = (principal * rate * Math.pow(1 + rate, n)) / (Math.pow(1 + rate, n) - 1)
-    const taxes = property.taxInfo?.annualTax ? property.taxInfo.annualTax / 12 : 0
-    const hoa = property.hoa?.fee || 0
-    return Math.round(payment + taxes + hoa)
+    return Math.round(payment)
   }
 
   return (
@@ -215,26 +190,27 @@ export function PropertyDetailsView({
               alt={property.address}
               className="w-full h-full object-cover"
             />
-            <Badge className="absolute top-4 left-4 bg-green-500">
-              {property.status}
-            </Badge>
-            <Badge className="absolute top-4 right-4" variant="secondary">
-              {property.daysOnMarket} days on market
-            </Badge>
+            {property.matchScore != null && (
+              <Badge className="absolute top-4 left-4 bg-green-500">
+                {property.matchScore}% match
+              </Badge>
+            )}
           </div>
-          <div className="flex gap-2 mt-2 overflow-x-auto pb-2">
-            {property.photos?.map((photo: string, idx: number) => (
-              <button
-                key={idx}
-                onClick={() => setActiveImageIndex(idx)}
-                className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 transition-all ${
-                  activeImageIndex === idx ? "border-primary" : "border-transparent"
-                }`}
-              >
-                <img src={photo || "/placeholder.svg"} alt={`View ${idx + 1}`} className="w-full h-full object-cover" />
-              </button>
-            ))}
-          </div>
+          {property.photos.length > 1 && (
+            <div className="flex gap-2 mt-2 overflow-x-auto pb-2">
+              {property.photos.map((photo: string, idx: number) => (
+                <button
+                  key={idx}
+                  onClick={() => setActiveImageIndex(idx)}
+                  className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 transition-all ${
+                    activeImageIndex === idx ? "border-primary" : "border-transparent"
+                  }`}
+                >
+                  <img src={photo || "/placeholder.svg"} alt={`View ${idx + 1}`} className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Quick Info Card */}
@@ -242,12 +218,12 @@ export function PropertyDetailsView({
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-3xl font-bold text-green-600">
-                ${property.price?.toLocaleString()}
+                {property.price != null ? `$${property.price.toLocaleString()}` : "Price on request"}
               </CardTitle>
             </div>
             <CardDescription className="flex items-center gap-1 text-base">
               <MapPin className="w-4 h-4" />
-              {property.address}, {property.city}, {property.state} {property.zip}
+              {[property.address, property.city, property.state].filter(Boolean).join(", ")}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -272,11 +248,13 @@ export function PropertyDetailsView({
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 rounded-lg">
-              <p className="text-sm text-muted-foreground mb-1">Estimated Monthly Payment</p>
-              <p className="text-2xl font-bold">${calculateMonthlyPayment().toLocaleString()}/mo</p>
-              <p className="text-xs text-muted-foreground">Based on 20% down, 6.5% rate</p>
-            </div>
+            {calculateMonthlyPayment() != null && (
+              <div className="p-4 bg-slate-50 rounded-lg">
+                <p className="text-sm text-muted-foreground mb-1">Estimated Monthly Payment</p>
+                <p className="text-2xl font-bold">${calculateMonthlyPayment()!.toLocaleString()}/mo</p>
+                <p className="text-xs text-muted-foreground">Principal &amp; interest only — 20% down, 6.5%, 30yr</p>
+              </div>
+            )}
 
             <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
               <DialogTrigger asChild>
@@ -333,21 +311,39 @@ export function PropertyDetailsView({
       <Tabs defaultValue="overview" className="w-full">
         <TabsList className="w-full justify-start">
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="features">Features</TabsTrigger>
           <TabsTrigger value="financials">Financials</TabsTrigger>
-          <TabsTrigger value="schools">Schools</TabsTrigger>
           <TabsTrigger value="location">Location</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>About This Home</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-muted-foreground leading-relaxed">{property.description}</p>
-            </CardContent>
-          </Card>
+          {property.description && (
+            <Card>
+              <CardHeader>
+                <CardTitle>About This Home</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-muted-foreground leading-relaxed">{property.description}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {property.matchReasons.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Why this matches you</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {property.matchReasons.map((reason, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+                      <span className="text-sm">{reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
@@ -355,155 +351,80 @@ export function PropertyDetailsView({
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <Home className="w-5 h-5 text-muted-foreground" />
+                {property.propertyType && (
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-slate-100 rounded-lg">
+                      <Home className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Type</p>
+                      <p className="font-medium capitalize">{property.propertyType}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Type</p>
-                    <p className="font-medium">{property.propertyType}</p>
+                )}
+                {property.mlsNumber && (
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-slate-100 rounded-lg">
+                      <Building className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">MLS #</p>
+                      <p className="font-medium">{property.mlsNumber}</p>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <CalendarIcon className="w-5 h-5 text-muted-foreground" />
+                )}
+                {property.sqft != null && (
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-slate-100 rounded-lg">
+                      <Square className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Living Area</p>
+                      <p className="font-medium">{property.sqft.toLocaleString()} sqft</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Year Built</p>
-                    <p className="font-medium">{property.yearBuilt}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <Ruler className="w-5 h-5 text-muted-foreground" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Lot Size</p>
-                    <p className="font-medium">{property.lotSize}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <Car className="w-5 h-5 text-muted-foreground" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Garage</p>
-                    <p className="font-medium">{property.garage} Car</p>
-                  </div>
-                </div>
+                )}
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="features" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Home Features</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {property.features?.map((feature: string, idx: number) => (
-                  <div key={idx} className="flex items-center gap-2 p-3 bg-slate-50 rounded-lg">
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                    <span className="text-sm">{feature}</span>
-                  </div>
-                ))}
-              </div>
+              {property.listingUrl && (
+                <a
+                  href={property.listingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-4 inline-flex items-center gap-1 text-sm text-primary underline"
+                >
+                  View full listing
+                </a>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="financials" className="space-y-6">
-          <div className="grid md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Calculator className="w-5 h-5" />
-                  Monthly Cost Breakdown
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between py-2 border-b">
-                  <span>Principal & Interest</span>
-                  <span className="font-medium">
-                    ${Math.round(calculateMonthlyPayment() - (property.taxInfo?.annualTax || 0) / 12 - (property.hoa?.fee || 0)).toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between py-2 border-b">
-                  <span>Property Tax</span>
-                  <span className="font-medium">
-                    ${Math.round((property.taxInfo?.annualTax || 0) / 12).toLocaleString()}
-                  </span>
-                </div>
-                {property.hoa?.fee && (
-                  <div className="flex justify-between py-2 border-b">
-                    <span>HOA Fee</span>
-                    <span className="font-medium">${property.hoa.fee}</span>
-                  </div>
-                )}
-                <div className="flex justify-between py-2 font-bold text-lg">
-                  <span>Total Monthly</span>
-                  <span className="text-green-600">${calculateMonthlyPayment().toLocaleString()}</span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <DollarSign className="w-5 h-5" />
-                  Tax Information
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between py-2 border-b">
-                  <span>Annual Tax</span>
-                  <span className="font-medium">${property.taxInfo?.annualTax?.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b">
-                  <span>Tax Assessed Value</span>
-                  <span className="font-medium">${property.taxInfo?.assessedValue?.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span>Tax Rate</span>
-                  <span className="font-medium">
-                    {((property.taxInfo?.annualTax / property.taxInfo?.assessedValue) * 100).toFixed(2)}%
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="schools" className="space-y-6">
-          <Card>
+          <Card className="max-w-md">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <School className="w-5 h-5" />
-                Nearby Schools
+                <Calculator className="w-5 h-5" />
+                Estimated Monthly Payment
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {property.schools?.map((school: any, idx: number) => (
-                  <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
-                    <div className="flex items-center gap-4">
-                      <div className="p-3 bg-white rounded-full">
-                        <School className="w-5 h-5 text-primary" />
-                      </div>
-                      <div>
-                        <p className="font-medium">{school.name}</p>
-                        <p className="text-sm text-muted-foreground">{school.type} • {school.distance}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-                      <span className="font-bold">{school.rating}/10</span>
-                    </div>
+            <CardContent className="space-y-4">
+              {calculateMonthlyPayment() != null ? (
+                <>
+                  <div className="flex justify-between py-2 font-bold text-lg">
+                    <span>Principal &amp; Interest</span>
+                    <span className="text-green-600">${calculateMonthlyPayment()!.toLocaleString()}/mo</span>
                   </div>
-                ))}
-              </div>
+                  <p className="text-xs text-muted-foreground">
+                    Estimate only — assumes 20% down, 6.5% rate, 30-year fixed. Taxes,
+                    insurance, and HOA are not included. Talk to your agent or lender
+                    for a precise quote.
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No list price on file for this property yet.
+                </p>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
