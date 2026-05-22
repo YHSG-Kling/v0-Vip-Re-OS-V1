@@ -1,6 +1,24 @@
 {
   "version": 1,
   "skills": {
+    "browser-use": {
+      "source": "browser-use/browser-use",
+      "sourceType": "github",
+      "skillPath": "skills/browser-use/SKILL.md",
+      "computedHash": "9f3a097275554dc44356f37d17d445d9c2b5b3579332fa93a1e9422f465f01bb"
+    },
+    "real-estate-expert": {
+      "source": "personamanagmentlayer/pcl",
+      "sourceType": "github",
+      "skillPath": "stdlib/domains/real-estate-expert/SKILL.md",
+      "computedHash": "47cf88cf1835a5e7da3e9868ba50e52d865f5d3e60541227e4c5fad3ed0f65d0"
+    },
+    "real-estate-investment": {
+      "source": "aznatkoiny/zai-skills",
+      "sourceType": "github",
+      "skillPath": "real-estate-investment/skills/real-estate-investment/SKILL.md",
+      "computedHash": "2e2242a7e087ebea79e55ceffbc5e4f365d1d302a410ad1cf46d1ff35e1cfdc3"
+    },
     "vercel-react-best-practices": {
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",
