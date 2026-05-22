@@ -19,6 +19,12 @@
       "skillPath": "real-estate-investment/skills/real-estate-investment/SKILL.md",
       "computedHash": "2e2242a7e087ebea79e55ceffbc5e4f365d1d302a410ad1cf46d1ff35e1cfdc3"
     },
+    "remotion-best-practices": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion/SKILL.md",
+      "computedHash": "006f8413941b59eff54a7ce64851b8a2fb79e7a3a5f1a895e97a48f01482553d"
+    },
     "vercel-react-best-practices": {
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",
