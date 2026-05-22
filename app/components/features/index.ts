@@ -17,7 +17,6 @@ export * from './portal/tools'
 export * from './portal/widgets'
 export * from './portal/calendar'
 export * from './portal/social'
-export * from './portal/views'
 export * from './portal/settings'
 export * from './portal/ai'
 

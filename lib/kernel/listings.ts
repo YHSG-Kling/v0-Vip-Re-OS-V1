@@ -168,6 +168,19 @@ export async function createListingRecord(
       })
       .then(() => {})
 
+    // Portal fan-out: the seller sees "Your listing is being prepared".
+    const { fanOutKernelEvent } = await import("./event-fanout")
+    await fanOutKernelEvent({
+      event:           KernelEvent.LISTING_CREATED,
+      brokerageId:     input.brokerageId,
+      entityType:      "listing",
+      entityId:        listing.id as string,
+      sellerContactId: input.sellerContactId,
+      listingId:       listing.id as string,
+      agentUserId:     input.agentId,
+      metadata:        { stage: "LEAD" },
+    }).catch(() => {})
+
     return { success: true, listing }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "createListingRecord failed"

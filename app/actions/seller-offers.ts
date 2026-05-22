@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { emitTransactionEvent } from "@/lib/kernel/transactions"
 import { KernelEvent } from "@/lib/kernel/events"
 import { analyzeAndCompareOffers, calcNetToSeller } from "@/lib/offers/offer-analyzer"
 import { isValidUUID } from "@/lib/validations"
@@ -178,21 +178,16 @@ export async function acceptOffer(params: {
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
 
-  // lifecycle_events + kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     offerId,
-    event_type:    KernelEvent.OFFER_ACCEPTED,
-    actor_user_id: agentUserId,
-    metadata:      { listing_id: listingId },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_ACCEPTED,
+  // Canonical fan-out: records the lifecycle event, notifies staff, and writes
+  // the buyer + seller portal updates (transparency feed + chat + notification)
+  // by resolving both contacts from the offer + listing.
+  await emitTransactionEvent({
+    event:       KernelEvent.OFFER_ACCEPTED,
+    entityType:  "offer",
     brokerageId,
-    entityType: "offer",
-    entityId:   offerId,
+    entityId:    offerId,
+    actorUserId: agentUserId,
+    metadata:    { listing_id: listingId },
   }).catch(() => {})
 
   // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT
@@ -357,26 +352,20 @@ export async function sendCounterOffer(params: {
     .eq("id", parentOfferId)
     .eq("brokerage_id", brokerageId)
 
-  // lifecycle_events + kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     counter.id,
-    event_type:    KernelEvent.OFFER_COUNTER_SENT,
-    actor_user_id: agentUserId,
+  // Canonical fan-out: lifecycle event + staff notification + buyer/seller
+  // portal updates. The counter offer row is the entity.
+  await emitTransactionEvent({
+    event:       KernelEvent.OFFER_COUNTER_SENT,
+    entityType:  "offer",
+    brokerageId,
+    entityId:    counter.id,
+    actorUserId: agentUserId,
     metadata: {
       listing_id:      listingId,
       parent_offer_id: parentOfferId,
       counter_price:   counterPrice,
       round:           nextRound,
     },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_COUNTER_SENT,
-    brokerageId,
-    entityType: "offer",
-    entityId:   counter.id,
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
@@ -422,20 +411,15 @@ export async function rejectOffer(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     offerId,
-    event_type:    KernelEvent.OFFER_REJECTED,
-    actor_user_id: agentUserId,
-    metadata:      { listing_id: listingId, reason: reason ?? null },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_REJECTED,
+  // Canonical fan-out: lifecycle event + staff notification + buyer portal
+  // update ("Offer not accepted") so the buyer learns the outcome.
+  await emitTransactionEvent({
+    event:       KernelEvent.OFFER_REJECTED,
+    entityType:  "offer",
     brokerageId,
-    entityType: "offer",
-    entityId:   offerId,
+    entityId:    offerId,
+    actorUserId: agentUserId,
+    metadata:    { listing_id: listingId, reason: reason ?? null },
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)

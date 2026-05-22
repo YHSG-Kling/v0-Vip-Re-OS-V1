@@ -282,6 +282,22 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     plainLanguageSummary: "A counter offer was sent. Awaiting the other side's response.",
     responsibleParty: "client",
   },
+  // Offer-OS submission path (lib/kernel/offers.ts emits OFFER_OS_SUBMITTED,
+  // not OFFER_SUBMITTED). Mirror the OFFER_SUBMITTED treatment so buyer +
+  // seller both get the right portal update.
+  [KernelEvent.OFFER_OS_SUBMITTED]: {
+    title: "Offer submitted",
+    plainLanguageSummary:
+      "Your offer was sent to the seller's agent. Most sellers respond within 24-48 hours.",
+    responsibleParty: "client",
+    perRole: {
+      seller: {
+        title: "New offer received",
+        plainLanguageSummary: "An offer came in on your home. Your agent will walk you through the details.",
+        chatBody: "An offer just came in on your home — let me know when you have time to review.",
+      },
+    },
+  },
 }
 
 async function writePortalUpdate(
