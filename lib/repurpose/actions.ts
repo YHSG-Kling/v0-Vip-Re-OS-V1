@@ -17,6 +17,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { scheduleSocialPost, getConnectedAccounts } from "@/app/actions/social-media-automation"
 import { createVideoProject } from "@/app/actions/video/create-video-project"
 import { generateBlogPost } from "@/app/actions/blog"
+import { createPodcastEpisode, generatePodcastAudio } from "@/app/actions/podcast-generation"
 import { transcribeFromUrl } from "@/lib/repurpose/transcribe"
 import { DISTRIBUTABLE_PLATFORMS, extractHashtags } from "@/lib/repurpose/shared"
 import type {
@@ -738,4 +739,58 @@ export async function repurposeUrlToBlogPost(input: {
     generateCoverImage: true,
   })
   return { success: res.success, postId: res.postId, error: res.error }
+}
+
+export interface RepurposePodcastResult {
+  success: boolean
+  episodeId?: string
+  needsTranscript?: boolean
+  error?: string
+}
+
+export async function repurposeUrlToPodcast(input: {
+  sourceUrl: string
+  transcript?: string
+  title?: string
+}): Promise<RepurposePodcastResult> {
+  const url = input.sourceUrl?.trim()
+  if (!url || !/^https?:\/\/\S+$/i.test(url)) return { success: false, error: "Enter a valid http(s) video URL" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const tr = await acquireTranscript(url, input.transcript)
+  if (!tr.ok) return { success: false, needsTranscript: true, error: tr.error }
+
+  // Rewrite the transcript into a branded first-person podcast monologue.
+  const supabase = await createClient()
+  const branding = await loadAgentBranding(supabase, ctx.userId, ctx.brokerageId)
+  const scriptResp = await generateAIResponse({
+    prompt:
+      `Rewrite this transcript into a natural ~2-minute first-person podcast monologue script for real estate agent ${branding.agentName}` +
+      (branding.brokerageName ? ` of ${branding.brokerageName}` : "") +
+      `. Conversational and engaging, no stage directions or headings, fair-housing safe (no language about protected classes), and avoid inventing specific properties/prices.\nTranscript:\n${tr.transcript.slice(0, 6000)}`,
+    maxTokens: 900,
+    metadata: { userId: ctx.userId, brokerageId: ctx.brokerageId, feature: "podcast_generation" },
+  })
+  const script = (scriptResp.text ?? "").trim()
+  if (!script) return { success: false, error: "Could not generate a podcast script" }
+
+  const created = await createPodcastEpisode({
+    title: input.title?.trim() || `Repurposed episode ${new Date().toISOString().slice(0, 10)}`,
+    script,
+    category: "market_update",
+  })
+  if (!created.success || !created.episode?.id) {
+    return { success: false, error: created.error ?? "Could not create the podcast episode" }
+  }
+
+  // Render the audio (TTS → storage). The episode exists even if audio fails
+  // (e.g. the agent hasn't set up a voice clone yet).
+  const audio = await generatePodcastAudio(created.episode.id).catch(() => null)
+  return {
+    success: true,
+    episodeId: created.episode.id,
+    error: audio && !audio.success ? audio.error : undefined,
+  }
 }

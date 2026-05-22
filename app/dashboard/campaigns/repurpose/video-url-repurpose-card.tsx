@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Loader2, Link2, Send, Clapperboard, FileText } from "lucide-react"
+import { Loader2, Link2, Send, Clapperboard, FileText, Mic } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -15,6 +15,7 @@ import {
   repurposeVideoUrl,
   repurposeUrlToBrandedVideo,
   repurposeUrlToBlogPost,
+  repurposeUrlToPodcast,
 } from "@/lib/repurpose/actions"
 import type { OutputFormat, RepurposedOutput } from "@/lib/repurpose/types"
 
@@ -36,7 +37,7 @@ const STATUS_STYLES: Record<string, string> = {
   pending: "bg-blue-100 text-blue-800",
 }
 
-type Mode = "create" | "distribute" | "blog"
+type Mode = "create" | "distribute" | "blog" | "podcast"
 const NEEDS_CHANNELS: Mode[] = ["create", "distribute"]
 
 export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatforms: string[] }) {
@@ -131,17 +132,28 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
       router.refresh()
     })
 
+  const runPodcast = () =>
+    startTransition(async () => {
+      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      if (handleTranscriptGate(res)) return
+      if (!res.success) return void toast.error(res.error ?? "Could not create the podcast episode")
+      toast.success(res.error ? `Episode created, audio pending: ${res.error}` : "Podcast episode generated — review it in your podcast dashboard.")
+      router.refresh()
+    })
+
   const handleRun = () => {
     if (!validate()) return
     if (mode === "create") runCreate()
     else if (mode === "distribute") runDistribute()
-    else runBlog()
+    else if (mode === "blog") runBlog()
+    else runPodcast()
   }
 
   const MODES: { id: Mode; label: string; icon: React.ReactNode; blurb: string }[] = [
     { id: "create", label: "New branded video", icon: <Clapperboard className="mr-2 h-4 w-4" />, blurb: "AI grabs the transcript, rewrites it in your brand voice, and renders a new branded video (your voice + avatar, intro/outro). When ready, per-channel posts are drafted for your review." },
     { id: "distribute", label: "Distribute this video", icon: <Send className="mr-2 h-4 w-4" />, blurb: "Schedules the same video to each connected channel with AI-written, platform-tailored captions." },
     { id: "blog", label: "Blog post", icon: <FileText className="mr-2 h-4 w-4" />, blurb: "No video — repurpose the transcript into an SEO blog post with a generated cover image (saved as a draft)." },
+    { id: "podcast", label: "Podcast episode", icon: <Mic className="mr-2 h-4 w-4" />, blurb: "No video — rewrite the transcript into a podcast monologue and render audio in your cloned voice (ElevenLabs)." },
   ]
   const activeBlurb = MODES.find((m) => m.id === mode)?.blurb ?? ""
 

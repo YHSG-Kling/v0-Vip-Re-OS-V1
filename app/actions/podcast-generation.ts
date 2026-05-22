@@ -92,13 +92,18 @@ export async function createPodcastEpisode(params: {
       templateData = template
     }
 
-    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio)
-    const { data: agentRow } = await supabase
-      .from("users")
+    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio).
+    // The voice clone lives in agent_voice_profiles keyed by agents.id (agentId) —
+    // it is a customer-facing brand asset. (users has no elevenlabs_voice_id.)
+    const { data: voiceProfile } = await supabase
+      .from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
-      .eq("id", agentId)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .order("is_default", { ascending: false })
+      .limit(1)
       .maybeSingle()
-    const agentVoiceId = agentRow?.elevenlabs_voice_id ?? null
+    const agentVoiceId = voiceProfile?.elevenlabs_voice_id ?? null
 
     // Generate script from keywords if no script provided
     let finalScript = params.script
@@ -177,7 +182,8 @@ export async function createPodcastEpisode(params: {
       .from("podcast_episodes")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: agentId,
+        // podcast_episodes.agent_id FKs to users (content/business action), not agents.
+        agent_id: userId,
         template_id: params.templateId || null,
         marketing_campaign_id: params.marketingCampaignId || null,
         source_video_project_id: params.sourceVideoProjectId || null,
@@ -371,7 +377,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== agentId) {
+    if (episode.agent_id !== userId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -604,14 +610,14 @@ async function synthesizeVoice(
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
-  if (!agentId || !brokerageId) {
+  const { userId, brokerageId } = await getAgentContext()
+  if (!userId || !brokerageId) {
     return { success: false, error: "Missing agent context", episodes: [] }
   }
   const supabase = await createClient()
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", userId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -677,7 +683,7 @@ export async function publishPodcastEpisode(
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== agentId) {
+    if (episode.agent_id !== userId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -712,7 +718,7 @@ export async function publishPodcastEpisode(
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -841,14 +847,14 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
@@ -871,7 +877,7 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -879,7 +885,7 @@ export async function createPodcastTemplate(params: {
       .from("podcast_templates")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: agentId,
+        agent_id: userId,
         name: params.name,
         description: params.description || "",
         template_type: params.templateType,
@@ -912,7 +918,7 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -929,7 +935,7 @@ export async function updatePodcastTemplate(
         updated_at: new Date().toISOString(),
       })
       .eq("id", templateId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
       .select()
       .single()
@@ -1063,7 +1069,7 @@ export async function getVideoScriptsLibrary() {
 
 // Get video projects for episode sourcing
 export async function getVideoProjects() {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -1071,7 +1077,7 @@ export async function getVideoProjects() {
       .from("ai_video_projects")
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .in("status", ["completed", "published"])
       .order("created_at", { ascending: false })
       .limit(50)
@@ -1168,7 +1174,7 @@ export async function getPodcastAnalytics() {
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -1184,7 +1190,7 @@ export async function deletePodcastEpisode(episodeId: string) {
       .from("podcast_episodes")
       .delete()
       .eq("id", episodeId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error

@@ -134,13 +134,15 @@ export async function POST(request: NextRequest) {
     // so the disclosure goes into the script the avatar speaks.
     let renderScript: string = script
     let injectedDisclosure = false
+    let captionsEnabled = false
     {
       const { data: videoRow } = await supabase
         .from("ai_video_projects")
-        .select("usage_intent")
+        .select("usage_intent, captions_enabled")
         .eq("id", video_project_id)
         .maybeSingle()
       const usageIntent: string = videoRow?.usage_intent ?? "public_marketing"
+      captionsEnabled = videoRow?.captions_enabled ?? false
 
       if (usageIntent !== "mls" && auth.brokerageId) {
         const { data: brokerage } = await supabase
@@ -267,6 +269,8 @@ export async function POST(request: NextRequest) {
             audio_url: ttsData.audio_url,
           },
           ...(bgValue ? { background: bgValue } : {}),
+          // D-ID natively burns captions into the mp4 when subtitles=true.
+          ...(captionsEnabled ? { subtitles: true } : {}),
           config: { stitch: true, result_format: "mp4" },
         }
       : {
@@ -279,6 +283,7 @@ export async function POST(request: NextRequest) {
           driver_url: "bank://natural",
           expression,
           ...(bgValue ? { background: bgValue } : {}),
+          ...(captionsEnabled ? { subtitles: true } : {}),
           config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
           face: { size: 1, top_x: 0, top_y: 0, overlap: "NO" },
         }
