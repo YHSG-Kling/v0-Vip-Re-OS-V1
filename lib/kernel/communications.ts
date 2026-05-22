@@ -148,7 +148,7 @@ export async function evaluateOutboundEligibility(
 
 // ─── UNIVERSAL INBOX ─────────────────────────────────────────────────────────
 
-export type InboxChannel = "all" | "sms" | "email" | "voice" | "portal" | "chat" | "ai"
+export type InboxChannel = "all" | "sms" | "email" | "voice" | "portal" | "chat" | "ai" | "vendor"
 
 export interface InboxMessageRow {
   id: string
@@ -159,9 +159,10 @@ export interface InboxMessageRow {
   body: string
   created_at: string
   read: boolean
-  source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages"
+  source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages" | "vendor_messages"
   sentiment?: string | null
   summary?: string | null
+  vendor_id?: string | null
 }
 
 export interface InboxThread {
@@ -343,6 +344,39 @@ export async function loadUniversalInbox(
           source_table: "voice_calls",
           sentiment: v.sentiment,
           summary: v.summary,
+        })
+      }
+    }
+
+    // ── 6b. vendor_messages (vendor↔contact threads surface in the contact's
+    // thread; vendor↔agent threads are not contact-keyed and are shown in the
+    // vendor surface, not here) ───────────────────────────────────────────────
+    const fetchVendor = channel === "all" || channel === "vendor"
+    if (fetchVendor) {
+      let q = supabase
+        .from("vendor_messages")
+        .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, created_at, read")
+        .eq("brokerage_id", actorContext.brokerageId)
+        .eq("counterparty_type", "contact")
+        .order("created_at", { ascending: false })
+        .limit(limit)
+      if (contactIds) q = q.in("counterparty_id", contactIds)
+      if (unreadOnly) q = q.eq("read", false)
+      const { data: vendorMsgs } = await q
+      for (const m of vendorMsgs ?? []) {
+        const contact = contactMap.get(m.counterparty_id)
+        results.push({
+          id: m.id,
+          contact_id: m.counterparty_id,
+          contact_name: contact?.name ?? "Unknown",
+          channel: "vendor",
+          // A vendor-sent message is inbound to the brokerage side.
+          direction: m.sender_type === "vendor" ? "inbound" : "outbound",
+          body: m.body ?? "",
+          created_at: m.created_at,
+          read: m.read ?? false,
+          source_table: "vendor_messages",
+          vendor_id: m.vendor_id,
         })
       }
     }
