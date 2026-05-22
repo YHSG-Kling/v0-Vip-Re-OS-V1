@@ -1,13 +1,14 @@
 // lib/repurpose/types.ts
 // Type definitions for Layer 9.11 Omnipresence Repurposer
 
-export type SourceType = 
-  | "video_project" 
-  | "blog_post" 
-  | "podcast_episode" 
+export type SourceType =
+  | "video_project"
+  | "blog_post"
+  | "podcast_episode"
   | "social_post"
   | "script"
   | "newsletter"
+  | "video_url"
 
 export type OutputFormat = 
   | "instagram_reels"
@@ -47,7 +48,7 @@ export interface RepurposedOutput {
   outputRefId: string
   platform: string
   contentPreview: string
-  status: "pending" | "approved" | "rejected" | "published"
+  status: "pending" | "approved" | "rejected" | "published" | "scheduled" | "skipped" | "failed"
 }
 
 export interface ExecutePipelineResult {
