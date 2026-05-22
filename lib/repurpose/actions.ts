@@ -14,7 +14,10 @@ import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapter
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { scheduleSocialPost } from "@/app/actions/social-media-automation"
+import { scheduleSocialPost, getConnectedAccounts } from "@/app/actions/social-media-automation"
+import { createVideoProject } from "@/app/actions/video/create-video-project"
+import { transcribeFromUrl } from "@/lib/repurpose/transcribe"
+import { DISTRIBUTABLE_PLATFORMS, extractHashtags } from "@/lib/repurpose/shared"
 import type {
   SourceType,
   OutputFormat,
@@ -25,11 +28,6 @@ import type {
   SavePipelineResult
 } from "@/lib/repurpose/types"
 import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
-
-// Platforms accepted by social_posts.platform CHECK constraint — only these can
-// be auto-distributed. Other output formats (email/blog/quote_graphic) generate
-// copy but have no distribution backend yet.
-const DISTRIBUTABLE_PLATFORMS = new Set(["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest"])
 
 interface AgentBranding {
   agentName: string
@@ -69,11 +67,6 @@ function buildRepurposePrompt(args: {
     `Do NOT make claims about specific properties, prices, or guarantees. Follow fair-housing rules.`,
     limit,
   ].join(" ")
-}
-
-function extractHashtags(text: string): string[] {
-  const matches = text.match(/#[\p{L}0-9_]+/gu) ?? []
-  return Array.from(new Set(matches.map((h) => h.slice(1)))).slice(0, 15)
 }
 
 async function logRepurpose(
@@ -487,4 +480,177 @@ export async function repurposeVideoUrl(params: {
   }
 
   return executePipeline({ pipelineId: created.pipelineId, brokerageId: ctx.brokerageId })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 8. REPURPOSE A VIDEO URL INTO A NEW BRANDED VIDEO (omnipresence, async)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Flow: paste video URL → transcript (Whisper on a direct media file, else a
+// pasted transcript) → AI rewrites it into the agent's branded short script →
+// create an ai_video_projects row → return the D-ID payload for the client to
+// kick off generation. Generation is async; when the poll-did-videos cron sets
+// video_url, the completion handler drafts per-channel social posts for review
+// (see lib/repurpose/distribute.ts, wired in app/actions/video-content.ts).
+
+function buildVideoScriptPrompt(args: { transcript: string; branding: AgentBranding }): string {
+  return [
+    `Rewrite the following transcript into a punchy ~150-word first-person video script for real estate agent ${args.branding.agentName}` +
+      (args.branding.brokerageName ? ` of ${args.branding.brokerageName}` : "") + ".",
+    `Match a warm, professional brand voice, open with a hook, and end with a clear call to action.`,
+    `Do NOT invent specific properties, prices, or guarantees. Follow fair-housing rules (no language about protected classes).`,
+    `Return ONLY the spoken script text, no headings or stage directions.`,
+    `Transcript:\n${args.transcript.slice(0, 6000)}`,
+  ].join(" ")
+}
+
+export interface RepurposeToVideoResult {
+  success: boolean
+  projectId?: string
+  status?: "generating"
+  /** Client posts this to /api/did/generate-video to start the render. */
+  didPayload?: {
+    video_project_id: string
+    script: string
+    elevenlabs_voice_id: string
+    did_avatar_id?: string
+    agent_photo_url?: string | null
+    agent_video_url?: string | null
+  }
+  needsSetup?: "social" | "voice"
+  needsTranscript?: boolean
+  redirectTo?: string
+  error?: string
+}
+
+export async function repurposeUrlToBrandedVideo(input: {
+  sourceUrl: string
+  transcript?: string
+  channels: OutputFormat[]
+  title?: string
+}): Promise<RepurposeToVideoResult> {
+  const url = input.sourceUrl?.trim()
+  if (!url || !/^https?:\/\/\S+$/i.test(url)) {
+    return { success: false, error: "Enter a valid http(s) video URL" }
+  }
+  if (!input.channels?.length) {
+    return { success: false, error: "Select at least one channel" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.agentId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const access = await canAccessFeature(ctx.userId, "omnipresence_repurposer")
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Feature not available" }
+  }
+
+  // Gate A — must have at least one connected social account.
+  const accounts = await getConnectedAccounts(ctx.agentId)
+  if (accounts.length === 0) {
+    return { success: false, needsSetup: "social", redirectTo: "/settings/integrations", error: "Connect a social account before repurposing." }
+  }
+
+  const supabase = await createClient()
+
+  // Gate B — must have a voice clone + an avatar source (D-ID hard-fails otherwise).
+  const { data: voice } = await supabase
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_avatar_id, did_video_url, did_photo_url")
+    .eq("agent_id", ctx.agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("is_default", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const avatarSource = voice?.did_avatar_id || voice?.did_video_url || voice?.did_photo_url
+  if (!voice?.elevenlabs_voice_id || !avatarSource) {
+    return { success: false, needsSetup: "voice", redirectTo: "/dashboard/videos/voice", error: "Set up your voice clone and avatar before generating videos." }
+  }
+
+  // Transcript: a pasted transcript wins; otherwise transcribe a direct media file.
+  let transcript = input.transcript?.trim() ?? ""
+  if (!transcript) {
+    const t = await transcribeFromUrl(url)
+    if (!t.success) {
+      const hint = t.reason === "not_media"
+        ? "Couldn't read that link automatically (e.g. a YouTube page). Paste the transcript to continue."
+        : `Couldn't transcribe the video (${t.message}). Paste the transcript to continue.`
+      return { success: false, needsTranscript: true, error: hint }
+    }
+    transcript = t.transcript
+  }
+
+  // Rewrite into a branded script, then run the brand-voice + compliance gates.
+  const branding = await loadAgentBranding(supabase, ctx.userId, ctx.brokerageId)
+  const scriptResp = await generateAIResponse({
+    prompt: buildVideoScriptPrompt({ transcript, branding }),
+    maxTokens: 600,
+    metadata: { userId: ctx.userId, brokerageId: ctx.brokerageId, feature: "video_script_generation" },
+  })
+  const script = (scriptResp.text ?? "").trim()
+  if (!script) {
+    return { success: false, error: "Could not generate a script from the transcript" }
+  }
+
+  const brand = await applyKernelBrandVoice({
+    brokerageId: ctx.brokerageId, actorUserId: ctx.userId, actorRole: "agent",
+    journeyType: "marketing", persona: "seller", messageType: "social", content: script,
+  })
+  if (isBrandVoiceBlocked(brand)) {
+    return { success: false, error: "Generated script violates brand voice — try a different source." }
+  }
+  const comp = await evaluateKernelOutbound({
+    actorContext: { userId: ctx.userId, role: "agent", brokerageId: ctx.brokerageId },
+    journeyType: "marketing", persona: "seller", messageType: "social", content: script,
+    contact: { id: ctx.userId, status: "active" },
+  })
+  if (isComplianceBlocked(comp)) {
+    return { success: false, error: "Generated script failed a compliance check." }
+  }
+
+  // Create the video project (draft) — generation is kicked off client-side.
+  // NOTE: ai_video_projects.agent_id FKs to users.id (not agents.id), matching
+  // the existing create flow which passes the user id.
+  const created = await createVideoProject({
+    brokerageId: ctx.brokerageId,
+    agentId: ctx.userId,
+    title: input.title?.trim() || `Repurposed video ${new Date().toISOString().slice(0, 10)}`,
+    script,
+    videoType: "social_reel",
+    backgroundType: "solid",
+    backgroundColorHex: "#ffffff",
+    format: "vertical",
+    durationSeconds: 60,
+    captionsEnabled: true,
+  })
+  if (!created.success || !created.project) {
+    return { success: false, error: created.error ?? "Could not create the video project" }
+  }
+  const projectId = created.project.id
+
+  // Persist the distribution intent so the completion hook drafts per-channel posts.
+  await supabase
+    .from("ai_video_projects")
+    .update({
+      video_metadata: {
+        ...((created.project as { video_metadata?: Record<string, unknown> }).video_metadata ?? {}),
+        repurpose: { channels: input.channels, source_url: url, distribute_as_draft: true },
+      },
+    })
+    .eq("id", projectId)
+
+  return {
+    success: true,
+    projectId,
+    status: "generating",
+    didPayload: {
+      video_project_id: projectId,
+      script,
+      elevenlabs_voice_id: voice.elevenlabs_voice_id,
+      ...(voice.did_avatar_id ? { did_avatar_id: voice.did_avatar_id } : {}),
+      agent_photo_url: voice.did_avatar_id ? null : voice.did_photo_url ?? null,
+      agent_video_url: voice.did_avatar_id ? null : voice.did_video_url ?? null,
+    },
+  }
 }
