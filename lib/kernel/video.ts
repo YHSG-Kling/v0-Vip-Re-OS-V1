@@ -491,32 +491,35 @@ export async function distributeVideoProject(
         continue
       }
 
-      // Publish to platform via dispatch
-      const publishUrl = await publishToChannel({
-        platform: channel,
-        videoUrl: project.video_url,
-        title: input.title,
-        description: input.description,
-        tags: input.tags,
-        accountId: account.id,
-      })
-
-      // Record social post
-      await supabase.from("social_posts").insert({
+      // Schedule the post for the real publisher cron (publish-social-posts),
+      // which performs the actual platform publish via lib/social/publisher.ts
+      // and records external_post_id + published_at. We do NOT fabricate a
+      // published URL — the post goes out as 'scheduled'/'approved' and the cron
+      // owns the live publish + URL.
+      const { error: postError } = await supabase.from("social_posts").insert({
+        brokerage_id: project.brokerage_id,
         agent_id: project.agent_id,
+        social_account_id: account.id,
         platform: channel,
+        post_type: "custom",
         content: input.description,
-        media_url: project.video_url,
-        published_url: publishUrl,
-        status: "published",
+        media_urls: [project.video_url],
+        hashtags: input.tags ?? [],
+        listing_id: project.listing_id ?? null,
+        status: "scheduled",
+        approval_status: "approved",
+        scheduled_for: new Date().toISOString(),
+        ai_generated: true,
         created_at: new Date().toISOString(),
       })
 
-      distributions.push({
-        channel,
-        status: "published",
-        url: publishUrl,
-      })
+      if (postError) {
+        distributions.push({ channel, status: "failed", error: postError.message })
+        continue
+      }
+
+      // Queued for the publisher cron — not yet live on the platform.
+      distributions.push({ channel, status: "pending" })
     } catch (err) {
       distributions.push({
         channel,
@@ -526,12 +529,11 @@ export async function distributeVideoProject(
     }
   }
 
-  // Update project status
+  // Mark the project distributed (posts now carry their own publish lifecycle).
   await supabase
     .from("ai_video_projects")
     .update({
-      status: "published",
-      distribution_channels: input.channels,
+      status: "distributed",
       updated_at: new Date().toISOString(),
     })
     .eq("id", input.projectId)
@@ -549,44 +551,14 @@ export async function distributeVideoProject(
  * Database: UPDATE ai_video_projects with repurposed URLs
  */
 export async function repurposeVideoOutput(
-  input: RepurposeVideoOutputInput
+  _input: RepurposeVideoOutputInput
 ): Promise<RepurposeVideoOutputOutput> {
-  const supabase = await createClient()
-
-  const { data: project, error } = await supabase
-    .from("ai_video_projects")
-    .select("*")
-    .eq("id", input.projectId)
-    .maybeSingle()
-
-  if (error || !project || !project.video_url) {
-    throw new Error(`Video not found: ${input.projectId}`)
-  }
-
-  const artifacts = []
-
-  for (const format of input.formats) {
-    const url = await generateArtifact(project.video_url, format)
-    artifacts.push({
-      format,
-      url,
-      duration: format === "shorts" ? 15 : format === "clips" ? 30 : undefined,
-    })
-  }
-
-  // Store artifact URLs
-  await supabase
-    .from("ai_video_projects")
-    .update({
-      repurposed_artifacts: artifacts,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.projectId)
-
-  return {
-    projectId: input.projectId,
-    artifacts,
-  }
+  // No video-processing backend (shorts/clips/thumbnail generation) is wired
+  // yet. The prior implementation fabricated artifact URLs by appending
+  // ?format=… to the source video, which would surface "clips" that don't
+  // exist. Fail honestly until a real processor (e.g. an ffmpeg/Shotstack
+  // worker) is connected, rather than returning fake artifacts.
+  throw new Error("Video repurposing (shorts/clips/thumbnails) is not yet available")
 }
 
 /**
@@ -610,11 +582,13 @@ export async function loadVideoPerformance(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
-  // Aggregate analytics from social posts
+  // Aggregate analytics from social posts. social_posts stores media as a
+  // media_urls array and metrics in engagement_data (there is no media_url /
+  // engagement_metrics column).
   const { data: posts } = await supabase
     .from("social_posts")
-    .select("engagement_metrics")
-    .eq("media_url", project.video_url)
+    .select("engagement_data")
+    .contains("media_urls", [project.video_url])
 
   let totalViews = 0
   let totalEngagement = 0
@@ -622,7 +596,7 @@ export async function loadVideoPerformance(
   let totalShares = 0
 
   for (const post of posts || []) {
-    const metrics = post.engagement_metrics || {}
+    const metrics = (post.engagement_data || {}) as Record<string, number>
     totalViews += metrics.views || 0
     totalEngagement += metrics.engagement || 0
     totalComments += metrics.comments || 0
@@ -749,22 +723,3 @@ async function checkHeyGenJobStatus(jobId: string): Promise<{
   }
 }
 
-async function publishToChannel(params: {
-  platform: string
-  videoUrl: string
-  title: string
-  description: string
-  tags?: string[]
-  accountId: string
-}): Promise<string> {
-  // Publish to YouTube/LinkedIn/TikTok - would use actual dispatch provider
-  return `https://${params.platform}.com/watch?v=${Date.now()}`
-}
-
-async function generateArtifact(
-  videoUrl: string,
-  format: string
-): Promise<string> {
-  // Generate shorts/clips/thumbnail - would use actual video processing
-  return `${videoUrl}?format=${format}`
-}
