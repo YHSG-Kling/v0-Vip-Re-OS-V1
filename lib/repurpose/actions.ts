@@ -16,6 +16,7 @@ import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { scheduleSocialPost, getConnectedAccounts } from "@/app/actions/social-media-automation"
 import { createVideoProject } from "@/app/actions/video/create-video-project"
+import { generateBlogPost } from "@/app/actions/blog"
 import { transcribeFromUrl } from "@/lib/repurpose/transcribe"
 import { DISTRIBUTABLE_PLATFORMS, extractHashtags } from "@/lib/repurpose/shared"
 import type {
@@ -515,6 +516,8 @@ export interface RepurposeToVideoResult {
     did_avatar_id?: string
     agent_photo_url?: string | null
     agent_video_url?: string | null
+    intro_video_url?: string
+    outro_video_url?: string
   }
   needsSetup?: "social" | "voice"
   needsTranscript?: boolean
@@ -640,6 +643,17 @@ export async function repurposeUrlToBrandedVideo(input: {
     })
     .eq("id", projectId)
 
+  // Intro/outro stock clips (applied by the poll cron via ffmpeg concat). Optional.
+  const { data: clips } = await supabase
+    .from("video_assets")
+    .select("video_url, category")
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("category", ["intro", "outro"])
+    .order("created_at", { ascending: false })
+    .limit(10)
+  const introUrl = clips?.find((c) => c.category === "intro")?.video_url ?? null
+  const outroUrl = clips?.find((c) => c.category === "outro")?.video_url ?? null
+
   return {
     success: true,
     projectId,
@@ -651,6 +665,77 @@ export async function repurposeUrlToBrandedVideo(input: {
       ...(voice.did_avatar_id ? { did_avatar_id: voice.did_avatar_id } : {}),
       agent_photo_url: voice.did_avatar_id ? null : voice.did_photo_url ?? null,
       agent_video_url: voice.did_avatar_id ? null : voice.did_video_url ?? null,
+      ...(introUrl ? { intro_video_url: introUrl } : {}),
+      ...(outroUrl ? { outro_video_url: outroUrl } : {}),
     },
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 9. "NO VIDEO" OUTPUT MODES — repurpose a URL into a blog post or a podcast
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Shared: pasted transcript wins; otherwise transcribe a direct media file.
+async function acquireTranscript(
+  url: string,
+  pasted?: string,
+): Promise<{ ok: true; transcript: string } | { ok: false; error: string }> {
+  const t = pasted?.trim()
+  if (t) return { ok: true, transcript: t }
+  const r = await transcribeFromUrl(url)
+  if (!r.success) {
+    const hint = r.reason === "not_media"
+      ? "Couldn't read that link automatically (e.g. a YouTube page). Paste the transcript to continue."
+      : `Couldn't transcribe the video (${r.message}). Paste the transcript to continue.`
+    return { ok: false, error: hint }
+  }
+  return { ok: true, transcript: r.transcript }
+}
+
+export interface RepurposeBlogResult {
+  success: boolean
+  postId?: string
+  needsTranscript?: boolean
+  error?: string
+}
+
+export async function repurposeUrlToBlogPost(input: {
+  sourceUrl: string
+  transcript?: string
+  title?: string
+}): Promise<RepurposeBlogResult> {
+  const url = input.sourceUrl?.trim()
+  if (!url || !/^https?:\/\/\S+$/i.test(url)) return { success: false, error: "Enter a valid http(s) video URL" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const tr = await acquireTranscript(url, input.transcript)
+  if (!tr.ok) return { success: false, needsTranscript: true, error: tr.error }
+
+  // Derive a few SEO keywords from the transcript (blog generator needs them).
+  let keywords: string[] = []
+  try {
+    const kw = await generateAIResponse({
+      prompt: `Extract 3-5 concise SEO keywords (comma-separated, no # symbols) for a real estate blog post based on this transcript:\n${tr.transcript.slice(0, 3000)}`,
+      maxTokens: 60,
+      metadata: { userId: ctx.userId, brokerageId: ctx.brokerageId, feature: "blog_generation" },
+    })
+    keywords = Array.from(
+      new Set((kw.text ?? "").split(",").map((s) => s.trim().replace(/^#+/, "")).filter(Boolean)),
+    ).slice(0, 5)
+  } catch {
+    /* fall back below */
+  }
+  if (keywords.length === 0) keywords = ["real estate"]
+
+  const res = await generateBlogPost(ctx.userId, {
+    brokerageId: ctx.brokerageId,
+    agentUserId: ctx.userId,
+    title: input.title?.trim() || undefined,
+    keywords,
+    sourceContent: tr.transcript,
+    generateCoverImage: true,
+  })
+  return { success: res.success, postId: res.postId, error: res.error }
 }

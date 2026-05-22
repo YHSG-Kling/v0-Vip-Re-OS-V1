@@ -23,6 +23,11 @@ export interface GenerateBlogPostParams {
   keywords: string[]
   campaignId?: string
   tone?: string
+  /** Source material to repurpose (e.g. a video transcript) — the article is
+   * written FROM this when provided, instead of from keywords alone. */
+  sourceContent?: string
+  /** When true, generate a branded cover image and set featured_image_url. */
+  generateCoverImage?: boolean
 }
 
 export interface UpdateBlogPostParams {
@@ -79,7 +84,7 @@ ${brandVoice.keyBrandMessages?.length ? `Key messages to incorporate: ${brandVoi
 ${brandVoice.prohibitedWords?.length ? `Avoid these words: ${brandVoice.prohibitedWords.join(", ")}` : ""}`
 
   const userPrompt = `Write a 600-800 word SEO-optimized blog post about real estate topics related to: ${topicKeywords}.
-${params.title ? `Use this title: ${params.title}` : "Create an engaging title."}
+${params.sourceContent ? `Base the article on this source material (repurpose its key points; do not invent specific properties, prices, or guarantees):\n"""${params.sourceContent.slice(0, 6000)}"""\n` : ""}${params.title ? `Use this title: ${params.title}` : "Create an engaging title."}
 
 Include these keywords naturally throughout the content: ${topicKeywords}
 
@@ -141,6 +146,18 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     }
   }
 
+  // ── 5b. Optional branded cover image ────────────────────────────────────────
+  let featuredImageUrl: string | null = null
+  if (params.generateCoverImage && blogResult.featuredImagePrompt) {
+    try {
+      const { generateImage } = await import("@/lib/ai/image-generation")
+      const img = await generateImage({ prompt: blogResult.featuredImagePrompt, purpose: "blog_hero" })
+      if (img.success && img.imageUrl) featuredImageUrl = img.imageUrl
+    } catch (imgErr) {
+      console.error("[generateBlogPost] Cover image generation failed (non-blocking):", imgErr)
+    }
+  }
+
   // ── 6. Insert blog_posts ────────────────────────────────────────────────────
   const { data: post, error: postError } = await supabase
     .from("blog_posts")
@@ -152,10 +169,11 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       slug: blogResult.slug,
       excerpt: blogResult.excerpt,
       content: blogResult.content,
+      featured_image_url: featuredImageUrl,
       publish_status: "draft",
-      visibility_scope: params.agentUserId ? "agent" : "brokerage",
+      visibility_scope: params.agentUserId ? "private" : "brokerage",
       created_by: userId,
-      compliance_approved: false,
+      is_ai_generated: true,
     })
     .select("id")
     .maybeSingle()
@@ -191,7 +209,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
           keyword: keyword,
           keyword_type: isPrimary ? "primary" : "secondary",
           search_intent: "informational",
-          visibility_scope: params.agentUserId ? "agent" : "brokerage",
+          visibility_scope: params.agentUserId ? "private" : "brokerage",
           created_by: userId,
           is_active: true,
         })

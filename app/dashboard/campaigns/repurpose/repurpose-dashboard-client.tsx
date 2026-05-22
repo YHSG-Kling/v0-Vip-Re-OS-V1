@@ -161,6 +161,7 @@ const OUTPUT_FORMAT_UI: Record<OutputFormat, { label: string; icon: React.ReactN
   email_snippet: { label: "Email", icon: <FileText className="h-4 w-4" />, color: "bg-emerald-100 text-emerald-700" },
   blog_excerpt: { label: "Blog Excerpt", icon: <FileText className="h-4 w-4" />, color: "bg-indigo-100 text-indigo-700" },
   quote_graphic: { label: "Quote Card", icon: <Copy className="h-4 w-4" />, color: "bg-violet-100 text-violet-700" },
+  google_business_post: { label: "Google Business", icon: <Link2 className="h-4 w-4" />, color: "bg-emerald-100 text-emerald-700" },
 }
 
 const STATUS_CONFIG: Record<string, { icon: React.ReactNode; color: string }> = {

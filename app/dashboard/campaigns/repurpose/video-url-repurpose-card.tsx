@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Loader2, Link2, Send, Clapperboard } from "lucide-react"
+import { Loader2, Link2, Send, Clapperboard, FileText } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -11,7 +11,11 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
-import { repurposeVideoUrl, repurposeUrlToBrandedVideo } from "@/lib/repurpose/actions"
+import {
+  repurposeVideoUrl,
+  repurposeUrlToBrandedVideo,
+  repurposeUrlToBlogPost,
+} from "@/lib/repurpose/actions"
 import type { OutputFormat, RepurposedOutput } from "@/lib/repurpose/types"
 
 const CHANNELS: { platform: string; format: OutputFormat; label: string }[] = [
@@ -21,6 +25,7 @@ const CHANNELS: { platform: string; format: OutputFormat; label: string }[] = [
   { platform: "facebook", format: "facebook_reels", label: "Facebook Reels" },
   { platform: "linkedin", format: "linkedin_post", label: "LinkedIn" },
   { platform: "twitter", format: "twitter_thread", label: "X / Twitter" },
+  { platform: "google_business", format: "google_business_post", label: "Google Business" },
 ]
 
 const STATUS_STYLES: Record<string, string> = {
@@ -31,7 +36,8 @@ const STATUS_STYLES: Record<string, string> = {
   pending: "bg-blue-100 text-blue-800",
 }
 
-type Mode = "distribute" | "create"
+type Mode = "create" | "distribute" | "blog"
+const NEEDS_CHANNELS: Mode[] = ["create", "distribute"]
 
 export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatforms: string[] }) {
   const router = useRouter()
@@ -59,28 +65,33 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
       toast.error("Enter a valid http(s) video URL")
       return false
     }
-    if (selected.size === 0) {
+    if (NEEDS_CHANNELS.includes(mode) && selected.size === 0) {
       toast.error("Select at least one channel")
       return false
     }
     return true
   }
 
-  const runDistribute = () => {
+  const handleTranscriptGate = (res: { needsTranscript?: boolean; error?: string }): boolean => {
+    if (res.needsTranscript) {
+      setShowTranscript(true)
+      toast.error(res.error ?? "Paste the transcript to continue")
+      return true
+    }
+    return false
+  }
+
+  const runDistribute = () =>
     startTransition(async () => {
       const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected] })
-      if (!res.success) {
-        toast.error(res.error ?? "Repurpose failed")
-        return
-      }
+      if (!res.success) return void toast.error(res.error ?? "Repurpose failed")
       setResults(res.outputs ?? [])
       const scheduled = (res.outputs ?? []).filter((o) => o.status === "scheduled").length
       toast.success(scheduled > 0 ? `Scheduled to ${scheduled} channel${scheduled === 1 ? "" : "s"}` : "Generated — see results below")
       router.refresh()
     })
-  }
 
-  const runCreate = () => {
+  const runCreate = () =>
     startTransition(async () => {
       const res = await repurposeUrlToBrandedVideo({
         sourceUrl: url.trim(),
@@ -92,16 +103,8 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         router.push(res.redirectTo)
         return
       }
-      if (res.needsTranscript) {
-        setShowTranscript(true)
-        toast.error(res.error ?? "Paste the transcript to continue")
-        return
-      }
-      if (!res.success || !res.didPayload) {
-        toast.error(res.error ?? "Could not start video generation")
-        return
-      }
-      // Kick off the D-ID render client-side (session cookie travels automatically).
+      if (handleTranscriptGate(res)) return
+      if (!res.success || !res.didPayload) return void toast.error(res.error ?? "Could not start video generation")
       try {
         const kick = await fetch("/api/did/generate-video", {
           method: "POST",
@@ -110,23 +113,37 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         })
         if (!kick.ok) {
           const body = await kick.json().catch(() => ({}))
-          toast.error(body.error ?? "Video project created, but generation failed to start. Retry it from your video library.")
-          return
+          return void toast.error(body.error ?? "Video project created, but generation failed to start. Retry it from your video library.")
         }
       } catch {
-        toast.error("Video project created, but the network request failed. Retry generation from your video library.")
-        return
+        return void toast.error("Video project created, but the network request failed. Retry generation from your video library.")
       }
       toast.success("Generating your branded video. Posts will be drafted for review when it's ready.")
       router.refresh()
     })
-  }
+
+  const runBlog = () =>
+    startTransition(async () => {
+      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      if (handleTranscriptGate(res)) return
+      if (!res.success) return void toast.error(res.error ?? "Could not create the blog post")
+      toast.success("Draft blog post with a cover image created — review it in your blog dashboard.")
+      router.refresh()
+    })
 
   const handleRun = () => {
     if (!validate()) return
     if (mode === "create") runCreate()
-    else runDistribute()
+    else if (mode === "distribute") runDistribute()
+    else runBlog()
   }
+
+  const MODES: { id: Mode; label: string; icon: React.ReactNode; blurb: string }[] = [
+    { id: "create", label: "New branded video", icon: <Clapperboard className="mr-2 h-4 w-4" />, blurb: "AI grabs the transcript, rewrites it in your brand voice, and renders a new branded video (your voice + avatar, intro/outro). When ready, per-channel posts are drafted for your review." },
+    { id: "distribute", label: "Distribute this video", icon: <Send className="mr-2 h-4 w-4" />, blurb: "Schedules the same video to each connected channel with AI-written, platform-tailored captions." },
+    { id: "blog", label: "Blog post", icon: <FileText className="mr-2 h-4 w-4" />, blurb: "No video — repurpose the transcript into an SEO blog post with a generated cover image (saved as a draft)." },
+  ]
+  const activeBlurb = MODES.find((m) => m.id === mode)?.blurb ?? ""
 
   return (
     <Card>
@@ -134,36 +151,25 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         <CardTitle className="flex items-center gap-2">
           <Link2 className="h-5 w-5" /> Repurpose a Video URL
         </CardTitle>
-        <CardDescription>
-          Turn a video link into omnipresence across your connected social channels.
-        </CardDescription>
+        <CardDescription>Turn one video link into omnipresence — video, social posts, a blog post, or a podcast.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant={mode === "create" ? "default" : "outline"}
-            onClick={() => setMode("create")}
-            disabled={isPending}
-          >
-            <Clapperboard className="mr-2 h-4 w-4" /> New branded video
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={mode === "distribute" ? "default" : "outline"}
-            onClick={() => setMode("distribute")}
-            disabled={isPending}
-          >
-            <Send className="mr-2 h-4 w-4" /> Distribute this video
-          </Button>
+          {MODES.map((m) => (
+            <Button
+              key={m.id}
+              type="button"
+              size="sm"
+              variant={mode === m.id ? "default" : "outline"}
+              onClick={() => setMode(m.id)}
+              disabled={isPending}
+            >
+              {m.icon}
+              {m.label}
+            </Button>
+          ))}
         </div>
-        <p className="text-xs text-muted-foreground">
-          {mode === "create"
-            ? "AI grabs the transcript, rewrites it in your brand voice, and renders a new branded video (your voice + avatar). When ready, per-channel posts are drafted for your review."
-            : "Schedules the same video to each connected channel with AI-written, platform-tailored captions."}
-        </p>
+        <p className="text-xs text-muted-foreground">{activeBlurb}</p>
 
         <div className="space-y-2">
           <Label htmlFor="repurpose-url">Source video URL</Label>
@@ -176,7 +182,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
           />
         </div>
 
-        {mode === "create" && (showTranscript || transcript) && (
+        {mode !== "distribute" && (showTranscript || transcript) && (
           <div className="space-y-2">
             <Label htmlFor="repurpose-transcript">Transcript (paste if the link isn't a direct media file)</Label>
             <Textarea
@@ -190,44 +196,36 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
           </div>
         )}
 
-        <div className="space-y-2">
-          <Label>Channels</Label>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {CHANNELS.map((ch) => {
-              const isConnected = connected.has(ch.platform)
-              return (
-                <label key={ch.format} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-                  <Checkbox
-                    checked={selected.has(ch.format)}
-                    onCheckedChange={() => toggle(ch.format)}
-                    disabled={isPending}
-                  />
-                  <span className="flex-1">{ch.label}</span>
-                  {!isConnected && <span className="text-xs text-muted-foreground">not connected</span>}
-                </label>
-              )
-            })}
+        {NEEDS_CHANNELS.includes(mode) && (
+          <div className="space-y-2">
+            <Label>Channels</Label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {CHANNELS.map((ch) => {
+                const isConnected = connected.has(ch.platform)
+                return (
+                  <label key={ch.format} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+                    <Checkbox checked={selected.has(ch.format)} onCheckedChange={() => toggle(ch.format)} disabled={isPending} />
+                    <span className="flex-1">{ch.label}</span>
+                    {!isConnected && <span className="text-xs text-muted-foreground">not connected</span>}
+                  </label>
+                )
+              })}
+            </div>
+            {connectedPlatforms.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No social accounts connected — you'll be sent to Settings → Integrations to connect them first.
+              </p>
+            )}
           </div>
-          {connectedPlatforms.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No social accounts connected — you'll be sent to Settings → Integrations to connect them first.
-            </p>
-          )}
-        </div>
+        )}
 
         <Button onClick={handleRun} disabled={isPending} className="w-full sm:w-auto">
           {isPending ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Working…
             </>
-          ) : mode === "create" ? (
-            <>
-              <Clapperboard className="mr-2 h-4 w-4" /> Generate branded video
-            </>
           ) : (
-            <>
-              <Send className="mr-2 h-4 w-4" /> Generate &amp; Distribute
-            </>
+            <>{MODES.find((m) => m.id === mode)?.icon}Run</>
           )}
         </Button>
 

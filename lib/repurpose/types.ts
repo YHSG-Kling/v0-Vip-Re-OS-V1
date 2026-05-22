@@ -22,6 +22,7 @@ export type OutputFormat =
   | "email_snippet"
   | "blog_excerpt"
   | "quote_graphic"
+  | "google_business_post"
 
 export interface PipelineConfig {
   id?: string
@@ -139,9 +140,15 @@ export const OUTPUT_FORMAT_CONFIG: Record<OutputFormat, {
     maxLength: 2000,
     outputTable: "blog_posts"
   },
-  quote_graphic: { 
-    displayName: "Quote Graphic", 
+  quote_graphic: {
+    displayName: "Quote Graphic",
     platform: "social",
     outputTable: "graphics"
+  },
+  google_business_post: {
+    displayName: "Google Business",
+    platform: "google_business",
+    maxLength: 1500,
+    outputTable: "social_posts"
   }
 }

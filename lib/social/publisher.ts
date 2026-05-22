@@ -420,6 +420,7 @@ export function validateContentForPlatform(
     tiktok: { maxLength: 2200, requiresMedia: true, mediaTypes: ["video"] },
     youtube: { maxLength: 5000, requiresMedia: true, mediaTypes: ["video"] },
     pinterest: { maxLength: 500, requiresMedia: true, mediaTypes: ["image"] },
+    google_business: { maxLength: 1500, requiresMedia: false },
   }
 
   const req = platformRequirements[platform.toLowerCase()]

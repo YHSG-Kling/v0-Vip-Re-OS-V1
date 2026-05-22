@@ -12,6 +12,7 @@ export const DISTRIBUTABLE_PLATFORMS = new Set([
   "tiktok",
   "youtube",
   "pinterest",
+  "google_business",
 ])
 
 export function extractHashtags(text: string): string[] {
