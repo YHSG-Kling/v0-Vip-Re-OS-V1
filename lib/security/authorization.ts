@@ -20,7 +20,7 @@ export async function requireSuperAdmin(): Promise<AuthorizedUser> {
       .single()
 
     if (error) throw new Error("Authorization check failed")
-    if (!data || data.platform_role !== "super_admin") {
+    if (!data || data.platform_role !== "superadmin") {
       throw new Error("Forbidden: Super admin access required")
     }
 

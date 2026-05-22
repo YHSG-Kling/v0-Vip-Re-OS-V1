@@ -41,7 +41,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
   // Load agent profile for brokerage_id
   const { data: profile } = await supabase
     .from("users")
-    .select("brokerage_id, first_name, last_name, role")
+    .select("brokerage_id, first_name, last_name")
     .eq("id", user.id)
     .single()
 

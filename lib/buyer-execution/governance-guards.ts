@@ -280,7 +280,7 @@ export async function checkAdminOverride(params: {
   // Verify admin/broker role
   const { data: user, error: userError } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, platform_role')
     .eq('id', userId)
     .single()
 
@@ -288,7 +288,7 @@ export async function checkAdminOverride(params: {
     return { allowed: false, error: 'User not found' }
   }
 
-  if (!['admin', 'broker'].includes(user.role)) {
+  if (!['admin', 'broker', 'broker_owner', 'superadmin'].includes(user.user_type ?? '') && user.platform_role !== 'superadmin') {
     return { allowed: false, error: 'Only admins or brokers can override governance' }
   }
 

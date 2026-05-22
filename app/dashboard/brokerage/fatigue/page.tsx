@@ -28,12 +28,12 @@ export default async function BrokerageFatiguePage() {
   // Validate broker/admin role
   const { data: profile } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard")
-  if (!["broker", "admin", "manager"].includes(profile.role ?? "")) {
+  if (!["broker", "broker_owner", "admin", "manager", "superadmin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

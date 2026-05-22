@@ -15,14 +15,14 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .single()
 
   if (!userRow?.brokerage_id) redirect("/dashboard")
 
   // Marketing tiers are superadmin-only — redirect everyone else
-  if (userRow.role !== "superadmin") {
+  if (userRow.user_type !== "superadmin") {
     redirect(`/dashboard/listings/${listingId}/lifecycle`)
   }
 
@@ -97,7 +97,7 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
     .select("id, asset_type, asset_name, campaign_id")
     .eq("campaign_id", campaigns?.[0]?.id ?? "00000000-0000-0000-0000-000000000000")
 
-  const isAdmin = ["broker", "admin"].includes(userRow.role)
+  const isAdmin = ["broker", "broker_owner", "admin", "superadmin"].includes(userRow.user_type ?? "")
 
   return (
     <MarketingTierClient

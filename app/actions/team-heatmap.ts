@@ -98,11 +98,11 @@ export async function getHeatmapSnapshots(
   // Check user role for filtering
   const { data: user } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  const isPrivileged = ["broker", "admin", "team_lead"].includes(user?.role || "")
+  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(user?.user_type || "")
 
   let query = supabase
     .from("team_heatmap_snapshots")
@@ -452,11 +452,11 @@ export async function getAgentsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  const isPrivileged = ["broker", "admin", "team_lead"].includes(user?.role || "")
+  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(user?.user_type || "")
 
   if (!isPrivileged) {
     return { agents: [], error: null }
@@ -499,11 +499,11 @@ export async function getTeamsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  if (user?.role !== "broker" && user?.role !== "admin") {
+  if (!["broker", "broker_owner", "admin", "superadmin"].includes(user?.user_type || "")) {
     return { teams: [], error: null }
   }
 

@@ -163,11 +163,11 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
   if (!isExpired) {
     const { data: user } = await supabase
       .from("users")
-      .select("user_type, role")
+      .select("user_type")
       .eq("id", (await supabase.auth.getUser()).data.user?.id)
       .single()
 
-    if (user?.role !== "broker" && user?.role !== "admin") {
+    if (!["broker", "broker_owner", "admin", "superadmin"].includes(user?.user_type ?? "")) {
       return { success: false, error: "Only brokers or admins can refresh non-expired reports" }
     }
   }

@@ -31,7 +31,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   // Auth: agent owns buyer or broker/admin in same brokerage
   const { data: agentProfile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role")
+    .select("id, brokerage_id, user_type")
     .eq("id", user.id)
     .single()
 
@@ -45,7 +45,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   if (!contact) redirect("/dashboard/buyers")
 
   const isOwner  = contact.agent_id === user.id
-  const isBroker = ["broker", "admin"].includes(agentProfile?.role ?? "") &&
+  const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile?.user_type ?? "") &&
     agentProfile?.brokerage_id === contact.brokerage_id
 
   if (!isOwner && !isBroker) redirect("/dashboard/buyers")

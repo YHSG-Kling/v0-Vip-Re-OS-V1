@@ -30,20 +30,21 @@ export async function getListingCoaching(
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, user_type, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .single()
 
   if (!userRow?.brokerage_id) return { success: false, error: "No brokerage" }
 
-  // Load listing — respect agent scope
+  // Load listing — respect agent scope. Default to the restrictive ("agent")
+  // path when user_type is absent so a null role can never widen visibility.
   let listingQuery = supabase
     .from("listings")
     .select("id, lifecycle_stage, contact_id, brokerage_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
-  if (userRow.role === "agent") {
+  if ((userRow.user_type ?? "agent") === "agent") {
     listingQuery = listingQuery.eq("assigned_agent_id", user.id)
   }
 

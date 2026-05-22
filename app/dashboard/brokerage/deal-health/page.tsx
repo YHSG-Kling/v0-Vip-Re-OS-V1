@@ -25,18 +25,17 @@ export default async function DealHealthDashboardPage() {
   if (!user) redirect("/login")
 
   // Get user's record from users table (not profiles)
-  // Schema: users.id, users.role, users.brokerage_id
   const { data: userRecord } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!userRecord?.brokerage_id) redirect("/dashboard/onboarding")
 
-  // Gate to broker/admin/manager/tc roles
-  const allowedRoles = ["broker", "admin", "manager", "tc"]
-  if (!allowedRoles.includes(userRecord.role ?? "")) {
+  // Gate to broker/admin/manager/tc roles (or platform superadmin)
+  const allowedRoles = ["broker", "broker_owner", "admin", "manager", "tc", "superadmin"]
+  if (!allowedRoles.includes(userRecord.user_type ?? "") && userRecord.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

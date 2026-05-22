@@ -50,12 +50,12 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   const { data: user } = await supabase.auth.getUser()
   const { data: userData } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type")
     .eq("id", user.user?.id)
     .single()
 
-  const userRole = userData?.role || "agent"
-  const canViewAllCalls = ["team_lead", "broker", "admin", "compliance_officer"].includes(userRole)
+  const userRole = userData?.user_type || "agent"
+  const canViewAllCalls = ["team_lead", "broker", "broker_owner", "admin", "superadmin", "compliance_officer"].includes(userRole)
 
   // Fetch voice call with contact and agent info
   const { data: voiceCall, error: voiceCallError } = await supabase

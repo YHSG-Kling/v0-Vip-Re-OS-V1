@@ -26,7 +26,7 @@ export default async function RepurposePage() {
     // Get user profile with role
     const { data: profile } = await supabase
       .from("users")
-      .select("role, first_name, last_name, user_type")
+      .select("first_name, last_name, user_type")
       .eq("id", userId)
       .maybeSingle()
 
@@ -93,7 +93,7 @@ export default async function RepurposePage() {
           userId={userId}
           brokerageId={brokerageId ?? ""}
           teamId={teamId}
-          userRole={profile?.role || "agent"}
+          userRole={profile?.user_type || "agent"}
           pipelines={pipelinesResult.success ? pipelinesResult.pipelines : []}
           history={historyResult.success ? historyResult.history : []}
           sources={sources}

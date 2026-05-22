@@ -40,20 +40,21 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .single()
 
   if (!userRow?.brokerage_id) redirect("/dashboard")
 
-  // Load listing — auth scope: agent=own, team_lead=team, broker/admin=any
+  // Load listing — auth scope: agent=own, team_lead=team, broker/admin=any.
+  // Default to the restrictive ("agent") path when user_type is absent.
   let listingQuery = supabase
     .from("listings")
     .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
-  if (userRow.role === "agent") {
+  if ((userRow.user_type ?? "agent") === "agent") {
     listingQuery = listingQuery.eq("agent_id", user.id)
   }
 
@@ -232,8 +233,8 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
-  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
-  const isSuperAdmin = userRow.role === "superadmin"
+  const canOverride = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRow.user_type ?? "")
+  const isSuperAdmin = userRow.user_type === "superadmin"
 
   // Blockers
   const blockers: string[] = []
@@ -407,7 +408,7 @@ const { data: listingVendorBookings } = await supabase
               listingId={listingId}
               userId={user.id}
               brokerageId={userRow.brokerage_id}
-              role={userRow.role as "agent" | "team_lead" | "admin" | "broker"}
+              role={(userRow.user_type ?? "agent") as "agent" | "team_lead" | "admin" | "broker"}
               currentStage={currentStage}
               listingAddress={`${listing.address}, ${listing.city}, ${listing.state}`}
               listingStatus={(listing as any).status ?? ""}

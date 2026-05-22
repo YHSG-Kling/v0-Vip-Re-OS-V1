@@ -29,9 +29,9 @@ export default async function TransactionFormsPage() {
   if (!user) redirect("/login?redirect=/dashboard/admin/transaction-forms")
 
   const { data: userRow } = await supabase
-    .from("users").select("brokerage_id, role, platform_role").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   const brokerageId = userRow?.brokerage_id
-  const role = userRow?.role ?? userRow?.platform_role
+  const role = userRow?.user_type ?? userRow?.platform_role
   if (!brokerageId || !role || !ADMIN_ROLES.has(role)) {
     redirect("/dashboard")
   }
