@@ -8,6 +8,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { assembleSocialDisclosures, appendDisclosures } from "@/lib/social/assemble-disclosures"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -173,9 +174,18 @@ export async function GET(request: Request) {
           throw new Error(`No active account found for social_account_id: ${post.social_account_id}`)
         }
 
-        // Step 4: Call lib/social/publisher.ts publishToSocialPlatform
+        // Step 4: Append required real-estate disclosures (brokerage name +
+        // license # + Equal Housing) resolved from the agent→brokerage settings
+        // cascade, then publish. Final chokepoint, so every published post is
+        // compliant by construction regardless of how it was created.
+        const disclosures = await assembleSocialDisclosures(supabase, {
+          brokerageId: post.brokerage_id,
+          userId: post.user_id,
+        })
+        const compliantContent = appendDisclosures(post.content, disclosures)
+
         const publishResult = await publishToSocialPlatform(post.platform, {
-          content: post.content,
+          content: compliantContent,
           mediaUrls: post.media_urls || [],
           accessToken: account.access_token,
           accountId: account.account_id,
