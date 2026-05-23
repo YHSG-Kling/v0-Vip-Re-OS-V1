@@ -12,6 +12,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
+import { resolveConnection } from "@/lib/integrations/connection-manager"
 
 export interface ExternalListing {
   externalId: string
@@ -60,26 +61,20 @@ export async function searchExternalListings(
 ): Promise<ExternalSearchResult> {
   const svc = createServiceClient()
 
-  // IDX Broker is configured via Settings → Integrations, stored in
-  // platform_credentials (platform='idxbroker'). Other IDX feeds (spark/rets/
-  // bridge) and Rentcast are tracked in integration_credentials.
-  const [{ data: idxCred }, { data: creds }] = await Promise.all([
-    svc
-      .from("platform_credentials")
-      .select("api_key, is_active")
-      .eq("brokerage_id", input.brokerageId)
-      .eq("platform", "idxbroker")
-      .eq("is_active", true)
-      .maybeSingle(),
+  // IDX Broker may be stored under any of the credential tables / name aliases
+  // (idxbroker vs idx_broker) — the connection manager resolves all of them.
+  // Rentcast is tracked in integration_credentials.
+  const [idxConn, { data: creds }] = await Promise.all([
+    resolveConnection({ brokerageId: input.brokerageId, provider: "idxbroker" }),
     svc
       .from("integration_credentials")
       .select("provider_name, is_active")
       .eq("brokerage_id", input.brokerageId)
-      .in("provider_name", ["idx_broker", "spark", "rets", "bridge", "rentcast"])
+      .in("provider_name", ["spark", "rets", "bridge", "rentcast"])
       .eq("is_active", true),
   ])
 
-  const hasIdx = !!idxCred?.api_key
+  const hasIdx = !!idxConn?.apiKey
   const hasRentcast = creds?.some((c) => c.provider_name === "rentcast") || !!process.env.RENTCAST_API_KEY
 
   // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).

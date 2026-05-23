@@ -1,7 +1,7 @@
 // IDX Broker API Client for property search activity tracking
 // Tracks what properties leads view, save, and share on IDX sites
 
-import { createServiceClient } from "@/lib/supabase/service"
+import { resolveConnection } from "@/lib/integrations/connection-manager"
 
 export interface NormalizedIdxListing {
   externalId: string
@@ -30,18 +30,10 @@ export class IDXBrokerClient {
     }
   }
 
-  /** Multi-tenant factory: resolves API key from platform_credentials for a brokerage. */
+  /** Multi-tenant factory: resolves the IDX Broker connection across credential tables. */
   static async forBrokerage(brokerageId: string): Promise<IDXBrokerClient> {
-    const supabase = createServiceClient()
-    const { data: cred } = await supabase
-      .from("platform_credentials")
-      .select("api_key")
-      .eq("brokerage_id", brokerageId)
-      .eq("platform", "idxbroker")
-      .eq("is_active", true)
-      .limit(1)
-      .maybeSingle()
-    const apiKey = cred?.api_key || process.env.IDXBROKER_API_KEY || ""
+    const conn = await resolveConnection({ brokerageId, provider: "idxbroker" })
+    const apiKey = conn?.apiKey || process.env.IDXBROKER_API_KEY || ""
     return new IDXBrokerClient(apiKey)
   }
 
