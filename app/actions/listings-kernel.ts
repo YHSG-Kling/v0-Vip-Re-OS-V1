@@ -219,7 +219,7 @@ export async function launchListingAction(params: {
       const svc = createServiceClient()
       const { data: listing } = await svc
         .from("listings")
-        .select("id, property_address, brokerage_id, agent_id")
+        .select("id, address, brokerage_id, agent_id")
         .eq("id", params.listingId)
         .maybeSingle()
 
@@ -243,7 +243,7 @@ export async function launchListingAction(params: {
             brokerage_id: listing.brokerage_id,
             agent_id:     listing.agent_id,
             listing_id:   params.listingId,
-            label:        `Listing — ${listing.property_address}`,
+            label:        `Listing — ${listing.address}`,
             slug,
             target_url:   targetUrl,
             // qr_codes.purpose CHECK only allows: listing, open_house, event,
@@ -425,8 +425,12 @@ export async function updateListingStatus(listingId: string, status: string) {
       .from("listings")
       .update({
         status,
-        current_stage:
-          status === "sold" ? "closed" : status === "withdrawn" ? "cancelled" : undefined,
+        // current_stage was renamed to lifecycle_stage (migration 1014) and the
+        // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
+        // old { current_stage: "closed" | "cancelled" } update threw on both the
+        // column and the value.
+        lifecycle_stage:
+          status === "sold" ? "CLOSED" : status === "withdrawn" ? "LISTING_CANCELLED" : undefined,
         updated_at: new Date().toISOString(),
       })
       .eq("id", listingId)
