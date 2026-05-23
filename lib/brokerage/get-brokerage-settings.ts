@@ -14,16 +14,15 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import type { ProviderName } from "@/lib/integrations/providers/catalog"
 
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
 
-export type TransactionProvider =
-  | "dotloop"
-  | "skyslope"
-  | "formsimplicity"
-  | "brokermint"
+// Unified with the provider catalog (single source of truth). This adds the
+// already-implemented docusign + authentisign that were previously omitted here.
+export type TransactionProvider = ProviderName
 
 export type TransactionMode =
   | "hybrid"

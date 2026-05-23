@@ -1,12 +1,16 @@
 import { createClient } from "@/lib/supabase/server"
 import { getTransactionProvider, type TransactionProvider } from "@/lib/brokerage/get-brokerage-settings"
+import { getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
 export interface ResolvedTransactionProvider {
   provider: TransactionProvider
   credentialsId?: string
 }
 
-const TRANSACTION_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokermint"] as const
+// Derived from the provider catalog: only IMPLEMENTED transaction-form providers
+// are resolvable (previously a hardcoded list that excluded docusign/authentisign
+// and included unimplemented formsimplicity/brokermint, which crash the factory).
+const TRANSACTION_PLATFORMS = getTransactionFormProviders()
 
 /**
  * Resolves the transaction provider for a given agent with fallback:

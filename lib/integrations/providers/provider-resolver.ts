@@ -14,6 +14,17 @@ import { DocusignProvider }     from "./docusign-provider"
 import { SkyslopeProvider }     from "./skyslope-provider"
 import { AuthentisignProvider } from "./authentisign-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
+import { getCatalogEntry, getImplementedProviders } from "./catalog"
+
+/** Clear, catalog-aware error for a name that has no instantiable provider class. */
+function unresolvableProviderError(providerName: string): Error {
+  const entry = getCatalogEntry(providerName)
+  if (entry && !entry.implemented) {
+    const available = getImplementedProviders().map((p) => p.label).join(", ")
+    return new Error(`${entry.label} is not yet available. Choose one of: ${available}.`)
+  }
+  return new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
+}
 
 // ── Provider registry ────────────────────────────────────────────────────────
 // Every provider supported by resolveESignProviderForActor MUST appear here.
@@ -42,7 +53,7 @@ export async function getTransactionProvider(
   const normalized   = String(providerName ?? "").toLowerCase() as ProviderName
   const factory      = PROVIDER_REGISTRY[normalized]
   if (!factory) {
-    throw new Error(`Unknown transaction provider: ${providerName}`)
+    throw unresolvableProviderError(String(providerName ?? ""))
   }
   return factory()
 }
@@ -64,7 +75,7 @@ export function getTransactionProviderByName(
   const factory = PROVIDER_REGISTRY[normalizedName]
 
   if (!factory) {
-    throw new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
+    throw unresolvableProviderError(providerName)
   }
 
   return factory(credentials)
