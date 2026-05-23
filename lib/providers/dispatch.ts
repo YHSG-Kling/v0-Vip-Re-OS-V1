@@ -23,6 +23,7 @@ import {
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
+import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
@@ -80,6 +81,25 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     const supabase = await createServiceClient()
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
+
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (email_unsubscribed + legacy email_opt_out) AND contact_suppression_list,
+    // brokerage-scoped. The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: params.to ?? null,
+      phone: null,
+      channel: "email",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] Email blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
 
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
@@ -218,6 +238,25 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
 
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (sms_unsubscribed + legacy sms_opt_out) AND contact_suppression_list,
+    // brokerage-scoped. The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: null,
+      phone: params.to ?? null,
+      channel: "sms",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] SMS blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
+
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
       .select("*")
@@ -305,6 +344,25 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
     const supabase = await createServiceClient()
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
+
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (dnc_status / call_stop_flag) AND contact_suppression_list, brokerage-scoped.
+    // The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: null,
+      phone: params.to ?? null,
+      channel: "phone",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] Phone call blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
 
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
