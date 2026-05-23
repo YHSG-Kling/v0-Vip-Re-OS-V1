@@ -208,11 +208,20 @@ export async function GET(request: Request) {
             created_at: new Date().toISOString(),
           })
 
-          // INSERT social_post_analytics (brokerage_id, social_post_id, platform)
-          await supabase.from("social_post_analytics").insert({
+          // Seed a zeroed engagement-tracking row so the published post surfaces
+          // in the social dashboard, which reads social_engagement_tracking.
+          // (Previously wrote social_post_analytics, a table nothing reads.)
+          await supabase.from("social_engagement_tracking").insert({
             social_post_id: post.id,
             brokerage_id: post.brokerage_id,
             platform: post.platform,
+            impressions_count: 0,
+            likes_count: 0,
+            comments_count: 0,
+            shares_count: 0,
+            saves_count: 0,
+            clicks_count: 0,
+            leads_generated: 0,
             captured_at: new Date().toISOString(),
           })
 
