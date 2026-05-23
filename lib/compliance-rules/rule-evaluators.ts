@@ -3,6 +3,10 @@
 // Pure evaluation logic (no database dependencies)
 // ============================================
 
+// Fair Housing patterns live in a shared module so this evaluator and the
+// social/ads gate (lib/kernel/marketing/real-estate-compliance-gate.ts) cannot drift.
+import { FAIR_HOUSING_PATTERNS } from "./fair-housing-patterns"
+
 /**
  * Rule Violation Type
  */
@@ -53,83 +57,8 @@ const FAIR_HOUSING_PROTECTED_CLASSES = [
   "children",
 ]
 
-const FAIR_HOUSING_VIOLATIONS = [
-  // Critical - Direct protected class references
-  {
-    pattern: /perfect\s+(for|area\s+for)\s+famil/gi,
-    phrase: "perfect for families",
-    severity: "high" as const,
-    fix: "Spacious layout with multiple bedrooms",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /(great|perfect|ideal)\s+(for|area\s+for)\s+retire/gi,
-    phrase: "great for retirees",
-    severity: "high" as const,
-    fix: "Single-level living with accessible features",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /young\s+professional/gi,
-    phrase: "young professional area",
-    severity: "high" as const,
-    fix: "Urban location with dining and entertainment",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /adult\s+(only\s+)?community/gi,
-    phrase: "adult community",
-    severity: "high" as const,
-    fix: "Age-qualified community (if verified 55+)",
-    reference: "Housing for Older Persons Act",
-  },
-  {
-    pattern: /(empty\s+nesters?|mature\s+buyers?)/gi,
-    phrase: "empty nesters/mature buyers",
-    severity: "high" as const,
-    fix: "Low-maintenance home",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-
-  // Medium - Implicit protected class steering
-  {
-    pattern: /walk\s+to\s+(church|mosque|synagogue|temple)/gi,
-    phrase: "walk to church/religious institution",
-    severity: "medium" as const,
-    fix: "Close to community amenities",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /safe\s+(area|neighborhood|community)/gi,
-    phrase: "safe area",
-    severity: "medium" as const,
-    fix: "Well-maintained neighborhood",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /quiet\s+neighborhood/gi,
-    phrase: "quiet neighborhood",
-    severity: "medium" as const,
-    fix: "Peaceful surroundings",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-  {
-    pattern: /(changing|transitioning|up[\s-]and[\s-]coming)\s+(area|neighborhood)/gi,
-    phrase: "changing/transitioning neighborhood",
-    severity: "high" as const,
-    fix: "Developing area with new amenities",
-    reference: "Fair Housing Act § 3604(c)",
-  },
-
-  // Low - Accessibility language that could imply disability
-  {
-    pattern: /wheelchair\s+(accessible|bound|user)/gi,
-    phrase: "wheelchair accessible",
-    severity: "low" as const,
-    fix: "Accessible features throughout",
-    reference: "Fair Housing Amendments Act of 1988",
-  },
-]
+// Canonical Fair Housing patterns (shared — see ./fair-housing-patterns).
+const FAIR_HOUSING_VIOLATIONS = FAIR_HOUSING_PATTERNS
 
 export function evaluateRegulatoryCompliance(input: ComplianceContentInput): RuleViolation[] {
   const violations: RuleViolation[] = []

@@ -20,6 +20,8 @@
  *   - social comment / review reply assistant
  */
 
+import { FAIR_HOUSING_PATTERNS } from "@/lib/compliance-rules/fair-housing-patterns"
+
 export interface ComplianceGateResult {
   passed: boolean
   blockers: string[]
@@ -174,6 +176,17 @@ export async function realEstateComplianceGate(params: GateParams): Promise<Comp
         `Fair Housing violation detected: content appears to describe the property or area in terms of protected classes. Review and remove before publishing.`
       )
       break  // one message per category to avoid flooding
+    }
+  }
+  // Canonical shared Fair Housing patterns — the same set the messaging gate
+  // enforces (lib/compliance-rules/fair-housing-patterns). Surfaces the specific
+  // phrase + a compliant rewrite. Uses .match() (global-flagged patterns).
+  for (const rule of FAIR_HOUSING_PATTERNS) {
+    if (content.match(rule.pattern)) {
+      blockers.push(
+        `Fair Housing: avoid "${rule.phrase}" — use e.g. "${rule.fix}" (${rule.reference}).`
+      )
+      break
     }
   }
 
