@@ -6,45 +6,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
-
-// ─── Auth helper ──────────────────────────────────────────────────────────────
-// markMessagesRead / getPortalMessages / generateAIDraft previously did an
-// auth.getUser() check but never verified the contactId belonged to the
-// caller. Any signed-in user could read/mutate/AI-draft messages for any
-// contact in the database. This helper enforces ownership the same way
-// sendPortalMessage already does — contact-self or agent in same brokerage.
-async function requireContactAccess(contactId: string): Promise<
-  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
-  | { ok: false; error: string }
-> {
-  const authClient = await createClient()
-  const { data: { user: authUser } } = await authClient.auth.getUser()
-  if (!authUser) return { ok: false, error: "Unauthorized" }
-
-  const svc = createServiceClient()
-  const { data: contact } = await svc
-    .from("contacts")
-    .select("brokerage_id, contact_user_id, email")
-    .eq("id", contactId)
-    .maybeSingle()
-  if (!contact || !contact.brokerage_id) return { ok: false, error: "Contact not found" }
-
-  const isContactSelf =
-    contact.contact_user_id === authUser.id ||
-    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
-
-  if (isContactSelf) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
-  }
-
-  const { data: callerRow } = await svc
-    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
-  }
-
-  return { ok: false, error: "Forbidden" }
-}
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
