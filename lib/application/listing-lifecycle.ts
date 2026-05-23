@@ -64,8 +64,7 @@ export async function markListingSignedService(
   const { data, error} = await supabase
     .from("listings")
     .update({
-      current_stage: "SIGNED",
-      lifecycle_stage: "SIGNED",
+      lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
       // listing_agreement_signed_date doesn't exist in schema
       go_live_date: params.go_live_date,
       // commission_rate doesn't exist in listings table
@@ -97,8 +96,7 @@ export async function markListingLiveService(
   const { data, error } = await supabase
     .from("listings")
     .update({
-      current_stage: "ACTIVE",
-      lifecycle_stage: "ACTIVE",
+      lifecycle_stage: "MLS_ACTIVE",
       mls_number: params.mls_number,
       mls_link: params.mls_link,
       listing_date: new Date().toISOString().split("T")[0], // live_date doesn't exist, use listing_date
@@ -151,7 +149,6 @@ export async function updateListingStageService(params: {
   const { data, error } = await supabase
     .from("listings")
     .update({
-      current_stage: params.stage,
       lifecycle_stage: params.stage,
       // notes column doesn't exist on listings table
       updated_at: new Date().toISOString(),

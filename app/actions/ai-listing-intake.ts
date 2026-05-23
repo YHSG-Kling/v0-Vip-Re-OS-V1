@@ -716,7 +716,6 @@ export async function createListing(params: ListingIntakeData) {
         bathrooms:         params.propertyDetails?.baths,
         sqft:              params.propertyDetails?.sqft,
         status:            "draft",
-        current_stage:     "LEAD",
         lifecycle_stage:   "LEAD",
       })
       .select()

@@ -68,8 +68,7 @@ export async function createListingService(params: {
         bathrooms:          params.bathrooms,
         sqft:               params.sqft,              // correct column (not square_footage)
         property_type:      params.propertyType || "residential",
-        current_stage:      "LEAD",
-        lifecycle_stage:    "LEAD",
+        lifecycle_stage:    "LISTING_AGREEMENT_INITIATED",
         status:             "active",
       })
       .select()

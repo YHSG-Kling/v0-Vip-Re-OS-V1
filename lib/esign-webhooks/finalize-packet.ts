@@ -320,9 +320,9 @@ export async function finalizeLegacyEsignArtifacts(
       .eq("id", matchedAgreement.id)
     await supabase
       .from("listings")
-      .update({ current_stage: "active", stage_entered_at: now })
+      .update({ lifecycle_stage: "MLS_ACTIVE", stage_entered_at: now })
       .eq("id", matchedAgreement.listing_id)
-      .in("current_stage", ["prep", "pre_listing", "coming_soon"])
+      .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "MLS_DATE_CONFIRMED", "COMING_SOON_PREP", "COMING_SOON_ACTIVE", "MLS_READY"])
   }
 
   return {
