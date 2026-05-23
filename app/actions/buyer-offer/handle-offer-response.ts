@@ -127,7 +127,7 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
           listing_id:       offer.listing_id ?? null,
           offer_id:         offerId,
           status:           "active",
-          deal_type:        "purchase",
+          deal_type:        "buyer",
           deal_name:        listing?.address
             ? `${listing.address} — ${new Date().getFullYear()}`
             : `Offer ${offerId.slice(0, 8)}`,

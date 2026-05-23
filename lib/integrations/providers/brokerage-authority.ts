@@ -16,7 +16,7 @@
  */
 
 export interface BrokerageAuthoritySettings {
-  transactionProvider: string
+  transactionProvider: string | null
   transactionMode: "hybrid" | "external" | "internal"
   complianceAuthority: "internal" | "external"
   commissionAuthority: "internal" | "external"
@@ -24,7 +24,8 @@ export interface BrokerageAuthoritySettings {
 }
 
 const DEFAULT_SETTINGS: BrokerageAuthoritySettings = {
-  transactionProvider: "dotloop",
+  // No silent default — dotloop is NOT assumed; provider must be configured.
+  transactionProvider: null,
   transactionMode: "hybrid",
   complianceAuthority: "internal",
   commissionAuthority: "internal",
@@ -93,6 +94,6 @@ export function isHybridMode(settings: BrokerageAuthoritySettings): boolean {
 /**
  * Get provider name from settings
  */
-export function getProviderName(settings: BrokerageAuthoritySettings): string {
+export function getProviderName(settings: BrokerageAuthoritySettings): string | null {
   return settings.transactionProvider
 }

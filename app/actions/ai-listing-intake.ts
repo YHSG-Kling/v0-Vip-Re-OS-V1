@@ -10,6 +10,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
 
 // ============================================
@@ -723,36 +724,52 @@ export async function createListing(params: ListingIntakeData) {
 
     if (error || !listing) throw error ?? new Error("Failed to create listing")
 
-    // Create transaction record — stamped from session identity
-    const { data: transaction } = await supabase
+    // Create transaction record — stamped from session identity.
+    // Live schema: column is deal_type (buyer|seller|dual) and status is a fixed
+    // CHECK set; the previous transaction_type/"pre_listing" values silently
+    // failed the constraint, so no transaction row was ever created.
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
         agent_id:          ownerAgentId,
         brokerage_id:      ctx.brokerageId,
         seller_contact_id: sellerId,
         listing_id:        listing.id,
-        transaction_type:  "seller_side",
-        status:            "pre_listing",
+        deal_type:         "seller",
+        status:            "qualifying",
         property_address:  params.propertyAddress,
       })
       .select()
       .maybeSingle()
 
-    // Create Dotloop loop
-    const dotloopResult = await createOrPullDotloop({
-      agentId: ownerAgentId,
-      listingId: listing.id,
-      propertyAddress: params.propertyAddress,
-      sellerId: sellerId ?? "",
-      transactionType: "listing",
-    })
+    if (txError) {
+      console.error("[AI Listing Intake] Transaction insert failed:", txError)
+    }
 
-    // Update listing with loop ID
-    if (dotloopResult.success && dotloopResult.loopId) {
-      await supabase
-        .from("listings")
-        .update({ dotloop_loop_id: dotloopResult.loopId })
-        .eq("id", listing.id)
+    // Provider container at intake is provider-specific. We do NOT assume dotloop:
+    // only create a Dotloop loop when the brokerage's resolved provider is dotloop.
+    // Other providers create their container later at send-for-signature time.
+    let dotloopResult: Awaited<ReturnType<typeof createOrPullDotloop>> | null = null
+    const resolvedProvider = await resolveTransactionProvider({
+      agentUserId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (resolvedProvider?.provider === "dotloop") {
+      dotloopResult = await createOrPullDotloop({
+        agentId: ownerAgentId,
+        listingId: listing.id,
+        propertyAddress: params.propertyAddress,
+        sellerId: sellerId ?? "",
+        transactionType: "listing",
+      })
+
+      // Update listing with loop ID
+      if (dotloopResult.success && dotloopResult.loopId) {
+        await supabase
+          .from("listings")
+          .update({ dotloop_loop_id: dotloopResult.loopId })
+          .eq("id", listing.id)
+      }
     }
 
     revalidatePath("/dashboard/listings")

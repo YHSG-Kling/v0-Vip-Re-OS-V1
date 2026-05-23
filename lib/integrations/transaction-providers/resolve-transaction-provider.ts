@@ -58,10 +58,11 @@ export async function resolveTransactionProvider(params: {
     return { provider: brokerageCreds.platform as TransactionProvider, credentialsId: brokerageCreds.id }
   }
 
-  // Final fallback: global_settings.additional_settings.transaction_provider
+  // Final fallback: global_settings.additional_settings.transaction_provider.
+  // Returns null (not a silent dotloop default) when nothing is configured.
   try {
     const provider = await getTransactionProvider(brokerageId)
-    return { provider }
+    return provider ? { provider } : null
   } catch {
     return null
   }
