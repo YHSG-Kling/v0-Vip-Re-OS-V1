@@ -130,7 +130,34 @@ export async function GET(request: Request) {
               .eq("id", post.id)
           } catch (complianceError: any) {
             console.error("[cron/publish-social-posts] Compliance check error:", complianceError)
-            // Continue with publish if compliance check fails (non-blocking)
+            // Fail CLOSED — never push content we could not verify for Fair Housing /
+            // brand compliance to a public platform. Hold the post for review and skip.
+            await supabase
+              .from("social_posts")
+              .update({
+                status: "failed",
+                compliance_checked_at: new Date().toISOString(),
+                error_message: `Brand compliance check errored — held for review: ${complianceError?.message ?? "unknown error"}`,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", post.id)
+
+            await supabase.from("social_publish_log").insert({
+              social_post_id: post.id,
+              brokerage_id: post.brokerage_id,
+              platform: post.platform,
+              publish_status: "failed",
+              error_message: "Brand compliance check errored — held for review",
+              created_at: new Date().toISOString(),
+            })
+
+            results.push({
+              postId: post.id,
+              status: "failed",
+              platform: post.platform,
+              error: "Compliance check errored",
+            })
+            continue
           }
         }
 
