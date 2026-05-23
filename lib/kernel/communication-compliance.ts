@@ -188,10 +188,24 @@ export async function evaluateOutboundCompliance(
       timestamp: new Date().toISOString(),
     }
 
-    // Write audit log asynchronously (non-blocking)
+    // Write the eval decision to compliance_events (the canonical compliance
+    // audit table — gate_name/allowed/violations/blocked_reason all map cleanly,
+    // and it is brokerage-scoped). communication_audit_log is for actual sends,
+    // not eval decisions, and lacks columns for this shape. Non-blocking.
     void (async () => {
       try {
-        await supabase.from("communication_audit_log").insert(auditLogEntry)
+        await supabase.from("compliance_events").insert({
+          brokerage_id: actorContext.brokerageId,
+          actor_user_id: actorContext.userId ?? null,
+          actor_role: actorContext.actorType,
+          entity_type: "contact",
+          entity_id: contact.id,
+          message_type: channel,
+          gate_name: "outbound_suppression",
+          allowed,
+          violations,
+          blocked_reason: allowed ? null : primaryReason,
+        })
       } catch (err) {
         console.error("[Compliance] Failed to write audit log:", err)
       }

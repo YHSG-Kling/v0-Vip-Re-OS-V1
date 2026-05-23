@@ -69,7 +69,7 @@ export function ComplianceContent() {
     let alertsQuery = supabase
       .from("compliance_flags")
       .select("*")
-      .eq("status", "open")
+      .eq("status", "flagged")
       .order("detected_at", { ascending: false })
       .limit(10)
 
