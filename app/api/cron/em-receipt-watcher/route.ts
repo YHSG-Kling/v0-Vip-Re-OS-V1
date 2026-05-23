@@ -25,13 +25,13 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { flagOfferCompliance } from "@/app/actions/buyer-offer/flag-compliance"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(req: Request) {
-  // Standard cron-bearer auth — same pattern as the other cron routes
-  const auth = req.headers.get("authorization") ?? ""
-  if (process.env.CRON_SECRET && !auth.endsWith(process.env.CRON_SECRET)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail-closed cron auth (the previous inline check was fail-open when
+  // CRON_SECRET was unset).
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const supabase = createServiceClient()
 
