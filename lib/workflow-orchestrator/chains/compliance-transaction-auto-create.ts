@@ -92,15 +92,16 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
         const notifyTargets: string[] = []
         if (ctx.agentUserId) notifyTargets.push(ctx.agentUserId)
 
-        // Find TC + compliance officer for this brokerage. The live
-        // users.user_type CHECK constraint allows 'TC' (uppercase) +
-        // 'compliance_officer' — earlier code used 'tc' /
-        // 'transaction_coordinator' which never matched any row.
+        // Notify the deal's TC + compliance officer. user_type is stored in the
+        // canonical lowercase vocabulary (see lib/auth/permissions.ts Role) — the
+        // TC role is 'tc', and 'compliance_manager' is a legacy alias of
+        // 'compliance_officer'. The prior ['TC','compliance_manager'] filter
+        // matched no rows, so TCs were never notified.
         const { data: staff } = await svc
           .from("users")
           .select("id, user_type")
           .eq("brokerage_id", ctx.brokerageId)
-          .in("user_type", ["TC", "compliance_officer", "compliance_manager"])
+          .in("user_type", ["tc", "compliance_officer"])
 
         for (const u of staff ?? []) notifyTargets.push(u.id)
 
