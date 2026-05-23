@@ -654,7 +654,7 @@ export default function BriefingPage() {
                   </p>
                 )}
                 <Button variant="ghost" size="sm" className="w-full mt-3 text-xs h-7" asChild>
-                  <Link href="/dashboard/buyers">View Buyers <ArrowRight className="h-3 w-3 ml-1" /></Link>
+                  <Link href="/crm?contact_type=buyer">View Buyers <ArrowRight className="h-3 w-3 ml-1" /></Link>
                 </Button>
               </CardContent>
             </Card>

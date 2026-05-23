@@ -25,7 +25,7 @@ const quickActions: QuickAction[] = [
   },
   {
     label: "Check Pipeline",
-    href: "/dashboard/buyers",
+    href: "/crm?contact_type=buyer",
     icon: <BarChart3 className="h-6 w-6" />,
     color: "bg-amber-500 text-white",
   },

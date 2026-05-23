@@ -42,13 +42,13 @@ export default async function BuyerOffersPage({ params }: PageProps) {
     .is("deleted_at", null)
     .single()
 
-  if (!contact) redirect("/dashboard/buyers")
+  if (!contact) redirect("/crm?contact_type=buyer")
 
   const isOwner  = contact.agent_id === user.id
   const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile?.user_type ?? "") &&
     agentProfile?.brokerage_id === contact.brokerage_id
 
-  if (!isOwner && !isBroker) redirect("/dashboard/buyers")
+  if (!isOwner && !isBroker) redirect("/crm?contact_type=buyer")
 
   // Gate: must be BUYER_OFFER_ELIGIBLE or later
   if (!OFFER_ELIGIBLE_STAGES.includes(contact.buyer_stage ?? "")) {

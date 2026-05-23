@@ -44,7 +44,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
     .eq('id', contactId)
     .single()
 
-  if (!contact) redirect('/dashboard/buyers')
+  if (!contact) redirect('/crm?contact_type=buyer')
 
   // Load agent's brokerage_id
   const { data: agentUser } = await supabase

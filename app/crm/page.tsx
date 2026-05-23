@@ -177,7 +177,15 @@ export default function CRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
-  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor" | "lifetime_customer">("all")
+  // Seed the type tab from ?contact_type= (or legacy ?type=) so deep-links from
+  // elsewhere (e.g. the former /dashboard/buyers lane) land on the right tab of
+  // the single chronological CRM rather than spawning a separate dashboard.
+  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor" | "lifetime_customer">(() => {
+    const p = (searchParams.get("contact_type") ?? searchParams.get("type") ?? "").toLowerCase()
+    if (p === "buyer" || p === "seller" || p === "investor" || p === "lifetime_customer") return p
+    if (p === "lifetime") return "lifetime_customer"
+    return "all"
+  })
   const [loading, setLoading] = useState(true)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2705,7 +2713,7 @@ export default function CRMPage() {
       </div>
 
       {/* Contact type filter tabs */}
-      <div className="flex gap-1 border-b">
+      <div className="flex items-center gap-1 border-b">
         {(["all", "buyer", "seller", "investor", "lifetime_customer"] as const).map((t) => (
           <button
             key={t}
@@ -2723,6 +2731,16 @@ export default function CRMPage() {
               : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
           </button>
         ))}
+        {/* Buyer fatigue analytics — re-homed here from the retired /dashboard/buyers lane. */}
+        {typeFilter === "buyer" && (
+          <Link
+            href="/dashboard/buyers/fatigue"
+            className="ml-auto flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground whitespace-nowrap"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Fatigue Monitor
+          </Link>
+        )}
       </div>
 
       {/* AI Priority Contacts Strip */}

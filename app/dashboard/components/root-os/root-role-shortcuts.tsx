@@ -30,7 +30,7 @@ interface QuickAction {
 const ROLE_SHORTCUTS: Record<string, QuickAction[]> = {
   agent: [
     { label: 'CRM', href: '/crm', icon: Users, description: 'Manage contacts' },
-    { label: 'Buyers', href: '/dashboard/buyers', icon: Target, description: 'Active buyers' },
+    { label: 'Buyers', href: '/crm?contact_type=buyer', icon: Target, description: 'Active buyers' },
     { label: 'Listings', href: '/dashboard/listings', icon: Home, description: 'Your listings' },
     { label: 'Calendar', href: '/dashboard/calendar', icon: Calendar, description: 'Schedule' },
     { label: 'Reports', href: '/dashboard/reports', icon: BarChart3, description: 'Business reports' },

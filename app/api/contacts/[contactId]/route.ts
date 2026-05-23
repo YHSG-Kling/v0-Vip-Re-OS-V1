@@ -2,19 +2,19 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ contactId: string }> }) {
   // Auth guard — brokerage scoping always from session
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
   try {
-    const { id } = await params
+    const { contactId } = await params
 
     let query = supabase
       .from("contacts")
       .select("*")
-      .eq("id", id)
+      .eq("id", contactId)
       .eq("brokerage_id", auth.brokerageId)
       .is("deleted_at", null)
 
@@ -38,19 +38,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ contactId: string }> }) {
   // Auth guard — brokerage scoping always from session
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
   try {
-    const { id } = await params
+    const { contactId } = await params
 
     let query = supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
-      .eq("id", id)
+      .eq("id", contactId)
       .eq("brokerage_id", auth.brokerageId)   // brokerage isolation
 
     // Agents can only delete their own contacts; brokers/admins can delete any in brokerage.
