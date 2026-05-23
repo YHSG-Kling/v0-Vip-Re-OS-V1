@@ -9,6 +9,8 @@
     "lint": "next lint",
     "start": "next start",
     "type-check": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
@@ -126,6 +128,7 @@
     "zustand": "5.0.9"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "4.1.9",
     "@types/fluent-ffmpeg": "^2.1.28",
     "@types/node": "22.19.7",
