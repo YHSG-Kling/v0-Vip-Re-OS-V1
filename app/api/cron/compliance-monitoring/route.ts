@@ -1,7 +1,7 @@
 import {
 type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { trackCertificationExpiration, monitorTRIDCompliance } from "@/app/actions/compliance-monitoring"
+import { trackCertificationExpirationService, monitorTRIDComplianceService } from "@/lib/application"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
     const { data: agents } = await supabase.from("users").select("id").eq("role", "agent")
 
     for (const agent of agents || []) {
-      const status = await trackCertificationExpiration(agent.id)
+      const status = await trackCertificationExpirationService(agent.id, supabase)
       results.certifications_checked++
       results.expiring_certs += status.expiring
       results.expired_certs += status.expired
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
       .in("status", ["under_contract", "pending"])
 
     for (const txn of transactions || []) {
-      const compliance = await monitorTRIDCompliance(txn.id)
+      const compliance = await monitorTRIDComplianceService(txn.id, supabase)
       if (!compliance.compliant) {
         results.trid_violations += compliance.violations.length
       }

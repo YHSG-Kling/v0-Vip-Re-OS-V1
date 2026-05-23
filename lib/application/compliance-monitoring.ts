@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -86,8 +87,10 @@ export async function checkComplianceStatusService(transactionId: string) {
 // CERTIFICATION TRACKING
 // ============================================
 
-export async function trackCertificationExpirationService(agentId: string) {
-  const supabase = await createClient()
+export async function trackCertificationExpirationService(agentId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so system crons can pass a service-role
+  // client (bypasses RLS); UI callers default to the user-context client.
+  const supabase = client ?? await createClient()
 
   const today = new Date()
   const thirtyDaysFromNow = new Date()
@@ -270,8 +273,10 @@ const getBusinessDays = (startDate: string, endDate: string) => {
   return count
 }
 
-export async function monitorTRIDComplianceService(transactionId: string) {
-  const supabase = await createClient()
+export async function monitorTRIDComplianceService(transactionId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so the compliance cron can pass a
+  // service-role client (bypasses RLS); UI callers default to user context.
+  const supabase = client ?? await createClient()
 
   const { data: timeline } = await supabase
     .from("trid_timeline")
