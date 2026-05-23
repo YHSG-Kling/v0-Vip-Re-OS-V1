@@ -145,10 +145,11 @@ export async function createListingRecord(
         bedrooms:          input.bedrooms    ?? null,
         bathrooms:         input.bathrooms   ?? null,
         sqft:              input.sqft        ?? null,
-        property_type:     input.propertyType ?? "residential",
+        // listings has no property_type column → keep it in metadata. current_stage
+        // was renamed to lifecycle_stage (migration 1014), so only set the latter.
         status:            "active",
-        current_stage:     "LEAD",
         lifecycle_stage:   "LEAD",
+        metadata:          { property_type: input.propertyType ?? "residential" },
       })
       .select()
       .single()
