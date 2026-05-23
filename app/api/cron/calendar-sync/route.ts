@@ -1,6 +1,6 @@
 import {
 NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { pullCalendarEventsFromProvider } from "@/lib/kernel"
 import {
   createCronRunContextAction,
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     const { data: accounts, error } = await supabase
       .from("calendar_provider_accounts")

@@ -1,6 +1,6 @@
 import {
 type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { trackCertificationExpiration, monitorTRIDCompliance } from "@/app/actions/compliance-monitoring"
 import {
   createCronRunContextAction,
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const results = {
       certifications_checked: 0,
       expiring_certs: 0,

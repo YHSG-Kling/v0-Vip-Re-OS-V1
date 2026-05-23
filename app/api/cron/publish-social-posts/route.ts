@@ -2,8 +2,7 @@
 // Layer 9.2 Social Media Automation — Cron Publisher
 // Tables: social_posts, social_media_accounts, social_publish_log, social_post_analytics
 
-import {
-createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { NextResponse } from "next/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -39,7 +38,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const now = new Date()
 
     // SELECT social_posts WHERE status='scheduled' AND approval_status='approved'

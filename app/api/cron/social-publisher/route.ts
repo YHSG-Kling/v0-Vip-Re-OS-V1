@@ -1,5 +1,4 @@
-import {
-createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { NextResponse } from "next/server"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
 import {
@@ -32,7 +31,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const now = new Date()
 
     // Fetch posts scheduled for now or earlier that are approved (or don't require approval)
