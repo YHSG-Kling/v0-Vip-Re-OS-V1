@@ -70,8 +70,11 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             listing_date: data.listDate ?? null,
             expiration_date: data.expirationDate ?? null,
             commission_rate: data.commissionRate ?? null,
-            status: "pending_mls",
-            lifecycle_stage: "agreement_signed",
+            // listings_status_check allows coming_soon|active|pending|sold|expired|
+            // withdrawn — a freshly auto-created (signed, pre-MLS) listing is
+            // "coming_soon". ("pending_mls" violated the constraint → insert threw.)
+            status: "coming_soon",
+            lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             created_via: "compliance_auto_create",
             metadata: {
               source_document_id: ctx.metadata.document_id,
@@ -84,6 +87,35 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
 
         if (error || !listing) {
           return { success: false, error: error?.message ?? "Listing insert failed" }
+        }
+
+        // Emit LISTING_CREATED so downstream automation enrolls — same signal the
+        // kernel createListingRecord emits. Direct-insert chains otherwise skip it,
+        // so auto-created listings never kicked off marketing/portal automation.
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await svc.from("lifecycle_events").insert({
+          entity_type: "listing",
+          entity_id: listing.id,
+          event_type: KernelEvent.LISTING_CREATED ?? "listing_created",
+          brokerage_id: ctx.brokerageId,
+          metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, created_via: "compliance_auto_create" },
+          created_at: new Date().toISOString(),
+        }).then(() => {})
+
+        try {
+          const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+          await fanOutKernelEvent({
+            event: KernelEvent.LISTING_CREATED,
+            brokerageId: ctx.brokerageId,
+            entityType: "listing",
+            entityId: listing.id as string,
+            sellerContactId: ctx.contactId,
+            listingId: listing.id as string,
+            agentUserId: ctx.agentUserId,
+            metadata: { stage: "LISTING_AGREEMENT_SIGNED" },
+          })
+        } catch (err: any) {
+          console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
         }
 
         return {
