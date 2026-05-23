@@ -10,17 +10,20 @@ const TRANSACTION_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokerm
 
 /**
  * Resolves the transaction provider for a given agent with fallback:
- *   1. Agent-scoped platform_credentials
- *   2. Team-scoped platform_credentials (if teamId provided)
- *   3. Brokerage-scoped platform_credentials
- *   4. global_settings.additional_settings.transaction_provider (existing brokerage setting)
+ *   1. Agent-scoped platform_credentials (scope='agent', agent_user_id)
+ *   2. Brokerage-scoped platform_credentials (scope='brokerage', brokerage_id)
+ *   3. global_settings.additional_settings.transaction_provider
+ *
+ * NOTE: platform_credentials is keyed by agent_user_id / brokerage_id + scope —
+ * there is no `owner_id` column (the prior query used one, so it always errored
+ * and silently fell through to the global_settings fallback) and no team scope.
  */
 export async function resolveTransactionProvider(params: {
   agentUserId: string
   teamId?: string | null
   brokerageId: string
 }): Promise<ResolvedTransactionProvider | null> {
-  const { agentUserId, teamId, brokerageId } = params
+  const { agentUserId, brokerageId } = params
   const supabase = await createClient()
 
   const { data: agentCreds } = await supabase
@@ -28,7 +31,8 @@ export async function resolveTransactionProvider(params: {
     .select("id, platform")
     .in("platform", TRANSACTION_PLATFORMS)
     .eq("scope", "agent")
-    .eq("owner_id", agentUserId)
+    .eq("agent_user_id", agentUserId)
+    .eq("is_active", true)
     .limit(1)
     .maybeSingle()
 
@@ -36,27 +40,13 @@ export async function resolveTransactionProvider(params: {
     return { provider: agentCreds.platform as TransactionProvider, credentialsId: agentCreds.id }
   }
 
-  if (teamId) {
-    const { data: teamCreds } = await supabase
-      .from("platform_credentials")
-      .select("id, platform")
-      .in("platform", TRANSACTION_PLATFORMS)
-      .eq("scope", "team")
-      .eq("owner_id", teamId)
-      .limit(1)
-      .maybeSingle()
-
-    if (teamCreds) {
-      return { provider: teamCreds.platform as TransactionProvider, credentialsId: teamCreds.id }
-    }
-  }
-
   const { data: brokerageCreds } = await supabase
     .from("platform_credentials")
     .select("id, platform")
     .in("platform", TRANSACTION_PLATFORMS)
     .eq("scope", "brokerage")
-    .eq("owner_id", brokerageId)
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
     .limit(1)
     .maybeSingle()
 
