@@ -1,9 +1,34 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+
+// System callers (e.g. the daily lifetime-touchpoints cron) have no user session,
+// so they pass the owning agentId + a service-role client; UI callers pass neither
+// and the acting agent is resolved from the session.
+type TouchpointActorOpts = { agentId?: string; client?: SupabaseClient }
+
+async function resolveTouchpointActor(opts: TouchpointActorOpts | undefined) {
+  const supabase = opts?.client ?? (await createClient())
+  let agentId = opts?.agentId
+  if (!agentId) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) throw new Error("Not authenticated")
+    agentId = (await resolveAgentId(supabase, user.id)) ?? undefined
+  }
+  if (!agentId) throw new Error("Agent profile not found")
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  return { supabase, agentId, brokerageId: agentRow?.brokerage_id ?? null }
+}
 
 // Schedule automatic touchpoints after transaction closes (sphere-of-influence retention sequence)
 export async function scheduleLifetimeCustomerTouchpoints(contactId: string, transactionId: string, closeDate: Date) {
@@ -48,15 +73,8 @@ export async function scheduleLifetimeCustomerTouchpoints(contactId: string, tra
 }
 
 // Send anniversary message
-export async function sendAnniversaryMessage(contactId: string, yearsAgo: number) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+export async function sendAnniversaryMessage(contactId: string, yearsAgo: number, opts?: TouchpointActorOpts) {
+  const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
 
   const { data: contact } = await supabase
     .from("contacts")
@@ -74,13 +92,14 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
 
   // Create touchpoint record only after confirming email exists — status "sent" must be truthful
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
+    brokerage_id: brokerageId,
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "home_anniversary",
     channel: "email",
     scheduled_date: new Date().toISOString().split("T")[0],
-    sent_at: new Date().toISOString(),
-    message_template: message,
+    sent_date: new Date().toISOString().split("T")[0],
+    engagement_data: { message },
     status: "sent",
   })
 
@@ -101,15 +120,8 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
 }
 
 // Send birthday message
-export async function sendBirthdayMessage(contactId: string) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+export async function sendBirthdayMessage(contactId: string, opts?: TouchpointActorOpts) {
+  const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
 
   const { data: contact } = await supabase.from("contacts").select("first_name, last_name").eq("id", contactId).single()
 
@@ -118,13 +130,14 @@ export async function sendBirthdayMessage(contactId: string) {
   const message = `Happy Birthday ${contact.first_name}! Wishing you an amazing year ahead!`
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
+    brokerage_id: brokerageId,
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "birthday",
     channel: "sms",
     scheduled_date: new Date().toISOString().split("T")[0],
-    sent_at: new Date().toISOString(),
-    message_template: message,
+    sent_date: new Date().toISOString().split("T")[0],
+    engagement_data: { message },
     status: "sent",
   })
 
@@ -135,15 +148,8 @@ export async function sendBirthdayMessage(contactId: string) {
 }
 
 // Send referral request
-export async function sendReferralRequest(contactId: string) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+export async function sendReferralRequest(contactId: string, opts?: TouchpointActorOpts) {
+  const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
 
   const { data: contact } = await supabase
     .from("contacts")
@@ -158,13 +164,14 @@ export async function sendReferralRequest(contactId: string) {
   const message = `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agent?.full_name || "Your Agent"}`
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
+    brokerage_id: brokerageId,
     contact_id: contactId,
     agent_id: agentId,
     touchpoint_type: "referral_request",
     channel: "sms",
     scheduled_date: new Date().toISOString().split("T")[0],
-    sent_at: new Date().toISOString(),
-    message_template: message,
+    sent_date: new Date().toISOString().split("T")[0],
+    engagement_data: { message },
     status: "sent",
   })
 
