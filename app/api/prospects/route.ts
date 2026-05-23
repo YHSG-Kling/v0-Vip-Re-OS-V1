@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from("prospects")
       .select("*, prospect_context(*)")
+      .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
 
     if (error) throw error
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
 
     const { data, error } = await supabase
       .from("prospects")
-      .insert({ name, email, phone })
+      .insert({ name, email, phone, brokerage_id: auth.brokerageId })
       .select()
       .single()
 

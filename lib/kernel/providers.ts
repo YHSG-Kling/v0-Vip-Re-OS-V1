@@ -49,6 +49,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   transaction:  "dotloop",
   crm:          "follow_up_boss",
   accounting:   "quickbooks",
+  idx:          "idxbroker",   // IDX/MLS feed — subscriber connects their own
   // Platform (system-only). D-ID is the platform-primary video/avatar engine.
   ai:           "anthropic",
   video:        "did",
@@ -56,10 +57,18 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   voice_clone:  "elevenlabs",
   ai_voice:     "vapi",
   direct_mail:  "lob",
+  scraper:      "apify",       // lead-source scraping — platform-funded keys
+  enrichment:   "peopledata",  // skip-trace / contact enrichment — platform-funded
 }
 
 // Platform tier — locked to a single vendor chosen by the platform. No
 // per-user/team/brokerage overrides; superadmin may swap the vendor.
+//
+// NOTE on `ai`: this governs the AI *vendor* (the platform AI gateway). It is a
+// DIFFERENT axis from AI *model selection*. `resolveAIModel` (lib/kernel/
+// ai-model.ts) legitimately routes/caps the model TIER per brokerage/team/user
+// for cost governance — that operates within this single platform vendor and is
+// not a vendor override, so it does not conflict with `ai` being system-only.
 const SYSTEM_ONLY_TYPES = new Set([
   "ai",
   "video",
@@ -67,6 +76,8 @@ const SYSTEM_ONLY_TYPES = new Set([
   "voice_clone",
   "ai_voice",
   "direct_mail",
+  "scraper",
+  "enrichment",
 ])
 
 // ─── RESOLVE PROVIDER ─────────────────────────────────────────────────────────

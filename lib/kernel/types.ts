@@ -89,9 +89,13 @@ export type MessageType =
   | "direct_mail"
 
 // ─── PROVIDER TYPE ────────────────────────────────────────────────────────────
-// Note: 'direct_mail' and 'video' are system-only — not in ProviderType
+// Authoritative union of every resolvable provider type. Mirrors the tiers in
+// lib/kernel/providers.ts. PER-TENANT types cascade (user→team→brokerage→
+// superadmin→default); PLATFORM types are system-only (superadmin override or
+// system default — no per-tenant overrides).
 
 export type ProviderType =
+  // Per-tenant (BYO via cascade)
   | "email"
   | "sms"
   | "social"
@@ -100,7 +104,18 @@ export type ProviderType =
   | "payment"
   | "esign"
   | "transaction"
+  | "crm"
+  | "accounting"
+  | "idx"
+  // Platform (system-only)
   | "ai"
+  | "video"
+  | "avatar"
+  | "voice_clone"
+  | "ai_voice"
+  | "direct_mail"
+  | "scraper"
+  | "enrichment"
 
 // ─── ACTOR ROLE ───────────────────────────────────────────────────────────────
 

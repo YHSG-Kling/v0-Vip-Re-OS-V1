@@ -479,7 +479,6 @@ export {
   recordAiIsaOutcome,
   routeHistoryToCanonicalEntity,
   resolveLeadChannel,
-  buildCallContext,
 } from "./ai-isa"
 export type {
   KernelAiIsaResult,
@@ -500,8 +499,6 @@ export type {
   RouteHistoryInput,
   ResolveLeadChannelInput,
   LeadChannelResult,
-  BuildCallContextInput,
-  CallContext,
 } from "./ai-isa"
 
 // ─── REPORTING OS ────────────────────────────────────────────────────────────
