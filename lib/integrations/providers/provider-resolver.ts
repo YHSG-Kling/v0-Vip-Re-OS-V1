@@ -9,12 +9,14 @@
  */
 
 import type { ITransactionProvider } from "./transaction-provider.interface"
-import { DotloopProvider }      from "./dotloop-provider"
-import { DocusignProvider }     from "./docusign-provider"
-import { SkyslopeProvider }     from "./skyslope-provider"
-import { AuthentisignProvider } from "./authentisign-provider"
+import { DotloopProvider }        from "./dotloop-provider"
+import { DocusignProvider }       from "./docusign-provider"
+import { SkyslopeProvider }       from "./skyslope-provider"
+import { AuthentisignProvider }   from "./authentisign-provider"
+import { BrokermintProvider }     from "./brokermint-provider"
+import { FormSimplicityProvider } from "./formsimplicity-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
-import { getCatalogEntry, getImplementedProviders } from "./catalog"
+import { getCatalogEntry, getImplementedProviders, type ProviderName } from "./catalog"
 
 /** Clear, catalog-aware error for a name that has no instantiable provider class. */
 function unresolvableProviderError(providerName: string): Error {
@@ -31,15 +33,20 @@ function unresolvableProviderError(providerName: string): Error {
 // Brokerages choose one in Settings → Integrations; we instantiate from
 // platform_credentials at dispatch time.
 
-export type ProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
+// ProviderName is the unified catalog type (6 providers). The registry only
+// contains entries for providers with a working class; resolution throws a
+// catalog-aware error for any known-but-unregistered name.
+export type { ProviderName }
 
 type ProviderCredentials = { apiKey: string; profileId: string; baseUri?: string }
 
-const PROVIDER_REGISTRY: Record<ProviderName, (creds?: ProviderCredentials) => ITransactionProvider> = {
-  dotloop:      (creds) => new DotloopProvider(creds),
-  docusign:     (creds) => new DocusignProvider(creds as ProviderCredentials),
-  skyslope:     (creds) => new SkyslopeProvider(creds as ProviderCredentials),
-  authentisign: (creds) => new AuthentisignProvider(creds as ProviderCredentials),
+const PROVIDER_REGISTRY: Partial<Record<ProviderName, (creds?: ProviderCredentials) => ITransactionProvider>> = {
+  dotloop:        (creds) => new DotloopProvider(creds),
+  docusign:       (creds) => new DocusignProvider(creds as ProviderCredentials),
+  skyslope:       (creds) => new SkyslopeProvider(creds as ProviderCredentials),
+  authentisign:   (creds) => new AuthentisignProvider(creds as ProviderCredentials),
+  brokermint:     (creds) => new BrokermintProvider(creds as ProviderCredentials),
+  formsimplicity: (creds) => new FormSimplicityProvider(creds as ProviderCredentials),
 }
 
 /**

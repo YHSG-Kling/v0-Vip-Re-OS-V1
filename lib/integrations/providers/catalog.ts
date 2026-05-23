@@ -42,10 +42,11 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   docusign:       { name: "docusign",       label: "DocuSign",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
   skyslope:       { name: "skyslope",       label: "SkySlope",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
   authentisign:   { name: "authentisign",   label: "Authentisign",    implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
-  // Declared/offered but no provider class yet — selectable as "coming soon" only,
-  // and resolution/dispatch degrade gracefully instead of crashing.
-  brokermint:     { name: "brokermint",     label: "Brokermint",      implemented: false, capabilities: { esign: false, transactionForms: true,  embed: true  } },
-  formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: false, capabilities: { esign: true,  transactionForms: true,  embed: true  } },
+  // Brokermint = transaction/back-office management, no native e-sign (pair an
+  // eSign provider for signing). Form Simplicity = state-association form library
+  // plus e-sign via its Authentisign integration.
+  brokermint:     { name: "brokermint",     label: "Brokermint",      implemented: true,  capabilities: { esign: false, transactionForms: true,  embed: true  } },
+  formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
 }
 
 export function isKnownProvider(name?: string | null): name is ProviderName {

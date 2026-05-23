@@ -11,6 +11,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
+import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 
 export interface ExternalListing {
   externalId: string
@@ -59,24 +60,47 @@ export async function searchExternalListings(
 ): Promise<ExternalSearchResult> {
   const svc = createServiceClient()
 
-  const { data: creds } = await svc
-    .from("integration_credentials")
-    .select("provider_name, is_active")
-    .eq("brokerage_id", input.brokerageId)
-    .in("provider_name", ["idx_broker", "spark", "rets", "bridge", "rentcast"])
-    .eq("is_active", true)
+  // IDX Broker is configured via Settings → Integrations, stored in
+  // platform_credentials (platform='idxbroker'). Other IDX feeds (spark/rets/
+  // bridge) and Rentcast are tracked in integration_credentials.
+  const [{ data: idxCred }, { data: creds }] = await Promise.all([
+    svc
+      .from("platform_credentials")
+      .select("api_key, is_active")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("platform", "idxbroker")
+      .eq("is_active", true)
+      .maybeSingle(),
+    svc
+      .from("integration_credentials")
+      .select("provider_name, is_active")
+      .eq("brokerage_id", input.brokerageId)
+      .in("provider_name", ["idx_broker", "spark", "rets", "bridge", "rentcast"])
+      .eq("is_active", true),
+  ])
 
-  const idxProviders = new Set(["idx_broker", "spark", "rets", "bridge"])
-  const hasIdx = creds?.some((c) => idxProviders.has(c.provider_name))
+  const hasIdx = !!idxCred?.api_key
   const hasRentcast = creds?.some((c) => c.provider_name === "rentcast") || !!process.env.RENTCAST_API_KEY
 
-  // Tier 1: IDX feed (when integrated)
+  // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).
   if (hasIdx) {
-    // Stub: when an IDX provider is wired, route here.
-    // Today we fall through to Rentcast since IDX integration is brokerage-specific.
-    // The provider-specific clients (idx-broker.ts, spark-api.ts) live alongside
-    // rentcast.ts and follow the same shape.
-    return { listings: [], source: "none", error: "IDX provider configured but no client implementation yet" }
+    const idx = await IDXBrokerClient.forBrokerage(input.brokerageId)
+    const idxListings = await idx.searchActiveListings({
+      city: input.city,
+      state: input.state,
+      zipCode: input.zipCode,
+      bedroomsMin: input.bedroomsMin,
+      bedroomsMax: input.bedroomsMax,
+      bathroomsMin: input.bathroomsMin,
+      priceMin: input.priceMin,
+      priceMax: input.priceMax,
+      limit: input.limit,
+    })
+    // IDX is account-scoped (featured/active set); if it yields nothing for this
+    // query, fall through to the broader Rentcast license rather than dead-ending.
+    if (idxListings.length > 0) {
+      return { listings: idxListings.map(idxToExternal), source: "idx" }
+    }
   }
 
   // Tier 2: Rentcast
@@ -105,6 +129,25 @@ export async function searchExternalListings(
 
   // Tier 3: nothing available
   return { listings: [], source: "none" }
+}
+
+function idxToExternal(l: NormalizedIdxListing): ExternalListing {
+  return {
+    externalId: l.externalId,
+    source: "idx",
+    address: l.address,
+    city: l.city,
+    state: l.state,
+    zip: l.zip,
+    price: l.price,
+    bedrooms: l.bedrooms,
+    bathrooms: l.bathrooms,
+    squareFeet: l.squareFeet,
+    yearBuilt: l.yearBuilt,
+    propertyType: l.propertyType,
+    daysOnMarket: l.daysOnMarket,
+    photoUrl: l.photoUrl,
+  }
 }
 
 function rentcastToExternal(l: RentcastListing): ExternalListing {
