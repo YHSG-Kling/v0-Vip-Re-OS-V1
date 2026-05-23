@@ -1,7 +1,16 @@
 // lib/kernel/providers.ts
-// LAYER 0 — provider resolution for the platform.
-// Cascades through: user → team → brokerage → superadmin → system default.
-// direct_mail and video bypass the cascade and return system defaults immediately.
+// LAYER 0 — provider resolution for the platform. Two tiers:
+//
+//   • PLATFORM (system-only): one vendor for the whole app, owned by the
+//     platform. Superadmin may override the single vendor; there are NO
+//     user/team/brokerage overrides. Per-agent ASSETS (avatar id, cloned
+//     voice id) are applied downstream — only the VENDOR is platform-locked.
+//     Types: ai, video, avatar, voice_clone, ai_voice, direct_mail.
+//
+//   • PER-TENANT (cascade): user → team → brokerage → superadmin → system
+//     default. BYO credentials. Types: transaction, esign, email, sms, phone,
+//     calendar, crm, accounting, social, payment.
+//
 // No side effects. Read-only.
 
 import { createClient } from "@/lib/supabase/server"
@@ -24,24 +33,41 @@ export interface ResolvedProvider {
 }
 
 // ─── SYSTEM DEFAULTS ──────────────────────────────────────────────────────────
-// direct_mail and video are system-only — no per-user/team/brokerage overrides.
+// The vendor used when no override applies. For PLATFORM types this is the
+// platform-primary vendor (superadmin can override it); for PER-TENANT types
+// it is the fallback when a tenant has not connected their own.
 
 const SYSTEM_DEFAULTS: Record<string, string> = {
+  // Per-tenant (BYO via cascade)
   email:        "sendgrid",
   sms:          "twilio",
-  social:       "buffer",
   phone:        "twilio",
+  social:       "buffer",
   calendar:     "google",
   payment:      "stripe",
   esign:        "dotloop",
   transaction:  "dotloop",
+  crm:          "follow_up_boss",
+  accounting:   "quickbooks",
+  // Platform (system-only). D-ID is the platform-primary video/avatar engine.
   ai:           "anthropic",
+  video:        "did",
+  avatar:       "did",
+  voice_clone:  "elevenlabs",
+  ai_voice:     "vapi",
   direct_mail:  "lob",
-  video:        "heygen",
 }
 
-// Types that are locked to the system default — no override cascade.
-const SYSTEM_ONLY_TYPES = new Set(["direct_mail", "video"])
+// Platform tier — locked to a single vendor chosen by the platform. No
+// per-user/team/brokerage overrides; superadmin may swap the vendor.
+const SYSTEM_ONLY_TYPES = new Set([
+  "ai",
+  "video",
+  "avatar",
+  "voice_clone",
+  "ai_voice",
+  "direct_mail",
+])
 
 // ─── RESOLVE PROVIDER ─────────────────────────────────────────────────────────
 
@@ -51,12 +77,27 @@ export async function resolveProvider(
   const { providerType, actorContext } = params
   const systemDefault = SYSTEM_DEFAULTS[providerType] ?? providerType
 
-  // direct_mail and video skip the override cascade entirely.
+  const supabase = await createClient()
+
+  // Platform tier: superadmin override (single vendor for the whole app) or
+  // the system default. The per-user/team/brokerage cascade does not apply.
   if (SYSTEM_ONLY_TYPES.has(providerType)) {
+    const { data: platformOverride } = await supabase
+      .from("provider_overrides")
+      .select("provider_key, config")
+      .eq("provider_type", providerType)
+      .eq("scope_type", "superadmin")
+      .eq("enabled", true)
+      .maybeSingle()
+
+    if (platformOverride) {
+      return {
+        providerKey: platformOverride.provider_key,
+        config: (platformOverride.config as Record<string, any>) ?? {},
+      }
+    }
     return { providerKey: systemDefault, config: {} }
   }
-
-  const supabase = await createClient()
 
   // ── 1. User personal override ─────────────────────────────────────────────
   const { data: userOverride } = await supabase
