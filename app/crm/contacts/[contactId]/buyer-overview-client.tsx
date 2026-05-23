@@ -18,7 +18,7 @@ import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
 import { Badge }                              from "@/components/ui/badge"
-import { Users, Calendar, AlertTriangle, Zap, Loader2 } from "lucide-react"
+import { Users, Calendar, AlertTriangle, Zap, Loader2, FileText, Home } from "lucide-react"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
@@ -309,6 +309,20 @@ export function BuyerOverviewClient({
                 {activePlan.is_paused ? "Resume AI-ISA" : "Pause AI-ISA"}
               </Button>
             )}
+            <Link
+              href={`/crm/contacts/${buyerId}/offers/new`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent transition-colors"
+            >
+              <FileText className="h-3 w-3" />
+              Create Offer
+            </Link>
+            <Link
+              href={`/crm/contacts/${buyerId}/listings/new`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent transition-colors"
+            >
+              <Home className="h-3 w-3" />
+              Create Listing
+            </Link>
             <Link
               href={`/crm/contacts/${buyerId}/search`}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
