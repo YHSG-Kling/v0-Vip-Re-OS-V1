@@ -528,6 +528,14 @@ export async function convertLeadToContact(params: {
     metadata:     { contact_id: result.contactId },
   })
 
+  // A newly-created converted lead was qualified + consented, so AI-ISA keeps
+  // engaging the contact until an agent toggles it off (merged from the retired
+  // serviceConvertLeadToContact). Skip on a dedup-merge so we never silently
+  // re-enable ISA on an existing contact an agent had toggled off.
+  if (!result.isDuplicate) {
+    await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+  }
+
   return result
 }
 

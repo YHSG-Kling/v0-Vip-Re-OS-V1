@@ -298,8 +298,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   }
 
   // ── STEP 4B: Promotion identity gate ────────────────────────────────────────
-  // A record may remain raw without promotion if it has no email after enrichment.
-  if (!enriched.email) {
+  // Business contract: promote to an unconsented lead only with at least a FULL
+  // NAME (first + last) AND email after enrichment. A confirmed mailing address is
+  // optional (captured when present, never required).
+  const promoFirst = (enriched.first_name ?? firstName ?? '').trim()
+  const promoLast  = (enriched.last_name  ?? lastName  ?? '').trim()
+  if (!enriched.email || !promoFirst || !promoLast) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
     await logDeduplication({
       raw_record_id:             rawRecordId,
@@ -307,13 +311,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
       match_score:               0,
       match_details:             {},
       action_taken:              'skipped',
-      skip_reason:               'No email after enrichment — cannot promote for AI ISA',
+      skip_reason:               'Requires full name + email after enrichment to promote for AI ISA',
       new_enrichment_confidence: enriched.enrichmentConfidence,
     }, supabase)
     return {
       success: false,
       action: 'skipped',
-      reason: 'No email after enrichment — record remains raw without promotion',
+      reason: 'Insufficient identity (need full name + email) — record remains raw without promotion',
       stage: 'promotion_identity_gate',
     }
   }

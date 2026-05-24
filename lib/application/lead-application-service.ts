@@ -55,9 +55,9 @@ import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment
 //                                        for the admin CRM view at /app/leads.
 //   • serviceEnrichLead               — flag a `leads` row as enriched
 //                                       (sets enrichment_status / confidence).
-//   • serviceConvertLeadToContact     — promote `leads` → `contacts` (lane A
-//                                       final step, after consent). Runs
-//                                       resolveAgentForContact for the owner.
+//   (lead → contact promotion is the kernel command convertLeadToContact, used
+//    by the lead-lifecycle action — consolidated; the former service variants
+//    were removed.)
 //   • serviceRejectLead               — mark a `leads` row rejected with reason
 //                                       in notes (no dedicated columns).
 //   • serviceImportLeads              — Lane B entry point. Writes directly to
@@ -193,83 +193,6 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
 
   revalidatePath("/leads")
   return data
-}
-
-// Lane A final step: lead → contact promotion. Per the product flow,
-// agent assignment runs at consent time using the brokerage's
-// assignment_rules (see resolveAgentForContact precedence). If the lead
-// already has an agent_id (e.g., the ISA already routed it), that agent
-// is honored — the explicit owner takes precedence over rules-re-run.
-export async function serviceConvertLeadToContact(agentId: string, brokerageId: string, leadId: string) {
-  const supabase = await createClient()
-
-  const { data: lead, error: leadError } = await supabase
-    .from("leads")
-    .select("*")
-    .eq("id", leadId)
-    .eq("brokerage_id", brokerageId)
-    .single()
-
-  if (leadError) throw leadError
-
-  // Run the contact-assignment resolver. lead.agent_id (if set) plays the
-  // ownerAgentId role — same precedence rule used by Lane B imports.
-  const assignment = await resolveAgentForContact({
-    brokerageId,
-    ownerAgentId: lead.agent_id ?? null,
-    source: lead.source ?? null,
-    propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
-  })
-
-  if (!assignment.agentId) {
-    throw new Error(
-      `serviceConvertLeadToContact: no eligible agent in brokerage ${brokerageId} for lead ${leadId}`
-    )
-  }
-
-  const { data: contact, error: contactError } = await supabase
-    .from("contacts")
-    .insert({
-      agent_id: assignment.agentId, // agents.id
-      brokerage_id: brokerageId,
-      first_name: lead.first_name || "Unknown",
-      last_name: lead.last_name || "Lead",
-      email: lead.email,
-      phone: lead.phone,
-      // contacts schema: source/contact_type/status; tags live in metadata.
-      source: `lead_${lead.source ?? "unknown"}`,
-      contact_type: lead.lead_type === "selling" ? "seller" : lead.lead_type === "buying" ? "buyer" : "both",
-      status: "new",
-      // Consent flows from the leads stage (set during ISA qualification).
-      tcpa_consent: lead.tcpa_consent ?? false,
-      tcpa_consent_at: lead.tcpa_consent_at ?? null,
-      tcpa_consent_source: lead.tcpa_consent_source ?? "lead_conversion",
-      ai_isa_enabled: true, // qualified+consented contact, ISA continues until agent toggles off
-      metadata: {
-        tags: [lead.lead_type, `score_${lead.lead_score}`].filter(Boolean),
-        assignment_method: assignment.method,
-        assignment_rule_id: assignment.ruleId ?? null,
-        promoted_from_lead_id: leadId,
-      },
-    })
-    .select()
-    .single()
-
-  if (contactError) throw contactError
-
-  await supabase
-    .from("leads")
-    .update({
-      status: "converted",
-      contact_id: contact.id,
-      converted_at: new Date().toISOString(),
-      agent_id: assignment.agentId,
-    })
-    .eq("id", leadId)
-
-  revalidatePath("/leads")
-  revalidatePath("/crm")
-  return contact
 }
 
 export async function serviceRejectLead(
@@ -595,58 +518,6 @@ export async function serviceAssignLead(leadId: string, agentId: string) {
 
   revalidatePath("/intelligence")
   return data
-}
-
-export async function serviceConvertLeadToContactFull(leadId: string) {
-  const supabase = await createClient()
-
-  const { data: lead, error: leadError } = await supabase.from("leads").select("*").eq("id", leadId).single()
-  if (leadError) throw leadError
-  if (!lead) throw new Error("Lead not found")
-
-  const { data: newContact, error: contactError } = await supabase
-    .from("contacts")
-    .insert({
-      first_name: lead.first_name || "Unknown",
-      last_name: lead.last_name || "",
-      email: lead.email,
-      phone: lead.phone,
-      address: lead.address,
-      city: lead.city,
-      state: lead.state,
-      zip_code: lead.zip_code,
-      source: lead.lead_source,
-      agent_id: lead.assigned_agent_id,
-      persona:
-        lead.intent_type === "seller"
-          ? "motivated_seller"
-          : lead.intent_type === "buyer"
-            ? "first_time_buyer"
-            : "general",
-      engagement_score: lead.engagement_score,
-      intent_score: lead.motivation_score,
-      notes: `Converted from lead. Original source: ${lead.lead_source}. Scraped from: ${lead.scraped_from || "N/A"}`,
-    })
-    .select()
-    .single()
-
-  if (contactError) throw contactError
-
-  const { error: updateError } = await supabase
-    .from("leads")
-    .update({
-      lead_status: "converted",
-      converted_to_contact_id: newContact.id,
-      converted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-
-  if (updateError) throw updateError
-
-  revalidatePath("/intelligence")
-  revalidatePath("/crm")
-  return newContact
 }
 
 // ============================================

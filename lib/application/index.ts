@@ -37,7 +37,6 @@ export {
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
-  serviceConvertLeadToContact,
   serviceRejectLead,
   serviceImportLeads,
   // leads table (external scraped, not yet in system)
@@ -45,7 +44,6 @@ export {
   serviceGetLeadsFull,
   serviceUpdateLead,
   serviceAssignLead,
-  serviceConvertLeadToContactFull,
   serviceScrapeZillowLeads,
   serviceScrapeNextdoorLeads,
   serviceScrapeBatchDataLeads,
