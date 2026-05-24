@@ -98,6 +98,8 @@ export async function createTransaction(transactionData: {
   client_email?: string
   client_phone?: string
   agent_id?: string
+  brokerage_id?: string
+  contact_id?: string
   close_date?: string
   notes?: string
   commissionPercentage?: number
@@ -118,8 +120,9 @@ export async function createTransaction(transactionData: {
   const { data, error } = await supabase
     .from("transactions")
     .insert({
-      brokerage_id:          (transactionData as any).brokerage_id ?? null,
+      brokerage_id:          transactionData.brokerage_id ?? null,
       agent_id:              transactionData.agent_id ?? null,
+      contact_id:            transactionData.contact_id ?? null,  // primary client (hangs off a contact)
       deal_name:             transactionData.property_address, // NOT NULL
       deal_type:             DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
       status:                transactionData.status || "active",

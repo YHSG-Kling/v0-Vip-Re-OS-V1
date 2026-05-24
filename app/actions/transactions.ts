@@ -3,6 +3,8 @@
 import { isValidUUID } from "@/lib/validations"
 import * as TransactionKernel from "@/lib/kernel/transactions"
 import * as TransactionService from "@/lib/application/transactions"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { createContactManually } from "@/lib/kernel/crm"
 
 // ============================================
 // TRANSACTION CRUD
@@ -47,7 +49,41 @@ export async function createTransaction(transactionData: {
   commissionPercentage?: number
 }) {
   if (!transactionData.property_address?.trim()) return { success: false, error: "Property address is required" }
-  return TransactionService.createTransaction(transactionData)
+
+  // Resolve session ownership — the manual sheet doesn't pass these, so without
+  // this the row was created unscoped (no brokerage_id/agent_id). agentId is
+  // agents.id (null for non-agent users).
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+
+  // The client is a person → hangs off a contact, not free text on the
+  // transaction. Create/dedupe a contact and link it (when we have a client
+  // name and an agent to own it). contact_type follows the deal side.
+  let contactId: string | undefined
+  if (transactionData.client_name?.trim() && ctx.agentId) {
+    const parts = transactionData.client_name.trim().split(/\s+/)
+    const res = await createContactManually({
+      first_name:   parts[0],
+      last_name:    parts.slice(1).join(" ") || parts[0],
+      email:        transactionData.client_email ?? null,
+      phone:        transactionData.client_phone ?? null,
+      city:         transactionData.property_city ?? null,
+      state:        transactionData.property_state ?? null,
+      zip_code:     transactionData.property_zip ?? null,
+      contact_type: transactionData.transaction_type === "sale" ? "seller" : "buyer",
+      agent_id:     ctx.agentId,
+      brokerage_id: ctx.brokerageId,
+      source_label: "manual_transaction",
+    })
+    if (res.success) contactId = res.contactId ?? res.mergedIntoId
+  }
+
+  return TransactionService.createTransaction({
+    ...transactionData,
+    brokerage_id: ctx.brokerageId,
+    agent_id:     ctx.agentId ?? undefined,
+    contact_id:   contactId,
+  })
 }
 
 export async function updateTransaction(
