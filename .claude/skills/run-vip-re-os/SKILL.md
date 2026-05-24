@@ -64,14 +64,30 @@ npm run dev            # boots locally with env (Turbopack); needs a real machin
 On a real machine, log in via Google, then the changed surfaces to click:
 `/dashboard/buyers` → redirects to `/crm?contact_type=buyer`; New Transaction → creates a
 linked contact; listing e-sign → "coming soon". The deployed app (old code) is live at
-`https://v0-supabase-client-initialization.vercel.app/login` (verified 200).
+`https://v0-supabase-client-initialization.vercel.app/login` (verified 200 via the Vercel MCP).
+
+## Browser driver (screenshots)
+A headless-Chromium driver is committed:
+[`.claude/skills/run-vip-re-os/browser-shot.cjs`](.claude/skills/run-vip-re-os/browser-shot.cjs).
+It uses `@sparticuz/chromium` because that package ships the browser binary inside the
+npm package — the sandbox egress allowlist blocks `cdn.playwright.dev` and apt, but npm
+is allowed, so this is the only Chromium that installs here.
+```bash
+npm i @sparticuz/chromium puppeteer-core   # one-time
+node .claude/skills/run-vip-re-os/browser-shot.cjs http://localhost:3000/login /tmp/app-shot.png
+```
+Verified working in-sandbox against an allowlisted host (rendered + screenshotted
+`https://github.com`, status 200). It prints status/title/clickables and writes a
+full-page PNG. **Reachability:** point it at `localhost` (the dev server, on a machine
+where that runs) — `*.vercel.app` returns the proxy "Host not in allowlist" page from the
+agent sandbox, so the deployed app is only browser-reachable from your own machine.
 
 ## Gotchas (sandbox battle scars)
-- **No browser obtainable.** Egress is an **allowlist**: npm/pypi/github are allowed,
-  but `cdn.playwright.dev` returns `403 'Host not in allowlist'` and Ubuntu PPAs return
-  403, so neither Playwright Chromium nor `apt-get chromium` (snap-only on 24.04) can be
-  installed. `browser-use` installs via pip but can't fetch its Chromium. → UI
-  screenshots must be done on a deployed preview or a real machine.
+- **No browser from the usual sources.** Egress is an **allowlist**: npm/pypi/github are
+  allowed; `cdn.playwright.dev`, `vercel.com`, `*.vercel.app`, and Ubuntu PPAs return
+  `403 'Host not in allowlist'`. Chromium therefore must come via npm
+  (`@sparticuz/chromium`); Playwright's download and `apt-get chromium` both fail. The
+  egress proxy also does TLS interception, so the browser needs `ignoreHTTPSErrors`.
 - **Dev server is SIGTERM-killed** (exit 144) in the agent sandbox — it dies before
   Turbopack finishes compiling (memory is fine at 14GB free; it's a command-runtime
   policy). It boots normally on a real machine / Vercel.
