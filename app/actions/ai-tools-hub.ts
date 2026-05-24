@@ -27,7 +27,7 @@ export async function executeAITool(
         break
         
       case "property_comparison":
-        result = await compareProperties(params.propertyIds, userId)
+        result = await compareProperties(params, userId)
         break
         
       case "affordability_calculator":
@@ -164,58 +164,86 @@ Explain:
 // PROPERTY COMPARISON (CLIENT TOOL)
 // =====================================================
 
-async function compareProperties(propertyIds: string[], userId: string) {
+interface ComparePropertiesParams {
+  property1?: string
+  property2?: string
+  property3?: string
+  buyerCriteria?: string
+}
+
+async function compareProperties(params: ComparePropertiesParams, userId: string) {
   const supabase = await createClient()
 
-  // BROKEN — DO NOT USE without fixing the full flow:
-  //   1. There is no `properties` table in this schema. `listings` is the
-  //      closest analog but uses different column names: `list_price`
-  //      (not `price`), `bedrooms`/`bathrooms` (not `beds`/`baths`), and
-  //      has no `year_built` or `property_type` columns at all.
-  //   2. The UI form at /dashboard/ai-tools collects address strings
-  //      (`property1`, `property2`, `buyerCriteria`) not UUIDs. With the
-  //      current executor signature `propertyIds` is always undefined.
-  //   3. Buyer-side property comparison should likely read from IDX/MLS
-  //      data (e.g. `saved_properties` keyed by `property_address`),
-  //      not the brokerage's own active listings.
-  // Leaving the original `.from("properties")` call so the missing-table
-  // error keeps surfacing instead of silently returning empty rows.
-  const { data: properties } = await supabase
-    .from("properties")
-    .select("*")
-    .in("id", propertyIds)
-  
-  if (!properties || properties.length < 2) {
-    throw new Error("Need at least 2 properties to compare")
+  // Buyer-side properties live in `saved_properties` (IDX/external/manual,
+  // keyed by `property_address`) — NOT the seller-owned `listings` table and
+  // not a non-existent `properties` table. The UI collects address strings,
+  // so we match on address and enrich with whatever saved-property data exists.
+  const addresses = [params.property1, params.property2, params.property3]
+    .map((a) => a?.trim())
+    .filter((a): a is string => Boolean(a))
+
+  if (addresses.length < 2) {
+    throw new Error("Need at least 2 property addresses to compare")
   }
-  
+
+  const { data: saved } = await supabase
+    .from("saved_properties")
+    .select(
+      "property_address, list_price, bedrooms, bathrooms, sqft, city, state, property_type, source"
+    )
+    .eq("user_id", userId)
+    .in("property_address", addresses)
+
+  const byAddress = new Map(
+    (saved ?? []).map((p) => [p.property_address?.trim().toLowerCase(), p])
+  )
+
+  const properties = addresses.map((address) => {
+    const match = byAddress.get(address.toLowerCase())
+    return {
+      property_address: address,
+      list_price: match?.list_price ?? null,
+      bedrooms: match?.bedrooms ?? null,
+      bathrooms: match?.bathrooms ?? null,
+      sqft: match?.sqft ?? null,
+      city: match?.city ?? null,
+      state: match?.state ?? null,
+      property_type: match?.property_type ?? null,
+      source: match?.source ?? null,
+    }
+  })
+
   const prompt = `
-You are a real estate AI assistant. Compare these properties for a homebuyer and provide insights:
-
-${properties.map((p, i) => `
+You are a real estate AI assistant. Compare these properties for a homebuyer and provide insights.
+${params.buyerCriteria ? `\nBuyer criteria: ${params.buyerCriteria}\n` : ""}
+${properties
+  .map(
+    (p, i) => `
 Property ${i + 1}:
-- Address: ${p.address}
-- Price: $${p.price?.toLocaleString()}
-- Beds: ${p.beds} | Baths: ${p.baths} | SqFt: ${p.sqft}
-- Year Built: ${p.year_built}
-- Property Type: ${p.property_type}
-`).join("\\n")}
+- Address: ${p.property_address}
+- Price: ${p.list_price != null ? `$${Number(p.list_price).toLocaleString()}` : "unknown"}
+- Beds: ${p.bedrooms ?? "?"} | Baths: ${p.bathrooms ?? "?"} | SqFt: ${p.sqft ?? "?"}
+- Location: ${[p.city, p.state].filter(Boolean).join(", ") || "unknown"}
+- Property Type: ${p.property_type ?? "unknown"}`
+  )
+  .join("\n")}
 
+Where a field is unknown, reason from the address and buyer criteria rather than inventing numbers.
 Provide:
-1. Price per square foot comparison
+1. Price per square foot comparison (only where data is available)
 2. Key differentiators
 3. Pros/cons of each
-4. Which property offers better value and why
+4. Which property offers better value for this buyer and why
 
 Be concise, objective, and helpful.
 `
-  
+
   const { text } = await generateText({
     model: "openai/gpt-4o-mini",
     prompt,
     temperature: 0.7,
   })
-  
+
   return {
     properties,
     comparison: text,

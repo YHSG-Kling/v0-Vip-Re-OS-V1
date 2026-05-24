@@ -407,32 +407,13 @@ export async function createOffer(
     }
   }
 
-  // Resolve listing_id — required by NOT NULL constraint on offers.listing_id
-  let resolvedListingId = form.listing_id
-  if (!resolvedListingId) {
-    // Create a synthetic listing row for external properties
-    const { data: syntheticListing, error: lErr } = await supabase
-      .from("listings")
-      .insert({
-        address:       form.property_address,
-        city:          form.property_city ?? "",
-        state:         form.property_state ?? "",
-        zip:           form.property_zip ?? "",
-        brokerage_id:  brokerageId,
-        agent_id:      agentId,
-        list_price:    form.offer_price,
-        // status left NULL — "external" is not a valid listings.status; this is
-        // a synthetic placeholder for an off-platform property, not on our market.
-        lifecycle_stage: "LEAD",
-      })
-      .select("id")
-      .single()
-
-    if (lErr || !syntheticListing) {
-      return { success: false, error: "Could not resolve listing for offer" }
-    }
-    resolvedListingId = syntheticListing.id
-  }
+  // listing_id is nullable on offers. It points to a seller-owned `listings`
+  // row ONLY when the buyer is offering on one of our own listings. For
+  // external/IDX/off-platform properties (the common buyer case) it stays NULL
+  // — the property is identified by `property_address`. We never fabricate a
+  // synthetic seller listing for a buyer's external target; listings belong to
+  // sellers and the two domains stay separate.
+  const resolvedListingId = form.listing_id ?? null
 
   const { data: offer, error: offerError } = await supabase
     .from("offers")

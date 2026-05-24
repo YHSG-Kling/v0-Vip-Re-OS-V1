@@ -130,38 +130,64 @@ DELETE FROM leads WHERE source='E2E_CYCLE';
 DELETE FROM contacts WHERE id IN ('e0000000-0000-0000-0000-0000000c0012','e0000000-0000-0000-0000-0000000c0015');
 
 -- ============================================================================
--- FLOW 5 — OUTSIDE PROPERTY: buyer tours + buys a non-MLS property (NAR-gated)
--- NAR 2024: an ACTIVE buyer_broker_agreement is required before a showing
--- (enforced in app/actions/showings.ts via lib/buyer-broker/gate.ts). An active
--- BBA needs a commission value (CHECK). External property = synthetic listing +
--- showings.external_* metadata (showings.listing_id is NOT NULL). Valid enums:
--- buyer_broker_agreements.agreement_type ∈ {exclusive,non_exclusive,showing_only,open}.
+-- FLOW 5 — OUTSIDE PROPERTY: buyer tours an external/IDX property, then buys it
+-- CORRECT MODEL: buyer properties live in saved_properties (NOT listings, which are
+-- seller-owned). The buyer TOUR system (tours + tour_stops) handles external/IDX/
+-- manual properties: each stop carries the OUTSIDE listing agent's contact; showings
+-- are created only for INSIDE-listing stops (so an external stop gets NO showing).
+-- finalizeTour -> confirmed + agent_approved + report (client_portal_messages) +
+-- calendar_events per stop. Tour gate = financial verification (buyer_financial_profiles
+-- .verified). Buying an external property needs NO synthetic listing: offer.listing_id
+-- is nullable, the property is named via offer/transaction.property_address.
+-- Valid enums: tour_stops.scheduling_method ∈ {showingtime,manual_call,email,text,other};
+-- buyer_financial_profiles.finance_type ∈ {conventional,fha,va,usda,jumbo,cash,bridge,other};
+-- client_portal_messages.direction ∈ {agent_to_client,client_to_agent}.
 INSERT INTO leads (id, brokerage_id, agent_id, lifecycle_state, lead_type, source, first_name, last_name, email, tcpa_consent) VALUES
  ('e0000000-0000-0000-0000-0000000d0001','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','assigned','buying','E2E_EXT_BUY','Tina','Tourbuyer','tina.extbuy@example.com',true);
 INSERT INTO contacts (id, brokerage_id, agent_id, lifecycle_state, contact_type, buyer_stage, first_name, last_name, email, status, tcpa_consent) VALUES
  ('e0000000-0000-0000-0000-0000000d0002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','assigned','buyer','BUYER_TOUR_ELIGIBLE','Tina','Tourbuyer','tina.extbuy@example.com','new',true);
 UPDATE leads SET contact_id='e0000000-0000-0000-0000-0000000d0002' WHERE id='e0000000-0000-0000-0000-0000000d0001';
-INSERT INTO buyer_broker_agreements (id, brokerage_id, buyer_contact_id, agent_id, created_by, agreement_type, status, commission_percentage, signed_at) VALUES
- ('e0000000-0000-0000-0000-0000000d0004','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-000000000002','exclusive','active',2.5, now());
-INSERT INTO listings (id, brokerage_id, agent_id, address, city, state, lifecycle_stage) VALUES
- ('e0000000-0000-0000-0000-0000000d0003','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','999 Outside Property Rd','Tampa','FL','LEAD');
-INSERT INTO showings (id, brokerage_id, listing_id, contact_id, agent_id, scheduled_at, status, external_source, external_address, external_mls_id, completed_at) VALUES
- ('e0000000-0000-0000-0000-0000000d0005','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0003','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002', now(),'completed','external_mls','999 Outside Property Rd, Tampa, FL','EXT-12345', now());
-INSERT INTO offers (id, brokerage_id, agent_id, contact_id, listing_id, offer_price, status, submitted_at) VALUES
- ('e0000000-0000-0000-0000-0000000d0006','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0003',425000,'accepted', now());
+INSERT INTO buyer_financial_profiles (brokerage_id, contact_id, finance_type, verified) VALUES
+ ('b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0002','conventional',true);
+-- buyer-owned external/IDX property (saved_properties, no inside listing)
+INSERT INTO saved_properties (id, user_id, contact_id, brokerage_id, property_address, city, state, list_price, source, external_property_id, listing_url) VALUES
+ ('e0000000-0000-0000-0000-0000000d0003','a0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','b0000000-0000-0000-0000-000000000001','999 Outside Property Rd','Tampa','FL',425000,'idx','IDX-77001','https://idx.example.com/999');
+-- tour with one external stop (outside listing agent captured); NO showing for external
+INSERT INTO tours (id, contact_id, buyer_id, agent_id, brokerage_id, tour_date, start_time, status, ai_plan_narrative, plan_sent_at) VALUES
+ ('e0000000-0000-0000-0000-0000000d0008','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002','b0000000-0000-0000-0000-000000000001', now()::date,'10:00','planned','route', now());
+INSERT INTO tour_stops (id, tour_id, brokerage_id, contact_id, listing_id, order_index, property_address, listing_agent_name, listing_agent_phone, scheduling_method, suggested_time, is_confirmed) VALUES
+ ('e0000000-0000-0000-0000-0000000d0009','e0000000-0000-0000-0000-0000000d0008','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0002',NULL,0,'999 Outside Property Rd','Ling Listingagent','305-555-7777','manual_call', now(),false);
+UPDATE tours SET status='scheduling' WHERE id='e0000000-0000-0000-0000-0000000d0008';
+UPDATE tour_stops SET is_confirmed=true, confirmed_time=now() WHERE id='e0000000-0000-0000-0000-0000000d0009';
+UPDATE tours SET status='confirmed', all_confirmed=true, agent_approved_at=now(), agent_approved_by='a0000000-0000-0000-0000-000000000002', report_sent_at=now(), report_sent_via=ARRAY['portal'] WHERE id='e0000000-0000-0000-0000-0000000d0008';
+INSERT INTO calendar_events (brokerage_id, entity_type, entity_id, event_type, start_at) VALUES
+ ('b0000000-0000-0000-0000-000000000001','tour','e0000000-0000-0000-0000-0000000d0008','tour_stop', now());
+INSERT INTO client_portal_messages (brokerage_id, contact_id, agent_id, direction, body) VALUES
+ ('b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002','agent_to_client','Tour confirmed.');
+UPDATE saved_properties SET added_to_tour=true WHERE id='e0000000-0000-0000-0000-0000000d0003';
+UPDATE contacts SET buyer_stage='BUYER_TOURING' WHERE id='e0000000-0000-0000-0000-0000000d0002';
+-- buyer buys the external property: offer + transaction with NO listing (external) and NO in-house seller
+INSERT INTO offers (id, brokerage_id, agent_id, contact_id, listing_id, property_address, offer_price, status, submitted_at) VALUES
+ ('e0000000-0000-0000-0000-0000000d0006','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002',NULL,'999 Outside Property Rd',425000,'accepted', now());
 INSERT INTO transactions (id, brokerage_id, agent_id, contact_id, buyer_contact_id, listing_id, offer_id, deal_name, deal_type, stage, status, purchase_price, contract_date) VALUES
- ('e0000000-0000-0000-0000-0000000d0007','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0003','e0000000-0000-0000-0000-0000000d0006','999 Outside Property Rd','buyer','CLOSED','closed',425000, now()::date);
+ ('e0000000-0000-0000-0000-0000000d0007','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0002',NULL,'e0000000-0000-0000-0000-0000000d0006','999 Outside Property Rd','buyer','CLOSED','closed',425000, now()::date);
 UPDATE contacts SET buyer_stage='BUYER_CLOSED' WHERE id='e0000000-0000-0000-0000-0000000d0002';
--- VERIFY (expect bba active, external showing, txn CLOSED, no in-house seller)
-SELECT bba.status, s.external_mls_id, t.stage, t.seller_contact_id IS NULL AS external_no_seller
-FROM transactions t JOIN buyer_broker_agreements bba ON bba.buyer_contact_id=t.buyer_contact_id
-JOIN showings s ON s.listing_id=t.listing_id WHERE t.id='e0000000-0000-0000-0000-0000000d0007';
+-- VERIFY (tour confirmed, external stop has NO showing, offer/txn carry no listing & no seller)
+SELECT t.status AS tour_status, (SELECT count(*) FROM showings WHERE tour_id=t.id) AS showings_for_external,
+  sp.source AS property_source, o.listing_id IS NULL AS offer_no_listing,
+  tx.listing_id IS NULL AS txn_no_listing, tx.seller_contact_id IS NULL AS txn_no_seller, tx.stage
+FROM tours t JOIN saved_properties sp ON sp.contact_id=t.contact_id
+JOIN offers o ON o.contact_id=t.contact_id JOIN transactions tx ON tx.offer_id=o.id
+WHERE t.id='e0000000-0000-0000-0000-0000000d0008';
 -- CLEANUP
 DELETE FROM transactions WHERE id='e0000000-0000-0000-0000-0000000d0007';
 DELETE FROM offers WHERE id='e0000000-0000-0000-0000-0000000d0006';
-DELETE FROM showings WHERE id='e0000000-0000-0000-0000-0000000d0005';
-DELETE FROM buyer_broker_agreements WHERE id='e0000000-0000-0000-0000-0000000d0004';
-DELETE FROM listings WHERE id='e0000000-0000-0000-0000-0000000d0003';
+DELETE FROM client_portal_messages WHERE contact_id='e0000000-0000-0000-0000-0000000d0002';
+DELETE FROM calendar_events WHERE entity_id='e0000000-0000-0000-0000-0000000d0008';
+DELETE FROM tour_stops WHERE tour_id='e0000000-0000-0000-0000-0000000d0008';
+DELETE FROM tours WHERE id='e0000000-0000-0000-0000-0000000d0008';
+DELETE FROM saved_properties WHERE id='e0000000-0000-0000-0000-0000000d0003';
+DELETE FROM buyer_financial_profiles WHERE contact_id='e0000000-0000-0000-0000-0000000d0002';
 DELETE FROM leads WHERE source='E2E_EXT_BUY';
 DELETE FROM contacts WHERE id='e0000000-0000-0000-0000-0000000d0002';
 

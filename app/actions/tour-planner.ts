@@ -52,7 +52,7 @@ export interface TourStop {
   listingAgentPhone?: string
   listingAgentEmail?: string
   listingAgentCompany?: string
-  schedulingMethod?: 'showingtime' | 'call_agent' | 'other'
+  schedulingMethod?: 'showingtime' | 'manual_call' | 'email' | 'text' | 'other'
   schedulingInstructions?: string
   suggestedDurationMinutes?: number
   driveTimeFromPrevMinutes?: number
@@ -345,7 +345,7 @@ export async function createTourPlan(params: CreateTourParams) {
     listing_agent_phone:         s.listingAgentPhone ?? null,
     listing_agent_email:         s.listingAgentEmail ?? null,
     listing_agent_company:       s.listingAgentCompany ?? null,
-    scheduling_method:           s.schedulingMethod ?? 'call_agent',
+    scheduling_method:           s.schedulingMethod ?? 'manual_call',
     scheduling_instructions:     s.schedulingInstructions ?? null,
     suggested_time:              s.suggestedTime,
     suggested_duration_minutes:  s.suggestedDurationMinutes ?? 30,
@@ -451,7 +451,7 @@ export async function createTourPlan(params: CreateTourParams) {
 // the action that goes out to listing agents:
 //   - schedulingMethod='showingtime' → ShowingTime API call (deferred — for
 //     now we record intent and mark the stop as scheduling-pending)
-//   - schedulingMethod='call_agent'  → text message draft to listing_agent_phone
+//   - schedulingMethod='manual_call' → text message draft to listing_agent_phone
 //   - schedulingMethod='other'       → email draft to listing_agent_email
 //
 // Flips tour status: planned → scheduling. Each stop now has a record of
@@ -504,7 +504,7 @@ export async function scheduleTourStops(params: {
       event_type:    'tour_stop.schedule_dispatched',
       actor_user_id: agentUserId,
       metadata: {
-        scheduling_method:   stop.scheduling_method ?? 'call_agent',
+        scheduling_method:   stop.scheduling_method ?? 'manual_call',
         listing_agent_phone: stop.listing_agent_phone,
         listing_agent_email: stop.listing_agent_email,
         suggested_time:      stop.suggested_time,
