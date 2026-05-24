@@ -161,7 +161,7 @@ export async function POST(request: NextRequest) {
             .eq("id", matchedAgreement.listing_id)
             .maybeSingle()
 
-          if (listingRow?.brokerage_id && ["LEAD", "LISTING_AGREEMENT_INITIATED"].includes(listingRow.lifecycle_stage)) {
+          if (listingRow?.brokerage_id && listingRow.lifecycle_stage === "LISTING_AGREEMENT_INITIATED") {
             await transitionLifecycle({
               brokerageId: listingRow.brokerage_id,
               entityType:  "listing_stage_machine",

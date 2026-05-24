@@ -328,7 +328,7 @@ export async function finalizeLegacyEsignArtifacts(
       .select("lifecycle_stage, brokerage_id")
       .eq("id", matchedAgreement.listing_id)
       .maybeSingle()
-    if (listingRow?.brokerage_id && ["LEAD", "LISTING_AGREEMENT_INITIATED"].includes((listingRow as any).lifecycle_stage)) {
+    if (listingRow?.brokerage_id && (listingRow as any).lifecycle_stage === "LISTING_AGREEMENT_INITIATED") {
       await transitionLifecycle({
         brokerageId: (listingRow as any).brokerage_id,
         entityType:  "listing_stage_machine",
