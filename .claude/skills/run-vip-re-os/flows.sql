@@ -130,11 +130,90 @@ DELETE FROM leads WHERE source='E2E_CYCLE';
 DELETE FROM contacts WHERE id IN ('e0000000-0000-0000-0000-0000000c0012','e0000000-0000-0000-0000-0000000c0015');
 
 -- ============================================================================
+-- FLOW 5 — OUTSIDE PROPERTY: buyer tours + buys a non-MLS property (NAR-gated)
+-- NAR 2024: an ACTIVE buyer_broker_agreement is required before a showing
+-- (enforced in app/actions/showings.ts via lib/buyer-broker/gate.ts). An active
+-- BBA needs a commission value (CHECK). External property = synthetic listing +
+-- showings.external_* metadata (showings.listing_id is NOT NULL). Valid enums:
+-- buyer_broker_agreements.agreement_type ∈ {exclusive,non_exclusive,showing_only,open}.
+INSERT INTO leads (id, brokerage_id, agent_id, lifecycle_state, lead_type, source, first_name, last_name, email, tcpa_consent) VALUES
+ ('e0000000-0000-0000-0000-0000000d0001','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','assigned','buying','E2E_EXT_BUY','Tina','Tourbuyer','tina.extbuy@example.com',true);
+INSERT INTO contacts (id, brokerage_id, agent_id, lifecycle_state, contact_type, buyer_stage, first_name, last_name, email, status, tcpa_consent) VALUES
+ ('e0000000-0000-0000-0000-0000000d0002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','assigned','buyer','BUYER_TOUR_ELIGIBLE','Tina','Tourbuyer','tina.extbuy@example.com','new',true);
+UPDATE leads SET contact_id='e0000000-0000-0000-0000-0000000d0002' WHERE id='e0000000-0000-0000-0000-0000000d0001';
+INSERT INTO buyer_broker_agreements (id, brokerage_id, buyer_contact_id, agent_id, created_by, agreement_type, status, commission_percentage, signed_at) VALUES
+ ('e0000000-0000-0000-0000-0000000d0004','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-000000000002','exclusive','active',2.5, now());
+INSERT INTO listings (id, brokerage_id, agent_id, address, city, state, lifecycle_stage) VALUES
+ ('e0000000-0000-0000-0000-0000000d0003','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','999 Outside Property Rd','Tampa','FL','LEAD');
+INSERT INTO showings (id, brokerage_id, listing_id, contact_id, agent_id, scheduled_at, status, external_source, external_address, external_mls_id, completed_at) VALUES
+ ('e0000000-0000-0000-0000-0000000d0005','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000d0003','e0000000-0000-0000-0000-0000000d0002','c0000000-0000-0000-0000-000000000002', now(),'completed','external_mls','999 Outside Property Rd, Tampa, FL','EXT-12345', now());
+INSERT INTO offers (id, brokerage_id, agent_id, contact_id, listing_id, offer_price, status, submitted_at) VALUES
+ ('e0000000-0000-0000-0000-0000000d0006','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0003',425000,'accepted', now());
+INSERT INTO transactions (id, brokerage_id, agent_id, contact_id, buyer_contact_id, listing_id, offer_id, deal_name, deal_type, stage, status, purchase_price, contract_date) VALUES
+ ('e0000000-0000-0000-0000-0000000d0007','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0002','e0000000-0000-0000-0000-0000000d0003','e0000000-0000-0000-0000-0000000d0006','999 Outside Property Rd','buyer','CLOSED','closed',425000, now()::date);
+UPDATE contacts SET buyer_stage='BUYER_CLOSED' WHERE id='e0000000-0000-0000-0000-0000000d0002';
+-- VERIFY (expect bba active, external showing, txn CLOSED, no in-house seller)
+SELECT bba.status, s.external_mls_id, t.stage, t.seller_contact_id IS NULL AS external_no_seller
+FROM transactions t JOIN buyer_broker_agreements bba ON bba.buyer_contact_id=t.buyer_contact_id
+JOIN showings s ON s.listing_id=t.listing_id WHERE t.id='e0000000-0000-0000-0000-0000000d0007';
+-- CLEANUP
+DELETE FROM transactions WHERE id='e0000000-0000-0000-0000-0000000d0007';
+DELETE FROM offers WHERE id='e0000000-0000-0000-0000-0000000d0006';
+DELETE FROM showings WHERE id='e0000000-0000-0000-0000-0000000d0005';
+DELETE FROM buyer_broker_agreements WHERE id='e0000000-0000-0000-0000-0000000d0004';
+DELETE FROM listings WHERE id='e0000000-0000-0000-0000-0000000d0003';
+DELETE FROM leads WHERE source='E2E_EXT_BUY';
+DELETE FROM contacts WHERE id='e0000000-0000-0000-0000-0000000d0002';
+
+-- ============================================================================
+-- FLOW 6 — OUTSIDE AGENT: our seller's listing gets an offer from an external agent
+-- The outside buyer's agent is captured in outside_agents + linked via
+-- outside_agent_contact_links AND as a free-text transaction_participants row
+-- (role buyer_agent). Our agent is the seller_agent (transaction_agent_roles).
+INSERT INTO leads (id, brokerage_id, agent_id, lifecycle_state, lead_type, source, first_name, last_name, email, tcpa_consent) VALUES
+ ('e0000000-0000-0000-0000-0000000f0001','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','assigned','motivated_seller','E2E_OUTAGENT','Sam','Selleragent','sam.outagent@example.com',true);
+INSERT INTO contacts (id, brokerage_id, agent_id, contact_type, first_name, last_name, email, status) VALUES
+ ('e0000000-0000-0000-0000-0000000f0002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','seller','Sam','Selleragent','sam.outagent@example.com','new'),
+ ('e0000000-0000-0000-0000-0000000f0022','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Ext','Buyer','ext.buyer.outagent@example.com','new');
+UPDATE leads SET contact_id='e0000000-0000-0000-0000-0000000f0002' WHERE id='e0000000-0000-0000-0000-0000000f0001';
+INSERT INTO listings (id, brokerage_id, agent_id, seller_contact_id, contact_id, address, city, state, status, lifecycle_stage) VALUES
+ ('e0000000-0000-0000-0000-0000000f0003','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000f0002','e0000000-0000-0000-0000-0000000f0002','77 Our Listing Blvd','Orlando','FL','active','MLS_ACTIVE');
+INSERT INTO outside_agents (id, brokerage_id, full_name, email, license_number, license_state, outside_brokerage_name) VALUES
+ ('e0000000-0000-0000-0000-0000000f00a1','b0000000-0000-0000-0000-000000000001','Oscar Outside','oscar@externalrealty.com','SL3334444','FL','External Realty Group');
+INSERT INTO offers (id, brokerage_id, agent_id, contact_id, listing_id, offer_price, status, submitted_at) VALUES
+ ('e0000000-0000-0000-0000-0000000f0006','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000f0022','e0000000-0000-0000-0000-0000000f0003',610000,'accepted', now());
+INSERT INTO transactions (id, brokerage_id, agent_id, contact_id, seller_contact_id, buyer_contact_id, listing_id, offer_id, deal_name, deal_type, stage, status, purchase_price, contract_date) VALUES
+ ('e0000000-0000-0000-0000-0000000f0007','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000f0002','e0000000-0000-0000-0000-0000000f0002','e0000000-0000-0000-0000-0000000f0022','e0000000-0000-0000-0000-0000000f0003','e0000000-0000-0000-0000-0000000f0006','77 Our Listing Blvd','seller','CLOSED','closed',610000, now()::date);
+INSERT INTO transaction_participants (transaction_id, brokerage_id, role, name, company, email, license_number) VALUES
+ ('e0000000-0000-0000-0000-0000000f0007','b0000000-0000-0000-0000-000000000001','buyer_agent','Oscar Outside','External Realty Group','oscar@externalrealty.com','SL3334444');
+INSERT INTO outside_agent_contact_links (outside_agent_id, contact_id, brokerage_id, link_role, transaction_id, listing_id, created_by_user_id) VALUES
+ ('e0000000-0000-0000-0000-0000000f00a1','e0000000-0000-0000-0000-0000000f0022','b0000000-0000-0000-0000-000000000001','buyer_agent','e0000000-0000-0000-0000-0000000f0007','e0000000-0000-0000-0000-0000000f0003','a0000000-0000-0000-0000-000000000002');
+INSERT INTO transaction_agent_roles (transaction_id, brokerage_id, agent_id, role_type) VALUES
+ ('e0000000-0000-0000-0000-0000000f0007','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','seller_agent');
+UPDATE listings SET lifecycle_stage='CLOSED', status='sold' WHERE id='e0000000-0000-0000-0000-0000000f0003';
+-- VERIFY (expect our seller + ext buyer + outside agent captured both ways)
+SELECT t.deal_type, tp.role AS participant_role, oa.full_name AS outside_agent, oacl.link_role
+FROM transactions t JOIN transaction_participants tp ON tp.transaction_id=t.id
+JOIN outside_agent_contact_links oacl ON oacl.transaction_id=t.id JOIN outside_agents oa ON oa.id=oacl.outside_agent_id
+WHERE t.id='e0000000-0000-0000-0000-0000000f0007';
+-- CLEANUP
+DELETE FROM transaction_agent_roles WHERE transaction_id='e0000000-0000-0000-0000-0000000f0007';
+DELETE FROM transaction_participants WHERE transaction_id='e0000000-0000-0000-0000-0000000f0007';
+DELETE FROM outside_agent_contact_links WHERE transaction_id='e0000000-0000-0000-0000-0000000f0007';
+DELETE FROM transactions WHERE id='e0000000-0000-0000-0000-0000000f0007';
+DELETE FROM offers WHERE id='e0000000-0000-0000-0000-0000000f0006';
+DELETE FROM outside_agents WHERE id='e0000000-0000-0000-0000-0000000f00a1';
+DELETE FROM listings WHERE id='e0000000-0000-0000-0000-0000000f0003';
+DELETE FROM leads WHERE source='E2E_OUTAGENT';
+DELETE FROM contacts WHERE id IN ('e0000000-0000-0000-0000-0000000f0002','e0000000-0000-0000-0000-0000000f0022');
+
+-- ============================================================================
 -- FINAL CLEANUP GUARD — confirm zero leftover test rows (expect all 0)
 -- ============================================================================
 SELECT
  (SELECT count(*) FROM raw_scraped_leads WHERE source='RUNSKILL_TEST') AS raw_left,
- (SELECT count(*) FROM leads WHERE source IN ('RUNSKILL_TEST','E2E_CYCLE')) AS leads_left,
- (SELECT count(*) FROM contacts WHERE email IN ('runskill@example.com','txnclient@example.com','sally.e2ecycle@example.com','bob.e2ecycle@example.com')) AS contacts_left,
- (SELECT count(*) FROM transactions WHERE deal_name IN ('RUNSKILL_TXN','123 E2E Cycle Way')) AS txn_left,
- (SELECT count(*) FROM listings WHERE address IN ('RUNSKILL_LISTING','123 E2E Cycle Way')) AS listings_left;
+ (SELECT count(*) FROM leads WHERE source IN ('RUNSKILL_TEST','E2E_CYCLE','E2E_EXT_BUY','E2E_OUTAGENT')) AS leads_left,
+ (SELECT count(*) FROM contacts WHERE email IN ('runskill@example.com','txnclient@example.com','sally.e2ecycle@example.com','bob.e2ecycle@example.com','tina.extbuy@example.com','sam.outagent@example.com','ext.buyer.outagent@example.com')) AS contacts_left,
+ (SELECT count(*) FROM transactions WHERE deal_name IN ('RUNSKILL_TXN','123 E2E Cycle Way','999 Outside Property Rd','77 Our Listing Blvd')) AS txn_left,
+ (SELECT count(*) FROM listings WHERE address IN ('RUNSKILL_LISTING','123 E2E Cycle Way','999 Outside Property Rd','77 Our Listing Blvd')) AS listings_left,
+ (SELECT count(*) FROM outside_agents WHERE email='oscar@externalrealty.com') AS outside_agents_left;
