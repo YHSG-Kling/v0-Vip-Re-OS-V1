@@ -13,104 +13,10 @@ import {
   getLoopActivity,
 } from "@/lib/providers/esign"
 
-interface DotloopTransactionData {
-  listingId?: string
-  buyerId?: string
-  sellerId?: string
-  transactionType: "purchase" | "listing"
-  propertyAddress: string
-  agentId?: string // ignored — derived from session
-  purchasePrice?: number
-  estimatedCloseDate?: string
-}
-
 interface DotloopSyncData {
   loopId: string
   contactId: string
   transactionId?: string
-}
-
-export async function createDotloopTransaction(data: DotloopTransactionData) {
-  try {
-    // AUTH GATE — previously called createLoop() (which under the hood uses
-    // platform_credentials for whatever brokerage gets resolved) with no
-    // session check, then wrote to transactions/listings under any
-    // caller-supplied agentId. Multi-tenant credential + data leak.
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-    const brokerageId = ctx.brokerageId
-
-    const supabase = await createClient()
-    const svc = createServiceClient()
-
-    // Verify ownership of listing or agent before any provider call.
-    if (data.listingId) {
-      const { data: listingRow } = await svc
-        .from("listings").select("brokerage_id").eq("id", data.listingId).maybeSingle()
-      if (!listingRow || listingRow.brokerage_id !== brokerageId) {
-        return { success: false, error: "Forbidden: listing not in your brokerage" }
-      }
-    }
-    // Resolve the actual acting agent from session, not caller input
-    let actingAgentId: string | null = ctx.agentId
-    if (!actingAgentId) {
-      const { data: agentRow } = await svc
-        .from("agents").select("id").eq("user_id", ctx.userId).maybeSingle()
-      actingAgentId = agentRow?.id ?? null
-    }
-    if (!data.listingId && !actingAgentId) {
-      return { success: false, error: "No agent profile for caller" }
-    }
-
-    const result = await createLoop({
-      propertyAddress: data.propertyAddress,
-      transactionType: data.transactionType,
-    })
-
-    if (!result.success || !result.loopId) {
-      throw new Error(result.error || "No loop_id returned from Dotloop")
-    }
-
-    const loopId = result.loopId
-
-    if (data.listingId) {
-      // Update existing listing (scoped to caller's brokerage)
-      const { error } = await supabase
-        .from("listings")
-        .update({ dotloop_loop_id: loopId })
-        .eq("id", data.listingId)
-        .eq("brokerage_id", brokerageId)
-
-      if (error) throw error
-    } else {
-      // Create new transaction record under caller's brokerage + acting agent
-      const { error } = await supabase.from("transactions").insert({
-        brokerage_id: brokerageId,
-        agent_id: actingAgentId,
-        buyer_id: data.buyerId,
-        seller_id: data.sellerId,
-        transaction_type: data.transactionType === "purchase" ? "buyer_side" : "seller_side",
-        status: "pending",
-        property_address: data.propertyAddress,
-        purchase_price: data.purchasePrice,
-        estimated_close_date: data.estimatedCloseDate,
-        dotloop_loop_id: loopId,
-        dotloop_sync_enabled: true,
-      })
-
-      if (error) throw error
-    }
-
-    revalidatePath("/dashboard/transactions")
-    revalidatePath(`/listings/${data.listingId}`)
-
-    return { success: true, loopId }
-  } catch (error: any) {
-    console.error("[v0] Create Dotloop Transaction error:", error)
-    return { success: false, error: error.message }
-  }
 }
 
 export async function syncDotloopDocuments(data: DotloopSyncData) {

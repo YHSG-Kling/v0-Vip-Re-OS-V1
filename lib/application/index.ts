@@ -120,7 +120,6 @@ export {
   finalizeRepairNegotiation,
   getTransactionStats,
   getPendingDocuments,
-  createTransparentTransaction,
   generateClientTimeline,
   generateCostBreakdown,
   generateStatusUpdate,

@@ -537,25 +537,6 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
   return TransactionService.getPendingDocuments(transactionId, limit)
 }
 
-// ============================================
-// TRANSPARENT TRANSACTION MANAGEMENT
-// ============================================
-
-export async function createTransparentTransaction(data: {
-  property_address: string
-  transaction_type: "buyer_side" | "seller_side" | "dual"
-  primary_client_id: string
-  agent_id: string
-  purchase_price?: number
-  financing_type?: string
-  close_date?: string
-}) {
-  if (!data.property_address?.trim()) return { success: false, error: "Property address is required" }
-  if (!isValidUUID(data.primary_client_id)) return { success: false, error: "Invalid client ID" }
-  if (!isValidUUID(data.agent_id)) return { success: false, error: "Invalid agent ID" }
-  return TransactionService.createTransparentTransaction(data)
-}
-
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
   if (!isValidUUID(transactionId)) return { success: false }
   return TransactionService.generateClientTimeline(transactionId, transactionType, financingType)

@@ -53,9 +53,8 @@ export {
 } from "./social-publishing.service"
 
 // ─── TRANSACTION MANAGEMENT ───────────────────────────────────────────────────
-export type { CreateTransactionParams, UpdateTransactionParams } from "./transaction-management.service"
+export type { UpdateTransactionParams } from "./transaction-management.service"
 export {
-  createTransaction,
   updateTransaction,
   getTransactionDetails,
   getAgentTransactions,

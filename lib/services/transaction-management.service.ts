@@ -12,17 +12,6 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
  * Consolidates transaction CRUD operations from multiple files
  */
 
-export interface CreateTransactionParams {
-  agentId: string
-  contactId?: string
-  propertyId?: string
-  transactionType: string
-  listingPrice?: number
-  offerPrice?: number
-  status?: string
-  metadata?: any
-}
-
 export interface UpdateTransactionParams {
   transactionId: string
   agentId: string
@@ -39,64 +28,6 @@ export interface UpdateTransactionParams {
 /**
  * Create a new transaction
  */
-export async function createTransaction(params: CreateTransactionParams) {
-  try {
-    if (!isValidUUID(params.agentId)) {
-      throw new ValidationError("Invalid agent ID")
-    }
-
-    if (params.contactId && !isValidUUID(params.contactId)) {
-      throw new ValidationError("Invalid contact ID")
-    }
-
-    if (params.propertyId && !isValidUUID(params.propertyId)) {
-      throw new ValidationError("Invalid property ID")
-    }
-
-    // Validate transaction type
-    const validTypes = TRANSACTION_TYPES as readonly string[]
-    if (!validTypes.includes(params.transactionType)) {
-      throw new ValidationError(`Invalid transaction type. Must be one of: ${validTypes.join(", ")}`)
-    }
-
-    const supabase = await createClient()
-
-    const transactionData = {
-      agent_id: params.agentId,
-      contact_id: params.contactId || null,
-      property_id: params.propertyId || null,
-      transaction_type: params.transactionType,
-      listing_price: params.listingPrice || null,
-      offer_price: params.offerPrice || null,
-      status: params.status || "active",
-      stage: "Pre-Listing",
-      metadata: params.metadata || {},
-      created_at: new Date().toISOString(),
-    }
-
-    const { data, error } = await supabase.from("transactions").insert(transactionData).select().maybeSingle()
-
-    if (error) throw error
-
-    // Create initial milestone
-    await supabase.from("transaction_milestones").insert({
-      transaction_id: data.id,
-      milestone_type: "created",
-      target_date: new Date().toISOString(),
-      status: "completed",
-      notes: "Transaction created",
-    })
-
-    revalidatePath("/dashboard/transactions")
-    revalidatePath(`/transactions/${data.id}`)
-
-    console.log("[v0] Transaction created:", data.id)
-    return { success: true, transaction: data }
-  } catch (error) {
-    return handleError(error, "createTransaction")
-  }
-}
-
 /**
  * Update an existing transaction
  */
