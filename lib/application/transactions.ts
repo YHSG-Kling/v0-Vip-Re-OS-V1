@@ -104,12 +104,32 @@ export async function createTransaction(transactionData: {
 }) {
   const supabase = await createClient()
 
+  // Map the UI/legacy input contract onto live schema columns. The old code
+  // spread the input directly, which wrote columns that don't exist
+  // (transaction_type, contract_price, client_email, listing_price, notes),
+  // used an invalid status ("new"), and omitted the NOT NULL deal_name — so the
+  // insert always failed. deal_type CHECK is {buyer,seller,dual}.
+  const DEAL_TYPE_MAP: Record<string, "buyer" | "seller" | "dual"> = {
+    purchase: "buyer",
+    sale: "seller",
+    lease: "dual",
+    dual: "dual",
+  }
   const { data, error } = await supabase
     .from("transactions")
     .insert({
-      ...transactionData,
-      property_zip: normalizeZip(transactionData.property_zip),
-      status: transactionData.status || "new",
+      brokerage_id:          (transactionData as any).brokerage_id ?? null,
+      agent_id:              transactionData.agent_id ?? null,
+      deal_name:             transactionData.property_address, // NOT NULL
+      deal_type:             DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
+      status:                transactionData.status || "active",
+      property_address:      transactionData.property_address,
+      property_city:         transactionData.property_city ?? null,
+      property_state:        transactionData.property_state ?? null,
+      property_zip:          normalizeZip(transactionData.property_zip),
+      purchase_price:        transactionData.contract_price ?? transactionData.listing_price ?? null,
+      close_date:            transactionData.close_date ?? null,
+      client_name:           transactionData.client_name ?? null,
       commission_percentage: transactionData.commissionPercentage ?? null,
     })
     .select()
