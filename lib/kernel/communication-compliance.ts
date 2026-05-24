@@ -69,8 +69,8 @@ const RESTRICTED_STATES = new Set([
   "DC", // Washington DC
 ])
 
-const HARD_BLOCKS = ["dnc", "call_stop_flag", "email_opt_out", "sms_opt_out", "opt_out_channel", "restricted_state_no_consent"]
-const SOFT_WARNS = ["no_tcpa_consent", "lifecycle_stage_inactive"]
+const HARD_BLOCKS = ["dnc", "call_stop_flag", "email_opt_out", "sms_opt_out", "opt_out_channel", "restricted_state_no_consent", "no_tcpa_consent"]
+const SOFT_WARNS = ["lifecycle_stage_inactive"]
 
 /**
  * KERNEL MASTER FUNCTION: Evaluate outbound eligibility
@@ -150,15 +150,21 @@ export async function evaluateOutboundCompliance(
       })
     }
 
-    // ─── RULE 7: TCPA Consent for Phone Calls (SOFT WARN) ──────────────────
+    // ─── RULE 7: TCPA Consent for SMS / Phone (HARD BLOCK) ─────────────────
+    // SMS, phone, and voicemail are consent-gated by TCPA. Email and
+    // direct_mail are intentionally NOT gated here — unconsented leads may
+    // receive email/direct-mail outreach (the ISA allowance); only live
+    // telephony/text requires prior express consent. This mirrors the kernel
+    // content gate (lib/kernel/compliance.ts Gate 2) so the physical-dispatch
+    // "final straggler" gate cannot pass a send the content gate would block.
     if (
-      (channel === "phone" || channel === "voicemail") &&
+      (channel === "sms" || channel === "phone" || channel === "voicemail") &&
       contact.tcpa_consent !== true
     ) {
       violations.push({
         code: "no_tcpa_consent",
-        message: "No TCPA consent on file for phone communication",
-        severity: "soft_warn",
+        message: "No TCPA consent on file for SMS/phone communication",
+        severity: "hard_block",
       })
     }
 

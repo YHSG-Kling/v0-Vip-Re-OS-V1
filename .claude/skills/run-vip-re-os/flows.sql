@@ -234,6 +234,48 @@ DELETE FROM leads WHERE source='E2E_OUTAGENT';
 DELETE FROM contacts WHERE id IN ('e0000000-0000-0000-0000-0000000f0002','e0000000-0000-0000-0000-0000000f0022');
 
 -- ============================================================================
+-- FLOW 7 — OUTBOUND COMPLIANCE DECISION MATRIX (TCPA / DNC / opt-out)
+-- Contract test for the dispatch-layer suppression gate
+-- (lib/kernel/communication-compliance.ts::evaluateOutboundCompliance) which
+-- must agree with the kernel content gate (lib/kernel/compliance.ts Gate 2):
+--   • DNC blocks ALL channels.
+--   • Email + direct_mail are allowed for UNCONSENTED leads (the ISA allowance).
+--   • SMS / phone / voicemail are HARD-blocked without tcpa_consent (TCPA).
+--   • Restricted states (CA/NY/DC) block ALL channels without consent.
+--   • Per-channel opt-out (email_opt_out/sms_opt_out/opt_out_channels) blocks.
+-- The SELECT below replicates the gate's hard-block logic against the real
+-- stored columns so any schema/logic drift surfaces as a mismatch.
+-- ============================================================================
+INSERT INTO contacts (id, brokerage_id, agent_id, contact_type, first_name, last_name, email, phone, status, tcpa_consent, dnc_status, sms_opt_out, email_opt_out, phone_opt_out, call_stop_flag, state, opt_out_channels) VALUES
+ ('e0000000-0000-0000-0000-0000000c1001','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Una','Unconsented','una.e2ecomp@example.com','5610000001','new',false,false,false,false,false,false,'FL',NULL),
+ ('e0000000-0000-0000-0000-0000000c1002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Connie','Consented','connie.e2ecomp@example.com','5610000002','new',true ,false,false,false,false,false,'FL',NULL),
+ ('e0000000-0000-0000-0000-0000000c1003','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Donna','Dnc','donna.e2ecomp@example.com','5610000003','new',true ,true ,false,false,false,false,'FL',NULL),
+ ('e0000000-0000-0000-0000-0000000c1004','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Sam','Smsout','sam.e2ecomp@example.com','5610000004','new',true ,false,true ,false,false,false,'FL',NULL),
+ ('e0000000-0000-0000-0000-0000000c1005','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Cara','California','cara.e2ecomp@example.com','5610000005','new',false,false,false,false,false,false,'CA',NULL);
+-- VERIFY (expected gate_allows per row):
+--   Una:    email t, direct_mail t, sms f, phone f   (unconsented → email/DM only)
+--   Connie: all t                                     (consented)
+--   Donna:  all f                                     (DNC)
+--   Sam:    email t, direct_mail t, phone t, sms f    (sms opt-out)
+--   Cara:   all f                                     (restricted state, no consent)
+WITH ch AS (SELECT unnest(ARRAY['email','sms','phone','direct_mail']) AS channel)
+SELECT c.first_name, ch.channel,
+  NOT (
+       c.dnc_status
+    OR (ch.channel IN ('phone','voicemail') AND c.call_stop_flag)
+    OR (ch.channel='email' AND c.email_opt_out)
+    OR (ch.channel='sms'   AND c.sms_opt_out)
+    OR (c.opt_out_channels IS NOT NULL AND ch.channel = ANY(c.opt_out_channels))
+    OR (c.state IN ('CA','NY','DC') AND c.tcpa_consent IS NOT TRUE)
+    OR (ch.channel IN ('sms','phone','voicemail') AND c.tcpa_consent IS NOT TRUE)
+  ) AS gate_allows
+FROM contacts c CROSS JOIN ch
+WHERE c.email LIKE '%e2ecomp@example.com'
+ORDER BY c.first_name, ch.channel;
+-- CLEANUP
+DELETE FROM contacts WHERE email LIKE '%e2ecomp@example.com';
+
+-- ============================================================================
 -- FINAL CLEANUP GUARD — confirm zero leftover test rows (expect all 0)
 -- ============================================================================
 SELECT
