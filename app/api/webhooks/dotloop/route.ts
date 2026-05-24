@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -147,25 +148,37 @@ export async function POST(request: NextRequest) {
             })
             .eq("id", matchedAgreement.id)
 
-          // Listing agreement signed → the listing is now "coming soon"
-          // (pre-listing). Do NOT jump to MLS_ACTIVE here: going live on the MLS
-          // is a later, separate step (execution-engine MLS_READY → MLS_ACTIVE).
-          // Only advance from the pre-signature stages so we never regress a
-          // listing that's already further along.
-          await supabase
+          // Listing agreement signed → the listing becomes "coming soon"
+          // (pre-listing). Run the stage change through the KERNEL (service
+          // client, since a webhook has no user session) so the
+          // LISTING_AGREEMENT_SIGNED kernel event + its automation fire — the
+          // prior raw UPDATE bypassed that, and logEventAndTrigger threw on the
+          // empty brokerage_id. Going live on the MLS is a later, separate step
+          // (MLS_READY → MLS_ACTIVE). Only advance from pre-signature stages.
+          const { data: listingRow } = await supabase
             .from("listings")
-            .update({ lifecycle_stage: "LISTING_AGREEMENT_SIGNED", status: "coming_soon", stage_entered_at: now })
+            .select("lifecycle_stage, brokerage_id")
             .eq("id", matchedAgreement.listing_id)
-            .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED"])
+            .maybeSingle()
 
-          await logEventAndTrigger({
-            brokerage_id: "",
-            event_type: "listing.agreement.esign.completed",
-            user_id:    matchedAgreement.listing_id,
-            payload:    { listingId: matchedAgreement.listing_id, agreementId: matchedAgreement.id, loop_id, provider: "dotloop" },
-            source:     "webhook",
-            dedupe_key: `listing-agreement-esign-complete-${matchedAgreement.id}`,
-          } as any)
+          if (listingRow?.brokerage_id && ["LEAD", "LISTING_AGREEMENT_INITIATED"].includes(listingRow.lifecycle_stage)) {
+            await transitionLifecycle({
+              brokerageId: listingRow.brokerage_id,
+              entityType:  "listing_stage_machine",
+              entityId:    matchedAgreement.listing_id,
+              fromState:   listingRow.lifecycle_stage,
+              toState:     "LISTING_AGREEMENT_SIGNED",
+              actorUserId: null,
+              eventType:   "listing_agreement_signed",
+              metadata:    { agreementId: matchedAgreement.id, loop_id, provider: "dotloop", source: "webhook" },
+            }, supabase)
+
+            // status is the MLS-status column, not part of the stage machine.
+            await supabase
+              .from("listings")
+              .update({ status: "coming_soon", stage_entered_at: now })
+              .eq("id", matchedAgreement.listing_id)
+          }
         }
 
         // ── Esign completion: voice-cockpit staged artifacts ─────────────────

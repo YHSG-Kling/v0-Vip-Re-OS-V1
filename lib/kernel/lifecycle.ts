@@ -5,6 +5,7 @@
 // Import types from './types'; use createClient from '@/lib/supabase/server'.
 
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import type { TransitionLifecycleParams } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
@@ -126,7 +127,10 @@ const ENTITY_MAP: Record<
 // ─── MAIN FUNCTION ────────────────────────────────────────────────────────────
 
 export async function transitionLifecycle(
-  params: TransitionLifecycleParams
+  params: TransitionLifecycleParams,
+  // Optional injected client. Pass a service-role client from contexts with no
+  // user session (webhooks, crons); defaults to the request-scoped server client.
+  injectedClient?: SupabaseClient,
 ): Promise<{ ok: boolean; success: boolean; activityId: string; error?: string }> {
   const {
     brokerageId,
@@ -143,7 +147,7 @@ export async function transitionLifecycle(
   if (fromState === toState) {
     // Insert a no-op event so the caller has an activityId to reference,
     // but do NOT update the entity row (avoids spurious updated_at bumps).
-    const supabase = await createClient()
+    const supabase = injectedClient ?? await createClient()
 
     const { data: noopEvent, error: noopError } = await supabase
       .from("lifecycle_events")
@@ -176,7 +180,7 @@ export async function transitionLifecycle(
     return { ok: false, success: false, activityId: "", error: msg }
   }
 
-  const supabase = await createClient()
+  const supabase = injectedClient ?? await createClient()
 
   // 3. Atomically update the state column on the entity row.
   const { error: updateError } = await (supabase as any)

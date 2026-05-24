@@ -31,6 +31,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { logEventAndTrigger }  from "@/lib/events"
 import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -319,13 +320,30 @@ export async function finalizeLegacyEsignArtifacts(
       .update({ esign_status: "fully_signed", fully_executed_at: now })
       .eq("id", matchedAgreement.id)
     // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
-    // MLS_ACTIVE is set later by the execution engine (MLS_READY → MLS_ACTIVE).
-    // Guard to pre-signature stages so a further-along listing is never regressed.
-    await supabase
+    // Run through the KERNEL (service client — webhooks have no session) so the
+    // LISTING_AGREEMENT_SIGNED event + automation fire. MLS_ACTIVE is set later
+    // by the execution engine. Guard to pre-signature stages (no regression).
+    const { data: listingRow } = await supabase
       .from("listings")
-      .update({ lifecycle_stage: "LISTING_AGREEMENT_SIGNED", status: "coming_soon", stage_entered_at: now })
+      .select("lifecycle_stage, brokerage_id")
       .eq("id", matchedAgreement.listing_id)
-      .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED"])
+      .maybeSingle()
+    if (listingRow?.brokerage_id && ["LEAD", "LISTING_AGREEMENT_INITIATED"].includes((listingRow as any).lifecycle_stage)) {
+      await transitionLifecycle({
+        brokerageId: (listingRow as any).brokerage_id,
+        entityType:  "listing_stage_machine",
+        entityId:    matchedAgreement.listing_id,
+        fromState:   (listingRow as any).lifecycle_stage,
+        toState:     "LISTING_AGREEMENT_SIGNED",
+        actorUserId: null,
+        eventType:   "listing_agreement_signed",
+        metadata:    { agreementId: matchedAgreement.id, envelopeId, source: "webhook" },
+      }, supabase)
+      await supabase
+        .from("listings")
+        .update({ status: "coming_soon", stage_entered_at: now })
+        .eq("id", matchedAgreement.listing_id)
+    }
   }
 
   return {

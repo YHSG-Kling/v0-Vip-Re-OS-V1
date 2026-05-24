@@ -247,7 +247,7 @@ export interface TransitionLifecycleParams {
   entityId: string
   fromState: string         // State values vary per entity (BuyerStage, SellerStage, etc.)
   toState: string
-  actorUserId: string
+  actorUserId: string | null  // null for system/webhook/cron transitions (no user session)
   actorRole?: ActorRole     // Optional — system-triggered transitions may not have a role
   eventType: string         // e.g. 'buyer.financial_verification_submitted'
   metadata?: Record<string, any>
