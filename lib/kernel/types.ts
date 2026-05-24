@@ -175,8 +175,10 @@ export interface KernelContact {
   persona?: Persona
 
   // State & Lifecycle
+  // buyer_stage lives on the contact (buyers have no listing entity). The seller
+  // journey is tracked on the listing (listings.lifecycle_stage) — contacts has
+  // no seller_stage column, so it's intentionally not modeled here.
   buyer_stage?: BuyerStage
-  seller_stage?: SellerStage
   lifecycle_state?: string
   status?: string
 
