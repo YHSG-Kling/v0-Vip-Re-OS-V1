@@ -20,6 +20,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { applyBrandVoice } from "./brand-voice"
+import { hasActiveRepresentation } from "./compliance/active-representation"
 import type { EvaluateOutboundParams, ComplianceResult } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
@@ -139,10 +140,16 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       violations.push("DNC: Contact is on the global Do Not Contact list")
     }
 
-    // TCPA consent required for SMS/phone (only when not already blocked by DNC)
+    // TCPA consent required for SMS/phone (only when not already blocked by DNC).
+    // An active representation relationship (open transaction / signed agreement /
+    // live offer) carries implied consent, so a client actively in a deal is
+    // always reachable even if the standalone tcpa_consent flag was never set.
     if (!dncStatus && (messageType === "sms" || messageType === "phone")) {
       const tcpaConsent = freshContact?.tcpa_consent ?? contact.tcpa_consent ?? false
-      if (!tcpaConsent) {
+      const consentGiven =
+        tcpaConsent ||
+        (await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId))
+      if (!consentGiven) {
         violations.push("TCPA: Contact has not consented to SMS/phone outreach")
       }
     }

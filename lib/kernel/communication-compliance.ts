@@ -4,6 +4,7 @@
 // Every dispatch path (email, SMS, voice, DM, mail) gates through this
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,11 +139,25 @@ export async function evaluateOutboundCompliance(
       })
     }
 
-    // ─── RULE 6: Restricted State Without TCPA Consent ─────────────────────
-    if (
-      RESTRICTED_STATES.has(contact.state ?? "") &&
-      contact.tcpa_consent !== true
-    ) {
+    // Implied consent: an explicit tcpa_consent flag, OR an active representation
+    // relationship (open transaction / signed buyer-broker or listing agreement /
+    // live offer). Agreements carry consent and the client is actively in a deal,
+    // so the servicing team must always be able to reach them. Only queried on the
+    // consent-gated path (sms/phone or restricted state) — email/direct_mail to an
+    // unconsented lead never triggers the lookup.
+    const needsConsentCheck =
+      channel === "sms" ||
+      channel === "phone" ||
+      channel === "voicemail" ||
+      RESTRICTED_STATES.has(contact.state ?? "")
+    const consentGiven =
+      contact.tcpa_consent === true ||
+      (needsConsentCheck
+        ? await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId)
+        : false)
+
+    // ─── RULE 6: Restricted State Without Consent ──────────────────────────
+    if (RESTRICTED_STATES.has(contact.state ?? "") && !consentGiven) {
       violations.push({
         code: "restricted_state_no_consent",
         message: `No TCPA consent in restricted state (${contact.state})`,
@@ -159,7 +174,7 @@ export async function evaluateOutboundCompliance(
     // "final straggler" gate cannot pass a send the content gate would block.
     if (
       (channel === "sms" || channel === "phone" || channel === "voicemail") &&
-      contact.tcpa_consent !== true
+      !consentGiven
     ) {
       violations.push({
         code: "no_tcpa_consent",

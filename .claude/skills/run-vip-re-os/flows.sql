@@ -243,6 +243,10 @@ DELETE FROM contacts WHERE id IN ('e0000000-0000-0000-0000-0000000f0002','e00000
 --   • SMS / phone / voicemail are HARD-blocked without tcpa_consent (TCPA).
 --   • Restricted states (CA/NY/DC) block ALL channels without consent.
 --   • Per-channel opt-out (email_opt_out/sms_opt_out/opt_out_channels) blocks.
+--   • Implied consent — an active deal/agreement (open transaction, signed BBA,
+--     fully-signed listing agreement, or live offer) counts as TCPA consent for
+--     sms/phone (see FLOW 8). The contacts below have no deals, so the implied-
+--     consent clauses evaluate false and do not change this matrix.
 -- The SELECT below replicates the gate's hard-block logic against the real
 -- stored columns so any schema/logic drift surfaces as a mismatch.
 -- ============================================================================
@@ -274,6 +278,45 @@ WHERE c.email LIKE '%e2ecomp@example.com'
 ORDER BY c.first_name, ch.channel;
 -- CLEANUP
 DELETE FROM contacts WHERE email LIKE '%e2ecomp@example.com';
+
+-- ============================================================================
+-- FLOW 8 — IMPLIED CONSENT FROM ACTIVE REPRESENTATION ("agreements have consent")
+-- An UNCONSENTED contact (tcpa_consent=false, no opt-out, no DNC) becomes
+-- reachable on sms/phone once an active deal/agreement exists. Mirrors
+-- lib/kernel/compliance/active-representation.ts::hasActiveRepresentation, used
+-- by BOTH gates. Expected sms_allowed: Anna f (no deal); Bart/Cleo/Dale/Erin t.
+-- ============================================================================
+INSERT INTO contacts (id, brokerage_id, agent_id, contact_type, first_name, last_name, email, phone, status, tcpa_consent, dnc_status) VALUES
+ ('e0000000-0000-0000-0000-0000000ca001','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Anna','NoDeal','anna.e2erep@example.com','5612220001','active',false,false),
+ ('e0000000-0000-0000-0000-0000000ca002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Bart','OpenTxn','bart.e2erep@example.com','5612220002','active',false,false),
+ ('e0000000-0000-0000-0000-0000000ca003','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Cleo','ActiveBBA','cleo.e2erep@example.com','5612220003','active',false,false),
+ ('e0000000-0000-0000-0000-0000000ca004','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','seller','Dale','SignedLA','dale.e2erep@example.com','5612220004','active',false,false),
+ ('e0000000-0000-0000-0000-0000000ca005','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','buyer','Erin','LiveOffer','erin.e2erep@example.com','5612220005','active',false,false);
+INSERT INTO transactions (id, brokerage_id, agent_id, contact_id, buyer_contact_id, deal_name, deal_type, status) VALUES
+ ('e0000000-0000-0000-0000-0000000cb002','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000ca002','e0000000-0000-0000-0000-0000000ca002','E2EREP_TXN','buyer','under_contract');
+INSERT INTO buyer_broker_agreements (id, brokerage_id, buyer_contact_id, agent_id, created_by, status, commission_percentage) VALUES
+ ('e0000000-0000-0000-0000-0000000cb003','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000ca003','c0000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-000000000002','active',3.0);
+INSERT INTO listings (id, brokerage_id, agent_id, seller_contact_id, contact_id, address, city, state, status, lifecycle_stage) VALUES
+ ('e0000000-0000-0000-0000-0000000cb004','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000ca004','e0000000-0000-0000-0000-0000000ca004','5 Rep Test Ct','Tampa','FL','active','MLS_ACTIVE');
+INSERT INTO listing_agreements (id, brokerage_id, listing_id, agent_user_id, seller_contact_id, esign_status) VALUES
+ ('e0000000-0000-0000-0000-0000000cb014','b0000000-0000-0000-0000-000000000001','e0000000-0000-0000-0000-0000000cb004','a0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000ca004','fully_signed');
+INSERT INTO offers (id, brokerage_id, agent_id, contact_id, offer_price, status, property_address) VALUES
+ ('e0000000-0000-0000-0000-0000000cb005','b0000000-0000-0000-0000-000000000001','c0000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-0000000ca005',500000,'accepted','5 Rep Test Ct');
+SELECT c.first_name,
+ (c.tcpa_consent
+  OR EXISTS(SELECT 1 FROM transactions t WHERE t.brokerage_id=c.brokerage_id AND t.status IN ('active','under_contract','closing') AND (t.contact_id=c.id OR t.buyer_contact_id=c.id OR t.seller_contact_id=c.id))
+  OR EXISTS(SELECT 1 FROM buyer_broker_agreements b WHERE b.brokerage_id=c.brokerage_id AND b.buyer_contact_id=c.id AND b.status='active')
+  OR EXISTS(SELECT 1 FROM listing_agreements la WHERE la.brokerage_id=c.brokerage_id AND la.seller_contact_id=c.id AND la.esign_status='fully_signed')
+  OR EXISTS(SELECT 1 FROM offers o WHERE o.brokerage_id=c.brokerage_id AND o.contact_id=c.id AND o.status IN ('submitted','accepted','countered'))
+ ) AS sms_allowed
+FROM contacts c WHERE c.email LIKE '%e2erep@example.com' ORDER BY c.first_name;
+-- CLEANUP (FK-safe order)
+DELETE FROM offers WHERE id='e0000000-0000-0000-0000-0000000cb005';
+DELETE FROM listing_agreements WHERE id='e0000000-0000-0000-0000-0000000cb014';
+DELETE FROM listings WHERE id='e0000000-0000-0000-0000-0000000cb004';
+DELETE FROM buyer_broker_agreements WHERE id='e0000000-0000-0000-0000-0000000cb003';
+DELETE FROM transactions WHERE id='e0000000-0000-0000-0000-0000000cb002';
+DELETE FROM contacts WHERE email LIKE '%e2erep@example.com';
 
 -- ============================================================================
 -- FINAL CLEANUP GUARD — confirm zero leftover test rows (expect all 0)
