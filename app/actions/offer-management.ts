@@ -27,6 +27,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { calcNetToSeller }       from "@/lib/offers/offer-analyzer"
 import { KernelEvent }           from "@/lib/kernel/events"
 import { isValidUUID }           from "@/lib/validations"
+import { resolveAgentId }        from "@/lib/kernel/agent-identity"
 
 // ─── LOAD OFFERS FOR LISTING ───────────────────────────────────────────────────
 
@@ -86,13 +87,16 @@ export async function submitOffer(offerData: {
   const brokerageId = profile?.brokerage_id
   if (!brokerageId) return { success: false, error: "User brokerage not found" }
 
+  // offers.agent_id is an FK to agents.id, not users.id — resolve it.
+  const agentId = await resolveAgentId(supabase, user.id)
+
   const { data: offer, error } = await supabase
     .from("offers")
     .insert({
       listing_id:           offerData.listing_id,
       contact_id:           offerData.contact_id,   // live FK (not buyer_id)
       brokerage_id:         brokerageId,
-      agent_id:             user.id,
+      agent_id:             agentId,
       offer_price:          offerData.offer_price,   // live column (not offer_amount)
       earnest_money:        offerData.earnest_money,
       down_payment_percent: offerData.down_payment_percent,
@@ -118,7 +122,7 @@ export async function submitOffer(offerData: {
 
   if (listing?.agent_id) {
     const { data: agentRow } = await supabase
-      .from("users").select("brokerage_id").eq("id", listing.agent_id).maybeSingle()
+      .from("agents").select("brokerage_id").eq("id", listing.agent_id).maybeSingle()
 
     await supabase.from("activities").insert({
       brokerage_id:  agentRow?.brokerage_id ?? brokerageId,
@@ -393,7 +397,7 @@ export async function counterOffer(
       listing_id:      offer.listing_id,
       contact_id:      offer.contact_id,   // live FK (not buyer_id)
       brokerage_id:    offer.brokerage_id,
-      agent_id:        user.id,
+      agent_id:        await resolveAgentId(supabase, user.id),  // agents.id, not users.id
       parent_offer_id: offerId,
       offer_type:      "counter",
       current_round:   nextRound,

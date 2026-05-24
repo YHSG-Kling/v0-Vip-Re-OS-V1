@@ -62,7 +62,7 @@ async function resolveCallerContext() {
 
   return {
     userId:      user.id,
-    agentId:     agentRow.data?.id ?? user.id,   // agents.id — falls back to user.id for broker/admin
+    agentId:     agentRow.data?.id ?? null,   // agents.id (NOT users.id); null for broker/admin without an agent profile
     brokerageId,
     userType:    userRow.data?.user_type ?? "agent",
   }

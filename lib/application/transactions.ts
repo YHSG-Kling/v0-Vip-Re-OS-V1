@@ -2196,19 +2196,23 @@ export async function loadAgentDashboard() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id, not users.id. For non-agent users there is no agent
+  // row → return empty rather than filtering by a users.id (which never matches).
+  const agentId = agent?.id ?? null
   const brokerageId = agent?.profiles?.brokerage_id
   if (!brokerageId) throw new Error("Agent brokerage not found")
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   const pipeline = await calculatePipeline(transactions || [], brokerageId)
   const atRiskDeals = identifyAtRiskDeals(transactions || [])
-  const upcomingMilestones = await getUpcomingMilestones(agentId)
+  const upcomingMilestones = agentId ? await getUpcomingMilestones(agentId) : []
 
   return { agentId, pipeline, atRiskDeals, upcomingMilestones, transactions: transactions || [] }
 }
@@ -2219,14 +2223,17 @@ export async function getAgentTransactionKanban() {
   if (!user) throw new Error("Not authenticated")
 
   const { data: agent } = await supabase.from("agents").select("*").eq("user_id", user.id).maybeSingle()
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id; non-agent users have no agent row → empty board.
+  const agentId = agent?.id ?? null
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .neq("status", "closed")
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .neq("status", "closed")
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   return {
     lead: { title: "Leads", deals: transactions?.filter((t) => t.status === "lead" || !t.status) || [], color: "gray" },

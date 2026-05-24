@@ -5,6 +5,7 @@ import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
+import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 
 // ─── startOfferDraft ─────────────────────────────────────────────────────────
 // Emits lifecycle_event for buyer.offer.draft_started on page mount.
@@ -381,6 +382,12 @@ export async function createOffer(
 
   const supabase = createServiceClient()
 
+  // offers.agent_id / listings.agent_id are FKs to agents.id (NOT users.id).
+  // agentUserId is the session user id — resolve it to the agents.id. Null is
+  // acceptable (e.g. broker/admin without an agent profile); never fall back to
+  // the user id, which would write a wrong/invalid FK value.
+  const agentId = await resolveAgentId(supabase, agentUserId)
+
   // ── Financial verification gate (System J3.1 — buyer cannot make offers
   //    until verified or explicitly bypassed by the agent). Previously this
   //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
@@ -412,9 +419,10 @@ export async function createOffer(
         state:         form.property_state ?? "",
         zip:           form.property_zip ?? "",
         brokerage_id:  brokerageId,
-        agent_id:      agentUserId,
+        agent_id:      agentId,
         list_price:    form.offer_price,
-        status:        "external",
+        // status left NULL — "external" is not a valid listings.status; this is
+        // a synthetic placeholder for an off-platform property, not on our market.
         lifecycle_stage: "LEAD",
       })
       .select("id")
@@ -431,7 +439,7 @@ export async function createOffer(
     .insert({
       contact_id:                  contactId,
       brokerage_id:                brokerageId,
-      agent_id:                    agentUserId,
+      agent_id:                    agentId,
       listing_id:                  resolvedListingId,
       property_address:            form.property_address,
       property_address_ai_filled:  form.property_address_ai_filled ?? false,
