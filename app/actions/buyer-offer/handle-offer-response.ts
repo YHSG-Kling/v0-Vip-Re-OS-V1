@@ -123,6 +123,8 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
         .insert({
           brokerage_id:     brokerageId,
           agent_id:         userId,
+          // contact_id = primary in-house client; buyer side → the buyer.
+          contact_id:       offer.contact_id,
           buyer_contact_id: offer.contact_id,
           listing_id:       offer.listing_id ?? null,
           offer_id:         offerId,

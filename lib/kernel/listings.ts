@@ -703,11 +703,18 @@ export async function createTransactionShellFromAcceptedOffer(input: {
         brokerage_id:      input.brokerageId,
         listing_id:        input.listingId,
         offer_id:          input.offerId,
+        // contact_id = primary in-house client; this transaction is created from
+        // OUR listing, so the in-house client is the seller. Live column is
+        // deal_type (buyer|seller|dual) — "transaction_type"/"seller_side" did
+        // not exist / failed the CHECK, so the insert silently errored.
+        contact_id:        listing.seller_contact_id,
         seller_contact_id: listing.seller_contact_id,
         buyer_contact_id:  offer.buyer_contact_id ?? null,
-        transaction_type:  "seller_side",
+        deal_type:         "seller",
         status:            "under_contract",
+        stage:             "UNDER_CONTRACT",
         purchase_price:    offer.offer_price ?? listing.list_price,
+        deal_name:         [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || `Transaction ${input.offerId.slice(0, 8)}`,
         property_address:  [listing.address, listing.city, listing.state].filter(Boolean).join(", "),
       })
       .select("id")

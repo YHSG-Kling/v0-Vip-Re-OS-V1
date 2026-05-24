@@ -581,13 +581,19 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       .insert({
         agent_id: effectiveAgentId,
         brokerage_id: ctx.brokerageId,
-        buyer_id: params.buyerId,
+        // Live columns: contact_id (primary client = buyer) + buyer_contact_id;
+        // there is no buyer_id. deal_type ∈ {buyer,seller,dual}; status CHECK has
+        // no "offer_submitted"; close_date (not estimated_close_date). The old
+        // values failed the insert outright.
+        contact_id: params.buyerId,
+        buyer_contact_id: params.buyerId,
         listing_id: params.listingId,
-        deal_type: "buyer_side",
-        status: "offer_submitted",
+        deal_type: "buyer",
+        status: "active",
+        deal_name: listing.address || `Offer ${params.listingId}`, // NOT NULL
         property_address: listing.address,
         purchase_price: params.offerPrice,
-        estimated_close_date: params.closeDate,
+        close_date: params.closeDate,
       })
       .select()
       .single()

@@ -736,10 +736,14 @@ export async function createListing(params: ListingIntakeData) {
       .insert({
         agent_id:          ownerAgentId,
         brokerage_id:      ctx.brokerageId,
+        // contact_id is the primary in-house client; on a seller-side deal that
+        // is the seller. seller_contact_id is the same person in its role slot.
+        contact_id:        sellerId,
         seller_contact_id: sellerId,
         listing_id:        listing.id,
         deal_type:         "seller",
         status:            "qualifying",
+        deal_name:         params.propertyAddress, // NOT NULL on transactions
         property_address:  params.propertyAddress,
       })
       .select()
