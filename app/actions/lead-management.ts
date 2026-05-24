@@ -6,7 +6,6 @@ import {
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
-  serviceConvertLeadToContact,
   serviceRejectLead,
   serviceImportLeads,
 } from "@/lib/application/lead-application-service"
@@ -72,18 +71,6 @@ export async function enrichLead(leadId: string) {
     if (!brokerageId) return { success: false, error: "Missing brokerage context" }
     const lead = await serviceEnrichLead((agentId ?? null) as any, brokerageId, leadId)
     return { success: true, lead }
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
-}
-
-export async function convertLeadToContact(leadId: string) {
-  try {
-    if (!leadId) return { success: false, error: "Lead ID is required" }
-    const { agentId, brokerageId } = await getAgentContext()
-    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
-    const contact = await serviceConvertLeadToContact((agentId ?? null) as any, brokerageId, leadId)
-    return { success: true, contact }
   } catch (error) {
     return { success: false, error: String(error) }
   }

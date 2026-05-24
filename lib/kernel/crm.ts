@@ -471,12 +471,27 @@ export async function convertLeadToContact(params: {
     return { success: false, error: "Lead not found" }
   }
 
+  // Map lead_type → a VALID contacts.contact_type (CHECK: buyer|seller|both|
+  // investor|vendor|lender). A raw cast of lead_type (e.g. "motivated_seller")
+  // would violate the CHECK. Derive persona from motivation_type.
+  const lt = (lead.lead_type ?? "").toLowerCase()
+  const contactType: "buyer" | "seller" | "both" | "investor" =
+    lt.includes("seller") ? "seller" : lt === "investor" ? "investor" : lt === "both" ? "both" : "buyer"
+  const mt = (lead.motivation_type ?? "").toLowerCase()
+  const contactPersona =
+    mt === "probate" ? "probate"
+    : mt === "divorce" ? "divorce"
+    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "motivated_seller"
+    : mt === "fsbo" ? "fsbo"
+    : undefined
+
   const result = await createOrUpdateContactFromDirectIntake({
     first_name:    lead.first_name ?? "Unknown",
     last_name:     lead.last_name ?? "",
     email:         lead.email ?? null,
     phone:         lead.phone ?? null,
-    contact_type:  (lead.lead_type as "buyer" | "seller" | "both" | "investor") ?? "buyer",
+    contact_type:  contactType,
+    contact_persona: contactPersona,
     tcpa_consent:  params.tcpaConsent,
     agent_id:      params.agentId,
     brokerage_id:  params.brokerageId,
