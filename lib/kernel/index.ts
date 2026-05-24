@@ -203,7 +203,6 @@ export {
   dedupRawAgainstLeadAndContact,
   enrichRawRecord,
   gateRawRecordToLead,
-  promoteQualifiedRawToLead,
   loadScrapingDiagnostics,
   retryFailedSourceBatch,
 } from "./scraping"
@@ -220,8 +219,6 @@ export type {
   GateRawRecordToLeadParams,
   GatingDecision,
   GateResult,
-  PromoteRawToLeadParams,
-  PromoteResult,
   ScrapingDiagnosticsParams,
   ScrapingDiagnosticsData,
   RetryFailedBatchParams,

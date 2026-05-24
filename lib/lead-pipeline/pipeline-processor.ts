@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { KernelEvent } from '@/lib/kernel/events'
 import {
   calculateSourceScore,
   getSourceSemantics,
@@ -376,6 +377,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     skip_reason:               null,
     new_enrichment_confidence: enriched.enrichmentConfidence,
   }, supabase)
+
+  // Emit the RAW_RECORD_PROMOTED kernel event (non-blocking). This was previously
+  // only emitted by the kernel's unused promoteQualifiedRawToLead (now removed);
+  // emitting it here completes the intended raw->lead audit signal on the live path.
+  void supabase.from('lifecycle_events').insert({
+    entity_type:  'raw_scraped_lead',
+    entity_id:    rawRecordId,
+    event_type:   KernelEvent.RAW_RECORD_PROMOTED,
+    brokerage_id: brokerageId,
+    metadata:     { lead_id: newLead.id, source: rec.source },
+  }).then(() => {}, () => {})
 
   return {
     success: true,
