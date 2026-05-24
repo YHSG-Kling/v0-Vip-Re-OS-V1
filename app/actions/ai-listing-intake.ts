@@ -716,7 +716,10 @@ export async function createListing(params: ListingIntakeData) {
         bedrooms:          params.propertyDetails?.beds,
         bathrooms:         params.propertyDetails?.baths,
         sqft:              params.propertyDetails?.sqft,
-        status:            "draft",
+        // status stays NULL pre-agreement (not yet on market). The status CHECK
+        // only allows coming_soon|active|pending|sold|expired|withdrawn — the old
+        // "draft" value violated it and made this insert throw. It becomes
+        // coming_soon when the listing agreement is signed.
         lifecycle_stage:   "LEAD",
       })
       .select()

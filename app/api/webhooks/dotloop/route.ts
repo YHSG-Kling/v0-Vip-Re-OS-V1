@@ -147,12 +147,16 @@ export async function POST(request: NextRequest) {
             })
             .eq("id", matchedAgreement.id)
 
-          // Advance listing to active stage if still in prep
+          // Listing agreement signed → the listing is now "coming soon"
+          // (pre-listing). Do NOT jump to MLS_ACTIVE here: going live on the MLS
+          // is a later, separate step (execution-engine MLS_READY → MLS_ACTIVE).
+          // Only advance from the pre-signature stages so we never regress a
+          // listing that's already further along.
           await supabase
             .from("listings")
-            .update({ lifecycle_stage: "MLS_ACTIVE", stage_entered_at: now })
+            .update({ lifecycle_stage: "LISTING_AGREEMENT_SIGNED", status: "coming_soon", stage_entered_at: now })
             .eq("id", matchedAgreement.listing_id)
-            .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "MLS_DATE_CONFIRMED", "COMING_SOON_PREP", "COMING_SOON_ACTIVE", "MLS_READY"])
+            .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED"])
 
           await logEventAndTrigger({
             brokerage_id: "",

@@ -318,11 +318,14 @@ export async function finalizeLegacyEsignArtifacts(
       .from("listing_agreements")
       .update({ esign_status: "fully_signed", fully_executed_at: now })
       .eq("id", matchedAgreement.id)
+    // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
+    // MLS_ACTIVE is set later by the execution engine (MLS_READY → MLS_ACTIVE).
+    // Guard to pre-signature stages so a further-along listing is never regressed.
     await supabase
       .from("listings")
-      .update({ lifecycle_stage: "MLS_ACTIVE", stage_entered_at: now })
+      .update({ lifecycle_stage: "LISTING_AGREEMENT_SIGNED", status: "coming_soon", stage_entered_at: now })
       .eq("id", matchedAgreement.listing_id)
-      .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "MLS_DATE_CONFIRMED", "COMING_SOON_PREP", "COMING_SOON_ACTIVE", "MLS_READY"])
+      .in("lifecycle_stage", ["LEAD", "LISTING_AGREEMENT_INITIATED"])
   }
 
   return {
