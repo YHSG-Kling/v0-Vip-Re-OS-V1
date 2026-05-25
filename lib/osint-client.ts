@@ -2,6 +2,70 @@
 // Searches public records, court records, social profiles, property records
 
 import { ZenrowsClient } from "./zenrows-client"
+import * as cheerio from "cheerio"
+
+/** A single distressed-seller court/public-records filing discovered by territory. */
+export interface CourtFiling {
+  firstName: string | null
+  lastName: string | null
+  recordType: string
+  county: string | null
+  caseNumber: string | null
+  date: string | null
+}
+
+/** Court/public-record filing types that signal a motivated SELLER. */
+export const DISTRESS_RECORD_TYPES = [
+  "divorce",
+  "probate",
+  "estate",
+  "foreclosure",
+  "pre_foreclosure",
+  "tax_lien",
+  "eviction",
+  "bankruptcy",
+] as const
+
+/**
+ * Pure parser: extract individual filing rows (party name + type + county/date)
+ * from a court-records search results page. Defensive across common result-row
+ * structures; returns only rows with at least a party name. No network.
+ */
+export function parseTerritoryCourtRecords(html: string, recordType: string): CourtFiling[] {
+  const $ = cheerio.load(html)
+  const filings: CourtFiling[] = []
+
+  $('.result, .case-result, [class*="case-row"], [class*="record-row"], li.result-row, tr.case').each((_, el) => {
+    const block = $(el)
+    const name = block
+      .find('.case-name, .party-name, [class*="name"], h3, h4, a')
+      .first()
+      .text()
+      .trim()
+    if (!name || name.length < 3) return
+
+    const county = block.find('.county, [class*="county"], .court').first().text().trim() || null
+    const caseNumber = block.find('.case-number, [class*="case-no"], [class*="docket"]').first().text().trim() || null
+    const date = block.find('.date, [class*="filed"], time').first().text().trim() || null
+
+    // "Last, First" or "First Last"
+    let firstName: string | null = null
+    let lastName: string | null = null
+    if (name.includes(",")) {
+      const [ln, fn] = name.split(",").map((s) => s.trim())
+      lastName = ln || null
+      firstName = (fn ?? "").split(/\s+/)[0] || null
+    } else {
+      const parts = name.split(/\s+/).filter(Boolean)
+      firstName = parts[0] ?? null
+      lastName = parts.length > 1 ? parts[parts.length - 1] : null
+    }
+
+    filings.push({ firstName, lastName, recordType, county, caseNumber, date })
+  })
+
+  return filings
+}
 
 export class OSINTClient {
   private zenrows: ZenrowsClient
@@ -261,5 +325,39 @@ export class OSINTClient {
   } {
     // Simplified parsing - real implementation would use cheerio
     return { properties: [] }
+  }
+
+  /**
+   * Territory-based distressed-seller discovery (auto sourcing, not enrichment).
+   * Scrapes a public court-records aggregator for RECENT filings of each distress
+   * type in a county/state and returns the parties as motivated-seller filings.
+   * Used by lib/lead-pipeline/osint-sourcer.ts to feed raw_recruit/lead pipelines.
+   */
+  async searchCourtRecordsByTerritory(params: {
+    county?: string | null
+    state: string
+    recordTypes?: readonly string[]
+    limitPerType?: number
+  }): Promise<{ filings: CourtFiling[]; cost: number }> {
+    const types = params.recordTypes ?? DISTRESS_RECORD_TYPES
+    const filings: CourtFiling[] = []
+    let cost = 0
+
+    for (const recordType of types) {
+      const q = `${recordType.replace(/_/g, " ")} ${params.county ?? ""}`.trim()
+      const searchUrl = `https://www.judyrecords.com/?q=${encodeURIComponent(q)}&state=${encodeURIComponent(params.state)}`
+      try {
+        const result = await this.zenrows.scrape(searchUrl, { js_render: true })
+        cost += result.cost ?? 0
+        if (result.success && result.html) {
+          const rows = parseTerritoryCourtRecords(result.html, recordType)
+          filings.push(...rows.slice(0, params.limitPerType ?? 25))
+        }
+      } catch (error) {
+        console.error(`[OSINT] Territory court search failed for ${recordType}:`, error)
+      }
+    }
+
+    return { filings, cost }
   }
 }

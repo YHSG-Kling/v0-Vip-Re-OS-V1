@@ -16,6 +16,8 @@ import {
   sourceCraigslist,
   sourceGoogle,
 } from "@/lib/lead-pipeline/social-sourcer"
+import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
+import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -93,7 +95,19 @@ export async function GET(request: Request) {
   }
 
   try {
-    // STEP 2 — Load all active territories with their full config from DB only.
+    // STEP 1.5 — SUBSCRIPTION GATE: only scrape territories owned by brokerages
+    // with an ACTIVE subscription, so we never ingest leads that can't be
+    // assigned. Runs automatically every cycle — no manual/admin toggle.
+    const { data: subs } = await supabase
+      .from("subscriptions")
+      .select("brokerage_id, status")
+    const activeBrokerageIds = [...activeSubscriberBrokerageIds(subs ?? [])]
+    if (activeBrokerageIds.length === 0) {
+      console.log("[Lead Scraping Cron] No active-subscription brokerages — nothing to scrape")
+      return NextResponse.json({ message: "No active-subscription brokerages", results })
+    }
+
+    // STEP 2 — Load active territories for ACTIVE-SUBSCRIPTION brokerages only.
     // Zero hardcoded geography — city, state, brokerage_id all come from the record.
     const { data: markets } = await supabase
       .from("lead_scraping_markets")
@@ -106,6 +120,7 @@ export async function GET(request: Request) {
           facebook_group_urls, reddit_subreddits)
       `)
       .eq("is_active", true)
+      .in("brokerage_id", activeBrokerageIds)
       .order("priority", { ascending: false })
 
     if (!markets || markets.length === 0) {
@@ -501,6 +516,28 @@ export async function GET(request: Request) {
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
         territorySpendUsd += sourceCostUsd
+      }
+
+      // ── OSINT public-records source — distressed-seller filings ─────────────
+      // Divorce / probate / foreclosure / tax-lien / eviction / bankruptcy court
+      // filings in the territory → motivated-seller raw records (platform-owned).
+      if (enabledSources.has("osint_signal")) {
+        try {
+          const { records, cost } = await sourceOsintRecords({
+            city: market.city,
+            state: market.state,
+            county: market.counties?.[0] ?? null,
+          })
+          territorySpendUsd += cost
+          for (const record of records) {
+            const { inserted } = await insertRawRecord({
+              supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: null,
+            })
+            if (inserted) results.total_leads_created++
+          }
+        } catch (err) {
+          results.errors.push(`OSINT source error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       // ── RECRUITING SOURCE — agents/teams looking to switch brokerages ───────

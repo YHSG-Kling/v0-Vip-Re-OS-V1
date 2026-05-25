@@ -39,6 +39,9 @@ import {
   normalizeCraigslistItem,
   normalizeFacebookPost,
 } from "../lib/lead-pipeline/social-sourcer"
+import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
+import { parseTerritoryCourtRecords } from "../lib/osint-client"
+import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
 
 let passed = 0
 let failed = 0
@@ -303,6 +306,60 @@ function testSocialNormalizers() {
   check("FB buyer post → buyer intent", fb.intentType === "buyer")
 }
 
+// ── 12. Subscription gate (auto territory scoping) ───────────────────────────
+function testSubscriptionGate() {
+  console.log("\n[Subscription gate — scrape only active-subscriber territories]")
+  check("active is eligible", isActiveSubscriptionStatus("active"))
+  check("trialing is eligible", isActiveSubscriptionStatus("trialing"))
+  check("past_due not eligible", !isActiveSubscriptionStatus("past_due"))
+  check("cancelled not eligible", !isActiveSubscriptionStatus("cancelled"))
+  check("paused not eligible", !isActiveSubscriptionStatus("paused"))
+  check("null not eligible", !isActiveSubscriptionStatus(null))
+
+  const subs = [
+    { brokerage_id: "b-active", status: "active" },
+    { brokerage_id: "b-trial", status: "trialing" },
+    { brokerage_id: "b-lapsed", status: "cancelled" },
+    { brokerage_id: "b-due", status: "past_due" },
+    { brokerage_id: null, status: "active" },
+  ]
+  const ids = activeSubscriberBrokerageIds(subs)
+  check("includes active + trialing only", ids.has("b-active") && ids.has("b-trial") && ids.size === 2, `${[...ids].join(",")}`)
+  check("excludes cancelled/past_due/null", !ids.has("b-lapsed") && !ids.has("b-due"))
+}
+
+// ── 13. OSINT distressed-seller source (divorce/probate/foreclosure) ─────────
+function testOsint() {
+  console.log("\n[OSINT public-records source]")
+  const html = `
+    <div class="result">
+      <a class="case-name">Doe, Jane</a>
+      <span class="county">Hillsborough</span>
+      <span class="case-number">2024-DR-1234</span>
+      <time class="date">2024-03-01</time>
+    </div>
+    <div class="result">
+      <h3 class="party-name">Robert Smith</h3>
+      <span class="county">Pinellas</span>
+    </div>
+    <div class="result"><span>too short</span></div>`
+  const filings = parseTerritoryCourtRecords(html, "divorce")
+  check("parses 2 named filings (short row dropped)", filings.length === 2, `got ${filings.length}`)
+  const doe = filings.find((f) => f.lastName === "Doe")
+  check("'Last, First' parsed", doe?.firstName === "Jane" && doe?.lastName === "Doe")
+  check("county + case number captured", doe?.county === "Hillsborough" && doe?.caseNumber === "2024-DR-1234")
+  const smith = filings.find((f) => f.lastName === "Smith")
+  check("'First Last' parsed", smith?.firstName === "Robert" && smith?.lastName === "Smith")
+
+  const rec = normalizeCourtFiling(filings[0]!, { city: "Tampa", state: "FL", county: "Hillsborough" })
+  check("OSINT record = seller intent", rec.intentType === "seller")
+  check("OSINT source = osint_signal", rec.source === "osint_signal")
+  check("divorce motivationScore high (>=70)", (rec.motivationScore ?? 0) >= 70)
+  check("OSINT record viable (name + state)", isViableRecord(rec))
+  // OSINT source key maps correctly (alias osint → osint_signal).
+  check("osint alias resolves", resolveSourceKey("osint") === "osint_signal")
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -317,6 +374,8 @@ async function main() {
   testIntentMapping()
   testVendorRouting()
   testSocialNormalizers()
+  testSubscriptionGate()
+  testOsint()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")
