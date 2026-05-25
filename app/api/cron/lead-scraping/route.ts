@@ -34,7 +34,7 @@ import {
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
+import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
 import {
@@ -150,8 +150,10 @@ export async function GET(request: Request) {
         continue
       }
 
-      // STEP 4 — Resolve the set of enabled sources for this territory.
-      const enabledSources = new Set<string>(market.enabled_sources ?? ["batchdata_motivated"])
+      // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
+      // through GATE_TOKEN so the gate matches whether the DB stored short names
+      // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
+      const enabledSources = expandEnabledSources(market.enabled_sources ?? ["batchdata_motivated"])
 
       // Track spend accumulated across all sources in this territory run.
       let territorySpendUsd = 0

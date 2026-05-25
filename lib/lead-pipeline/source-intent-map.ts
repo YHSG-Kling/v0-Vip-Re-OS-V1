@@ -460,6 +460,57 @@ export function resolveSourceKey(source: string): SourceKey {
 }
 
 /**
+ * Gate token used by the lead-scraping cron's `enabledSources.has(...)` checks.
+ * The cron historically gated on short names ("facebook"), while DB config and
+ * normalizers use canonical keys ("facebook_group") — so a market configured with
+ * canonical keys silently scraped nothing. GATE_TOKEN maps each canonical key to
+ * the exact string the cron checks; expandEnabledSources() applies it so the gate
+ * matches regardless of which form (short / canonical / alias) the DB stored.
+ * The three ZenRows property sources collapse to the single "zillow_behavior"
+ * property-block gate the cron uses.
+ */
+const GATE_TOKEN: Record<SourceKey, string> = {
+  zenrows_zillow:       'zillow_behavior',
+  zenrows_realtor:      'zillow_behavior',
+  zenrows_homes:        'zillow_behavior',
+  nextdoor_intent:      'nextdoor',
+  facebook_group:       'facebook',
+  facebook_marketplace: 'facebook',
+  instagram_intent:     'instagram',
+  reddit_intent:        'reddit',
+  craigslist_fsbo:      'craigslist',
+  google_phrase_intent: 'google_phrase_intent',
+  rental_listing:       'rental',
+  linkedin_relocation:  'linkedin',
+  expired_listing:      'expired_listing',
+  exa_buyer_intent:     'exa',
+  tavily_intent:        'tavily',
+  batchdata_motivated:  'batchdata_motivated',
+  osint_signal:         'osint_signal',
+}
+
+/**
+ * Builds the set the cron tests with `enabledSources.has(...)`. For each configured
+ * value it adds: the raw value, its canonical SourceKey, and the cron gate token —
+ * so "facebook", "facebook_group", and the canonical key all activate the Facebook
+ * block. Pass-through values (e.g. "zillow_behavior", "recruiting_intent") are kept
+ * verbatim. This is the single bridge between DB `enabled_sources` config and the
+ * cron gate, eliminating the short-name/canonical-key drift.
+ */
+export function expandEnabledSources(raw: readonly string[] | null | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const v of raw ?? []) {
+    if (!v) continue
+    out.add(v)
+    const key = resolveSourceKey(v)
+    out.add(key)
+    const token = GATE_TOKEN[key as SourceKey]
+    if (token) out.add(token)
+  }
+  return out
+}
+
+/**
  * Derives urgency_level from a numeric motivation score.
  * Maps directly to the leads.urgency_level column values.
  */

@@ -34,7 +34,7 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources } from "../lib/lead-pipeline/source-intent-map"
 import {
   detectIntent,
   isInvestor,
@@ -273,6 +273,29 @@ function testIntentMapping() {
   check("alias redfin → zenrows_homes", resolveSourceKey("redfin") === "zenrows_homes")
   check("alias nextdoor → nextdoor_intent", resolveSourceKey("nextdoor") === "nextdoor_intent")
   check("listing-site motivation = real_estate_site_intent", getSourceSemantics("zillow").motivationType === "real_estate_site_intent")
+
+  // ── enabled_sources gate bridge — the cron checks short names; DB may store ──
+  // canonical keys or aliases. expandEnabledSources must make all forms activate
+  // the same gate (this is the silent-skip drift fix).
+  const canonical = expandEnabledSources(["facebook_group", "reddit_intent", "instagram_intent", "linkedin_relocation", "exa_buyer_intent", "tavily_intent"])
+  check("canonical facebook_group activates 'facebook' gate", canonical.has("facebook"))
+  check("canonical reddit_intent activates 'reddit' gate", canonical.has("reddit"))
+  check("canonical instagram_intent activates 'instagram' gate", canonical.has("instagram"))
+  check("canonical linkedin_relocation activates 'linkedin' gate", canonical.has("linkedin"))
+  check("canonical exa_buyer_intent activates 'exa' gate", canonical.has("exa"))
+  check("canonical tavily_intent activates 'tavily' gate", canonical.has("tavily"))
+  const shortNames = expandEnabledSources(["facebook", "reddit", "zillow"])
+  check("short 'facebook' still activates gate", shortNames.has("facebook"))
+  check("short 'zillow' activates 'zillow_behavior' property gate", shortNames.has("zillow_behavior"))
+  const canonicalZillow = expandEnabledSources(["zenrows_zillow", "zenrows_realtor"])
+  check("canonical zenrows_zillow activates 'zillow_behavior' gate", canonicalZillow.has("zillow_behavior"))
+  // Pass-through tokens used directly by the cron must survive verbatim.
+  const passthrough = expandEnabledSources(["zillow_behavior", "recruiting_intent", "batchdata_motivated", "osint_signal"])
+  check("'zillow_behavior' passes through", passthrough.has("zillow_behavior"))
+  check("'recruiting_intent' passes through", passthrough.has("recruiting_intent"))
+  check("'batchdata_motivated' passes through", passthrough.has("batchdata_motivated"))
+  check("'osint_signal' passes through", passthrough.has("osint_signal"))
+  check("empty/null enabled_sources → empty set", expandEnabledSources(null).size === 0)
 }
 
 // ── 10. Vendor routing contract ──────────────────────────────────────────────
