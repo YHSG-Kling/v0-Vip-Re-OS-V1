@@ -352,6 +352,44 @@ DELETE FROM raw_scraped_leads WHERE id='e0000000-0000-0000-0000-0000000ad002';
 DELETE FROM lead_scraping_markets WHERE id='e0000000-0000-0000-0000-0000000ad001';
 
 -- ============================================================================
+-- FLOW 10 — RECRUITING SOURCING: platform-owned raw recruit prospect (agent
+-- looking to switch) → territory-derived promotion into brokerage-owned recruits.
+-- Mirrors the lead pipeline: raw_recruit_prospects.brokerage_id NULL + market_id;
+-- promotion resolves the owning brokerage from the market and requires a full
+-- name + (email or current brokerage). Anonymous (no-name) signals are filtered.
+-- ============================================================================
+INSERT INTO lead_scraping_markets (id, brokerage_id, name, state, is_active)
+VALUES ('e0000000-0000-0000-0000-0000000a1001','b0000000-0000-0000-0000-000000000001','E2E Recruit Market','FL',true);
+INSERT INTO raw_recruit_prospects (id, brokerage_id, market_id, source, source_record_id, raw_data, normalized_preview, processing_status) VALUES
+ ('e0000000-0000-0000-0000-0000000a1002', NULL, 'e0000000-0000-0000-0000-0000000a1001','reddit_agent_switch','rec-viable',
+   '{"matched_term":"switching brokerages"}'::jsonb,
+   '{"firstName":"Switchy","lastName":"Agent","email":"switchy.agent@example.com","licenseState":"FL","currentBrokerage":"Old Realty"}'::jsonb,'pending'),
+ ('e0000000-0000-0000-0000-0000000a1003', NULL, 'e0000000-0000-0000-0000-0000000a1001','reddit_agent_switch','rec-anon',
+   '{"matched_term":"low commission split"}'::jsonb,
+   '{"firstName":null,"lastName":null,"state":"FL","handle":"anon123"}'::jsonb,'pending');
+-- VERIFY identity gate: viable passes, anon fails (raw platform-owned)
+SELECT source_record_id, brokerage_id IS NULL AS platform_owned,
+  ((normalized_preview->>'firstName') IS NOT NULL AND (normalized_preview->>'lastName') IS NOT NULL
+    AND ((normalized_preview->>'email') IS NOT NULL OR (normalized_preview->>'currentBrokerage') IS NOT NULL)) AS passes_identity_gate
+FROM raw_recruit_prospects WHERE market_id='e0000000-0000-0000-0000-0000000a1001' ORDER BY source_record_id;
+-- Promote the viable prospect (brokerage derived from territory)
+INSERT INTO recruits (id, brokerage_id, first_name, last_name, email, license_state, current_brokerage, status, referral_source)
+SELECT 'e0000000-0000-0000-0000-0000000a1004', m.brokerage_id,
+  rp.normalized_preview->>'firstName', rp.normalized_preview->>'lastName', rp.normalized_preview->>'email',
+  rp.normalized_preview->>'licenseState', rp.normalized_preview->>'currentBrokerage', 'prospect', rp.source
+FROM raw_recruit_prospects rp JOIN lead_scraping_markets m ON m.id=rp.market_id
+WHERE rp.id='e0000000-0000-0000-0000-0000000a1002';
+UPDATE raw_recruit_prospects SET recruit_id='e0000000-0000-0000-0000-0000000a1004', processing_status='promoted' WHERE id='e0000000-0000-0000-0000-0000000a1002';
+-- VERIFY (recruit assigned to territory owner, status prospect, referral_source = source)
+SELECT brokerage_id = 'b0000000-0000-0000-0000-000000000001' AS recruit_to_territory_owner, status, referral_source
+FROM recruits WHERE id='e0000000-0000-0000-0000-0000000a1004';
+-- CLEANUP
+UPDATE raw_recruit_prospects SET recruit_id=NULL WHERE market_id='e0000000-0000-0000-0000-0000000a1001';
+DELETE FROM recruits WHERE id='e0000000-0000-0000-0000-0000000a1004';
+DELETE FROM raw_recruit_prospects WHERE market_id='e0000000-0000-0000-0000-0000000a1001';
+DELETE FROM lead_scraping_markets WHERE id='e0000000-0000-0000-0000-0000000a1001';
+
+-- ============================================================================
 -- FINAL CLEANUP GUARD — confirm zero leftover test rows (expect all 0)
 -- ============================================================================
 SELECT

@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
+import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
+import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
   type NormalizedScrapedRecord,
@@ -74,6 +76,8 @@ export async function GET(request: Request) {
     total_leads_found: 0,
     total_leads_created: 0,
     leads_promoted: 0,
+    recruits_sourced: 0,
+    recruits_promoted: 0,
     errors: [] as string[],
   }
 
@@ -598,6 +602,26 @@ export async function GET(request: Request) {
         territorySpendUsd += sourceCostUsd
       }
 
+      // ── RECRUITING SOURCE — agents/teams looking to switch brokerages ───────
+      // Platform-owned raw_recruit_prospects (brokerage_id NULL, market_id set);
+      // promoted to brokerage-owned `recruits` in the recruit promotion pass.
+      if (enabledSources.has("recruiting_intent")) {
+        try {
+          const reviewUrls = (market.lead_scraping_motivated_params?.[0] as { brokerage_review_urls?: string[] } | undefined)
+            ?.brokerage_review_urls ?? []
+          const recruitRes = await sourceRecruitProspects({
+            supabase,
+            marketId: market.id,
+            state: market.state,
+            reviewUrls,
+          })
+          results.recruits_sourced += recruitRes.inserted
+          if (recruitRes.errors.length) results.errors.push(...recruitRes.errors)
+        } catch (err) {
+          results.errors.push(`Recruit sourcing error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
       // STEP 6 — Update territory spend and last_scraped_at after all sources run.
       await supabase
         .from("lead_scraping_markets")
@@ -629,6 +653,26 @@ export async function GET(request: Request) {
         if (promo.action === "created") results.leads_promoted++
       } catch (err) {
         results.errors.push(`Promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    // ── RECRUIT PROMOTION PASS — promote pending raw recruiting prospects ─────
+    // Mirrors the lead promotion pass: brokerage_id is NULL on platform-sourced
+    // raw_recruit_prospects; processRawRecruit resolves the owning brokerage from
+    // the record's market_id territory and promotes into `recruits`.
+    const { data: pendingRecruits } = await supabase
+      .from("raw_recruit_prospects")
+      .select("id")
+      .eq("processing_status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(100)
+
+    for (const raw of pendingRecruits ?? []) {
+      try {
+        const promo = await processRawRecruit(raw.id)
+        if (promo.action === "created") results.recruits_promoted++
+      } catch (err) {
+        results.errors.push(`Recruit promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
