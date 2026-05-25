@@ -2,7 +2,7 @@ import {
 NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
+import { ZenrowsClient, BatchDataClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
@@ -23,6 +23,7 @@ import {
 } from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
+export const maxDuration = 300
 
 // Runs every 6 hours to scrape leads from all configured sources.
 // Kernel OS: cron_execution_logs are opened at entry and closed at every exit path.
@@ -62,44 +63,17 @@ export async function GET(request: Request) {
 
   const supabase = await createClient()
 
-  // ── Instantiate all provider clients BEFORE the try block ─────────────────
+  // ── Instantiate the scraper clients used below ────────────────────────────
+  // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
+  // the promotion pass — not here — so only the scrape clients are needed.
   const zenrows   = new ZenrowsClient()
   const batchdata = new BatchDataClient()
-  const peopledata = new PeopleDataClient()
-  const apify     = new ApifyClient()
-
-  const validation = {
-    validateContact: async (params: { email?: string | null; phone?: string | null }) => {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      const phoneRegex = /^\+?[\d\s\-()\\.]{10,15}$/
-      const emailValid  = params.email ? emailRegex.test(params.email) : false
-      const phoneValid  = params.phone ? phoneRegex.test(params.phone) : false
-      return {
-        overall_valid:  emailValid || phoneValid,
-        email_valid:    emailValid,
-        email_status:   emailValid ? 'valid_format' : 'invalid_format',
-        phone_valid:    phoneValid,
-        phone_formatted: params.phone?.replace(/\D/g, '').slice(-10) ?? null,
-        phone_type:     phoneValid ? 'unknown' : null,
-      }
-    },
-  }
-
-  const osint = {
-    searchPerson: async (params: { name?: string; firstName?: string; lastName?: string; city?: string; state?: string; email?: string; phone?: string }) => {
-      const { skipTraceWithPeopleData } = await import('@/lib/external/peopledata-client')
-      const fullName = params.name ?? `${params.firstName ?? ''} ${params.lastName ?? ''}`.trim()
-      return skipTraceWithPeopleData({ name: fullName }).then(r => r.data).catch(() => null)
-    },
-  }
 
   const results = {
     markets_processed: 0,
     total_leads_found: 0,
     total_leads_created: 0,
-    leads_validated: 0,
-    leads_enriched: 0,
-    osint_searches: 0,
+    leads_promoted: 0,
     errors: [] as string[],
   }
 
@@ -635,6 +609,27 @@ export async function GET(request: Request) {
         .then(() => {}, () => {})
     }
 
+    // ── PROMOTION PASS — run scraped raw records through the pipeline ──────────
+    // Scraping above only writes raw_scraped_leads (pending). Promote them to
+    // leads here so the scrape → lead → AI-ISA flow completes in the same
+    // scheduled run. Bounded per run; records that fail a gate stay 'pending'
+    // (the pipeline is retry-safe) and are picked up on the next run.
+    const { data: pendingRaws } = await supabase
+      .from("raw_scraped_leads")
+      .select("id, brokerage_id")
+      .eq("processing_status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(100)
+
+    for (const raw of pendingRaws ?? []) {
+      try {
+        const promo = await processRawRecord(raw.id, raw.brokerage_id)
+        if (promo.action === "created") results.leads_promoted++
+      } catch (err) {
+        results.errors.push(`Promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     const durationMs = Date.now() - cronStartedAt
     console.log("[Lead Scraping Cron] Completed:", results)
 
@@ -674,124 +669,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ error: String(error), results, context_id: contextId }, { status: 500 })
   }
-}
-
-// ============================================
-// ENRICHMENT PIPELINE
-// Runs OSINT, PeopleData enrichment, and contact validation for each lead
-// ============================================
-async function enrichLeadPipeline(
-  leadData: {
-    first_name?: string
-    last_name?: string
-    email?: string
-    phone?: string
-    address?: string
-    city?: string
-    state?: string
-  },
-  clients: {
-    peopledata: PeopleDataClient
-    osint: { searchPerson: (params: Record<string, string | undefined>) => Promise<any> }
-    validation: { validateContact: (params: { email?: string | null; phone?: string | null }) => Promise<any> }
-  },
-  results: { leads_validated: number; leads_enriched: number; osint_searches: number },
-): Promise<any | null> {
-  const enrichedLead = { ...leadData }
-
-  // Step 1: Validate email and phone
-  if (leadData.email || leadData.phone) {
-    const validationResult = await clients.validation.validateContact({
-      email: leadData.email,
-      phone: leadData.phone,
-    })
-    results.leads_validated++
-
-    // Skip if no valid contact method
-    if (!validationResult.overall_valid) {
-      console.log(`[Enrichment] Skipping lead - no valid contact: ${leadData.first_name} ${leadData.last_name}`)
-      return null
-    }
-
-    // Use validated/formatted phone
-    if (validationResult.phone_valid) {
-      enrichedLead.phone = validationResult.phone_formatted
-    }
-    // Store validation metadata
-    ;(enrichedLead as any).validation_data = {
-      email_valid: validationResult.email_valid,
-      email_status: validationResult.email_status,
-      phone_valid: validationResult.phone_valid,
-      phone_type: validationResult.phone_type,
-    }
-  }
-
-  // Step 2: Run OSINT search
-  if (leadData.first_name && leadData.last_name) {
-    try {
-      const osintResult = await clients.osint.searchPerson({
-        firstName: leadData.first_name,
-        lastName: leadData.last_name,
-        city: leadData.city,
-        state: leadData.state,
-        email: leadData.email,
-        phone: leadData.phone,
-      })
-      results.osint_searches++
-      ;(enrichedLead as any).osint_data = {
-        social_profiles: osintResult.social_profiles,
-        public_records: osintResult.public_records,
-        court_records: osintResult.court_records,
-        property_records: osintResult.property_records,
-        life_events: osintResult.life_events,
-        confidence_score: osintResult.confidence_score,
-      }
-
-      // Boost motivation score if life events indicate motivated seller
-      const motivatedEvents = ["divorce", "bankruptcy", "foreclosure", "death_in_family", "inheritance"]
-      const hasMotivatedEvent = osintResult.life_events.some((e: any) => motivatedEvents.includes(e.event))
-      if (hasMotivatedEvent) {
-        ;(enrichedLead as any).motivation_boost = 25
-      }
-    } catch (error) {
-      console.error("[Enrichment] OSINT error:", error)
-    }
-  }
-
-  // Step 3: Enrich with PeopleData
-  if (leadData.email || leadData.phone) {
-    try {
-      const peopleDataResult = await clients.peopledata.enrich({
-        email: leadData.email,
-        phone: leadData.phone,
-        firstName: leadData.first_name,
-        lastName: leadData.last_name,
-      })
-      results.leads_enriched++
-
-      if (peopleDataResult) {
-        ;(enrichedLead as any).peopledata = {
-          demographics: peopleDataResult.demographics,
-          employment: peopleDataResult.employment,
-          financial: peopleDataResult.financial,
-          life_events: peopleDataResult.lifeEvents,
-          social: peopleDataResult.social,
-        }
-
-        // Fill in missing contact info from PeopleData
-        if (!enrichedLead.email && (peopleDataResult.additionalContacts as any)?.email) {
-          enrichedLead.email = (peopleDataResult.additionalContacts as any).email
-        }
-        if (!enrichedLead.phone && (peopleDataResult.additionalContacts as any)?.phone) {
-          enrichedLead.phone = (peopleDataResult.additionalContacts as any).phone
-        }
-      }
-    } catch (error) {
-      console.error("[Enrichment] PeopleData error:", error)
-    }
-  }
-
-  return enrichedLead
 }
 
 // ============================================
