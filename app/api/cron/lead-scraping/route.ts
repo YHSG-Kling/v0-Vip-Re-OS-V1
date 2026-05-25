@@ -7,9 +7,15 @@ import { processRawRecord } from "@/lib/lead-pipeline"
 import {
   buildPropertySearchUrl,
   parsePropertySearchResults,
-  parseCraigslistHtml,
   normalizeBatchDataRecord,
 } from "@/lib/lead-pipeline/scraper-parsers"
+import {
+  sourceReddit,
+  sourceFacebook,
+  sourceInstagram,
+  sourceCraigslist,
+  sourceGoogle,
+} from "@/lib/lead-pipeline/social-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -19,7 +25,6 @@ import {
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import * as cheerio from "cheerio"
 import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -319,8 +324,10 @@ export async function GET(request: Request) {
       const socialSourcesEnabled =
         enabledSources.has("nextdoor") ||
         enabledSources.has("facebook") ||
+        enabledSources.has("instagram") ||
         enabledSources.has("reddit") ||
-        enabledSources.has("craigslist")
+        enabledSources.has("craigslist") ||
+        enabledSources.has("google_phrase_intent")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -406,176 +413,64 @@ export async function GET(request: Request) {
             }
           }
 
-          // STEP 4 gate
+          const socialMarket = { city: market.city, state: market.state }
+          const insertSocial = async (records: NormalizedScrapedRecord[]) => {
+            for (const record of records) {
+              const { inserted } = await insertRawRecord({
+                supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: execRecord?.id ?? null,
+              })
+              if (inserted) socialLeadsCreated++
+            }
+          }
+
+          // ── Facebook groups (Apify) ──────────────────────────────────────────
           if (enabledSources.has("facebook") && keywordsBySource["facebook"]) {
             const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
               ? motivatedParams.facebook_group_urls
               : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}realestate`]
-
-            const fbResult = await zenrows.scrapeFacebookGroups({ groupUrls, keywords: keywordsBySource["facebook"] })
-              .catch(() => ({ success: false, posts: [], cost: 0 }))
-            sourceCostUsd += (fbResult as any).cost ?? 0
-
-            for (const post of fbResult.posts) {
-              const matched = keywords.find(
-                (kw) =>
-                  kw.sources?.includes("facebook") &&
-                  post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
-              )
-              if (matched && (matched.weight ?? 1) >= 3) {
-                const fbRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `fb-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
-                  source:          "facebook_group",
-                  behaviorType:    "social_intent",
-                  intentType:      "seller",
-                  intentSignals:   [matched.keyword],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: (matched.weight ?? 1) * 15,
-                  rawPayload:      { post, matched_keyword: matched.keyword },
-                }
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      fbRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
+            for (const groupUrl of groupUrls) {
+              const { records, cost } = await sourceFacebook(groupUrl, keywordsBySource["facebook"], socialMarket)
+              sourceCostUsd += cost
+              await insertSocial(records)
             }
           }
 
-          // STEP 4 gate
+          // ── Instagram (Apify) — real-estate hashtags, buyer + seller intent ──
+          if (enabledSources.has("instagram") && keywordsBySource["instagram"]) {
+            const { records, cost } = await sourceInstagram(keywordsBySource["instagram"], socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── Reddit communities (Apify) ───────────────────────────────────────
           if (enabledSources.has("reddit") && keywordsBySource["reddit"]) {
-            const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
             const subreddits: string[] = motivatedParams?.reddit_subreddits?.length
               ? motivatedParams.reddit_subreddits
-              : [
-                  `${market.city.toLowerCase().replace(/\s+/g, "")}realestate`,
-                  "FirstTimeHomeBuyer",
-                  "moving",
-                ]
-
-            const redditResult = await scrapeRedditPosts({
-              subreddits,
-              keywords: keywordsBySource["reddit"],
-              limit: 50,
-            }).catch(() => ({ posts: [], cost: 0 }))
-
-            for (const post of redditResult.posts) {
-              const matched = keywords.find(
-                (kw) =>
-                  kw.sources?.includes("reddit") &&
-                  `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase().includes(kw.keyword.toLowerCase()),
-              )
-              if (matched && (matched.weight ?? 1) >= 2) {
-                const redditRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `reddit-${post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
-                  source:          "reddit_intent",
-                  behaviorType:    "social_intent",
-                  intentType:      "buyer",
-                  intentSignals:   [matched.keyword],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: (matched.weight ?? 1) * 15,
-                  sourceUrl:       post.url ?? null,
-                  rawPayload:      { post, matched_keyword: matched.keyword },
-                }
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      redditRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
-            }
+              : [`${market.city.toLowerCase().replace(/\s+/g, "")}realestate`, "FirstTimeHomeBuyer", "moving"]
+            const { records, cost } = await sourceReddit(subreddits, keywordsBySource["reddit"], socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
-          // STEP 4 gate
-          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"]) {
-            // STEP 7 — city from market record
-            const craigslistUrl = `https://${market.city.toLowerCase().replace(/ /g, "")}.craigslist.org/search/rea?query=${encodeURIComponent(
-              keywordsBySource["craigslist"].slice(0, 3).join(" "),
-            )}`
-            const scraped = await zenrows.scrape(craigslistUrl, { js_render: false })
-            sourceCostUsd += scraped.cost ?? 0
-
-            if (scraped.success && scraped.html) {
-              // parseCraigslistHtml returns NormalizedScrapedRecord[] filtered by isViableRecord
-              const listings = parseCraigslistHtml(scraped.html)
-              for (const listing of listings) {
-                // listing already has city/state from market; ensure they're set
-                listing.city  = listing.city  ?? market.city
-                listing.state = listing.state ?? market.state
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      listing,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
-            }
+          // ── Craigslist FSBO (Apify) ──────────────────────────────────────────
+          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"] && market.city) {
+            const { records, cost } = await sourceCraigslist(
+              market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
+            )
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
-          // STEP 4 gate — G-5: Google phrase intent
-          // buildTerritoryPhrases() derives buyer+seller search queries from city, state, zip_codes, counties.
+          // ── Google phrase intent (Apify) — buyer + seller searches ───────────
+          // buildTerritoryPhrases() derives buyer+seller search queries from the territory.
           if (enabledSources.has("google_phrase_intent")) {
             const { buyerPhrases, sellerPhrases } = buildTerritoryPhrases({
-              city:      market.city,
-              state:     market.state,
-              zip_codes: market.zip_codes,
-              counties:  market.counties,
+              city: market.city, state: market.state, zip_codes: market.zip_codes, counties: market.counties,
             })
-
-            // Sample 3 seller phrases and 2 buyer phrases per run to stay within cost envelope
-            const phrases = [
-              ...sellerPhrases.slice(0, 3).map(p => ({ phrase: p, intentType: 'seller' as const })),
-              ...buyerPhrases.slice(0, 2).map(p => ({ phrase: p, intentType: 'buyer' as const })),
-            ]
-
-            for (const { phrase, intentType } of phrases) {
-              const result = await zenrows.googleSearch(phrase, { num: 5 }).catch(() => null)
-              sourceCostUsd += 0.002 // Google SERP costs ~$0.002/call via ZenRows
-
-              if (!result) continue
-
-              // Parse organic result snippets from raw HTML
-              const $g = cheerio.load(result)
-              $g('.g, [data-sokoban-container]').each((_, el) => {
-                const title   = $g(el).find('h3').first().text().trim()
-                const snippet = $g(el).find('.VwiC3b, span.st, .IsZvec').first().text().trim()
-                const link    = $g(el).find('a').first().attr('href') ?? null
-
-                if (!title || title.length < 5) return
-
-                const gRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `google-${Buffer.from(`${phrase}|${link ?? title}`).toString('base64').slice(0, 32)}`,
-                  source:          'google_phrase_intent',
-                  behaviorType:    'search_signal',
-                  intentType,
-                  intentSignals:   [phrase],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: intentType === 'seller' ? 42 : 38,
-                  sourceUrl:       link,
-                  rawPayload:      { phrase, title, snippet, link, market_id: market.id },
-                }
-
-                // Fire and forget — analytics_only identity policy means no enrichment spend
-                insertRawRecord({
-                  supabase,
-                  record:      gRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                }).then(({ inserted }) => { if (inserted) socialLeadsCreated++ }).catch(() => {})
-              })
-            }
+            const queries = [...sellerPhrases.slice(0, 3), ...buyerPhrases.slice(0, 2)]
+            const { records, cost } = await sourceGoogle(queries, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
           results.total_leads_created += socialLeadsCreated

@@ -24,6 +24,7 @@ export type SourceKey =
   | 'facebook_group'
   | 'facebook_marketplace'
   | 'reddit_intent'
+  | 'instagram_intent'
   | 'craigslist_fsbo'
   | 'google_phrase_intent'
   | 'osint_signal'
@@ -186,6 +187,22 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Instagram intent (Apify) ──────────────────────────────────────────────────
+  // Real-estate hashtags/posts surface both buyer ("house hunting", "first home")
+  // and seller ("listing my home", "fsbo") intent; resolved per-post at enrichment.
+  instagram_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
+    behaviorType:              'social_intent',
+    scoreRange:                [30, 55],
+    baseScore:                 38,
+    boostSignals:              ['looking_to_buy', 'house_hunting', 'first_home', 'selling', 'fsbo', 'listing_my_home', 'relocating'],
+    dampSignals:               ['agent_promo', 'just_browsing'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
   // ── Craigslist FSBO listing ───────────────────────────────────────────────────
   // Strong sell signal; property address often present.
   // Score range 70–90; promotion-eligible when property address is confirmed.
@@ -308,9 +325,35 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   facebook: "facebook_group",
   facebook_marketplace: "facebook_marketplace",
   reddit: "reddit_intent",
+  instagram: "instagram_intent",
   craigslist: "craigslist_fsbo",
   google: "google_phrase_intent",
   osint: "osint_signal",
+}
+
+/**
+ * Vendor routing contract — which scraping vendor owns each source.
+ *   • zenrows  — expensive; reserved for real-estate sites + Nextdoor only.
+ *   • apify    — Facebook / Instagram / Craigslist / Reddit / Google.
+ *   • batchdata — FSBO / divorce / probate / motivated-seller property data.
+ *   • osint    — public + court records (divorce / probate / foreclosure).
+ *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
+ */
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint'
+
+export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
+  zenrows_zillow:       'zenrows',
+  zenrows_realtor:      'zenrows',
+  zenrows_homes:        'zenrows',
+  nextdoor_intent:      'zenrows',
+  facebook_group:       'apify',
+  facebook_marketplace: 'apify',
+  instagram_intent:     'apify',
+  reddit_intent:        'apify',
+  craigslist_fsbo:      'apify',
+  google_phrase_intent: 'apify',
+  batchdata_motivated:  'batchdata',
+  osint_signal:         'osint',
 }
 
 export function resolveSourceKey(source: string): SourceKey {

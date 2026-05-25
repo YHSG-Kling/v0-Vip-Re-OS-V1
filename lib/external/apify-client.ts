@@ -122,3 +122,42 @@ export async function scrapeRedditPosts(params: {
     cost: result.cost,
   }
 }
+
+export async function scrapeInstagramPosts(params: {
+  hashtags?: string[]
+  searchTerms?: string[]
+  limit?: number
+}): Promise<{ posts: any[]; cost: number }> {
+  const result = await runApifyActor('apify/instagram-scraper', {
+    search: (params.searchTerms ?? params.hashtags ?? []).join(' '),
+    searchType: 'hashtag',
+    resultsLimit: params.limit || 100,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
+export async function scrapeCraigslistPosts(params: {
+  city: string
+  query?: string
+  limit?: number
+}): Promise<{ posts: any[]; cost: number }> {
+  const result = await runApifyActor('epctex/craigslist-scraper', {
+    startUrls: [
+      { url: `https://${params.city.toLowerCase().replace(/ /g, '')}.craigslist.org/search/rea?query=${encodeURIComponent(params.query ?? '')}` },
+    ],
+    maxItems: params.limit || 100,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
+export async function scrapeGoogleSearchResults(params: {
+  queries: string[]
+  resultsPerQuery?: number
+}): Promise<{ results: any[]; cost: number }> {
+  const result = await runApifyActor('apify/google-search-scraper', {
+    queries: params.queries.join('\n'),
+    resultsPerPage: params.resultsPerQuery || 10,
+    maxPagesPerQuery: 1,
+  })
+  return { results: result.data, cost: result.cost }
+}

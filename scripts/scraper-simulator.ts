@@ -31,7 +31,14 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR } from "../lib/lead-pipeline/source-intent-map"
+import {
+  detectIntent,
+  normalizeInstagramPost,
+  normalizeGoogleResult,
+  normalizeCraigslistItem,
+  normalizeFacebookPost,
+} from "../lib/lead-pipeline/social-sourcer"
 
 let passed = 0
 let failed = 0
@@ -233,8 +240,9 @@ function testIntentMapping() {
     ["craigslist_fsbo", "seller"],
     ["facebook_group", "seller"],
     ["reddit_intent", "buyer"],      // buyer research/intent posts
+    ["instagram", "unknown"],        // both buyer + seller (aliased → instagram_intent)
     ["nextdoor", "unknown"],         // buyer-or-seller until enrichment
-    ["google_phrase_intent", "unknown"],
+    ["google_phrase_intent", "unknown"], // buyers search homes + sellers search agents
   ]
   for (const [source, expected] of cases) {
     const sem = getSourceSemantics(source)
@@ -245,6 +253,54 @@ function testIntentMapping() {
   check("alias redfin → zenrows_homes", resolveSourceKey("redfin") === "zenrows_homes")
   check("alias nextdoor → nextdoor_intent", resolveSourceKey("nextdoor") === "nextdoor_intent")
   check("listing-site motivation = fsbo_seller", getSourceSemantics("zillow").motivationType === "fsbo_seller")
+}
+
+// ── 10. Vendor routing contract ──────────────────────────────────────────────
+function testVendorRouting() {
+  console.log("\n[Vendor routing — SOURCE_VENDOR contract]")
+  // ZenRows is reserved for the (expensive) real-estate sites + Nextdoor.
+  check("zillow → zenrows", SOURCE_VENDOR.zenrows_zillow === "zenrows")
+  check("realtor → zenrows", SOURCE_VENDOR.zenrows_realtor === "zenrows")
+  check("redfin/homes → zenrows", SOURCE_VENDOR.zenrows_homes === "zenrows")
+  check("nextdoor → zenrows", SOURCE_VENDOR.nextdoor_intent === "zenrows")
+  // Apify owns Facebook / Instagram / Craigslist / Reddit / Google.
+  check("facebook → apify", SOURCE_VENDOR.facebook_group === "apify")
+  check("instagram → apify", SOURCE_VENDOR.instagram_intent === "apify")
+  check("craigslist → apify", SOURCE_VENDOR.craigslist_fsbo === "apify")
+  check("reddit → apify", SOURCE_VENDOR.reddit_intent === "apify")
+  check("google → apify", SOURCE_VENDOR.google_phrase_intent === "apify")
+  // Distress + records sources.
+  check("batchdata → batchdata", SOURCE_VENDOR.batchdata_motivated === "batchdata")
+  check("osint → osint", SOURCE_VENDOR.osint_signal === "osint")
+}
+
+// ── 11. Social-source normalizers + intent detection ─────────────────────────
+function testSocialNormalizers() {
+  console.log("\n[Social normalizers + detectIntent]")
+  check("detectIntent: seller phrase", detectIntent("Thinking of selling my home, FSBO") === "seller")
+  check("detectIntent: buyer phrase", detectIntent("We are house hunting and pre-approved") === "buyer")
+  check("detectIntent: ambiguous → unknown", detectIntent("Nice neighborhood photos") === "unknown")
+
+  const ig = normalizeInstagramPost(
+    { id: "ig1", caption: "Finally listing my home! #fsbo", ownerFullName: "Dana Seller", ownerUsername: "dana_s", url: "https://instagram.com/p/ig1" },
+    { city: "Tampa", state: "FL" },
+  )
+  check("IG source = instagram_intent", ig.source === "instagram_intent")
+  check("IG seller caption → seller intent", ig.intentType === "seller")
+  check("IG owner name parsed", ig.firstName === "Dana" && ig.lastName === "Seller")
+
+  const g = normalizeGoogleResult(
+    { title: "Sell my house fast in Tampa", url: "https://x.com/sell", snippet: "cash offer" },
+    { city: "Tampa", state: "FL" },
+  )
+  check("Google source = google_phrase_intent", g.source === "google_phrase_intent")
+  check("Google seller query → seller intent", g.intentType === "seller")
+
+  const cl = normalizeCraigslistItem({ id: "cl9", title: "3BR home for sale by owner", url: "https://cl/9" }, { city: "Tampa", state: "FL" })
+  check("Craigslist FSBO → seller + fsbo_listing", cl.intentType === "seller" && cl.behaviorType === "fsbo_listing")
+
+  const fb = normalizeFacebookPost({ id: "fb2", text: "looking to buy my first home", authorName: "Sam Buyer" }, { city: "Tampa", state: "FL" })
+  check("FB buyer post → buyer intent", fb.intentType === "buyer")
 }
 
 async function main() {
@@ -259,6 +315,8 @@ async function main() {
   testGates()
   testUrlBuilder()
   testIntentMapping()
+  testVendorRouting()
+  testSocialNormalizers()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")
