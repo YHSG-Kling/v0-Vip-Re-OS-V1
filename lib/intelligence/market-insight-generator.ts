@@ -1,6 +1,6 @@
 /**
  * Market Insight Generator
- * 4-tier data provider waterfall: HouseCanary → BatchData → OSINT/ZenRows → CMA aggregate
+ * 4-tier data provider waterfall: RentCast → BatchData → OSINT/ZenRows → CMA aggregate
  * Generates AI-powered market analysis for agents
  */
 
@@ -9,11 +9,7 @@ import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
-import {
-  fetchHouseCanaryMarketStats,
-  fetchHouseCanaryForecast,
-  type HouseCanaryMarketStats,
-} from '@/lib/external/housecanary-client'
+import { getRentcastMarketStats } from '@/lib/property/rentcast'
 import {
   fetchBatchDataMarketStats,
   type BatchDataMarketStats,
@@ -142,24 +138,22 @@ export async function refreshMarketData(
   const supabase = createServiceClient()
   let stats: any = null
   let source = 'none'
-  let forecast: { forecast_6mo_pct: number } | null = null
 
-  // TIER 1: HouseCanary (highest accuracy)
-  if (process.env.HOUSECANARY_API_KEY && zipCode) {
-    const hcStats = await fetchHouseCanaryMarketStats(zipCode)
-    if (hcStats) {
+  // TIER 1: RentCast (chosen property-data provider) — zip-level market stats.
+  if (zipCode) {
+    const rcStats = await getRentcastMarketStats({ brokerageId, zipCode })
+    if (rcStats) {
       stats = {
-        active_listings: hcStats.total_active_listings,
-        new_listings_30d: Math.round(hcStats.total_active_listings * 0.15), // estimate
-        sold_listings_30d: hcStats.total_sold_30d,
-        median_sale_price: hcStats.median_sale_price,
-        avg_days_on_market: hcStats.avg_days_on_market,
-        list_to_sale_ratio: hcStats.list_to_sale_ratio,
-        months_of_inventory: hcStats.months_of_inventory,
-        price_trend_pct_1yr: hcStats.price_trend_yoy_pct,
+        active_listings: rcStats.active_listings,
+        new_listings_30d: rcStats.new_listings_30d,
+        sold_listings_30d: 0, // RentCast /markets does not expose sold counts
+        median_sale_price: rcStats.median_sale_price,
+        avg_days_on_market: rcStats.avg_days_on_market,
+        list_to_sale_ratio: 0,
+        months_of_inventory: 0,
+        price_trend_pct_1yr: rcStats.price_trend_yoy_pct,
       }
-      source = 'housecanary'
-      forecast = await fetchHouseCanaryForecast(zipCode)
+      source = 'rentcast'
     }
   }
 

@@ -55,6 +55,13 @@ import { normalizeExaRow } from "../lib/external/exa-client"
 import { normalizeTavilyResult } from "../lib/lead-pipeline/tavily-sourcer"
 import { normalizeTavilyRow } from "../lib/external/tavily-client"
 import { runWebSearch } from "../lib/ai/web-search"
+import { normalizeRentcastMarketStats } from "../lib/property/rentcast-normalize"
+import {
+  isNeighborhoodReportAllowed,
+  computeLivabilityScore,
+  factualNarrative,
+} from "../lib/property/neighborhood-scoring"
+import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
 import { BATCHDATA_MOTIVATION_TYPES } from "../lib/external/batchdata-client"
 
 let passed = 0
@@ -620,6 +627,72 @@ async function testWebSearchFallback() {
   check("web search → none when both empty", r5.provider === "none" && r5.hits.length === 0)
 }
 
+// ── 19d. RentCast market-stats normalizer (TIER-1 market data feed) ──────────
+function testRentcastMarketStats() {
+  console.log("\n[RentCast market-stats normalizer]")
+  const history: Record<string, any> = {}
+  // 13 monthly snapshots: 12 months ago = 400k, latest = 440k → +10% YoY.
+  for (let i = 12; i >= 0; i--) {
+    const m = `2024-${String(13 - i).padStart(2, "0")}` // arbitrary ascending keys
+    history[m] = { medianPrice: i === 12 ? 400000 : i === 0 ? 440000 : 420000 }
+  }
+  const stats = normalizeRentcastMarketStats({
+    medianPrice: 440000,
+    averageDaysOnMarket: 32,
+    totalListings: 120,
+    newListings: 18,
+    history,
+  })
+  check("rentcast → median price", stats?.median_sale_price === 440000)
+  check("rentcast → DOM", stats?.avg_days_on_market === 32)
+  check("rentcast → active listings", stats?.active_listings === 120)
+  check("rentcast → YoY +10%", stats?.price_trend_yoy_pct === 10)
+  check("rentcast → null on empty", normalizeRentcastMarketStats(null) === null)
+  check("rentcast → null on zero price", normalizeRentcastMarketStats({ medianPrice: 0 }) === null)
+}
+
+// ── 19e. Neighborhood intelligence — tier gate, livability, Fair-Housing ─────
+function testNeighborhoodIntelligence() {
+  console.log("\n[Neighborhood intelligence — tier gate + livability + Fair-Housing]")
+  // Tier gate: only the most advanced plans.
+  check("tier gate allows brokerage", isNeighborhoodReportAllowed("brokerage"))
+  check("tier gate allows multi_location", isNeighborhoodReportAllowed("multi_location"))
+  check("tier gate denies solo_agent", !isNeighborhoodReportAllowed("solo_agent"))
+  check("tier gate denies team", !isNeighborhoodReportAllowed("team"))
+  check("tier gate denies null", !isNeighborhoodReportAllowed(null))
+
+  const rich = {
+    lat: 27.95, lon: -82.45,
+    amenities: {
+      restaurants: [{ name: "Cafe", distance: 200 }, { name: "Grill", distance: 350 }],
+      grocery: [{ name: "Market", distance: 300 }],
+      parks: [{ name: "Park", distance: 600 }],
+      schools: [{ name: "Elementary", distance: 800 }],
+      transit: [{ name: "Bus Stop", distance: 150 }],
+    },
+    censusMedianHomeValue: 415000,
+    dataSource: "openstreetmap+census" as const,
+  }
+  const liv = computeLivabilityScore(rich)
+  check("livability: all 5 categories scored", liv.score >= 60)
+  check("livability: proximity bonus pushed to walkable band", liv.score >= 75 && liv.label === "Highly walkable")
+
+  const empty = {
+    lat: null, lon: null,
+    amenities: { restaurants: [], grocery: [], parks: [], schools: [], transit: [] },
+    censusMedianHomeValue: null,
+    dataSource: "none" as const,
+  }
+  const livEmpty = computeLivabilityScore(empty)
+  check("livability: no data → score 0 / Limited data", livEmpty.score === 0 && livEmpty.label === "Limited data")
+
+  // The factual fallback narrative must be Fair-Housing clean (no high-severity hits).
+  const narrative = factualNarrative(rich, liv)
+  check("factual narrative non-empty", narrative.length > 0)
+  const violations = detectFairHousingViolations(narrative)
+  check("factual narrative passes Fair-Housing detector", violations.filter((v) => v.severity === "high").length === 0)
+}
+
 // ── 20. BatchData = comprehensive motivated-seller source ────────────────────
 function testBatchDataTypes() {
   console.log("\n[BatchData motivated-seller coverage]")
@@ -654,6 +727,8 @@ async function main() {
   testExaBuyerIntent()
   testTavilyIntent()
   await testWebSearchFallback()
+  testRentcastMarketStats()
+  testNeighborhoodIntelligence()
   testBatchDataTypes()
   await testZenRowsClient()
 

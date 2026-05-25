@@ -15,6 +15,9 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { normalizeRentcastMarketStats, type RentcastMarketStats } from "./rentcast-normalize"
+
+export { normalizeRentcastMarketStats, type RentcastMarketStats }
 
 const RENTCAST_BASE = "https://api.rentcast.io/v1"
 
@@ -269,5 +272,43 @@ export async function getRentcastAVM(params: {
     }
   } catch {
     return { value: null, rangeLow: null, rangeHigh: null }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Market statistics endpoint — zip-level aggregate (median price, DOM, inventory).
+// This is the TIER-1 data feed for the AI market-insight report, replacing the
+// retired HouseCanary integration. RentCast is the brokerage's chosen property-data
+// provider for AVM/comps/market stats.
+// ---------------------------------------------------------------------------
+
+const COST_PER_MARKET_LOOKUP = 0.20
+
+/** Fetch zip-level sale market statistics from RentCast. Never throws. */
+export async function getRentcastMarketStats(params: {
+  brokerageId: string
+  zipCode: string
+}): Promise<RentcastMarketStats | null> {
+  const apiKey = await getApiKey(params.brokerageId)
+  if (!apiKey || !params.zipCode) return null
+
+  try {
+    const qs = new URLSearchParams({ zipCode: params.zipCode, dataType: "Sale", historyRange: "12" })
+    const res = await fetch(`${RENTCAST_BASE}/markets?${qs.toString()}`, {
+      headers: { "X-Api-Key": apiKey, Accept: "application/json" },
+      cache: "no-store",
+    })
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "market_stats",
+      cost: COST_PER_MARKET_LOOKUP,
+      endpoint: "/markets",
+      metadata: { ok: res.ok, status: res.status, zip: params.zipCode },
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return normalizeRentcastMarketStats(data?.saleData)
+  } catch {
+    return null
   }
 }
