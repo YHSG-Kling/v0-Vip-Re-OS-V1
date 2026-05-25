@@ -24,6 +24,7 @@ import {
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
+import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -359,7 +360,8 @@ export async function GET(request: Request) {
         enabledSources.has("google_phrase_intent") ||
         enabledSources.has("rental") ||
         enabledSources.has("linkedin") ||
-        enabledSources.has("exa")
+        enabledSources.has("exa") ||
+        enabledSources.has("tavily")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -534,6 +536,13 @@ export async function GET(request: Request) {
           // ── Exa neural search (AI-native) — buyer-intent content across the web ─
           if (enabledSources.has("exa")) {
             const { records, cost } = await sourceExaBuyerIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── Tavily agentic search (AI-native) — buyer / seller / investor intent ─
+          if (enabledSources.has("tavily")) {
+            const { records, cost } = await sourceTavilyIntent(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records)
           }

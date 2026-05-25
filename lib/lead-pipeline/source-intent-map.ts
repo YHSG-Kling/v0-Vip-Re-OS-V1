@@ -31,6 +31,7 @@ export type SourceKey =
   | 'expired_listing'
   | 'linkedin_relocation'
   | 'exa_buyer_intent'
+  | 'tavily_intent'
   | 'osint_signal'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
@@ -304,6 +305,23 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Tavily agentic-search intent (AI-native) — buyer / seller / investor ─────
+  // Real-time ranked web content with snippets; per-result intent via detectIntent
+  // + isInvestor (investors tagged as buyers). Identity anchored on email/phone
+  // extracted from the snippet, else the source page URL.
+  tavily_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'ai_search_intent',
+    behaviorType:              'search_signal',
+    scoreRange:                [35, 65],
+    baseScore:                 48,
+    boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'selling', 'fsbo', 'investor', '1031_exchange', 'cash_buyer', 'relocating'],
+    dampSignals:               ['just_browsing', 'no_timeline', 'agent_promo'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
   // ── OSINT / skip-trace signal ────────────────────────────────────────────────
   // Enrichment result that elevates an existing raw record.
   osint_signal: {
@@ -401,6 +419,7 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   expired: "expired_listing",
   linkedin: "linkedin_relocation",
   exa: "exa_buyer_intent",
+  tavily: "tavily_intent",
   osint: "osint_signal",
 }
 
@@ -412,7 +431,7 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
  *   • osint    — public + court records (divorce / probate / foreclosure).
  *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
  */
-export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa'
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily'
 
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
@@ -429,6 +448,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   linkedin_relocation:  'apify',
   expired_listing:      'zenrows', // real-estate listing pages (off-market detection)
   exa_buyer_intent:     'exa',     // AI-native neural search (buyer intent)
+  tavily_intent:        'tavily',  // AI-native agentic search (buyer/seller/investor)
   batchdata_motivated:  'batchdata',
   osint_signal:         'osint',
 }

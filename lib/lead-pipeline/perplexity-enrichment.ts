@@ -8,6 +8,7 @@
 
 import { z } from "zod"
 import { generateObjectRouted } from "@/lib/ai/models"
+import { webSearch, formatWebSearchContext } from "@/lib/ai/web-search"
 import type { PerplexityFindings } from "./enrichment-merge"
 
 // Re-export the pure merge helpers so existing importers keep one entry point;
@@ -31,6 +32,14 @@ export async function enrichViaPerplexity(params: {
 }): Promise<PerplexityFindings | null> {
   const where = [params.city, params.state].filter(Boolean).join(", ")
   try {
+    // Ground the model with fresh web results (Tavily primary, Exa fallback) so
+    // it reasons over current public pages rather than parametric memory alone.
+    const grounding = await webSearch({
+      query: `${params.firstName} ${params.lastName}${where ? ` ${where}` : ""} real estate agent contact email phone brokerage`,
+      maxResults: 6,
+    }).catch(() => null)
+    const context = grounding ? formatWebSearchContext(grounding) : ""
+
     const { object } = await generateObjectRouted({
       feature: "lead_enrichment_research",
       brokerageId: params.brokerageId,
@@ -40,7 +49,8 @@ export async function enrichViaPerplexity(params: {
       prompt:
         `Find publicly-listed contact and professional details for ${params.firstName} ${params.lastName}` +
         `${where ? ` in ${where}` : ""}. Return only verifiable public info; use null for anything not found. ` +
-        `Fields: email, phone, employer, currentBrokerage (if they are a real-estate agent).`,
+        `Fields: email, phone, employer, currentBrokerage (if they are a real-estate agent).` +
+        (context ? `\n\nWeb search context:\n${context}` : ""),
     })
     return object
   } catch {

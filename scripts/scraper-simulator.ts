@@ -37,6 +37,7 @@ import {
 import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR } from "../lib/lead-pipeline/source-intent-map"
 import {
   detectIntent,
+  isInvestor,
   normalizeRedditPost,
   normalizeInstagramPost,
   normalizeGoogleResult,
@@ -51,6 +52,9 @@ import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
 import { ACTOR_REGISTRY, pickActors, runApifyTask } from "../lib/external/apify-actors"
 import { normalizeExaResult } from "../lib/lead-pipeline/exa-sourcer"
 import { normalizeExaRow } from "../lib/external/exa-client"
+import { normalizeTavilyResult } from "../lib/lead-pipeline/tavily-sourcer"
+import { normalizeTavilyRow } from "../lib/external/tavily-client"
+import { runWebSearch } from "../lib/ai/web-search"
 import { BATCHDATA_MOTIVATION_TYPES } from "../lib/external/batchdata-client"
 
 let passed = 0
@@ -524,6 +528,67 @@ function testExaBuyerIntent() {
   check("exa → exa vendor", SOURCE_VENDOR.exa_buyer_intent === "exa")
 }
 
+// ── 19b. Tavily agentic-search intent (AI-native) — buyer/seller/investor ────
+function testTavilyIntent() {
+  console.log("\n[Tavily agentic-search intent (AI-native)]")
+  // Raw Tavily row → normalized result (defensive field mapping, snippet fallback).
+  const row = normalizeTavilyRow({ title: "Pre-approved buyer in Tampa", snippet: "looking to buy a first home in Tampa", url: "https://forum.example/1", score: 0.8 })
+  check("Tavily row → content via snippet fallback", row.content === "looking to buy a first home in Tampa")
+  check("Tavily row → score captured", row.score === 0.8)
+
+  // Buyer intent + contact extraction from snippet anchors viability.
+  const buyer = normalizeTavilyResult(
+    { title: "House hunting in Tampa", content: "We are pre-approved and looking to buy. Reach me at buyer@example.com.", url: "https://x/1", score: 0.7 },
+    { city: "Tampa", state: "FL" },
+  )
+  check("Tavily buyer → buyer intent + tavily_intent", buyer.intentType === "buyer" && buyer.source === "tavily_intent")
+  check("Tavily buyer → email extracted for viability", buyer.email === "buyer@example.com" && isViableRecord(buyer))
+  check("Tavily buyer → ai_search_match signal", buyer.intentSignals?.includes("ai_search_match"))
+
+  // Seller phrasing → seller intent; phone extraction anchors viability.
+  const seller = normalizeTavilyResult(
+    { title: "FSBO Tampa", content: "Selling my home, call (813) 555-0142", url: "https://x/2", score: 0.6 },
+    { city: "Tampa", state: "FL" },
+  )
+  check("Tavily seller → seller intent", seller.intentType === "seller")
+  check("Tavily seller → phone extracted for viability", !!seller.phone && isViableRecord(seller))
+
+  // Investor phrasing → buyer intent + investor signal.
+  check("isInvestor detects 1031 exchange", isInvestor("looking for a 1031 exchange rental property"))
+  const investor = normalizeTavilyResult(
+    { title: "Investor Tampa", content: "Cash buyer seeking rental portfolio, email investor@example.com", url: "https://x/3", score: 0.9 },
+    { city: "Tampa", state: "FL" },
+  )
+  check("Tavily investor → buyer intent + investor signal", investor.intentType === "buyer" && investor.intentSignals?.includes("investor"))
+  check("Tavily investor → higher motivation score", (investor.motivationScore ?? 0) === 55)
+
+  // Source intent + vendor routing.
+  check("tavily → tavily vendor", SOURCE_VENDOR.tavily_intent === "tavily")
+  check("tavily alias resolves", resolveSourceKey("tavily") === "tavily_intent")
+  check("tavily semantics present", getSourceSemantics("tavily").motivationType === "ai_search_intent")
+}
+
+// ── 19c. Unified web search — Tavily primary, Exa fallback ───────────────────
+async function testWebSearchFallback() {
+  console.log("\n[Unified web search — Tavily primary, Exa fallback]")
+  const exaStub = async () => ({ results: [{ id: "e1", url: "https://e/1", title: "Exa hit", text: "exa text", author: null, publishedDate: null }], cost: 0.01 })
+
+  // Tavily returns results → provider is tavily, Exa not consulted.
+  const tavilyOk = async () => ({ answer: "summary", results: [{ title: "T", url: "https://t/1", content: "t snippet", score: 0.5 }], cost: 0.005 })
+  const r1 = await runWebSearch({ query: "q" }, { tavily: tavilyOk as any, exa: exaStub as any })
+  check("web search uses Tavily when it has results", r1.provider === "tavily" && r1.answer === "summary" && r1.hits.length === 1)
+
+  // Tavily empty → falls back to Exa.
+  const tavilyEmpty = async () => ({ answer: null, results: [], cost: 0 })
+  const r2 = await runWebSearch({ query: "q" }, { tavily: tavilyEmpty as any, exa: exaStub as any })
+  check("web search falls back to Exa when Tavily empty", r2.provider === "exa" && r2.hits.length === 1)
+
+  // Both empty → provider none.
+  const exaEmpty = async () => ({ results: [], cost: 0 })
+  const r3 = await runWebSearch({ query: "q" }, { tavily: tavilyEmpty as any, exa: exaEmpty as any })
+  check("web search → none when both empty", r3.provider === "none" && r3.hits.length === 0)
+}
+
 // ── 20. BatchData = comprehensive motivated-seller source ────────────────────
 function testBatchDataTypes() {
   console.log("\n[BatchData motivated-seller coverage]")
@@ -556,6 +621,8 @@ async function main() {
   testNewSources()
   await testActorResilience()
   testExaBuyerIntent()
+  testTavilyIntent()
+  await testWebSearchFallback()
   testBatchDataTypes()
   await testZenRowsClient()
 

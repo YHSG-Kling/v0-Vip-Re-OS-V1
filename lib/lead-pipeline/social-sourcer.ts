@@ -43,6 +43,20 @@ export function detectIntent(text: string): "buyer" | "seller" | "unknown" {
   return "unknown" // ambiguous or both — resolved later at enrichment
 }
 
+// Real-estate INVESTOR signals — investors are buyers acquiring income/flip
+// property; tagged as buyer intent with an "investor" marker for routing.
+const INVESTOR_TERMS = [
+  "investment property", "rental property", "income property", "looking to invest",
+  "1031 exchange", "cash buyer", "fix and flip", "fix-and-flip", "buy and hold",
+  "rental portfolio", "cap rate", "cash flow property", "multifamily", "investor looking",
+]
+
+/** True if the text expresses real-estate INVESTOR (acquisition) intent. */
+export function isInvestor(text: string): boolean {
+  const t = (text ?? "").toLowerCase()
+  return INVESTOR_TERMS.some((term) => t.includes(term))
+}
+
 function nameFromHandle(handle: unknown): { firstName: string | null; lastName: string | null } {
   const parts = String(handle ?? "").trim().split(/\s+/).filter(Boolean)
   if (parts.length >= 2) return { firstName: parts[0], lastName: parts.slice(1).join(" ") }
