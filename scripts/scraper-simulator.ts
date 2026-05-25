@@ -31,6 +31,7 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
+import { getSourceSemantics, resolveSourceKey } from "../lib/lead-pipeline/source-intent-map"
 
 let passed = 0
 let failed = 0
@@ -65,7 +66,8 @@ function testZillow() {
   check("parses 2 viable Zillow listings (address-less dropped)", records.length === 2, `got ${records.length}`)
   const r = records[0]
   check("source = zillow", r?.source === "zillow")
-  check("intentType = buyer", r?.intentType === "buyer")
+  check("intentType = seller (FSBO, not property/buyer)", r?.intentType === "seller")
+  check("behaviorType = fsbo_listing", r?.behaviorType === "fsbo_listing")
   check("propertyAddress captured", r?.propertyAddress === "123 Main St")
   check("sourceUrl built from detailUrl", r?.sourceUrl === "https://www.zillow.com/homedetails/123_zpid/")
   check("sourceRecordId namespaced", r?.sourceRecordId === "zillow-12345")
@@ -170,9 +172,11 @@ function testGates() {
 function testUrlBuilder() {
   console.log("\n[Property search URL builder]")
   const z = buildPropertySearchUrl("zillow", { city: "St Petersburg", state: "FL" }, { min_price: 200000, max_price: 500000 })
-  check("zillow url slugged + encoded", z.startsWith("https://www.zillow.com/st-petersburg-fl/homes/") && z.includes("searchQueryState="))
+  check("zillow url targets FSBO + encoded", z.startsWith("https://www.zillow.com/st-petersburg-fl/fsbo/") && z.includes("searchQueryState=") && z.includes("fsbo"))
   const rl = buildPropertySearchUrl("realtor", { city: "Tampa", state: "FL" }, { min_beds: 3 })
-  check("realtor url uses underscores + beds", rl.includes("Tampa_FL") && rl.includes("beds-3"))
+  check("realtor url uses underscores + beds + show-fsbo", rl.includes("Tampa_FL") && rl.includes("beds-3") && rl.endsWith("/show-fsbo"))
+  const rd = buildPropertySearchUrl("redfin", { city: "Tampa", state: "FL" }, {})
+  check("redfin url includes forSaleByOwner", rd.includes("include=forSaleByOwner"))
   const d = buildPropertySearchUrl("unknown", { city: "Tampa", state: "FL" }, {})
   check("unknown site falls back to zillow", d.startsWith("https://www.zillow.com/"))
 }
@@ -216,6 +220,33 @@ async function testZenRowsClient() {
   check("extracts phone", phones.some((p) => p.replace(/\D/g, "").includes("8135550142")))
 }
 
+// ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
+function testIntentMapping() {
+  console.log("\n[Source → intent mapping]")
+  // Each scraper source must resolve to the correct buyer/seller intent.
+  // ZenRows listing sites = FSBO SELLER intent (we capture by-owner, not property).
+  const cases: Array<[string, "buyer" | "seller" | "unknown"]> = [
+    ["zillow", "seller"],            // FSBO seller intent (aliased → zenrows_zillow)
+    ["realtor", "seller"],
+    ["redfin", "seller"],            // aliased → zenrows_homes
+    ["batchdata_motivated", "seller"], // FSBO/divorce/probate/foreclosure distress
+    ["craigslist_fsbo", "seller"],
+    ["facebook_group", "seller"],
+    ["reddit_intent", "buyer"],      // buyer research/intent posts
+    ["nextdoor", "unknown"],         // buyer-or-seller until enrichment
+    ["google_phrase_intent", "unknown"],
+  ]
+  for (const [source, expected] of cases) {
+    const sem = getSourceSemantics(source)
+    check(`source "${source}" → intent ${expected}`, sem.intentType === expected, `got ${sem.intentType}`)
+  }
+  // Alias resolution must not fall through to the unknown fallback.
+  check("alias zillow → zenrows_zillow", resolveSourceKey("zillow") === "zenrows_zillow")
+  check("alias redfin → zenrows_homes", resolveSourceKey("redfin") === "zenrows_homes")
+  check("alias nextdoor → nextdoor_intent", resolveSourceKey("nextdoor") === "nextdoor_intent")
+  check("listing-site motivation = fsbo_seller", getSourceSemantics("zillow").motivationType === "fsbo_seller")
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -227,6 +258,7 @@ async function main() {
   testBatchData()
   testGates()
   testUrlBuilder()
+  testIntentMapping()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")

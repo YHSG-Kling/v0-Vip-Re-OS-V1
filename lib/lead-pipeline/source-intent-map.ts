@@ -81,45 +81,46 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   },
 
   // ── Zillow behavioral signal ──────────────────────────────────────────────────
-  // Anonymous property views from Zillow search pages.
-  // Scores 35–65; anonymous until enrichment resolves identity.
+  // FSBO / by-owner listings scraped from Zillow (we filter to for-sale-by-owner,
+  // not agent inventory — a by-owner listing is a SELLER lead, not a property).
+  // The owner is resolved by skip-trace enrichment from the property address.
   zenrows_zillow: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'fsbo_seller',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 50,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing', 'multiple_views', 'price_reduced'],
-    dampSignals:               ['single_view', 'no_contact'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'expired_listing'],
+    dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Realtor.com behavioral signal ────────────────────────────────────────────
+  // ── Realtor.com FSBO / by-owner signal ───────────────────────────────────────
   zenrows_realtor: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'fsbo_seller',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 48,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing', 'open_house_rsvp'],
-    dampSignals:               ['single_view', 'no_contact'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced'],
+    dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Homes.com / generic property portal ──────────────────────────────────────
+  // ── Redfin / generic property portal — FSBO / by-owner only ──────────────────
   zenrows_homes: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'fsbo_seller',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 60],
     baseScore:                 45,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing'],
-    dampSignals:               ['single_view'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon'],
+    dampSignals:               ['agent_listed', 'rental'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
@@ -260,7 +261,7 @@ const FALLBACK_DEFINITION: SourceDefinition = {
  *   4. Clamp to source scoreRange [min, max]
  */
 export function calculateSourceScore(source: string, signals: string[]): number {
-  const def = SOURCE_MAP[source as SourceKey] ?? FALLBACK_DEFINITION
+  const def = SOURCE_MAP[resolveSourceKey(source)] ?? FALLBACK_DEFINITION
 
   const normalizedSignals = signals.map(s => s.toLowerCase().replace(/[\s\-]/g, '_'))
 
@@ -287,7 +288,35 @@ export function calculateSourceScore(source: string, signals: string[]): number 
  * Falls back to the default definition for unrecognised sources.
  */
 export function getSourceSemantics(source: string): SourceDefinition {
-  return SOURCE_MAP[source as SourceKey] ?? FALLBACK_DEFINITION
+  return SOURCE_MAP[resolveSourceKey(source)] ?? FALLBACK_DEFINITION
+}
+
+/**
+ * Maps the `source` values emitted by the scrapers/parsers to the canonical
+ * SOURCE_MAP keys. Without this, parser sources like "zillow"/"realtor"/"redfin"/
+ * "nextdoor" silently fell through to the unknown fallback (wrong intent + score).
+ * Already-canonical keys pass through unchanged.
+ */
+const SOURCE_ALIASES: Record<string, SourceKey> = {
+  zillow: "zenrows_zillow",
+  realtor: "zenrows_realtor",
+  "realtor.com": "zenrows_realtor",
+  redfin: "zenrows_homes",
+  homes: "zenrows_homes",
+  homes_com: "zenrows_homes",
+  nextdoor: "nextdoor_intent",
+  facebook: "facebook_group",
+  facebook_marketplace: "facebook_marketplace",
+  reddit: "reddit_intent",
+  craigslist: "craigslist_fsbo",
+  google: "google_phrase_intent",
+  osint: "osint_signal",
+}
+
+export function resolveSourceKey(source: string): SourceKey {
+  const key = source as SourceKey
+  if (key in SOURCE_MAP) return key
+  return SOURCE_ALIASES[source.toLowerCase()] ?? (source as SourceKey)
 }
 
 /**

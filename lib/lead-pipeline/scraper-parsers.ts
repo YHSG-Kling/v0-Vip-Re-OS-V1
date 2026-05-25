@@ -31,7 +31,9 @@ export function buildPropertySearchUrl(
 
   switch (site) {
     case "zillow":
-      return `https://www.zillow.com/${market.city.toLowerCase().replace(/ /g, "-")}-${market.state.toLowerCase()}/homes/?searchQueryState=${encodeURIComponent(
+      // fsbo:true + fsba:false targets for-sale-by-owner only (seller intent),
+      // excluding agent inventory. cmsn (coming-soon) is pre-listing seller intent.
+      return `https://www.zillow.com/${market.city.toLowerCase().replace(/ /g, "-")}-${market.state.toLowerCase()}/fsbo/?searchQueryState=${encodeURIComponent(
         JSON.stringify({
           pagination: {},
           mapBounds: {},
@@ -39,15 +41,20 @@ export function buildPropertySearchUrl(
             price: { min: params.min_price, max: params.max_price },
             beds: { min: params.min_beds },
             baths: { min: params.min_baths },
+            fsbo: { value: true },
+            fsba: { value: false },
+            cmsn: { value: true },
           },
         }),
       )}`
 
     case "realtor":
-      return `https://www.realtor.com/realestateandhomes-search/${market.city.replace(/ /g, "_")}_${market.state}/price-${params.min_price || 0}-${params.max_price || 10000000}/beds-${params.min_beds || 1}`
+      // show-fsbo restricts to for-sale-by-owner listings (seller leads).
+      return `https://www.realtor.com/realestateandhomes-search/${market.city.replace(/ /g, "_")}_${market.state}/price-${params.min_price || 0}-${params.max_price || 10000000}/beds-${params.min_beds || 1}/show-fsbo`
 
     case "redfin":
-      return `https://www.redfin.com/city/${market.city.replace(/ /g, "-")}/${market.state}/filter/min-price=${params.min_price || 0},max-price=${params.max_price || 10000000},min-beds=${params.min_beds || 1}`
+      // include=forSaleByOwner restricts to by-owner listings (seller leads).
+      return `https://www.redfin.com/city/${market.city.replace(/ /g, "-")}/${market.state}/filter/min-price=${params.min_price || 0},max-price=${params.max_price || 10000000},min-beds=${params.min_beds || 1},include=forSaleByOwner`
 
     case "trulia":
       return `https://www.trulia.com/${market.state}/${market.city.replace(/ /g, "_")}/`
@@ -91,9 +98,9 @@ export function parsePropertySearchResults(
           const record: NormalizedScrapedRecord = {
             sourceRecordId: `zillow-${zpid}`,
             source: "zillow",
-            behaviorType: "property_view",
-            intentType: "buyer",
-            intentSignals: ["zillow_listing"],
+            behaviorType: "fsbo_listing",
+            intentType: "seller",
+            intentSignals: ["by_owner", "fsbo"],
             propertyAddress: address,
             city: (listing.city as string | null | undefined) ?? market.city,
             state: (listing.state as string | null | undefined) ?? market.state,
@@ -124,9 +131,9 @@ export function parsePropertySearchResults(
       const record: NormalizedScrapedRecord = {
         sourceRecordId: `realtor-${pid}`,
         source: "realtor",
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: ["realtor_listing"],
+        behaviorType: "fsbo_listing",
+        intentType: "seller",
+        intentSignals: ["by_owner", "fsbo"],
         propertyAddress: address,
         city: market.city,
         state: market.state,
@@ -146,9 +153,9 @@ export function parsePropertySearchResults(
       const record: NormalizedScrapedRecord = {
         sourceRecordId: `redfin-${pid}`,
         source: "redfin",
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: ["redfin_listing"],
+        behaviorType: "fsbo_listing",
+        intentType: "seller",
+        intentSignals: ["by_owner", "fsbo"],
         propertyAddress: address,
         city: market.city,
         state: market.state,
@@ -166,9 +173,9 @@ export function parsePropertySearchResults(
       const record: NormalizedScrapedRecord = {
         sourceRecordId: `${site}-${Date.now()}-${Math.random()}`,
         source: site,
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: [`${site}_listing`],
+        behaviorType: "fsbo_listing",
+        intentType: "seller",
+        intentSignals: ["by_owner", "fsbo"],
         propertyAddress: address,
         city: market.city,
         state: market.state,
