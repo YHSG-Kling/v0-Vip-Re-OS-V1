@@ -46,9 +46,18 @@ export interface BatchDataRecord {
   baths?: number
   sqft?: number
   estimatedValue?: number
-  motivationType: 'probate' | 'divorce' | 'foreclosure' | 'tax_lien' | 'pre_foreclosure' | 'distressed'
+  // The full motivated-seller spectrum BatchData covers — downsizers (high
+  // equity), divorce, foreclosure / pre-foreclosure, tax lien, expired listings,
+  // investor/absentee owners, vacant, and tired landlords.
+  motivationType: 'probate' | 'divorce' | 'foreclosure' | 'tax_lien' | 'pre_foreclosure' | 'distressed' | 'high_equity' | 'absentee' | 'expired' | 'vacant' | 'tired_landlord'
   motivationConfidence: number
 }
+
+/** Full motivated-seller trigger set requested by default (BatchData = the comprehensive seller source). */
+export const BATCHDATA_MOTIVATION_TYPES = [
+  'probate', 'divorce', 'foreclosure', 'pre_foreclosure', 'tax_lien',
+  'high_equity', 'absentee', 'expired', 'vacant', 'tired_landlord',
+] as const
 
 export async function fetchMotivatedSellers(params: {
   state: string
@@ -67,7 +76,7 @@ export async function fetchMotivatedSellers(params: {
     },
     body: JSON.stringify({
       state: params.state,
-      motivation_types: params.motivationTypes || ['probate', 'divorce', 'foreclosure', 'tax_lien'],
+      motivation_types: params.motivationTypes || [...BATCHDATA_MOTIVATION_TYPES],
       limit: params.limit || 100,
     }),
   })

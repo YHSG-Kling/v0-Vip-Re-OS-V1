@@ -23,7 +23,7 @@ import {
 } from "@/lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
-import { sourceRentcastRentals, sourceRentcastExpired } from "@/lib/lead-pipeline/rentcast-sourcer"
+import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -358,7 +358,8 @@ export async function GET(request: Request) {
         enabledSources.has("craigslist") ||
         enabledSources.has("google_phrase_intent") ||
         enabledSources.has("rental") ||
-        enabledSources.has("linkedin")
+        enabledSources.has("linkedin") ||
+        enabledSources.has("exa")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -508,29 +509,31 @@ export async function GET(request: Request) {
             await insertSocial(records)
           }
 
-          // ── Rental listings — RentCast (structured) preferred, Craigslist fallback ─
+          // ── Rental listings (Apify Craigslist 'apa') — landlord/investor sellers ─
+          // Craigslist 'apa' carries a reply email (real landlord contact);
+          // RentCast is property-data only (no owner contact) so it is NOT used
+          // for seller leads — motivated-seller DETAILS come from BatchData /
+          // OSINT / PropertyRadar.
           if (enabledSources.has("rental") && market.city) {
-            const rc = await sourceRentcastRentals(market.brokerage_id, { city: market.city, state: market.state, zip: market.zip_codes?.[0] ?? null })
-            if (rc.ok && rc.records.length > 0) {
-              await insertSocial(rc.records)
-            } else {
-              // RentCast unavailable/empty → fall back to Apify Craigslist 'apa'.
-              const { records, cost } = await sourceRentalListings(market.city, socialMarket)
-              sourceCostUsd += cost
-              await insertSocial(records)
-            }
+            const { records, cost } = await sourceRentalListings(market.city, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
-          // ── Expired / off-market listings — RentCast (structured, status=Inactive) ─
-          if (enabledSources.has("expired_listing") && market.city) {
-            const rc = await sourceRentcastExpired(market.brokerage_id, { city: market.city, state: market.state, zip: market.zip_codes?.[0] ?? null })
-            if (rc.ok) await insertSocial(rc.records)
-            // (ZenRows off-market detection on the property page is the scraping fallback.)
-          }
+          // Expired / off-market sellers: addresses are scraped via
+          // parseExpiredListings (property block) and owner DETAILS come from
+          // BatchData (motivated block) / OSINT distress filings / PropertyRadar.
 
           // ── LinkedIn relocation posts (Apify) — inbound relocating buyers ──────
           if (enabledSources.has("linkedin")) {
             const { records, cost } = await sourceLinkedInRelocation(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── Exa neural search (AI-native) — buyer-intent content across the web ─
+          if (enabledSources.has("exa")) {
+            const { records, cost } = await sourceExaBuyerIntent(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records)
           }

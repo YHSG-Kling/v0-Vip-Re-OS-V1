@@ -49,7 +49,9 @@ import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
 import { ACTOR_REGISTRY, pickActors, runApifyTask } from "../lib/external/apify-actors"
-import { rentcastToRecord } from "../lib/lead-pipeline/rentcast-sourcer"
+import { normalizeExaResult } from "../lib/lead-pipeline/exa-sourcer"
+import { normalizeExaRow } from "../lib/external/exa-client"
+import { BATCHDATA_MOTIVATION_TYPES } from "../lib/external/batchdata-client"
 
 let passed = 0
 let failed = 0
@@ -502,24 +504,34 @@ async function testActorResilience() {
   check("all actors down → empty + actorUsed null (no throw)", r2.actorUsed === null && r2.data.length === 0)
 }
 
-// ── 19. RentCast structured source (rentals + expired) ───────────────────────
-function testRentcast() {
-  console.log("\n[RentCast structured source]")
-  const rental = rentcastToRecord(
-    { externalId: "rc1", address: "10 Rent Rd", city: "Tampa", state: "FL", zip: "33601", price: 2200, bedrooms: 3, bathrooms: 2, squareFeet: 1500, yearBuilt: 1990, propertyType: "SFR", daysOnMarket: 120, status: "Active", photoUrl: null, source: "rentcast" },
-    "rental_listing",
-  )
-  check("rental → seller + rental_listing", rental.intentType === "seller" && rental.source === "rental_listing")
-  check("rental aged (DOM>=90) → vacant signal", rental.intentSignals?.includes("vacant"))
-  check("rental anchored on address", rental.propertyAddress === "10 Rent Rd" && isViableRecord(rental))
+// ── 19. Exa neural-search buyer intent (AI-native) ───────────────────────────
+function testExaBuyerIntent() {
+  console.log("\n[Exa neural-search buyer intent (AI-native)]")
+  // Raw Exa row → normalized result (defensive field mapping, contents.text fallback).
+  const row = normalizeExaRow({ id: "x1", url: "https://forum.example/post/1", title: "Pre-approved, house hunting in Tampa", author: "homehunter_mia", contents: { text: "We just got pre-approved and are looking to buy our first home in Tampa." } })
+  check("Exa row → text via contents fallback", !!row.text && row.text.includes("pre-approved"))
+  check("Exa row → author captured", row.author === "homehunter_mia")
 
-  const expired = rentcastToRecord(
-    { externalId: "rc2", address: "20 Stale Ave", city: "Tampa", state: "FL", zip: null, price: 400000, bedrooms: 4, bathrooms: 3, squareFeet: 2200, yearBuilt: 2001, propertyType: "SFR", daysOnMarket: 200, status: "Inactive", photoUrl: null, source: "rentcast" },
-    "expired_listing",
-  )
-  check("expired → seller + expired_listing", expired.intentType === "seller" && expired.source === "expired_listing")
-  check("expired motivationScore high (>=70)", (expired.motivationScore ?? 0) >= 70)
-  check("expired off_market signal", expired.intentSignals?.includes("off_market"))
+  const rec = normalizeExaResult(row, { city: "Tampa", state: "FL" })
+  check("Exa record → buyer intent + exa_buyer_intent", rec.intentType === "buyer" && rec.source === "exa_buyer_intent")
+  check("Exa record → ai_neural_match signal", rec.intentSignals?.includes("ai_neural_match"))
+  check("Exa record viable via author handle", rec.username === "homehunter_mia" && isViableRecord(rec))
+  // Seller phrasing within Exa content classifies as seller.
+  const sellerRow = normalizeExaRow({ id: "x2", url: "https://blog/2", title: "Thinking of selling my home in Tampa", author: "owner_bob" })
+  check("Exa seller content → seller intent", normalizeExaResult(sellerRow, { city: "Tampa", state: "FL" }).intentType === "seller")
+  // Source intent + vendor routing.
+  check("exa → buyer intent", getSourceSemantics("exa").intentType === "buyer")
+  check("exa → exa vendor", SOURCE_VENDOR.exa_buyer_intent === "exa")
+}
+
+// ── 20. BatchData = comprehensive motivated-seller source ────────────────────
+function testBatchDataTypes() {
+  console.log("\n[BatchData motivated-seller coverage]")
+  const required = ["probate", "divorce", "foreclosure", "pre_foreclosure", "tax_lien", "high_equity", "absentee", "expired", "vacant", "tired_landlord"]
+  for (const t of required) {
+    check(`BatchData covers "${t}"`, (BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes(t))
+  }
+  check("batchdata_motivated → seller intent", getSourceSemantics("batchdata_motivated").intentType === "seller")
 }
 
 async function main() {
@@ -543,7 +555,8 @@ async function main() {
   testOsintBuyer()
   testNewSources()
   await testActorResilience()
-  testRentcast()
+  testExaBuyerIntent()
+  testBatchDataTypes()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")
