@@ -568,25 +568,33 @@ function testTavilyIntent() {
   check("tavily semantics present", getSourceSemantics("tavily").motivationType === "ai_search_intent")
 }
 
-// ── 19c. Unified web search — Tavily primary, Exa fallback ───────────────────
+// ── 19c. Unified web search — Exa-first (intent) / Tavily-first (research) ────
 async function testWebSearchFallback() {
-  console.log("\n[Unified web search — Tavily primary, Exa fallback]")
-  const exaStub = async () => ({ results: [{ id: "e1", url: "https://e/1", title: "Exa hit", text: "exa text", author: null, publishedDate: null }], cost: 0.01 })
-
-  // Tavily returns results → provider is tavily, Exa not consulted.
-  const tavilyOk = async () => ({ answer: "summary", results: [{ title: "T", url: "https://t/1", content: "t snippet", score: 0.5 }], cost: 0.005 })
-  const r1 = await runWebSearch({ query: "q" }, { tavily: tavilyOk as any, exa: exaStub as any })
-  check("web search uses Tavily when it has results", r1.provider === "tavily" && r1.answer === "summary" && r1.hits.length === 1)
-
-  // Tavily empty → falls back to Exa.
-  const tavilyEmpty = async () => ({ answer: null, results: [], cost: 0 })
-  const r2 = await runWebSearch({ query: "q" }, { tavily: tavilyEmpty as any, exa: exaStub as any })
-  check("web search falls back to Exa when Tavily empty", r2.provider === "exa" && r2.hits.length === 1)
-
-  // Both empty → provider none.
+  console.log("\n[Unified web search — Exa-first intent, Tavily-first research]")
+  const exaOk = async () => ({ results: [{ id: "e1", url: "https://e/1", title: "Exa hit", text: "exa text", author: null, publishedDate: null }], cost: 0.01 })
   const exaEmpty = async () => ({ results: [], cost: 0 })
-  const r3 = await runWebSearch({ query: "q" }, { tavily: tavilyEmpty as any, exa: exaEmpty as any })
-  check("web search → none when both empty", r3.provider === "none" && r3.hits.length === 0)
+  const tavilyOk = async () => ({ answer: "summary", results: [{ title: "T", url: "https://t/1", content: "t snippet", score: 0.5 }], cost: 0.005 })
+  const tavilyEmpty = async () => ({ answer: null, results: [], cost: 0 })
+
+  // DEFAULT (intent) mode → Exa is PRIMARY for behavior/intent discovery.
+  const r1 = await runWebSearch({ query: "q" }, { tavily: tavilyOk as any, exa: exaOk as any })
+  check("intent mode uses Exa first (lead-acquisition behavior discovery)", r1.provider === "exa" && r1.hits.length === 1)
+
+  // intent mode, Exa empty → falls back to Tavily.
+  const r2 = await runWebSearch({ query: "q" }, { tavily: tavilyOk as any, exa: exaEmpty as any })
+  check("intent mode falls back to Tavily when Exa empty", r2.provider === "tavily" && r2.answer === "summary")
+
+  // research mode → Tavily is PRIMARY (synthesized answer for Q&A grounding).
+  const r3 = await runWebSearch({ query: "q", mode: "research" }, { tavily: tavilyOk as any, exa: exaOk as any })
+  check("research mode uses Tavily first (synthesized answer)", r3.provider === "tavily" && r3.answer === "summary")
+
+  // research mode, Tavily empty → falls back to Exa.
+  const r4 = await runWebSearch({ query: "q", mode: "research" }, { tavily: tavilyEmpty as any, exa: exaOk as any })
+  check("research mode falls back to Exa when Tavily empty", r4.provider === "exa" && r4.hits.length === 1)
+
+  // Both empty → provider none (either mode).
+  const r5 = await runWebSearch({ query: "q" }, { tavily: tavilyEmpty as any, exa: exaEmpty as any })
+  check("web search → none when both empty", r5.provider === "none" && r5.hits.length === 0)
 }
 
 // ── 20. BatchData = comprehensive motivated-seller source ────────────────────

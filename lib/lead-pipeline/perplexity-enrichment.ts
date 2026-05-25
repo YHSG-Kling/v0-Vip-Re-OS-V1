@@ -32,11 +32,14 @@ export async function enrichViaPerplexity(params: {
 }): Promise<PerplexityFindings | null> {
   const where = [params.city, params.state].filter(Boolean).join(", ")
   try {
-    // Ground the model with fresh web results (Tavily primary, Exa fallback) so
-    // it reasons over current public pages rather than parametric memory alone.
+    // Ground the model with fresh web results so it reasons over current public
+    // pages rather than parametric memory alone. "research" mode = Tavily-first
+    // (synthesized answer): best for a named-person contact/identity lookup, as
+    // opposed to Exa-first "intent" mode used for behavior discovery in sourcing.
     const grounding = await webSearch({
       query: `${params.firstName} ${params.lastName}${where ? ` ${where}` : ""} real estate agent contact email phone brokerage`,
       maxResults: 6,
+      mode: "research",
     }).catch(() => null)
     const context = grounding ? formatWebSearchContext(grounding) : ""
 
