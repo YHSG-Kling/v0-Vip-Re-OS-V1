@@ -268,3 +268,59 @@ export function normalizeBatchDataRecord(
     rawPayload: record,
   }
 }
+
+/**
+ * Parse BUYER-intent signals from a real-estate site (Zillow/Realtor/Redfin) —
+ * saved searches, favorited/saved listings, and "watching" activity that expose
+ * an active buyer (a handle/name + the criteria/property they're tracking).
+ * Complements parsePropertySearchResults (which captures FSBO sellers): the same
+ * site yields both buyer and seller online behavior. Defensive across markup;
+ * a record is emitted only when a buyer handle/name OR saved property is present.
+ */
+export function parseBuyerSavedSearches(
+  html: string,
+  site: string,
+  market: MarketGeo,
+): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  $(
+    '[class*="saved-search"], [class*="savedSearch"], [data-saved-search], ' +
+    '[class*="favorited"], [class*="saved-home"], [class*="watching"], [data-buyer]',
+  ).each((i, el) => {
+    const block = $(el)
+    const handle =
+      block.attr("data-user") ||
+      block.find('[class*="user"], [class*="member"], [class*="author"]').first().text().trim() ||
+      ""
+    const criteria =
+      block.find('[class*="criteria"], [class*="search-terms"], [class*="query"]').first().text().trim() ||
+      block.text().trim().slice(0, 120)
+    const savedAddress =
+      block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
+
+    // Need a usable identity (handle) or a saved property to anchor the lead.
+    if (!handle && !savedAddress) return
+
+    const nameParts = handle.split(/\s+/).filter(Boolean)
+    records.push({
+      sourceRecordId: `${site}-buyer-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: site,
+      behaviorType: "saved_search",
+      intentType: "buyer",
+      intentSignals: ["saved_search", "active_buyer"],
+      firstName: nameParts.length >= 2 ? nameParts[0] : null,
+      lastName: nameParts.length >= 2 ? nameParts.slice(1).join(" ") : null,
+      username: handle || undefined,
+      propertyAddress: savedAddress,
+      city: market.city,
+      state: market.state,
+      motivationScore: 55, // active saved-search buyers score above passive views
+      sourceUrl: null,
+      rawPayload: { criteria, handle, savedAddress },
+    })
+  })
+
+  return records.filter(isViableRecord)
+}

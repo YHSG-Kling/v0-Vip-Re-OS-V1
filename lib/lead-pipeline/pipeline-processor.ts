@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
 import {
   calculateSourceScore,
@@ -243,7 +244,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // ── Enrichment ──────────────────────────────────────────────────────────────
   await setStatus(supabase, rawRecordId, 'enriching')
 
-  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone })
+  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone, city, state, brokerageId: effectiveBrokerageId })
 
   // ── Post-enrichment deduplication ───────────────────────────────────────────
   const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', effectiveBrokerageId, supabase)
@@ -430,6 +431,9 @@ async function enrichWithPeopleData(fields: {
   last_name:  string | null
   email:      string | null
   phone:      string | null
+  city?:      string | null
+  state?:     string | null
+  brokerageId?: string | null
 }): Promise<any> {
   const enrichmentResult = await skipTraceWithPeopleData({
     name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
@@ -437,26 +441,39 @@ async function enrichWithPeopleData(fields: {
     email: fields.email   || undefined,
   }).catch(() => ({ data: null }))
 
-  if (!enrichmentResult.data) {
-    return {
-      first_name: fields.first_name,
-      last_name:  fields.last_name,
-      email:      fields.email,
-      phone:      fields.phone,
-      enrichmentConfidence: 0.3,
-    }
+  const data = enrichmentResult.data
+  let base: BaseEnrichment & { phone_secondary?: string | null; peopleDataResult?: unknown } = data
+    ? {
+        first_name:           data.firstName   || fields.first_name,
+        last_name:            data.lastName    || fields.last_name,
+        email:                data.emails?.[0] || fields.email,
+        phone:                data.phones?.[0] || fields.phone,
+        phone_secondary:      data.phones?.[1] || null,
+        enrichmentConfidence: data.enrichmentConfidence ?? 0.5,
+        peopleDataResult:     data,
+      }
+    : {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email,
+        phone:      fields.phone,
+        enrichmentConfidence: 0.3,
+      }
+
+  // Cost-gated Perplexity gap-fill: only when skip-trace left a full-name lead
+  // without an email (high-value, identity-promising). No spend otherwise.
+  if (shouldGapFill(base) && base.first_name && base.last_name) {
+    const findings = await enrichViaPerplexity({
+      firstName: base.first_name,
+      lastName:  base.last_name,
+      city:      fields.city,
+      state:     fields.state,
+      brokerageId: fields.brokerageId ?? undefined,
+    })
+    base = { ...base, ...mergeEnrichment(base, findings) }
   }
 
-  const data = enrichmentResult.data
-  return {
-    first_name:           data.firstName   || fields.first_name,
-    last_name:            data.lastName    || fields.last_name,
-    email:                data.emails?.[0] || fields.email,
-    phone:                data.phones?.[0] || fields.phone,
-    phone_secondary:      data.phones?.[1] || null,
-    enrichmentConfidence: data.enrichmentConfidence ?? 0.5,
-    peopleDataResult:     data,
-  }
+  return base
 }
 
 // ─── Deduplication matching ───────────────────────────────────────────────────

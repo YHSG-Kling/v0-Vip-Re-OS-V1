@@ -82,45 +82,46 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   },
 
   // ── Zillow behavioral signal ──────────────────────────────────────────────────
-  // FSBO / by-owner listings scraped from Zillow (we filter to for-sale-by-owner,
-  // not agent inventory — a by-owner listing is a SELLER lead, not a property).
-  // The owner is resolved by skip-trace enrichment from the property address.
+  // Real-estate sites yield BOTH online behaviors: FSBO/by-owner listings
+  // (SELLER) and saved-search / favorited / watching activity (BUYER). Intent is
+  // set per record by the parser (parsePropertySearchResults vs
+  // parseBuyerSavedSearches); the owner/buyer is resolved by enrichment.
   zenrows_zillow: {
-    intentType:                'seller',
-    leadType:                  'seller',
-    motivationType:            'fsbo_seller',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
     behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 50,
-    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'expired_listing'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'expired_listing', 'saved_search', 'favorited', 'active_buyer'],
     dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Realtor.com FSBO / by-owner signal ───────────────────────────────────────
+  // ── Realtor.com — FSBO sellers + saved-search buyers ─────────────────────────
   zenrows_realtor: {
-    intentType:                'seller',
-    leadType:                  'seller',
-    motivationType:            'fsbo_seller',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
     behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 48,
-    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'saved_search', 'favorited', 'active_buyer'],
     dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Redfin / generic property portal — FSBO / by-owner only ──────────────────
+  // ── Redfin / generic property portal — FSBO sellers + saved-search buyers ────
   zenrows_homes: {
-    intentType:                'seller',
-    leadType:                  'seller',
-    motivationType:            'fsbo_seller',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
     behaviorType:              'fsbo_listing',
     scoreRange:                [35, 60],
     baseScore:                 45,
-    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'saved_search', 'favorited', 'active_buyer'],
     dampSignals:               ['agent_listed', 'rental'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,

@@ -21,10 +21,12 @@
 
 import {
   parsePropertySearchResults,
+  parseBuyerSavedSearches,
   parseCraigslistHtml,
   normalizeBatchDataRecord,
   buildPropertySearchUrl,
 } from "../lib/lead-pipeline/scraper-parsers"
+import { mergeEnrichment, shouldGapFill } from "../lib/lead-pipeline/enrichment-merge"
 import {
   isViableRecord,
   hasPromotionEligibleIdentity,
@@ -41,7 +43,7 @@ import {
   normalizeFacebookPost,
 } from "../lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
-import { parseTerritoryCourtRecords } from "../lib/osint-client"
+import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
 
 let passed = 0
@@ -237,9 +239,9 @@ function testIntentMapping() {
   // Each scraper source must resolve to the correct buyer/seller intent.
   // ZenRows listing sites = FSBO SELLER intent (we capture by-owner, not property).
   const cases: Array<[string, "buyer" | "seller" | "unknown"]> = [
-    ["zillow", "seller"],            // FSBO seller intent (aliased → zenrows_zillow)
-    ["realtor", "seller"],
-    ["redfin", "seller"],            // aliased → zenrows_homes
+    ["zillow", "unknown"],           // FSBO sellers + saved-search buyers (both)
+    ["realtor", "unknown"],
+    ["redfin", "unknown"],           // aliased → zenrows_homes
     ["batchdata_motivated", "seller"], // FSBO/divorce/probate/foreclosure distress
     ["craigslist_fsbo", "seller"],
     ["facebook_group", "unknown"],   // both buyer + seller posts (per-post detect)
@@ -256,7 +258,7 @@ function testIntentMapping() {
   check("alias zillow → zenrows_zillow", resolveSourceKey("zillow") === "zenrows_zillow")
   check("alias redfin → zenrows_homes", resolveSourceKey("redfin") === "zenrows_homes")
   check("alias nextdoor → nextdoor_intent", resolveSourceKey("nextdoor") === "nextdoor_intent")
-  check("listing-site motivation = fsbo_seller", getSourceSemantics("zillow").motivationType === "fsbo_seller")
+  check("listing-site motivation = real_estate_site_intent", getSourceSemantics("zillow").motivationType === "real_estate_site_intent")
 }
 
 // ── 10. Vendor routing contract ──────────────────────────────────────────────
@@ -372,6 +374,57 @@ function testOsint() {
   check("osint alias resolves", resolveSourceKey("osint") === "osint_signal")
 }
 
+// ── 14. Listing-site BUYER saved-search capture (ZenRows) ────────────────────
+function testBuyerSavedSearches() {
+  console.log("\n[Listing-site buyer saved-search parse]")
+  const html = `
+    <div class="saved-search" data-user="Jane Buyer" data-id="ss1">
+      <span class="search-criteria">3BR Tampa under 500k</span>
+    </div>
+    <div class="favorited-home" data-id="fav2">
+      <span class="member">Bob Shopper</span>
+      <span class="home-address">123 Bay St, Tampa FL</span>
+    </div>
+    <div class="saved-search" data-id="ss3"><span>no identity here</span></div>`
+  const records = parseBuyerSavedSearches(html, "zillow", { city: "Tampa", state: "FL" })
+  check("parses 2 buyer signals (identity-less dropped)", records.length === 2, `got ${records.length}`)
+  check("all buyer intent", records.every((r) => r.intentType === "buyer"))
+  check("behaviorType = saved_search", records[0]?.behaviorType === "saved_search")
+  const jane = records.find((r) => r.username === "Jane Buyer")
+  check("saved-search buyer handle captured", !!jane && jane.firstName === "Jane")
+  check("buyer records viable (handle/address anchor)", records.every(isViableRecord))
+}
+
+// ── 15. Perplexity enrichment gap-fill (pure merge) ──────────────────────────
+function testPerplexityEnrichment() {
+  console.log("\n[Perplexity enrichment — gap-fill merge]")
+  const base = { first_name: "Ann", last_name: "Lee", email: null, phone: "8135551234", enrichmentConfidence: 0.4 }
+  check("shouldGapFill: full name + no email → yes", shouldGapFill(base))
+  check("shouldGapFill: has email → no", !shouldGapFill({ ...base, email: "a@x.com" }))
+  const merged = mergeEnrichment(base, { email: "ann.lee@example.com", currentBrokerage: "Old Realty" })
+  check("fills missing email from Perplexity", merged.email === "ann.lee@example.com")
+  check("does not overwrite existing phone", merged.phone === "8135551234")
+  check("confidence nudged up after gap-fill", merged.enrichmentConfidence > base.enrichmentConfidence)
+  const noChange = mergeEnrichment({ ...base, email: "have@x.com" }, { email: "other@x.com" })
+  check("structured email takes precedence (no overwrite)", noChange.email === "have@x.com")
+  check("null findings → unchanged", mergeEnrichment(base, null).email === null)
+}
+
+// ── 16. OSINT buyer-intent record types ──────────────────────────────────────
+function testOsintBuyer() {
+  console.log("\n[OSINT buyer-intent record types]")
+  check("marriage → buyer", recordTypeIntent("marriage") === "buyer")
+  check("new_mover → buyer", recordTypeIntent("new_mover") === "buyer")
+  check("relocation → buyer", recordTypeIntent("relocation") === "buyer")
+  check("divorce → seller", recordTypeIntent("divorce") === "seller")
+  check("foreclosure → seller", recordTypeIntent("foreclosure") === "seller")
+  const buyerRec = normalizeCourtFiling(
+    { firstName: "New", lastName: "Couple", recordType: "marriage", county: "Hillsborough", caseNumber: null, date: null },
+    { city: "Tampa", state: "FL" },
+  )
+  check("OSINT marriage filing → buyer intent", buyerRec.intentType === "buyer")
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -388,6 +441,9 @@ async function main() {
   testSocialNormalizers()
   testSubscriptionGate()
   testOsint()
+  testBuyerSavedSearches()
+  testPerplexityEnrichment()
+  testOsintBuyer()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")

@@ -7,6 +7,7 @@ import { processRawRecord } from "@/lib/lead-pipeline"
 import {
   buildPropertySearchUrl,
   parsePropertySearchResults,
+  parseBuyerSavedSearches,
   normalizeBatchDataRecord,
 } from "@/lib/lead-pipeline/scraper-parsers"
 import {
@@ -192,22 +193,26 @@ export async function GET(request: Request) {
               sourceCostUsd += scraped.cost ?? 0
 
               if (scraped.success && scraped.html) {
-                // parsePropertySearchResults returns NormalizedScrapedRecord[] filtered by isViableRecord
-                const buyers = parsePropertySearchResults(scraped.html, site, market)
-                sourceItemsFound += buyers.length
+                // Same page yields BOTH online behaviors: FSBO sellers
+                // (parsePropertySearchResults) AND saved-search/favorited buyers
+                // (parseBuyerSavedSearches). Both are filtered by the viability gate.
+                const sellerRecords = parsePropertySearchResults(scraped.html, site, market)
+                const buyerRecords = parseBuyerSavedSearches(scraped.html, site, market)
+                const siteRecords = [...sellerRecords, ...buyerRecords]
+                sourceItemsFound += siteRecords.length
 
-                for (const buyer of buyers) {
+                for (const record of siteRecords) {
                   // Write raw record only — enrichment and promotion happen in pipeline-processor
                   const { inserted } = await insertRawRecord({
                     supabase,
-                    record:      buyer,
+                    record,
                     brokerageId: market.brokerage_id,
                     marketId:    market.id,
                     executionId: execRecord?.id ?? null,
                   })
                   if (inserted) { sourceLeadsCreated++; results.total_leads_created++ }
                 }
-                results.total_leads_found += buyers.length
+                results.total_leads_found += siteRecords.length
               }
             }
 

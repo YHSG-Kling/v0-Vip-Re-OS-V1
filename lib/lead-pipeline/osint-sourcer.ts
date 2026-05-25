@@ -6,7 +6,7 @@
 // raw stage; the owner (a missing contact + property address) is resolved by
 // PeopleData skip-trace enrichment downstream.
 
-import { OSINTClient, type CourtFiling } from "@/lib/osint-client"
+import { OSINTClient, recordTypeIntent, type CourtFiling } from "@/lib/osint-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 
 export interface OsintMarket {
@@ -15,8 +15,8 @@ export interface OsintMarket {
   county?: string | null
 }
 
-// Motivation score by distress type — foreclosure/divorce/probate are the
-// strongest sell signals; eviction/tax-lien slightly lower but still motivated.
+// Motivation score by record type — distress (seller) signals score highest;
+// buyer life-events (marriage/new-mover/relocation) are solid but lower.
 const MOTIVATION_BY_TYPE: Record<string, number> = {
   foreclosure: 85,
   pre_foreclosure: 82,
@@ -26,6 +26,9 @@ const MOTIVATION_BY_TYPE: Record<string, number> = {
   tax_lien: 72,
   bankruptcy: 70,
   eviction: 68,
+  marriage: 60,
+  new_mover: 58,
+  relocation: 62,
 }
 
 /** Pure: court filing → canonical seller raw record. */
@@ -38,7 +41,8 @@ export function normalizeCourtFiling(filing: CourtFiling, market: OsintMarket): 
     sourceRecordId: `osint-${slug || Date.now()}`,
     source: "osint_signal",
     behaviorType: "osint_signal",
-    intentType: "seller", // distress filings are motivated-seller signals
+    // Distress filings → seller; marriage / new-mover / relocation → buyer.
+    intentType: recordTypeIntent(filing.recordType),
     intentSignals: [filing.recordType],
     firstName: filing.firstName,
     lastName: filing.lastName,

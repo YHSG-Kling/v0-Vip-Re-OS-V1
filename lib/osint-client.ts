@@ -27,6 +27,24 @@ export const DISTRESS_RECORD_TYPES = [
 ] as const
 
 /**
+ * Public-record filing types that signal a BUYER. Marriage licenses → new
+ * household formation (first-home buyers); new-mover / relocation records →
+ * inbound buyers. OSINT captures both sides of online + public-records behavior.
+ */
+export const BUYER_RECORD_TYPES = [
+  "marriage",
+  "new_mover",
+  "relocation",
+] as const
+
+/** Buyer vs seller classification for a record type. */
+export function recordTypeIntent(recordType: string): "buyer" | "seller" {
+  return (BUYER_RECORD_TYPES as readonly string[]).includes(recordType) ? "buyer" : "seller"
+}
+
+export const ALL_RECORD_TYPES = [...DISTRESS_RECORD_TYPES, ...BUYER_RECORD_TYPES] as const
+
+/**
  * Pure parser: extract individual filing rows (party name + type + county/date)
  * from a court-records search results page. Defensive across common result-row
  * structures; returns only rows with at least a party name. No network.
@@ -339,7 +357,7 @@ export class OSINTClient {
     recordTypes?: readonly string[]
     limitPerType?: number
   }): Promise<{ filings: CourtFiling[]; cost: number }> {
-    const types = params.recordTypes ?? DISTRESS_RECORD_TYPES
+    const types = params.recordTypes ?? ALL_RECORD_TYPES
     const filings: CourtFiling[] = []
     let cost = 0
 
