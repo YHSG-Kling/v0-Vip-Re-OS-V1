@@ -5,6 +5,9 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateAIText } from "@/lib/ai"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
+import { getRentcastMarketStats } from "@/lib/property/rentcast"
+import { computeLivabilityScore, isNeighborhoodReportAllowed } from "@/lib/property/neighborhood-scoring"
+import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
 
 // Types
 export interface NeighborhoodReport {
@@ -145,6 +148,17 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
     return { success: false, error: "Listing not found" }
   }
 
+  // Tier gate — neighborhood intelligence is a premium feature on the most
+  // advanced plans (brokerage / multi_location).
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("plan_tier")
+    .eq("id", brokerageId)
+    .single()
+  if (!isNeighborhoodReportAllowed(brokerage?.plan_tier)) {
+    return { success: false, error: "Neighborhood intelligence requires the Brokerage or Multi-Location plan." }
+  }
+
   // Check if user can refresh (broker/admin or if report is expired)
   const { data: existingReport } = await supabase
     .from("neighborhood_reports")
@@ -178,54 +192,38 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
 
   let reportData: Partial<NeighborhoodReport> = {}
 
-  // Seed report with OSINT data where available
+  // Seed report with OSINT data where available. walk_score is computed
+  // deterministically from real OSM amenity proximity (not AI-guessed).
   if (osint.dataSource !== "none") {
+    const livability = computeLivabilityScore(osint)
     reportData.amenities_json = osint.amenities
     reportData.data_source = osint.dataSource
+    reportData.walk_score = livability.score
     if (osint.censusMedianHomeValue) {
       reportData.median_home_price = osint.censusMedianHomeValue
     }
   }
 
-  // Step 2: Try HouseCanary API if key is set (enriches / overrides OSINT data)
-  const houseCanaryKey = process.env.HOUSECANARY_API_KEY
+  // Step 2: RentCast market stats (chosen property-data provider, replacing the
+  // retired HouseCanary integration). Enriches the report with real zip-level
+  // median price / days-on-market / appreciation trend.
+  try {
+    const rc = await getRentcastMarketStats({ brokerageId: brokerageId!, zipCode: listing.zip })
+    if (rc) {
+      reportData.median_home_price = rc.median_sale_price || reportData.median_home_price
+      reportData.avg_days_on_market = rc.avg_days_on_market || null
+      reportData.market_trend =
+        rc.price_trend_yoy_pct > 2 ? "appreciating" : rc.price_trend_yoy_pct < -2 ? "depreciating" : "stable"
+      reportData.data_source = reportData.data_source ? `${reportData.data_source}+rentcast` : "rentcast"
 
-  if (houseCanaryKey) {
-    try {
-      // Call HouseCanary API for real data
-      const address = encodeURIComponent(`${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}`)
-      const response = await fetch(`https://api.housecanary.com/v2/property/neighborhood?address=${address}`, {
-        headers: {
-          Authorization: `Bearer ${houseCanaryKey}`,
-        },
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        reportData = {
-          median_home_price: data.median_home_price,
-          price_per_sqft: data.price_per_sqft,
-          avg_days_on_market: data.avg_days_on_market,
-          list_to_sale_ratio: data.list_to_sale_ratio,
-          school_ratings: data.schools,
-          walk_score: data.walk_score,
-          transit_score: data.transit_score,
-          crime_index: data.crime_index,
-          amenities_json: data.amenities,
-          market_trend: data.market_trend,
-          data_source: "HouseCanary",
-        }
-
-        // Update data source sync time
-        await supabase
-          .from("neighborhood_data_sources")
-          .update({ last_synced_at: new Date().toISOString() })
-          .eq("brokerage_id", brokerageId)
-          .eq("source_name", "HouseCanary")
-      }
-    } catch (err) {
-      console.error("HouseCanary API error:", err)
+      await supabase
+        .from("neighborhood_data_sources")
+        .update({ last_synced_at: new Date().toISOString() })
+        .eq("brokerage_id", brokerageId)
+        .eq("source_name", "RentCast")
     }
+  } catch (err) {
+    console.error("RentCast market-stats error:", err)
   }
 
   // If HouseCanary returned no market stats, ask AI to fill in the numeric fields.
@@ -297,7 +295,10 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
       maxTokens: 500,
       feature: "neighborhood_report",
     })
-    aiSummary = summaryText
+    // Fair-Housing guard: reject any summary with high-severity steering language
+    // (protected-class references, "good/bad area", group targeting) — never persist it.
+    const violations = detectFairHousingViolations(summaryText)
+    aiSummary = violations.some((v) => v.severity === "high") ? "" : summaryText
   } catch (err) {
     console.error("[v0] AI summary generation error:", err)
   }

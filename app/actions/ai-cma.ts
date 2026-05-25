@@ -48,7 +48,7 @@ interface ComparableProperty {
   distance: number
   adjustedValue: number
   adjustments: PropertyAdjustment[]
-  source?: "BatchData" | "HouseCanary"
+  source?: "BatchData" | "RentCast"
 }
 
 interface PropertyAdjustment {
@@ -99,7 +99,7 @@ export async function generateAICMA(params: CMAParams) {
   }
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, brokerage_id")
     .eq("id", params.agentId)
     .eq("user_id", user.id)
     .maybeSingle()
@@ -109,7 +109,7 @@ export async function generateAICMA(params: CMAParams) {
 
   try {
     // 1. Fetch comparable properties from database/MLS
-    const comparables = await fetchComparableProperties(params)
+    const comparables = await fetchComparableProperties(params, agentRow.brokerage_id)
 
     // 2. Get market trends data
     const marketTrends = await analyzeMarketTrends(params, supabase)
@@ -175,15 +175,16 @@ export async function generateAICMA(params: CMAParams) {
 /**
  * Fetch comparable properties — priority chain:
  *   1. BatchData /comparable-sales (real MLS comps via API key)
- *   2. HouseCanary /property/sales_history (if BatchData unconfigured)
+ *   2. RentCast /avm/value comparables (chosen comps provider; if BatchData unconfigured)
  *   3. AI-estimated stubs clearly labelled "AI-estimated" (never passed off as real sold data)
  * Returns empty array when neither API is configured and AI flag is off.
  */
 async function fetchComparableProperties(
-  params: CMAParams
+  params: CMAParams,
+  brokerageId: string | null,
 ): Promise<ComparableProperty[]> {
   const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
-  const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
+  const { getRentcastComps } = await import("@/lib/property/rentcast")
 
   // ── 1. BatchData ─────────────────────────────────────────────────────────
   const bdComps = await fetchComparableSales({
@@ -225,18 +226,13 @@ async function fetchComparableProperties(
     })
   }
 
-  // ── 2. HouseCanary ───────────────────────────────────────────────────────
-  const hcComps = await fetchHouseCanaryComps({
-    address: params.propertyAddress,
-    zipCode: params.propertyZip,
-    bedrooms: params.bedrooms,
-    squareFeet: params.squareFeet,
-    maxAgeDays: 180,
-    limit: 10,
-  })
+  // ── 2. RentCast (chosen comps provider) ──────────────────────────────────
+  const rcComps = brokerageId
+    ? await getRentcastComps({ brokerageId, address: `${params.propertyAddress}, ${params.propertyCity}, ${params.propertyState} ${params.propertyZip}`, limit: 10 })
+    : []
 
-  if (hcComps.length > 0) {
-    return hcComps.map((c) => {
+  if (rcComps.length > 0) {
+    return rcComps.map((c) => {
       const adjustments = calculatePropertyAdjustments(params, {
         square_feet: c.square_feet,
         bedrooms: c.bedrooms,
@@ -256,7 +252,7 @@ async function fetchComparableProperties(
         distance: c.distance_miles,
         adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
         adjustments,
-        source: "HouseCanary" as const,
+        source: "RentCast" as const,
       }
     })
   }

@@ -11,6 +11,44 @@ export interface RentcastMarketStats {
   price_trend_yoy_pct: number
 }
 
+/** Normalized comparable sale — matches the shape the CMA pipeline consumes. */
+export interface RentcastComp {
+  address: string
+  list_price: number
+  sale_price: number
+  days_on_market: number
+  square_feet: number
+  price_per_sqft: number
+  bedrooms: number
+  bathrooms: number
+  year_built: number | null
+  distance_miles: number
+}
+
+/** Pure: RentCast /avm/value `comparables[]` → normalized comps (drops entries with no price). */
+export function normalizeRentcastComps(comparables: any[] | null | undefined): RentcastComp[] {
+  if (!Array.isArray(comparables)) return []
+  const out: RentcastComp[] = []
+  for (const c of comparables) {
+    const price = Number(c?.price ?? 0)
+    if (!price || price <= 0) continue
+    const sqft = Number(c?.squareFootage ?? 0)
+    out.push({
+      address: String(c?.formattedAddress ?? c?.address ?? "Unknown"),
+      list_price: price,
+      sale_price: price,
+      days_on_market: Math.round(Number(c?.daysOnMarket ?? 0)),
+      square_feet: Math.round(sqft),
+      price_per_sqft: sqft > 0 ? Math.round(price / sqft) : 0,
+      bedrooms: Math.round(Number(c?.bedrooms ?? 0)),
+      bathrooms: Number(c?.bathrooms ?? 0),
+      year_built: c?.yearBuilt != null ? Math.round(Number(c.yearBuilt)) : null,
+      distance_miles: Math.round(Number(c?.distance ?? 0) * 100) / 100,
+    })
+  }
+  return out
+}
+
 /** Pure: a RentCast /markets saleData object → normalized market stats (or null). */
 export function normalizeRentcastMarketStats(saleData: Record<string, any> | null | undefined): RentcastMarketStats | null {
   if (!saleData || typeof saleData !== "object") return null

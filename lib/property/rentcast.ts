@@ -15,9 +15,14 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { normalizeRentcastMarketStats, type RentcastMarketStats } from "./rentcast-normalize"
+import {
+  normalizeRentcastMarketStats,
+  normalizeRentcastComps,
+  type RentcastMarketStats,
+  type RentcastComp,
+} from "./rentcast-normalize"
 
-export { normalizeRentcastMarketStats, type RentcastMarketStats }
+export { normalizeRentcastMarketStats, normalizeRentcastComps, type RentcastMarketStats, type RentcastComp }
 
 const RENTCAST_BASE = "https://api.rentcast.io/v1"
 
@@ -310,5 +315,39 @@ export async function getRentcastMarketStats(params: {
     return normalizeRentcastMarketStats(data?.saleData)
   } catch {
     return null
+  }
+}
+
+/**
+ * Fetch comparable sales for an address via RentCast's AVM endpoint (returns a
+ * `comparables[]` array). This is the chosen comps source for CMA generation,
+ * replacing the retired HouseCanary integration. Never throws.
+ */
+export async function getRentcastComps(params: {
+  brokerageId: string
+  address: string
+  limit?: number
+}): Promise<RentcastComp[]> {
+  const apiKey = await getApiKey(params.brokerageId)
+  if (!apiKey || !params.address) return []
+
+  try {
+    const qs = new URLSearchParams({ address: params.address, compCount: String(params.limit ?? 10) })
+    const res = await fetch(`${RENTCAST_BASE}/avm/value?${qs.toString()}`, {
+      headers: { "X-Api-Key": apiKey, Accept: "application/json" },
+      cache: "no-store",
+    })
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "comps_lookup",
+      cost: COST_PER_AVM_LOOKUP,
+      endpoint: "/avm/value(comps)",
+      metadata: { ok: res.ok, status: res.status },
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    return normalizeRentcastComps(data?.comparables)
+  } catch {
+    return []
   }
 }
