@@ -29,6 +29,7 @@ type ProcessingStatus =
   | 'insufficient_contact_data'
   | 'insufficient_identity'
   | 'insufficient_identity_for_promotion'
+  | 'unassigned_no_market'
   | 'promoted'
   | 'error'
 
@@ -85,7 +86,7 @@ async function setStatus(
     .eq('id', rawRecordId)
 }
 
-export async function processRawRecord(rawRecordId: string, brokerageId: string): Promise<PipelineResult> {
+export async function processRawRecord(rawRecordId: string, brokerageId?: string | null): Promise<PipelineResult> {
   const supabase = await createClient()
 
   // ── STEP 3: Read from raw_scraped_leads (not batchdata_motivated_sellers_raw) ──
@@ -118,14 +119,18 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
+  // Raw records are platform-owned (brokerage_id NULL) until promotion; the
+  // owning brokerage is resolved here from the scraped market's territory.
+  let marketBrokerageId: string | null = null
   if (rec.market_id) {
     const { data: market } = await supabase
       .from('lead_scraping_markets')
-      .select('city, state, zip_codes')
+      .select('city, state, zip_codes, brokerage_id')
       .eq('id', rec.market_id)
       .single()
 
     if (market) {
+      marketBrokerageId = (market as { brokerage_id?: string | null }).brokerage_id ?? null
       const recordGeo = {
         city:  rec.normalized_preview?.city  ?? (rec.raw_data?.city  as string | null) ?? null,
         state: rec.normalized_preview?.state ?? (rec.raw_data?.state as string | null) ?? null,
@@ -152,6 +157,22 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
           stage:   'territory_gate',
         }
       }
+    }
+  }
+
+  // ── Resolve the owning brokerage ──────────────────────────────────────────
+  // Prefer an explicit brokerageId (manual broker-triggered scrapes) and fall
+  // back to the brokerage that owns the scraped market (scheduled platform
+  // scraping leaves raw_scraped_leads.brokerage_id NULL). Without either, the
+  // record cannot be promoted to a tenant-scoped lead.
+  const effectiveBrokerageId = brokerageId ?? marketBrokerageId
+  if (!effectiveBrokerageId) {
+    await setStatus(supabase, rawRecordId, 'unassigned_no_market')
+    return {
+      success: false,
+      action: 'skipped',
+      reason: 'Cannot resolve owning brokerage (no brokerageId passed and no market territory)',
+      stage: 'brokerage_resolution',
     }
   }
 
@@ -195,7 +216,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
   const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
-  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', brokerageId, supabase)
+  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase)
 
   if (preEnrichDuplicate) {
     await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
@@ -225,7 +246,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone })
 
   // ── Post-enrichment deduplication ───────────────────────────────────────────
-  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', brokerageId, supabase)
+  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', effectiveBrokerageId, supabase)
 
   if (postEnrichDuplicate) {
     const oldConfidence = postEnrichDuplicate.enrichment_confidence ?? 0
@@ -326,7 +347,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   const { data: newLead, error: createError } = await supabase
     .from('leads')
     .insert({
-      brokerage_id:          brokerageId,
+      brokerage_id:          effectiveBrokerageId,
       first_name:            enriched.first_name  ?? firstName,
       last_name:             enriched.last_name   ?? lastName,
       email:                 enriched.email,
@@ -389,7 +410,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     entity_type:  'raw_scraped_lead',
     entity_id:    rawRecordId,
     event_type:   KernelEvent.RAW_RECORD_PROMOTED,
-    brokerage_id: brokerageId,
+    brokerage_id: effectiveBrokerageId,
     metadata:     { lead_id: newLead.id, source: rec.source },
   }).then(() => {}, () => {})
 

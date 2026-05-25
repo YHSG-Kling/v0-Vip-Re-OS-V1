@@ -616,14 +616,16 @@ export async function GET(request: Request) {
     // (the pipeline is retry-safe) and are picked up on the next run.
     const { data: pendingRaws } = await supabase
       .from("raw_scraped_leads")
-      .select("id, brokerage_id")
+      .select("id")
       .eq("processing_status", "pending")
       .order("created_at", { ascending: true })
       .limit(100)
 
     for (const raw of pendingRaws ?? []) {
       try {
-        const promo = await processRawRecord(raw.id, raw.brokerage_id)
+        // brokerage_id is NULL on platform-scraped raw records; processRawRecord
+        // resolves the owning brokerage from the record's market_id territory.
+        const promo = await processRawRecord(raw.id)
         if (promo.action === "created") results.leads_promoted++
       } catch (err) {
         results.errors.push(`Promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
@@ -726,7 +728,10 @@ async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserte
   const { data, error } = await params.supabase
     .from('raw_scraped_leads')
     .insert({
-      brokerage_id:         params.brokerageId,
+      // Platform-owned until promotion: leave brokerage_id NULL. The owning
+      // brokerage is resolved from market_id (the active-subscriber territory
+      // this record was scraped for) when it passes the promotion gate.
+      brokerage_id:         null,
       market_id:            params.marketId,
       source:               params.record.source,
       source_record_id:     params.record.sourceRecordId,

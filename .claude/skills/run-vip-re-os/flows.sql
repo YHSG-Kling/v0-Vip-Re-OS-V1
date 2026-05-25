@@ -319,6 +319,39 @@ DELETE FROM transactions WHERE id='e0000000-0000-0000-0000-0000000cb002';
 DELETE FROM contacts WHERE email LIKE '%e2erep@example.com';
 
 -- ============================================================================
+-- FLOW 9 — PLATFORM-OWNED RAW LEADS: scraped without brokerage_id, brokerage
+-- resolved from the active-subscriber territory (market) at promotion.
+-- Raw records carry market_id but NO brokerage_id (RLS hides them from every
+-- brokerage role; only platform_admin + ai_isa_system read raw_scraped_leads).
+-- processRawRecord derives the owning brokerage from market.brokerage_id and
+-- stamps it on the promoted lead. Expect: lead assigned to the territory owner.
+-- ============================================================================
+INSERT INTO lead_scraping_markets (id, brokerage_id, name, city, state, is_active)
+VALUES ('e0000000-0000-0000-0000-0000000ad001','b0000000-0000-0000-0000-000000000001','E2E Platform Market','Tampa','FL',true);
+INSERT INTO raw_scraped_leads (id, brokerage_id, market_id, source, raw_data, normalized_preview, processing_status)
+VALUES ('e0000000-0000-0000-0000-0000000ad002', NULL, 'e0000000-0000-0000-0000-0000000ad001','E2E_PLATFORM',
+  '{"first_name":"Plat","last_name":"Owned","email":"plat.owned@example.com","city":"Tampa","state":"FL"}'::jsonb,
+  '{"firstName":"Plat","lastName":"Owned","email":"plat.owned@example.com","city":"Tampa","state":"FL"}'::jsonb,
+  'pending');
+-- Promote: brokerage derived from the market territory (effectiveBrokerageId)
+INSERT INTO leads (id, brokerage_id, raw_record_id, lifecycle_state, source, first_name, last_name, email, ai_isa_owner)
+SELECT 'e0000000-0000-0000-0000-0000000ad003', m.brokerage_id, r.id, 'unconsented', 'E2E_PLATFORM', 'Plat','Owned','plat.owned@example.com', true
+FROM raw_scraped_leads r JOIN lead_scraping_markets m ON m.id = r.market_id
+WHERE r.id = 'e0000000-0000-0000-0000-0000000ad002';
+UPDATE raw_scraped_leads SET lead_id='e0000000-0000-0000-0000-0000000ad003', processing_status='promoted' WHERE id='e0000000-0000-0000-0000-0000000ad002';
+-- VERIFY (expect: raw brokerage NULL, lead assigned to territory owner, unconsented)
+SELECT r.brokerage_id IS NULL AS raw_platform_owned,
+       l.brokerage_id = 'b0000000-0000-0000-0000-000000000001' AS lead_to_territory_owner,
+       l.lifecycle_state
+FROM raw_scraped_leads r JOIN leads l ON l.id = r.lead_id
+WHERE r.id = 'e0000000-0000-0000-0000-0000000ad002';
+-- CLEANUP
+UPDATE raw_scraped_leads SET lead_id=NULL WHERE id='e0000000-0000-0000-0000-0000000ad002';
+DELETE FROM leads WHERE id='e0000000-0000-0000-0000-0000000ad003';
+DELETE FROM raw_scraped_leads WHERE id='e0000000-0000-0000-0000-0000000ad002';
+DELETE FROM lead_scraping_markets WHERE id='e0000000-0000-0000-0000-0000000ad001';
+
+-- ============================================================================
 -- FINAL CLEANUP GUARD — confirm zero leftover test rows (expect all 0)
 -- ============================================================================
 SELECT
