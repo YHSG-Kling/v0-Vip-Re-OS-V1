@@ -34,6 +34,10 @@
       "schedule": "0 */6 * * *"
     },
     {
+      "path": "/api/cron/actor-health",
+      "schedule": "0 6 * * *"
+    },
+    {
       "path": "/api/cron/contact-enrichment",
       "schedule": "0 */6 * * *"
     },

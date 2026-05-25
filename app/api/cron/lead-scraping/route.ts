@@ -23,6 +23,7 @@ import {
 } from "@/lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
+import { sourceRentcastRentals, sourceRentcastExpired } from "@/lib/lead-pipeline/rentcast-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -507,11 +508,24 @@ export async function GET(request: Request) {
             await insertSocial(records)
           }
 
-          // ── Rental listings (Apify Craigslist apa) — landlord/investor sellers ─
+          // ── Rental listings — RentCast (structured) preferred, Craigslist fallback ─
           if (enabledSources.has("rental") && market.city) {
-            const { records, cost } = await sourceRentalListings(market.city, socialMarket)
-            sourceCostUsd += cost
-            await insertSocial(records)
+            const rc = await sourceRentcastRentals(market.brokerage_id, { city: market.city, state: market.state, zip: market.zip_codes?.[0] ?? null })
+            if (rc.ok && rc.records.length > 0) {
+              await insertSocial(rc.records)
+            } else {
+              // RentCast unavailable/empty → fall back to Apify Craigslist 'apa'.
+              const { records, cost } = await sourceRentalListings(market.city, socialMarket)
+              sourceCostUsd += cost
+              await insertSocial(records)
+            }
+          }
+
+          // ── Expired / off-market listings — RentCast (structured, status=Inactive) ─
+          if (enabledSources.has("expired_listing") && market.city) {
+            const rc = await sourceRentcastExpired(market.brokerage_id, { city: market.city, state: market.state, zip: market.zip_codes?.[0] ?? null })
+            if (rc.ok) await insertSocial(rc.records)
+            // (ZenRows off-market detection on the property page is the scraping fallback.)
           }
 
           // ── LinkedIn relocation posts (Apify) — inbound relocating buyers ──────

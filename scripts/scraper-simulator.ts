@@ -48,6 +48,8 @@ import {
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
+import { ACTOR_REGISTRY, pickActors, runApifyTask } from "../lib/external/apify-actors"
+import { rentcastToRecord } from "../lib/lead-pipeline/rentcast-sourcer"
 
 let passed = 0
 let failed = 0
@@ -468,6 +470,58 @@ function testOsintBuyer() {
   check("OSINT marriage filing → buyer intent", buyerRec.intentType === "buyer")
 }
 
+// ── 18. Apify actor resilience (fallback chain + health) ─────────────────────
+async function testActorResilience() {
+  console.log("\n[Apify actor resilience — fallback chain]")
+  // Every task has a primary + at least one fallback (no single point of failure).
+  for (const task of Object.keys(ACTOR_REGISTRY) as Array<keyof typeof ACTOR_REGISTRY>) {
+    check(`task "${task}" has >=2 candidate actors`, ACTOR_REGISTRY[task].length >= 2, `${ACTOR_REGISTRY[task].length}`)
+  }
+  // Health filtering: a dead primary is dropped; order preserved.
+  const reddit = ACTOR_REGISTRY.reddit
+  const picked = pickActors("reddit", { [reddit[0]]: false })
+  check("pickActors drops dead primary", !picked.includes(reddit[0]) && picked[0] === reddit[1])
+  check("pickActors keeps all when no health", pickActors("reddit").length === reddit.length)
+  check("pickActors falls back to primary if all dead", pickActors("reddit", Object.fromEntries(reddit.map((a) => [a, false])))[0] === reddit[0])
+
+  // Runtime fallback: first actor errors (gone), second succeeds.
+  let calls: string[] = []
+  const runner = async (actorId: string) => {
+    calls.push(actorId)
+    if (actorId === reddit[0]) throw new Error("Actor not found (404)")
+    return { data: [{ id: "ok" }], cost: 0.5 }
+  }
+  const r = await runApifyTask("reddit", { x: 1 }, { runner })
+  check("runApifyTask skips dead actor → uses fallback", r.actorUsed === reddit[1], String(r.actorUsed))
+  check("runApifyTask returns the working actor's data", r.data.length === 1)
+  check("runApifyTask records tried actors", r.triedActors.length === 2)
+
+  // All actors down → graceful empty (never throws).
+  const allFail = async () => { throw new Error("down") }
+  const r2 = await runApifyTask("facebook", {}, { runner: allFail })
+  check("all actors down → empty + actorUsed null (no throw)", r2.actorUsed === null && r2.data.length === 0)
+}
+
+// ── 19. RentCast structured source (rentals + expired) ───────────────────────
+function testRentcast() {
+  console.log("\n[RentCast structured source]")
+  const rental = rentcastToRecord(
+    { externalId: "rc1", address: "10 Rent Rd", city: "Tampa", state: "FL", zip: "33601", price: 2200, bedrooms: 3, bathrooms: 2, squareFeet: 1500, yearBuilt: 1990, propertyType: "SFR", daysOnMarket: 120, status: "Active", photoUrl: null, source: "rentcast" },
+    "rental_listing",
+  )
+  check("rental → seller + rental_listing", rental.intentType === "seller" && rental.source === "rental_listing")
+  check("rental aged (DOM>=90) → vacant signal", rental.intentSignals?.includes("vacant"))
+  check("rental anchored on address", rental.propertyAddress === "10 Rent Rd" && isViableRecord(rental))
+
+  const expired = rentcastToRecord(
+    { externalId: "rc2", address: "20 Stale Ave", city: "Tampa", state: "FL", zip: null, price: 400000, bedrooms: 4, bathrooms: 3, squareFeet: 2200, yearBuilt: 2001, propertyType: "SFR", daysOnMarket: 200, status: "Inactive", photoUrl: null, source: "rentcast" },
+    "expired_listing",
+  )
+  check("expired → seller + expired_listing", expired.intentType === "seller" && expired.source === "expired_listing")
+  check("expired motivationScore high (>=70)", (expired.motivationScore ?? 0) >= 70)
+  check("expired off_market signal", expired.intentSignals?.includes("off_market"))
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -488,6 +542,8 @@ async function main() {
   testPerplexityEnrichment()
   testOsintBuyer()
   testNewSources()
+  await testActorResilience()
+  testRentcast()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")

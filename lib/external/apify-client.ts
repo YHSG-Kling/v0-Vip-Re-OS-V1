@@ -1,3 +1,5 @@
+import { runApifyTask } from './apify-actors'
+
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
 export class ApifyClient {
   async scrapeZillow(location: string, filters?: { minPrice?: number; maxPrice?: number }) {
@@ -91,7 +93,7 @@ export async function scrapeFacebookGroupPosts(params: {
   posts: any[]
   cost: number
 }> {
-  const result = await runApifyActor('apify/facebook-pages-scraper', {
+  const result = await runApifyTask('facebook', {
     startUrls: [{ url: params.groupUrl }],
     maxPosts: params.limit || 100,
     searchKeywords: params.keywords,
@@ -111,7 +113,7 @@ export async function scrapeRedditPosts(params: {
   posts: any[]
   cost: number
 }> {
-  const result = await runApifyActor('trudax/reddit-scraper', {
+  const result = await runApifyTask('reddit', {
     subreddits: params.subreddits,
     searchTerms: params.keywords,
     maxPosts: params.limit || 100,
@@ -128,7 +130,7 @@ export async function scrapeInstagramPosts(params: {
   searchTerms?: string[]
   limit?: number
 }): Promise<{ posts: any[]; cost: number }> {
-  const result = await runApifyActor('apify/instagram-scraper', {
+  const result = await runApifyTask('instagram', {
     search: (params.searchTerms ?? params.hashtags ?? []).join(' '),
     searchType: 'hashtag',
     resultsLimit: params.limit || 100,
@@ -144,7 +146,7 @@ export async function scrapeCraigslistPosts(params: {
   section?: string
 }): Promise<{ posts: any[]; cost: number }> {
   const section = params.section || 'rea'
-  const result = await runApifyActor('epctex/craigslist-scraper', {
+  const result = await runApifyTask('craigslist', {
     startUrls: [
       { url: `https://${params.city.toLowerCase().replace(/ /g, '')}.craigslist.org/search/${section}?query=${encodeURIComponent(params.query ?? '')}` },
     ],
@@ -158,7 +160,7 @@ export async function scrapeLinkedInPosts(params: {
   location?: string
   limit?: number
 }): Promise<{ posts: any[]; cost: number }> {
-  const result = await runApifyActor('apimaestro/linkedin-posts-search-scraper', {
+  const result = await runApifyTask('linkedin', {
     keywords: params.keywords.join(' '),
     location: params.location,
     maxItems: params.limit || 50,
@@ -170,7 +172,7 @@ export async function scrapeGoogleSearchResults(params: {
   queries: string[]
   resultsPerQuery?: number
 }): Promise<{ results: any[]; cost: number }> {
-  const result = await runApifyActor('apify/google-search-scraper', {
+  const result = await runApifyTask('google', {
     queries: params.queries.join('\n'),
     resultsPerPage: params.resultsPerQuery || 10,
     maxPagesPerQuery: 1,

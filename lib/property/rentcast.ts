@@ -55,6 +55,8 @@ export interface RentcastSearchFilters {
   priceMax?: number
   propertyType?: string
   limit?: number
+  /** Listing status filter (RentCast): 'Active' (default) | 'Inactive' (off-market/expired). */
+  status?: string
 }
 
 export interface RentcastListing {
@@ -117,7 +119,7 @@ export async function searchRentcastSaleListings(params: {
   if (f.bedroomsMin != null) qs.set("bedrooms", String(f.bedroomsMin))
   if (f.bathroomsMin != null) qs.set("bathrooms", String(f.bathroomsMin))
   if (f.propertyType) qs.set("propertyType", f.propertyType)
-  qs.set("status", "Active")
+  qs.set("status", f.status ?? "Active")
   qs.set("limit", String(f.limit ?? 30))
 
   try {
