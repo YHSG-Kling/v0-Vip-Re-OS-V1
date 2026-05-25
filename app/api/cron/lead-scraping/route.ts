@@ -14,6 +14,7 @@ import {
   sourceFacebook,
   sourceInstagram,
   sourceCraigslist,
+  sourceCraigslistWanted,
   sourceGoogle,
 } from "@/lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
@@ -467,13 +468,17 @@ export async function GET(request: Request) {
             await insertSocial(records)
           }
 
-          // ── Craigslist FSBO (Apify) ──────────────────────────────────────────
+          // ── Craigslist (Apify) — for-sale (seller FSBO) + housing-wanted (buyer) ─
           if (enabledSources.has("craigslist") && keywordsBySource["craigslist"] && market.city) {
-            const { records, cost } = await sourceCraigslist(
+            const forSale = await sourceCraigslist(
               market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
             )
-            sourceCostUsd += cost
-            await insertSocial(records)
+            sourceCostUsd += forSale.cost
+            await insertSocial(forSale.records)
+            // Buyer intent: "housing wanted" / ISO posts.
+            const wanted = await sourceCraigslistWanted(market.city, socialMarket)
+            sourceCostUsd += wanted.cost
+            await insertSocial(wanted.records)
           }
 
           // ── Google phrase intent (Apify) — buyer + seller searches ───────────

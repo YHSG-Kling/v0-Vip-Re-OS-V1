@@ -34,6 +34,7 @@ import {
 import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR } from "../lib/lead-pipeline/source-intent-map"
 import {
   detectIntent,
+  normalizeRedditPost,
   normalizeInstagramPost,
   normalizeGoogleResult,
   normalizeCraigslistItem,
@@ -241,8 +242,8 @@ function testIntentMapping() {
     ["redfin", "seller"],            // aliased → zenrows_homes
     ["batchdata_motivated", "seller"], // FSBO/divorce/probate/foreclosure distress
     ["craigslist_fsbo", "seller"],
-    ["facebook_group", "seller"],
-    ["reddit_intent", "buyer"],      // buyer research/intent posts
+    ["facebook_group", "unknown"],   // both buyer + seller posts (per-post detect)
+    ["reddit_intent", "unknown"],    // both buyer + seller posts (per-post detect)
     ["instagram", "unknown"],        // both buyer + seller (aliased → instagram_intent)
     ["nextdoor", "unknown"],         // buyer-or-seller until enrichment
     ["google_phrase_intent", "unknown"], // buyers search homes + sellers search agents
@@ -304,6 +305,17 @@ function testSocialNormalizers() {
 
   const fb = normalizeFacebookPost({ id: "fb2", text: "looking to buy my first home", authorName: "Sam Buyer" }, { city: "Tampa", state: "FL" })
   check("FB buyer post → buyer intent", fb.intentType === "buyer")
+  const fbSell = normalizeFacebookPost({ id: "fb3", text: "thinking of selling my home soon", authorName: "Pat Seller" }, { city: "Tampa", state: "FL" })
+  check("FB seller post → seller intent", fbSell.intentType === "seller")
+
+  // Buyer-intent coverage on every social source (the mandate).
+  const rdBuy = normalizeRedditPost({ id: "r1", title: "Looking to buy a first home in Tampa", author: "buyer1" }, { city: "Tampa", state: "FL" })
+  check("Reddit buyer post → buyer intent", rdBuy.intentType === "buyer")
+  const rdSell = normalizeRedditPost({ id: "r2", title: "Selling my home FSBO", author: "seller1" }, { city: "Tampa", state: "FL" })
+  check("Reddit seller post → seller intent", rdSell.intentType === "seller")
+  const clWanted = normalizeCraigslistItem({ id: "clw", title: "ISO / wanted to buy a 3BR house", email: "iso@example.com" }, { city: "Tampa", state: "FL" })
+  check("Craigslist wanted/ISO → buyer intent", clWanted.intentType === "buyer")
+  check("Craigslist buyer post viable via reply email", isViableRecord(clWanted))
 }
 
 // ── 12. Subscription gate (auto territory scoping) ───────────────────────────

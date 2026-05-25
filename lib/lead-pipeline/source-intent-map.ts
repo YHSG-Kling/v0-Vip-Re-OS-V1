@@ -145,9 +145,10 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // ── Facebook group post ───────────────────────────────────────────────────────
   // Often seller-side intent in real estate or neighborhood groups.
   facebook_group: {
-    intentType:                'seller',
-    leadType:                  'seller',
-    motivationType:            'social_seller_intent',
+    // Both buyer and seller posts; classified per post by the normalizer.
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
     behaviorType:              'social_intent',
     scoreRange:                [30, 65],
     baseScore:                 45,
@@ -175,9 +176,11 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // ── Reddit intent signal ─────────────────────────────────────────────────────
   // Often anonymous buyer intent; lower scores reflect anonymous identity.
   reddit_intent: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'buyer_research',
+    // Both buyer ("looking to buy", "first home") and seller ("selling my home")
+    // posts; the per-post normalizer sets the actual intent via detectIntent.
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
     behaviorType:              'social_intent',
     scoreRange:                [35, 55],
     baseScore:                 40,

@@ -140,10 +140,13 @@ export async function scrapeCraigslistPosts(params: {
   city: string
   query?: string
   limit?: number
+  /** Craigslist search section: 'rea' = real estate for sale (seller), 'hhh' = housing (buyer "wanted"/ISO posts live here). */
+  section?: string
 }): Promise<{ posts: any[]; cost: number }> {
+  const section = params.section || 'rea'
   const result = await runApifyActor('epctex/craigslist-scraper', {
     startUrls: [
-      { url: `https://${params.city.toLowerCase().replace(/ /g, '')}.craigslist.org/search/rea?query=${encodeURIComponent(params.query ?? '')}` },
+      { url: `https://${params.city.toLowerCase().replace(/ /g, '')}.craigslist.org/search/${section}?query=${encodeURIComponent(params.query ?? '')}` },
     ],
     maxItems: params.limit || 100,
   })

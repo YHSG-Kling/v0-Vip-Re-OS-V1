@@ -52,12 +52,13 @@ function nameFromHandle(handle: unknown): { firstName: string | null; lastName: 
 
 export function normalizeRedditPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const text = `${post.title ?? ""} ${post.body ?? post.text ?? ""}`
+  const intent = detectIntent(text)
   return {
     sourceRecordId: `reddit-${post.id ?? post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
     source: "reddit_intent",
     behaviorType: "social_intent",
-    intentType: "buyer", // reddit r/realestate skews buyer research; default per source map
-    intentSignals: [detectIntent(text) === "seller" ? "selling" : "looking_to_buy"],
+    intentType: intent, // buyer ("looking to buy") OR seller ("selling my home"), per post
+    intentSignals: [intent === "seller" ? "selling" : "looking_to_buy"],
     city: market.city,
     state: market.state,
     username: (post.author ?? post.username) ?? undefined,
@@ -75,7 +76,7 @@ export function normalizeFacebookPost(post: Record<string, any>, market: SocialM
     sourceRecordId: `fb-${post.postId ?? post.id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
     source: "facebook_group",
     behaviorType: "social_intent",
-    intentType: intent === "unknown" ? "seller" : intent, // groups skew seller
+    intentType: intent, // buyer + seller both captured; classified per post
     intentSignals: [intent === "buyer" ? "looking_to_buy" : "selling"],
     firstName,
     lastName,
@@ -107,16 +108,26 @@ export function normalizeInstagramPost(post: Record<string, any>, market: Social
   }
 }
 
+const CL_WANTED = /\b(wanted|iso|in search of|looking (to|for)|need(ed)? to (buy|rent))\b/i
+
 export function normalizeCraigslistItem(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const title = `${item.title ?? item.name ?? ""}`
   const isFsbo = /\b(by owner|fsbo|for sale by owner)\b/i.test(title)
+  // Housing-wanted / "ISO" posts are BUYER intent; for-sale-by-owner is SELLER.
+  const isBuyer = CL_WANTED.test(title) || detectIntent(title) === "buyer"
+  const intentType: "buyer" | "seller" = isBuyer ? "buyer" : "seller"
   return {
     sourceRecordId: `cl-${item.id ?? item.pid ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
     source: "craigslist_fsbo",
-    behaviorType: isFsbo ? "fsbo_listing" : "property_listing",
-    intentType: "seller",
-    intentSignals: isFsbo ? ["fsbo", "by_owner"] : ["craigslist_listing"],
-    propertyAddress: title.slice(0, 100) || null,
+    behaviorType: intentType === "buyer" ? "social_intent" : isFsbo ? "fsbo_listing" : "property_listing",
+    intentType,
+    intentSignals: intentType === "buyer" ? ["looking_to_buy"] : isFsbo ? ["fsbo", "by_owner"] : ["craigslist_listing"],
+    // A buyer "wanted" post has no property to sell — don't store its title as a property address.
+    propertyAddress: intentType === "seller" ? title.slice(0, 100) || null : null,
+    // Craigslist posts carry an (often anonymized) reply email/handle — the viability
+    // anchor for buyer "wanted" posts that have no address.
+    email: item.email ?? item.contactEmail ?? item.replyEmail ?? undefined,
+    username: item.author ?? item.posterId ?? undefined,
     city: market.city,
     state: market.state,
     sourceUrl: item.url ?? null,
@@ -159,7 +170,14 @@ export async function sourceInstagram(hashtags: string[], market: SocialMarket):
 }
 
 export async function sourceCraigslist(city: string, query: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  const r = await scrapeCraigslistPosts({ city, query, limit: 100 }).catch(() => ({ posts: [], cost: 0 }))
+  const r = await scrapeCraigslistPosts({ city, query, limit: 100, section: "rea" }).catch(() => ({ posts: [], cost: 0 }))
+  return { records: (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+/** Craigslist housing section — surfaces buyer "wanted"/ISO posts (buyer intent). */
+export async function sourceCraigslistWanted(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const r = await scrapeCraigslistPosts({ city, query: "wanted to buy ISO looking to buy home", limit: 100, section: "hhh" }).catch(() => ({ posts: [], cost: 0 }))
+  // normalizeCraigslistItem classifies "wanted"/ISO titles as buyer intent.
   return { records: (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
 }
 
