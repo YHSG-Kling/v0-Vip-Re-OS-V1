@@ -24,6 +24,9 @@ export const DISTRESS_RECORD_TYPES = [
   "tax_lien",
   "eviction",
   "bankruptcy",
+  "building_permit", // major remodel/addition → equity built, often pre-sale
+  "code_violation",  // distressed owner, deferred maintenance
+  "obituary",        // probate-adjacent estate sale (decedent's property)
 ] as const
 
 /**

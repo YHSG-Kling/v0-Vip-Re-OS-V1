@@ -8,6 +8,7 @@ import {
   buildPropertySearchUrl,
   parsePropertySearchResults,
   parseBuyerSavedSearches,
+  parseExpiredListings,
   normalizeBatchDataRecord,
 } from "@/lib/lead-pipeline/scraper-parsers"
 import {
@@ -17,6 +18,8 @@ import {
   sourceCraigslist,
   sourceCraigslistWanted,
   sourceGoogle,
+  sourceRentalListings,
+  sourceLinkedInRelocation,
 } from "@/lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
@@ -198,7 +201,11 @@ export async function GET(request: Request) {
                 // (parseBuyerSavedSearches). Both are filtered by the viability gate.
                 const sellerRecords = parsePropertySearchResults(scraped.html, site, market)
                 const buyerRecords = parseBuyerSavedSearches(scraped.html, site, market)
-                const siteRecords = [...sellerRecords, ...buyerRecords]
+                // Expired/withdrawn listings = top motivated sellers (off-market detection).
+                const expiredRecords = enabledSources.has("expired_listing")
+                  ? parseExpiredListings(scraped.html, site, market)
+                  : []
+                const siteRecords = [...sellerRecords, ...buyerRecords, ...expiredRecords]
                 sourceItemsFound += siteRecords.length
 
                 for (const record of siteRecords) {
@@ -348,7 +355,9 @@ export async function GET(request: Request) {
         enabledSources.has("instagram") ||
         enabledSources.has("reddit") ||
         enabledSources.has("craigslist") ||
-        enabledSources.has("google_phrase_intent")
+        enabledSources.has("google_phrase_intent") ||
+        enabledSources.has("rental") ||
+        enabledSources.has("linkedin")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -494,6 +503,20 @@ export async function GET(request: Request) {
             })
             const queries = [...sellerPhrases.slice(0, 3), ...buyerPhrases.slice(0, 2)]
             const { records, cost } = await sourceGoogle(queries, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── Rental listings (Apify Craigslist apa) — landlord/investor sellers ─
+          if (enabledSources.has("rental") && market.city) {
+            const { records, cost } = await sourceRentalListings(market.city, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── LinkedIn relocation posts (Apify) — inbound relocating buyers ──────
+          if (enabledSources.has("linkedin")) {
+            const { records, cost } = await sourceLinkedInRelocation(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records)
           }

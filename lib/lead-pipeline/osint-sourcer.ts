@@ -29,6 +29,9 @@ const MOTIVATION_BY_TYPE: Record<string, number> = {
   marriage: 60,
   new_mover: 58,
   relocation: 62,
+  building_permit: 64,
+  code_violation: 74,
+  obituary: 79,
 }
 
 /** Pure: court filing → canonical seller raw record. */

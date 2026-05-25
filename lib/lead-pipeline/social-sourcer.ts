@@ -15,6 +15,7 @@ import {
   scrapeInstagramPosts,
   scrapeCraigslistPosts,
   scrapeGoogleSearchResults,
+  scrapeLinkedInPosts,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 
@@ -184,4 +185,64 @@ export async function sourceCraigslistWanted(city: string, market: SocialMarket)
 export async function sourceGoogle(queries: string[], market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
   const r = await scrapeGoogleSearchResults({ queries, resultsPerQuery: 10 }).catch(() => ({ results: [], cost: 0 }))
   return { records: (r.results ?? []).map((x) => normalizeGoogleResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── Rental listings (Craigslist apartments) → landlord/investor SELLER ───────
+
+export function normalizeRentalListing(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const title = `${item.title ?? item.name ?? ""}`
+  const byOwner = /\b(by owner|owner|private landlord)\b/i.test(title) && !/\b(property management|realty|broker|agent)\b/i.test(title)
+  return {
+    sourceRecordId: `rental-${item.id ?? item.pid ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "rental_listing",
+    behaviorType: "rental_listing",
+    intentType: "seller", // landlords listing rentals are prospective sellers of the asset
+    intentSignals: byOwner ? ["by_owner", "tired_landlord"] : ["rental_listing"],
+    propertyAddress: title.slice(0, 100) || null,
+    email: item.email ?? item.contactEmail ?? item.replyEmail ?? undefined,
+    username: item.author ?? item.posterId ?? undefined,
+    city: market.city,
+    state: market.state,
+    sourceUrl: item.url ?? null,
+    motivationScore: byOwner ? 50 : 40,
+    rawPayload: item,
+  }
+}
+
+export async function sourceRentalListings(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  // Craigslist 'apa' = apartments / housing for rent (landlord-posted).
+  const r = await scrapeCraigslistPosts({ city, query: "house for rent by owner", limit: 100, section: "apa" }).catch(() => ({ posts: [], cost: 0 }))
+  return { records: (r.posts ?? []).map((p) => normalizeRentalListing(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── LinkedIn relocation posts → inbound BUYER ────────────────────────────────
+
+export function normalizeLinkedInPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const text = `${post.text ?? post.content ?? post.commentary ?? ""}`
+  const { firstName, lastName } = nameFromHandle(post.authorName ?? post.author?.name ?? post.fullName)
+  return {
+    sourceRecordId: `li-${post.id ?? post.urn ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "linkedin_relocation",
+    behaviorType: "social_intent",
+    intentType: "buyer", // relocation posts are inbound-buyer signals
+    intentSignals: ["relocating", "new_job"],
+    firstName,
+    lastName,
+    username: post.authorHeadline ? undefined : (post.authorPublicId ?? post.username ?? undefined),
+    city: market.city,
+    state: market.state,
+    sourceUrl: post.url ?? null,
+    motivationScore: 52,
+    rawPayload: post,
+  }
+}
+
+export async function sourceLinkedInRelocation(market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const where = [market.city, market.state].filter(Boolean).join(" ")
+  const r = await scrapeLinkedInPosts({
+    keywords: ["excited to announce", "starting a new role", "relocating to", "moving to"].map((k) => `${k} ${where}`.trim()),
+    location: where || undefined,
+    limit: 50,
+  }).catch(() => ({ posts: [], cost: 0 }))
+  return { records: (r.posts ?? []).map((p) => normalizeLinkedInPost(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
 }

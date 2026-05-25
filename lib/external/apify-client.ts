@@ -153,6 +153,19 @@ export async function scrapeCraigslistPosts(params: {
   return { posts: result.data, cost: result.cost }
 }
 
+export async function scrapeLinkedInPosts(params: {
+  keywords: string[]
+  location?: string
+  limit?: number
+}): Promise<{ posts: any[]; cost: number }> {
+  const result = await runApifyActor('apimaestro/linkedin-posts-search-scraper', {
+    keywords: params.keywords.join(' '),
+    location: params.location,
+    maxItems: params.limit || 50,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
 export async function scrapeGoogleSearchResults(params: {
   queries: string[]
   resultsPerQuery?: number

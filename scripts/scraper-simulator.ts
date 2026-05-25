@@ -22,6 +22,7 @@
 import {
   parsePropertySearchResults,
   parseBuyerSavedSearches,
+  parseExpiredListings,
   parseCraigslistHtml,
   normalizeBatchDataRecord,
   buildPropertySearchUrl,
@@ -41,6 +42,8 @@ import {
   normalizeGoogleResult,
   normalizeCraigslistItem,
   normalizeFacebookPost,
+  normalizeRentalListing,
+  normalizeLinkedInPost,
 } from "../lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
@@ -249,6 +252,9 @@ function testIntentMapping() {
     ["instagram", "unknown"],        // both buyer + seller (aliased → instagram_intent)
     ["nextdoor", "unknown"],         // buyer-or-seller until enrichment
     ["google_phrase_intent", "unknown"], // buyers search homes + sellers search agents
+    ["rental_listing", "seller"],    // landlord/investor sellers
+    ["expired_listing", "seller"],   // failed listings = motivated sellers
+    ["linkedin_relocation", "buyer"],// inbound relocating buyers
   ]
   for (const [source, expected] of cases) {
     const sem = getSourceSemantics(source)
@@ -278,6 +284,43 @@ function testVendorRouting() {
   // Distress + records sources.
   check("batchdata → batchdata", SOURCE_VENDOR.batchdata_motivated === "batchdata")
   check("osint → osint", SOURCE_VENDOR.osint_signal === "osint")
+  // New sources (recs 1-5).
+  check("rental → apify", SOURCE_VENDOR.rental_listing === "apify")
+  check("linkedin → apify", SOURCE_VENDOR.linkedin_relocation === "apify")
+  check("expired → zenrows", SOURCE_VENDOR.expired_listing === "zenrows")
+}
+
+// ── 17. New sources: rental / expired / linkedin / OSINT permits-violations ──
+function testNewSources() {
+  console.log("\n[New sources — rental / expired / linkedin / OSINT records]")
+  // Expired/withdrawn listing → seller
+  const expiredHtml = `
+    <div class="listing-card" data-id="e1">
+      <span class="status-badge">Off market</span>
+      <div class="card-address">55 Failed Sale Dr, Tampa FL</div>
+      <a href="/home/e1"></a>
+    </div>
+    <div class="listing-card" data-id="e2"><span>Active</span><div class="card-address">99 Active Rd</div></div>`
+  const expired = parseExpiredListings(expiredHtml, "zillow", { city: "Tampa", state: "FL" })
+  check("expired: parses 1 off-market (active skipped)", expired.length === 1, `got ${expired.length}`)
+  check("expired → seller + expired_listing", expired[0]?.intentType === "seller" && expired[0]?.source === "expired_listing")
+  check("expired motivationScore high (>=70)", (expired[0]?.motivationScore ?? 0) >= 70)
+  check("expired anchored on address", expired[0]?.propertyAddress === "55 Failed Sale Dr, Tampa FL")
+
+  // Rental → landlord/investor seller
+  const rental = normalizeRentalListing({ id: "r1", title: "3BR house for rent by owner", email: "landlord@example.com" }, { city: "Tampa", state: "FL" })
+  check("rental → seller (landlord)", rental.intentType === "seller" && rental.source === "rental_listing")
+  check("rental by-owner viable via email", isViableRecord(rental))
+
+  // LinkedIn relocation → buyer
+  const li = normalizeLinkedInPost({ id: "li1", text: "Excited to relocate to Tampa for my new role!", authorName: "Mia Mover" }, { city: "Tampa", state: "FL" })
+  check("linkedin → buyer (relocation)", li.intentType === "buyer" && li.source === "linkedin_relocation")
+  check("linkedin author parsed", li.firstName === "Mia" && li.lastName === "Mover")
+
+  // OSINT permit/violation/obituary → seller
+  check("building_permit → seller", recordTypeIntent("building_permit") === "seller")
+  check("code_violation → seller", recordTypeIntent("code_violation") === "seller")
+  check("obituary → seller (probate)", recordTypeIntent("obituary") === "seller")
 }
 
 // ── 11. Social-source normalizers + intent detection ─────────────────────────
@@ -444,6 +487,7 @@ async function main() {
   testBuyerSavedSearches()
   testPerplexityEnrichment()
   testOsintBuyer()
+  testNewSources()
   await testZenRowsClient()
 
   console.log("\n──────────────────────────────────────────────────")

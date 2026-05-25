@@ -27,6 +27,9 @@ export type SourceKey =
   | 'instagram_intent'
   | 'craigslist_fsbo'
   | 'google_phrase_intent'
+  | 'rental_listing'
+  | 'expired_listing'
+  | 'linkedin_relocation'
   | 'osint_signal'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
@@ -239,6 +242,51 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Rental listings (Craigslist apa) — landlord/investor SELLER signal ───────
+  // Owners listing rentals are prospective sellers (liquidating investment props).
+  rental_listing: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'investor_landlord',
+    behaviorType:              'rental_listing',
+    scoreRange:                [35, 60],
+    baseScore:                 45,
+    boostSignals:              ['by_owner', 'must_sell', 'tired_landlord', 'vacant', 'price_reduced'],
+    dampSignals:               ['property_manager', 'large_complex'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Expired / withdrawn listings — top motivated SELLER signal ───────────────
+  // A listing that failed to sell (off-market / removed) is a high-intent seller.
+  expired_listing: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'expired_listing',
+    behaviorType:              'expired_listing',
+    scoreRange:                [60, 90],
+    baseScore:                 75,
+    boostSignals:              ['off_market', 'listing_removed', 'withdrawn', 'expired', 'price_reduced', 'days_on_market'],
+    dampSignals:               ['recently_sold', 'pending'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── LinkedIn relocation posts — inbound BUYER signal ─────────────────────────
+  // "Excited to start at {company} in {city}" → relocating buyer with timeline.
+  linkedin_relocation: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'relocation_buyer',
+    behaviorType:              'social_intent',
+    scoreRange:                [40, 70],
+    baseScore:                 52,
+    boostSignals:              ['relocating', 'new_job', 'moving_to', 'starting_at', 'excited_to_join'],
+    dampSignals:               ['remote', 'no_location'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
   // ── OSINT / skip-trace signal ────────────────────────────────────────────────
   // Enrichment result that elevates an existing raw record.
   osint_signal: {
@@ -332,6 +380,9 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   instagram: "instagram_intent",
   craigslist: "craigslist_fsbo",
   google: "google_phrase_intent",
+  rental: "rental_listing",
+  expired: "expired_listing",
+  linkedin: "linkedin_relocation",
   osint: "osint_signal",
 }
 
@@ -356,6 +407,9 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   reddit_intent:        'apify',
   craigslist_fsbo:      'apify',
   google_phrase_intent: 'apify',
+  rental_listing:       'apify',   // Craigslist apartments section
+  linkedin_relocation:  'apify',
+  expired_listing:      'zenrows', // real-estate listing pages (off-market detection)
   batchdata_motivated:  'batchdata',
   osint_signal:         'osint',
 }

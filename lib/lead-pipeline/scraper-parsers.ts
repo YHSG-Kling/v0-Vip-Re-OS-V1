@@ -324,3 +324,47 @@ export function parseBuyerSavedSearches(
 
   return records.filter(isViableRecord)
 }
+
+const EXPIRED_MARKERS = /\b(off[\s-]?market|no longer available|listing (removed|expired|withdrawn)|was listed|delisted|taken off)\b/i
+
+/**
+ * Parse EXPIRED / WITHDRAWN listing signals from a real-estate site — listings
+ * that failed to sell are the highest-intent motivated sellers. We detect the
+ * off-market/removed status on a card and anchor the lead on the property
+ * address; PeopleData skip-trace resolves the owner from the address.
+ */
+export function parseExpiredListings(
+  html: string,
+  site: string,
+  market: MarketGeo,
+): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  $('[class*="card"], [class*="listing"], [class*="result"], article').each((i, el) => {
+    const block = $(el)
+    const statusText = block.find('[class*="status"], [class*="label"], [class*="badge"]').text() + " " + block.text().slice(0, 200)
+    if (!EXPIRED_MARKERS.test(statusText)) return
+
+    const address =
+      block.find('[class*="address"], [data-testid="card-address"], [class*="home-address"]').first().text().trim() ||
+      null
+    if (!address || address.length < 5) return
+
+    records.push({
+      sourceRecordId: `${site}-expired-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: "expired_listing",
+      behaviorType: "expired_listing",
+      intentType: "seller",
+      intentSignals: ["expired", "off_market", "listing_removed"],
+      propertyAddress: address,
+      city: market.city,
+      state: market.state,
+      motivationScore: 75,
+      sourceUrl: block.find("a").first().attr("href") ?? null,
+      rawPayload: { status: statusText.trim().slice(0, 160), address },
+    })
+  })
+
+  return records.filter(isViableRecord)
+}
