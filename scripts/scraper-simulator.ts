@@ -65,6 +65,7 @@ import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housin
 import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
+import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD } from "../lib/vendor-governance/budget-eval"
 
 let passed = 0
 let failed = 0
@@ -352,6 +353,15 @@ async function testVendorGateway() {
     { logger: aiLogger },
   )
   check("D-ID render recorded to ledger (vendor=did, cost=0.10)", aiCalls.length === 1 && aiCalls[0].vendorName === "did" && aiCalls[0].estimatedCost === 0.10)
+
+  // ── Vendor budget gate (the cap that closes the metering→enforcement loop) ──
+  check("tier budgets ascend solo<team<brokerage<multi", MONTHLY_VENDOR_BUDGET_USD.solo_agent < MONTHLY_VENDOR_BUDGET_USD.team && MONTHLY_VENDOR_BUDGET_USD.team < MONTHLY_VENDOR_BUDGET_USD.brokerage && MONTHLY_VENDOR_BUDGET_USD.brokerage < MONTHLY_VENDOR_BUDGET_USD.multi_location)
+  check("unknown tier → solo default budget", vendorBudgetForTier("nope") === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
+  check("under budget → allowed, no warning", (() => { const r = evaluateVendorBudget(10, 50, 0.5); return r.allowed && !r.softWarning })())
+  check("at 80% → soft warning (still allowed)", (() => { const r = evaluateVendorBudget(40, 50); return r.allowed && r.softWarning && r.percent === 80 })())
+  check("projected over ceiling → BLOCKED", (() => { const r = evaluateVendorBudget(49.8, 50, 0.5); return r.allowed === false })())
+  check("exactly at ceiling → allowed (boundary)", evaluateVendorBudget(49.5, 50, 0.5).allowed === true)
+  check("zero/invalid budget falls back to default ceiling", evaluateVendorBudget(0, 0, 1).budget === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

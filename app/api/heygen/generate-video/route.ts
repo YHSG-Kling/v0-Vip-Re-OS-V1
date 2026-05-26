@@ -199,6 +199,22 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Vendor budget gate — auto-pause when the brokerage is over its monthly
+    // platform-vendor spend ceiling (closes the metering→cap governance loop).
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost: estCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: brokerage_id, addCost: estCost("heygen", 1) })
+    if (!budget.allowed) {
+      await supabase
+        .from("ai_video_projects")
+        .update({ status: "blocked", error_message: `Vendor budget exceeded ($${budget.spent}/$${budget.budget})` })
+        .eq("id", video_project_id)
+      return NextResponse.json(
+        { success: false, error: "Monthly vendor budget reached — video generation paused.", budgetExceeded: true, spent: budget.spent, budget: budget.budget },
+        { status: 402 },
+      )
+    }
+
     // ─── PREPARE VIDEO DIMENSIONS ─────────────────────────────────────────────
     const dimensions = {
       landscape: { width: 1920, height: 1080 },

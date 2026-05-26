@@ -287,6 +287,17 @@ export async function generateVideo(
   // 2. Submit the D-ID job
   // ---------------------------------------------------------------------------
 
+  // Vendor budget gate — auto-pause D-ID renders when the brokerage is over its
+  // monthly platform-vendor ceiling (closes the metering→cap governance loop).
+  {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost: estCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estCost("did", 1) })
+    if (!budget.allowed) {
+      throw new Error(`Vendor budget exceeded — D-ID render paused ($${budget.spent}/$${budget.budget})`)
+    }
+  }
+
   let talkId: string
   try {
     const created = await didPost("/talks", bodyBase)
