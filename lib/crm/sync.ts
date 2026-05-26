@@ -10,6 +10,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { syncContactToGHL } from "@/services/goHighLevelService"
+import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
+import { syncContactToLofty } from "@/lib/crm/providers/lofty"
 
 export interface CRMContactPayload {
   firstName: string
@@ -86,6 +89,31 @@ export async function syncContactToCRM(
       }
     } catch (err: any) {
       return { success: false, providerKey, error: err?.message ?? "GHL sync failed" }
+    }
+  }
+
+  // ── Lofty + Follow Up Boss — sync-OUT via the connector-gateway ──────────────
+  if (providerKey === "followupboss" || providerKey === "lofty") {
+    const conn = await resolveConnection({ brokerageId, provider: providerKey }).catch(() => null)
+    const contact = {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phone: payload.phone,
+      source: payload.source ?? "kernel",
+      tags: payload.tags ?? [],
+    }
+    const result =
+      providerKey === "followupboss"
+        ? await syncContactToFollowUpBoss(contact, conn?.apiKey ?? null)
+        : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null)
+    return {
+      success: result.success,
+      contactId: result.contactId,
+      action: result.action,
+      providerKey,
+      error: result.error,
+      requiresConfiguration: result.requiresConfiguration,
     }
   }
 

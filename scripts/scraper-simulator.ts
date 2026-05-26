@@ -78,6 +78,7 @@ import { CONNECTED_CAPABILITY_REGISTRY, isConnectedCapability } from "../lib/age
 import { deriveConnectivityStatus, transportFor, summarizeConnectivity, needsAttention, EXPIRY_WARNING_DAYS, type ConnectorHealth } from "../lib/agentic-os/connectivity-agent"
 import { inferTransport, assessShape, adaptResponse, shapeHealthy, type ConnectorShapeSpec } from "../lib/agentic-os/connector-shape"
 import { classifyProbe, PROBE_SPECS } from "../lib/agentic-os/connector-probe"
+import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -538,7 +539,8 @@ async function testVendorGateway() {
 
   // ── Vendor ownership: platform-owned (budget-gated) vs user-connected (connection-gated) ──
   check("lob is classified PLATFORM-owned", isPlatformVendor("lob") && vendorOwnership("lob") === "platform")
-  check("financial vendors are USER-CONNECTED", ["stripe", "quickbooks"].every((v) => isUserConnectedVendor(v)))
+  check("financial vendors (stripe/quickbooks) are PLATFORM-operated (offered to all subscribers)", ["stripe", "quickbooks", "plaid"].every((v) => isPlatformVendor(v)))
+  check("CRM sync-out vendors (ghl/lofty/followupboss) are USER-CONNECTED", ["gohighlevel", "lofty", "followupboss"].every((v) => isUserConnectedVendor(v)))
   check("comms/idx/social/calendar/podcast/showing/txn vendors are USER-CONNECTED", ["sendgrid", "twilio", "idxbroker", "meta", "nylas", "podcast_syndicator", "showingtime", "dotloop"].every((v) => isUserConnectedVendor(v)))
   check("scraper/AVM/voice/video vendors stay PLATFORM-owned", ["rentcast", "perplexity", "vapi", "did", "heygen", "batchdata", "peopledata"].every((v) => isPlatformVendor(v)))
   check("platform & user-connected vendor sets are disjoint", [...PLATFORM_VENDORS].every((v) => !USER_CONNECTED_VENDORS.has(v)))
@@ -546,18 +548,20 @@ async function testVendorGateway() {
   check("lob over-budget hard-blocks (no free direct-mail alt)", freeAlternativeFor("lob") === null && resolveVendorAction("lob", true) === "block")
 
   // ── Connected-vendor capability registry + manifest ─────────────────────────
-  check("connected registry covers the user-connected surface (>=14)", Object.keys(CONNECTED_CAPABILITY_REGISTRY).length >= 14)
+  check("connected registry covers the user-connected surface (>=11)", Object.keys(CONNECTED_CAPABILITY_REGISTRY).length >= 11)
+  check("payments/accounting are NOT user-connected (platform-operated app capabilities)", !isConnectedCapability("payment_transfer") && !isConnectedCapability("accounting_sync") && APP_CAPABILITY_REGISTRY.payment_transfer?.domain === "finance" && APP_CAPABILITY_REGISTRY.accounting_sync?.domain === "finance")
+  check("crm_contact_sync is sync-OUT to ghl/lofty/followupboss", CONNECTED_CAPABILITY_REGISTRY.crm_contact_sync.verb === "UPDATE" && ["gohighlevel", "lofty", "followupboss"].every((p) => CONNECTED_CAPABILITY_REGISTRY.crm_contact_sync.connections.includes(p)))
   check("connected manifest tagged ownership=user_connected + kind=connected", connectedManifest.every((a) => a.ownership === "user_connected" && a.kind === "connected"))
   check("every app/vendor action tagged ownership=platform", appManifest.every((a) => a.ownership === "platform") && full.filter((a) => a.kind !== "connected").every((a) => a.ownership === "platform"))
   check("connected actions carry their connection provider list", connectedManifest.every((a) => Array.isArray(a.connections) && a.connections!.length > 0))
-  check("financial/idx/email/phone/calendar/social/txn/esign/showing/podcast all present", ["payment_transfer", "accounting_sync", "idx_listing_search", "email_send", "sms_send", "phone_call_place", "calendar_event_book", "social_account_publish", "transaction_forms_open", "esign_send", "showing_schedule", "podcast_syndicate"].every((c) => isConnectedCapability(c)))
+  check("crm/idx/email/phone/calendar/social/txn/esign/showing/podcast all present", ["crm_contact_sync", "idx_listing_search", "email_send", "sms_send", "phone_call_place", "calendar_event_book", "social_account_publish", "transaction_forms_open", "esign_send", "showing_schedule", "podcast_syndicate"].every((c) => isConnectedCapability(c)))
   check("esign_send maps to real esign providers", CONNECTED_CAPABILITY_REGISTRY.esign_send.connections.includes("docusign") && CONNECTED_CAPABILITY_REGISTRY.esign_send.connections.includes("dotloop"))
 
   // Connection-gate planner: scope → inputs → CONNECTION presence → confirmation.
   check("connected plan: missing scope → unauthorized", planConnectedInvocation("email_send", { inputs: { to: "x", subject: "s", body: "b" }, grantedScopes: ["lead:read"], connected: true }).decision === "unauthorized")
   check("connected plan: missing inputs → invalid_input", planConnectedInvocation("email_send", { inputs: {}, grantedScopes: [ALL_SCOPES], connected: true }).decision === "invalid_input")
-  check("connected plan: not connected → not_connected (with providers to connect)", (() => { const p = planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: false }); return p.decision === "not_connected" && p.missingConnections.includes("stripe") })())
-  check("connected plan: authorized + connected write → requires_confirmation", planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "requires_confirmation")
+  check("connected plan: not connected → not_connected (with providers to connect)", (() => { const p = planConnectedInvocation("crm_contact_sync", { inputs: { contactId: "c1" }, grantedScopes: [ALL_SCOPES], connected: false }); return p.decision === "not_connected" && p.missingConnections.includes("followupboss") })())
+  check("connected plan: authorized + connected write → requires_confirmation", planConnectedInvocation("crm_contact_sync", { inputs: { contactId: "c1" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "requires_confirmation")
   check("connected plan: authorized + connected read → execute", planConnectedInvocation("calendar_availability_get", { inputs: { from: "a", to: "b" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "execute")
 
   // ── Connectivity API Agent (keeps up with api/oauth/mcp connection health) ──
@@ -573,7 +577,7 @@ async function testVendorGateway() {
   check("connectivity: oauth far out → connected", deriveConnectivityStatus({ connected: true, transport: "oauth", isActive: true, tokenExpiresAt: later }, NOW) === "connected")
   check("connectivity: platform_managed always platform_managed", deriveConnectivityStatus({ connected: false, transport: "platform_managed" }, NOW) === "platform_managed")
   check("connectivity: 7-day warning window constant", EXPIRY_WARNING_DAYS === 7)
-  check("connectivity: transportFor classifies oauth vs api_key", transportFor("quickbooks") === "oauth" && transportFor("nylas") === "oauth" && transportFor("idxbroker") === "api_key" && transportFor("twilio") === "api_key")
+  check("connectivity: transportFor classifies oauth vs api_key", transportFor("gohighlevel") === "oauth" && transportFor("nylas") === "oauth" && transportFor("idxbroker") === "api_key" && transportFor("twilio") === "api_key" && transportFor("followupboss") === "api_key")
   check("connectivity: expired/expiring need attention; connected does not", needsAttention("expired") && needsAttention("expiring_soon") && !needsAttention("connected") && !needsAttention("disconnected"))
   const fleet: ConnectorHealth[] = [
     { provider: "idxbroker", transport: "api_key", status: "connected", expiresAt: null, source: "integration_credentials", actionRequired: false },
@@ -609,6 +613,11 @@ async function testVendorGateway() {
   check("probe: network error → unreachable", classifyProbe({ configured: true, httpStatus: null, networkError: true, missingRequired: [] }) === "unreachable")
   check("probe specs cover the key real-estate financial+comms connectors", ["idxbroker", "gohighlevel", "meta", "sendgrid", "twilio", "stripe", "quickbooks"].every((p) => !!PROBE_SPECS[p]))
   check("quickbooks probe url requires realmId from config", (() => { const u = PROBE_SPECS.quickbooks.url; return typeof u === "function" && u({ config: {} }) === null && typeof u({ config: { realmId: "123" }, accessToken: "t" }) === "string" })())
+
+  // ── Single egress gateway (the one way in/out through connector-shape) ───────
+  check("gateway builds bearer auth header + joined url", (() => { const r = buildAuthedRequest({ connector: "lofty", baseUrl: "https://api.lofty.com/v1", path: "contacts", auth: { style: "bearer", token: "TKN" } }); return r.headers.Authorization === "Bearer TKN" && r.url === "https://api.lofty.com/v1/contacts" })())
+  check("gateway builds basic auth (followupboss key:'' )", (() => { const r = buildAuthedRequest({ connector: "followupboss", baseUrl: "https://api.followupboss.com/v1", path: "/people", auth: { style: "basic", username: "APIKEY", password: "" } }); return r.headers.Authorization === `Basic ${Buffer.from("APIKEY:").toString("base64")}` })())
+  check("gateway header auth + query auth styles", (() => { const h = buildAuthedRequest({ connector: "idxbroker", baseUrl: "https://api.idxbroker.com", path: "clients/accountinfo", auth: { style: "header", name: "accesskey", value: "K" } }); const q = buildAuthedRequest({ connector: "meta", baseUrl: "https://graph.facebook.com/v18.0", path: "me", auth: { style: "query", name: "access_token", value: "T" } }); return h.headers.accesskey === "K" && q.url.includes("access_token=T") })())
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

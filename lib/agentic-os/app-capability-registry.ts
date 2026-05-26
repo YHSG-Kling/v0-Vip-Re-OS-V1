@@ -43,11 +43,13 @@ export type AppCapability =
   | "gift_send"            // trigger a closing/nurture gift order
   | "handwritten_note_send" // send a handwritten thank-you note
   | "connectivity_scan"    // report live api/oauth/mcp connector health (Connectivity Agent)
+  | "payment_transfer"     // platform-operated Stripe payout/transfer (offered to all subscribers)
+  | "accounting_sync"      // platform-operated QuickBooks invoice/journal sync
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
   | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications" | "gifting"
-  | "connectivity"
+  | "connectivity" | "finance"
 
 export interface AppCapabilityDef {
   capability: AppCapability
@@ -89,6 +91,9 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Send a handwritten thank-you note to a contact.", inputs: ["brokerageId", "contactId", "message?"] },
 
   connectivity_scan:        { capability: "connectivity_scan",         verb: "GET",     scope: "connectivity:read", domain: "connectivity",  mutates: false, purpose: "Report live connection health of every api/oauth/mcp connector for the brokerage (expiry-aware).", inputs: ["brokerageId?"] },
+
+  payment_transfer:         { capability: "payment_transfer",          verb: "CREATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Move funds / commission payout via the PLATFORM Stripe account (offered to all subscribers).", inputs: ["amount", "destinationAccountId", "description?"] },
+  accounting_sync:          { capability: "accounting_sync",           verb: "UPDATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Sync an invoice or journal entry to the PLATFORM QuickBooks account (offered to all subscribers).", inputs: ["kind", "amount?", "customerRef?"] },
 }
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {

@@ -19,12 +19,15 @@
 
 export type VendorOwnership = "platform" | "user_connected"
 
-/** Vendors whose key/cost the PLATFORM owns — gated by the per-brokerage budget. */
+/** Vendors whose key/cost the PLATFORM owns — gated by the per-brokerage budget.
+ *  Stripe + QuickBooks are platform-operated: the platform runs its own accounts and
+ *  offers payments/accounting to every subscriber (subscribers do NOT connect their own). */
 export const PLATFORM_VENDORS = new Set<string>([
   "perplexity", "osint", "rentcast", "peopledata", "exa", "tavily",
   "apify_social", "apify", "batchdata", "zenrows",
   "vapi", "did", "heygen", "elevenlabs", "browser_tts", "cma_aggregate",
-  "lob", // direct mail — platform-owned per product decision
+  "lob",                          // direct mail — platform-owned
+  "stripe", "quickbooks", "plaid", // financial — platform-operated, offered to all subscribers
 ])
 
 /** Vendors the BROKERAGE connects from its own account — gated by connection presence.
@@ -34,11 +37,10 @@ export const PLATFORM_VENDORS = new Set<string>([
 // connectivity scan and connection gate recognize every name a connection may be stored under.
 export const USER_CONNECTED_VENDORS = new Set<string>([
   "idxbroker",                                                   // IDX / MLS listings
-  "gohighlevel",                                                 // CRM sync
+  "gohighlevel", "lofty", "followupboss",                        // CRM sync-out (egress)
   "sendgrid", "gmail", "outlook", "resend", "postmark", "mailgun", // email
   "twilio", "telnyx", "bandwidth", "plivo", "sinch",             // phone + SMS
-  "nylas", "google_calendar",                                    // calendar
-  "stripe", "quickbooks", "plaid",                               // financial
+  "nylas", "google_calendar",                                    // calendar (Google products etc.)
   "dotloop", "docusign", "skyslope", "authentisign",
   "brokermint", "formsimplicity",                                // transaction / e-sign
   "showingtime",                                                 // showings

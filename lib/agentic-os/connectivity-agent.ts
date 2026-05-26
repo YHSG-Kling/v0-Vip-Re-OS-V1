@@ -36,14 +36,15 @@ export const EXPIRY_WARNING_DAYS = 7
 export const CONNECTOR_TRANSPORT: Record<string, Transport> = {
   // OAuth (token + refresh + expiry)
   gmail: "oauth", outlook: "oauth", nylas: "oauth", google_calendar: "oauth",
-  quickbooks: "oauth", plaid: "oauth", gohighlevel: "oauth",
+  gohighlevel: "oauth",
   meta: "oauth", facebook: "oauth", instagram: "oauth", linkedin: "oauth",
   twitter: "oauth", tiktok: "oauth", youtube: "oauth", pinterest: "oauth", buffer: "oauth",
-  dotloop: "oauth", docusign: "oauth", stripe: "oauth",
+  dotloop: "oauth", docusign: "oauth",
   // API key / secret
   idxbroker: "api_key", sendgrid: "api_key", resend: "api_key", postmark: "api_key",
   mailgun: "api_key", twilio: "api_key", telnyx: "api_key", bandwidth: "api_key",
   plivo: "api_key", sinch: "api_key",
+  lofty: "api_key", followupboss: "api_key", // CRM sync-out
   skyslope: "api_key", authentisign: "api_key", brokermint: "api_key",
   formsimplicity: "api_key", showingtime: "api_key", podcast_syndicator: "api_key",
 }
