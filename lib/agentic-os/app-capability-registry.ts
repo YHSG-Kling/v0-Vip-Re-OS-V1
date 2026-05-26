@@ -31,10 +31,15 @@ export type AppCapability =
   | "portal_milestones_get" // fetch a client-portal milestone timeline
   | "review_request_send"  // send a reputation review request
   | "inbox_reply_send"     // send a reply in the universal inbox
+  | "podcast_publish"      // publish a podcast episode
+  | "direct_mail_send"     // submit a direct-mail campaign (print/Lob)
+  | "video_distribute"     // distribute a marketing video across channels
+  | "gift_send"            // trigger a closing/nurture gift order
+  | "handwritten_note_send" // send a handwritten thank-you note
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
-  | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications"
+  | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications" | "gifting"
 
 export interface AppCapabilityDef {
   capability: AppCapability
@@ -69,6 +74,11 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   portal_milestones_get:    { capability: "portal_milestones_get",     verb: "GET",     scope: "portal:read",      domain: "portal",         mutates: false, purpose: "Fetch the client-portal milestone timeline for a contact/transaction.", inputs: ["contactId"] },
   review_request_send:      { capability: "review_request_send",       verb: "NOTIFY",  scope: "reputation:write", domain: "reputation",     mutates: true,  purpose: "Send a review request to a past client (reputation engine).", inputs: ["brokerageId", "contactId"] },
   inbox_reply_send:         { capability: "inbox_reply_send",          verb: "NOTIFY",  scope: "comms:write",      domain: "communications", mutates: true,  purpose: "Send a reply in the universal inbox (compliance-gated).", inputs: ["brokerageId", "threadId", "body"] },
+  podcast_publish:          { capability: "podcast_publish",           verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a podcast episode to the brokerage's distribution channels.", inputs: ["brokerageId", "episodeId"] },
+  direct_mail_send:         { capability: "direct_mail_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Submit a direct-mail campaign for print + delivery (Lob).", inputs: ["brokerageId", "campaignId"] },
+  video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"] },
+  gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Trigger a closing/nurture gift order for a contact.", inputs: ["brokerageId", "contactId", "giftType?"] },
+  handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Send a handwritten thank-you note to a contact.", inputs: ["brokerageId", "contactId", "message?"] },
 }
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {

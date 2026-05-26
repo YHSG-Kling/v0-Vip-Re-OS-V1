@@ -523,6 +523,12 @@ async function testVendorGateway() {
   check("report_generate is read (ANALYZE, not mutating)", APP_CAPABILITY_REGISTRY.report_generate.verb === "ANALYZE" && APP_CAPABILITY_REGISTRY.report_generate.mutates === false)
   check("every app action has a domain-scoped scope (domain:verb form)", appManifest.every((a) => /^[a-z_]+:[a-z_]+$/.test(a.scope)))
   check("unified manifest grew to cover whole app (>=18 actions)", full.length >= 18)
+
+  // Newly-added marketing/comms/gifting capabilities (podcast / direct mail / video / gifts / notes).
+  check("podcast/direct-mail/video/gift/note capabilities registered", ["podcast_publish", "direct_mail_send", "video_distribute", "gift_send", "handwritten_note_send"].every((c) => !!(APP_CAPABILITY_REGISTRY as any)[c]))
+  check("all new send/publish actions are mutating (confirmation-gated)", ["podcast_publish", "direct_mail_send", "video_distribute", "gift_send", "handwritten_note_send"].every((c) => (APP_CAPABILITY_REGISTRY as any)[c].mutates === true))
+  check("gifting domain present + scoped", APP_CAPABILITY_REGISTRY.gift_send.domain === "gifting" && APP_CAPABILITY_REGISTRY.gift_send.scope === "gifting:write" && APP_CAPABILITY_REGISTRY.handwritten_note_send.scope === "gifting:write")
+  check("direct_mail_send uses marketing:send (NOTIFY)", APP_CAPABILITY_REGISTRY.direct_mail_send.scope === "marketing:send" && APP_CAPABILITY_REGISTRY.direct_mail_send.verb === "NOTIFY")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
