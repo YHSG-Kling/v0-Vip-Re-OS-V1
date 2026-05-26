@@ -12,6 +12,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
+import { resolveListingSource } from "./listing-source"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 
 export interface ExternalListing {
@@ -78,9 +79,10 @@ export async function searchExternalListings(
   const hasRentcast = creds?.some((c) => c.provider_name === "rentcast") || !!process.env.RENTCAST_API_KEY
 
   // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).
+  let idxListings: NormalizedIdxListing[] = []
   if (hasIdx) {
     const idx = await IDXBrokerClient.forBrokerage(input.brokerageId)
-    const idxListings = await idx.searchActiveListings({
+    idxListings = await idx.searchActiveListings({
       city: input.city,
       state: input.state,
       zipCode: input.zipCode,
@@ -91,15 +93,18 @@ export async function searchExternalListings(
       priceMax: input.priceMax,
       limit: input.limit,
     })
-    // IDX is account-scoped (featured/active set); if it yields nothing for this
-    // query, fall through to the broader Rentcast license rather than dead-ending.
-    if (idxListings.length > 0) {
-      return { listings: idxListings.map(idxToExternal), source: "idx" }
-    }
+  }
+
+  // RentCast is the platform default; IDX wins only when connected AND it
+  // actually returned results (account-scoped feeds can be empty for a query).
+  const chosen = resolveListingSource({ hasIdx, idxResultCount: idxListings.length, hasRentcast })
+
+  if (chosen === "idx") {
+    return { listings: idxListings.map(idxToExternal), source: "idx" }
   }
 
   // Tier 2: Rentcast
-  if (hasRentcast) {
+  if (chosen === "rentcast") {
     const rc = await searchRentcastSaleListings({
       brokerageId: input.brokerageId,
       filters: {
