@@ -76,6 +76,8 @@ import { APP_CAPABILITY_REGISTRY, buildAppActionManifest, buildConnectedActionMa
 import { vendorOwnership, isPlatformVendor, isUserConnectedVendor, PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "../lib/agentic-os/vendor-ownership"
 import { CONNECTED_CAPABILITY_REGISTRY, isConnectedCapability } from "../lib/agentic-os/connected-vendor-registry"
 import { deriveConnectivityStatus, transportFor, summarizeConnectivity, needsAttention, EXPIRY_WARNING_DAYS, type ConnectorHealth } from "../lib/agentic-os/connectivity-agent"
+import { inferTransport, assessShape, adaptResponse, shapeHealthy, type ConnectorShapeSpec } from "../lib/agentic-os/connector-shape"
+import { classifyProbe, PROBE_SPECS } from "../lib/agentic-os/connector-probe"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -584,6 +586,29 @@ async function testVendorGateway() {
   check("connectivity summary counts by status", sum.total === 5 && sum.connected === 1 && sum.expiringSoon === 1 && sum.expired === 1 && sum.disconnected === 1 && sum.platformManaged === 1)
   check("connectivity summary surfaces attention list (expired+expiring)", sum.attention.length === 2 && sum.attention.includes("quickbooks") && sum.attention.includes("nylas"))
   check("connectivity_scan registered as a discoverable read capability", APP_CAPABILITY_REGISTRY.connectivity_scan?.verb === "GET" && APP_CAPABILITY_REGISTRY.connectivity_scan.scope === "connectivity:read" && APP_CAPABILITY_REGISTRY.connectivity_scan.mutates === false && APP_CAPABILITY_REGISTRY.connectivity_scan.domain === "connectivity")
+
+  // ── Adaptive connector: shape inference + self-healing field drift ──────────
+  check("infer oauth from token fields", inferTransport({ accessToken: "x", refreshToken: "y", tokenExpiresAt: "2026-06-01T00:00:00Z" }) === "oauth")
+  check("infer api_key from apiKey", inferTransport({ apiKey: "k" }) === "api_key")
+  check("infer mcp from mcpUrl", inferTransport({ mcpUrl: "https://mcp.example.com" }) === "mcp")
+  check("oauth missing accessToken is incomplete", (() => { const a = assessShape({ refreshToken: "r" }, "oauth"); return !a.complete && a.missing.includes("accessToken") })())
+  check("oauth with refresh is refreshable", assessShape({ accessToken: "a", refreshToken: "r" }, "oauth").refreshable === true)
+  check("api_key complete when key present", assessShape({ apiKey: "k" }, "api_key").complete === true)
+  const idxSpec: ConnectorShapeSpec = { connector: "idxbroker", fields: [{ canonical: "clientID", aliases: ["clientId", "memberID"], required: true }, { canonical: "email", aliases: ["emailAddress"], required: false }] }
+  check("adaptResponse maps canonical key cleanly (no drift)", (() => { const r = adaptResponse({ clientID: "abc", email: "a@b.com" }, idxSpec); return !r.drifted && r.value.clientID === "abc" && r.drift.aliased.length === 0 })())
+  check("adaptResponse self-heals a renamed field via alias (flags drift)", (() => { const r = adaptResponse({ memberID: "abc" }, idxSpec); return r.value.clientID === "abc" && r.drifted && r.drift.aliased[0].matchedKey === "memberID" && shapeHealthy(r.drift) })())
+  check("adaptResponse flags a missing required field (unhealthy)", (() => { const r = adaptResponse({ email: "a@b.com" }, idxSpec); return r.drift.missingRequired.includes("clientID") && !shapeHealthy(r.drift) })())
+  check("adaptResponse reports unmapped (candidate new vendor) keys", (() => { const r = adaptResponse({ clientID: "x", brandNewField: 1 }, idxSpec); return r.drift.unmapped.includes("brandNewField") })())
+
+  // ── Live probe classification (pure) ────────────────────────────────────────
+  check("probe: not configured", classifyProbe({ configured: false, httpStatus: null, networkError: false, missingRequired: [] }) === "not_configured")
+  check("probe: 200 + healthy shape → ok", classifyProbe({ configured: true, httpStatus: 200, networkError: false, missingRequired: [] }) === "ok")
+  check("probe: 200 + missing required → shape_drift", classifyProbe({ configured: true, httpStatus: 200, networkError: false, missingRequired: ["id"] }) === "shape_drift")
+  check("probe: 401/403 → auth_failed", classifyProbe({ configured: true, httpStatus: 401, networkError: false, missingRequired: [] }) === "auth_failed" && classifyProbe({ configured: true, httpStatus: 403, networkError: false, missingRequired: [] }) === "auth_failed")
+  check("probe: 5xx and 429 → unreachable", classifyProbe({ configured: true, httpStatus: 503, networkError: false, missingRequired: [] }) === "unreachable" && classifyProbe({ configured: true, httpStatus: 429, networkError: false, missingRequired: [] }) === "unreachable")
+  check("probe: network error → unreachable", classifyProbe({ configured: true, httpStatus: null, networkError: true, missingRequired: [] }) === "unreachable")
+  check("probe specs cover the key real-estate financial+comms connectors", ["idxbroker", "gohighlevel", "meta", "sendgrid", "twilio", "stripe", "quickbooks"].every((p) => !!PROBE_SPECS[p]))
+  check("quickbooks probe url requires realmId from config", (() => { const u = PROBE_SPECS.quickbooks.url; return typeof u === "function" && u({ config: {} }) === null && typeof u({ config: { realmId: "123" }, accessToken: "t" }) === "string" })())
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

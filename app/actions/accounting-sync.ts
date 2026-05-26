@@ -1,5 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────
 export async function getProviderConnectionStatus(brokerageId: string) {
@@ -209,6 +212,100 @@ export async function retrySyncError(data: {
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")
   return { success: true }
+}
+
+// ─── PUSH AN ENTRY TO QUICKBOOKS (the real write) ────────────────────────────
+// The connection/sync-log/tax-category scaffolding above tracked QuickBooks but never
+// called it. This dispatches a real invoice/journal write through QuickBooksProvider,
+// resolving the brokerage's OAuth creds via connection-manager (any of the three stores),
+// refreshing the token if near expiry, and recording the outcome in accounting_sync_log.
+
+async function buildQuickBooks(brokerageId: string): Promise<QuickBooksProvider | null> {
+  const conn = await resolveConnection({ brokerageId, provider: "quickbooks" })
+  if (!conn || !conn.accessToken) return null
+  const clientId = process.env.QUICKBOOKS_CLIENT_ID
+  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET
+  if (!clientId || !clientSecret) throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
+  const realmId = (conn.config?.realmId as string) || conn.accountId || ""
+  if (!realmId) throw new Error("QuickBooks connection missing realmId (company id)")
+
+  const provider = new QuickBooksProvider({
+    accessToken: conn.accessToken,
+    refreshToken: conn.refreshToken ?? "",
+    realmId,
+    clientId,
+    clientSecret,
+  })
+
+  const expIso = (conn.config?.tokenExpiresAt as string) ?? null
+  if (expIso && conn.refreshToken) {
+    const exp = Date.parse(expIso)
+    if (!Number.isNaN(exp) && exp <= Date.now() + 5 * 60_000) {
+      const fresh = await provider.refreshAccessToken()
+      if (conn.source !== "integration_credentials") {
+        const svc = createServiceClient()
+        await svc
+          .from(conn.source)
+          .update({ access_token: fresh.accessToken, refresh_token: fresh.refreshToken, token_expires_at: fresh.tokenExpiresAt })
+          .eq("id", conn.credentialId)
+      }
+    }
+  }
+  return provider
+}
+
+export async function pushAccountingEntry(
+  params:
+    | { brokerageId: string; kind: "invoice"; customerRef: string; amount: number; description?: string; currency?: string }
+    | { brokerageId: string; kind: "journal"; lines: Array<{ amount: number; accountRef: string; postingType: "Debit" | "Credit" }>; description?: string },
+): Promise<{ ok: true; result: AccountingWriteResult } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  const { data: profile } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+  if (!["superadmin", "broker", "broker_owner", "admin"].includes(profile?.user_type ?? "")) {
+    return { ok: false, error: "Broker/admin role required" }
+  }
+
+  const startedAt = new Date().toISOString()
+  const svc = createServiceClient()
+  const logFailure = async (msg: string) => {
+    await svc.from("accounting_sync_log").insert({
+      brokerage_id: params.brokerageId, provider: "quickbooks", sync_type: params.kind,
+      status: "failed", records_synced: 0, records_failed: 1,
+      started_at: startedAt, completed_at: new Date().toISOString(), error_summary: msg.slice(0, 500),
+    })
+  }
+
+  let qbo: QuickBooksProvider | null
+  try {
+    qbo = await buildQuickBooks(params.brokerageId)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    await logFailure(msg)
+    return { ok: false, error: msg }
+  }
+  if (!qbo) {
+    await logFailure("QuickBooks not connected")
+    return { ok: false, error: "QuickBooks is not connected for this brokerage" }
+  }
+
+  const result =
+    params.kind === "invoice"
+      ? await qbo.createInvoice({ customerRef: params.customerRef, amount: params.amount, description: params.description, currency: params.currency })
+      : await qbo.createJournalEntry({ lines: params.lines, description: params.description })
+
+  await svc.from("accounting_sync_log").insert({
+    brokerage_id: params.brokerageId, provider: "quickbooks", sync_type: params.kind,
+    status: result.success ? "completed" : "failed",
+    records_synced: result.success ? 1 : 0, records_failed: result.success ? 0 : 1,
+    started_at: startedAt, completed_at: new Date().toISOString(),
+    error_summary: result.success ? null : (result.error ?? "unknown error")?.slice(0, 500),
+  })
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/settings/accounting")
+  return { ok: true, result }
 }
 
 // ─── GET TAX CATEGORIES ──────────────────────────────────────────────────────

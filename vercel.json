@@ -10,6 +10,10 @@
   },
   "crons": [
     {
+      "path": "/api/cron/connector-health",
+      "schedule": "0 */12 * * *"
+    },
+    {
       "path": "/api/cron/dotloop-sync",
       "schedule": "0 */6 * * *"
     },

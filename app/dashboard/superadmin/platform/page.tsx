@@ -109,6 +109,9 @@ export default async function SuperadminPlatformPage() {
           <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/brokerages">Manage all</Link>
           </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/connectors">Connectors</Link>
+          </Button>
           <Button asChild size="sm">
             <Link href="/dashboard/superadmin/brokerages/new">+ Add subscriber</Link>
           </Button>
