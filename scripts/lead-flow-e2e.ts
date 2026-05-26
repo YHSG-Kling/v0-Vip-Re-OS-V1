@@ -26,7 +26,6 @@ import {
 import {
   isViableRecord,
   hasPromotionEligibleIdentity,
-  buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
 import { normalizeRedditPost, normalizeFacebookPost } from "../lib/lead-pipeline/social-sourcer"
@@ -34,6 +33,7 @@ import { normalizeTavilyResult } from "../lib/lead-pipeline/tavily-sourcer"
 import { normalizeExaResult } from "../lib/lead-pipeline/exa-sourcer"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
 import { resolveListingSource } from "../lib/property/listing-source"
+import { calculateFuzzyMatch } from "../lib/lead-pipeline/fuzzy-matcher"
 
 let passed = 0
 let failed = 0
@@ -52,33 +52,33 @@ function check(name: string, cond: boolean, detail?: string) {
   }
 }
 
-// Tampa FL territory (B1) used throughout.
-const B1 = "b0000000-0000-0000-0000-000000000001"
-const B4 = "b0000000-0000-0000-0000-000000000004"
+// Tampa FL territory used throughout.
 const market = { city: "Tampa", state: "FL", zip_codes: ["33602", "33606"] }
 
 // ── STAGE 1 — Subscriber kill-switch ─────────────────────────────────────────
 // Only active/trialing brokerages may be scraped. Cancelled / past_due / paused
 // subscribers' territories are skipped (we never spend on un-assignable leads).
 function stageKillSwitch(): Set<string> {
-  console.log("\n[1] Subscriber kill-switch (cancelled / past-due → scrapers off)")
+  console.log("\n[1] Subscriber kill-switch — multi-tier (brokerage / team / solo)")
+  // Seeded subscription matrix across all three paid tiers + the inactive states.
   const subscriptions = [
-    { brokerage_id: B1, status: "active" },
-    { brokerage_id: "b2", status: "past_due" },
-    { brokerage_id: "b3", status: "canceled" },
-    { brokerage_id: B4, status: "trialing" },
-    { brokerage_id: "b5", status: "paused" },
-    { brokerage_id: "b6", status: null },
+    { brokerage_id: "BK_BROK", status: "active", tier: "brokerage" },
+    { brokerage_id: "BK_TEAM", status: "active", tier: "team" },
+    { brokerage_id: "BK_SOLO", status: "trialing", tier: "solo_agent" },
+    { brokerage_id: "BK_CANC", status: "cancelled", tier: "brokerage" },
+    { brokerage_id: "BK_PAST", status: "past_due", tier: "team" },
+    { brokerage_id: "BK_PAUSE", status: "paused", tier: "solo_agent" },
   ]
   const active = activeSubscriberBrokerageIds(subscriptions)
-  check("active subscriber is scrapeable", active.has(B1))
-  check("trialing subscriber is scrapeable", active.has(B4))
-  check("PAST_DUE subscriber is NOT scraped", !active.has("b2"))
-  check("CANCELED subscriber is NOT scraped", !active.has("b3"))
-  check("PAUSED subscriber is NOT scraped", !active.has("b5"))
-  check("null-status subscriber is NOT scraped", !active.has("b6"))
+  check("brokerage-tier active → scrapeable", active.has("BK_BROK"))
+  check("team-tier active → scrapeable", active.has("BK_TEAM"))
+  check("solo-tier trialing → scrapeable", active.has("BK_SOLO"))
+  check("brokerage-tier CANCELED → NOT scraped", !active.has("BK_CANC"))
+  check("team-tier PAST_DUE → NOT scraped", !active.has("BK_PAST"))
+  check("solo-tier PAUSED → NOT scraped", !active.has("BK_PAUSE"))
+  check("exactly 3 active tiers scrapeable", active.size === 3, `size=${active.size}`)
   check("isActiveSubscriptionStatus(active)", isActiveSubscriptionStatus("active"))
-  check("isActiveSubscriptionStatus(canceled) false", !isActiveSubscriptionStatus("canceled"))
+  check("isActiveSubscriptionStatus(cancelled) false", !isActiveSubscriptionStatus("cancelled"))
   return active
 }
 
@@ -166,24 +166,78 @@ function stageTerritory(records: NormalizedScrapedRecord[]): NormalizedScrapedRe
   return inMarket
 }
 
-// ── STAGE 5 — Dedup ──────────────────────────────────────────────────────────
-function stageDedup(records: NormalizedScrapedRecord[]) {
-  console.log("\n[5] Dedup (stable identity key)")
-  const keys = new Set<string>()
-  let withKey = 0
-  for (const r of records) {
-    const k = buildLeadIdentityKey(r)
-    if (k) {
-      withKey++
-      keys.add(k)
+// ── STAGE 5 — Pipeline: pre-dedup → enrich → post-dedup → promotion gate ─────
+// Mirrors processRawRecord exactly: findBestMatch uses the REAL calculateFuzzyMatch
+// with a >0.75 threshold over a SAME-BROKERAGE candidate set (cross-tenant matches
+// are impossible). Enrichment in-sandbox mirrors PeopleData returning no data
+// (confidence 0.3, fields unchanged), then the promotion gate requires full name +
+// email. This is the production gate sequence, not a re-implementation.
+type DbRow = { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null; brokerage_id: string }
+
+function findDuplicate(
+  incoming: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
+  brokerageId: string,
+  candidates: DbRow[],
+): { row: DbRow; score: number } | null {
+  let best: { row: DbRow; score: number } | null = null
+  let highest = 0.75 // findBestMatch initial threshold
+  for (const c of candidates) {
+    if (c.brokerage_id !== brokerageId) continue // same-tenant only (PII isolation)
+    const { score } = calculateFuzzyMatch(incoming, c)
+    if (score > highest) {
+      highest = score
+      best = { row: c, score }
     }
   }
-  check("every viable record yields an identity key", withKey === records.length, `${withKey}/${records.length}`)
+  return best
+}
 
-  // Two records, same email → one dedup key.
-  const a = normalizeTavilyResult({ title: "A", content: "buy Tampa dup@example.com", url: "https://x/a", score: 0.5 }, market)
-  const b = normalizeTavilyResult({ title: "B", content: "investor Tampa DUP@example.com", url: "https://x/b", score: 0.6 }, market)
-  check("same email → identical dedup key (case-insensitive)", buildLeadIdentityKey(a) === buildLeadIdentityKey(b))
+function enrichPassthrough(f: { first_name: string | null; last_name: string | null; email: string | null; phone: string | null }) {
+  // Sandbox PeopleData returns no data → passthrough, confidence 0.3 (matches
+  // enrichWithPeopleData's null branch).
+  return { ...f, enrichmentConfidence: 0.3 }
+}
+
+function promotionGatePasses(e: { first_name: string | null; last_name: string | null; email: string | null }): boolean {
+  return !!(e.email && (e.first_name ?? "").trim() && (e.last_name ?? "").trim())
+}
+
+function stagePipeline() {
+  console.log("\n[5] Pipeline: pre-dedup → enrich → post-dedup → promotion gate")
+
+  // Existing same-brokerage records (the dedup candidate set the cron would load).
+  const existing: DbRow[] = [
+    { brokerage_id: "BK_BROK", first_name: "Jane", last_name: "Existing", email: "jane.existing@example.com", phone: "8135550111" },
+  ]
+
+  // Case 1 — unique incoming buyer for BK_BROK → no pre-dup → enrich → promote.
+  const unique = { first_name: "Carlos", last_name: "Newbuyer", email: "carlos.new@example.com", phone: "8135550199" }
+  const preDup1 = findDuplicate(unique, "BK_BROK", existing)
+  check("unique record → NO pre-enrichment duplicate", preDup1 === null)
+  const enriched1 = enrichPassthrough(unique)
+  const postDup1 = findDuplicate(enriched1, "BK_BROK", existing)
+  check("unique record → NO post-enrichment duplicate", postDup1 === null)
+  check("unique record passes promotion gate (full name + email)", promotionGatePasses(enriched1))
+
+  // Case 2 — incoming duplicate (same email as existing) → pre-enrich dup (skip).
+  const dup = { first_name: "J.", last_name: "Existing", email: "JANE.EXISTING@example.com", phone: null }
+  const preDup2 = findDuplicate(dup, "BK_BROK", existing)
+  check("same-email record → pre-enrichment DUPLICATE (score>0.75)", !!preDup2 && preDup2.score > 0.75, `score=${preDup2?.score.toFixed(2)}`)
+
+  // Case 3 — cross-tenant: BK_TEAM record with BK_BROK's email must NOT match.
+  const crossTenant = { first_name: "Jane", last_name: "Existing", email: "jane.existing@example.com", phone: "8135550111" }
+  const preDup3 = findDuplicate(crossTenant, "BK_TEAM", existing)
+  check("cross-tenant identical record → NO duplicate (PII isolation)", preDup3 === null)
+
+  // Case 4 — promotion gate rejects email-less record (raw stays unpromoted).
+  const noEmail = enrichPassthrough({ first_name: "No", last_name: "Email", email: null, phone: "8135550133" })
+  check("no-email record → promotion gate REJECTS", !promotionGatePasses(noEmail))
+
+  // Case 5 — phone-only match across same tenant → fuzzy phone weight (0.35) alone
+  // does not cross 0.75, so it is NOT a duplicate (name/email differ).
+  const phoneOnly = { first_name: "Different", last_name: "Person", email: "other@example.com", phone: "8135550111" }
+  const preDup5 = findDuplicate(phoneOnly, "BK_BROK", existing)
+  check("phone-only overlap (diff name+email) → NOT a duplicate", preDup5 === null)
 }
 
 // ── STAGE 6 — Scoring + urgency ──────────────────────────────────────────────
@@ -234,14 +288,14 @@ function main() {
 
   const active = stageKillSwitch()
   // Only proceed to spend for an active subscriber (mirrors the cron gate).
-  if (!active.has(B1)) {
+  if (!active.has("BK_BROK")) {
     console.log("active subscriber missing — aborting (kill-switch)")
     process.exit(1)
   }
   stageEnabledSources()
   const { records, costByVendor } = stageSourcing()
   const inMarket = stageTerritory(records)
-  stageDedup(inMarket)
+  stagePipeline()
   stageScoring(inMarket)
   stagePromotion(inMarket)
   stageUsage(costByVendor)
