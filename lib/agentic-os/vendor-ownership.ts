@@ -29,17 +29,21 @@ export const PLATFORM_VENDORS = new Set<string>([
 
 /** Vendors the BROKERAGE connects from its own account — gated by connection presence.
  *  Names are the CANONICAL provider names understood by connection-manager. */
+// Canonical provider names match the live credential stores (platform_credentials CHECK +
+// agent_api_credentials.service_name + integration_credentials.provider_name) so the
+// connectivity scan and connection gate recognize every name a connection may be stored under.
 export const USER_CONNECTED_VENDORS = new Set<string>([
   "idxbroker",                                                   // IDX / MLS listings
   "gohighlevel",                                                 // CRM sync
-  "sendgrid", "gmail", "outlook",                                // email
-  "twilio",                                                      // phone + SMS
-  "nylas",                                                       // calendar
-  "stripe", "quickbooks",                                        // financial
+  "sendgrid", "gmail", "outlook", "resend", "postmark", "mailgun", // email
+  "twilio", "telnyx", "bandwidth", "plivo", "sinch",             // phone + SMS
+  "nylas", "google_calendar",                                    // calendar
+  "stripe", "quickbooks", "plaid",                               // financial
   "dotloop", "docusign", "skyslope", "authentisign",
   "brokermint", "formsimplicity",                                // transaction / e-sign
   "showingtime",                                                 // showings
-  "meta", "linkedin", "twitter", "tiktok", "youtube", "pinterest", // social accounts
+  "meta", "facebook", "instagram", "linkedin", "twitter",
+  "tiktok", "youtube", "pinterest", "buffer",                    // social accounts
   "podcast_syndicator",                                          // podcast distribution
 ])
 

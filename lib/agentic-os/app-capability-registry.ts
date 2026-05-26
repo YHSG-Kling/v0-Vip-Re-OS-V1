@@ -42,10 +42,12 @@ export type AppCapability =
   | "video_distribute"     // distribute a marketing video across channels
   | "gift_send"            // trigger a closing/nurture gift order
   | "handwritten_note_send" // send a handwritten thank-you note
+  | "connectivity_scan"    // report live api/oauth/mcp connector health (Connectivity Agent)
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
   | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications" | "gifting"
+  | "connectivity"
 
 export interface AppCapabilityDef {
   capability: AppCapability
@@ -85,6 +87,8 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"] },
   gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Trigger a closing/nurture gift order for a contact.", inputs: ["brokerageId", "contactId", "giftType?"] },
   handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Send a handwritten thank-you note to a contact.", inputs: ["brokerageId", "contactId", "message?"] },
+
+  connectivity_scan:        { capability: "connectivity_scan",         verb: "GET",     scope: "connectivity:read", domain: "connectivity",  mutates: false, purpose: "Report live connection health of every api/oauth/mcp connector for the brokerage (expiry-aware).", inputs: ["brokerageId?"] },
 }
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {

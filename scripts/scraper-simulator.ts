@@ -75,6 +75,7 @@ import { hashAgentToken, generateAgentToken, extractBearerToken } from "../lib/a
 import { APP_CAPABILITY_REGISTRY, buildAppActionManifest, buildConnectedActionManifest, buildFullActionManifest } from "../lib/agentic-os/app-capability-registry"
 import { vendorOwnership, isPlatformVendor, isUserConnectedVendor, PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "../lib/agentic-os/vendor-ownership"
 import { CONNECTED_CAPABILITY_REGISTRY, isConnectedCapability } from "../lib/agentic-os/connected-vendor-registry"
+import { deriveConnectivityStatus, transportFor, summarizeConnectivity, needsAttention, EXPIRY_WARNING_DAYS, type ConnectorHealth } from "../lib/agentic-os/connectivity-agent"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -556,6 +557,33 @@ async function testVendorGateway() {
   check("connected plan: not connected → not_connected (with providers to connect)", (() => { const p = planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: false }); return p.decision === "not_connected" && p.missingConnections.includes("stripe") })())
   check("connected plan: authorized + connected write → requires_confirmation", planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "requires_confirmation")
   check("connected plan: authorized + connected read → execute", planConnectedInvocation("calendar_availability_get", { inputs: { from: "a", to: "b" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "execute")
+
+  // ── Connectivity API Agent (keeps up with api/oauth/mcp connection health) ──
+  const NOW = new Date("2026-05-26T00:00:00Z")
+  const soon = new Date(NOW.getTime() + 3 * 86_400_000).toISOString()  // 3 days out (< 7d)
+  const later = new Date(NOW.getTime() + 30 * 86_400_000).toISOString() // 30 days out
+  const past = new Date(NOW.getTime() - 86_400_000).toISOString()       // yesterday
+  check("connectivity: api_key connected when active", deriveConnectivityStatus({ connected: true, transport: "api_key", isActive: true }, NOW) === "connected")
+  check("connectivity: inactive credential → disconnected", deriveConnectivityStatus({ connected: true, transport: "api_key", isActive: false }, NOW) === "disconnected")
+  check("connectivity: no credential → disconnected", deriveConnectivityStatus({ connected: false, transport: "oauth" }, NOW) === "disconnected")
+  check("connectivity: oauth lapsed → expired", deriveConnectivityStatus({ connected: true, transport: "oauth", isActive: true, tokenExpiresAt: past }, NOW) === "expired")
+  check("connectivity: oauth within warning window → expiring_soon", deriveConnectivityStatus({ connected: true, transport: "oauth", isActive: true, tokenExpiresAt: soon }, NOW) === "expiring_soon")
+  check("connectivity: oauth far out → connected", deriveConnectivityStatus({ connected: true, transport: "oauth", isActive: true, tokenExpiresAt: later }, NOW) === "connected")
+  check("connectivity: platform_managed always platform_managed", deriveConnectivityStatus({ connected: false, transport: "platform_managed" }, NOW) === "platform_managed")
+  check("connectivity: 7-day warning window constant", EXPIRY_WARNING_DAYS === 7)
+  check("connectivity: transportFor classifies oauth vs api_key", transportFor("quickbooks") === "oauth" && transportFor("nylas") === "oauth" && transportFor("idxbroker") === "api_key" && transportFor("twilio") === "api_key")
+  check("connectivity: expired/expiring need attention; connected does not", needsAttention("expired") && needsAttention("expiring_soon") && !needsAttention("connected") && !needsAttention("disconnected"))
+  const fleet: ConnectorHealth[] = [
+    { provider: "idxbroker", transport: "api_key", status: "connected", expiresAt: null, source: "integration_credentials", actionRequired: false },
+    { provider: "nylas", transport: "oauth", status: "expiring_soon", expiresAt: soon, source: "platform_credentials", actionRequired: true },
+    { provider: "quickbooks", transport: "oauth", status: "expired", expiresAt: past, source: "agent_api_credentials", actionRequired: true },
+    { provider: "twilio", transport: "api_key", status: "disconnected", expiresAt: null, source: null, actionRequired: false },
+    { provider: "rentcast", transport: "platform_managed", status: "platform_managed", expiresAt: null, source: null, actionRequired: false },
+  ]
+  const sum = summarizeConnectivity(fleet)
+  check("connectivity summary counts by status", sum.total === 5 && sum.connected === 1 && sum.expiringSoon === 1 && sum.expired === 1 && sum.disconnected === 1 && sum.platformManaged === 1)
+  check("connectivity summary surfaces attention list (expired+expiring)", sum.attention.length === 2 && sum.attention.includes("quickbooks") && sum.attention.includes("nylas"))
+  check("connectivity_scan registered as a discoverable read capability", APP_CAPABILITY_REGISTRY.connectivity_scan?.verb === "GET" && APP_CAPABILITY_REGISTRY.connectivity_scan.scope === "connectivity:read" && APP_CAPABILITY_REGISTRY.connectivity_scan.mutates === false && APP_CAPABILITY_REGISTRY.connectivity_scan.domain === "connectivity")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
