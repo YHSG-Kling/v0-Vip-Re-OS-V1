@@ -71,6 +71,8 @@ import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governanc
 import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider, buildActionManifest, requiredScope, AGIS_VERBS } from "../lib/agentic-os/vendor-capability-registry"
 import { hasScope, authorizedActions, ALL_SCOPES } from "../lib/agentic-os/agent-scopes"
 import { planInvocation, parseInputSpec } from "../lib/agentic-os/invoke-planner"
+import { hashAgentToken, generateAgentToken, extractBearerToken } from "../lib/agentic-os/agent-credentials"
+import { APP_CAPABILITY_REGISTRY, buildAppActionManifest, buildFullActionManifest } from "../lib/agentic-os/app-capability-registry"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -494,6 +496,25 @@ async function testVendorGateway() {
   check("over budget + no free path → blocked", planInvocation("video_render", { inputs: { script: "hi", brokerageId: "b1", "avatar/voice assets": {} }, grantedScopes: ALL, overBudget: true }).selection.action === "block")
   // Over budget, read capability WITH free tier → still executes (degraded), not blocked.
   check("over budget read w/ free tier → execute (degraded)", (() => { const p = planInvocation("market_stats", { inputs: { zipCode: "33602" }, grantedScopes: ALL, overBudget: true }); return p.decision === "execute" && p.selection.usingFreeFallback })())
+
+  // ── Agent credentials (tokens + scopes) ────────────────────────────────────
+  const tok = generateAgentToken()
+  check("generated token has vos_ prefix", tok.startsWith("vos_"))
+  check("token hash is deterministic sha256 hex (64 chars)", hashAgentToken(tok) === hashAgentToken(tok) && /^[0-9a-f]{64}$/.test(hashAgentToken(tok)))
+  check("different tokens → different hashes", hashAgentToken(generateAgentToken()) !== hashAgentToken(generateAgentToken()))
+  check("extractBearerToken parses 'Bearer vos_...'", extractBearerToken(`Bearer ${tok}`) === tok)
+  check("extractBearerToken rejects non-vos / missing", extractBearerToken("Bearer abc123") === null && extractBearerToken(null) === null && extractBearerToken("Basic xxx") === null)
+
+  // ── App-capability expansion + unified manifest ─────────────────────────────
+  const appManifest = buildAppActionManifest()
+  check("app registry covers kernel ops", Object.keys(APP_CAPABILITY_REGISTRY).length >= 8 && !!APP_CAPABILITY_REGISTRY.lead_search && !!APP_CAPABILITY_REGISTRY.transaction_advance)
+  check("app actions are scope-tagged + verb'd", appManifest.every((a) => a.scope.includes(":") && a.verb.length > 0 && a.kind === "app"))
+  check("read app caps not mutating; write app caps mutating", APP_CAPABILITY_REGISTRY.lead_search.mutates === false && APP_CAPABILITY_REGISTRY.listing_publish.mutates === true && APP_CAPABILITY_REGISTRY.transaction_advance.mutates === true)
+  const full = buildFullActionManifest()
+  check("unified manifest merges vendor + app", full.some((a) => a.kind === "vendor") && full.some((a) => a.kind === "app") && full.length === manifest.length + appManifest.length)
+  check("unified manifest stays VENDOR-ANONYMOUS", !JSON.stringify(full).includes("rentcast") && !JSON.stringify(full).includes("perplexity") && !JSON.stringify(full).includes("vapi"))
+  check("unified manifest sorted by intentWeight desc", full.every((a, i) => i === 0 || full[i - 1].intentWeight >= a.intentWeight))
+  check("listing_publish (PUBLISH) is highest-weight write", full[0].mutates === true)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

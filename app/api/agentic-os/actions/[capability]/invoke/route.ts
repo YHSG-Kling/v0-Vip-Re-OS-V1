@@ -7,13 +7,10 @@
 // Side-effecting actions (RENDER/NOTIFY) are never auto-fired here — they carry their
 // own guarded, context-rich dedicated routes.
 import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
-import { requireAuth } from "@/lib/kernel/api-auth"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { VENDOR_CAPABILITY_REGISTRY, type VendorCapability } from "@/lib/agentic-os/vendor-capability-registry"
 import { planInvocation } from "@/lib/agentic-os/invoke-planner"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
-import { ALL_SCOPES } from "@/lib/agentic-os/agent-scopes"
+import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
 
 // Executors for read/analyze actions. Side-effecting capabilities intentionally have
 // no executor here — they run through their dedicated guarded routes after confirmation.
@@ -38,9 +35,10 @@ const STATUS: Record<string, number> = {
 }
 
 export async function POST(req: Request, ctx: { params: Promise<{ capability: string }> }) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
+  const caller = await resolveAgenticCaller(req)
+  if (caller.via === "none") {
+    return NextResponse.json({ error: "Unauthenticated — supply an agent bearer token or sign in" }, { status: 401 })
+  }
 
   const { capability } = await ctx.params
   if (!(capability in VENDOR_CAPABILITY_REGISTRY)) {
@@ -56,12 +54,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
   }
   const inputs = body.inputs ?? {}
 
-  const grantedScopes = isPlatformStaff(auth.userType) ? [ALL_SCOPES] : []
+  const grantedScopes = caller.scopes
   let overBudget = false
-  try {
-    const budget = await checkVendorBudget({ brokerageId: auth.brokerageId })
-    overBudget = !budget.allowed
-  } catch { /* fail open */ }
+  if (caller.brokerageId) {
+    try {
+      const budget = await checkVendorBudget({ brokerageId: caller.brokerageId })
+      overBudget = !budget.allowed
+    } catch { /* fail open */ }
+  }
 
   const plan = planInvocation(cap, { inputs, grantedScopes, overBudget })
 
@@ -80,7 +80,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
   }
 
   try {
-    const result = await executor(inputs, { brokerageId: auth.brokerageId })
+    const result = await executor(inputs, { brokerageId: caller.brokerageId ?? "" })
     return NextResponse.json({ status: "executed", plan, result })
   } catch (err) {
     return NextResponse.json(

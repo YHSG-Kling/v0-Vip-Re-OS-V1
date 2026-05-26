@@ -161,8 +161,13 @@ export function getVendorCapability(capability: VendorCapability): VendorCapabil
 // deliberately VENDOR-ANONYMOUS: it describes WHAT the action does + the scope it
 // needs, never WHICH connector serves it (vendor selection stays platform-internal).
 
-/** AGIS semantic verb vocabulary — what the agent is trying to DO (intent-oriented). */
-export const AGIS_VERBS = ["FIND", "ANALYZE", "ENRICH", "RENDER", "NOTIFY", "DELEGATE", "ESCALATE", "DISCOVER", "DESCRIBE"] as const
+/** AGIS semantic verb vocabulary — what the agent is trying to DO (intent-oriented).
+ *  Read verbs: FIND/ANALYZE/ENRICH/GET/DISCOVER/DESCRIBE. Side-effecting verbs:
+ *  RENDER/NOTIFY/DELEGATE/ESCALATE/CREATE/UPDATE/BOOK/ADVANCE/PUBLISH. */
+export const AGIS_VERBS = [
+  "FIND", "ANALYZE", "ENRICH", "GET", "DISCOVER", "DESCRIBE",
+  "RENDER", "NOTIFY", "DELEGATE", "ESCALATE", "CREATE", "UPDATE", "BOOK", "ADVANCE", "PUBLISH",
+] as const
 export type AgisVerb = (typeof AGIS_VERBS)[number]
 
 export interface CapabilityAgis {

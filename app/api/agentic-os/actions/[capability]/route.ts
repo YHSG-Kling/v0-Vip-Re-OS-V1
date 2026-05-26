@@ -3,17 +3,16 @@
 // action: AGIS verb, required scope, intent weight, business purpose, and the typed
 // input spec (required vs optional) an agent must satisfy to INVOKE it. VENDOR-ANONYMOUS.
 import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
-import { requireAuth } from "@/lib/kernel/api-auth"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { VENDOR_CAPABILITY_REGISTRY, CAPABILITY_AGIS, type VendorCapability } from "@/lib/agentic-os/vendor-capability-registry"
 import { parseInputSpec, SIDE_EFFECTING_VERBS, CONFIRMATION_THRESHOLD } from "@/lib/agentic-os/invoke-planner"
-import { hasScope, ALL_SCOPES } from "@/lib/agentic-os/agent-scopes"
+import { hasScope } from "@/lib/agentic-os/agent-scopes"
+import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
 
-export async function GET(_req: Request, ctx: { params: Promise<{ capability: string }> }) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
+export async function GET(req: Request, ctx: { params: Promise<{ capability: string }> }) {
+  const caller = await resolveAgenticCaller(req)
+  if (caller.via === "none") {
+    return NextResponse.json({ error: "Unauthenticated — supply an agent bearer token or sign in" }, { status: 401 })
+  }
 
   const { capability } = await ctx.params
   if (!(capability in VENDOR_CAPABILITY_REGISTRY)) {
@@ -25,7 +24,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ capability: st
   const cap = capability as VendorCapability
   const def = VENDOR_CAPABILITY_REGISTRY[cap]
   const agis = CAPABILITY_AGIS[cap]
-  const granted = isPlatformStaff(auth.userType) ? [ALL_SCOPES] : []
+  const granted = caller.scopes
   const requiresConfirmation = SIDE_EFFECTING_VERBS.has(agis.verb) || agis.intentWeight >= CONFIRMATION_THRESHOLD
 
   return NextResponse.json({

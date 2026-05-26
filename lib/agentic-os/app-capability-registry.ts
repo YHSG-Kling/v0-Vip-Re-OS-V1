@@ -1,0 +1,107 @@
+// lib/agentic-os/app-capability-registry.ts
+// Expands the Agentic API beyond external CONNECTORS to the app's own KERNEL
+// operations (leads, CRM, CMA, calendar, transactions, listings, ISA). Same
+// agenticapi.com model — AGIS intent verb + granular scope + business context — but
+// gated by SCOPE/role (not vendor budget). `mutates` marks write ops, which (like
+// side-effecting verbs) require confirmation before an agent executes them.
+//
+// Pure — no I/O — so the registry + the unified manifest are unit-tested.
+
+import { buildActionManifest, type AgisVerb } from "./vendor-capability-registry"
+
+export type AppCapability =
+  | "lead_search"          // find leads in a brokerage by criteria
+  | "contact_get"          // fetch a contact record
+  | "cma_generate"         // generate a CMA report (writes + may spend)
+  | "appointment_schedule" // book an appointment on the calendar
+  | "transaction_advance"  // advance a transaction to the next stage
+  | "listing_publish"      // publish a listing (coming-soon → active)
+  | "isa_qualify"          // run AI-ISA qualification on a lead
+  | "lead_create"          // create a lead/contact record
+
+export type AppDomain = "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
+
+export interface AppCapabilityDef {
+  capability: AppCapability
+  verb: AgisVerb
+  scope: string
+  domain: AppDomain
+  purpose: string
+  inputs: string[]
+  /** True for write/side-effecting operations — require confirmation before invoke. */
+  mutates: boolean
+}
+
+export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = {
+  lead_search:          { capability: "lead_search",          verb: "FIND",    scope: "lead:read",         domain: "lead_generation", mutates: false, purpose: "Search the brokerage's leads by status, source, score, or territory.", inputs: ["brokerageId", "filters?"] },
+  contact_get:          { capability: "contact_get",          verb: "GET",     scope: "contact:read",      domain: "crm",             mutates: false, purpose: "Fetch a single contact record (CRM) with its lead lineage.", inputs: ["contactId"] },
+  cma_generate:         { capability: "cma_generate",         verb: "ANALYZE", scope: "cma:write",         domain: "valuation",       mutates: true,  purpose: "Generate a comparative market analysis report for a property.", inputs: ["agentId", "propertyAddress", "propertyCity", "propertyState", "propertyZip"] },
+  appointment_schedule: { capability: "appointment_schedule", verb: "BOOK",    scope: "calendar:write",    domain: "scheduling",      mutates: true,  purpose: "Book an appointment on an agent's calendar with a contact.", inputs: ["agentId", "contactId", "startsAt", "durationMin?"] },
+  transaction_advance:  { capability: "transaction_advance",  verb: "ADVANCE", scope: "transaction:write", domain: "transactions",    mutates: true,  purpose: "Advance a transaction to its next valid lifecycle stage.", inputs: ["transactionId", "toStatus"] },
+  listing_publish:      { capability: "listing_publish",      verb: "PUBLISH", scope: "listing:write",     domain: "listings",        mutates: true,  purpose: "Publish a listing (signed agreement → coming-soon / active).", inputs: ["listingId"] },
+  isa_qualify:          { capability: "isa_qualify",          verb: "ANALYZE", scope: "lead:qualify",      domain: "lead_generation", mutates: true,  purpose: "Run AI-ISA qualification on a lead and record the outcome.", inputs: ["leadId"] },
+  lead_create:          { capability: "lead_create",          verb: "CREATE",  scope: "lead:write",        domain: "lead_generation", mutates: true,  purpose: "Create a new lead/contact record from supplied identity.", inputs: ["brokerageId", "firstName", "lastName", "email?", "phone?"] },
+}
+
+export function getAppCapability(capability: AppCapability): AppCapabilityDef {
+  return APP_CAPABILITY_REGISTRY[capability]
+}
+
+// Intent weight by verb — reads low, writes high (planning/confirmation hint).
+const VERB_WEIGHT: Partial<Record<AgisVerb, number>> = {
+  GET: 0.2, FIND: 0.4, ANALYZE: 0.6, ENRICH: 0.6,
+  BOOK: 0.85, CREATE: 0.85, UPDATE: 0.85, ADVANCE: 0.9, PUBLISH: 0.95,
+}
+
+export interface UnifiedAction {
+  action: string
+  kind: "vendor" | "app"
+  verb: AgisVerb
+  capability: string
+  category: string
+  scope: string
+  purpose: string
+  inputs: string[]
+  intentWeight: number
+  mutates: boolean
+}
+
+/** Pure: app kernel operations as agentic actions (vendor-anonymous; scope-tagged). */
+export function buildAppActionManifest(): UnifiedAction[] {
+  return (Object.keys(APP_CAPABILITY_REGISTRY) as AppCapability[]).map((cap) => {
+    const def = APP_CAPABILITY_REGISTRY[cap]
+    return {
+      action: `${def.verb} ${cap}`,
+      kind: "app" as const,
+      verb: def.verb,
+      capability: cap,
+      category: def.domain,
+      scope: def.scope,
+      purpose: def.purpose,
+      inputs: def.inputs,
+      intentWeight: VERB_WEIGHT[def.verb] ?? (def.mutates ? 0.85 : 0.4),
+      mutates: def.mutates,
+    }
+  })
+}
+
+/**
+ * Pure: the UNIFIED Agentic API manifest — every external connector capability AND
+ * every internal kernel operation, as one machine-readable, vendor-anonymous surface
+ * an agent can DISCOVER. Sorted by intent weight (most consequential first).
+ */
+export function buildFullActionManifest(): UnifiedAction[] {
+  const vendor: UnifiedAction[] = buildActionManifest().map((a) => ({
+    action: a.action,
+    kind: "vendor" as const,
+    verb: a.verb,
+    capability: a.capability,
+    category: a.category,
+    scope: a.scope,
+    purpose: a.purpose,
+    inputs: a.inputs,
+    intentWeight: a.intentWeight,
+    mutates: a.verb === "RENDER" || a.verb === "NOTIFY",
+  }))
+  return [...vendor, ...buildAppActionManifest()].sort((a, b) => b.intentWeight - a.intentWeight)
+}
