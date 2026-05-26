@@ -11,8 +11,9 @@ import { VENDOR_CAPABILITY_REGISTRY, type VendorCapability } from "@/lib/agentic
 import { planInvocation, planConnectedInvocation } from "@/lib/agentic-os/invoke-planner"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
-import { isConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
+import { isConnectedCapability, getConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
 import { resolveConnectedCapability } from "@/lib/agentic-os/resolve-connected-capability"
+import { recordInvocation } from "@/lib/agentic-os/invocation-log"
 
 // Executors for read/analyze actions. Side-effecting capabilities intentionally have
 // no executor here — they run through their dedicated guarded routes after confirmation.
@@ -52,6 +53,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
     body = { inputs: {} }
   }
   const inputs = body.inputs ?? {}
+  const startedAt = Date.now()
 
   // ── User-connected vendor capability — connection-gated (NOT platform budget). ──
   if (isConnectedCapability(capability)) {
@@ -62,6 +64,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
       inputs,
       grantedScopes: caller.scopes,
       connected: resolution?.connected ?? false,
+    })
+    const verb = getConnectedCapability(capability).verb
+    const status = plan.decision === "execute" ? "no_executor" : plan.decision
+    void recordInvocation({
+      capability, kind: "connected", verb, decision: status,
+      brokerageId: caller.brokerageId ?? null, callerVia: caller.via,
+      authorized: plan.decision !== "unauthorized", durationMs: Date.now() - startedAt,
+      detail: { connectedProvider: resolution?.provider ?? null, missing: plan.missingConnections },
     })
     if (plan.decision !== "execute") {
       return NextResponse.json({ status: plan.decision, plan }, { status: STATUS[plan.decision] ?? 200 })
@@ -89,8 +99,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
   }
 
   const plan = planInvocation(cap, { inputs, grantedScopes, overBudget })
+  const logVendor = (decision: string, error?: string | null) =>
+    void recordInvocation({
+      capability: cap, kind: "vendor", decision,
+      brokerageId: caller.brokerageId ?? null, callerVia: caller.via,
+      authorized: plan.decision !== "unauthorized", durationMs: Date.now() - startedAt,
+      error: error ?? null, detail: { provider: plan.selection?.provider, overBudget },
+    })
 
   if (plan.decision !== "execute") {
+    logVendor(plan.decision)
     return NextResponse.json({ status: plan.decision, plan }, { status: STATUS[plan.decision] ?? 200 })
   }
 
@@ -98,6 +116,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
   if (!executor) {
     // Authorized + within budget, but this read action has no generic executor — it is
     // served by its own dedicated route. Honest 501, not a fabricated result.
+    logVendor("no_executor")
     return NextResponse.json(
       { status: "no_executor", plan, message: `Use the dedicated endpoint for ${cap}` },
       { status: 501 },
@@ -106,10 +125,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
 
   try {
     const result = await executor(inputs, { brokerageId: caller.brokerageId ?? "" })
+    logVendor("executed")
     return NextResponse.json({ status: "executed", plan, result })
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logVendor("error", msg)
     return NextResponse.json(
-      { status: "error", plan, error: err instanceof Error ? err.message : String(err) },
+      { status: "error", plan, error: msg },
       { status: 502 },
     )
   }

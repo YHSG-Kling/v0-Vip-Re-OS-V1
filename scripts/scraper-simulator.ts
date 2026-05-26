@@ -79,6 +79,8 @@ import { deriveConnectivityStatus, transportFor, summarizeConnectivity, needsAtt
 import { inferTransport, assessShape, adaptResponse, shapeHealthy, type ConnectorShapeSpec } from "../lib/agentic-os/connector-shape"
 import { classifyProbe, PROBE_SPECS } from "../lib/agentic-os/connector-probe"
 import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
+import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
+import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -618,6 +620,18 @@ async function testVendorGateway() {
   check("gateway builds bearer auth header + joined url", (() => { const r = buildAuthedRequest({ connector: "lofty", baseUrl: "https://api.lofty.com/v1", path: "contacts", auth: { style: "bearer", token: "TKN" } }); return r.headers.Authorization === "Bearer TKN" && r.url === "https://api.lofty.com/v1/contacts" })())
   check("gateway builds basic auth (followupboss key:'' )", (() => { const r = buildAuthedRequest({ connector: "followupboss", baseUrl: "https://api.followupboss.com/v1", path: "/people", auth: { style: "basic", username: "APIKEY", password: "" } }); return r.headers.Authorization === `Basic ${Buffer.from("APIKEY:").toString("base64")}` })())
   check("gateway header auth + query auth styles", (() => { const h = buildAuthedRequest({ connector: "idxbroker", baseUrl: "https://api.idxbroker.com", path: "clients/accountinfo", auth: { style: "header", name: "accesskey", value: "K" } }); const q = buildAuthedRequest({ connector: "meta", baseUrl: "https://graph.facebook.com/v18.0", path: "me", auth: { style: "query", name: "access_token", value: "T" } }); return h.headers.accesskey === "K" && q.url.includes("access_token=T") })())
+  check("gateway merges vendor-required extra headers (e.g. GHL Version)", buildAuthedRequest({ connector: "gohighlevel", baseUrl: "https://services.leadconnectorhq.com", path: "/contacts/", auth: { style: "bearer", token: "T" }, headers: { Version: "2021-07-28" } }).headers.Version === "2021-07-28")
+
+  // ── Invocation audit/learning log (pure decision→outcome) ────────────────────
+  check("invocation outcome mapping", outcomeForDecision("executed") === "executed" && outcomeForDecision("requires_confirmation") === "planned" && outcomeForDecision("no_executor") === "planned" && outcomeForDecision("unauthorized") === "denied" && outcomeForDecision("not_connected") === "denied" && outcomeForDecision("blocked") === "denied" && outcomeForDecision("error") === "error")
+
+  // ── MCP server wrapper (manifest → tools) ────────────────────────────────────
+  const mcpTools = manifestToMcpTools(buildFullActionManifest())
+  check("MCP exposes one tool per unified capability", mcpTools.length === buildFullActionManifest().length && mcpTools.length >= 30)
+  check("MCP tools carry scope+ownership meta + valid names", mcpTools.every((t) => /^[a-zA-Z0-9_-]+$/.test(t.name) && t.inputSchema.type === "object" && !!t._meta.scope && !!t._meta.ownership))
+  check("MCP inputSchema marks required vs optional", (() => { const s = inputsToJsonSchema(["address", "zipCode?"]); return s.required.includes("address") && !s.required.includes("zipCode") && !!s.properties.zipCode })())
+  check("MCP tool name sanitizer", toToolName("lead_search") === "lead_search")
+  check("MCP stays vendor-anonymous (no platform vendor names leak)", !JSON.stringify(mcpTools).includes("rentcast") && !JSON.stringify(mcpTools).includes("perplexity"))
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

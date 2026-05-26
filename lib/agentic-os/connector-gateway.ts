@@ -24,6 +24,8 @@ export interface GatewayRequest {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   query?: Record<string, string>
   body?: unknown
+  /** Extra vendor-required headers (e.g. an API version header). Merged after auth. */
+  headers?: Record<string, string>
   auth: GatewayAuth
   /** Optional response shape — when present, the response is adapted + drift is reported. */
   shape?: ConnectorShapeSpec
@@ -44,7 +46,7 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
   const url = new URL(req.path.replace(/^\//, ""), req.baseUrl.endsWith("/") ? req.baseUrl : `${req.baseUrl}/`)
   for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v)
 
-  const headers: Record<string, string> = { Accept: "application/json" }
+  const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) }
   if (req.body !== undefined) headers["Content-Type"] = "application/json"
 
   switch (req.auth.style) {

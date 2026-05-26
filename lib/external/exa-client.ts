@@ -31,28 +31,29 @@ export async function exaSearch(params: {
   const apiKey = process.env.EXA_API_KEY
   if (!apiKey) return { results: [], cost: 0 }
 
-  try {
-    const res = await fetch(`${EXA_BASE}/search`, {
-      method: "POST",
-      headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: params.query,
-        type: "neural",
-        numResults: params.numResults ?? 25,
-        ...(params.startPublishedDate ? { startPublishedDate: params.startPublishedDate } : {}),
-        ...(params.includeDomains ? { includeDomains: params.includeDomains } : {}),
-        contents: { text: { maxCharacters: 1000 } },
-      }),
-    })
-    if (!res.ok) return { results: [], cost: 0 }
-    const json = await res.json()
-    const rows: any[] = json?.results ?? []
-    return {
-      results: rows.map((r) => normalizeExaRow(r)),
-      cost: typeof json?.costDollars?.total === "number" ? json.costDollars.total : 0.005 * rows.length,
-    }
-  } catch {
-    return { results: [], cost: 0 }
+  // Single egress: route through the connector-gateway (one way in/out). callConnector
+  // never throws, so the no-results fallback is preserved.
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<{ results?: any[]; costDollars?: { total?: number } }>({
+    connector: "exa",
+    baseUrl: EXA_BASE,
+    path: "search",
+    method: "POST",
+    auth: { style: "header", name: "x-api-key", value: apiKey },
+    body: {
+      query: params.query,
+      type: "neural",
+      numResults: params.numResults ?? 25,
+      ...(params.startPublishedDate ? { startPublishedDate: params.startPublishedDate } : {}),
+      ...(params.includeDomains ? { includeDomains: params.includeDomains } : {}),
+      contents: { text: { maxCharacters: 1000 } },
+    },
+  })
+  if (!res.ok || !res.data) return { results: [], cost: 0 }
+  const rows: any[] = res.data.results ?? []
+  return {
+    results: rows.map((r) => normalizeExaRow(r)),
+    cost: typeof res.data.costDollars?.total === "number" ? res.data.costDollars.total : 0.005 * rows.length,
   }
 }
 
