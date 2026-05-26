@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -237,6 +238,9 @@ export default async function TeamDashboard() {
       </div>
 
       <div className="p-6 space-y-6">
+        {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
+        <BudgetWarningBanner />
+
         {/* Command Strip */}
         <div className="flex flex-wrap items-center gap-2 p-3 bg-muted/30 border border-border rounded-lg">
           <span className="text-sm font-semibold text-foreground mr-1">Quick Access</span>

@@ -45,3 +45,37 @@ export function evaluateVendorBudget(spent: number, budget: number, addCost = 0)
 export function vendorBudgetForTier(planTier: string | null | undefined): number {
   return MONTHLY_VENDOR_BUDGET_USD[planTier ?? "solo_agent"] ?? DEFAULT_VENDOR_BUDGET
 }
+
+export interface BrokerageSpendRow {
+  brokerageId: string
+  name: string
+  planTier: string
+  spent: number
+  budget: number
+  percent: number
+  level: "ok" | "approaching" | "paused"
+}
+
+/**
+ * Pure: month-to-date vendor spend per brokerage → a platform-staff overview row set.
+ * Spend rows are summed by brokerage; the ceiling comes from each brokerage's tier.
+ * Sorted by percent-of-budget descending (closest-to-limit first).
+ */
+export function aggregateBrokerageSpend(
+  usageRows: Array<{ brokerage_id: string | null; estimated_cost: number | string | null }>,
+  brokerages: Array<{ id: string; name: string | null; plan_tier: string | null }>,
+): BrokerageSpendRow[] {
+  const spentByBrokerage = new Map<string, number>()
+  for (const r of usageRows) {
+    if (!r.brokerage_id) continue
+    spentByBrokerage.set(r.brokerage_id, (spentByBrokerage.get(r.brokerage_id) ?? 0) + (Number(r.estimated_cost) || 0))
+  }
+  return brokerages
+    .map((b) => {
+      const spent = Math.round((spentByBrokerage.get(b.id) ?? 0) * 100) / 100
+      const e = evaluateVendorBudget(spent, vendorBudgetForTier(b.plan_tier))
+      const level: BrokerageSpendRow["level"] = !e.allowed ? "paused" : e.softWarning ? "approaching" : "ok"
+      return { brokerageId: b.id, name: b.name ?? "—", planTier: b.plan_tier ?? "solo_agent", spent, budget: e.budget, percent: e.percent, level }
+    })
+    .sort((a, b) => b.percent - a.percent)
+}

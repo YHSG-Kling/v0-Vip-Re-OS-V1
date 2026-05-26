@@ -65,7 +65,7 @@ import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housin
 import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
-import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD } from "../lib/vendor-governance/budget-eval"
+import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
@@ -392,6 +392,27 @@ async function testVendorGateway() {
   // Even blocked, brokerage only sees level (paused) — never the numbers.
   const brokBlocked = redactBudgetForActor(evalBlocked, { isPlatformStaff: false, showBrokerageWarning: true })
   check("brokerage blocked → level 'paused', still no $", brokBlocked.level === "paused" && !("spent" in brokBlocked))
+
+  // ── Support-console overview aggregation (multi-tier: solo / team / brokerage) ──
+  const overview = aggregateBrokerageSpend(
+    [
+      { brokerage_id: "solo1", estimated_cost: 48 },   // near solo $50 ceiling
+      { brokerage_id: "solo1", estimated_cost: 3 },     // → 51 over → paused
+      { brokerage_id: "team1", estimated_cost: 170 },   // 85% of team $200 → approaching
+      { brokerage_id: "brok1", estimated_cost: 100 },   // well under brokerage $750 → ok
+    ],
+    [
+      { id: "solo1", name: "Solo Co", plan_tier: "solo_agent" },
+      { id: "team1", name: "Team Co", plan_tier: "team" },
+      { id: "brok1", name: "Brokerage Co", plan_tier: "brokerage" },
+    ],
+  )
+  const byId = Object.fromEntries(overview.map((r) => [r.brokerageId, r]))
+  check("overview sums per brokerage (solo1 = 51)", byId.solo1.spent === 51)
+  check("solo over $50 ceiling → paused", byId.solo1.level === "paused" && byId.solo1.budget === 50)
+  check("team at 85% of $200 → approaching", byId.team1.level === "approaching" && byId.team1.budget === 200)
+  check("brokerage under $750 → ok", byId.brok1.level === "ok" && byId.brok1.budget === 750)
+  check("overview sorted closest-to-limit first", overview[0].brokerageId === "solo1")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

@@ -15,6 +15,7 @@ import {
   getVendorSpendBreakdown,
 } from "@/lib/vendor-governance/budget-gate"
 import { redactBudgetForActor, type BudgetView } from "@/lib/vendor-governance/budget-visibility"
+import { aggregateBrokerageSpend, type BrokerageSpendRow } from "@/lib/vendor-governance/budget-eval"
 
 async function resolveActor(): Promise<{ userId: string; userType: string; brokerageId: string | null; email: string } | null> {
   const supabase = await createClient()
@@ -64,6 +65,26 @@ export async function getPlatformVendorBudget(brokerageId: string): Promise<
     getVendorSpendBreakdown(brokerageId),
   ])
   return { ok: true, view: redactBudgetForActor(budget, { isPlatformStaff: true, showBrokerageWarning: true, vendors }) }
+}
+
+/**
+ * Cross-brokerage vendor-spend overview — PLATFORM STAFF ONLY (superadmin/support).
+ * Powers the read-only support console; sorted closest-to-limit first.
+ */
+export async function getPlatformVendorSpendOverview(): Promise<
+  { ok: true; rows: BrokerageSpendRow[] } | { ok: false; error: string }
+> {
+  const actor = await resolveActor()
+  if (!actor) return { ok: false, error: "Unauthenticated" }
+  if (!isPlatformStaff(actor.userType)) return { ok: false, error: "Platform staff access required" }
+
+  const svc = createServiceClient()
+  const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
+  const [{ data: usage }, { data: brokerages }] = await Promise.all([
+    svc.from("vendor_usage_tracking").select("brokerage_id, estimated_cost").gte("created_at", startOfMonth),
+    svc.from("brokerages").select("id, name, plan_tier"),
+  ])
+  return { ok: true, rows: aggregateBrokerageSpend(usage ?? [], brokerages ?? []) }
 }
 
 /**
