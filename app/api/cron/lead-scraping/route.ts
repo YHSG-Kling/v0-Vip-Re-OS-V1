@@ -35,6 +35,7 @@ import {
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
+import { meterVendorSpend, scraperTypeToVendor } from "@/lib/vendor-governance/meter-vendor"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
 import {
@@ -252,6 +253,15 @@ export async function GET(request: Request) {
             api_cost: sourceCostUsd,
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id)
+
+          // Unified vendor-spend ledger (one gateway for all data-vendor cost).
+          await meterVendorSpend({
+            vendorName: scraperTypeToVendor("zillow_behavior"),
+            usageType: "property_scrape",
+            cost: sourceCostUsd,
+            brokerageId: market.brokerage_id,
+            metadata: { market_id: market.id, scraper_type: "zillow_behavior" },
+          })
 
           territorySpendUsd += sourceCostUsd
         }
@@ -576,6 +586,15 @@ export async function GET(request: Request) {
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
+        // Unified vendor-spend ledger (Apify + Exa + Tavily social scrape).
+        await meterVendorSpend({
+          vendorName: scraperTypeToVendor("social_intent"),
+          usageType: "social_scrape",
+          cost: sourceCostUsd,
+          brokerageId: market.brokerage_id,
+          metadata: { market_id: market.id, scraper_type: "social_intent" },
+        })
+
         territorySpendUsd += sourceCostUsd
       }
 
@@ -590,6 +609,13 @@ export async function GET(request: Request) {
             county: market.counties?.[0] ?? null,
           })
           territorySpendUsd += cost
+          await meterVendorSpend({
+            vendorName: scraperTypeToVendor("osint_signal"),
+            usageType: "public_records",
+            cost,
+            brokerageId: market.brokerage_id,
+            metadata: { market_id: market.id, scraper_type: "osint_signal" },
+          })
           for (const record of records) {
             const { inserted } = await insertRawRecord({
               supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: null,

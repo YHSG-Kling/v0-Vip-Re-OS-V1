@@ -64,6 +64,7 @@ import {
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
 import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
+import { meterVendorSpend, scraperTypeToVendor } from "../lib/vendor-governance/meter-vendor"
 
 let passed = 0
 let failed = 0
@@ -296,6 +297,42 @@ async function testVendorConnectors() {
   check("Apify returns dataset items array", Array.isArray(apifyRes.data) && apifyRes.data.length === 1)
 
   globalThis.fetch = realFetch
+}
+
+// ── 8c. Unified vendor-spend gateway (meterVendorSpend) ──────────────────────
+async function testVendorGateway() {
+  console.log("\n[Unified vendor-spend gateway — meterVendorSpend]")
+  // scraper_type → canonical vendor mapping (the ledger's vendor_name).
+  check("zillow_behavior → zenrows", scraperTypeToVendor("zillow_behavior") === "zenrows")
+  check("batchdata_motivated → batchdata", scraperTypeToVendor("batchdata_motivated") === "batchdata")
+  check("social_intent → apify_social", scraperTypeToVendor("social_intent") === "apify_social")
+  check("osint_signal → osint", scraperTypeToVendor("osint_signal") === "osint")
+
+  // Captured logger records exactly what the gateway forwards.
+  const calls: any[] = []
+  const logger = async (e: any) => {
+    calls.push(e)
+    return { success: true }
+  }
+
+  const recorded = await meterVendorSpend(
+    { vendorName: "tavily", usageType: "social_scrape", cost: 0.05, brokerageId: "b1", metadata: { market_id: "m1" } },
+    { logger },
+  )
+  check("records spend when cost>0 + brokerageId", recorded === true && calls.length === 1)
+  check("forwards estimatedCost + vendor + brokerage", calls[0]?.estimatedCost === 0.05 && calls[0]?.vendorName === "tavily" && calls[0]?.brokerageId === "b1")
+  check("defaults systemSource to lead_scraping", calls[0]?.systemSource === "lead_scraping")
+
+  // No-op guards (no ledger pollution).
+  const zeroCost = await meterVendorSpend({ vendorName: "exa", usageType: "x", cost: 0, brokerageId: "b1" }, { logger })
+  check("skips zero-cost calls", zeroCost === false && calls.length === 1)
+  const noBrokerage = await meterVendorSpend({ vendorName: "exa", usageType: "x", cost: 0.1, brokerageId: null }, { logger })
+  check("skips calls with no brokerage", noBrokerage === false && calls.length === 1)
+
+  // Never throws even if the logger blows up.
+  const boom = async () => { throw new Error("ledger down") }
+  const safe = await meterVendorSpend({ vendorName: "zenrows", usageType: "x", cost: 0.2, brokerageId: "b1" }, { logger: boom as any })
+  check("never throws when ledger fails", safe === false)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
@@ -772,6 +809,7 @@ async function main() {
   testNewSources()
   await testActorResilience()
   await testVendorConnectors()
+  await testVendorGateway()
   testExaBuyerIntent()
   testTavilyIntent()
   await testWebSearchFallback()
