@@ -247,6 +247,7 @@ export async function negotiationCoPilot(params: {
     bedrooms: listing?.bedrooms ?? null,
     sqft:     listing?.sqft ?? null,
     listPrice,
+    brokerageId: listing?.brokerage_id ?? null,
   })
 
   // ─── 2b. Escalation cap calculator ───────────────────────────────────────
@@ -355,20 +356,19 @@ async function summarizeComparables(input: {
   bedrooms: number | null
   sqft:     number | null
   listPrice: number
+  brokerageId: string | null
 }): Promise<ComparableSummary> {
-  // Try BatchData external pull first (returns up to 20 recent sold comps).
+  // RentCast comps (the platform comps provider). Returns recent sold comps with
+  // sale_price / days_on_market / price_per_sqft — the fields the medians use.
   try {
-    const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
-    const comps = await fetchComparableSales({
-      address:    input.address ?? "",
-      city:       input.city ?? "",
-      state:      input.state ?? "",
-      zip:        input.zip ?? "",
-      bedrooms:   input.bedrooms ?? 0,
-      bathrooms:  0,
-      squareFeet: input.sqft ?? 0,
-      radiusMiles: 1,
-    }).catch(() => null)
+    const { getRentcastComps } = await import("@/lib/property/rentcast")
+    const comps = input.brokerageId
+      ? await getRentcastComps({
+          brokerageId: input.brokerageId,
+          address: [input.address, input.city, input.state, input.zip].filter(Boolean).join(", "),
+          limit: 20,
+        }).catch(() => null)
+      : null
 
     if (comps && Array.isArray(comps) && comps.length > 0) {
       // BatchDataComp shape: sale_price, days_on_market, price_per_sqft

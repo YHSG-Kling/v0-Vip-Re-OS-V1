@@ -48,7 +48,7 @@ interface ComparableProperty {
   distance: number
   adjustedValue: number
   adjustments: PropertyAdjustment[]
-  source?: "BatchData" | "RentCast"
+  source?: "RentCast"
 }
 
 interface PropertyAdjustment {
@@ -183,50 +183,9 @@ async function fetchComparableProperties(
   params: CMAParams,
   brokerageId: string | null,
 ): Promise<ComparableProperty[]> {
-  const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
   const { getRentcastComps } = await import("@/lib/property/rentcast")
 
-  // ── 1. BatchData ─────────────────────────────────────────────────────────
-  const bdComps = await fetchComparableSales({
-    address: params.propertyAddress,
-    city: params.propertyCity,
-    state: params.propertyState,
-    zip: params.propertyZip,
-    bedrooms: params.bedrooms,
-    bathrooms: params.bathrooms,
-    squareFeet: params.squareFeet,
-    radiusMiles: 1,
-    maxAgeDays: 180,
-    limit: 10,
-  })
-
-  if (bdComps.length > 0) {
-    return bdComps.map((c) => {
-      const adjustments = calculatePropertyAdjustments(params, {
-        square_feet: c.square_feet,
-        bedrooms: c.bedrooms,
-        bathrooms: c.bathrooms,
-        sold_price: c.sale_price,
-      })
-      return {
-        address: c.address,
-        listPrice: c.list_price,
-        soldPrice: c.sale_price,
-        daysOnMarket: c.days_on_market,
-        squareFeet: c.square_feet,
-        pricePerSqFt: c.price_per_sqft,
-        bedrooms: c.bedrooms,
-        bathrooms: c.bathrooms,
-        yearBuilt: c.year_built ?? 0,
-        distance: c.distance_miles,
-        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
-        adjustments,
-        source: "BatchData" as const,
-      }
-    })
-  }
-
-  // ── 2. RentCast (chosen comps provider) ──────────────────────────────────
+  // RentCast is the platform comps provider (BatchData has no comparables endpoint).
   const rcComps = brokerageId
     ? await getRentcastComps({ brokerageId, address: `${params.propertyAddress}, ${params.propertyCity}, ${params.propertyState} ${params.propertyZip}`, limit: 10 })
     : []

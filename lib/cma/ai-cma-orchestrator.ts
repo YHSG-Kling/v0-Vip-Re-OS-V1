@@ -289,57 +289,7 @@ async function runPremiumCompPull(input: AiCmaInput): Promise<{
   const closedComps: ScoredComp[] = []
   const citations: string[] = []
 
-  // BatchData comparable sales (closed only)
-  if (process.env.BATCHDATA_API_KEY) {
-    try {
-      const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
-      const bd = await fetchComparableSales({
-        address: input.subject.address,
-        city: input.subject.city ?? "",
-        state: input.subject.state,
-        zip: input.subject.zip ?? undefined,
-        bedrooms: input.subject.bedrooms ?? 3,
-        bathrooms: (input.subject.fullBaths ?? 2) + (input.subject.halfBaths ?? 0) * 0.5,
-        squareFeet: input.subject.sqftLiving ?? 1500,
-        radiusMiles: 1,
-        maxAgeDays: 180,
-        limit: 5,
-      })
-
-      for (const c of bd ?? []) {
-        const cAny = c as unknown as { address?: string; sold_price?: number; sale_price?: number; sold_date?: string; sale_date?: string; square_feet?: number; bedrooms?: number; bathrooms?: number; days_on_market?: number }
-        closedComps.push({
-          address: cAny.address ?? "Unknown",
-          status: "closed",
-          salePrice: cAny.sold_price ?? cAny.sale_price ?? 0,
-          saleDate: cAny.sold_date ?? cAny.sale_date ?? new Date().toISOString().slice(0, 10),
-          sqftLiving: cAny.square_feet ?? null,
-          bedrooms: cAny.bedrooms ?? null,
-          fullBaths: Math.floor(cAny.bathrooms ?? 0),
-          halfBaths: 0,
-          garageSpaces: null,
-          hasPool: null,
-          isWaterfront: null,
-          hasView: null,
-          lotSizeAcres: null,
-          yearBuilt: null,
-          conditionGrade: null,
-          basementFinished: null,
-          isNewConstruction: null,
-          isGated: null,
-          daysOnMarket: cAny.days_on_market ?? null,
-          pricePerSqft: null,
-          similarityScore: 0.85,
-          citation: "BatchData premium pull",
-        })
-      }
-      citations.push("BatchData premium comp pull")
-    } catch {
-      // fall through to HouseCanary
-    }
-  }
-
-  // RentCast comps fallback / supplement (chosen comps provider)
+  // RentCast comps — the platform comps provider (BatchData has no comps endpoint).
   if (closedComps.length < 3) {
     try {
       const { getRentcastComps } = await import("@/lib/property/rentcast")

@@ -10,10 +10,12 @@ import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { getRentcastMarketStats } from '@/lib/property/rentcast'
-import {
-  fetchBatchDataMarketStats,
-  type BatchDataMarketStats,
-} from '@/lib/external/batchdata-client'
+
+// Minimal shape for the free OSINT (ZenRows/Zillow) market-stats fallback.
+interface ScrapedMarketStats {
+  median_sale_price?: number
+  avg_days_on_market?: number
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -86,7 +88,7 @@ type MarketInsight = z.infer<typeof MarketInsightSchema>
 async function scrapeZillowNeighborhoodData(
   city: string,
   state: string
-): Promise<Partial<BatchDataMarketStats>> {
+): Promise<ScrapedMarketStats> {
   if (!process.env.ZENROWS_API_KEY) return {}
 
   try {
@@ -99,7 +101,7 @@ async function scrapeZillowNeighborhoodData(
 
     // Parse Zillow neighborhood stats from HTML using string matching
     const html = result.html
-    let stats: Partial<BatchDataMarketStats> = {}
+    let stats: ScrapedMarketStats = {}
 
     // Look for median price patterns
     if (html.includes('Median listing price')) {
@@ -157,25 +159,7 @@ export async function refreshMarketData(
     }
   }
 
-  // TIER 2: BatchData (fallback)
-  if (!stats && process.env.BATCHDATA_API_KEY && city && state) {
-    const bdStats = await fetchBatchDataMarketStats(city, state, zipCode)
-    if (bdStats) {
-      stats = {
-        active_listings: bdStats.active_listings,
-        new_listings_30d: Math.round(bdStats.active_listings * 0.1),
-        sold_listings_30d: bdStats.sold_last_30d,
-        median_sale_price: bdStats.median_sale_price,
-        avg_days_on_market: bdStats.avg_days_on_market,
-        list_to_sale_ratio: bdStats.list_to_sale_ratio,
-        months_of_inventory: bdStats.months_supply,
-        price_trend_pct_1yr: 0,
-      }
-      source = 'batchdata'
-    }
-  }
-
-  // TIER 3: OSINT/ZenRows (free scraping fallback)
+  // TIER 2: OSINT/ZenRows (free scraping fallback)
   if (!stats && process.env.ZENROWS_API_KEY && city && state) {
     const osintStats = await scrapeZillowNeighborhoodData(city, state)
     if (Object.keys(osintStats).length > 0) {
