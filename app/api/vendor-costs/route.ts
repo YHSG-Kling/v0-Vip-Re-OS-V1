@@ -2,24 +2,42 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { checkVendorBudget, getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
+import { redactBudgetForActor } from "@/lib/vendor-governance/budget-visibility"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
+  // PRIVACY: brokerage/subscriber users NEVER see vendor names or dollar amounts.
+  // They get only a coarse status level + a (superadmin-toggled) "approaching limit"
+  // warning. Full vendor-spend detail is platform-staff only (superadmin/support).
+  if (!isPlatformStaff(auth.userType)) {
+    const [budget, warningEnabled] = await Promise.all([
+      checkVendorBudget({ brokerageId: auth.brokerageId }),
+      getBrokerageBudgetWarningEnabled(),
+    ])
+    return NextResponse.json(
+      redactBudgetForActor(budget, { isPlatformStaff: false, showBrokerageWarning: warningEnabled }),
+    )
+  }
+
   try {
     const searchParams = request.nextUrl.searchParams
     const vendor_name = searchParams.get("vendor_name")
     const start_date = searchParams.get("start_date")
     const end_date = searchParams.get("end_date")
+    // Platform staff may inspect any brokerage; default to their own.
+    const targetBrokerageId = searchParams.get("brokerage_id") ?? auth.brokerageId
 
     const svc = createServiceClient()
 
     let query = svc
       .from("vendor_usage_tracking")
       .select("*")
-      .eq("brokerage_id", auth.brokerageId)  // always scope to caller's brokerage
+      .eq("brokerage_id", targetBrokerageId)
 
     if (vendor_name) {
       query = query.eq("vendor_name", vendor_name)

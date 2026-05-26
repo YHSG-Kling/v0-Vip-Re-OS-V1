@@ -66,6 +66,8 @@ import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataPr
 import { runApifyActor } from "../lib/external/apify-client"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD } from "../lib/vendor-governance/budget-eval"
+import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
+import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
 let failed = 0
@@ -362,6 +364,34 @@ async function testVendorGateway() {
   check("projected over ceiling → BLOCKED", (() => { const r = evaluateVendorBudget(49.8, 50, 0.5); return r.allowed === false })())
   check("exactly at ceiling → allowed (boundary)", evaluateVendorBudget(49.5, 50, 0.5).allowed === true)
   check("zero/invalid budget falls back to default ceiling", evaluateVendorBudget(0, 0, 1).budget === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
+
+  // ── Role-scoped visibility (PRIVACY: brokerages never see vendor names/$) ───
+  check("support is platform staff", isPlatformStaff("support"))
+  check("superadmin is platform staff", isPlatformStaff("superadmin"))
+  check("broker is NOT platform staff", !isPlatformStaff("broker"))
+  check("agent is NOT platform staff", !isPlatformStaff("agent"))
+
+  check("budgetLevel ok/approaching/paused", budgetLevel({ allowed: true, softWarning: false }) === "ok" && budgetLevel({ allowed: true, softWarning: true }) === "approaching" && budgetLevel({ allowed: false, softWarning: false }) === "paused")
+
+  const evalApproaching = evaluateVendorBudget(45, 50) // 90% → softWarning
+  const evalBlocked = evaluateVendorBudget(60, 50)
+
+  // Platform staff: full detail incl. vendor names.
+  const staffView = redactBudgetForActor(evalApproaching, { isPlatformStaff: true, showBrokerageWarning: false, vendors: [{ vendor: "did", spent: 30 }, { vendor: "vapi", spent: 15 }] })
+  check("platform view exposes spend + vendor names", staffView.scope === "platform" && (staffView as any).spent === 45 && (staffView as any).vendors?.[0]?.vendor === "did")
+
+  // Brokerage: NO spend, NO budget, NO percent, NO vendor names — level only.
+  const brokView = redactBudgetForActor(evalApproaching, { isPlatformStaff: false, showBrokerageWarning: true, vendors: [{ vendor: "did", spent: 30 }] })
+  check("brokerage view is level-only (no $/vendors)", brokView.scope === "brokerage" && !("spent" in brokView) && !("budget" in brokView) && !("vendors" in brokView) && !("percent" in brokView))
+  check("brokerage warning shows when toggle ON + approaching", (brokView as any).showWarning === true && brokView.level === "approaching")
+
+  // Superadmin toggle OFF → brokerage sees no warning even when approaching.
+  const brokHidden = redactBudgetForActor(evalApproaching, { isPlatformStaff: false, showBrokerageWarning: false })
+  check("brokerage warning hidden when superadmin toggle OFF", brokHidden.scope === "brokerage" && (brokHidden as any).showWarning === false)
+
+  // Even blocked, brokerage only sees level (paused) — never the numbers.
+  const brokBlocked = redactBudgetForActor(evalBlocked, { isPlatformStaff: false, showBrokerageWarning: true })
+  check("brokerage blocked → level 'paused', still no $", brokBlocked.level === "paused" && !("spent" in brokBlocked))
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

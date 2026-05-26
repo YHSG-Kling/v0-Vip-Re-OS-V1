@@ -58,3 +58,48 @@ export async function checkVendorBudget(params: {
   const spent = (rows ?? []).reduce((s, r: any) => s + (Number(r.estimated_cost) || 0), 0)
   return { ...evaluateVendorBudget(spent, budget, params.addCost ?? 0), planTier }
 }
+
+/**
+ * Superadmin-controlled toggle: may brokerage/subscriber users see the
+ * "approaching usage limit" warning at all? (Vendor names + dollar amounts are
+ * NEVER shown to brokerages regardless of this flag.) Defaults to true (show) on
+ * any read error — a missing-row failure should not silently hide a real warning.
+ */
+export async function getBrokerageBudgetWarningEnabled(): Promise<boolean> {
+  try {
+    const supabase = createServiceClient()
+    const { data, error } = await supabase
+      .from("platform_settings")
+      .select("show_brokerage_budget_warning")
+      .eq("id", true)
+      .single()
+    if (error || !data) return true
+    return data.show_brokerage_budget_warning !== false
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Per-vendor month-to-date spend breakdown for a brokerage. PLATFORM-STAFF ONLY —
+ * callers must gate on isPlatformStaff before exposing this (it contains vendor names).
+ */
+export async function getVendorSpendBreakdown(brokerageId: string): Promise<Array<{ vendor: string; spent: number }>> {
+  try {
+    const supabase = createServiceClient()
+    const { data } = await supabase
+      .from("vendor_usage_tracking")
+      .select("vendor_name, estimated_cost")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", startOfMonthIso())
+    const byVendor = new Map<string, number>()
+    for (const r of (data ?? []) as any[]) {
+      byVendor.set(r.vendor_name, (byVendor.get(r.vendor_name) ?? 0) + (Number(r.estimated_cost) || 0))
+    }
+    return [...byVendor.entries()]
+      .map(([vendor, spent]) => ({ vendor, spent: Math.round(spent * 100) / 100 }))
+      .sort((a, b) => b.spent - a.spent)
+  } catch {
+    return []
+  }
+}

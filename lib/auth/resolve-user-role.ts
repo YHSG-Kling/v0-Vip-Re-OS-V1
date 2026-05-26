@@ -22,6 +22,20 @@ export type UserRole =
   | "contact"
   | "system"
   | "superadmin"
+  | "support"
+
+/**
+ * Platform-staff roles operate ABOVE any brokerage. `superadmin` has full control
+ * (config, billing, brokerage management); `support` is a platform support tier with
+ * the same cross-brokerage visibility for triaging platform issues, intended for
+ * assistance rather than destructive platform configuration.
+ */
+export const PLATFORM_STAFF_ROLES = ["superadmin", "support"] as const
+
+/** True for platform-staff roles (superadmin OR support) — cross-brokerage visibility. */
+export function isPlatformStaff(role: string | null | undefined): boolean {
+  return !!role && (PLATFORM_STAFF_ROLES as readonly string[]).includes(role)
+}
 
 export function resolveUserRole(profile: {
   user_type?: string | null

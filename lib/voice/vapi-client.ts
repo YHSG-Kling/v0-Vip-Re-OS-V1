@@ -106,6 +106,22 @@ export async function initiateCall(params: VapiCallParams): Promise<VapiCallResp
     throw err
   }
 
+  // ── Vendor budget gate ─────────────────────────────────────────────────────
+  // Auto-pause outbound voice when the brokerage is over its monthly platform-vendor
+  // ceiling. Throws a blocked error (same shape as the TCPA block) so the ISA layer
+  // routes to a cheaper next-channel fallback instead of incurring more spend.
+  if (params.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: params.brokerageId, addCost: estimatePlatformVendorCost("vapi", 1) })
+    if (!budget.allowed) {
+      const err = new Error("Vendor budget exceeded — outbound voice paused") as Error & { blocked?: true; blockReason?: string }
+      err.blocked = true
+      err.blockReason = "vendor_budget_exceeded"
+      throw err
+    }
+  }
+
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
   if (!phoneNumberId) throw new Error("VAPI_PHONE_NUMBER_ID is not set")
 

@@ -63,6 +63,17 @@ export async function synthesizeSpeech(
     return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
   }
 
+  // Vendor budget gate — auto-pause TTS when the brokerage is over its monthly
+  // platform-vendor ceiling. Callers fall back to browser TTS on quota.
+  if (input.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
+    if (!budget.allowed) {
+      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
+    }
+  }
+
   const voiceId = input.voiceId || FALLBACK_VOICE_ID
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
@@ -136,6 +147,17 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) {
     return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
+  }
+
+  // Vendor budget gate — auto-pause TTS when the brokerage is over its monthly
+  // platform-vendor ceiling. Callers fall back to browser TTS on quota.
+  if (input.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
+    if (!budget.allowed) {
+      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
+    }
   }
 
   const voiceId = input.voiceId || FALLBACK_VOICE_ID

@@ -105,6 +105,29 @@ export async function requireSuperadminAuth(
 }
 
 /**
+ * Platform-staff auth guard. Allows superadmin AND support — the two platform-level
+ * roles with cross-brokerage visibility. Use for platform governance surfaces
+ * (vendor-spend ledger, observability) that brokerage users must never see.
+ */
+export async function requirePlatformStaffAuth(
+  supabase: SupabaseClient
+): Promise<AuthResult | AuthFailure> {
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth
+
+  if (auth.userType !== "superadmin" && auth.userType !== "support") {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Platform staff access required" },
+        { status: 403 }
+      ),
+    }
+  }
+  return auth
+}
+
+/**
  * Broker/Admin auth guard.
  * Allows broker, admin, and superadmin roles.
  */
