@@ -7,6 +7,8 @@ import { VENDOR_CAPABILITY_REGISTRY, CAPABILITY_AGIS, type VendorCapability } fr
 import { parseInputSpec, SIDE_EFFECTING_VERBS, CONFIRMATION_THRESHOLD } from "@/lib/agentic-os/invoke-planner"
 import { hasScope } from "@/lib/agentic-os/agent-scopes"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
+import { isConnectedCapability, getConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
+import { resolveConnectedCapability } from "@/lib/agentic-os/resolve-connected-capability"
 
 export async function GET(req: Request, ctx: { params: Promise<{ capability: string }> }) {
   const caller = await resolveAgenticCaller(req)
@@ -15,6 +17,34 @@ export async function GET(req: Request, ctx: { params: Promise<{ capability: str
   }
 
   const { capability } = await ctx.params
+
+  // User-connected vendor capability — DESCRIBE returns the connection gate (not budget).
+  if (isConnectedCapability(capability)) {
+    const def = getConnectedCapability(capability)
+    const requiresConfirmation = SIDE_EFFECTING_VERBS.has(def.verb) || def.mutates
+    const connection = caller.brokerageId
+      ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
+      : null
+    return NextResponse.json({
+      action: `${def.verb} ${capability}`,
+      verb: def.verb,
+      capability,
+      kind: "connected",
+      ownership: "user_connected",
+      category: def.domain,
+      scope: def.scope,
+      purpose: def.purpose,
+      inputSpec: parseInputSpec(def.inputs),
+      requiresConfirmation,
+      callerAuthorized: hasScope(caller.scopes, def.scope),
+      connections: def.connections,
+      connected: connection?.connected ?? false,
+      connectedProvider: connection?.provider ?? null,
+      missingConnections: connection?.missing ?? def.connections,
+      invoke: { method: "POST", path: `/api/agentic-os/actions/${capability}/invoke` },
+    })
+  }
+
   if (!(capability in VENDOR_CAPABILITY_REGISTRY)) {
     return NextResponse.json(
       { error: "Unknown capability", available: Object.keys(VENDOR_CAPABILITY_REGISTRY) },

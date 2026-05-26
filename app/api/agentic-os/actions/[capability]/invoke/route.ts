@@ -8,9 +8,11 @@
 // own guarded, context-rich dedicated routes.
 import { NextResponse } from "next/server"
 import { VENDOR_CAPABILITY_REGISTRY, type VendorCapability } from "@/lib/agentic-os/vendor-capability-registry"
-import { planInvocation } from "@/lib/agentic-os/invoke-planner"
+import { planInvocation, planConnectedInvocation } from "@/lib/agentic-os/invoke-planner"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
+import { isConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
+import { resolveConnectedCapability } from "@/lib/agentic-os/resolve-connected-capability"
 
 // Executors for read/analyze actions. Side-effecting capabilities intentionally have
 // no executor here — they run through their dedicated guarded routes after confirmation.
@@ -30,6 +32,7 @@ const STATUS: Record<string, number> = {
   unauthorized: 403,
   invalid_input: 400,
   blocked: 402,
+  not_connected: 409, // brokerage has not connected a provider for this capability
   requires_confirmation: 200,
   execute: 200,
 }
@@ -41,10 +44,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
   }
 
   const { capability } = await ctx.params
-  if (!(capability in VENDOR_CAPABILITY_REGISTRY)) {
-    return NextResponse.json({ error: "Unknown capability" }, { status: 404 })
-  }
-  const cap = capability as VendorCapability
 
   let body: { inputs?: Record<string, unknown> }
   try {
@@ -53,6 +52,32 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
     body = { inputs: {} }
   }
   const inputs = body.inputs ?? {}
+
+  // ── User-connected vendor capability — connection-gated (NOT platform budget). ──
+  if (isConnectedCapability(capability)) {
+    const resolution = caller.brokerageId
+      ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
+      : null
+    const plan = planConnectedInvocation(capability, {
+      inputs,
+      grantedScopes: caller.scopes,
+      connected: resolution?.connected ?? false,
+    })
+    if (plan.decision !== "execute") {
+      return NextResponse.json({ status: plan.decision, plan }, { status: STATUS[plan.decision] ?? 200 })
+    }
+    // Authorized + connected read action. User-connected writes run through their own
+    // guarded dedicated routes after confirmation; reads have no generic executor here.
+    return NextResponse.json(
+      { status: "no_executor", plan, connectedProvider: resolution?.provider ?? null, message: `Use the dedicated endpoint for ${capability}` },
+      { status: 501 },
+    )
+  }
+
+  if (!(capability in VENDOR_CAPABILITY_REGISTRY)) {
+    return NextResponse.json({ error: "Unknown capability" }, { status: 404 })
+  }
+  const cap = capability as VendorCapability
 
   const grantedScopes = caller.scopes
   let overBudget = false

@@ -70,6 +70,7 @@ export const PLATFORM_VENDOR_RATES = {
   heygen:     { perUnit: 0.50,    unit: "video"     }, // ~$0.50 / avatar video
   elevenlabs: { perUnit: 0.00018, unit: "character" }, // ~$0.18 / 1k chars (creator tier)
   vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute
+  lob:        { perUnit: 0.84,    unit: "piece"     }, // ~$0.84 / printed+mailed postcard
 } as const
 
 export type PlatformVendor = keyof typeof PLATFORM_VENDOR_RATES

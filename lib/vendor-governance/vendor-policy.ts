@@ -25,6 +25,9 @@ export const VENDOR_POLICY: Record<string, VendorPolicy> = {
   vapi: { freeAlternative: null },
   // Property valuation / comps — degrade to the free Perplexity + OSINT AVM tiers.
   rentcast: { freeAlternative: "perplexity_osint_avm" },
+  // Direct mail (Lob) — platform-owned, printed+mailed physical pieces. No free
+  // equivalent; over budget the direct-mail send hard-blocks (queued, not sent).
+  lob: { freeAlternative: null },
 }
 
 /**

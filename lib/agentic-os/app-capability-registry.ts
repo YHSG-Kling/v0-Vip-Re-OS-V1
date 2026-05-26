@@ -8,6 +8,12 @@
 // Pure — no I/O — so the registry + the unified manifest are unit-tested.
 
 import { buildActionManifest, type AgisVerb } from "./vendor-capability-registry"
+import { type VendorOwnership } from "./vendor-ownership"
+import {
+  CONNECTED_CAPABILITY_REGISTRY,
+  connectedIntentWeight,
+  type ConnectedCapability,
+} from "./connected-vendor-registry"
 
 export type AppCapability =
   | "lead_search"          // find leads in a brokerage by criteria
@@ -93,7 +99,7 @@ const VERB_WEIGHT: Partial<Record<AgisVerb, number>> = {
 
 export interface UnifiedAction {
   action: string
-  kind: "vendor" | "app"
+  kind: "vendor" | "app" | "connected"
   verb: AgisVerb
   capability: string
   category: string
@@ -102,6 +108,10 @@ export interface UnifiedAction {
   inputs: string[]
   intentWeight: number
   mutates: boolean
+  /** Who owns the vendor key/cost — decides the gate: platform=budget, user_connected=connection. */
+  ownership: VendorOwnership
+  /** For user-connected actions: the canonical provider names that satisfy the connection gate. */
+  connections?: string[]
 }
 
 /** Pure: app kernel operations as agentic actions (vendor-anonymous; scope-tagged). */
@@ -119,6 +129,30 @@ export function buildAppActionManifest(): UnifiedAction[] {
       inputs: def.inputs,
       intentWeight: VERB_WEIGHT[def.verb] ?? (def.mutates ? 0.85 : 0.4),
       mutates: def.mutates,
+      // Internal kernel operations run on platform infrastructure (platform-owned).
+      ownership: "platform" as const,
+    }
+  })
+}
+
+/** Pure: user-CONNECTED vendor connectors as agentic actions. Gated by connection
+ *  presence (not platform budget) — the brokerage owns the account. */
+export function buildConnectedActionManifest(): UnifiedAction[] {
+  return (Object.keys(CONNECTED_CAPABILITY_REGISTRY) as ConnectedCapability[]).map((cap) => {
+    const def = CONNECTED_CAPABILITY_REGISTRY[cap]
+    return {
+      action: `${def.verb} ${cap}`,
+      kind: "connected" as const,
+      verb: def.verb,
+      capability: cap,
+      category: def.domain,
+      scope: def.scope,
+      purpose: def.purpose,
+      inputs: def.inputs,
+      intentWeight: connectedIntentWeight(def),
+      mutates: def.mutates,
+      ownership: "user_connected" as const,
+      connections: def.connections,
     }
   })
 }
@@ -140,6 +174,10 @@ export function buildFullActionManifest(): UnifiedAction[] {
     inputs: a.inputs,
     intentWeight: a.intentWeight,
     mutates: a.verb === "RENDER" || a.verb === "NOTIFY",
+    // Every connector in the vendor registry is platform-owned (platform holds the key
+    // and pays); usage is budget-gated. User-connected vendors live in the connected manifest.
+    ownership: "platform" as const,
   }))
-  return [...vendor, ...buildAppActionManifest()].sort((a, b) => b.intentWeight - a.intentWeight)
+  return [...vendor, ...buildAppActionManifest(), ...buildConnectedActionManifest()]
+    .sort((a, b) => b.intentWeight - a.intentWeight)
 }

@@ -70,9 +70,11 @@ import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budg
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
 import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider, buildActionManifest, requiredScope, AGIS_VERBS } from "../lib/agentic-os/vendor-capability-registry"
 import { hasScope, authorizedActions, ALL_SCOPES } from "../lib/agentic-os/agent-scopes"
-import { planInvocation, parseInputSpec } from "../lib/agentic-os/invoke-planner"
+import { planInvocation, parseInputSpec, planConnectedInvocation } from "../lib/agentic-os/invoke-planner"
 import { hashAgentToken, generateAgentToken, extractBearerToken } from "../lib/agentic-os/agent-credentials"
-import { APP_CAPABILITY_REGISTRY, buildAppActionManifest, buildFullActionManifest } from "../lib/agentic-os/app-capability-registry"
+import { APP_CAPABILITY_REGISTRY, buildAppActionManifest, buildConnectedActionManifest, buildFullActionManifest } from "../lib/agentic-os/app-capability-registry"
+import { vendorOwnership, isPlatformVendor, isUserConnectedVendor, PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "../lib/agentic-os/vendor-ownership"
+import { CONNECTED_CAPABILITY_REGISTRY, isConnectedCapability } from "../lib/agentic-os/connected-vendor-registry"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -510,8 +512,9 @@ async function testVendorGateway() {
   check("app registry covers kernel ops", Object.keys(APP_CAPABILITY_REGISTRY).length >= 8 && !!APP_CAPABILITY_REGISTRY.lead_search && !!APP_CAPABILITY_REGISTRY.transaction_advance)
   check("app actions are scope-tagged + verb'd", appManifest.every((a) => a.scope.includes(":") && a.verb.length > 0 && a.kind === "app"))
   check("read app caps not mutating; write app caps mutating", APP_CAPABILITY_REGISTRY.lead_search.mutates === false && APP_CAPABILITY_REGISTRY.listing_publish.mutates === true && APP_CAPABILITY_REGISTRY.transaction_advance.mutates === true)
+  const connectedManifest = buildConnectedActionManifest()
   const full = buildFullActionManifest()
-  check("unified manifest merges vendor + app", full.some((a) => a.kind === "vendor") && full.some((a) => a.kind === "app") && full.length === manifest.length + appManifest.length)
+  check("unified manifest merges vendor + app + connected", full.some((a) => a.kind === "vendor") && full.some((a) => a.kind === "app") && full.some((a) => a.kind === "connected") && full.length === manifest.length + appManifest.length + connectedManifest.length)
   check("unified manifest stays VENDOR-ANONYMOUS", !JSON.stringify(full).includes("rentcast") && !JSON.stringify(full).includes("perplexity") && !JSON.stringify(full).includes("vapi"))
   check("unified manifest sorted by intentWeight desc", full.every((a, i) => i === 0 || full[i - 1].intentWeight >= a.intentWeight))
   check("listing_publish (PUBLISH) is highest-weight write", full[0].mutates === true)
@@ -529,6 +532,30 @@ async function testVendorGateway() {
   check("all new send/publish actions are mutating (confirmation-gated)", ["podcast_publish", "direct_mail_send", "video_distribute", "gift_send", "handwritten_note_send"].every((c) => (APP_CAPABILITY_REGISTRY as any)[c].mutates === true))
   check("gifting domain present + scoped", APP_CAPABILITY_REGISTRY.gift_send.domain === "gifting" && APP_CAPABILITY_REGISTRY.gift_send.scope === "gifting:write" && APP_CAPABILITY_REGISTRY.handwritten_note_send.scope === "gifting:write")
   check("direct_mail_send uses marketing:send (NOTIFY)", APP_CAPABILITY_REGISTRY.direct_mail_send.scope === "marketing:send" && APP_CAPABILITY_REGISTRY.direct_mail_send.verb === "NOTIFY")
+
+  // ── Vendor ownership: platform-owned (budget-gated) vs user-connected (connection-gated) ──
+  check("lob is classified PLATFORM-owned", isPlatformVendor("lob") && vendorOwnership("lob") === "platform")
+  check("financial vendors are USER-CONNECTED", ["stripe", "quickbooks"].every((v) => isUserConnectedVendor(v)))
+  check("comms/idx/social/calendar/podcast/showing/txn vendors are USER-CONNECTED", ["sendgrid", "twilio", "idxbroker", "meta", "nylas", "podcast_syndicator", "showingtime", "dotloop"].every((v) => isUserConnectedVendor(v)))
+  check("scraper/AVM/voice/video vendors stay PLATFORM-owned", ["rentcast", "perplexity", "vapi", "did", "heygen", "batchdata", "peopledata"].every((v) => isPlatformVendor(v)))
+  check("platform & user-connected vendor sets are disjoint", [...PLATFORM_VENDORS].every((v) => !USER_CONNECTED_VENDORS.has(v)))
+  check("lob metered as a platform vendor (per-piece rate)", PLATFORM_VENDOR_RATES.lob.unit === "piece" && estimatePlatformVendorCost("lob", 100) > 0)
+  check("lob over-budget hard-blocks (no free direct-mail alt)", freeAlternativeFor("lob") === null && resolveVendorAction("lob", true) === "block")
+
+  // ── Connected-vendor capability registry + manifest ─────────────────────────
+  check("connected registry covers the user-connected surface (>=14)", Object.keys(CONNECTED_CAPABILITY_REGISTRY).length >= 14)
+  check("connected manifest tagged ownership=user_connected + kind=connected", connectedManifest.every((a) => a.ownership === "user_connected" && a.kind === "connected"))
+  check("every app/vendor action tagged ownership=platform", appManifest.every((a) => a.ownership === "platform") && full.filter((a) => a.kind !== "connected").every((a) => a.ownership === "platform"))
+  check("connected actions carry their connection provider list", connectedManifest.every((a) => Array.isArray(a.connections) && a.connections!.length > 0))
+  check("financial/idx/email/phone/calendar/social/txn/esign/showing/podcast all present", ["payment_transfer", "accounting_sync", "idx_listing_search", "email_send", "sms_send", "phone_call_place", "calendar_event_book", "social_account_publish", "transaction_forms_open", "esign_send", "showing_schedule", "podcast_syndicate"].every((c) => isConnectedCapability(c)))
+  check("esign_send maps to real esign providers", CONNECTED_CAPABILITY_REGISTRY.esign_send.connections.includes("docusign") && CONNECTED_CAPABILITY_REGISTRY.esign_send.connections.includes("dotloop"))
+
+  // Connection-gate planner: scope → inputs → CONNECTION presence → confirmation.
+  check("connected plan: missing scope → unauthorized", planConnectedInvocation("email_send", { inputs: { to: "x", subject: "s", body: "b" }, grantedScopes: ["lead:read"], connected: true }).decision === "unauthorized")
+  check("connected plan: missing inputs → invalid_input", planConnectedInvocation("email_send", { inputs: {}, grantedScopes: [ALL_SCOPES], connected: true }).decision === "invalid_input")
+  check("connected plan: not connected → not_connected (with providers to connect)", (() => { const p = planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: false }); return p.decision === "not_connected" && p.missingConnections.includes("stripe") })())
+  check("connected plan: authorized + connected write → requires_confirmation", planConnectedInvocation("payment_transfer", { inputs: { amount: 1, currency: "usd", destination: "acct" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "requires_confirmation")
+  check("connected plan: authorized + connected read → execute", planConnectedInvocation("calendar_availability_get", { inputs: { from: "a", to: "b" }, grantedScopes: [ALL_SCOPES], connected: true }).decision === "execute")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
