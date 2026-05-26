@@ -60,3 +60,24 @@ export function scraperTypeToVendor(scraperType: string): string {
     default: return scraperType
   }
 }
+
+// ─── Platform-controlled AI vendors (D-ID, HeyGen, ElevenLabs, Vapi) ──────────
+// The platform owns these keys/cost (not the brokerage), but spend is still
+// attributed per brokerage in the ledger. Approximate per-unit USD rates for cost
+// telemetry — actual billing is reconciled against each vendor's invoice.
+export const PLATFORM_VENDOR_RATES = {
+  did:        { perUnit: 0.10,    unit: "video"     }, // ~$0.10 / talk render
+  heygen:     { perUnit: 0.50,    unit: "video"     }, // ~$0.50 / avatar video
+  elevenlabs: { perUnit: 0.00018, unit: "character" }, // ~$0.18 / 1k chars (creator tier)
+  vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute
+} as const
+
+export type PlatformVendor = keyof typeof PLATFORM_VENDOR_RATES
+
+/** Pure: estimated USD cost for a platform-vendor call given billable units. */
+export function estimatePlatformVendorCost(vendor: PlatformVendor, units: number): number {
+  const rate = PLATFORM_VENDOR_RATES[vendor]
+  if (!rate || !(units > 0)) return 0
+  // Round to 4dp — sub-cent precision for per-character vendors.
+  return Math.round(rate.perUnit * units * 10000) / 10000
+}

@@ -37,6 +37,8 @@ export interface SynthesizeSpeechInput {
   voiceId?: string | null
   voiceSettings?: VoiceSettings
   modelId?: string             // 'eleven_monolingual_v1' (default), 'eleven_multilingual_v2', etc.
+  /** When set, the synthesis cost is recorded to the unified vendor ledger. */
+  brokerageId?: string | null
 }
 
 export interface SynthesizeSpeechResult {
@@ -102,6 +104,19 @@ export async function synthesizeSpeech(
     }
 
     const arrayBuffer = await response.arrayBuffer()
+    // Unified vendor-spend ledger — ElevenLabs bills per character synthesized.
+    if (input.brokerageId) {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "elevenlabs",
+        usageType: "tts",
+        cost: estimatePlatformVendorCost("elevenlabs", input.text.length),
+        unitCount: input.text.length,
+        brokerageId: input.brokerageId,
+        systemSource: "voice_tts",
+        metadata: { voice_id: voiceId, chars: input.text.length },
+      })
+    }
     return { success: true, audioBuffer: Buffer.from(arrayBuffer) }
   } catch (err: any) {
     return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }

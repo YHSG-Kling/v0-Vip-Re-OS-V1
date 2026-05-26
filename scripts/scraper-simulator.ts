@@ -64,7 +64,7 @@ import {
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
 import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
-import { meterVendorSpend, scraperTypeToVendor } from "../lib/vendor-governance/meter-vendor"
+import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 
 let passed = 0
 let failed = 0
@@ -333,6 +333,25 @@ async function testVendorGateway() {
   const boom = async () => { throw new Error("ledger down") }
   const safe = await meterVendorSpend({ vendorName: "zenrows", usageType: "x", cost: 0.2, brokerageId: "b1" }, { logger: boom as any })
   check("never throws when ledger fails", safe === false)
+
+  // Platform-controlled AI vendors (D-ID, HeyGen, ElevenLabs, Vapi) cost catalog.
+  check("did + heygen are per-video, elevenlabs per-char, vapi per-minute",
+    PLATFORM_VENDOR_RATES.did.unit === "video" && PLATFORM_VENDOR_RATES.heygen.unit === "video" &&
+    PLATFORM_VENDOR_RATES.elevenlabs.unit === "character" && PLATFORM_VENDOR_RATES.vapi.unit === "minute")
+  check("D-ID 1 video → $0.10", estimatePlatformVendorCost("did", 1) === 0.10)
+  check("HeyGen 1 video → $0.50", estimatePlatformVendorCost("heygen", 1) === 0.50)
+  check("ElevenLabs 1000 chars → $0.18", estimatePlatformVendorCost("elevenlabs", 1000) === 0.18)
+  check("Vapi 5 minutes → $0.35", estimatePlatformVendorCost("vapi", 5) === 0.35)
+  check("zero/negative units → $0 (no charge)", estimatePlatformVendorCost("did", 0) === 0 && estimatePlatformVendorCost("vapi", -3) === 0)
+
+  // End-to-end: a metered D-ID render lands in the ledger via the gateway.
+  const aiCalls: any[] = []
+  const aiLogger = async (e: any) => { aiCalls.push(e); return { success: true } }
+  await meterVendorSpend(
+    { vendorName: "did", usageType: "video_render", cost: estimatePlatformVendorCost("did", 1), brokerageId: "b1", systemSource: "video_generation" },
+    { logger: aiLogger },
+  )
+  check("D-ID render recorded to ledger (vendor=did, cost=0.10)", aiCalls.length === 1 && aiCalls[0].vendorName === "did" && aiCalls[0].estimatedCost === 0.10)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

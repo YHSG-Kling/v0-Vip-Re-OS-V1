@@ -271,6 +271,19 @@ export async function POST(request: NextRequest) {
 
     const heygenVideoId = heygenData.data?.video_id
 
+    // Unified vendor-spend ledger — HeyGen bills per submitted avatar video.
+    {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "heygen",
+        usageType: "video_render",
+        cost: estimatePlatformVendorCost("heygen", 1),
+        brokerageId: brokerage_id,
+        systemSource: "video_generation",
+        metadata: { video_project_id, heygen_video_id: heygenVideoId },
+      })
+    }
+
     // ─── UPDATE AI_VIDEO_PROJECTS ─────────────────────────────────────────────
     await supabase
       .from("ai_video_projects")

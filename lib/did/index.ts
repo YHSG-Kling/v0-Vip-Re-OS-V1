@@ -296,6 +296,17 @@ export async function generateVideo(
     throw new Error(`D-ID submit failed: ${msg}`)
   }
 
+  // Unified vendor-spend ledger — D-ID bills per submitted talk render.
+  const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+  void meterVendorSpend({
+    vendorName: "did",
+    usageType: "video_render",
+    cost: estimatePlatformVendorCost("did", 1),
+    brokerageId: input.brokerageId,
+    systemSource: "video_generation",
+    metadata: { talk_id: talkId },
+  })
+
   // ---------------------------------------------------------------------------
   // 3. Poll for completion
   // ---------------------------------------------------------------------------

@@ -388,6 +388,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq("vapi_call_id", callId)
       .maybeSingle()
 
+    // Unified vendor-spend ledger — use Vapi's real reported cost when present,
+    // else estimate from billed minutes. Platform-owned vendor, attributed per brokerage.
+    if (voiceCall?.brokerage_id) {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "vapi",
+        usageType: "voice_call",
+        cost: (call.cost ?? 0) > 0 ? call.cost : estimatePlatformVendorCost("vapi", minutesBilled),
+        unitCount: minutesBilled,
+        brokerageId: voiceCall.brokerage_id,
+        systemSource: "voice",
+        metadata: { vapi_call_id: callId, duration_seconds: durationSeconds, ended_reason: endedReason },
+      })
+    }
+
     if (voiceCall) {
       // 2. Update voice_calls
       await supabase.from("voice_calls").update({
