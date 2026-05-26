@@ -70,6 +70,7 @@ import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budg
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
 import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider, buildActionManifest, requiredScope, AGIS_VERBS } from "../lib/agentic-os/vendor-capability-registry"
 import { hasScope, authorizedActions, ALL_SCOPES } from "../lib/agentic-os/agent-scopes"
+import { planInvocation, parseInputSpec } from "../lib/agentic-os/invoke-planner"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -471,6 +472,28 @@ async function testVendorGateway() {
   check("missing scope denies", !hasScope(["market:read"], "comms:voice"))
   check("empty grants deny", !hasScope([], "valuation:read") && !hasScope(undefined, "valuation:read"))
   check("authorizedActions filters by scope", authorizedActions(manifest, ["valuation:read"]).every((a) => a.scope === "valuation:read") && authorizedActions(manifest, [ALL_SCOPES]).length === manifest.length)
+
+  // ── Agentic API INVOKE planner (discover→describe→invoke loop) ──────────────
+  check("parseInputSpec marks required vs optional", (() => { const s = parseInputSpec(["address", "zipCode?"]); return s[0].name === "address" && s[0].required && s[1].name === "zipCode" && !s[1].required })())
+
+  const ALL = [ALL_SCOPES]
+  // No scope → unauthorized (gate 1, before anything else).
+  check("no scope → unauthorized", planInvocation("property_valuation", { inputs: { address: "1 Main" }, grantedScopes: [], overBudget: false }).decision === "unauthorized")
+  // Missing required input → invalid_input with the missing field listed.
+  check("missing required input → invalid_input", (() => { const p = planInvocation("property_valuation", { inputs: {}, grantedScopes: ALL, overBudget: false }); return p.decision === "invalid_input" && p.missingInputs.includes("address") })())
+  // Read action, scoped, inputs present, under budget → execute.
+  check("read action authorized + inputs → execute", planInvocation("web_research", { inputs: { query: "Tampa market" }, grantedScopes: ALL, overBudget: false }).decision === "execute")
+  // ANALYZE valuation → execute (read verb, weight 0.8 < threshold).
+  check("ANALYZE valuation → execute", planInvocation("property_valuation", { inputs: { address: "1 Main" }, grantedScopes: ALL, overBudget: false }).decision === "execute")
+  // Side-effecting verbs require confirmation (never auto-fire).
+  check("NOTIFY voice_call → requires_confirmation", planInvocation("voice_call", { inputs: { phoneNumber: "555", brokerageId: "b1", assistantConfig: {} }, grantedScopes: ALL, overBudget: false }).decision === "requires_confirmation")
+  check("RENDER video_render → requires_confirmation", planInvocation("video_render", { inputs: { script: "hi", brokerageId: "b1", "avatar/voice assets": {} }, grantedScopes: ALL, overBudget: false }).decision === "requires_confirmation")
+  // High-weight FIND (lead sourcing) → requires_confirmation even though it's a read verb.
+  check("FIND buyer_seller_intent (weight .9) → requires_confirmation", planInvocation("buyer_seller_intent", { inputs: { city: "Tampa", state: "FL" }, grantedScopes: ALL, overBudget: false }).decision === "requires_confirmation")
+  // Over budget, capability with NO free path → blocked.
+  check("over budget + no free path → blocked", planInvocation("video_render", { inputs: { script: "hi", brokerageId: "b1", "avatar/voice assets": {} }, grantedScopes: ALL, overBudget: true }).selection.action === "block")
+  // Over budget, read capability WITH free tier → still executes (degraded), not blocked.
+  check("over budget read w/ free tier → execute (degraded)", (() => { const p = planInvocation("market_stats", { inputs: { zipCode: "33602" }, grantedScopes: ALL, overBudget: true }); return p.decision === "execute" && p.selection.usingFreeFallback })())
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
