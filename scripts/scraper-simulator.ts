@@ -67,6 +67,7 @@ import { runApifyActor } from "../lib/external/apify-client"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
+import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -413,6 +414,19 @@ async function testVendorGateway() {
   check("team at 85% of $200 → approaching", byId.team1.level === "approaching" && byId.team1.budget === 200)
   check("brokerage under $750 → ok", byId.brok1.level === "ok" && byId.brok1.budget === 750)
   check("overview sorted closest-to-limit first", overview[0].brokerageId === "solo1")
+
+  // ── Downgrade ladder (cap throttles cost, not capability) ───────────────────
+  // Under budget → everything allowed.
+  check("under budget → allow (rentcast)", resolveVendorAction("rentcast", false) === "allow")
+  check("under budget → allow (did)", resolveVendorAction("did", false) === "allow")
+  // Over budget → degrade where a free path exists, block where none does.
+  check("over budget: rentcast DEGRADES (free Perplexity/OSINT AVM)", resolveVendorAction("rentcast", true) === "degrade")
+  check("over budget: elevenlabs DEGRADES (browser TTS)", resolveVendorAction("elevenlabs", true) === "degrade")
+  check("over budget: D-ID BLOCKS (no free video)", resolveVendorAction("did", true) === "block")
+  check("over budget: HeyGen BLOCKS (no free video)", resolveVendorAction("heygen", true) === "block")
+  check("over budget: Vapi BLOCKS (reroute to cheaper channel upstream)", resolveVendorAction("vapi", true) === "block")
+  check("over budget: unknown vendor BLOCKS (conservative)", resolveVendorAction("mystery", true) === "block")
+  check("free alternative names exposed", freeAlternativeFor("rentcast") === "perplexity_osint_avm" && freeAlternativeFor("elevenlabs") === "browser_tts" && freeAlternativeFor("did") === null)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

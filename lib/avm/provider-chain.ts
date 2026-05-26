@@ -100,7 +100,18 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   // Caller must pass usePaidProviders=true to opt into these. The standard
   // entry point for that is runAiCma({ mode: 'premium' }) which sets the
   // flag explicitly. Daily background work never sets it.
-  if (req.usePaidProviders) {
+  //
+  // DOWNGRADE LADDER: if the brokerage is over its monthly vendor budget, the paid
+  // tier is skipped — the caller still gets the free Perplexity/OSINT AVM computed
+  // above. The cap throttles cost, not capability.
+  let paidAllowed = !!req.usePaidProviders
+  if (paidAllowed && req.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { resolveVendorAction } = await import("@/lib/vendor-governance/vendor-policy")
+    const budget = await checkVendorBudget({ brokerageId: req.brokerageId })
+    if (resolveVendorAction("rentcast", !budget.allowed) !== "allow") paidAllowed = false
+  }
+  if (paidAllowed) {
     if (!skip.has("rentcast") && req.brokerageId) {
       const rc = await tryRentcast(req)
       if (rc && rc.confidence >= 0.6) return rc
