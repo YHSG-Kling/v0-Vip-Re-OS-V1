@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next'
+import { withWorkflow } from 'workflow/next'
 
 // Route tree uses [id] as the universal dynamic segment throughout app/dashboard/**
 // Widget CORS headers applied to /widget/* iframe pages and /api/widget/* routes.
@@ -93,4 +94,6 @@ const nextConfig: NextConfig = {
   },
 }
 
-export default nextConfig
+// withWorkflow enables the "use workflow" / "use step" directives (Vercel Workflow
+// DevKit). Durable workflows live in workflows/*; see workflows/market-insight-workflow.ts.
+export default withWorkflow(nextConfig)
