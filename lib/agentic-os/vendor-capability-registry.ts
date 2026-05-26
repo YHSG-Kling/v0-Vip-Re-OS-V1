@@ -154,6 +154,78 @@ export function getVendorCapability(capability: VendorCapability): VendorCapabil
   return VENDOR_CAPABILITY_REGISTRY[capability]
 }
 
+// ─── Agentic API layer (agenticapi.com methodology) ──────────────────────────
+// Capabilities are exposed to external AI agents as semantic INTENT verbs (AGIS
+// vocabulary) — operations against intents, not resources — discoverable via a
+// machine-readable action manifest and gated by granular scopes. The manifest is
+// deliberately VENDOR-ANONYMOUS: it describes WHAT the action does + the scope it
+// needs, never WHICH connector serves it (vendor selection stays platform-internal).
+
+/** AGIS semantic verb vocabulary — what the agent is trying to DO (intent-oriented). */
+export const AGIS_VERBS = ["FIND", "ANALYZE", "ENRICH", "RENDER", "NOTIFY", "DELEGATE", "ESCALATE", "DISCOVER", "DESCRIBE"] as const
+export type AgisVerb = (typeof AGIS_VERBS)[number]
+
+export interface CapabilityAgis {
+  /** Intent verb the agent invokes. */
+  verb: AgisVerb
+  /** OAuth-style granular scope an agent must hold to invoke this action. */
+  scope: string
+  /** Intent weight 0..1 — how consequential/expensive the action is (planning hint). */
+  intentWeight: number
+}
+
+export const CAPABILITY_AGIS: Record<VendorCapability, CapabilityAgis> = {
+  property_valuation:    { verb: "ANALYZE", scope: "valuation:read",  intentWeight: 0.8 },
+  comparable_sales:      { verb: "ANALYZE", scope: "valuation:read",  intentWeight: 0.8 },
+  market_stats:          { verb: "FIND",    scope: "market:read",     intentWeight: 0.6 },
+  lead_skip_trace:       { verb: "ENRICH",  scope: "lead:enrich",     intentWeight: 0.7 },
+  buyer_seller_intent:   { verb: "FIND",    scope: "lead:source",     intentWeight: 0.9 },
+  motivated_seller_data: { verb: "FIND",    scope: "lead:source",     intentWeight: 0.9 },
+  web_research:          { verb: "FIND",    scope: "research:read",   intentWeight: 0.5 },
+  voice_call:            { verb: "NOTIFY",  scope: "comms:voice",     intentWeight: 0.95 },
+  video_render:          { verb: "RENDER",  scope: "marketing:video", intentWeight: 0.7 },
+  tts:                   { verb: "RENDER",  scope: "comms:tts",       intentWeight: 0.4 },
+}
+
+/** The scope an agent must hold to invoke a capability. */
+export function requiredScope(capability: VendorCapability): string {
+  return CAPABILITY_AGIS[capability].scope
+}
+
+export interface AgenticAction {
+  /** AGIS verb + capability form the action id, e.g. "ANALYZE property_valuation". */
+  action: string
+  verb: AgisVerb
+  capability: VendorCapability
+  category: CapabilityDomain
+  scope: string
+  purpose: string
+  inputs: string[]
+  intentWeight: number
+}
+
+/**
+ * Pure: the machine-readable DISCOVER /actions manifest. VENDOR-ANONYMOUS — describes
+ * intent, scope, and inputs so an external AI agent can plan + request access, with no
+ * connector names. This is the app's agentic-API surface (agenticapi.com ACTION model).
+ */
+export function buildActionManifest(): AgenticAction[] {
+  return (Object.keys(VENDOR_CAPABILITY_REGISTRY) as VendorCapability[]).map((cap) => {
+    const def = VENDOR_CAPABILITY_REGISTRY[cap]
+    const agis = CAPABILITY_AGIS[cap]
+    return {
+      action: `${agis.verb} ${cap}`,
+      verb: agis.verb,
+      capability: cap,
+      category: def.domain,
+      scope: agis.scope,
+      purpose: def.purpose,
+      inputs: def.inputs,
+      intentWeight: agis.intentWeight,
+    }
+  }).sort((a, b) => b.intentWeight - a.intentWeight)
+}
+
 export interface ProviderSelection {
   provider: string
   tier: "free" | "paid"

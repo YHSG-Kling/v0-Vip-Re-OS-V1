@@ -68,7 +68,8 @@ import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLAT
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
-import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider } from "../lib/agentic-os/vendor-capability-registry"
+import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider, buildActionManifest, requiredScope, AGIS_VERBS } from "../lib/agentic-os/vendor-capability-registry"
+import { hasScope, authorizedActions, ALL_SCOPES } from "../lib/agentic-os/agent-scopes"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -452,6 +453,24 @@ async function testVendorGateway() {
   // Over budget, NO free path (video_render: did/heygen both paid) → block.
   check("video_render over budget → BLOCK (no free render)", (() => { const s = selectProvider("video_render", { overBudget: true }); return s.action === "block" && !s.usingFreeFallback })())
   check("voice_call over budget → BLOCK (no free voice)", selectProvider("voice_call", { overBudget: true }).action === "block")
+
+  // ── Agentic API layer (agenticapi.com): manifest, AGIS verbs, scopes ────────
+  const manifest = buildActionManifest()
+  check("manifest covers every capability", manifest.length === Object.keys(VENDOR_CAPABILITY_REGISTRY).length)
+  check("every action uses a valid AGIS verb", manifest.every((a) => (AGIS_VERBS as readonly string[]).includes(a.verb)))
+  check("every action has scope + inputs + purpose", manifest.every((a) => a.scope.includes(":") && a.inputs.length > 0 && a.purpose.length > 0))
+  check("manifest is VENDOR-ANONYMOUS (no provider/vendor fields leak)", manifest.every((a) => !("providers" in a) && !("vendor" in a) && !JSON.stringify(a).includes("rentcast") && !JSON.stringify(a).includes("perplexity")))
+  check("manifest sorted by intentWeight desc (voice_call first)", manifest[0].capability === "voice_call")
+  check("action id = 'VERB capability'", manifest.find((a) => a.capability === "property_valuation")?.action === "ANALYZE property_valuation")
+  check("requiredScope maps capability→scope", requiredScope("video_render") === "marketing:video" && requiredScope("lead_skip_trace") === "lead:enrich")
+
+  // Scope matching: exact, wildcard domain, and global *.
+  check("exact scope grants access", hasScope(["valuation:read"], "valuation:read"))
+  check("domain wildcard grants access", hasScope(["valuation:*"], "valuation:read"))
+  check("global * grants all", hasScope([ALL_SCOPES], "comms:voice"))
+  check("missing scope denies", !hasScope(["market:read"], "comms:voice"))
+  check("empty grants deny", !hasScope([], "valuation:read") && !hasScope(undefined, "valuation:read"))
+  check("authorizedActions filters by scope", authorizedActions(manifest, ["valuation:read"]).every((a) => a.scope === "valuation:read") && authorizedActions(manifest, [ALL_SCOPES]).length === manifest.length)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

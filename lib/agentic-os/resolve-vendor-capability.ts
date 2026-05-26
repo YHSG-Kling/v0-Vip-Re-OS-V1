@@ -10,13 +10,19 @@ import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import {
   getVendorCapability,
   selectProvider,
+  CAPABILITY_AGIS,
   type VendorCapability,
   type ProviderSelection,
+  type AgisVerb,
 } from "./vendor-capability-registry"
 
 export interface ResolvedCapability {
   capability: VendorCapability
   domain: string
+  /** Agentic-API action metadata (agenticapi.com): intent verb + scope + weight. */
+  verb: AgisVerb
+  scope: string
+  intentWeight: number
   /** Business context an agent reads to understand what this answers + how to use it. */
   purpose: string
   inputs: string[]
@@ -51,9 +57,13 @@ export async function resolveVendorCapability(
     }
   }
 
+  const agis = CAPABILITY_AGIS[capability]
   return {
     capability,
     domain: def.domain,
+    verb: agis.verb,
+    scope: agis.scope,
+    intentWeight: agis.intentWeight,
     purpose: def.purpose,
     inputs: def.inputs,
     providers: def.providers.map((p) => ({ vendor: p.vendor, tier: p.tier, note: p.note })),
