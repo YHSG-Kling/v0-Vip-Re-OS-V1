@@ -68,6 +68,7 @@ import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLAT
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
+import { VENDOR_CAPABILITY_REGISTRY, getVendorCapability, selectProvider } from "../lib/agentic-os/vendor-capability-registry"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -427,6 +428,30 @@ async function testVendorGateway() {
   check("over budget: Vapi BLOCKS (reroute to cheaper channel upstream)", resolveVendorAction("vapi", true) === "block")
   check("over budget: unknown vendor BLOCKS (conservative)", resolveVendorAction("mystery", true) === "block")
   check("free alternative names exposed", freeAlternativeFor("rentcast") === "perplexity_osint_avm" && freeAlternativeFor("elevenlabs") === "browser_tts" && freeAlternativeFor("did") === null)
+
+  // ── AI-API agent: vendor-capability registry + budget-aware selection ───────
+  // Every capability carries context (purpose + inputs) and providers in priority order.
+  const caps = Object.keys(VENDOR_CAPABILITY_REGISTRY)
+  check("registry covers core capabilities", caps.includes("property_valuation") && caps.includes("buyer_seller_intent") && caps.includes("voice_call") && caps.includes("video_render"))
+  for (const [k, def] of Object.entries(VENDOR_CAPABILITY_REGISTRY)) {
+    check(`capability '${k}' has context (purpose+inputs+providers)`, def.purpose.length > 0 && def.inputs.length > 0 && def.providers.length > 0)
+  }
+  check("getVendorCapability returns the def", getVendorCapability("property_valuation").domain === "valuation")
+
+  // Under budget → primary provider, allow.
+  check("valuation under budget → primary (perplexity, allow)", (() => { const s = selectProvider("property_valuation", { overBudget: false }); return s.provider === "perplexity" && s.action === "allow" })())
+
+  // Over budget, capability with a PAID primary + a FREE tier → degrade to free.
+  // (market_stats: rentcast paid primary, osint free) and skip-trace (peopledata paid, perplexity free).
+  check("market_stats over budget → degrade to free (osint)", (() => { const s = selectProvider("market_stats", { overBudget: true }); return s.usingFreeFallback && s.action === "degrade" && s.tier === "free" })())
+  check("skip_trace over budget → degrade to free (perplexity)", (() => { const s = selectProvider("lead_skip_trace", { overBudget: true }); return s.provider === "perplexity" && s.action === "degrade" })())
+
+  // Over budget, capability whose primary is already FREE → still allowed (no spend).
+  check("valuation over budget → still free primary, allow", (() => { const s = selectProvider("property_valuation", { overBudget: true }); return s.tier === "free" && s.action === "allow" })())
+
+  // Over budget, NO free path (video_render: did/heygen both paid) → block.
+  check("video_render over budget → BLOCK (no free render)", (() => { const s = selectProvider("video_render", { overBudget: true }); return s.action === "block" && !s.usingFreeFallback })())
+  check("voice_call over budget → BLOCK (no free voice)", selectProvider("voice_call", { overBudget: true }).action === "block")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
