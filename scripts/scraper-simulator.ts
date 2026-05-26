@@ -62,7 +62,8 @@ import {
   factualNarrative,
 } from "../lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
-import { BATCHDATA_MOTIVATION_TYPES } from "../lib/external/batchdata-client"
+import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
+import { runApifyActor } from "../lib/external/apify-client"
 
 let passed = 0
 let failed = 0
@@ -249,6 +250,52 @@ async function testZenRowsClient() {
   )
   check("extracts + dedups email", emails.length === 1 && emails[0] === "jane@example.com")
   check("extracts phone", phones.some((p) => p.replace(/\D/g, "").includes("8135550142")))
+}
+
+// ── 8b. Vendor connector request shapes (BatchData + Apify, fetch mocked) ────
+async function testVendorConnectors() {
+  console.log("\n[Vendor connector request shapes — BatchData + Apify]")
+  const realFetch = globalThis.fetch
+
+  // normalizeBatchDataProperty (pure) maps a real-shaped Property Search row.
+  const rec = normalizeBatchDataProperty(
+    {
+      address: { street: "123 Main St", city: "Tampa", state: "FL", zip: "33602" },
+      owner: { fullName: "Jane Owner", mailingAddress: { street: "PO Box 9", city: "Tampa", state: "FL", zip: "33602" } },
+      building: { bedroomCount: 3, bathroomCount: 2, livingAreaSquareFeet: 1800 },
+      valuation: { estimatedValue: 415000 },
+    },
+    "preforeclosure" as any,
+  )
+  check("batchdata property → owner name split", rec.firstName === "Jane" && rec.lastName === "Owner")
+  check("batchdata property → property address mapped", rec.propertyAddress === "123 Main St" && rec.propertyZip === "33602")
+  check("batchdata property → beds/sqft/value mapped", rec.beds === 3 && rec.sqft === 1800 && rec.estimatedValue === 415000)
+
+  // fetchMotivatedSellers → correct endpoint + searchCriteria.quickLists body.
+  let captured: { url: string; body: any } | null = null
+  globalThis.fetch = (async (url: any, init: any) => {
+    captured = { url: String(url), body: JSON.parse(init.body) }
+    return { ok: true, status: 200, json: async () => ({ results: { properties: [], meta: { totalResults: 0 } } }) }
+  }) as unknown as typeof fetch
+  await fetchMotivatedSellers({ state: "FL", city: "Tampa", motivationTypes: ["pre_foreclosure", "high_equity"], limit: 25 })
+  check("BatchData hits /api/v1/property/search", !!captured && (captured as any).url.endsWith("/property/search"))
+  check("BatchData body uses searchCriteria.quickLists", !!captured && Array.isArray((captured as any).body.searchCriteria.quickLists))
+  check("BatchData maps pre_foreclosure → 'preforeclosure' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("preforeclosure"))
+  check("BatchData maps high_equity → 'high-equity' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("high-equity"))
+  check("BatchData options.take = limit", !!captured && (captured as any).body.options.take === 25)
+
+  // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
+  let apifyUrl = ""
+  globalThis.fetch = (async (url: any) => {
+    apifyUrl = String(url)
+    return { ok: true, status: 200, json: async () => [{ id: "post1" }] }
+  }) as unknown as typeof fetch
+  const apifyRes = await runApifyActor("apify/facebook-posts-scraper", { maxPosts: 10 })
+  check("Apify slug '/'→'~' normalized in path", apifyUrl.includes("acts/apify~facebook-posts-scraper"))
+  check("Apify uses run-sync-get-dataset-items endpoint", apifyUrl.endsWith("/run-sync-get-dataset-items"))
+  check("Apify returns dataset items array", Array.isArray(apifyRes.data) && apifyRes.data.length === 1)
+
+  globalThis.fetch = realFetch
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
@@ -724,6 +771,7 @@ async function main() {
   testOsintBuyer()
   testNewSources()
   await testActorResilience()
+  await testVendorConnectors()
   testExaBuyerIntent()
   testTavilyIntent()
   await testWebSearchFallback()

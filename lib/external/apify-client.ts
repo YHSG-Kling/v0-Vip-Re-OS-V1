@@ -33,7 +33,14 @@ export async function runApifyActor(
   data: any[]
   cost: number
 }> {
-  const runResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs`, {
+  // Apify REST paths address actors as `username~actorname` (the public slug uses
+  // a slash). Normalize so e.g. "apify/facebook-posts-scraper" → "apify~facebook-posts-scraper".
+  const id = actorId.replace("/", "~")
+
+  // run-sync-get-dataset-items: starts the actor, waits for it to finish, and
+  // returns the default dataset items in one call — the Apify-recommended pattern
+  // for synchronous scrapes. Avoids manual run polling + dataset-id resolution.
+  const runResponse = await fetch(`${APIFY_API_URL}/acts/${id}/run-sync-get-dataset-items`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${APIFY_API_TOKEN}`,
@@ -42,45 +49,15 @@ export async function runApifyActor(
     body: JSON.stringify(input),
   })
 
+  // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {
-    throw new Error(`Apify actor start error: ${runResponse.status} ${runResponse.statusText}`)
+    throw new Error(`Apify actor run error: ${runResponse.status} ${runResponse.statusText}`)
   }
 
-  const runData = await runResponse.json()
-  const runId = runData.data.id
-
-  let status = 'RUNNING'
-  let attempts = 0
-  const maxAttempts = 40
-
-  while (status === 'RUNNING' && attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 3000))
-
-    const statusResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs/${runId}`, {
-      headers: {
-        'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-      },
-    })
-
-    const statusData = await statusResponse.json()
-    status = statusData.data.status
-    attempts++
-  }
-
-  if (status !== 'SUCCEEDED') {
-    throw new Error(`Apify actor failed with status: ${status}`)
-  }
-
-  const resultsResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs/${runId}/dataset/items`, {
-    headers: {
-      'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-    },
-  })
-
-  const results = await resultsResponse.json()
+  const results = await runResponse.json()
 
   return {
-    data: results || [],
+    data: Array.isArray(results) ? results : [],
     cost: 0.50,
   }
 }

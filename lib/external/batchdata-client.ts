@@ -59,8 +59,56 @@ export const BATCHDATA_MOTIVATION_TYPES = [
   'high_equity', 'absentee', 'expired', 'vacant', 'tired_landlord',
 ] as const
 
+// Maps our internal motivation types to BatchData Property Search `quickLists`
+// filter slugs (kebab-case, per the BatchData v1 Property Search API).
+const QUICKLIST_SLUG: Record<string, string> = {
+  probate:         'inherited',
+  divorce:         'divorce',
+  foreclosure:     'foreclosure',
+  pre_foreclosure: 'preforeclosure',
+  tax_lien:        'tax-default',
+  high_equity:     'high-equity',
+  absentee:        'absentee-owner',
+  expired:         'expired-listing',
+  vacant:          'vacant',
+  tired_landlord:  'tired-landlord',
+  distressed:      'foreclosure',
+}
+
+/** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
+export function normalizeBatchDataProperty(p: Record<string, any>, requestedType: string): BatchDataRecord {
+  const addr = p.address ?? {}
+  const owner = p.owner ?? {}
+  const building = p.building ?? {}
+  const valuation = p.valuation ?? {}
+  const fullName = typeof owner.fullName === 'string' ? owner.fullName.trim() : ''
+  const ownerFirst = owner.firstName ?? (fullName ? fullName.split(/\s+/)[0] : '')
+  const ownerLast = owner.lastName ?? (fullName ? fullName.split(/\s+/).slice(1).join(' ') : '')
+  return {
+    firstName: ownerFirst || '',
+    lastName: ownerLast || '',
+    phone: owner.phone ?? null,
+    email: owner.email ?? null,
+    address: owner.mailingAddress?.street ?? addr.street ?? '',
+    city: owner.mailingAddress?.city ?? addr.city ?? '',
+    state: owner.mailingAddress?.state ?? addr.state ?? '',
+    zip: owner.mailingAddress?.zip ?? addr.zip ?? '',
+    propertyAddress: addr.street ?? undefined,
+    propertyCity: addr.city ?? undefined,
+    propertyState: addr.state ?? undefined,
+    propertyZip: addr.zip ?? undefined,
+    beds: building.bedroomCount ?? building.beds ?? undefined,
+    baths: building.bathroomCount ?? building.baths ?? undefined,
+    sqft: building.livingAreaSquareFeet ?? building.sqft ?? undefined,
+    estimatedValue: valuation.estimatedValue ?? p.estimatedValue ?? undefined,
+    motivationType: (requestedType as BatchDataRecord['motivationType']) ?? 'distressed',
+    motivationConfidence: 0.7,
+  }
+}
+
 export async function fetchMotivatedSellers(params: {
   state: string
+  city?: string
   motivationTypes?: string[]
   limit?: number
 }): Promise<{
@@ -68,16 +116,23 @@ export async function fetchMotivatedSellers(params: {
   cost: number
   recordsFound: number
 }> {
-  const response = await fetch(`${BATCHDATA_API_URL}/motivated-sellers`, {
+  const types = params.motivationTypes && params.motivationTypes.length > 0
+    ? params.motivationTypes
+    : [...BATCHDATA_MOTIVATION_TYPES]
+  const quickLists = [...new Set(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean))]
+  const query = [params.city, params.state].filter(Boolean).join(', ') || params.state
+
+  // BatchData v1 Property Search — POST /api/v1/property/search.
+  // Motivated-seller triggers are expressed as `searchCriteria.quickLists`.
+  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      state: params.state,
-      motivation_types: params.motivationTypes || [...BATCHDATA_MOTIVATION_TYPES],
-      limit: params.limit || 100,
+      searchCriteria: { query, quickLists },
+      options: { take: params.limit ?? 100, skip: 0 },
     }),
   })
 
@@ -86,11 +141,13 @@ export async function fetchMotivatedSellers(params: {
   }
 
   const data = await response.json()
+  const properties: any[] = data?.results?.properties ?? data?.results ?? []
+  const records = properties.map((p) => normalizeBatchDataProperty(p, types[0] ?? 'distressed'))
 
   return {
-    records: data.records || [],
-    recordsFound: data.total || 0,
-    cost: (data.records?.length || 0) * 0.05,
+    records,
+    recordsFound: data?.results?.meta?.totalResults ?? properties.length,
+    cost: records.length * 0.05,
   }
 }
 
@@ -98,13 +155,14 @@ export async function searchProperties(address: string): Promise<{
   matches: any[]
   cost: number
 }> {
-  const response = await fetch(`${BATCHDATA_API_URL}/property-search`, {
+  // BatchData v1 Property Search by free-text address (POST /api/v1/property/search).
+  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ searchCriteria: { query: address }, options: { take: 5, skip: 0 } }),
   })
 
   if (!response.ok) {
@@ -114,7 +172,7 @@ export async function searchProperties(address: string): Promise<{
   const data = await response.json()
 
   return {
-    matches: data.matches || [],
+    matches: data?.results?.properties ?? data?.results ?? [],
     cost: 0.02,
   }
 }
@@ -125,13 +183,15 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
   daysOnMarket?: number
   cost: number
 }> {
-  const response = await fetch(`${BATCHDATA_API_URL}/property-enrichment`, {
+  // No dedicated "enrichment" endpoint on BatchData — a single-address Property
+  // Search returns the property valuation + attributes we derive condition from.
+  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ searchCriteria: { query: address }, options: { take: 1, skip: 0 } }),
   })
 
   if (!response.ok) {
@@ -139,11 +199,16 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
   }
 
   const data = await response.json()
+  const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? {}
+  const ql = prop.quickLists ?? {}
+  // Distress/vacancy signals imply a likely fixer; otherwise unknown.
+  const condition: 'turnkey' | 'fixer' | 'unknown' =
+    ql.vacant || ql.foreclosure || ql.preforeclosure || ql['tax-default'] ? 'fixer' : 'unknown'
 
   return {
-    condition: data.condition || 'unknown',
-    estimatedValue: data.estimated_value || 0,
-    daysOnMarket: data.days_on_market,
+    condition,
+    estimatedValue: prop.valuation?.estimatedValue ?? prop.estimatedValue ?? 0,
+    daysOnMarket: prop.listing?.daysOnMarket,
     cost: 0.03,
   }
 }
