@@ -515,6 +515,14 @@ async function testVendorGateway() {
   check("unified manifest stays VENDOR-ANONYMOUS", !JSON.stringify(full).includes("rentcast") && !JSON.stringify(full).includes("perplexity") && !JSON.stringify(full).includes("vapi"))
   check("unified manifest sorted by intentWeight desc", full.every((a, i) => i === 0 || full[i - 1].intentWeight >= a.intentWeight))
   check("listing_publish (PUBLISH) is highest-weight write", full[0].mutates === true)
+
+  // Expansive-domain coverage (marketing / social / reporting / education / portal / etc.).
+  const appDomains = new Set(appManifest.map((a) => a.category))
+  check("app registry now spans expansive domains", ["marketing", "social", "reporting", "education", "portal", "reputation", "communications"].every((d) => appDomains.has(d)))
+  check("newsletter_send is NOTIFY + marketing:send + mutating", APP_CAPABILITY_REGISTRY.newsletter_send.verb === "NOTIFY" && APP_CAPABILITY_REGISTRY.newsletter_send.scope === "marketing:send" && APP_CAPABILITY_REGISTRY.newsletter_send.mutates === true)
+  check("report_generate is read (ANALYZE, not mutating)", APP_CAPABILITY_REGISTRY.report_generate.verb === "ANALYZE" && APP_CAPABILITY_REGISTRY.report_generate.mutates === false)
+  check("every app action has a domain-scoped scope (domain:verb form)", appManifest.every((a) => /^[a-z_]+:[a-z_]+$/.test(a.scope)))
+  check("unified manifest grew to cover whole app (>=18 actions)", full.length >= 18)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

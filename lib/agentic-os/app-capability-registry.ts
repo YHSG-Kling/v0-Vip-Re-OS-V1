@@ -18,8 +18,23 @@ export type AppCapability =
   | "listing_publish"      // publish a listing (coming-soon → active)
   | "isa_qualify"          // run AI-ISA qualification on a lead
   | "lead_create"          // create a lead/contact record
+  // ── Expansive domains (marketing / social / reporting / education / portal / etc.) ──
+  | "newsletter_send"      // send/schedule a newsletter campaign
+  | "blog_publish"         // publish a blog post
+  | "marketing_campaign_create" // create a multi-channel marketing campaign
+  | "content_repurpose"    // repurpose a content asset across channels
+  | "social_post_publish"  // publish/distribute a social post
+  | "report_generate"      // generate a reporting workspace report
+  | "report_export"        // export a report (csv/pdf)
+  | "education_path_get"    // fetch a contact's personalized learning path
+  | "education_assign"     // assign an educational resource to a contact
+  | "portal_milestones_get" // fetch a client-portal milestone timeline
+  | "review_request_send"  // send a reputation review request
+  | "inbox_reply_send"     // send a reply in the universal inbox
 
-export type AppDomain = "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
+export type AppDomain =
+  | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
+  | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications"
 
 export interface AppCapabilityDef {
   capability: AppCapability
@@ -41,6 +56,19 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   listing_publish:      { capability: "listing_publish",      verb: "PUBLISH", scope: "listing:write",     domain: "listings",        mutates: true,  purpose: "Publish a listing (signed agreement → coming-soon / active).", inputs: ["listingId"] },
   isa_qualify:          { capability: "isa_qualify",          verb: "ANALYZE", scope: "lead:qualify",      domain: "lead_generation", mutates: true,  purpose: "Run AI-ISA qualification on a lead and record the outcome.", inputs: ["leadId"] },
   lead_create:          { capability: "lead_create",          verb: "CREATE",  scope: "lead:write",        domain: "lead_generation", mutates: true,  purpose: "Create a new lead/contact record from supplied identity.", inputs: ["brokerageId", "firstName", "lastName", "email?", "phone?"] },
+
+  newsletter_send:          { capability: "newsletter_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Send or schedule a newsletter campaign to a contact segment.", inputs: ["brokerageId", "campaignId", "scheduledAt?"] },
+  blog_publish:             { capability: "blog_publish",             verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a drafted blog post to the brokerage's site/SEO engine.", inputs: ["brokerageId", "postId"] },
+  marketing_campaign_create:{ capability: "marketing_campaign_create",verb: "CREATE",  scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Create a multi-channel marketing campaign.", inputs: ["brokerageId", "name", "channels"] },
+  content_repurpose:        { capability: "content_repurpose",        verb: "CREATE",  scope: "content:write",    domain: "marketing",      mutates: true,  purpose: "Repurpose an existing content asset into another channel format.", inputs: ["brokerageId", "assetId", "targetChannel"] },
+  social_post_publish:      { capability: "social_post_publish",      verb: "PUBLISH", scope: "social:write",     domain: "social",         mutates: true,  purpose: "Publish/distribute a post to connected social channels.", inputs: ["brokerageId", "assetId", "channels"] },
+  report_generate:          { capability: "report_generate",          verb: "ANALYZE", scope: "reporting:read",   domain: "reporting",      mutates: false, purpose: "Generate a reporting-workspace report (source/ROI/pipeline/team/financial).", inputs: ["brokerageId", "reportType", "range?"] },
+  report_export:            { capability: "report_export",            verb: "GET",     scope: "reporting:read",   domain: "reporting",      mutates: false, purpose: "Export a generated report as CSV or PDF.", inputs: ["brokerageId", "reportId", "format"] },
+  education_path_get:       { capability: "education_path_get",        verb: "GET",     scope: "education:read",   domain: "education",      mutates: false, purpose: "Fetch a contact's personalized learning path.", inputs: ["contactId"] },
+  education_assign:         { capability: "education_assign",          verb: "CREATE",  scope: "education:write",  domain: "education",      mutates: true,  purpose: "Assign an educational resource to a contact.", inputs: ["contactId", "resourceId"] },
+  portal_milestones_get:    { capability: "portal_milestones_get",     verb: "GET",     scope: "portal:read",      domain: "portal",         mutates: false, purpose: "Fetch the client-portal milestone timeline for a contact/transaction.", inputs: ["contactId"] },
+  review_request_send:      { capability: "review_request_send",       verb: "NOTIFY",  scope: "reputation:write", domain: "reputation",     mutates: true,  purpose: "Send a review request to a past client (reputation engine).", inputs: ["brokerageId", "contactId"] },
+  inbox_reply_send:         { capability: "inbox_reply_send",          verb: "NOTIFY",  scope: "comms:write",      domain: "communications", mutates: true,  purpose: "Send a reply in the universal inbox (compliance-gated).", inputs: ["brokerageId", "threadId", "body"] },
 }
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {
