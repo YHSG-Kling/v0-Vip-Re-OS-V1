@@ -3,21 +3,28 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from '@/lib/auth/client';
 
-const menuItems = [
-  { label: 'Dashboard', href: '/settings' },
-  { label: 'General', href: '/settings/general' },
-  { label: 'Branding', href: '/settings/branding' },
-  { label: 'Commission', href: '/settings/commission' },
-  { label: 'Email Templates', href: '/settings/email-templates' },
-  { label: 'Notifications', href: '/settings/notifications' },
-  { label: 'Integrations', href: '/settings/integrations' },
-  { label: 'Providers', href: '/settings/providers' },
-  { label: 'Users', href: '/settings/users' },
+// personal: every tier (solo agents too); brokerage: admin/broker/superadmin only.
+const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
+  { label: 'Dashboard', href: '/settings', personal: true },
+  { label: 'General', href: '/settings/general', personal: true },
+  { label: 'Integrations', href: '/settings/integrations', personal: true },
+  { label: 'CRM Sync', href: '/settings/crm', personal: true },
+  { label: 'Brand Voice', href: '/settings/brand-voice', personal: true },
+  { label: 'Branding', href: '/settings/branding', personal: true },
+  { label: 'Email Templates', href: '/settings/email-templates', personal: true },
+  { label: 'Notifications', href: '/settings/notifications', personal: true },
+  { label: 'Commission', href: '/settings/commission', personal: false },
+  { label: 'Providers', href: '/settings/providers', personal: false },
+  { label: 'Users', href: '/settings/users', personal: false },
 ];
 
 export function SettingsSidebar() {
   const pathname = usePathname();
+  const { userContext } = useAuth();
+  const isBrokerageRole = !!userContext?.roles.some((r) => ['admin', 'broker', 'superadmin'].includes(r));
+  const items = menuItems.filter((i) => i.personal || isBrokerageRole);
 
   return (
     <aside className="w-64 bg-white border-r border-gray-200 h-full">
@@ -26,7 +33,7 @@ export function SettingsSidebar() {
       </div>
       <nav className="p-4">
         <ul className="space-y-2">
-          {menuItems.map((item) => (
+          {items.map((item) => (
             <li key={item.href}>
               <Link
                 href={item.href}

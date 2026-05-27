@@ -3,15 +3,28 @@
 import React, { useEffect } from 'react';
 import { SettingsSidebar } from '@/app/components/settings/SettingsSidebar';
 import { useAuth } from '@/lib/auth/client';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+
+// Personal "tech stack" sections every tier may manage (a solo agent inside a brokerage/team
+// sets up their OWN email/phone/calendar/social/CRM, profile, brand voice, signature).
+const PERSONAL_SECTIONS = new Set([
+  'crm', 'integrations', 'brand-voice', 'branding', 'email-templates', 'notifications', 'general',
+]);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const { user, userContext, loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
-  const hasAccess = userContext?.roles.some(r => ['admin', 'broker', 'superadmin'].includes(r))
+  // /settings/<section>/... → section
+  const section = (pathname ?? '').split('/').filter(Boolean)[1] ?? '';
+  const isPersonalSection = PERSONAL_SECTIONS.has(section);
+  const isBrokerageRole = !!userContext?.roles.some(r => ['admin', 'broker', 'superadmin'].includes(r));
+  // Brokerage-wide sections (billing, users, global, commission, accounting, services, providers)
+  // stay admin/broker; personal-stack sections are open to any authenticated tier.
+  const hasAccess = isBrokerageRole || isPersonalSection
 
   useEffect(() => {
     if (!loading && (!user || !hasAccess)) {
