@@ -439,6 +439,8 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
 // direct_mail is SYSTEM_ONLY in kernel/providers.ts — resolveProvider always
 // returns the system default (lob) and ignores per-brokerage overrides.
 
+export type DirectMailPieceType = "letter" | "postcard" | "self_mailer"
+
 export interface DispatchDirectMailParams extends DispatchActorContext {
   recipientName: string
   mailingAddress: string
@@ -446,7 +448,16 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
   city: string
   state: string
   zip: string
+  /** Lob template id. For letters/self-mailers this is the document; for postcards it is the FRONT. */
   templateId: string
+  /** Postcard BACK template id (defaults to env LOB_POSTCARD_BACK_ID or the front). */
+  backTemplateId?: string
+  /** Mail piece type — Lob supports more than letters. Defaults to "letter". */
+  pieceType?: DirectMailPieceType
+  /** Postcard size: "4x6" | "6x9" | "6x11" (default "4x6"). Letters ignore this. */
+  size?: string
+  /** Color print (default false for letters, true for postcards). */
+  color?: boolean
   mergeVars?: Record<string, string>
   metadata?: Record<string, unknown>
 }
@@ -464,9 +475,8 @@ export async function dispatchDirectMail(
   })
   // providerKey will always be 'lob' until a superadmin override exists
 
-  // NOTE: Lob API integration is intentionally stubbed here.
-  // Feature code calls dispatchDirectMail — the provider stub throws if Lob keys
-  // are not configured, keeping the contract clean without hardcoding in feature code.
+  // Real Lob integration (letters / postcards / self-mailers). Feature code calls
+  // dispatchDirectMail; if Lob keys are absent it returns a clean unconfigured error.
   const lobApiKey = process.env.LOB_API_KEY
   if (!lobApiKey) {
     const result: DispatchResult = {
@@ -478,23 +488,52 @@ export async function dispatchDirectMail(
   }
 
   const lob = LobSDK(lobApiKey)
+  const pieceType: DirectMailPieceType = params.pieceType ?? "letter"
+  const to = {
+    name: params.recipientName,
+    address_line1: params.mailingAddress,
+    ...(params.mailingAddress2 ? { address_line2: params.mailingAddress2 } : {}),
+    address_city: params.city,
+    address_state: params.state,
+    address_zip: params.zip,
+    address_country: "US",
+  }
+  const from = process.env.LOB_RETURN_ADDRESS_ID
+  const mergeVars = params.mergeVars ?? {}
+
+  // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
+  const COST: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
+
   let data: { id?: string }
   try {
-    data = await lob.letters.create({
-      to: {
-        name: params.recipientName,
-        address_line1: params.mailingAddress,
-        ...(params.mailingAddress2 ? { address_line2: params.mailingAddress2 } : {}),
-        address_city: params.city,
-        address_state: params.state,
-        address_zip: params.zip,
-        address_country: "US",
-      },
-      from: process.env.LOB_RETURN_ADDRESS_ID,
-      file: params.templateId,
-      merge_variables: params.mergeVars ?? {},
-      color: false,
-    })
+    if (pieceType === "postcard") {
+      data = await lob.postcards.create({
+        to,
+        from,
+        front: params.templateId,
+        back: params.backTemplateId ?? process.env.LOB_POSTCARD_BACK_ID ?? params.templateId,
+        size: params.size ?? "4x6",
+        merge_variables: mergeVars,
+      })
+    } else if (pieceType === "self_mailer") {
+      data = await lob.selfMailers.create({
+        to,
+        from,
+        inside: params.templateId,
+        outside: params.backTemplateId ?? params.templateId,
+        size: params.size ?? "6x18_bifold",
+        merge_variables: mergeVars,
+        color: params.color ?? true,
+      })
+    } else {
+      data = await lob.letters.create({
+        to,
+        from,
+        file: params.templateId,
+        merge_variables: mergeVars,
+        color: params.color ?? false,
+      })
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return { success: false, providerKey, error: `Lob API error: ${msg}` }
@@ -504,13 +543,14 @@ export async function dispatchDirectMail(
     vendorName: providerKey,
     usageType: "pieces_mailed",
     unitCount: 1,
-    estimatedCost: 1.2, // Lob letter ~$1.20/piece
+    estimatedCost: COST[pieceType],
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
     leadId: params.leadId,
     metadata: {
-      lob_letter_id: data.id,
+      lob_id: data.id,
+      piece_type: pieceType,
       template_id: params.templateId,
       provider_key: providerKey,
       ...(params.metadata ?? {}),

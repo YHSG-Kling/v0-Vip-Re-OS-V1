@@ -17,7 +17,10 @@ export default async function CrmSettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold">CRM Sync</h1>
         <p className="text-sm text-muted-foreground">
-          Connect your CRM to sync contact updates OUT of VIP RE OS. One active CRM at a time.
+          Connect your CRM to sync contact updates OUT of VIP RE OS (one-way — nothing syncs back in).
+          {status.ok && (status.scope === "agent"
+            ? " You're setting up your personal CRM stack."
+            : " You're managing the brokerage-wide CRM.")}
         </p>
       </div>
       {!status.ok ? (

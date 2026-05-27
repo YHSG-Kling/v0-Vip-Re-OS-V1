@@ -53,66 +53,10 @@ export class GHLIntegration {
     this.apiKey = apiKey || process.env.GHL_API_KEY || ""
   }
 
-  async syncContactFromGHL(ghlContactData: any): Promise<{ success: boolean; contactId?: string; error?: string }> {
-    try {
-      const supabase = createServiceClient()
-
-      // Check if contact already exists by GHL ID
-      const { data: existingContact } = await supabase
-        .from("contacts")
-        .select("id, enriched_at")
-        .eq("ghl_contact_id", ghlContactData.id)
-        .single()
-
-      if (existingContact) {
-        // Update existing contact
-        await supabase
-          .from("contacts")
-          .update({
-            first_name: ghlContactData.firstName,
-            last_name: ghlContactData.lastName,
-            email: ghlContactData.email,
-            phone: ghlContactData.phone,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingContact.id)
-
-        // Queue for enrichment if not already enriched
-        if (!existingContact.enriched_at) {
-          queueContactEnrichment(existingContact.id, { source: "ghl_sync" })
-        }
-
-        return { success: true, contactId: existingContact.id }
-      }
-
-      // Create new contact
-      const { data: newContact, error } = await supabase
-        .from("contacts")
-        .insert({
-          first_name: ghlContactData.firstName,
-          last_name: ghlContactData.lastName,
-          email: ghlContactData.email,
-          phone: ghlContactData.phone,
-          ghl_contact_id: ghlContactData.id,
-          source: "ghl_sync",
-          status: "active",
-          stage: "New Lead",
-        })
-        .select()
-        .single()
-
-      if (error || !newContact) {
-        return { success: false, error: error?.message || "Failed to create contact" }
-      }
-
-      // Queue new contact for background enrichment
-      queueContactEnrichment(newContact.id, { source: "ghl_sync" })
-
-      return { success: true, contactId: newContact.id }
-    } catch (error) {
-      console.error("[GHL] Sync from GHL error:", error)
-      return { success: false, error: String(error) }
-    }
+  // DISABLED: GHL is SYNC-OUT ONLY. The app pushes contact/detail updates OUT to GoHighLevel
+  // and never ingests contacts from a CRM (no CRM syncs into the app — product decision).
+  async syncContactFromGHL(_ghlContactData: any): Promise<{ success: boolean; contactId?: string; error?: string }> {
+    return { success: false, error: "Inbound CRM sync is disabled — GHL is sync-out only" }
   }
 
   /**

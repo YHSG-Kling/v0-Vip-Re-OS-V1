@@ -1,7 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
-import { logEventAndTrigger } from "@/lib/events"
-import { createServiceClient } from "@/lib/supabase/service"
 
 // =====================================================
 // GOHIGHLEVEL WEBHOOK HANDLER
@@ -44,51 +42,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid or missing webhook signature" }, { status: 401 })
     }
 
-    const payload = JSON.parse(rawBody)
-
-    // Map GHL events to internal events
-    const eventType = mapGHLEventType(payload.type)
-    if (!eventType) {
-      return NextResponse.json({ message: "Event type not supported" }, { status: 200 })
-    }
-
-    // Get brokerage_id from GHL custom field or location
-    const supabase = createServiceClient()
-    const { data: brokerage } = await supabase
-      .from("brokerages")
-      .select("id")
-      .eq("ghl_location_id", payload.locationId)
-      .single()
-
-    if (!brokerage) {
-      console.error("[v0] No brokerage found for GHL location:", payload.locationId)
-      return NextResponse.json({ error: "Brokerage not found" }, { status: 404 })
-    }
-
-    // Log event to trigger automation
-    await logEventAndTrigger({
-      brokerage_id: brokerage.id,
-      user_id: payload.userId,
-      event_type: eventType,
-      payload: payload.data,
-      source: "webhook",
-      dedupe_key: payload.id || `ghl_${payload.type}_${payload.contactId}_${Date.now()}`,
-    })
-
-    return NextResponse.json({ success: true, message: "Event processed" })
+    // GHL is SYNC-OUT ONLY. The app pushes contact/detail updates OUT to GoHighLevel; it
+    // does NOT ingest CRM events back IN (no CRM syncs into the app — product decision).
+    // We still verify the signature above so an unconfigured deploy isn't an open endpoint,
+    // then acknowledge with a no-op so GHL stops retrying. No internal events are fired.
+    console.info("[gohighlevel-webhook] inbound event ignored — GHL is one-way OUT only")
+    return NextResponse.json({ success: true, message: "Ignored — GHL is sync-out only" }, { status: 200 })
   } catch (error) {
     console.error("[v0] Error processing GHL webhook:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
-}
-
-function mapGHLEventType(ghlType: string): string | null {
-  const mapping: Record<string, string> = {
-    "contact.created": "lead.created",
-    "contact.tagged": "lead.tagged_hot",
-    "appointment.scheduled": "listing.appointment_set",
-    "opportunity.status_change": "transaction.milestone_overdue",
-  }
-
-  return mapping[ghlType] || null
 }
