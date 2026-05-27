@@ -106,6 +106,22 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   }
 }
 
+// Single egress: all BatchData Property Search calls route through the connector-gateway
+// (one way in/out). Throws on error to preserve the callers' contract.
+async function batchDataPropertySearch(body: unknown, errorLabel: string): Promise<any> {
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<any>({
+    connector: "batchdata",
+    baseUrl: BATCHDATA_API_URL,
+    path: "property/search",
+    method: "POST",
+    auth: { style: "bearer", token: BATCHDATA_API_KEY },
+    body,
+  })
+  if (!res.ok) throw new Error(`${errorLabel}: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
+  return res.data
+}
+
 export async function fetchMotivatedSellers(params: {
   state: string
   city?: string
@@ -124,23 +140,10 @@ export async function fetchMotivatedSellers(params: {
 
   // BatchData v1 Property Search — POST /api/v1/property/search.
   // Motivated-seller triggers are expressed as `searchCriteria.quickLists`.
-  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      searchCriteria: { query, quickLists },
-      options: { take: params.limit ?? 100, skip: 0 },
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`BatchData API error: ${response.status} ${response.statusText}`)
-  }
-
-  const data = await response.json()
+  const data = await batchDataPropertySearch(
+    { searchCriteria: { query, quickLists }, options: { take: params.limit ?? 100, skip: 0 } },
+    "BatchData API error",
+  )
   const properties: any[] = data?.results?.properties ?? data?.results ?? []
   const records = properties.map((p) => normalizeBatchDataProperty(p, types[0] ?? 'distressed'))
 
@@ -156,20 +159,10 @@ export async function searchProperties(address: string): Promise<{
   cost: number
 }> {
   // BatchData v1 Property Search by free-text address (POST /api/v1/property/search).
-  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ searchCriteria: { query: address }, options: { take: 5, skip: 0 } }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`BatchData property search error: ${response.status} ${response.statusText}`)
-  }
-
-  const data = await response.json()
+  const data = await batchDataPropertySearch(
+    { searchCriteria: { query: address }, options: { take: 5, skip: 0 } },
+    "BatchData property search error",
+  )
 
   return {
     matches: data?.results?.properties ?? data?.results ?? [],
@@ -185,20 +178,10 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
 }> {
   // No dedicated "enrichment" endpoint on BatchData — a single-address Property
   // Search returns the property valuation + attributes we derive condition from.
-  const response = await fetch(`${BATCHDATA_API_URL}/property/search`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${BATCHDATA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ searchCriteria: { query: address }, options: { take: 1, skip: 0 } }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`BatchData enrichment error: ${response.status} ${response.statusText}`)
-  }
-
-  const data = await response.json()
+  const data = await batchDataPropertySearch(
+    { searchCriteria: { query: address }, options: { take: 1, skip: 0 } },
+    "BatchData enrichment error",
+  )
   const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? {}
   const ql = prop.quickLists ?? {}
   // Distress/vacancy signals imply a likely fixer; otherwise unknown.

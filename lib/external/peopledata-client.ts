@@ -86,27 +86,30 @@ export async function skipTraceWithPeopleData(params: {
     throw new Error('At least one of name, phone, or email required for skip trace')
   }
 
-  const response = await fetch(`${PEOPLEDATA_API_URL}/person/enrich`, {
-    method: 'POST',
-    headers: {
-      'X-Api-Key': PEOPLEDATA_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  // Single egress: route through the connector-gateway (one way in/out). Preserves the
+  // throw-on-error contract this enrichment caller expects.
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<any>({
+    connector: "peopledata",
+    baseUrl: PEOPLEDATA_API_URL,
+    path: "person/enrich",
+    method: "POST",
+    auth: { style: "header", name: "X-Api-Key", value: PEOPLEDATA_API_KEY },
+    body: {
       name: params.name,
       phone: params.phone,
       email: params.email,
       location: params.address,
       min_likelihood: 6,
       required: 'emails OR phones',
-    }),
+    },
   })
 
-  if (!response.ok) {
-    throw new Error(`PeopleData API error: ${response.status} ${response.statusText}`)
+  if (!res.ok) {
+    throw new Error(`PeopleData API error: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
   }
 
-  const data = await response.json()
+  const data = res.data
 
   if (data.status !== 200 || !data.data) {
     return {

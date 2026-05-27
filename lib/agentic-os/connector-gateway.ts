@@ -29,6 +29,8 @@ export interface GatewayRequest {
   auth: GatewayAuth
   /** Optional response shape — when present, the response is adapted + drift is reported. */
   shape?: ConnectorShapeSpec
+  /** "json" (default) parses the body as JSON; "text" returns the raw string (HTML scrapers). */
+  responseType?: "json" | "text"
   timeoutMs?: number
 }
 
@@ -82,6 +84,12 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
       ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
       signal: AbortSignal.timeout(req.timeoutMs ?? 15_000),
     })
+    // Text responses (HTML scrapers) bypass JSON parsing + shape adaptation.
+    if (req.responseType === "text") {
+      const text = await res.text().catch(() => "")
+      if (!res.ok) return { ok: false, status: res.status, data: null, drift: null, error: `HTTP ${res.status}` }
+      return { ok: true, status: res.status, data: text as unknown as T, drift: null, error: null }
+    }
     const raw = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok) {
       const msg = (raw?.error as any)?.message || (raw?.message as string) || `HTTP ${res.status}`

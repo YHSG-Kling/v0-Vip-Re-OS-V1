@@ -6,8 +6,9 @@ import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import {
   getConnectorAttentionFeedAction,
   getConnectorHealthSummaryAction,
+  getInvocationAnalyticsAction,
 } from "@/app/actions/superadmin/connector-health"
-import { Activity, AlertTriangle, Clock, PlugZap } from "lucide-react"
+import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
 
 export const dynamic = "force-dynamic"
 
@@ -47,13 +48,15 @@ export default async function SuperadminConnectorsPage() {
     return <div className="p-6 text-red-600">Forbidden: platform staff access only</div>
   }
 
-  const [feedRes, summaryRes] = await Promise.all([
+  const [feedRes, summaryRes, invRes] = await Promise.all([
     getConnectorAttentionFeedAction(150),
     getConnectorHealthSummaryAction(),
+    getInvocationAnalyticsAction(168),
   ])
   const rows = feedRes.ok ? feedRes.rows : []
   const byStatus = summaryRes.ok ? summaryRes.byStatus : {}
   const lastRunAt = summaryRes.ok ? summaryRes.lastRunAt : null
+  const inv = invRes.ok ? invRes.analytics : null
 
   const count = (k: string) => byStatus[k] ?? 0
   const attentionTotal = count("expired") + count("auth_failed") + count("shape_drift") + count("expiring_soon")
@@ -135,6 +138,69 @@ export default async function SuperadminConnectorsPage() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Agentic invocation analytics (audit + learning corpus) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Cpu className="h-4 w-4" /> Agentic invocations
+            {inv && <span className="text-xs font-normal text-muted-foreground">last {Math.round(inv.windowHours / 24)}d · {inv.total} calls</span>}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!invRes.ok ? (
+            <div className="text-sm text-red-600">Failed to load: {invRes.error}</div>
+          ) : !inv || inv.total === 0 ? (
+            <div className="text-sm text-muted-foreground">No agentic invocations recorded yet.</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(inv.byOutcome).map(([k, v]) => (
+                  <Badge key={k} variant={k === "error" ? "destructive" : k === "denied" ? "secondary" : "outline"}>
+                    {k}: {v}
+                  </Badge>
+                ))}
+              </div>
+              <div className="overflow-x-auto">
+                <div className="text-xs font-medium text-muted-foreground mb-1">Top capabilities</div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b">
+                      <th className="py-1 pr-4">Capability</th>
+                      <th className="py-1 pr-4">Calls</th>
+                      <th className="py-1 pr-4">Denied</th>
+                      <th className="py-1 pr-4">Errors</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inv.topCapabilities.map((c) => (
+                      <tr key={c.capability} className="border-b last:border-0">
+                        <td className="py-1 pr-4 font-medium">{c.capability}</td>
+                        <td className="py-1 pr-4">{c.count}</td>
+                        <td className="py-1 pr-4 text-amber-600">{c.denied || ""}</td>
+                        <td className="py-1 pr-4 text-red-600">{c.errors || ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {inv.recent.length > 0 && (
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-1">Recent denials / errors</div>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    {inv.recent.map((r, i) => (
+                      <li key={i}>
+                        <span className="font-medium">{r.capability}</span> · {r.decision}
+                        {r.error ? ` — ${r.error}` : ""} <span className="opacity-60">({fmtAgo(r.createdAt)})</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

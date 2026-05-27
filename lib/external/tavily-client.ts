@@ -34,29 +34,29 @@ export async function tavilySearch(params: {
   const apiKey = process.env.TAVILY_API_KEY
   if (!apiKey) return { answer: null, results: [], cost: 0 }
 
-  try {
-    const res = await fetch(`${TAVILY_BASE}/search`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: params.query,
-        max_results: params.maxResults ?? 20,
-        search_depth: params.searchDepth ?? "basic",
-        include_answer: params.includeAnswer ?? true,
-        ...(params.days ? { days: params.days } : {}),
-      }),
-    })
-    if (!res.ok) return { answer: null, results: [], cost: 0 }
-    const json = await res.json()
-    const rows: any[] = json?.results ?? []
-    return {
-      answer: typeof json?.answer === "string" ? json.answer : null,
-      results: rows.map((r) => normalizeTavilyRow(r)),
-      // Tavily basic ≈ 1 credit; advanced ≈ 2. Approximate $ for cost tracking.
-      cost: params.searchDepth === "advanced" ? 0.01 : 0.005,
-    }
-  } catch {
-    return { answer: null, results: [], cost: 0 }
+  // Single egress: route through the connector-gateway (one way in/out). Never throws.
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<{ answer?: string; results?: any[] }>({
+    connector: "tavily",
+    baseUrl: TAVILY_BASE,
+    path: "search",
+    method: "POST",
+    auth: { style: "bearer", token: apiKey },
+    body: {
+      query: params.query,
+      max_results: params.maxResults ?? 20,
+      search_depth: params.searchDepth ?? "basic",
+      include_answer: params.includeAnswer ?? true,
+      ...(params.days ? { days: params.days } : {}),
+    },
+  })
+  if (!res.ok || !res.data) return { answer: null, results: [], cost: 0 }
+  const rows: any[] = res.data.results ?? []
+  return {
+    answer: typeof res.data.answer === "string" ? res.data.answer : null,
+    results: rows.map((r) => normalizeTavilyRow(r)),
+    // Tavily basic ≈ 1 credit; advanced ≈ 2. Approximate $ for cost tracking.
+    cost: params.searchDepth === "advanced" ? 0.01 : 0.005,
   }
 }
 
