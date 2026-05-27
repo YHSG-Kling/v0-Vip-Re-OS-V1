@@ -8,7 +8,6 @@
 
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
 import { createTransfer } from "@/lib/providers/payment"
-import { createCalendarEvent } from "@/lib/providers/calendar"
 
 // HEYGEN VIDEO GENERATION
 // HeyGen is a video-specific provider — kept inline until lib/providers/video is created.
