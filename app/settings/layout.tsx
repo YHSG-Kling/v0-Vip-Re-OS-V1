@@ -10,7 +10,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 // Personal "tech stack" sections every tier may manage (a solo agent inside a brokerage/team
 // sets up their OWN email/phone/calendar/social/CRM, profile, brand voice, signature).
 const PERSONAL_SECTIONS = new Set([
-  'crm', 'phone', 'integrations', 'brand-voice', 'branding', 'email-templates', 'notifications', 'general',
+  'crm', 'phone', 'connections', 'integrations', 'brand-voice', 'branding', 'email-templates', 'notifications', 'general',
 ]);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {

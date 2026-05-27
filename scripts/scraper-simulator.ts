@@ -81,6 +81,7 @@ import { classifyProbe, PROBE_SPECS } from "../lib/agentic-os/connector-probe"
 import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
 import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
+import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -632,6 +633,20 @@ async function testVendorGateway() {
   check("MCP inputSchema marks required vs optional", (() => { const s = inputsToJsonSchema(["address", "zipCode?"]); return s.required.includes("address") && !s.required.includes("zipCode") && !!s.properties.zipCode })())
   check("MCP tool name sanitizer", toToolName("lead_search") === "lead_search")
   check("MCP stays vendor-anonymous (no platform vendor names leak)", !JSON.stringify(mcpTools).includes("rentcast") && !JSON.stringify(mcpTools).includes("perplexity"))
+
+  // ── Per-agent calendar (Google/Microsoft OAuth) — pure free-slot computation ──
+  const calStart = "2026-06-01T00:00:00.000Z"
+  const calEnd = "2026-06-01T23:59:59.000Z"
+  const freeNoBusy = computeFreeSlots([], { startDate: calStart, endDate: calEnd, durationMinutes: 60 })
+  check("free-slots: generates business-hours slots when no busy windows", freeNoBusy.length === 8 && freeNoBusy.every((s) => s.startTime < s.endTime))
+  check("free-slots: excludes a slot overlapping a busy window", (() => {
+    // Busy 09:00–10:00 local on that day → the 9am slot must be dropped.
+    const nineLocal = new Date("2026-06-01T00:00:00.000Z"); nineLocal.setHours(9, 0, 0, 0)
+    const busy = [{ start: nineLocal.getTime(), end: nineLocal.getTime() + 60 * 60_000 }]
+    const slots = computeFreeSlots(busy, { startDate: calStart, endDate: calEnd, durationMinutes: 60 })
+    return slots.length === 7 && !slots.some((s) => new Date(s.startTime).getHours() === 9)
+  })())
+  check("free-slots: respects duration (30-min slots still 8 in 9-17 hourly grid)", computeFreeSlots([], { startDate: calStart, endDate: calEnd, durationMinutes: 30 }).length === 8)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
