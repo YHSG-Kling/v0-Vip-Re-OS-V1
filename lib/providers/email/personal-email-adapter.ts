@@ -83,6 +83,21 @@ export async function sendPersonalEmail(
 
 // ─── Credential lookup ───────────────────────────────────────────────────────
 
+/**
+ * Shared accessor: resolve a FRESH OAuth access token for the agent's connected
+ * Google/Microsoft account (refreshing + persisting if expired). Reused by the
+ * calendar provider so calendar + email share ONE token per provider connection.
+ */
+export async function getFreshPersonalToken(
+  agentUserId: string,
+): Promise<{ provider: PersonalProvider; accessToken: string; email: string | null } | null> {
+  const cred = await loadActivePersonalCred(agentUserId)
+  if (!cred) return null
+  const accessToken = await ensureFreshAccessToken(cred)
+  if (!accessToken) return null
+  return { provider: cred.service_name, accessToken, email: cred.email }
+}
+
 interface PersonalCred {
   id: string
   service_name: "gmail" | "outlook"
