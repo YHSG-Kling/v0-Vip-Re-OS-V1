@@ -53,18 +53,36 @@ export interface BatchDataRecord {
   motivationConfidence: number
 }
 
-/** Full motivated-seller trigger set requested by default (BatchData = the comprehensive seller source). */
+/** Full motivated-seller trigger set requested by default. Only types that map to a REAL BatchData
+ *  quickList are pullable here (divorce has no BatchData quickList — those leads come from other
+ *  sources). A single Property Search caps quickLists at 3, so the cron pulls trigger-by-trigger. */
 export const BATCHDATA_MOTIVATION_TYPES = [
-  'probate', 'divorce', 'foreclosure', 'pre_foreclosure', 'tax_lien',
+  'probate', 'foreclosure', 'pre_foreclosure', 'tax_lien',
   'high_equity', 'absentee', 'expired', 'vacant', 'tired_landlord',
 ] as const
 
-// Maps our internal motivation types to BatchData Property Search `quickLists`
-// filter slugs (kebab-case, per the BatchData v1 Property Search API).
+/** The default high-intent seller trio used when no explicit triggers are given (API caps at 3). */
+const DEFAULT_MOTIVATION_TRIO = ['high_equity', 'pre_foreclosure', 'absentee'] as const
+
+/** Authoritative BatchData v1 Property Search quickList vocabulary (the named business-rule
+ *  queries). Used to validate every slug before it hits the API so an invalid name can't be sent.
+ *  Source: BatchData v1 "Create a Property Search" docs. */
+export const BATCHDATA_QUICKLISTS = new Set<string>([
+  'absentee-owner', 'active-auction', 'active-listing', 'canceled-listing', 'cash-buyer',
+  'corporate-owned', 'expired-listing', 'failed-listing', 'fix-and-flip', 'free-and-clear',
+  'for-sale-by-owner', 'has-hoa', 'has-hoa-fees', 'high-equity', 'inherited', 'involuntary-lien',
+  'in-state-absentee-owner', 'listed-below-market-price', 'low-equity', 'mailing-address-vacant',
+  'notice-of-default', 'notice-of-lis-pendens', 'notice-of-sale', 'on-market',
+  'out-of-state-absentee-owner', 'out-of-state-owner', 'owner-occupied', 'pending-listing',
+  'preforeclosure', 'recently-sold', 'same-property-and-mailing-address', 'senior-owner',
+  'tax-default', 'tired-landlord', 'trust-owned', 'unknown-equity', 'vacant', 'vacant-lot',
+])
+
+// Maps our internal motivation types to VALID BatchData Property Search quickList slugs. Each value
+// is a real quickList from BATCHDATA_QUICKLISTS (validated by the simulator).
 const QUICKLIST_SLUG: Record<string, string> = {
   probate:         'inherited',
-  divorce:         'divorce',
-  foreclosure:     'foreclosure',
+  foreclosure:     'notice-of-sale',     // active foreclosure (auction stage)
   pre_foreclosure: 'preforeclosure',
   tax_lien:        'tax-default',
   high_equity:     'high-equity',
@@ -72,7 +90,7 @@ const QUICKLIST_SLUG: Record<string, string> = {
   expired:         'expired-listing',
   vacant:          'vacant',
   tired_landlord:  'tired-landlord',
-  distressed:      'foreclosure',
+  distressed:      'preforeclosure',
 }
 
 /** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
@@ -110,32 +128,52 @@ export interface FetchMotivatedSellersOptions {
   state: string
   city?: string
   zip?: string
-  /** Internal motivation types → BatchData quickList slugs (the named lead descriptors). */
+  /** Internal motivation types → BatchData quickList slugs. A motivated-seller pull wants ANY of
+   *  these triggers, so they go into `orQuickLists` (OR-ed). Capped at 3 by the API. */
   motivationTypes?: string[]
+  /** Raw BatchData quickList slugs to AND together (e.g. ["high-equity","out-of-state-owner"] =
+   *  high-equity out-of-state owners). Validated + capped at 3. */
+  andQuickLists?: string[]
   /** Advanced "third search type": BatchData-native searchCriteria fields merged verbatim
-   *  (structured/geo filters) — an escape hatch so a verified field works without a code change. */
+   *  (address/building/foreclosure/etc.) — an escape hatch so a verified field works w/o a change. */
   searchCriteria?: Record<string, unknown>
   limit?: number
   skip?: number
 }
 
+/** Keep only valid BatchData quickList slugs (supports the "not-" exclude prefix), capped at 3. */
+function validQuickLists(slugs: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const s of slugs) {
+    const base = s.startsWith("not-") ? s.slice(4) : s
+    if (BATCHDATA_QUICKLISTS.has(base) && !seen.has(s)) { seen.add(s); out.push(s) }
+    if (out.length === 3) break // BatchData caps quickList arrays at 3 items
+  }
+  return out
+}
+
 /**
- * PURE: build the BatchData Property Search request body. BatchData's searchCriteria is driven by
- * `quickLists` (the named business-rule queries that DESCRIBE the leads — high-equity, absentee,
- * preforeclosure, …) scoped by a `query` string (the geography). The motivated-seller intent maps
- * to the best quickList(s) via QUICKLIST_SLUG — so the caller picks intent, not a pile of filters.
- * Any extra BatchData-native structured criteria can be supplied verbatim via `searchCriteria`.
- * Unit-tested in the simulator.
+ * PURE: build the BatchData v1 Property Search request body. The lead is DESCRIBED by quickLists —
+ * the named business-rule queries (high-equity, preforeclosure, absentee-owner, …) — scoped by a
+ * `query` string (the geography, e.g. "Tampa, FL"). A motivated-seller pull wants properties
+ * matching ANY trigger, so motivation types become `orQuickLists` (OR-ed, ≤3); an explicit
+ * `andQuickLists` narrows by intersection (AND-ed, ≤3). Invalid slugs are dropped (validated
+ * against BATCHDATA_QUICKLISTS) so a bad name never hits the API. Unit-tested in the simulator.
  */
 export function buildPropertySearchBody(opts: FetchMotivatedSellersOptions): { searchCriteria: Record<string, unknown>; options: { take: number; skip: number } } {
   const types = opts.motivationTypes && opts.motivationTypes.length > 0
     ? opts.motivationTypes
-    : [...BATCHDATA_MOTIVATION_TYPES]
-  const quickLists = [...new Set(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean))]
+    : [...DEFAULT_MOTIVATION_TRIO]
+  const orQuickLists = validQuickLists(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean) as string[])
+  const andQuickLists = validQuickLists(opts.andQuickLists ?? [])
   const query = [opts.city, opts.zip, opts.state].filter(Boolean).join(", ") || opts.state
 
-  // query (geography) + quickLists (the lead descriptors); verbatim passthrough wins last.
-  const searchCriteria: Record<string, unknown> = { query, quickLists, ...(opts.searchCriteria ?? {}) }
+  const searchCriteria: Record<string, unknown> = { query }
+  if (orQuickLists.length) searchCriteria.orQuickLists = orQuickLists
+  if (andQuickLists.length) searchCriteria.quickLists = andQuickLists
+  // Verbatim passthrough (the structured "third search type") wins last.
+  Object.assign(searchCriteria, opts.searchCriteria ?? {})
 
   return { searchCriteria, options: { take: opts.limit ?? 100, skip: opts.skip ?? 0 } }
 }

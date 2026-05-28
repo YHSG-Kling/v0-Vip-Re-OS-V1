@@ -62,7 +62,7 @@ import {
   factualNarrative,
 } from "../lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
-import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty, buildPropertySearchBody } from "../lib/external/batchdata-client"
+import { BATCHDATA_MOTIVATION_TYPES, BATCHDATA_QUICKLISTS, fetchMotivatedSellers, normalizeBatchDataProperty, buildPropertySearchBody } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
 import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
@@ -301,20 +301,23 @@ async function testVendorConnectors() {
   }) as unknown as typeof fetch
   await fetchMotivatedSellers({ state: "FL", city: "Tampa", motivationTypes: ["pre_foreclosure", "high_equity"], limit: 25 })
   check("BatchData hits /api/v1/property/search", !!captured && (captured as any).url.endsWith("/property/search"))
-  check("BatchData body uses searchCriteria.quickLists", !!captured && Array.isArray((captured as any).body.searchCriteria.quickLists))
-  check("BatchData maps pre_foreclosure → 'preforeclosure' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("preforeclosure"))
-  check("BatchData maps high_equity → 'high-equity' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("high-equity"))
+  check("BatchData body uses searchCriteria.orQuickLists (OR — match ANY trigger)", !!captured && Array.isArray((captured as any).body.searchCriteria.orQuickLists))
+  check("BatchData maps pre_foreclosure → 'preforeclosure' slug", !!captured && (captured as any).body.searchCriteria.orQuickLists.includes("preforeclosure"))
+  check("BatchData maps high_equity → 'high-equity' slug", !!captured && (captured as any).body.searchCriteria.orQuickLists.includes("high-equity"))
   check("BatchData options.take = limit", !!captured && (captured as any).body.options.take === 25)
 
   // buildPropertySearchBody (pure) — quickLists ARE the lead descriptors; query is the geography.
   const built = buildPropertySearchBody({ state: "FL", city: "Tampa", zip: "33602", motivationTypes: ["high_equity", "absentee"], limit: 50, skip: 100 })
   const sc = built.searchCriteria as any
-  check("BatchData builder: quickLists describe the leads (high-equity + absentee-owner)", sc.quickLists.includes("high-equity") && sc.quickLists.includes("absentee-owner"))
+  check("BatchData builder: motivation triggers → orQuickLists (high-equity + absentee-owner)", sc.orQuickLists.includes("high-equity") && sc.orQuickLists.includes("absentee-owner"))
   check("BatchData builder: query carries the geography (city/zip/state)", sc.query === "Tampa, 33602, FL")
-  check("BatchData builder: only query + quickLists by default (no param bloat)", Object.keys(sc).sort().join(",") === "query,quickLists")
+  check("BatchData builder: only query + orQuickLists by default (no param bloat)", Object.keys(sc).sort().join(",") === "orQuickLists,query")
   check("BatchData builder: pagination via options.take/skip", built.options.take === 50 && built.options.skip === 100)
-  check("BatchData builder: default pulls the full motivated-seller quickList set", ((buildPropertySearchBody({ state: "FL" }).searchCriteria as any).quickLists as string[]).length >= 10)
-  check("BatchData builder: searchCriteria passthrough is the structured 'third type' escape hatch", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { quickLists: ["vacant"] } }).searchCriteria as any; return b.quickLists[0] === "vacant" })())
+  check("BatchData builder: every mapped slug is a VALID BatchData quickList", Object.values((buildPropertySearchBody({ state: "FL", motivationTypes: [...BATCHDATA_MOTIVATION_TYPES] }).searchCriteria as any).orQuickLists as string[]).every((s) => BATCHDATA_QUICKLISTS.has(s)))
+  check("BatchData builder: quickList arrays capped at 3 (API limit)", (buildPropertySearchBody({ state: "FL", motivationTypes: [...BATCHDATA_MOTIVATION_TYPES] }).searchCriteria as any).orQuickLists.length === 3)
+  check("BatchData builder: invalid slug dropped (divorce/foreclosure not valid quickLists)", (() => { const b = buildPropertySearchBody({ state: "FL", andQuickLists: ["divorce", "high-equity", "not-owner-occupied"] }).searchCriteria as any; return !b.quickLists.includes("divorce") && b.quickLists.includes("high-equity") && b.quickLists.includes("not-owner-occupied") })())
+  check("BatchData builder: andQuickLists → AND-ed quickLists (intersection narrowing)", (() => { const b = buildPropertySearchBody({ state: "FL", motivationTypes: ["high_equity"], andQuickLists: ["out-of-state-owner"] }).searchCriteria as any; return b.orQuickLists.includes("high-equity") && b.quickLists.includes("out-of-state-owner") })())
+  check("BatchData builder: searchCriteria passthrough is the structured 'third type' escape hatch", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { building: { minBedroomCount: 3 } } }).searchCriteria as any; return b.building.minBedroomCount === 3 })())
 
   // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
   let apifyUrl = ""
@@ -1200,7 +1203,8 @@ function testNeighborhoodIntelligence() {
 // ── 20. BatchData = comprehensive motivated-seller source ────────────────────
 function testBatchDataTypes() {
   console.log("\n[BatchData motivated-seller coverage]")
-  const required = ["probate", "divorce", "foreclosure", "pre_foreclosure", "tax_lien", "high_equity", "absentee", "expired", "vacant", "tired_landlord"]
+  // The BatchData-pullable triggers (divorce has no BatchData quickList — sourced elsewhere).
+  const required = ["probate", "foreclosure", "pre_foreclosure", "tax_lien", "high_equity", "absentee", "expired", "vacant", "tired_landlord"]
   for (const t of required) {
     check(`BatchData covers "${t}"`, (BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes(t))
   }
