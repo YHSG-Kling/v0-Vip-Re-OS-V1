@@ -38,6 +38,7 @@ import type {
   ListFormsResponse,
   ProviderForm,
 } from "./transaction-provider.interface"
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 export class SkyslopeProvider implements ITransactionProvider {
   readonly name = "skyslope"
@@ -54,33 +55,39 @@ export class SkyslopeProvider implements ITransactionProvider {
     this.baseUri     = (credentials.baseUri ?? "https://api.skyslope.com").replace(/\/$/, "")
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...extra,
-    }
+  /** Single egress choke point — every SkySlope API call leaves through the connector-gateway. */
+  private request<T = any>(
+    path: string,
+    opts: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<GatewayResponse<T>> {
+    return callConnector<T>({
+      connector: "skyslope",
+      baseUrl: this.baseUri,
+      path,
+      method: opts.method,
+      body: opts.body,
+      query: opts.query,
+      auth: { style: "bearer", token: this.accessToken },
+    })
   }
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files`, {
+      const res = await this.request<{ fileId?: string; id?: string; file?: { id?: string } }>("/files", {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           officeId:         this.officeId,
           fileType:         request.transactionType === "purchase" ? "Sale" : "Listing",
           propertyAddress:  request.propertyAddress,
           purchasePrice:    request.purchasePrice,
           estimatedCloseDate: request.estimatedCloseDate,
           status:           "Pending",
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `SkySlope createFile ${res.status}: ${await res.text()}` }
+        return { success: false, error: `SkySlope createFile ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
+      const data = res.data ?? {}
       const fileId = data.fileId ?? data.id ?? data.file?.id
       if (!fileId) {
         return { success: false, error: "SkySlope returned no fileId" }
@@ -96,15 +103,14 @@ export class SkyslopeProvider implements ITransactionProvider {
       let attached = 0
       for (const form of request.forms) {
         if (!form.formUrl) continue
-        const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}/documents`, {
+        const res = await this.request(`/files/${request.externalTransactionId}/documents`, {
           method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({
+          body: {
             name:         form.formName,
             source:       "url",
             sourceUrl:    form.formUrl,
             metadata:     form.formData ?? {},
-          }),
+          },
         })
         if (res.ok) attached++
       }
@@ -116,10 +122,9 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}/signatures`, {
+      const res = await this.request(`/files/${request.externalTransactionId}/signatures`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           documentId: request.documentId,
           signers: request.signers.map((s, i) => ({
             order: i + 1,
@@ -128,10 +133,10 @@ export class SkyslopeProvider implements ITransactionProvider {
             role:  s.role,
           })),
           message: request.message ?? "Please review and sign.",
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `SkySlope sendSignatures ${res.status}: ${await res.text()}` }
+        return { success: false, error: `SkySlope sendSignatures ${res.status}: ${res.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -141,14 +146,11 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async getSignatureStatus(externalTransactionId: string): Promise<SignatureStatusResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files/${externalTransactionId}/signatures`, {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ signers?: any[]; signatures?: any[] }>(`/files/${externalTransactionId}/signatures`)
       if (!res.ok) {
         return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: `SkySlope status ${res.status}` }
       }
-      const data = await res.json()
-      const items: any[] = data.signers ?? data.signatures ?? []
+      const items: any[] = res.data?.signers ?? res.data?.signatures ?? []
       const total = items.length
       const signed = items.filter(s => (s.status ?? "").toString().toLowerCase() === "signed"
                                     || (s.status ?? "").toString().toLowerCase() === "completed").length
@@ -166,13 +168,12 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}`, {
+      const res = await this.request(`/files/${request.externalTransactionId}`, {
         method: "PATCH",
-        headers: this.headers(),
-        body: JSON.stringify({ status: "Cancelled", cancellationReason: request.reason ?? "Cancelled by agent" }),
+        body: { status: "Cancelled", cancellationReason: request.reason ?? "Cancelled by agent" },
       })
       if (!res.ok) {
-        return { success: false, error: `SkySlope void ${res.status}: ${await res.text()}` }
+        return { success: false, error: `SkySlope void ${res.status}: ${res.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -182,21 +183,19 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}/documents`, {
+      const res = await this.request<{ documentId?: string; id?: string }>(`/files/${request.externalTransactionId}/documents`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           name:      request.documentName,
           source:    "url",
           sourceUrl: request.documentUrl,
           folder:    request.folderName ?? "Documents",
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `SkySlope upload ${res.status}: ${await res.text()}` }
+        return { success: false, error: `SkySlope upload ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      return { success: true, externalDocumentId: String(data.documentId ?? data.id ?? "") }
+      return { success: true, externalDocumentId: String(res.data?.documentId ?? res.data?.id ?? "") }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "SkySlope uploadDocument failed" }
     }
@@ -205,21 +204,16 @@ export class SkyslopeProvider implements ITransactionProvider {
   async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
     try {
       // SkySlope's form library lives under /forms with state + category filters.
-      const params = new URLSearchParams()
-      if (request.stateCode) params.set("state",    request.stateCode)
-      if (request.category)  params.set("category", request.category)
-      if (request.query)     params.set("q",         request.query)
-      params.set("officeId", this.officeId)
-      params.set("limit",   String(request.pageSize ?? 100))
+      const query: Record<string, string> = { officeId: this.officeId, limit: String(request.pageSize ?? 100) }
+      if (request.stateCode) query.state = request.stateCode
+      if (request.category)  query.category = request.category
+      if (request.query)     query.q = request.query
 
-      const res = await fetch(`${this.baseUri}/forms?${params.toString()}`, {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ forms?: any[]; items?: any[] }>("/forms", { query })
       if (!res.ok) {
-        return { success: false, error: `SkySlope listForms ${res.status}: ${await res.text()}` }
+        return { success: false, error: `SkySlope listForms ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      const items: any[] = data.forms ?? data.items ?? data ?? []
+      const items: any[] = res.data?.forms ?? res.data?.items ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
       const forms: ProviderForm[] = items.map(f => ({
         formId:    String(f.formId ?? f.id),
         name:      f.name ?? f.title ?? "Form",
@@ -237,14 +231,12 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
-      const res = await fetch(`${this.baseUri}/files/${request.externalTransactionId}/documents`, {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ documents?: any[] }>(`/files/${request.externalTransactionId}/documents`)
       if (!res.ok) {
         return { success: false, syncedCount: 0, documents: [], error: `SkySlope list ${res.status}` }
       }
-      const data = await res.json()
-      const documents: ProviderDocument[] = (data.documents ?? data ?? []).map((d: any) => ({
+      const docList: any[] = res.data?.documents ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
+      const documents: ProviderDocument[] = docList.map((d: any) => ({
         externalDocumentId: String(d.id ?? d.documentId),
         documentName:       d.name,
         folderName:         d.folder ?? "Documents",

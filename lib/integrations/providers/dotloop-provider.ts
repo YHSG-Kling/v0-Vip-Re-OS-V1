@@ -27,6 +27,7 @@ import type {
   ListFormsResponse,
   ProviderForm,
 } from "./transaction-provider.interface"
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
 
@@ -53,54 +54,43 @@ export class DotloopProvider implements ITransactionProvider {
     return { apiKey, profileId }
   }
 
-  private getHeaders(apiKey: string) {
-    return {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    }
+  /** Single egress choke point — every Dotloop API call leaves through the connector-gateway. */
+  private request<T = any>(
+    apiKey: string,
+    path: string,
+    opts: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<GatewayResponse<T>> {
+    return callConnector<T>({
+      connector: "dotloop",
+      baseUrl: DOTLOOP_API_BASE,
+      path,
+      method: opts.method,
+      body: opts.body,
+      query: opts.query,
+      auth: { style: "bearer", token: apiKey },
+    })
   }
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
       const credentials = this.getCredentials()
-
-      // Mock fallback if no credentials
-      if (!credentials) {
-        return {
-          success: true,
-          externalTransactionId: `mock-loop-${Date.now()}`,
-        }
-      }
+      if (!credentials) return { success: false, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
 
-      const response = await fetch(`${DOTLOOP_API_BASE}/profile/${profileId}/loop`, {
+      const response = await this.request<{ data?: { loop_id?: string } }>(apiKey, `/profile/${profileId}/loop`, {
         method: "POST",
-        headers: this.getHeaders(apiKey),
-        body: JSON.stringify({
+        body: {
           name: `${request.propertyAddress} - ${request.transactionType}`,
           status: "Active",
           transaction_type: request.transactionType === "purchase" ? "Purchase" : "Listing for Sale",
           street_address: request.propertyAddress,
-        }),
+        },
       })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Dotloop API error: ${response.statusText} - ${errorText}`)
-      }
-
-      const result = await response.json()
-      const loopId = result.data?.loop_id
-
-      if (!loopId) {
-        throw new Error("No loop_id returned from Dotloop")
-      }
-
-      return {
-        success: true,
-        externalTransactionId: loopId,
-      }
+      if (!response.ok) throw new Error(`Dotloop API error: ${response.status} - ${response.error}`)
+      const loopId = response.data?.data?.loop_id
+      if (!loopId) throw new Error("No loop_id returned from Dotloop")
+      return { success: true, externalTransactionId: loopId }
     } catch (error: any) {
       console.error("[v0] Dotloop createTransaction error:", error)
       return {
@@ -113,41 +103,22 @@ export class DotloopProvider implements ITransactionProvider {
   async attachForms(request: AttachFormsRequest): Promise<AttachFormsResponse> {
     try {
       const credentials = this.getCredentials()
-
-      if (!credentials) {
-        return {
-          success: true,
-          attachedCount: request.forms.length,
-        }
-      }
+      if (!credentials) return { success: false, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
       let attachedCount = 0
 
       for (const form of request.forms) {
         if (!form.formUrl) continue
-
-        const response = await fetch(
-          `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${request.externalTransactionId}/folder/Documents/document`,
-          {
-            method: "POST",
-            headers: this.getHeaders(apiKey),
-            body: JSON.stringify({
-              name: form.formName,
-              file_url: form.formUrl,
-            }),
-          }
+        const response = await this.request(
+          apiKey,
+          `/profile/${profileId}/loop/${request.externalTransactionId}/folder/Documents/document`,
+          { method: "POST", body: { name: form.formName, file_url: form.formUrl } },
         )
-
-        if (response.ok) {
-          attachedCount++
-        }
+        if (response.ok) attachedCount++
       }
 
-      return {
-        success: true,
-        attachedCount,
-      }
+      return { success: true, attachedCount }
     } catch (error: any) {
       console.error("[v0] Dotloop attachForms error:", error)
       return {
@@ -160,26 +131,16 @@ export class DotloopProvider implements ITransactionProvider {
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
       const credentials = this.getCredentials()
-
-      if (!credentials) {
-        return { success: true }
-      }
+      if (!credentials) return { success: false, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
 
       // Add participants to the loop
       for (const signer of request.signers) {
-        await fetch(
-          `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${request.externalTransactionId}/participant`,
-          {
-            method: "POST",
-            headers: this.getHeaders(apiKey),
-            body: JSON.stringify({
-              email: signer.email,
-              full_name: signer.name,
-              role: signer.role,
-            }),
-          }
+        await this.request(
+          apiKey,
+          `/profile/${profileId}/loop/${request.externalTransactionId}/participant`,
+          { method: "POST", body: { email: signer.email, full_name: signer.name, role: signer.role } },
         )
       }
 
@@ -196,31 +157,19 @@ export class DotloopProvider implements ITransactionProvider {
   async getSignatureStatus(externalTransactionId: string): Promise<SignatureStatusResponse> {
     try {
       const credentials = this.getCredentials()
-
       if (!credentials) {
-        return {
-          success: true,
-          total: 5,
-          signed: 3,
-          pending: 2,
-          percentComplete: 60,
-        }
+        return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: "Dotloop not configured (missing API key / profile)" }
       }
 
       const { apiKey, profileId } = credentials
 
-      const response = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${externalTransactionId}/folder`,
-        {
-          headers: this.getHeaders(apiKey),
-        }
+      const response = await this.request<{ data?: any[] }>(
+        apiKey,
+        `/profile/${profileId}/loop/${externalTransactionId}/folder`,
       )
+      if (!response.ok) throw new Error(`Dotloop API error: ${response.status} - ${response.error}`)
 
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
-      }
-
-      const folders = await response.json()
+      const folders = response.data ?? {}
       let totalDocs = 0
       let signedDocs = 0
 
@@ -254,27 +203,16 @@ export class DotloopProvider implements ITransactionProvider {
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
       const credentials = this.getCredentials()
-
-      if (!credentials) {
-        return { success: true }
-      }
+      if (!credentials) return { success: false, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
 
-      const response = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${request.externalTransactionId}`,
-        {
-          method: "PATCH",
-          headers: this.getHeaders(apiKey),
-          body: JSON.stringify({
-            status: "Canceled",
-          }),
-        }
+      const response = await this.request(
+        apiKey,
+        `/profile/${profileId}/loop/${request.externalTransactionId}`,
+        { method: "PATCH", body: { status: "Canceled" } },
       )
-
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
-      }
+      if (!response.ok) throw new Error(`Dotloop API error: ${response.status} - ${response.error}`)
 
       return { success: true }
     } catch (error: any) {
@@ -289,39 +227,19 @@ export class DotloopProvider implements ITransactionProvider {
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
       const credentials = this.getCredentials()
-
-      if (!credentials) {
-        return {
-          success: true,
-          externalDocumentId: `mock-doc-${Date.now()}`,
-        }
-      }
+      if (!credentials) return { success: false, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
       const folderName = request.folderName || "Documents"
 
-      const response = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${request.externalTransactionId}/folder/${folderName}/document`,
-        {
-          method: "POST",
-          headers: this.getHeaders(apiKey),
-          body: JSON.stringify({
-            name: request.documentName,
-            file_url: request.documentUrl,
-          }),
-        }
+      const response = await this.request<{ data?: { document_id?: string } }>(
+        apiKey,
+        `/profile/${profileId}/loop/${request.externalTransactionId}/folder/${folderName}/document`,
+        { method: "POST", body: { name: request.documentName, file_url: request.documentUrl } },
       )
+      if (!response.ok) throw new Error(`Dotloop API error: ${response.status} - ${response.error}`)
 
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-
-      return {
-        success: true,
-        externalDocumentId: result.data?.document_id,
-      }
+      return { success: true, externalDocumentId: response.data?.data?.document_id }
     } catch (error: any) {
       console.error("[v0] Dotloop uploadDocument error:", error)
       return {
@@ -334,29 +252,17 @@ export class DotloopProvider implements ITransactionProvider {
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
       const credentials = this.getCredentials()
-
-      if (!credentials) {
-        return {
-          success: true,
-          documents: [],
-          syncedCount: 0,
-        }
-      }
+      if (!credentials) return { success: false, documents: [], syncedCount: 0, error: "Dotloop not configured (missing API key / profile)" }
 
       const { apiKey, profileId } = credentials
 
-      const response = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${request.externalTransactionId}/folder`,
-        {
-          headers: this.getHeaders(apiKey),
-        }
+      const response = await this.request<{ data?: any[] }>(
+        apiKey,
+        `/profile/${profileId}/loop/${request.externalTransactionId}/folder`,
       )
+      if (!response.ok) throw new Error(`Dotloop API error: ${response.status} - ${response.error}`)
 
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
-      }
-
-      const folders = await response.json()
+      const folders = response.data ?? {}
       const documents: ProviderDocument[] = []
 
       for (const folder of folders.data || []) {
@@ -399,20 +305,16 @@ export class DotloopProvider implements ITransactionProvider {
       // Dotloop exposes the brokerage form library under /profile/{id}/loop-template
       // and /profile/{id}/form. We use the form endpoint which returns the
       // forms available to this profile (state association + brokerage custom).
-      const params = new URLSearchParams()
-      if (request.stateCode) params.set("state", request.stateCode)
-      if (request.query)     params.set("q", request.query)
-      params.set("page_size", String(request.pageSize ?? 100))
+      const query: Record<string, string> = { page_size: String(request.pageSize ?? 100) }
+      if (request.stateCode) query.state = request.stateCode
+      if (request.query)     query.q = request.query
 
-      const response = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${profileId}/form?${params.toString()}`,
-        { headers: this.getHeaders(apiKey) }
-      )
+      const response = await this.request<{ data?: any[] }>(apiKey, `/profile/${profileId}/form`, { query })
       if (!response.ok) {
-        return { success: false, error: `Dotloop listForms ${response.status}: ${response.statusText}` }
+        return { success: false, error: `Dotloop listForms ${response.status}: ${response.error}` }
       }
-      const data = await response.json()
-      const forms: ProviderForm[] = (data.data ?? data ?? []).map((f: any) => ({
+      const data = response.data
+      const forms: ProviderForm[] = ((data?.data ?? (Array.isArray(data) ? data : [])) as any[]).map((f: any) => ({
         formId:    String(f.form_id ?? f.id),
         name:      f.name ?? f.title ?? "Form",
         issuer:    f.association ?? f.issuer,

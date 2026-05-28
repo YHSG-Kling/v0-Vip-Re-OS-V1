@@ -33,6 +33,7 @@ import type {
   ListFormsRequest,
   ListFormsResponse,
 } from "./transaction-provider.interface"
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 const ESIGN_UNSUPPORTED =
   "Brokermint does not provide e-signature directly. Connect an eSign provider (DocuSign or Authentisign) for signing."
@@ -49,36 +50,37 @@ export class BrokermintProvider implements ITransactionProvider {
     this.baseUri = (credentials.baseUri ?? "https://api.brokermint.com/v1").replace(/\/$/, "")
   }
 
-  /** Brokermint authenticates via an api_key query param. */
-  private url(path: string, params: Record<string, string | number | undefined> = {}): string {
-    const u = new URL(`${this.baseUri}${path}`)
-    u.searchParams.set("api_key", this.apiKey)
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null) u.searchParams.set(k, String(v))
-    }
-    return u.toString()
-  }
-
-  private headers(): Record<string, string> {
-    return { "Content-Type": "application/json", Accept: "application/json" }
+  /** Single egress choke point — every Brokermint API call leaves through the connector-gateway.
+   *  Brokermint authenticates via an api_key query param (gateway "query" auth style). */
+  private request<T = any>(
+    path: string,
+    opts: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<GatewayResponse<T>> {
+    return callConnector<T>({
+      connector: "brokermint",
+      baseUrl: this.baseUri,
+      path,
+      method: opts.method,
+      body: opts.body,
+      query: opts.query,
+      auth: { style: "query", name: "api_key", value: this.apiKey },
+    })
   }
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
-      const res = await fetch(this.url("/transactions"), {
+      const res = await this.request<{ id?: string; transaction?: { id?: string } }>("/transactions", {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           address:        request.propertyAddress,
           status:         "active",
           transaction_type: request.transactionType === "purchase" ? "purchase" : "listing",
           price:          request.purchasePrice,
           closing_date:   request.estimatedCloseDate,
-        }),
+        },
       })
-      if (!res.ok) return { success: false, error: `Brokermint createTransaction ${res.status}: ${await res.text()}` }
-      const data = await res.json()
-      const id = data.id ?? data.transaction?.id
+      if (!res.ok) return { success: false, error: `Brokermint createTransaction ${res.status}: ${res.error}` }
+      const id = res.data?.id ?? res.data?.transaction?.id
       if (!id) return { success: false, error: "Brokermint returned no transaction id" }
       return { success: true, externalTransactionId: String(id) }
     } catch (err: any) {
@@ -91,10 +93,9 @@ export class BrokermintProvider implements ITransactionProvider {
       let attached = 0
       for (const form of request.forms) {
         if (!form.formUrl) continue
-        const res = await fetch(this.url(`/transactions/${request.externalTransactionId}/documents`), {
+        const res = await this.request(`/transactions/${request.externalTransactionId}/documents`, {
           method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({ name: form.formName, url: form.formUrl }),
+          body: { name: form.formName, url: form.formUrl },
         })
         if (res.ok) attached++
       }
@@ -114,12 +115,11 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
-      const res = await fetch(this.url(`/transactions/${request.externalTransactionId}`), {
+      const res = await this.request(`/transactions/${request.externalTransactionId}`, {
         method: "PUT",
-        headers: this.headers(),
-        body: JSON.stringify({ status: "cancelled", cancellation_reason: request.reason ?? "Cancelled by agent" }),
+        body: { status: "cancelled", cancellation_reason: request.reason ?? "Cancelled by agent" },
       })
-      if (!res.ok) return { success: false, error: `Brokermint void ${res.status}: ${await res.text()}` }
+      if (!res.ok) return { success: false, error: `Brokermint void ${res.status}: ${res.error}` }
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "Brokermint voidTransaction failed" }
@@ -128,14 +128,12 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
-      const res = await fetch(this.url(`/transactions/${request.externalTransactionId}/documents`), {
+      const res = await this.request<{ id?: string }>(`/transactions/${request.externalTransactionId}/documents`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ name: request.documentName, url: request.documentUrl, folder: request.folderName }),
+        body: { name: request.documentName, url: request.documentUrl, folder: request.folderName },
       })
-      if (!res.ok) return { success: false, error: `Brokermint upload ${res.status}: ${await res.text()}` }
-      const data = await res.json()
-      return { success: true, externalDocumentId: String(data.id ?? "") }
+      if (!res.ok) return { success: false, error: `Brokermint upload ${res.status}: ${res.error}` }
+      return { success: true, externalDocumentId: String(res.data?.id ?? "") }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "Brokermint uploadDocument failed" }
     }
@@ -143,12 +141,10 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
-      const res = await fetch(this.url(`/transactions/${request.externalTransactionId}/documents`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<any>(`/transactions/${request.externalTransactionId}/documents`)
       if (!res.ok) return { success: false, syncedCount: 0, documents: [], error: `Brokermint list ${res.status}` }
-      const data = await res.json()
-      const documents: ProviderDocument[] = (Array.isArray(data) ? data : data.documents ?? []).map((d: any) => ({
+      const data = res.data
+      const documents: ProviderDocument[] = (Array.isArray(data) ? data : data?.documents ?? []).map((d: any) => ({
         externalDocumentId: String(d.id),
         documentName:       d.name,
         folderName:         d.folder ?? "Documents",
