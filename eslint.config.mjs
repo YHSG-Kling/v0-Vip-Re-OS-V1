@@ -11,6 +11,7 @@ const eslintConfig = [
       "public/**",
       "scripts/**",
       "supabase/**",
+      "plugins/**",
       "*.config.js",
       "*.config.mjs",
       "*.config.ts",
