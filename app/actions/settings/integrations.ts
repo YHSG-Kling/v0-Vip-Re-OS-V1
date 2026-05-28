@@ -118,6 +118,8 @@ export async function upsertPlatformCredential(params: {
     .upsert(
       {
         brokerage_id:  brokerageId,
+        owner_type:    "brokerage",
+        owner_id:      brokerageId,
         platform:      params.platform,
         scope:         params.scope ?? "brokerage",
         api_key:       params.api_key ?? null,

@@ -160,6 +160,8 @@ export async function saveCredentials(
       .from("platform_credentials")
       .upsert({
         brokerage_id: brokerageId,
+        owner_type: "brokerage",
+        owner_id: brokerageId,
         platform: provider,
         config: credentials, // Stored encrypted
         is_active: true,

@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
+import { writeScopeFor } from "@/lib/connections/scope"
 
 export type PhonePlatform = "twilio" | "telnyx" | "bandwidth"
 const PHONE_PLATFORMS: PhonePlatform[] = ["twilio", "telnyx", "bandwidth"]
@@ -42,9 +43,18 @@ export async function connectPhoneAction(params: {
   const { member } = gate
   const svc = createServiceClient()
 
+  // Unified ownership scope (m102): agent line → agent owner, broker line → brokerage owner.
+  const owner = writeScopeFor({
+    agentUserId: member.agentScoped ? member.userId : null,
+    brokerageId: member.brokerageId,
+    isBrokerageManager: !member.agentScoped,
+  })
+
   const row = {
     brokerage_id: member.brokerageId,
     agent_user_id: member.agentScoped ? member.userId : null,
+    owner_type: owner?.ownerType ?? null,
+    owner_id: owner?.ownerId ?? null,
     platform,
     scope: member.agentScoped ? "agent" : "brokerage",
     api_key: params.accountSid.trim(),

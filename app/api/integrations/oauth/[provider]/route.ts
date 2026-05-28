@@ -238,6 +238,8 @@ export async function GET(
         .from("platform_credentials")
         .upsert({
           brokerage_id: stateData.brokerageId,
+          owner_type: "brokerage",
+          owner_id: stateData.brokerageId,
           platform: provider,
           config: {
             access_token: tokens.access_token,
