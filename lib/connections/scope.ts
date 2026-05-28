@@ -46,8 +46,9 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   // implemented transaction-forms provider; esign = every implemented e-sign provider).
   transaction: getTransactionFormProviders(),
   esign:       getEsignProviders(),
-  // IDX / RentCast are PLATFORM-managed (env / platform config) — not a per-tier user connection.
-  listing:     [],
+  // IDX Broker is per-tier connectable (agent/team/brokerage/platform). RentCast is platform-only
+  // (env/platform config) and is intentionally NOT a user connection.
+  listing:     ["idxbroker"],
   showing:     ["showingtime"],
   documents:   [], // surface reserved; no user-selectable document provider yet
   marketing:   [], // system-managed; not a user-selectable connection

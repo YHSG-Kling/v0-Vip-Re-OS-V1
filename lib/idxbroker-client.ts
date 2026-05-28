@@ -1,7 +1,7 @@
 // IDX Broker API Client for property search activity tracking
 // Tracks what properties leads view, save, and share on IDX sites
 
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 
 export interface NormalizedIdxListing {
   externalId: string
@@ -30,9 +30,21 @@ export class IDXBrokerClient {
     }
   }
 
-  /** Multi-tenant factory: resolves the IDX Broker connection across credential tables. */
-  static async forBrokerage(brokerageId: string): Promise<IDXBrokerClient> {
-    const conn = await resolveConnection({ brokerageId, provider: "idxbroker" })
+  /**
+   * Multi-tenant factory: resolves the IDX Broker connection through the unified ownership
+   * cascade (agent → team → brokerage → platform, legacy fallback), then the IDXBROKER_API_KEY
+   * env as the platform default. Pass actor context to honor a per-agent/team IDX connection;
+   * brokerage-only callers keep their existing behavior.
+   */
+  static async forBrokerage(
+    brokerageId: string,
+    actor?: { agentUserId?: string | null; teamId?: string | null },
+  ): Promise<IDXBrokerClient> {
+    const conn = await resolveScopedConnection("idxbroker", {
+      agentUserId: actor?.agentUserId ?? null,
+      teamId: actor?.teamId ?? null,
+      brokerageId,
+    }).catch(() => null)
     const apiKey = conn?.apiKey || process.env.IDXBROKER_API_KEY || ""
     return new IDXBrokerClient(apiKey)
   }
