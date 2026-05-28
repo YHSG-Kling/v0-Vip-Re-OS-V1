@@ -31,6 +31,7 @@ import "server-only"
 import { put } from "@vercel/blob"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,37 +89,37 @@ export interface GenerateVideoResult {
 // D-ID helpers
 // ---------------------------------------------------------------------------
 
-function didAuthHeader(): string {
+// D-ID is a PLATFORM-owned connector (one DID_API_KEY; subscribers' avatars ride as request
+// params). Egress goes through the single connector-gateway. Auth = HTTP Basic base64(key + ":").
+function didKey(): string {
   const key = process.env.DID_API_KEY
   if (!key) throw new Error("DID_API_KEY is not configured")
-  return `Basic ${Buffer.from(`${key}:`).toString("base64")}`
+  return key
 }
 
 async function didPost(path: string, body: unknown): Promise<{ id: string }> {
-  const res = await fetch(`${DID_BASE}${path}`, {
+  const res = await callConnector<{ id: string }>({
+    connector: "did",
+    baseUrl: DID_BASE,
+    path,
     method: "POST",
-    headers: {
-      Authorization: didAuthHeader(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    auth: { style: "basic", username: didKey(), password: "" },
+    body,
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`D-ID API error (${res.status}): ${text}`)
-  }
-  return res.json()
+  if (!res.ok || !res.data) throw new Error(`D-ID API error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  return res.data
 }
 
 async function didGet(path: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${DID_BASE}${path}`, {
-    headers: { Authorization: didAuthHeader() },
+  const res = await callConnector<Record<string, unknown>>({
+    connector: "did",
+    baseUrl: DID_BASE,
+    path,
+    method: "GET",
+    auth: { style: "basic", username: didKey(), password: "" },
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`D-ID poll error (${res.status}): ${text}`)
-  }
-  return res.json()
+  if (!res.ok || !res.data) throw new Error(`D-ID poll error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  return res.data
 }
 
 /** Poll until done/error or timeout. Returns null on timeout (still processing). */
