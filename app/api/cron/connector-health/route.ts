@@ -100,7 +100,9 @@ export async function GET(req: Request) {
       try {
         const probe = await probeConnector(provider, {
           apiKey: (r.api_key as string) ?? null,
-          apiSecret: ((r.config as any)?.api_secret as string) ?? null,
+          // The connect flow stores a provider secret under config.auth_token (e.g. Twilio auth
+          // token); fall back to api_secret for any provider that uses that key.
+          apiSecret: ((r.config as any)?.auth_token as string) ?? ((r.config as any)?.api_secret as string) ?? null,
           accessToken: (r.access_token as string) ?? null,
           config: (r.config as Record<string, unknown>) ?? null,
         })

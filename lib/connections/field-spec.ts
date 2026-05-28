@@ -107,7 +107,7 @@ export function isOAuthConnection(domain: ConnectorDomain, _canonicalProviderId:
 export function oauthStartPath(domain: ConnectorDomain, canonicalProviderId: string): string | null {
   if (domain === "financial") {
     if (canonicalProviderId === "quickbooks") return "/api/integrations/oauth/quickbooks"
-    if (canonicalProviderId === "stripe") return "/settings/payments" // Stripe Connect onboarding lives here
+    if (canonicalProviderId === "stripe") return "/vendor/earnings" // Stripe Connect onboarding surface
     return null
   }
   const tmpl = DOMAIN_AUTH[domain].oauthStartPath

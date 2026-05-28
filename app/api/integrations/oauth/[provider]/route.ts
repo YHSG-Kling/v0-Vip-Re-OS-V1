@@ -241,6 +241,12 @@ export async function GET(
           owner_type: "brokerage",
           owner_id: stateData.brokerageId,
           platform: provider,
+          // Canonical token columns — what every resolver (resolveScopedConnection / connection-
+          // manager) reads. account_id carries the QBO realmId (company id). config keeps the same
+          // fields for back-compat + provider extras.
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
           config: {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
@@ -248,8 +254,8 @@ export async function GET(
             scope: tokens.scope,
             // Provider-specific fields
             ...(tokens.realmId && { realm_id: tokens.realmId }),
-            ...(tokens.x_refresh_token_expires_in && { 
-              refresh_token_expires_in: tokens.x_refresh_token_expires_in 
+            ...(tokens.x_refresh_token_expires_in && {
+              refresh_token_expires_in: tokens.x_refresh_token_expires_in
             }),
           },
           token_expires_at: expiresAt,

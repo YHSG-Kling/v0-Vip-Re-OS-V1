@@ -232,23 +232,27 @@ async function buildQuickBooks(
     teamId: actor?.teamId ?? null,
     brokerageId,
   })
-  if (!conn || !conn.accessToken) return null
+  // Token columns are the canonical store, but older QBO rows kept tokens in `config` — fall back so
+  // both shapes resolve. realmId may be config.realmId (camel), config.realm_id (snake), or account_id.
+  const accessToken = conn?.accessToken ?? ((conn?.config as any)?.access_token as string | undefined) ?? null
+  if (!conn || !accessToken) return null
+  const refreshToken = conn.refreshToken ?? ((conn.config as any)?.refresh_token as string | undefined) ?? ""
   const clientId = process.env.QUICKBOOKS_CLIENT_ID
   const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET
   if (!clientId || !clientSecret) throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
-  const realmId = (conn.config?.realmId as string) || conn.accountId || ""
+  const realmId = ((conn.config as any)?.realmId as string) || ((conn.config as any)?.realm_id as string) || conn.accountId || ""
   if (!realmId) throw new Error("QuickBooks connection missing realmId (company id)")
 
   const provider = new QuickBooksProvider({
-    accessToken: conn.accessToken,
-    refreshToken: conn.refreshToken ?? "",
+    accessToken,
+    refreshToken,
     realmId,
     clientId,
     clientSecret,
   })
 
-  const expIso = (conn.config?.tokenExpiresAt as string) ?? null
-  if (expIso && conn.refreshToken) {
+  const expIso = ((conn.config as any)?.tokenExpiresAt as string) ?? ((conn.config as any)?.token_expires_at as string) ?? null
+  if (expIso && refreshToken) {
     const exp = Date.parse(expIso)
     if (!Number.isNaN(exp) && exp <= Date.now() + 5 * 60_000) {
       const fresh = await provider.refreshAccessToken()
@@ -289,8 +293,11 @@ export async function pushAccountingEntry(
 
   let qbo: QuickBooksProvider | null
   try {
-    const { data: actorRow } = await supabase.from("users").select("team_id").eq("id", user.id).maybeSingle()
-    qbo = await buildQuickBooks(params.brokerageId, { agentUserId: user.id, teamId: (actorRow?.team_id as string | null) ?? null })
+    // Accounting writes are the BROKERAGE's books — resolve brokerage → platform only. We do NOT
+    // pass the acting broker's agent scope, or a broker who linked a personal QuickBooks would post
+    // brokerage invoices to their own company. (Agent/team financial connections cascade for their
+    // OWN financial ops, not the brokerage ledger.)
+    qbo = await buildQuickBooks(params.brokerageId, { teamId: null })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     await logFailure(msg)

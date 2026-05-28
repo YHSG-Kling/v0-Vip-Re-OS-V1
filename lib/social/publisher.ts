@@ -187,8 +187,10 @@ async function publishToTikTok(params: PublishParams): Promise<PublishResult> {
     },
     source_info: { source: "PULL_FROM_URL", video_url: params.mediaUrls[0] },
   }, { style: "bearer", token: params.accessToken })
-  // TikTok returns 200 with an error.code on business errors — check both.
-  if (!res.ok || res.data?.error?.code) throw new Error(res.data?.error?.message || res.error || "TikTok API error")
+  // TikTok returns 200 with error.code on business errors — but code "ok" means SUCCESS, so only
+  // treat a non-"ok" code as a failure.
+  const tkCode = res.data?.error?.code
+  if (!res.ok || (tkCode && tkCode !== "ok")) throw new Error(res.data?.error?.message || res.error || "TikTok API error")
   return { success: true, externalPostId: res.data?.data?.publish_id, platform: "tiktok" }
 }
 
