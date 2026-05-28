@@ -238,6 +238,9 @@ export async function GET(
         .from("platform_credentials")
         .upsert({
           brokerage_id: stateData.brokerageId,
+          agent_user_id: null,
+          owner_type: "brokerage",
+          owner_id: stateData.brokerageId,
           platform: provider,
           config: {
             access_token: tokens.access_token,
@@ -256,7 +259,7 @@ export async function GET(
           last_tested_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         }, {
-          onConflict: "brokerage_id,platform",
+          onConflict: "brokerage_id,agent_user_id,platform",
         })
 
       if (credError) {

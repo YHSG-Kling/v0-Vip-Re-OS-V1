@@ -61,6 +61,22 @@ export function scopeCascade(ctx: ScopeContext): ScopeOwner[] {
   return owners
 }
 
+/**
+ * Pure: resolve the owner scope a Settings → connect action should WRITE, honoring the
+ * user's REQUESTED scope. A manager may write either their own (agent) or the whole
+ * brokerage; a non-manager is always forced to agent (their own), regardless of request.
+ */
+export function resolveConnectWriteScope(params: {
+  requested: "agent" | "brokerage"
+  isManager: boolean
+  userId: string
+  brokerageId: string
+}): ScopeOwner {
+  const ownerType: ConnectionScope =
+    params.requested === "brokerage" && params.isManager ? "brokerage" : "agent"
+  return { ownerType, ownerId: ownerType === "brokerage" ? params.brokerageId : params.userId }
+}
+
 /** The owner scope a connect action should WRITE for a given actor (the most specific
  *  non-platform owner). Vendor/contact write to themselves; an agent writes agent scope,
  *  a broker/admin writes brokerage scope. */

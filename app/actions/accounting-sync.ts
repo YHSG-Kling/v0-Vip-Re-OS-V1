@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────
@@ -221,7 +221,7 @@ export async function retrySyncError(data: {
 // refreshing the token if near expiry, and recording the outcome in accounting_sync_log.
 
 async function buildQuickBooks(brokerageId: string): Promise<QuickBooksProvider | null> {
-  const conn = await resolveConnection({ brokerageId, provider: "quickbooks" })
+  const conn = await resolveScopedConnection("quickbooks", { brokerageId })
   if (!conn || !conn.accessToken) return null
   const clientId = process.env.QUICKBOOKS_CLIENT_ID
   const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET

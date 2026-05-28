@@ -14,7 +14,7 @@ import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { probeConnector } from "@/lib/agentic-os/connector-probe"
 
 const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_drift"])
@@ -53,7 +53,7 @@ export async function GET(req: Request) {
       // Live adaptive probe (opt-in) — real vendor health + field-drift detection.
       if (probeLive && c.status !== "disconnected") {
         try {
-          const conn = await resolveConnection({ brokerageId, provider: c.provider })
+          const conn = await resolveScopedConnection(c.provider, { brokerageId })
           if (conn) {
             const probe = await probeConnector(c.provider, {
               apiKey: conn.apiKey, apiSecret: conn.apiSecret, accessToken: conn.accessToken, config: conn.config,

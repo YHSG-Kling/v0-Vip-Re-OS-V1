@@ -13,7 +13,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { resolveListingSource } from "./listing-source"
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 
 export interface ExternalListing {
   externalId: string
@@ -66,7 +66,7 @@ export async function searchExternalListings(
   // (idxbroker vs idx_broker) — the connection manager resolves all of them.
   // Rentcast is tracked in integration_credentials.
   const [idxConn, { data: creds }] = await Promise.all([
-    resolveConnection({ brokerageId: input.brokerageId, provider: "idxbroker" }),
+    resolveScopedConnection("idxbroker", { brokerageId: input.brokerageId }),
     svc
       .from("integration_credentials")
       .select("provider_name, is_active")

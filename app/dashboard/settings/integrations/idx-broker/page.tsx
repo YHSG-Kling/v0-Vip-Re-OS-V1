@@ -165,16 +165,19 @@ export default function IDXBrokerSettingsPage() {
 
     await supabase.from("platform_credentials").upsert(
       {
-        brokerage_id: brokerageId,
-        platform:     "idxbroker",
-        scope:        "brokerage",
-        api_key:      apiKey,
-        account_name: accountLabel || "IDX Broker",
+        brokerage_id:  brokerageId,
+        agent_user_id: null,
+        owner_type:    "brokerage",
+        owner_id:      brokerageId,
+        platform:      "idxbroker",
+        scope:         "brokerage",
+        api_key:       apiKey,
+        account_name:  accountLabel || "IDX Broker",
         config,
-        is_active:    true,
-        updated_at:   new Date().toISOString(),
+        is_active:     true,
+        updated_at:    new Date().toISOString(),
       },
-      { onConflict: "brokerage_id,platform" }
+      { onConflict: "brokerage_id,agent_user_id,platform" }
     )
     setSaving(false)
     setTestResult(null)

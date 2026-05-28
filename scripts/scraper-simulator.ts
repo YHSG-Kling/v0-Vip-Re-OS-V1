@@ -82,7 +82,7 @@ import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
 import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
-import { scopeCascade, isConnectionAllowed, writeScopeFor } from "../lib/connections/scope"
+import { scopeCascade, isConnectionAllowed, writeScopeFor, resolveConnectWriteScope } from "../lib/connections/scope"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -661,6 +661,16 @@ async function testVendorGateway() {
   check("agent/team/brokerage/platform may connect any domain", (["agent", "team", "brokerage", "platform"] as const).every((s) => isConnectionAllowed(s, "email") && isConnectionAllowed(s, "financial") && isConnectionAllowed(s, "calendar")))
   check("writeScope: agent writes agent scope; broker-manager writes brokerage", writeScopeFor({ agentUserId: "u1", brokerageId: "b1" })?.ownerType === "agent" && writeScopeFor({ agentUserId: "u1", brokerageId: "b1", isBrokerageManager: true })?.ownerType === "brokerage")
   check("writeScope: vendor/contact write to themselves", writeScopeFor({ vendorId: "v1" })?.ownerType === "vendor" && writeScopeFor({ contactId: "c1" })?.ownerType === "contact")
+
+  // Settings connect-action write scope (honors the user's requested scope + role gate)
+  const mgrBrok = resolveConnectWriteScope({ requested: "brokerage", isManager: true, userId: "u1", brokerageId: "b1" })
+  check("connectWriteScope: manager + requested brokerage → brokerage(b1)", mgrBrok.ownerType === "brokerage" && mgrBrok.ownerId === "b1")
+  const mgrAgent = resolveConnectWriteScope({ requested: "agent", isManager: true, userId: "u1", brokerageId: "b1" })
+  check("connectWriteScope: manager + requested agent → agent(u1) [managers may pick their own]", mgrAgent.ownerType === "agent" && mgrAgent.ownerId === "u1")
+  const nonMgrBrok = resolveConnectWriteScope({ requested: "brokerage", isManager: false, userId: "u1", brokerageId: "b1" })
+  check("connectWriteScope: non-manager requesting brokerage is FORCED to agent(u1)", nonMgrBrok.ownerType === "agent" && nonMgrBrok.ownerId === "u1")
+  const nonMgrAgent = resolveConnectWriteScope({ requested: "agent", isManager: false, userId: "u1", brokerageId: "b1" })
+  check("connectWriteScope: non-manager + agent → agent(u1)", nonMgrAgent.ownerType === "agent" && nonMgrAgent.ownerId === "u1")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

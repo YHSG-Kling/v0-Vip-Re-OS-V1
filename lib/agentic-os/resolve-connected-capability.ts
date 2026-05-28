@@ -9,7 +9,7 @@
 // budget-aware). Kept here (server) and out of the pure registry so the registry stays
 // I/O-free and unit-testable.
 
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import {
   CONNECTED_CAPABILITY_REGISTRY,
   type ConnectedCapability,
@@ -41,11 +41,10 @@ export async function resolveConnectedCapability(
   const def = CONNECTED_CAPABILITY_REGISTRY[capability]
   for (const provider of def.connections) {
     try {
-      const conn = await resolveConnection({
+      const conn = await resolveScopedConnection(provider, {
         brokerageId: ctx.brokerageId,
-        provider,
-        agentId: ctx.agentId,
         agentUserId: ctx.agentUserId,
+        agentId: ctx.agentId,
       })
       if (conn) {
         return { capability, def, connected: true, provider: conn.provider, source: conn.source, missing: [] }
