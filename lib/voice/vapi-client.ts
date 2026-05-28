@@ -13,16 +13,16 @@
  */
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const VAPI_BASE = "https://api.vapi.ai"
 
-function vapiHeaders(): HeadersInit {
+/** VAPI is a PLATFORM-owned connector — one key for everyone; per-subscriber persona/voice is
+ *  passed as call overrides, not a per-tenant credential. Egress goes through the gateway. */
+function vapiKey(): string {
   const key = process.env.VAPI_API_KEY
   if (!key) throw new Error("VAPI_API_KEY is not set")
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${key}`,
-  }
+  return key
 }
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -139,18 +139,20 @@ export async function initiateCall(params: VapiCallParams): Promise<VapiCallResp
     body.assistant = params.assistantConfig
   }
 
-  const res = await fetch(`${VAPI_BASE}/call`, {
+  const res = await callConnector<{ id: string; status?: string; createdAt?: string }>({
+    connector: "vapi",
+    baseUrl: VAPI_BASE,
+    path: "call",
     method: "POST",
-    headers: vapiHeaders(),
-    body: JSON.stringify(body),
+    auth: { style: "bearer", token: vapiKey() },
+    body,
   })
 
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`VAPI initiateCall failed (${res.status}): ${text}`)
+  if (!res.ok || !res.data) {
+    throw new Error(`VAPI initiateCall failed (${res.status ?? "—"}): ${res.error ?? "unknown error"}`)
   }
 
-  const data = await res.json()
+  const data = res.data
   return {
     id: data.id,
     status: data.status ?? "initiated",
@@ -162,14 +164,17 @@ export async function initiateCall(params: VapiCallParams): Promise<VapiCallResp
  * End an active VAPI call by ID.
  */
 export async function endCall(vapiCallId: string): Promise<void> {
-  const res = await fetch(`${VAPI_BASE}/call/${vapiCallId}`, {
+  const res = await callConnector({
+    connector: "vapi",
+    baseUrl: VAPI_BASE,
+    path: `call/${vapiCallId}`,
     method: "DELETE",
-    headers: vapiHeaders(),
+    auth: { style: "bearer", token: vapiKey() },
   })
 
+  // Already-ended / unknown call (404) is not an error.
   if (!res.ok && res.status !== 404) {
-    const text = await res.text()
-    throw new Error(`VAPI endCall failed (${res.status}): ${text}`)
+    throw new Error(`VAPI endCall failed (${res.status ?? "—"}): ${res.error ?? "unknown error"}`)
   }
 }
 
@@ -177,17 +182,19 @@ export async function endCall(vapiCallId: string): Promise<void> {
  * Get the current status of a VAPI call.
  */
 export async function getCallStatus(vapiCallId: string): Promise<VapiCallStatus> {
-  const res = await fetch(`${VAPI_BASE}/call/${vapiCallId}`, {
+  const res = await callConnector<{ id: string; status: string; duration?: number; endedReason?: string }>({
+    connector: "vapi",
+    baseUrl: VAPI_BASE,
+    path: `call/${vapiCallId}`,
     method: "GET",
-    headers: vapiHeaders(),
+    auth: { style: "bearer", token: vapiKey() },
   })
 
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`VAPI getCallStatus failed (${res.status}): ${text}`)
+  if (!res.ok || !res.data) {
+    throw new Error(`VAPI getCallStatus failed (${res.status ?? "—"}): ${res.error ?? "unknown error"}`)
   }
 
-  const data = await res.json()
+  const data = res.data
   return {
     id: data.id,
     status: data.status,
