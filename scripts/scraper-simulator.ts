@@ -82,7 +82,7 @@ import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
 import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
-import { scopeCascade, isConnectionAllowed, writeScopeFor } from "../lib/connections/scope"
+import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -657,10 +657,22 @@ async function testVendorGateway() {
   check("scope cascade: brokerage-only actor → brokerage → platform", scopeCascade({ brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "brokerage,platform")
   check("scope cascade: vendor is a leaf → vendor → platform (no brokerage cascade)", scopeCascade({ vendorId: "v1", brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "vendor,platform")
   check("scope cascade: contact is a leaf → contact → platform", scopeCascade({ contactId: "c1", brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "contact,platform")
-  check("vendor/contact may connect ONLY social + calendar", isConnectionAllowed("vendor", "social") && isConnectionAllowed("vendor", "calendar") && !isConnectionAllowed("vendor", "email") && !isConnectionAllowed("contact", "phone") && !isConnectionAllowed("contact", "crm"))
-  check("agent/team/brokerage/platform may connect any domain", (["agent", "team", "brokerage", "platform"] as const).every((s) => isConnectionAllowed(s, "email") && isConnectionAllowed(s, "financial") && isConnectionAllowed(s, "calendar")))
+  check("vendor/contact may connect ONLY calendar + social + financial", isConnectionAllowed("vendor", "calendar") && isConnectionAllowed("vendor", "social") && isConnectionAllowed("vendor", "financial") && !isConnectionAllowed("vendor", "email") && !isConnectionAllowed("contact", "phone") && !isConnectionAllowed("contact", "crm") && !isConnectionAllowed("contact", "esign"))
+  check("agent/team/brokerage/platform may connect any provider-backed domain", (["agent", "team", "brokerage", "platform"] as const).every((s) => isConnectionAllowed(s, "email") && isConnectionAllowed(s, "financial") && isConnectionAllowed(s, "calendar") && isConnectionAllowed(s, "crm") && isConnectionAllowed(s, "transaction") && isConnectionAllowed(s, "esign")))
+  check("provider-less domains (documents, marketing) are never connectable", (["agent", "brokerage", "vendor"] as const).every((s) => !isConnectionAllowed(s, "documents") && !isConnectionAllowed(s, "marketing")))
   check("writeScope: agent writes agent scope; broker-manager writes brokerage", writeScopeFor({ agentUserId: "u1", brokerageId: "b1" })?.ownerType === "agent" && writeScopeFor({ agentUserId: "u1", brokerageId: "b1", isBrokerageManager: true })?.ownerType === "brokerage")
   check("writeScope: vendor/contact write to themselves", writeScopeFor({ vendorId: "v1" })?.ownerType === "vendor" && writeScopeFor({ contactId: "c1" })?.ownerType === "contact")
+
+  // ── Connection provider registry + per-actor provider gating ────────────────
+  check("provider gating: agent may pick docusign for esign, but not for crm", isProviderAllowedForScope("agent", "esign", "docusign") && !isProviderAllowedForScope("agent", "crm", "docusign"))
+  check("provider gating: crm is sync-out set {gohighlevel, followupboss, lofty}", CONNECTOR_PROVIDERS.crm.join(",") === "gohighlevel,followupboss,lofty")
+  check("provider gating: unknown provider rejected for a valid domain", !isProviderAllowedForScope("brokerage", "transaction", "notarize"))
+  check("provider gating: vendor may pick stripe (financial) but NOT a transaction provider", isProviderAllowedForScope("vendor", "financial", "stripe") && !isProviderAllowedForScope("vendor", "transaction", "dotloop"))
+  check("provider gating: contact may pick a calendar/social provider only", isProviderAllowedForScope("contact", "calendar", "gmail") && isProviderAllowedForScope("contact", "social", "instagram") && !isProviderAllowedForScope("contact", "email", "gmail"))
+  check("domainsForScope: vendor sees exactly calendar+social+financial", domainsForScope("vendor").sort().join(",") === "calendar,financial,social")
+  check("domainsForScope: agent sees the full provider-backed set (no documents/marketing)", (() => { const ds = domainsForScope("agent"); return ds.includes("email") && ds.includes("transaction") && ds.includes("listing") && ds.includes("showing") && !ds.includes("documents") && !ds.includes("marketing") })())
+  check("selectableConnectionsForScope(contact) only exposes allowed domains with providers", (() => { const m = selectableConnectionsForScope("contact"); return Object.keys(m).sort().join(",") === "calendar,financial,social" && (m.calendar as readonly string[]).includes("outlook") })())
+  check("every registry provider id is lowercase canonical (no spaces/aliases)", Object.values(CONNECTOR_PROVIDERS).every((list) => list.every((p) => /^[a-z0-9_]+$/.test(p))))
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

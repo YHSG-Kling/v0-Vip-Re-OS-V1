@@ -14,17 +14,69 @@
 export type ConnectionScope = "platform" | "brokerage" | "team" | "agent" | "vendor" | "contact"
 
 /** Connector domains a scope is permitted to own. Agent/team/brokerage/platform = anything;
- *  vendor + contact are restricted to social + calendar only (their limited app surface). */
+ *  vendor + contact are restricted to calendar + social + financial only (their limited app
+ *  surface — they bring their own scheduling, social presence, and payout/accounting). */
 export type ConnectorDomain =
   | "email" | "phone" | "calendar" | "social" | "crm" | "financial"
-  | "listing" | "transaction" | "esign" | "showing" | "marketing"
+  | "listing" | "transaction" | "esign" | "showing" | "documents" | "marketing"
 
-const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["social", "calendar"])
+const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["calendar", "social", "financial"])
 
-/** Pure: may this owner scope connect a given connector domain? */
+/**
+ * SINGLE source of truth for which providers a domain may be connected to. Values are the
+ * canonical provider ids from lib/integrations/connection-manager.ts (callers normalize UI
+ * input via canonicalProvider() before gating). An empty list = the domain is a known surface
+ * but has no user-selectable provider yet (NOT a stub — nothing is offered until an adapter
+ * exists). The UI selector, write-side gating, and dispatch resolvers all read from here so the
+ * allow-lists never drift apart again.
+ *
+ * CRM is SYNC-OUT ONLY (we push contact updates outward; we never pull a CRM's contacts in).
+ */
+export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
+  email:       ["gmail", "outlook"],
+  phone:       ["twilio", "telnyx", "bandwidth"],
+  calendar:    ["gmail", "outlook"],
+  social:      ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"],
+  crm:         ["gohighlevel", "followupboss", "lofty"], // hubspot: pending a sync-out adapter
+  financial:   ["quickbooks", "stripe"],
+  listing:     ["idxbroker"],
+  transaction: ["dotloop", "formsimplicity", "docusign", "skyslope", "brokermint"],
+  esign:       ["dotloop", "docusign", "skyslope", "authentisign"],
+  showing:     ["showingtime"],
+  documents:   [], // surface reserved; no user-selectable document provider yet
+  marketing:   [], // system-managed; not a user-selectable connection
+} as const
+
+/** Pure: may this owner scope connect a given connector domain? Vendor/contact are leaf actors
+ *  limited to calendar + social + financial; everyone else may connect any domain that has at
+ *  least one selectable provider. */
 export function isConnectionAllowed(scope: ConnectionScope, domain: ConnectorDomain): boolean {
+  if (CONNECTOR_PROVIDERS[domain].length === 0) return false
   if (scope === "vendor" || scope === "contact") return VENDOR_CONTACT_DOMAINS.has(domain)
   return true
+}
+
+/** Pure: may this owner scope connect this domain to this (already-canonical) provider? */
+export function isProviderAllowedForScope(
+  scope: ConnectionScope,
+  domain: ConnectorDomain,
+  canonicalProviderId: string,
+): boolean {
+  return isConnectionAllowed(scope, domain) && CONNECTOR_PROVIDERS[domain].includes(canonicalProviderId)
+}
+
+/** Pure: the connectable domains for an actor scope (those allowed AND with a provider). Drives
+ *  the per-tier connection UI — a solo agent/team/brokerage sees the full set; a vendor/contact
+ *  sees only calendar/social/financial. */
+export function domainsForScope(scope: ConnectionScope): ConnectorDomain[] {
+  return (Object.keys(CONNECTOR_PROVIDERS) as ConnectorDomain[]).filter((d) => isConnectionAllowed(scope, d))
+}
+
+/** Pure: the full {domain → selectable providers} map for an actor scope (UI source of truth). */
+export function selectableConnectionsForScope(scope: ConnectionScope): Record<string, readonly string[]> {
+  const out: Record<string, readonly string[]> = {}
+  for (const d of domainsForScope(scope)) out[d] = CONNECTOR_PROVIDERS[d]
+  return out
 }
 
 export interface ScopeContext {
