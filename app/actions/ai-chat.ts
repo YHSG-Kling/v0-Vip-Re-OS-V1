@@ -739,7 +739,7 @@ export async function getChatTemplates(filters?: {
   return data
 }
 
-export async function useChatTemplate(templateId: string, sessionId: string) {
+export async function applyChatTemplate(templateId: string, sessionId: string) {
   const supabase = await createClient()
 
   // Get template

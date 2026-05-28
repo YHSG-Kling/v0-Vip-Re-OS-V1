@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FileText, Search, CheckCircle } from "lucide-react"
-import { getChatTemplates, useChatTemplate } from "@/app/actions/ai-chat"
+import { getChatTemplates, applyChatTemplate } from "@/app/actions/ai-chat"
 
 export default function TemplateSelector({
   leadType,
@@ -67,7 +67,7 @@ export default function TemplateSelector({
     if (selectedTemplate) {
       const fetchPersonalizedContent = async () => {
         try {
-          const { personalizedContent } = await useChatTemplate(selectedTemplate.id, sessionId)
+          const { personalizedContent } = await applyChatTemplate(selectedTemplate.id, sessionId)
           onSelectTemplate(personalizedContent)
         } catch (error) {
           console.error("Error using template:", error)

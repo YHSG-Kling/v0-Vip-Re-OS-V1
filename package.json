@@ -6,7 +6,7 @@
   "scripts": {
     "build": "next build",
     "dev": "rm -f .next/dev/lock 2>/dev/null; next dev",
-    "lint": "next lint",
+    "lint": "eslint .",
     "start": "next start",
     "type-check": "tsc --noEmit",
     "test:e2e": "playwright test",
@@ -132,12 +132,15 @@
     "zustand": "5.0.9"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "4.1.9",
     "@types/fluent-ffmpeg": "^2.1.28",
     "@types/node": "22.19.7",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.4",
     "postcss": "8.5.6",
     "tailwindcss": "4.1.18",
     "typescript": "5.8.3"
