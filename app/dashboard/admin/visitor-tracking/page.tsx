@@ -20,6 +20,7 @@ type VisitorRow = {
 
 type Profile = {
   brokerage_id: string
+  /** auth user id — used as the agent identifier in the tracking pixel snippet */
   agent_id: string
   user_type: string
 }
@@ -45,8 +46,8 @@ export default function VisitorTrackingPage() {
       if (!user) { setError('Unauthorized'); setLoading(false); return }
 
       const { data: prof } = await supabase
-        .from('user_profiles')
-        .select('brokerage_id, agent_id: id, user_type')
+        .from('users')
+        .select('brokerage_id, user_type')
         .eq('id', user.id)
         .single()
 
@@ -56,7 +57,8 @@ export default function VisitorTrackingPage() {
         return
       }
 
-      setProfile({ ...prof, brokerage_id: prof.brokerage_id ?? '' } as Profile)
+      // agent_id uses the auth user's id — the pixel snippet scopes tracking to this brokerage+agent
+      setProfile({ brokerage_id: prof.brokerage_id ?? '', agent_id: user.id, user_type: prof.user_type })
 
       const { data: rows, error: fetchErr } = await supabase
         .from('website_visitors')

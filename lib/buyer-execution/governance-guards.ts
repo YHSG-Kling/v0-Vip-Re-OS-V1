@@ -16,6 +16,7 @@ import {
   getCurrentBuyerState as getCurrentState,
   type FinancialVerificationResult,
   type BuyerState,
+  type FinancialVerificationEvent,
 } from '@/lib/buyer-lifecycle'
 
 export interface GovernanceCheckResult {
@@ -50,14 +51,14 @@ export async function checkBuyerGovernance(params: {
   const financialCheck = await checkFinancialVerification({ contactId })
   
   // 2a. Check expiration
-  if (financialCheck.isVerified && isVerificationExpired(financialCheck)) {
+  if (financialCheck.isVerified && isVerificationExpired(financialCheck as unknown as FinancialVerificationEvent & { created_at: string })) {
     return {
       allowed: false,
       blockerType: 'verification_expired',
       reason: 'Financial verification has expired and requires renewal',
       verification: financialCheck,
       requiresRollback: true,
-      rollbackTarget: 'BUYER_FINANCIAL_VERIFICATION_REQUIRED'
+      rollbackTarget: 'BUYER_CONTACT_CREATED'
     }
   }
 
@@ -90,17 +91,15 @@ export async function checkBuyerGovernance(params: {
  * Frozen states CANNOT execute search/tour/offer actions
  */
 async function checkFrozenState(contactId: string): Promise<GovernanceCheckResult> {
-  const stateResult = await getCurrentState(contactId)
+  const currentState = await getCurrentState(contactId)
   
-  if (!stateResult.success || !stateResult.currentState) {
+  if (!currentState) {
     return {
       allowed: false,
       blockerType: 'lifecycle_gate',
       reason: 'Unable to determine buyer state'
     }
   }
-
-  const currentState = stateResult.currentState
 
   // Check if state is frozen
   const frozenStates: BuyerState[] = [
@@ -131,17 +130,15 @@ async function checkLifecycleEligibility(
   contactId: string,
   action: 'search' | 'tour' | 'offer'
 ): Promise<GovernanceCheckResult> {
-  const stateResult = await getCurrentState(contactId)
+  const currentState = await getCurrentState(contactId)
   
-  if (!stateResult.success || !stateResult.currentState) {
+  if (!currentState) {
     return {
       allowed: false,
       blockerType: 'lifecycle_gate',
       reason: 'Unable to determine buyer state'
     }
   }
-
-  const currentState = stateResult.currentState
 
   // Define allowed states for each action
   const allowedStates: Record<string, BuyerState[]> = {
@@ -207,10 +204,10 @@ export async function emitGovernanceBlockEvent(params: {
     : 'buyer.action.blocked.lifecycle_gate'
 
   const { error } = await supabase.from('activities').insert({
-    type: eventType,
+    activity_type: eventType,
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action_attempted: action,
       blocker_type: blockResult.blockerType,
@@ -246,10 +243,10 @@ export async function emitEligibilityCheckEvent(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from('activities').insert({
-    type: 'buyer.lifecycle.eligibility_checked',
+    activity_type: 'buyer.lifecycle.eligibility_checked',
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action: action,
       allowed: checkResult.allowed,
@@ -283,7 +280,7 @@ export async function checkAdminOverride(params: {
   // Verify admin/broker role
   const { data: user, error: userError } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, platform_role')
     .eq('id', userId)
     .single()
 
@@ -291,7 +288,7 @@ export async function checkAdminOverride(params: {
     return { allowed: false, error: 'User not found' }
   }
 
-  if (!['admin', 'broker'].includes(user.role)) {
+  if (!['admin', 'broker', 'broker_owner', 'superadmin'].includes(user.user_type ?? '') && user.platform_role !== 'superadmin') {
     return { allowed: false, error: 'Only admins or brokers can override governance' }
   }
 
@@ -320,13 +317,11 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
   error?: string
 }> {
   try {
-    const stateResult = await getCurrentState(contactId)
+    const currentState = await getCurrentState(contactId)
     const verification = await checkFinancialVerification({ contactId })
-    
-    const currentState = stateResult.currentState || null
     const isFrozen = currentState ? ['BUYER_UNDER_CONTRACT', 'BUYER_CLOSED', 'BUYER_LIFETIME'].includes(currentState) : false
     const isFinanciallyVerified = verification.isVerified
-    const isVerificationExpired = isFinanciallyVerified && isVerificationExpired(verification)
+    const isVerificationExpiredFlag = isFinanciallyVerified && isVerificationExpired(verification as unknown as FinancialVerificationEvent & { created_at: string })
 
     const searchCheck = await checkBuyerGovernance({ contactId, action: 'search' })
     const tourCheck = await checkBuyerGovernance({ contactId, action: 'tour' })
@@ -343,7 +338,7 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
         currentState,
         isFrozen,
         isFinanciallyVerified,
-        isVerificationExpired,
+        isVerificationExpired: isVerificationExpiredFlag,
         canSearch: searchCheck.allowed,
         canTour: tourCheck.allowed,
         canOffer: offerCheck.allowed,

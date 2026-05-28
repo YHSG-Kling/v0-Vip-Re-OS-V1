@@ -12,28 +12,26 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
+import {
+  checkQuietHours,
+  withRecordingDisclosure,
+} from "@/lib/communication/call-compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Auth guard — evaluateOutbound uses createClient() internally for TCPA re-check
+  // Auth guard — agentId and brokerageId always from session, never from body
   const authSupabase = await createClient()
-  const {
-    data: { user: authUser },
-  } = await authSupabase.auth.getUser()
-
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const auth = await requireAuth(authSupabase)
+  if (!auth.ok) return auth.response
 
   let body: {
     phoneNumber: string
     contactId?: string
     leadId?: string
     scriptId?: string
-    agentId: string
-    brokerageId: string
     callPurpose?: 'isa_qualification' | 'isa_followup' | 'ghost_recovery' | 'appointment_confirm' | 'post_close'
   }
 
@@ -43,12 +41,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const { phoneNumber, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
+  // agentId and brokerageId always from session — never from body
+  const agentId = auth.agentId ?? auth.userId
+  const brokerageId = auth.brokerageId
+  const { phoneNumber, leadId, scriptId, callPurpose = 'isa_qualification' } = body
   // contactId may be provided directly OR resolved from the lead record below
   let contactId = body.contactId ?? null
 
-  if (!phoneNumber || !agentId || !brokerageId) {
-    return NextResponse.json({ error: "phoneNumber, agentId, and brokerageId are required" }, { status: 400 })
+  if (!phoneNumber) {
+    return NextResponse.json({ error: "phoneNumber is required" }, { status: 400 })
   }
 
   const supabase = createServiceClient()
@@ -122,6 +123,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── 1b. TCPA quiet-hours: outbound auto-dial calls must be 8am-9pm in
+  // the recipient's local time. Resolves area code → state → timezone.
+  const quietHoursCheck = checkQuietHours(phoneNumber)
+  if (!quietHoursCheck.allowed) {
+    return NextResponse.json(
+      {
+        blocked: true,
+        reason: quietHoursCheck.reason ?? "Outside TCPA-allowed calling hours",
+        recipientLocalHour: quietHoursCheck.recipientLocalHour,
+        recipientTimezone: quietHoursCheck.recipientTimezone,
+      },
+      { status: 403 }
+    )
+  }
+
   // ── 2. Build brokerage-branded call context via buildCallContext() ───────────
   // This returns the assistant name, system prompt, and first message derived
   // from ai_identity_profiles (brokerage → team → agent hierarchy).
@@ -164,11 +180,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
   try {
+    // Prepend state-compliant recording disclosure to the first message.
+    // Default behavior plays disclosure ALWAYS (zero-risk, ~3s overhead);
+    // 12 two-party-consent states require it by law.
+    const firstMessageWithDisclosure = withRecordingDisclosure(
+      callCtx.firstMessage,
+      phoneNumber
+    )
+
     const vapiBody: Record<string, unknown> = {
       phoneNumberId,
       customer: { number: phoneNumber },
       assistant: {
-        firstMessage: callCtx.firstMessage,
+        firstMessage: firstMessageWithDisclosure,
         transcriber: { provider: "deepgram" },
         model: {
           provider: "anthropic",
@@ -222,7 +246,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       lead_id: resolvedLeadId ?? null,
       direction: "outbound",
       status: "initiated",
-      call_type: "isa_ai",
+      call_type: "ai_isa_call",
       phone_to: phoneNumber,
       vapi_call_id: vapiResponse.id,
     })

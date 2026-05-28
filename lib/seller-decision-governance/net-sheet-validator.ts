@@ -166,10 +166,20 @@ export async function emitNetSheetExpirationWarning(listingId: string, daysRemai
   if (!isValidUUID(listingId)) return
   
   const supabase = await createClient()
-  
+
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing?.brokerage_id) return
+
   await supabase.from("activities").insert({
+    brokerage_id: listing.brokerage_id,
     listing_id: listingId,
-    event_type: "seller.net_sheet.expiration_warning",
+    entity_type: "listing",
+    entity_id: listingId,
+    activity_type: "seller.net_sheet.expiration_warning",
     metadata: {
       days_remaining: daysRemaining,
       warning_level: daysRemaining <= 3 ? "high" : daysRemaining <= 7 ? "medium" : "low",

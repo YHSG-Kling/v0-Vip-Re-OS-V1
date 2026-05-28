@@ -63,7 +63,7 @@ export function BehaviorPatternsPanel({
 
   const getEntityLink = (entityType: string, entityId: string) => {
     switch (entityType) {
-      case "contact": return `/dashboard/contacts/${entityId}`
+      case "contact": return `/crm/contacts/${entityId}`
       case "listing": return `/dashboard/listings/${entityId}`
       case "transaction": return `/dashboard/transactions/${entityId}`
       default: return "#"

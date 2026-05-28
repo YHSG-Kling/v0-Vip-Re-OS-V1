@@ -15,10 +15,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff } from "lucide-react"
+import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff, Share2 } from "lucide-react"
 import Link from "next/link"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { createClient } from "@/lib/supabase/client"
+import { logActivity } from "@/app/actions/activities"
 
 interface ContactCommandStripProps {
   contact: {
@@ -44,7 +45,9 @@ interface ContactCommandStripProps {
   brokerageId: string
   onEnableAutopilot: (level: "conservative" | "moderate" | "aggressive") => Promise<void>
   onToggleAutopilot: (planId: string, pause: boolean) => Promise<void>
+  onShareSocialPost?: () => void | Promise<void>
   onChannelToggled?: () => void
+  onAddNote?: () => void
   loading?: boolean
 }
 
@@ -74,7 +77,9 @@ export function ContactCommandStrip({
   brokerageId,
   onEnableAutopilot,
   onToggleAutopilot,
+  onShareSocialPost,
   onChannelToggled,
+  onAddNote,
   loading = false,
 }: ContactCommandStripProps) {
   const [autopilotLoading, setAutopilotLoading] = useState(false)
@@ -137,10 +142,23 @@ export function ContactCommandStrip({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" asChild>
-                    <a href={`tel:${contact.phone}`}>
-                      <Phone className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId,
+                        agentId,
+                        contactId: contact.id,
+                        activityType: "call_initiated",
+                        title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      window.location.href = `tel:${contact.phone}`
+                    }}
+                  >
+                    <Phone className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Call</TooltipContent>
@@ -151,10 +169,25 @@ export function ContactCommandStrip({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" asChild>
-                    <a href={`sms:${contact.phone}`}>
-                      <MessageSquare className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => {
+                      const smsPhone = contact.phone!
+                      logActivity({
+                        brokerageId,
+                        agentId,
+                        contactId: contact.id,
+                        activityType: "sms_sent",
+                        title: `SMS initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      // Delay navigation slightly so the fetch can initiate before the sms: URL triggers a page unload
+                      setTimeout(() => { window.location.href = `sms:${smsPhone}` }, 100)
+                    }}
+                  >
+                    <MessageSquare className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Text</TooltipContent>
@@ -176,65 +209,37 @@ export function ContactCommandStrip({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button size="sm" variant="ghost" className="text-white hover:bg-white/20">
+                <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" onClick={() => onAddNote?.()}>
                   <FileText className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Add Note</TooltipContent>
             </Tooltip>
           </TooltipProvider>
-        </div>
-
-        {/* RIGHT: Autopilot section */}
-        <div className="flex items-center gap-2">
-          {!activePlan ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  className="bg-white/20 hover:bg-white/30 text-white"
-                  disabled={autopilotLoading}
-                >
-                  {autopilotLoading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4 mr-2" />
-                  )}
-                  Enable AI Autopilot
-                  <ChevronDown className="h-4 w-4 ml-2" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("conservative")}>
-                  Conservative - Light touches only
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("moderate")}>
-                  Moderate - Regular nurturing
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleEnableAutopilot("aggressive")}>
-                  Aggressive - Full engagement
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <>
-              <Badge className="bg-emerald-500 text-white flex items-center gap-1">
-                <Zap className="h-3 w-3" />
-                AI Autopilot Active - {activePlan.autopilot_level}
-              </Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white hover:bg-white/20"
-                onClick={() => handleToggleAutopilot(activePlan.id, true)}
-                disabled={autopilotLoading}
-              >
-                {autopilotLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
-                Pause
-              </Button>
-            </>
+          {onShareSocialPost && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => onShareSocialPost()}
+                  >
+                    <Share2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Share Social Post</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
         </div>
+
+        {/* AI Pilot is now controlled from the sidebar's unified AIPilotControl
+            (single source of truth: contacts.ai_autopilot_level). The old
+            split between this strip's "AI Autopilot" dropdown and the
+            sidebar's "AI Follow-up" Switch was removed because they wrote to
+            different tables and never stayed in sync. */}
       </div>
 
       {/* BOTTOM ticker */}

@@ -18,11 +18,11 @@ export default async function OperationsPage() {
 
   const { data: userRecord } = await supabase
     .from("users")
-    .select("first_name, role")
+    .select("first_name, user_type")
     .eq("id", user.id)
     .maybeSingle()
 
-  const role = userRecord?.role ?? "agent"
+  const role = userRecord?.user_type ?? "agent"
   const firstName = userRecord?.first_name ?? undefined
 
   return <OperationsClient role={role} firstName={firstName} />

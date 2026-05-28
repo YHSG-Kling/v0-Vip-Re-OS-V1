@@ -1,67 +1,55 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { logEventAndTrigger } from "@/lib/events"
-import { createServerClient } from "@/lib/supabase/server"
+import { createHmac, timingSafeEqual } from "crypto"
 
 // =====================================================
 // GOHIGHLEVEL WEBHOOK HANDLER
-// Receives events from GoHighLevel CRM
+// Receives events from GoHighLevel CRM.
+//
+// HMAC-SHA256 of raw body, verified against GHL_WEBHOOK_SECRET. Sent as
+// X-GHL-Signature (hex digest). Rejects if env var or signature is missing
+// so an unconfigured deploy can't be exploited by arbitrary POSTs that fire
+// internal kernel events.
+//
+// Uses the service client because there is no user session — the RLS-enforced
+// server client would block the brokerage lookup and event insert.
 // =====================================================
+
+function verifyGoHighLevelSignature(rawBody: string, signatureHeader: string | null): boolean {
+  const secret = process.env.GHL_WEBHOOK_SECRET
+  if (!secret) {
+    console.warn("[gohighlevel-webhook] GHL_WEBHOOK_SECRET not set — rejecting request")
+    return false
+  }
+  if (!signatureHeader) return false
+
+  const computed = createHmac("sha256", secret).update(rawBody, "utf-8").digest("hex")
+  try {
+    const a = Buffer.from(computed, "hex")
+    const b = Buffer.from(signatureHeader, "hex")
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const payload = await request.json()
+    const rawBody = await request.text()
+    const signatureHeader = request.headers.get("x-ghl-signature")
 
-    console.log("[v0] GoHighLevel webhook received:", payload)
-
-    // Verify webhook signature (implement based on GHL docs)
-    // const signature = request.headers.get("x-ghl-signature")
-    // if (!verifySignature(signature, payload)) {
-    //   return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
-    // }
-
-    // Map GHL events to internal events
-    const eventType = mapGHLEventType(payload.type)
-    if (!eventType) {
-      return NextResponse.json({ message: "Event type not supported" }, { status: 200 })
+    if (!verifyGoHighLevelSignature(rawBody, signatureHeader)) {
+      return NextResponse.json({ error: "Invalid or missing webhook signature" }, { status: 401 })
     }
 
-    // Get brokerage_id from GHL custom field or location
-    const supabase = await createServerClient()
-    const { data: brokerage } = await supabase
-      .from("brokerages")
-      .select("id")
-      .eq("ghl_location_id", payload.locationId)
-      .single()
-
-    if (!brokerage) {
-      console.error("[v0] No brokerage found for GHL location:", payload.locationId)
-      return NextResponse.json({ error: "Brokerage not found" }, { status: 404 })
-    }
-
-    // Log event to trigger automation
-    await logEventAndTrigger({
-      brokerage_id: brokerage.id,
-      user_id: payload.userId,
-      event_type: eventType,
-      payload: payload.data,
-      source: "webhook",
-      dedupe_key: payload.id || `ghl_${payload.type}_${payload.contactId}_${Date.now()}`,
-    })
-
-    return NextResponse.json({ success: true, message: "Event processed" })
+    // GHL is SYNC-OUT ONLY. The app pushes contact/detail updates OUT to GoHighLevel; it
+    // does NOT ingest CRM events back IN (no CRM syncs into the app — product decision).
+    // We still verify the signature above so an unconfigured deploy isn't an open endpoint,
+    // then acknowledge with a no-op so GHL stops retrying. No internal events are fired.
+    console.info("[gohighlevel-webhook] inbound event ignored — GHL is one-way OUT only")
+    return NextResponse.json({ success: true, message: "Ignored — GHL is sync-out only" }, { status: 200 })
   } catch (error) {
     console.error("[v0] Error processing GHL webhook:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
-}
-
-function mapGHLEventType(ghlType: string): string | null {
-  const mapping: Record<string, string> = {
-    "contact.created": "lead.created",
-    "contact.tagged": "lead.tagged_hot",
-    "appointment.scheduled": "listing.appointment_set",
-    "opportunity.status_change": "transaction.milestone_overdue",
-  }
-
-  return mapping[ghlType] || null
 }

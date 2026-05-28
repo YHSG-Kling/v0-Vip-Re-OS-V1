@@ -19,14 +19,14 @@ interface Document {
   created_at: string
 }
 
-const DOCUMENT_TYPES = [
+const DOCUMENT_TYPES: Array<{ value: string; label: string; sensitive?: boolean }> = [
   { value: "title_commitment", label: "Title Commitment" },
   { value: "settlement_statement", label: "Preliminary HUD/ALTA" },
   { value: "final_closing_disclosure", label: "Final Closing Disclosure" },
   { value: "wire_instructions", label: "Wire Instructions", sensitive: true },
-] as const
+]
 
-type DocumentType = typeof DOCUMENT_TYPES[number]["value"]
+type DocumentType = "title_commitment" | "settlement_statement" | "final_closing_disclosure" | "wire_instructions"
 
 function formatDate(date: string): string {
   return new Date(date).toLocaleDateString("en-US", {

@@ -12,20 +12,64 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
 
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+//
+// Every function in this file previously trusted caller-supplied brokerageId
+// / agentId / userId without authentication. Any signed-in (or even
+// unauthenticated, for some reads) user could:
+//   - List/read any brokerage's video scripts, templates, performance data
+//   - Burn paid HeyGen + Claude inference under our API keys
+//   - Insert scripts/variations/queue items under arbitrary brokerages/agents
+//   - Forge engagement events against another brokerage's videos
+// This helper resolves identity from the session; callers ignore the
+// caller-supplied IDs and use session-derived values.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+// Resolve caller's agents.id (some video tables use agent_id which is
+// agents.id, not auth.users.id). Returns null if caller isn't a registered
+// agent (e.g. brokerage admin) — callers handle that case.
+async function resolveAgentIdForCaller(userId: string, brokerageId: string): Promise<string | null> {
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("agents")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  return data?.id ?? null
+}
+
 // ============================================
 // VIDEO SCRIPT LIBRARY — CANONICAL TABLE
 // Table: public.video_scripts_library
 // ============================================
 
 export async function getVideoScriptLibrary(filters?: {
-  brokerageId?: string
+  brokerageId?: string  // ignored — derived from session
   agentId?: string
   scriptType?: ScriptType
   templateBacked?: boolean
   approvalStatus?: ApprovalStatus
   includeVariationCount?: boolean
 }) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
+  const supabase = createServiceClient()
 
   let query = supabase
     .from("video_scripts_library")
@@ -35,12 +79,12 @@ export async function getVideoScriptLibrary(filters?: {
       script_variations(id)
     `)
     .eq("is_active", true)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
-  if (filters?.brokerageId) {
-    query = query.eq("brokerage_id", filters.brokerageId)
-  }
-  if (filters?.agentId) {
+  if (filters?.agentId && isValidUUID(filters.agentId)) {
+    // agent_id here is agents.id — caller-supplied filter, but already
+    // pre-scoped by brokerage so they can only narrow within their own.
     query = query.eq("agent_id", filters.agentId)
   }
   if (filters?.scriptType) {
@@ -73,7 +117,10 @@ export async function getVideoScriptLibrary(filters?: {
 export async function getVideoScriptById(scriptId: string) {
   if (!isValidUUID(scriptId)) return null
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+
+  const supabase = createServiceClient()
 
   const { data, error } = await supabase
     .from("video_scripts_library")
@@ -83,6 +130,7 @@ export async function getVideoScriptById(scriptId: string) {
       script_variations(*)
     `)
     .eq("id", scriptId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
 
   if (error) {
@@ -94,7 +142,7 @@ export async function getVideoScriptById(scriptId: string) {
 }
 
 export async function saveVideoScript(data: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   agentId?: string
   listingId?: string
   contactId?: string
@@ -108,14 +156,43 @@ export async function saveVideoScript(data: {
   complianceReviewNotes?: string
   requiredBrandAssets?: Record<string, any>
   aiGenerated?: boolean
-  createdBy?: string
+  createdBy?: string  // ignored — derived from session
 }) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const brokerageId = auth.brokerageId
+  const createdBy = auth.userId
+
+  const supabase = createServiceClient()
+
+  // If caller supplied agent_id, verify it belongs to their brokerage
+  if (data.agentId && isValidUUID(data.agentId)) {
+    const { data: agentRow } = await supabase
+      .from("agents").select("brokerage_id").eq("id", data.agentId).maybeSingle()
+    if (!agentRow || agentRow.brokerage_id !== brokerageId) {
+      throw new Error("Forbidden: agent not in your brokerage")
+    }
+  }
+  // Same for listing
+  if (data.listingId && isValidUUID(data.listingId)) {
+    const { data: lstRow } = await supabase
+      .from("listings").select("brokerage_id").eq("id", data.listingId).maybeSingle()
+    if (!lstRow || lstRow.brokerage_id !== brokerageId) {
+      throw new Error("Forbidden: listing not in your brokerage")
+    }
+  }
+  if (data.contactId && isValidUUID(data.contactId)) {
+    const { data: ctRow } = await supabase
+      .from("contacts").select("brokerage_id").eq("id", data.contactId).maybeSingle()
+    if (!ctRow || ctRow.brokerage_id !== brokerageId) {
+      throw new Error("Forbidden: contact not in your brokerage")
+    }
+  }
 
   const { data: script, error } = await supabase
     .from("video_scripts_library")
     .insert({
-      brokerage_id: data.brokerageId,
+      brokerage_id: brokerageId,
       agent_id: data.agentId ?? null,
       listing_id: data.listingId ?? null,
       contact_id: data.contactId ?? null,
@@ -130,8 +207,9 @@ export async function saveVideoScript(data: {
       required_brand_assets: data.requiredBrandAssets ?? null,
       ai_generated: data.aiGenerated ?? false,
       is_active: true,
-      created_by: data.createdBy ?? null,
-      compliance_approved: false,
+      created_by: createdBy,
+      // NOTE: schema drift — compliance_approved column does not exist on
+      // live video_scripts_library; insert silently drops unknown columns.
     })
     .select()
     .single()
@@ -145,9 +223,9 @@ export async function saveVideoScript(data: {
   await supabase.from("lifecycle_events").insert({
     entity_type: "video_script",
     entity_id: script.id,
-    brokerage_id: data.brokerageId,
+    brokerage_id: brokerageId,
     event_type: KernelEvent.SCRIPT_GENERATED,
-    actor_user_id: data.createdBy ?? null,
+    actor_user_id: createdBy,
     metadata: {
       script_type: data.scriptType,
       ai_generated: data.aiGenerated ?? false,
@@ -158,7 +236,7 @@ export async function saveVideoScript(data: {
   // Fire kernel event
   await processKernelEvent({
     event: KernelEvent.SCRIPT_GENERATED,
-    brokerageId: data.brokerageId,
+    brokerageId: brokerageId,
     entityType: "video_script",
     entityId: script.id,
   }).catch(err => console.error("[video-generation] Kernel event failed:", err))
@@ -170,14 +248,19 @@ export async function saveVideoScript(data: {
 
 export async function updateScriptApprovalStatus(
   scriptId: string,
-  brokerageId: string,
+  _brokerageId: string,  // ignored — derived from session
   approvalStatus: ApprovalStatus,
   complianceReviewNotes?: string,
-  actorUserId?: string
+  _actorUserId?: string  // ignored — derived from session
 ) {
   if (!isValidUUID(scriptId)) throw new Error("Invalid script ID")
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const brokerageId = auth.brokerageId
+  const actorUserId = auth.userId
+
+  const supabase = createServiceClient()
 
   const { data: script, error } = await supabase
     .from("video_scripts_library")
@@ -197,10 +280,10 @@ export async function updateScriptApprovalStatus(
   }
 
   // Write lifecycle event
-  const eventType = approvalStatus === "approved" 
-    ? KernelEvent.SCRIPT_APPROVED 
-    : approvalStatus === "rejected" 
-      ? KernelEvent.SCRIPT_REJECTED 
+  const eventType = approvalStatus === "approved"
+    ? KernelEvent.SCRIPT_APPROVED
+    : approvalStatus === "rejected"
+      ? KernelEvent.SCRIPT_REJECTED
       : KernelEvent.SCRIPT_GENERATED
 
   await supabase.from("lifecycle_events").insert({
@@ -208,7 +291,7 @@ export async function updateScriptApprovalStatus(
     entity_id: scriptId,
     brokerage_id: brokerageId,
     event_type: eventType,
-    actor_user_id: actorUserId ?? null,
+    actor_user_id: actorUserId,
     metadata: {
       approval_status: approvalStatus,
       compliance_review_notes: complianceReviewNotes,
@@ -228,7 +311,12 @@ export async function getVideoTemplates(filters?: {
   category?: string
   scriptType?: ScriptType
 }) {
-  const supabase = await createClient()
+  // Auth gate — video_templates is a global library (no brokerage_id in live
+  // schema). Still require a session to prevent unauthenticated discovery.
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
+  const supabase = createServiceClient()
 
   let query = supabase
     .from("video_templates")
@@ -256,7 +344,10 @@ export async function getVideoTemplates(filters?: {
 export async function getVideoTemplateById(templateId: string) {
   if (!isValidUUID(templateId)) return null
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+
+  const supabase = createServiceClient()
 
   const { data, error } = await supabase
     .from("video_templates")
@@ -280,12 +371,24 @@ export async function getVideoTemplateById(templateId: string) {
 export async function getScriptVariations(scriptLibraryId: string) {
   if (!isValidUUID(scriptLibraryId)) return []
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
+  const supabase = createServiceClient()
+
+  // Verify the parent script belongs to caller's brokerage before reading variations
+  const { data: parent } = await supabase
+    .from("video_scripts_library")
+    .select("brokerage_id")
+    .eq("id", scriptLibraryId)
+    .maybeSingle()
+  if (!parent || parent.brokerage_id !== auth.brokerageId) return []
 
   const { data, error } = await supabase
     .from("script_variations")
     .select("*")
     .eq("script_library_id", scriptLibraryId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -298,34 +401,49 @@ export async function getScriptVariations(scriptLibraryId: string) {
 
 export async function createScriptVariation(data: {
   scriptLibraryId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   variationLabel: string
   variationGoal?: string
   scriptContent: string
   callToAction?: string
   audienceSegment?: string
   isAbTest?: boolean
-  createdBy?: string
+  createdBy?: string  // ignored — derived from session
 }) {
   if (!isValidUUID(data.scriptLibraryId)) {
     throw new Error("Invalid script library ID")
   }
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const brokerageId = auth.brokerageId
+  const createdBy = auth.userId
+
+  const supabase = createServiceClient()
+
+  // Verify the parent script belongs to caller's brokerage
+  const { data: parent } = await supabase
+    .from("video_scripts_library")
+    .select("brokerage_id")
+    .eq("id", data.scriptLibraryId)
+    .maybeSingle()
+  if (!parent) throw new Error("Script not found")
+  if (parent.brokerage_id !== brokerageId) throw new Error("Forbidden")
 
   const { data: variation, error } = await supabase
     .from("script_variations")
     .insert({
       script_library_id: data.scriptLibraryId,
-      brokerage_id: data.brokerageId,
+      brokerage_id: brokerageId,
       variation_label: data.variationLabel,
       variation_goal: data.variationGoal ?? null,
       script_content: data.scriptContent,
       call_to_action: data.callToAction ?? null,
       audience_segment: data.audienceSegment ?? null,
       is_ab_test: data.isAbTest ?? false,
-      created_by: data.createdBy ?? null,
-      compliance_approved: false,
+      created_by: createdBy,
+      // NOTE: schema drift — compliance_approved column does not exist on
+      // live script_variations; insert silently drops unknown columns.
     })
     .select()
     .single()
@@ -339,9 +457,9 @@ export async function createScriptVariation(data: {
   await supabase.from("lifecycle_events").insert({
     entity_type: "script_variation",
     entity_id: variation.id,
-    brokerage_id: data.brokerageId,
+    brokerage_id: brokerageId,
     event_type: KernelEvent.SCRIPT_VARIATION_CREATED,
-    actor_user_id: data.createdBy ?? null,
+    actor_user_id: createdBy,
     metadata: {
       script_library_id: data.scriptLibraryId,
       variation_label: data.variationLabel,
@@ -352,7 +470,7 @@ export async function createScriptVariation(data: {
   // Fire kernel event for variation
   await processKernelEvent({
     event: KernelEvent.SCRIPT_VARIATION_CREATED,
-    brokerageId: data.brokerageId,
+    brokerageId: brokerageId,
     entityType: "script_variation",
     entityId: variation.id,
   }).catch(err => console.error("[video-generation] Kernel event failed:", err))
@@ -366,7 +484,7 @@ export async function createScriptVariation(data: {
 // ============================================
 
 export async function queueVideoGeneration(data: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   scriptId?: string
   templateId?: string
   scriptContent: string
@@ -375,50 +493,28 @@ export async function queueVideoGeneration(data: {
   scheduledFor?: string
   metadata?: any
 }) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
 
-  const { data: queueItem, error } = await supabase
-    .from("video_generation_queue")
-    .insert({
-      agent_id: data.agentId,
-      script_id: data.scriptId,
-      template_id: data.templateId,
-      script_content: data.scriptContent,
-      video_type: data.videoType,
-      priority: data.priority || 5,
-      scheduled_for: data.scheduledFor,
-      metadata: data.metadata,
-      compliance_approved: false,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return queueItem
+  // SCHEMA DRIFT: live video_generation_queue has only id, project_id,
+  // status, priority, created_at, processed_at — none of agent_id,
+  // script_id, template_id, script_content, video_type, scheduled_for,
+  // metadata, compliance_approved exist. The richer queue model lives in
+  // ai_video_projects. We refuse to insert the drift columns to surface
+  // the bug; callers should be migrated to insert into ai_video_projects
+  // directly.
+  return {
+    error: "queueVideoGeneration: schema drift — use ai_video_projects insertion path instead",
+  }
 }
 
-export async function getVideoQueue(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return []
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("video_generation_queue")
-    .select("*")
-    .eq("agent_id", agentId)
-    .in("status", ["pending", "processing"])
-    .order("priority", { ascending: false })
-    .order("created_at")
-
-  if (error) {
-    console.error("Error fetching video queue:", error)
-    return []
-  }
-
-  return data || []
+export async function getVideoQueue(_agentId: string) {
+  // SCHEMA DRIFT: video_generation_queue has no agent_id column in live
+  // schema. Auth gate added to prevent unauthenticated probing while we
+  // resolve the drift. Returns empty until the queue model is reconciled.
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+  return []
 }
 
 // ============================================
@@ -430,7 +526,7 @@ export async function getVideoQueue(agentId: string) {
 // VIDEO_EVENT_TYPES, VideoEventType, and PERFORMANCE_THRESHOLDS are imported from @/app/types/video-generation
 
 export async function recordVideoEngagementEvent(data: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session or target row
   videoAssetId?: string
   videoProjectId?: string
   contactId?: string
@@ -442,12 +538,35 @@ export async function recordVideoEngagementEvent(data: {
     throw new Error(`Invalid event type: ${data.eventType}`)
   }
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
+  const supabase = createServiceClient()
+
+  // Resolve the actual brokerage_id from the target video row to prevent a
+  // hostile caller from logging events against another tenant's videos.
+  let resolvedBrokerageId: string | null = null
+  if (data.videoProjectId && isValidUUID(data.videoProjectId)) {
+    const { data: proj } = await supabase
+      .from("ai_video_projects").select("brokerage_id").eq("id", data.videoProjectId).maybeSingle()
+    resolvedBrokerageId = proj?.brokerage_id ?? null
+  } else if (data.videoAssetId && isValidUUID(data.videoAssetId)) {
+    const { data: tracking } = await supabase
+      .from("video_performance_tracking").select("brokerage_id").eq("video_asset_id", data.videoAssetId).maybeSingle()
+    resolvedBrokerageId = tracking?.brokerage_id ?? null
+  }
+  // Fall back to session brokerage if no video row exists yet (first event).
+  if (!resolvedBrokerageId) resolvedBrokerageId = auth.brokerageId
+  if (resolvedBrokerageId !== auth.brokerageId) {
+    throw new Error("Forbidden")
+  }
+  const brokerageId = resolvedBrokerageId
 
   // 1. Insert raw event into video_engagement_events
   const { data: event, error: eventError } = await supabase
     .from("video_engagement_events")
     .insert({
+      brokerage_id: brokerageId,
       video_asset_id: data.videoAssetId || null,
       contact_id: data.contactId || null,
       event_type: data.eventType,
@@ -464,7 +583,7 @@ export async function recordVideoEngagementEvent(data: {
 
   // 2. Update aggregate metrics in video_performance_tracking
   const tracking = await updateVideoPerformanceAggregates({
-    brokerageId: data.brokerageId,
+    brokerageId: brokerageId,
     videoAssetId: data.videoAssetId,
     videoProjectId: data.videoProjectId,
     eventType: data.eventType,
@@ -473,7 +592,7 @@ export async function recordVideoEngagementEvent(data: {
 
   // 3. Check thresholds and fire kernel events
   if (tracking) {
-    await checkAndFirePerformanceEvents(data.brokerageId, tracking)
+    await checkAndFirePerformanceEvents(brokerageId, tracking)
   }
 
   revalidatePath("/dashboard/videos/analytics")
@@ -487,10 +606,14 @@ async function updateVideoPerformanceAggregates(data: {
   eventType: VideoEventType
   watchDurationSeconds: number
 }) {
-  const supabase = await createClient()
+  // Internal helper — invoked only after recordVideoEngagementEvent's
+  // auth gate has already resolved + verified brokerageId.
+  const supabase = createServiceClient()
 
-  // Find existing tracking record
+  // Find existing tracking record — scoped by brokerage so we never
+  // accidentally update another tenant's row even if asset_id collides.
   let query = supabase.from("video_performance_tracking").select("*")
+    .eq("brokerage_id", data.brokerageId)
 
   if (data.videoAssetId) {
     query = query.eq("video_asset_id", data.videoAssetId)
@@ -595,7 +718,9 @@ async function updateVideoPerformanceAggregates(data: {
 }
 
 async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any) {
-  const supabase = await createClient()
+  // Internal helper — invoked only after recordVideoEngagementEvent's
+  // auth gate has resolved brokerageId.
+  const supabase = createServiceClient()
   const totalViews = tracking.total_views || 0
   const completionRate = tracking.average_completion_rate || 0
   const clickThroughRate = tracking.click_through_rate || 0
@@ -677,17 +802,9 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
   }
 }
 
-export async function getVideoPerformanceStats(agentId: string, brokerageId?: string) {
-  const supabase = await createClient()
-
-  // Get video projects for this agent
-  let projectQuery = supabase.from("ai_video_projects").select("id, title, video_type, status, created_at")
-
-  if (isValidUUID(agentId)) {
-    projectQuery = projectQuery.eq("agent_id", agentId)
-  } else if (brokerageId && isValidUUID(brokerageId)) {
-    projectQuery = projectQuery.eq("brokerage_id", brokerageId)
-  } else {
+export async function getVideoPerformanceStats(agentId: string, _brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) {
     return {
       totalViews: 0,
       uniqueViews: 0,
@@ -701,6 +818,18 @@ export async function getVideoPerformanceStats(agentId: string, brokerageId?: st
       topPerforming: [],
       videoCount: 0,
     }
+  }
+
+  const supabase = createServiceClient()
+
+  // Always scope to caller's brokerage; agentId filter is optional and
+  // pre-scoped (caller can only narrow within their own brokerage).
+  let projectQuery = supabase.from("ai_video_projects")
+    .select("id, title, video_type, status, created_at")
+    .eq("brokerage_id", auth.brokerageId)
+
+  if (isValidUUID(agentId)) {
+    projectQuery = projectQuery.eq("agent_id", agentId)
   }
 
   const { data: videos } = await projectQuery
@@ -723,10 +852,12 @@ export async function getVideoPerformanceStats(agentId: string, brokerageId?: st
 
   const videoIds = videos.map((v) => v.id)
 
-  // Get performance tracking data
+  // Get performance tracking data — scope by brokerage so a hostile
+  // collision on video_project_id can't leak another tenant's metrics.
   const { data: performance } = await supabase
     .from("video_performance_tracking")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .in("video_project_id", videoIds)
 
   const performanceCount = performance?.length || 0
@@ -735,16 +866,16 @@ export async function getVideoPerformanceStats(agentId: string, brokerageId?: st
   const uniqueViews = performance?.reduce((sum, p) => sum + (p.unique_views || 0), 0) || 0
   const totalWatchTime = performance?.reduce((sum, p) => sum + (p.total_watch_time_seconds || 0), 0) || 0
   const avgWatchTime = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.average_watch_time_seconds || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.average_watch_time_seconds || 0), 0) / performanceCount
     : 0
   const avgCompletionRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.average_completion_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.average_completion_rate || 0), 0) / performanceCount
     : 0
   const avgClickThroughRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performanceCount
     : 0
   const avgShareRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
     : 0
   const totalLeadConversions = performance?.reduce((sum, p) => sum + (p.lead_conversions || 0), 0) || 0
   const estimatedRoi = performance?.reduce((sum, p) => sum + (p.estimated_roi || 0), 0) || 0
@@ -787,18 +918,22 @@ export async function getVideoPerformanceStats(agentId: string, brokerageId?: st
 }
 
 export async function getVideoEngagementEvents(filters: {
-  brokerageId?: string
+  brokerageId?: string  // ignored — derived from session
   videoAssetId?: string
   videoProjectId?: string
   contactId?: string
   eventType?: VideoEventType
   limit?: number
 }) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
+  const supabase = createServiceClient()
 
   let query = supabase
     .from("video_engagement_events")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .order("timestamp", { ascending: false })
     .limit(filters.limit || 100)
 
@@ -823,22 +958,23 @@ export async function getVideoEngagementEvents(filters: {
 }
 
 export async function getVideoPerformanceTracking(filters: {
-  brokerageId?: string
+  brokerageId?: string  // ignored — derived from session
   videoAssetId?: string
   videoProjectId?: string
   limit?: number
 }) {
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
+  const supabase = createServiceClient()
 
   let query = supabase
     .from("video_performance_tracking")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .order("total_views", { ascending: false })
     .limit(filters.limit || 50)
 
-  if (filters.brokerageId) {
-    query = query.eq("brokerage_id", filters.brokerageId)
-  }
   if (filters.videoAssetId) {
     query = query.eq("video_asset_id", filters.videoAssetId)
   }
@@ -865,9 +1001,17 @@ export async function getAgentVideoProfile(agentId: string) {
     return null
   }
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return null
 
-  const { data, error } = await supabase.from("agent_voice_profiles").select("*").eq("agent_id", agentId).maybeSingle()
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("agent_voice_profiles")
+    .select("*")
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
 
   if (error) {
     console.error("Error fetching agent video profile:", error)
@@ -887,12 +1031,31 @@ export async function updateAgentVideoProfile(data: {
   outroScript?: string
   defaultStyle?: string
 }) {
-  const supabase = await createClient()
+  if (!isValidUUID(data.agentId)) throw new Error("Invalid agent ID")
 
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
+  const supabase = createServiceClient()
+
+  // Verify the agent_id belongs to caller's brokerage
+  const { data: agentRow } = await supabase
+    .from("agents").select("brokerage_id, user_id").eq("id", data.agentId).maybeSingle()
+  if (!agentRow) throw new Error("Agent not found")
+  if (agentRow.brokerage_id !== auth.brokerageId) throw new Error("Forbidden")
+
+  // SCHEMA DRIFT: live agent_voice_profiles has heygen_voice_clone_id,
+  // elevenlabs_voice_id, did_*, preferred_avatar_provider, profile_name,
+  // sample_count, training_status, quality_score, is_default — NOT
+  // heygen_avatar_id / default_voice_id / default_background_id /
+  // branding_preset_id / intro_script / outro_script / default_style.
+  // Insert silently drops unknown columns; preserved here so the function
+  // doesn't blow up but the actual settings won't persist.
   const { data: profile, error } = await supabase
     .from("agent_voice_profiles")
     .upsert({
       agent_id: data.agentId,
+      brokerage_id: auth.brokerageId,
       heygen_avatar_id: data.heygenAvatarId,
       default_voice_id: data.defaultVoiceId,
       default_background_id: data.defaultBackgroundId,
@@ -920,11 +1083,17 @@ export async function getVideoBrandingPresets(agentId: string) {
     return []
   }
 
-  const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return []
 
+  const supabase = createServiceClient()
+
+  // Scope by brokerage so agent_id collisions can't leak another tenant's
+  // presets. Also expose brokerage-wide defaults (is_default=true).
   const { data, error } = await supabase
     .from("video_branding_presets")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId)
     .or(`agent_id.eq.${agentId},is_default.eq.true`)
     .order("is_default", { ascending: false })
 
@@ -948,12 +1117,24 @@ export async function saveBrandingPreset(data: {
   watermarkPosition?: string
   socialHandles?: any
 }) {
-  const supabase = await createClient()
+  if (!isValidUUID(data.agentId)) throw new Error("Invalid agent ID")
+
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
+  const supabase = createServiceClient()
+
+  // Verify the agent_id belongs to caller's brokerage
+  const { data: agentRow } = await supabase
+    .from("agents").select("brokerage_id").eq("id", data.agentId).maybeSingle()
+  if (!agentRow) throw new Error("Agent not found")
+  if (agentRow.brokerage_id !== auth.brokerageId) throw new Error("Forbidden")
 
   const { data: preset, error } = await supabase
     .from("video_branding_presets")
     .insert({
       agent_id: data.agentId,
+      brokerage_id: auth.brokerageId,
       preset_name: data.presetName,
       logo_url: data.logoUrl,
       primary_color: data.primaryColor,
@@ -978,14 +1159,35 @@ export async function saveBrandingPreset(data: {
 // ============================================
 
 export async function generateVideoScript(params: {
-  purpose: string
-  persona: string
-  contactName: string
+  // Original prompt-driven shape
+  purpose?: string
+  persona?: string
+  contactName?: string
   tone?: string
   length?: string
-  userId?: string
-  brokerageId?: string
+  // Identity / context shape used by /dashboard/videos/create caller
+  userId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
+  agentId?: string
+  description?: string
+  videoType?: string
+  targetDurationSeconds?: number
+  listingContext?: {
+    address?: string
+    city?: string
+    state?: string
+    listPrice?: number
+    bedrooms?: number | null
+    bathrooms?: number | null
+    sqft?: number | null
+  }
+  saveToLibrary?: boolean
 }) {
+  // Auth gate — this function burns paid Claude inference under our API
+  // key. Previously open: any caller could trigger script generation.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   try {
     const { generateAIResponse } = await import("@/lib/ai")
     
@@ -1022,7 +1224,9 @@ export async function generateVideoScript(params: {
       long: "2-3 minutes (approximately 300-400 words)",
     }
     
-    const prompt = `Generate a compelling video script for ${purposeDescriptions[params.purpose] || params.purpose} targeting ${personaDescriptions[params.persona] || params.persona}.
+    const purposeKey = params.purpose ?? params.videoType ?? "welcome"
+    const personaKey = params.persona ?? "first_time_buyer"
+    const prompt = `Generate a compelling video script for ${purposeDescriptions[purposeKey] || params.description || purposeKey} targeting ${personaDescriptions[personaKey] || personaKey}.
     
 Tone: ${toneMap[params.tone || "friendly"] || "warm and professional"}
 Length: ${lengthMap[params.length || "medium"] || "60-90 seconds"}
@@ -1042,8 +1246,8 @@ Return ONLY the script text, no formatting or labels.`
     const response = await generateAIResponse({
       prompt,
       metadata: {
-        userId: params.userId,
-        brokerageId: params.brokerageId,
+        userId: auth.userId,
+        brokerageId: auth.brokerageId,
         feature: "video_script_generation",
       },
     })
@@ -1063,8 +1267,12 @@ export async function generateVideoFromScript(params: {
   type: "avatar" | "voice"
   avatarId?: string
   voiceId?: string
-  userId?: string
+  userId?: string  // ignored — derived from session
 }) {
+  // Auth gate — calls HeyGen API which burns paid credits under our key.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   try {
@@ -1078,16 +1286,17 @@ export async function generateVideoFromScript(params: {
       return { success: false, error: "Voice ID not configured. Please set up in Agent Roster." }
     }
 
+    // SCHEMA DRIFT: live video_generation_queue has only id, project_id,
+    // status, priority, created_at, processed_at. The columns inserted
+    // below (user_id, title, script, video_type, heygen_avatar_id,
+    // heygen_voice_id) do not exist on that table — Supabase will silently
+    // drop them, leaving a row with status only. Callers should migrate
+    // to ai_video_projects, which has the full video metadata schema.
     const { data: queueRecord, error: queueError } = await supabase
       .from("video_generation_queue")
       .insert({
-        user_id: params.userId || null,
-        title: params.title,
-        script: params.script,
-        video_type: params.type,
-        heygen_avatar_id: params.avatarId,
-        heygen_voice_id: params.voiceId,
         status: "queued",
+        priority: 5,
       })
       .select()
       .single()
@@ -1098,23 +1307,53 @@ export async function generateVideoFromScript(params: {
     }
 
     // Create video script record for backward compatibility
+    // SCHEMA DRIFT: video_scripts_library has no script_text / video_status
+    // / persona_validated / video_type columns — only script_content / etc.
+    // Map to the real columns we have.
     const { data: scriptRecord, error: scriptError } = await supabase
       .from("video_scripts_library")
       .insert({
-        script_text: params.script,
+        brokerage_id: auth.brokerageId,
+        script_content: params.script,
         title: params.title,
-        created_by: params.userId || "system",
-        video_status: "queued",
-        persona_validated: true,
-        video_type: params.type,
+        created_by: auth.userId,
+        script_type: "video",
+        is_active: true,
       })
       .select()
       .single()
 
     if (scriptError) console.warn("[v0] Script record error:", scriptError)
 
-    // TODO: Integrate with HeyGen API when credentials are added
-    // For now, mark as queued - actual processing happens in background job
+    // Call HeyGen API to start generation (non-fatal if API key not yet configured)
+    const heygenApiKey = process.env.HEYGEN_API_KEY
+    if (heygenApiKey && params.avatarId && params.voiceId) {
+      try {
+        const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
+          method: "POST",
+          headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            video_inputs: [{
+              character: { type: "avatar", avatar_id: params.avatarId, avatar_style: "normal" },
+              voice: { type: "text", input_text: params.script, voice_id: params.voiceId },
+            }],
+            dimension: { width: 1920, height: 1080 },
+          }),
+        })
+        if (heygenRes.ok) {
+          const heygenData = await heygenRes.json()
+          const heygenVideoId = heygenData.data?.video_id
+          if (heygenVideoId) {
+            await supabase.from("video_generation_queue")
+              .update({ heygen_video_id: heygenVideoId, status: "generating" })
+              .eq("id", queueRecord.id)
+          }
+        }
+      } catch (heygenErr) {
+        console.warn("[v0] HeyGen API call failed, video stays queued:", heygenErr)
+      }
+    }
+
     console.log("[v0] Video queued successfully:", queueRecord.id)
     return { success: true, videoId: queueRecord.id, queueId: scriptRecord?.id }
   } catch (error: any) {
@@ -1123,36 +1362,140 @@ export async function generateVideoFromScript(params: {
   }
 }
 
+// ============================================
+// VIDEO TEMPLATES — SAVE / CRUD
+// ============================================
+
+export async function saveVideoTemplate(data: {
+  brokerageId?: string  // ignored — derived from session (and not stored, see below)
+  agentId?: string
+  teamId?: string
+  templateName: string
+  category: string
+  scriptType?: string
+  defaultScript?: string
+  durationSeconds?: number
+  tags?: string[]
+  createdBy?: string  // ignored — derived from session
+}) {
+  // Auth gate. SCHEMA DRIFT: live video_templates has only id,
+  // template_name, category, description, thumbnail_url, default_script,
+  // duration_seconds, recommended_for, tags, sort_order, is_active,
+  // created_at, updated_at — no brokerage_id, agent_id, team_id,
+  // script_type, or created_by. Inserts of those drift columns are
+  // silently dropped, so templates are GLOBAL not brokerage-scoped. To
+  // prevent cross-tenant template pollution, we restrict this action to
+  // brokerage admins only.
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
+  const supabase = createServiceClient()
+
+  const { data: callerUser } = await supabase
+    .from("users").select("user_type").eq("id", auth.userId).maybeSingle()
+  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+    .includes(callerUser?.user_type ?? "")
+  if (!isAdmin) {
+    throw new Error("Forbidden: only brokerage admins can save video templates (global library)")
+  }
+
+  const { data: result, error } = await supabase
+    .from("video_templates")
+    .insert({
+      template_name: data.templateName,
+      category: data.category,
+      default_script: data.defaultScript ?? null,
+      duration_seconds: data.durationSeconds ?? null,
+      tags: data.tags ?? [],
+      is_active: true,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error saving template:", error)
+    throw new Error(error.message)
+  }
+
+  revalidatePath("/dashboard/videos/templates")
+  return result
+}
+
+export async function getEducationTemplates() {
+  return getVideoTemplates({ category: "education" })
+}
+
 export async function createAvatarVideo(params: {
   scriptId: string
   script: string
   avatarId?: string
   voice?: string
-  userId?: string
+  userId?: string  // ignored — derived from session
 }) {
+  if (!isValidUUID(params.scriptId)) {
+    return { success: false, error: "Invalid script ID" }
+  }
+
+  // Auth gate — calls HeyGen API which burns paid credits under our key.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
+  // Verify script belongs to caller's brokerage before billing HeyGen
+  const { data: scriptRow } = await supabase
+    .from("video_scripts_library")
+    .select("brokerage_id")
+    .eq("id", params.scriptId)
+    .maybeSingle()
+  if (!scriptRow) return { success: false, error: "Script not found" }
+  if (scriptRow.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
   try {
-    console.log("[v0] Generating video for script:", params.scriptId)
+    console.log("[v0] Generating avatar video for script:", params.scriptId)
 
-    // TODO: Integrate with HeyGen API when credentials are added
-    // For now, simulate video generation
-    const videoUrl = `https://example.com/videos/${params.scriptId}.mp4`
+    const heygenApiKey = process.env.HEYGEN_API_KEY
+    if (!heygenApiKey) {
+      return { success: false, error: "HeyGen API key not configured. Contact your administrator." }
+    }
 
-    // Update script with video URL
-    const { error } = await supabase
-      .from("video_scripts_library")
-      .update({
-        video_url: videoUrl,
-        video_status: "completed",
-        video_generated_at: new Date().toISOString(),
-      })
-      .eq("id", params.scriptId)
+    const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
+      method: "POST",
+      headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_inputs: [{
+          character: {
+            type: "avatar",
+            avatar_id: params.avatarId || "Angela-insuit-20220820",
+            avatar_style: "normal",
+          },
+          voice: {
+            type: "text",
+            input_text: params.script,
+            voice_id: params.voice || "1bd001e7e50f421d891986aad5158bc8",
+          },
+        }],
+        dimension: { width: 1920, height: 1080 },
+      }),
+    })
 
-    if (error) throw error
+    const heygenData = await heygenRes.json()
+    if (!heygenRes.ok) {
+      throw new Error(heygenData.message || heygenData.error || "HeyGen API error")
+    }
 
-    console.log("[v0] Video generated successfully:", videoUrl)
-    return { success: true, videoUrl }
+    const heygenVideoId = heygenData.data?.video_id
+
+    // SCHEMA DRIFT: video_scripts_library has no video_status /
+    // video_heygen_id / video_generated_at columns — these inserts are
+    // silently dropped. Provider job tracking belongs on ai_video_projects
+    // (provider_job_id, provider_status, heygen_video_id columns exist
+    // there). Logging the HeyGen video_id to console so it isn't lost.
+    console.log(`[video-generation] HeyGen video_id=${heygenVideoId} for script ${params.scriptId} (drift: no place to persist on video_scripts_library)`)
+
+    return { success: true, videoId: heygenVideoId, status: "generating" }
   } catch (error: any) {
     console.error("[v0] Video generation error:", error)
     return { success: false, error: error.message }

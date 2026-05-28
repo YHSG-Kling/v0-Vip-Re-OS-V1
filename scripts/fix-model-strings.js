@@ -46,7 +46,7 @@ let skipped = 0
 for (const dir of checkDirs) {
   if (!fs.existsSync(dir)) { console.log("SKIP (missing dir):", dir); continue }
 
-  let files = walk(dir)
+  const files = walk(dir)
   console.log("Files in", dir.replace(ROOT,""), ":", files.length)
 
   for (const file of files) {

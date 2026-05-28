@@ -107,7 +107,7 @@ export async function getServiceStatuses(): Promise<{
   lastCheckedAt: string | null
 }> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx) {
     redirect("/login")
@@ -175,7 +175,7 @@ export async function getServiceHealthHistory(
   limit = 10
 ): Promise<HealthCheck[]> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -202,7 +202,7 @@ export async function getUptimeHistory(
   days = 7
 ): Promise<HealthCheckHistory[]> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -232,7 +232,7 @@ export async function getResponseTimeLogs(
   hours = 24
 ): Promise<ApiResponseLog[]> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -259,7 +259,7 @@ export async function getResponseTimeLogs(
 
 export async function getCronExecutionLogs(limit = 50): Promise<CronExecutionLog[]> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -285,7 +285,7 @@ export async function getAutomationErrors(days = 7): Promise<{
   byWorkflow: Record<string, { count: number; severity: string }[]>
 }> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return { errors: [], byWorkflow: {} }
@@ -329,7 +329,7 @@ export async function getAutomationErrors(days = 7): Promise<{
 
 export async function getMessageProviderStats(): Promise<MessageProviderStats[]> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -383,7 +383,7 @@ export async function getSLASummary(days = 30): Promise<
   }[]
 > {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return []
@@ -462,7 +462,7 @@ export async function triggerManualHealthCheck(): Promise<{
   message: string
 }> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return { success: false, message: "Unauthorized" }
@@ -499,7 +499,7 @@ export async function exportSLAReport(): Promise<{
   error?: string
 }> {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
     return { success: false, error: "Unauthorized" }

@@ -10,11 +10,13 @@ export interface TestResult {
   detail: string
 }
 
-export type ProviderName = 
+export type ProviderName =
   | "twilio"
   | "sendgrid"
   | "docusign"
   | "dotloop"
+  | "skyslope"
+  | "brokermint"
   | "heygen"
   | "gohighlevel"
   | "google_calendar"
@@ -67,6 +69,10 @@ export async function testIntegration(
         return await testRealtorCom(credentials)
       case "opcity":
         return await testOpcity(credentials)
+      case "skyslope":
+        return await testSkySlope(credentials)
+      case "brokermint":
+        return await testBrokermint(credentials)
       default:
         return { pass: false, detail: `Unknown provider: ${provider}` }
     }
@@ -409,14 +415,43 @@ async function testRealtorCom(credentials: Record<string, string>): Promise<Test
 
 async function testOpcity(credentials: Record<string, string>): Promise<TestResult> {
   const { username, password } = credentials
-  
+
   if (!username || !password) {
     return { pass: false, detail: "Username and Password are required" }
   }
-  
-  // Opcity doesn't have a public API health check
-  // Validate credentials exist and assume valid
+
   return { pass: true, detail: "Opcity credentials saved - will verify on first sync" }
+}
+
+async function testSkySlope(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // SkySlope REST API health check
+  const response = await fetch("https://api.skyslope.com/v3/transactions?pageSize=1", {
+    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid SkySlope API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `SkySlope API returned ${response.status}` }
+  }
+  return { pass: true, detail: "SkySlope credentials verified - transaction platform accessible" }
+}
+
+async function testBrokermint(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key, office_id } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // Brokermint API health check
+  const url = office_id
+    ? `https://brokermint.com/api/v1/offices/${office_id}`
+    : "https://brokermint.com/api/v1/offices"
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid Brokermint API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `Brokermint API returned ${response.status}` }
+  }
+  return { pass: true, detail: "Brokermint credentials verified - office accessible" }
 }
 
 // ─── PROVIDER METADATA ────────────────────────────────────────────────────────
@@ -475,11 +510,31 @@ export const PROVIDER_METADATA: Record<ProviderName, {
     oauthProvider: "docusign",
   },
   dotloop: {
+    // Real estate transaction-and-forms platform with built-in e-sign. Counts
+    // as both transaction-management and e-sign — primary type is esign so
+    // it satisfies the required e-sign category in the progress calc.
     displayName: "DotLoop",
     providerType: "esign",
     credentialFields: [
       { key: "access_token", label: "Access Token", type: "password", required: true },
       { key: "partner_key", label: "Partner Key", type: "text", required: false },
+    ],
+  },
+  skyslope: {
+    // Transaction-and-forms platform with built-in DigiSign e-sign.
+    displayName: "SkySlope",
+    providerType: "esign",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+    ],
+  },
+  brokermint: {
+    // Pure transaction-management + commission tracking (no built-in e-sign).
+    displayName: "Brokermint",
+    providerType: "transaction",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+      { key: "office_id", label: "Office ID", type: "text", required: false },
     ],
   },
   heygen: {
@@ -586,29 +641,41 @@ export const PROVIDER_METADATA: Record<ProviderName, {
 // ─── PROVIDER GROUPS ──────────────────────────────────────────────────────────
 
 export const PROVIDER_GROUPS = {
+  // Required = the minimum tech a brokerage needs to operate on the platform.
+  // E-sign covers DocuSign, Dotloop, and SkySlope (the latter two also serve
+  // as transaction-form platforms, so connecting one of them satisfies both
+  // the required e-sign category and the recommended transaction category).
   required: {
     label: "Required",
-    description: "Must connect to advance in onboarding",
-    providers: ["twilio", "sendgrid", "docusign", "dotloop"] as ProviderName[],
+    description: "Connect one provider per category to advance in onboarding",
+    providers: ["twilio", "sendgrid", "docusign", "dotloop", "skyslope"] as ProviderName[],
     requirements: {
-      sms: 1,      // At least 1 SMS provider
-      email: 1,    // At least 1 email provider
-      esign: 1,    // At least 1 e-sign provider (DocuSign OR DotLoop)
+      sms: 1,
+      email: 1,
+      esign: 1,
     },
   },
+  // Recommended = transaction-form platform (so the form wizard can pull
+  // state contracts/disclosures), calendar, CRM. Dotloop and SkySlope are
+  // listed here too for the transaction-management UX even though their
+  // primary type is e-sign — connecting them counts toward both.
   recommended: {
     label: "Recommended",
-    description: "Enhance your AI capabilities",
-    providers: ["heygen", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
+    description: "Transaction-form platform, CRM, calendar — strongly recommended for the AI workflow",
+    providers: ["dotloop", "skyslope", "brokermint", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
     requirements: {
-      video: 0,    // Optional
-      crm: 0,      // Optional
-      calendar: 0, // Optional (Google OR Outlook)
+      transaction: 0,
+      crm: 0,
+      calendar: 0,
     },
   },
+  // Optional = accounting, MLS/IDX, lead portals, direct mail.
+  // Video generation (D-ID + HeyGen) and voice cloning (ElevenLabs) run on
+  // platform-managed infrastructure — subscribers configure their personal
+  // avatar/voice in Twin Studio, not by entering API keys here.
   optional: {
     label: "Optional",
-    description: "Additional integrations",
+    description: "Connect any that apply to your business",
     providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity"] as ProviderName[],
     requirements: {},
   },

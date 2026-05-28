@@ -51,14 +51,14 @@ export function TaxReadinessPanel({
   const handleGenerateExplanation = async () => {
     setGenerating(true)
     try {
-      const result = await generateSmartResponse({
+      const result = await (generateSmartResponse as any)({
         agentId,
         context: `Tax situation analysis. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. Est tax: $${estimatedTaxLiability.toLocaleString()}.`,
         prompt: `Explain this agent's tax situation in plain language. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. Est tax: $${estimatedTaxLiability.toLocaleString()}. What should they do this quarter? Be specific and practical.`,
         responseType: "advice",
       })
-      if (result.response) {
-        setAiExplanation(result.response)
+      if ((result as any).draft) {
+        setAiExplanation((result as any).draft)
       }
     } catch (error) {
       console.error("Error generating tax explanation:", error)

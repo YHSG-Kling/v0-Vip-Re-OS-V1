@@ -1,7 +1,8 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
@@ -31,26 +32,67 @@ const PropertyMatchSchema = z.object({
 // Generate AI-powered property matches for a buyer
 export async function generatePropertyMatches(params: {
   contactId: string
-  agentId: string
+  agentId?: string // ignored — derived from session
   maxResults?: number
   includeOffMarket?: boolean
 }) {
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid contact or agent ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
   }
 
-  const supabase = await createClient()
+  if (!isValidUUID(params.contactId)) {
+    return { success: false, error: "Invalid contact ID" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
-    // Get buyer preferences
-    const { data: contact } = await supabase
+    // Verify the contact belongs to caller's brokerage before any AI work
+    const { data: contactGuard } = await supabase
       .from("contacts")
-      .select("*, buyer_preferences:contact_preferences(*)")
+      .select("brokerage_id")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
+
+    if (!contactGuard || contactGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    // Get contact and buyer preferences from property_preferences table (correct schema)
+    const [{ data: contact }, { data: preferencesRaw }] = await Promise.all([
+      supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", params.contactId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .single(),
+      supabase
+        .from("property_preferences")
+        .select(
+          "preferred_price_min, preferred_price_max, preferred_bedrooms, preferred_bathrooms, " +
+          "preferred_cities, preferred_features, inferred_min_price, inferred_max_price, " +
+          "inferred_beds_min, inferred_baths_min, inferred_cities, inferred_property_types"
+        )
+        .eq("contact_id", params.contactId)
+        .maybeSingle(),
+    ])
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
+    }
+
+    const preferences = preferencesRaw as Record<string, any> | null
+
+    // Merge explicit preferences with inferred ones (explicit takes priority)
+    const prefs = {
+      min_price:      preferences?.preferred_price_min ?? preferences?.inferred_min_price ?? null,
+      max_price:      preferences?.preferred_price_max ?? preferences?.inferred_max_price ?? null,
+      min_beds:       preferences?.preferred_bedrooms  ?? preferences?.inferred_beds_min  ?? null,
+      min_baths:      preferences?.preferred_bathrooms ?? preferences?.inferred_baths_min ?? null,
+      cities:         preferences?.preferred_cities    ?? preferences?.inferred_cities    ?? [],
+      property_types: preferences?.inferred_property_types ?? [],
+      features:       preferences?.preferred_features ?? [],
     }
 
     // Get buyer's viewing history and saved properties
@@ -58,6 +100,7 @@ export async function generatePropertyMatches(params: {
       .from("property_views")
       .select("property_id, view_count, last_viewed_at, time_spent_seconds")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
       .order("last_viewed_at", { ascending: false })
       .limit(50)
 
@@ -65,25 +108,26 @@ export async function generatePropertyMatches(params: {
       .from("saved_properties")
       .select("property_id, saved_at, notes")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     // Get available listings matching basic criteria
-    const preferences = contact.buyer_preferences?.[0] || {}
     let listingsQuery = supabase
       .from("listings")
       .select("*")
       .eq("status", "active")
+      .eq("brokerage_id", ctx.brokerageId)
 
-    if (preferences.min_price) {
-      listingsQuery = listingsQuery.gte("price", preferences.min_price)
+    if (prefs.min_price) {
+      listingsQuery = listingsQuery.gte("price", prefs.min_price)
     }
-    if (preferences.max_price) {
-      listingsQuery = listingsQuery.lte("price", preferences.max_price)
+    if (prefs.max_price) {
+      listingsQuery = listingsQuery.lte("price", prefs.max_price)
     }
-    if (preferences.min_beds) {
-      listingsQuery = listingsQuery.gte("bedrooms", preferences.min_beds)
+    if (prefs.min_beds) {
+      listingsQuery = listingsQuery.gte("bedrooms", prefs.min_beds)
     }
-    if (preferences.cities?.length > 0) {
-      listingsQuery = listingsQuery.in("city", preferences.cities)
+    if (prefs.cities?.length > 0) {
+      listingsQuery = listingsQuery.in("city", prefs.cities)
     }
 
     const { data: listings } = await listingsQuery.limit(100)
@@ -104,14 +148,12 @@ export async function generatePropertyMatches(params: {
 
 BUYER PROFILE:
 - Name: ${contact.first_name} ${contact.last_name}
-- Budget: $${preferences.min_price || 0} - $${preferences.max_price || "No max"}
-- Bedrooms: ${preferences.min_beds || "Any"}+
-- Bathrooms: ${preferences.min_baths || "Any"}+
-- Preferred Areas: ${preferences.cities?.join(", ") || "Any"}
-- Property Types: ${preferences.property_types?.join(", ") || "Any"}
-- Must-Have Features: ${preferences.must_haves?.join(", ") || "None specified"}
-- Nice-to-Have Features: ${preferences.nice_to_haves?.join(", ") || "None specified"}
-- Deal Breakers: ${preferences.deal_breakers?.join(", ") || "None specified"}
+- Budget: $${prefs.min_price || 0} - $${prefs.max_price || "No max"}
+- Bedrooms: ${prefs.min_beds || "Any"}+
+- Bathrooms: ${prefs.min_baths || "Any"}+
+- Preferred Areas: ${prefs.cities?.join(", ") || "Any"}
+- Property Types: ${prefs.property_types?.join(", ") || "Any"}
+- Preferred Features: ${prefs.features?.join(", ") || "None specified"}
 - Timeline: ${contact.timeline || "Not specified"}
 - Notes: ${contact.notes || "None"}
 
@@ -138,6 +180,7 @@ Score each property 0-100 based on how well it matches the buyer's explicit pref
     const matchInserts = matchAnalysis.matches.map(match => ({
       contact_id: params.contactId,
       property_id: match.propertyId,
+      brokerage_id: ctx.brokerageId,
       match_score: match.matchScore,
       match_reasons: match.matchReasons,
       priority_factors: match.priorityFactors,
@@ -169,32 +212,57 @@ Score each property 0-100 based on how well it matches the buyer's explicit pref
 export async function analyzePropertyForBuyer(params: {
   contactId: string
   propertyId: string
-  agentId: string
+  agentId?: string // ignored — derived from session
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   try {
-    const [{ data: contact }, { data: property }] = await Promise.all([
-      supabase.from("contacts").select("*, buyer_preferences:contact_preferences(*)").eq("id", params.contactId).single(),
-      supabase.from("listings").select("*").eq("id", params.propertyId).single(),
+    // Verify contact and listing both belong to caller's brokerage BEFORE AI work
+    const [{ data: contactGuard }, { data: listingGuard }] = await Promise.all([
+      supabase.from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle(),
+      supabase.from("listings").select("brokerage_id").eq("id", params.propertyId).maybeSingle(),
+    ])
+
+    if (!contactGuard || contactGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+    if (!listingGuard || listingGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const [{ data: contact }, { data: property }, { data: buyerPrefs }] = await Promise.all([
+      supabase.from("contacts").select("*").eq("id", params.contactId).eq("brokerage_id", ctx.brokerageId).single(),
+      supabase.from("listings").select("*").eq("id", params.propertyId).eq("brokerage_id", ctx.brokerageId).single(),
+      supabase
+        .from("property_preferences")
+        .select("preferred_price_max, preferred_features, inferred_max_price")
+        .eq("contact_id", params.contactId)
+        .maybeSingle(),
     ])
 
     if (!contact || !property) {
       return { success: false, error: "Contact or property not found" }
     }
 
+    const maxBudget = buyerPrefs?.preferred_price_max ?? buyerPrefs?.inferred_max_price
+    const preferredFeatures = buyerPrefs?.preferred_features ?? []
+
     const { text: analysis } = await generateText({
       model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this property for the buyer and provide a comprehensive assessment:
 
 BUYER: ${contact.first_name} ${contact.last_name}
-- Budget: $${contact.buyer_preferences?.[0]?.max_price || "Not set"}
-- Must-haves: ${contact.buyer_preferences?.[0]?.must_haves?.join(", ") || "None"}
-- Deal breakers: ${contact.buyer_preferences?.[0]?.deal_breakers?.join(", ") || "None"}
+- Budget: $${maxBudget || "Not set"}
+- Preferred Features: ${preferredFeatures.join(", ") || "None"}
 
 PROPERTY: ${property.address}
 - Price: $${property.price?.toLocaleString()}
@@ -220,20 +288,41 @@ Provide:
 // Smart notification for new matches
 export async function notifyNewMatches(params: {
   contactId: string
-  agentId: string
+  agentId?: string // ignored — derived from session
   threshold?: number
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  if (!isValidUUID(params.contactId)) {
+    return { success: false, error: "Invalid contact ID" }
+  }
+
   const threshold = params.threshold || 85
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   try {
+    // Verify contact belongs to caller's brokerage BEFORE AI work
+    const { data: contactGuard } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+
+    if (!contactGuard || contactGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Get high-score matches from today
     const today = new Date().toISOString().split("T")[0]
     const { data: newMatches } = await supabase
       .from("property_matches")
       .select("*, listings(*)")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
       .gte("match_score", threshold)
       .gte("generated_at", today)
 
@@ -250,7 +339,8 @@ export async function notifyNewMatches(params: {
     // Log the notification
     await supabase.from("notifications").insert({
       contact_id: params.contactId,
-      agent_id: params.agentId,
+      agent_id: ctx.agentId,
+      brokerage_id: ctx.brokerageId,
       type: "property_match",
       title: "New Property Matches",
       message: notification,
@@ -266,7 +356,7 @@ export async function notifyNewMatches(params: {
 // Helper function to analyze viewing patterns
 function analyzeViewingPatterns(viewHistory: any[] | null): string {
   if (!viewHistory || viewHistory.length === 0) return "No viewing history"
-  
+
   const avgTimeSpent = viewHistory.reduce((sum, v) => sum + (v.time_spent_seconds || 0), 0) / viewHistory.length
   return `${viewHistory.length} properties viewed, avg ${Math.round(avgTimeSpent / 60)} min per property`
 }
@@ -277,15 +367,38 @@ export async function learnFromBuyerFeedback(params: {
   propertyId: string
   feedback: "loved" | "liked" | "neutral" | "disliked" | "hated"
   reasons?: string[]
-  agentId: string
+  agentId?: string // ignored — derived from session
 }) {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = createServiceClient()
 
   try {
+    // Verify contact and listing both belong to caller's brokerage BEFORE AI work
+    const [{ data: contactGuard }, { data: listingGuard }] = await Promise.all([
+      supabase.from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle(),
+      supabase.from("listings").select("brokerage_id").eq("id", params.propertyId).maybeSingle(),
+    ])
+
+    if (!contactGuard || contactGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+    if (!listingGuard || listingGuard.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
     // Save feedback
     await supabase.from("property_feedback").insert({
       contact_id: params.contactId,
       property_id: params.propertyId,
+      brokerage_id: ctx.brokerageId,
       feedback: params.feedback,
       reasons: params.reasons,
       created_at: new Date().toISOString(),
@@ -296,6 +409,7 @@ export async function learnFromBuyerFeedback(params: {
       .from("property_feedback")
       .select("*, listings(*)")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     if (allFeedback && allFeedback.length >= 5) {
       const { object: preferenceUpdates } = await generateObject({
@@ -310,7 +424,7 @@ export async function learnFromBuyerFeedback(params: {
           })),
         }),
         prompt: `Based on this buyer's property feedback history, suggest preference updates:
-        
+
 ${allFeedback.map(f => `- ${f.feedback}: ${f.listings?.address} (${f.reasons?.join(", ") || "no reasons"})`).join("\n")}
 
 Analyze patterns in what they love vs hate and suggest specific preference field updates.`,

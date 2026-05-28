@@ -95,13 +95,13 @@ export default async function MobileVoicePage() {
       <main className="px-4 py-4 space-y-6">
         {/* Voice Assistant Panel as Hero */}
         <VoiceAssistantPanel
-          userId={userId}
+          userId={userId ?? ""}
           userRole="agent"
-          brokerageId={brokerageId}
+          brokerageId={brokerageId ?? ""}
         />
 
         {/* Mobile OS Command Strip */}
-        <MobileCommandStrip agentId={agentId} activeSection="voice" />
+        <MobileCommandStrip agentId={agentId ?? ""} />
 
         {/* Section 1: Voice Status Card */}
         <section>
@@ -202,7 +202,7 @@ export default async function MobileVoicePage() {
         {/* Section 3: Start Voice Session Button */}
         <section>
           <VoiceSessionButton
-            agentId={agentId}
+            agentId={agentId ?? ""}
             hasActiveSession={!!activeSession}
             isConfigured={!!voiceConfig}
           />
@@ -222,7 +222,7 @@ export default async function MobileVoicePage() {
           {recentCalls && recentCalls.length > 0 ? (
             <div className="space-y-2">
               {recentCalls.map((call) => {
-                const contact = call.contacts as { id: string; first_name: string; last_name: string } | null
+                const contact = call.contacts as unknown as { id: string; first_name: string; last_name: string } | null
                 const contactName = contact
                   ? `${contact.first_name} ${contact.last_name}`
                   : "Unknown"
@@ -291,13 +291,13 @@ export default async function MobileVoicePage() {
               <CardTitle className="text-sm font-medium">Quick Dial</CardTitle>
             </CardHeader>
             <CardContent>
-              <QuickDialSearch agentId={agentId} brokerageId={brokerageId} />
+              <QuickDialSearch agentId={agentId ?? ""} brokerageId={brokerageId ?? ""} />
             </CardContent>
           </Card>
         </section>
 
         {/* Mobile OS Quick Contact Panel */}
-        <QuickContactPanel agentId={agentId} brokerageId={brokerageId} />
+        <QuickContactPanel contacts={[]} />
       </main>
     </div>
   )

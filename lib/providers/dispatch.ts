@@ -11,6 +11,9 @@
  * SMS and phone are supported via the existing Twilio messaging provider.
  */
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const LobSDK = require("lob")
+
 import { resolveProvider } from "@/lib/kernel/providers"
 import {
   sendEmail as messagingSendEmail,
@@ -20,6 +23,7 @@ import {
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
+import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
@@ -77,6 +81,25 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     const supabase = await createServiceClient()
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
+
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (email_unsubscribed + legacy email_opt_out) AND contact_suppression_list,
+    // brokerage-scoped. The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: params.to ?? null,
+      phone: null,
+      channel: "email",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] Email blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
 
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
@@ -215,6 +238,25 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
 
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (sms_unsubscribed + legacy sms_opt_out) AND contact_suppression_list,
+    // brokerage-scoped. The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: null,
+      phone: params.to ?? null,
+      channel: "sms",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] SMS blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
+
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
       .select("*")
@@ -303,6 +345,25 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
     const recipientId = params.contactId || params.leadId
     const table = params.contactId ? "contacts" : "leads"
 
+    // Final straggler gate (1/2): comprehensive suppression check — contact flags
+    // (dnc_status / call_stop_flag) AND contact_suppression_list, brokerage-scoped.
+    // The contact-flag-only gate below misses list-only entries.
+    const suppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId: params.contactId ?? null,
+      email: null,
+      phone: params.to ?? null,
+      channel: "phone",
+    })
+    if (suppression.suppressed) {
+      console.warn(`[Dispatch] Phone call blocked for ${recipientId}: ${suppression.reason}`)
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${suppression.reason}`,
+      }
+    }
+
     const { data: recipient, error: recipientError } = await supabase
       .from(table)
       .select("*")
@@ -378,13 +439,25 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
 // direct_mail is SYSTEM_ONLY in kernel/providers.ts — resolveProvider always
 // returns the system default (lob) and ignores per-brokerage overrides.
 
+export type DirectMailPieceType = "letter" | "postcard" | "self_mailer"
+
 export interface DispatchDirectMailParams extends DispatchActorContext {
   recipientName: string
   mailingAddress: string
+  mailingAddress2?: string
   city: string
   state: string
   zip: string
+  /** Lob template id. For letters/self-mailers this is the document; for postcards it is the FRONT. */
   templateId: string
+  /** Postcard BACK template id (defaults to env LOB_POSTCARD_BACK_ID or the front). */
+  backTemplateId?: string
+  /** Mail piece type — Lob supports more than letters. Defaults to "letter". */
+  pieceType?: DirectMailPieceType
+  /** Postcard size: "4x6" | "6x9" | "6x11" (default "4x6"). Letters ignore this. */
+  size?: string
+  /** Color print (default false for letters, true for postcards). */
+  color?: boolean
   mergeVars?: Record<string, string>
   metadata?: Record<string, unknown>
 }
@@ -402,9 +475,8 @@ export async function dispatchDirectMail(
   })
   // providerKey will always be 'lob' until a superadmin override exists
 
-  // NOTE: Lob API integration is intentionally stubbed here.
-  // Feature code calls dispatchDirectMail — the provider stub throws if Lob keys
-  // are not configured, keeping the contract clean without hardcoding in feature code.
+  // Real Lob integration (letters / postcards / self-mailers). Feature code calls
+  // dispatchDirectMail; if Lob keys are absent it returns a clean unconfigured error.
   const lobApiKey = process.env.LOB_API_KEY
   if (!lobApiKey) {
     const result: DispatchResult = {
@@ -415,47 +487,70 @@ export async function dispatchDirectMail(
     return result
   }
 
-  // Lob Letters API — stub implementation (to be fleshed out when Lob is live)
-  const response = await fetch("https://api.lob.com/v1/letters", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${lobApiKey}:`).toString("base64")}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      to: {
-        name: params.recipientName,
-        address_line1: params.mailingAddress,
-        address_city: params.city,
-        address_state: params.state,
-        address_zip: params.zip,
-        address_country: "US",
-      },
-      from: process.env.LOB_RETURN_ADDRESS_ID ?? undefined,
-      file: params.templateId,
-      merge_variables: params.mergeVars ?? {},
-      color: false,
-    }),
-  })
-
-  if (!response.ok) {
-    const body = await response.text()
-    return { success: false, providerKey, error: `Lob API error: ${body}` }
+  const lob = LobSDK(lobApiKey)
+  const pieceType: DirectMailPieceType = params.pieceType ?? "letter"
+  const to = {
+    name: params.recipientName,
+    address_line1: params.mailingAddress,
+    ...(params.mailingAddress2 ? { address_line2: params.mailingAddress2 } : {}),
+    address_city: params.city,
+    address_state: params.state,
+    address_zip: params.zip,
+    address_country: "US",
   }
+  const from = process.env.LOB_RETURN_ADDRESS_ID
+  const mergeVars = params.mergeVars ?? {}
 
-  const data = (await response.json()) as { id?: string }
+  // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
+  const COST: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
+
+  let data: { id?: string }
+  try {
+    if (pieceType === "postcard") {
+      data = await lob.postcards.create({
+        to,
+        from,
+        front: params.templateId,
+        back: params.backTemplateId ?? process.env.LOB_POSTCARD_BACK_ID ?? params.templateId,
+        size: params.size ?? "4x6",
+        merge_variables: mergeVars,
+      })
+    } else if (pieceType === "self_mailer") {
+      data = await lob.selfMailers.create({
+        to,
+        from,
+        inside: params.templateId,
+        outside: params.backTemplateId ?? params.templateId,
+        size: params.size ?? "6x18_bifold",
+        merge_variables: mergeVars,
+        color: params.color ?? true,
+      })
+    } else {
+      data = await lob.letters.create({
+        to,
+        from,
+        file: params.templateId,
+        merge_variables: mergeVars,
+        color: params.color ?? false,
+      })
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, providerKey, error: `Lob API error: ${msg}` }
+  }
 
   void logVendorUsage({
     vendorName: providerKey,
     usageType: "pieces_mailed",
     unitCount: 1,
-    estimatedCost: 1.2, // Lob letter ~$1.20/piece
+    estimatedCost: COST[pieceType],
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
     leadId: params.leadId,
     metadata: {
-      lob_letter_id: data.id,
+      lob_id: data.id,
+      piece_type: pieceType,
       template_id: params.templateId,
       provider_key: providerKey,
       ...(params.metadata ?? {}),
@@ -486,8 +581,162 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
       teamId: params.teamId,
     },
   })
-  // providerKey will always be 'heygen' until a superadmin override exists
 
+  // Platform-level video provider preference. Default per kernel-OS plan = "did" (D-ID + ElevenLabs).
+  const { getPlatformVideoProvider } = await import("@/app/actions/settings/global-settings-actions")
+  const platformProvider = await getPlatformVideoProvider().catch(() => "did" as const)
+
+  if (platformProvider === "did") {
+    return dispatchVideoViaDID({ params, providerKey })
+  }
+
+  return dispatchVideoViaHeyGen({ params, providerKey })
+}
+
+// ─── D-ID + ElevenLabs path (default per plan) ────────────────────────────────
+async function dispatchVideoViaDID({
+  params,
+  providerKey,
+}: {
+  params: DispatchVideoParams
+  providerKey: string
+}): Promise<DispatchResult> {
+  const didApiKey = process.env.DID_API_KEY
+  const elApiKey = process.env.ELEVENLABS_API_KEY
+
+  if (!didApiKey || !elApiKey) {
+    return {
+      success: false,
+      providerKey,
+      error:
+        "Video provider (D-ID + ElevenLabs) not configured. Set DID_API_KEY and ELEVENLABS_API_KEY in the platform Settings → Providers page.",
+    }
+  }
+
+  // Resolve agent's D-ID + ElevenLabs identity profile.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const supabase = createServiceClient()
+
+  const agentUserId = params.userId ?? params.agentId
+  if (!agentUserId) {
+    return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+  }
+
+  const { data: didProfile } = await supabase
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", agentUserId)
+    .maybeSingle()
+
+  if (!didProfile?.elevenlabs_voice_id) {
+    return {
+      success: false,
+      providerKey,
+      error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated.",
+    }
+  }
+
+  const sourceUrl = didProfile.did_video_url ?? didProfile.did_photo_url
+  if (!sourceUrl) {
+    return {
+      success: false,
+      providerKey,
+      error: "Avatar not set up. The agent must upload a headshot or video clip in Settings → Voice & Avatar.",
+    }
+  }
+
+  const isVideoSource = !!didProfile.did_video_url
+
+  // Render the script with template variables filled in.
+  const renderedScript = (params.scriptVars ? Object.entries(params.scriptVars) : []).reduce(
+    (acc, [k, v]) => acc.replace(new RegExp(`{{\\s*${k}\\s*}}`, "g"), String(v ?? "")),
+    String(params.templateId ?? "")
+  ) || JSON.stringify(params.scriptVars ?? {})
+
+  // ─── 1. Generate audio via ElevenLabs TTS ───────────────────────────────────
+  const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + didProfile.elevenlabs_voice_id, {
+    method: "POST",
+    headers: { "xi-api-key": elApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
+    body: JSON.stringify({ text: renderedScript, model_id: "eleven_multilingual_v2" }),
+  })
+
+  if (!ttsRes.ok) {
+    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: HTTP ${ttsRes.status}` }
+  }
+
+  // For D-ID we need a hosted audio URL — write to Supabase storage.
+  const audioBuf = await ttsRes.arrayBuffer()
+  const audioPath = `isa-videos/${agentUserId}/${Date.now()}.mp3`
+  const { error: uploadError } = await supabase.storage
+    .from("media")
+    .upload(audioPath, new Uint8Array(audioBuf), { contentType: "audio/mpeg", upsert: false })
+  if (uploadError) {
+    return { success: false, providerKey: "did", error: `Failed to host audio: ${uploadError.message}` }
+  }
+  const { data: pub } = supabase.storage.from("media").getPublicUrl(audioPath)
+  const audioUrl = pub.publicUrl
+
+  // ─── 2. Submit to D-ID ──────────────────────────────────────────────────────
+  const endpoint = isVideoSource ? "https://api.d-id.com/clips" : "https://api.d-id.com/talks"
+  const didPayload = isVideoSource
+    ? {
+        source_url: sourceUrl,
+        script: { type: "audio", audio_url: audioUrl },
+        config: { stitch: true, result_format: "mp4" },
+      }
+    : {
+        source_url: sourceUrl,
+        script: { type: "audio", audio_url: audioUrl },
+        driver_url: "bank://natural",
+        config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
+      }
+
+  const didRes = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(didPayload),
+  })
+
+  if (!didRes.ok) {
+    const errBody = await didRes.text()
+    return { success: false, providerKey: "did", error: `D-ID API error: ${errBody}` }
+  }
+
+  const didData = (await didRes.json()) as { id?: string }
+
+  void logVendorUsage({
+    vendorName: "did",
+    usageType: "video_renders",
+    unitCount: 1,
+    estimatedCost: 0.3, // D-ID + ElevenLabs ~$0.30/render combined
+    systemSource: params.systemSource ?? "dispatch",
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    leadId: params.leadId,
+    metadata: {
+      did_talk_id: didData.id,
+      mode: isVideoSource ? "clip" : "talk",
+      recipient_email: params.recipientEmail,
+      provider_key: "did",
+      ...(params.metadata ?? {}),
+    },
+  })
+
+  return { success: true, providerKey: "did", messageId: didData.id }
+}
+
+// ─── HeyGen path (legacy / opt-in) ────────────────────────────────────────────
+async function dispatchVideoViaHeyGen({
+  params,
+  providerKey,
+}: {
+  params: DispatchVideoParams
+  providerKey: string
+}): Promise<DispatchResult> {
   const heygenApiKey = process.env.HEYGEN_API_KEY
   if (!heygenApiKey) {
     return {
@@ -497,17 +746,10 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
     }
   }
 
-  // HeyGen Video Generation API
   const response = await fetch("https://api.heygen.com/v2/video/generate", {
     method: "POST",
-    headers: {
-      "X-Api-Key": heygenApiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      template_id: params.templateId,
-      variables: params.scriptVars ?? {},
-    }),
+    headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ template_id: params.templateId, variables: params.scriptVars ?? {} }),
   })
 
   if (!response.ok) {
@@ -521,7 +763,7 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
     vendorName: providerKey,
     usageType: "video_renders",
     unitCount: 1,
-    estimatedCost: 0.5, // HeyGen ~$0.50/render estimate
+    estimatedCost: 0.5,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,

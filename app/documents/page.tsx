@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
 
 export default function DocumentsRedirect() {
-  redirect('/dashboard/transactions')
+  redirect('/dashboard/documents')
 }

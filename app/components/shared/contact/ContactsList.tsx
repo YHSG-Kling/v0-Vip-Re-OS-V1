@@ -213,7 +213,7 @@ export function ContactsList({
       <div className="flex items-center gap-2">
         <div className={`w-2 h-2 rounded-full ${colors.dot}`} />
         <span className={`text-xs font-medium ${colors.text}`}>{contact.timeline.replace("_", " ")}</span>
-        {days <= 90 && <span className="text-xs text-red-600">({days}d)</span>}
+        {(days ?? 0) <= 90 && <span className="text-xs text-red-600">({days}d)</span>}
       </div>
     )
   }

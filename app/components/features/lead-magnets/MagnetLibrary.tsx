@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
-import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions/lead-magnets"
+import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions/lead-magnets-actions"
 import type { ListLeadMagnetsOutput } from "@/lib/kernel/lead-magnets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -41,7 +41,7 @@ export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNe
   async function load() {
     setLoading(true)
     setError(null)
-    const result = await listLeadMagnetsAction({ brokerageId, agentId, status: "all" })
+    const result = await listLeadMagnetsAction({ brokerageId, agentId })
     if (result.success) {
       setMagnets(result.magnets ?? [])
     } else {
@@ -52,12 +52,7 @@ export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNe
 
   function handleToggleActive(magnet: Magnet) {
     startTransition(async () => {
-      const result = await updateMagnetSettingsAction({
-        magnetId: magnet.id,
-        brokerageId,
-        actorUserId: "",
-        updates: { isActive: !magnet.isActive },
-      })
+      const result = await updateMagnetSettingsAction(magnet.id, { isActive: !magnet.isActive })
       if (result.success) {
         setMagnets((prev) =>
           prev.map((m) => (m.id === magnet.id ? { ...m, isActive: !m.isActive } : m))

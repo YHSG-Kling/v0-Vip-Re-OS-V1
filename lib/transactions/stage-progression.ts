@@ -262,7 +262,6 @@ export async function advanceStage(params: {
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
-        .catch(err => console.error("[stage-progression] seller contact_type update failed:", err))
 
       // 3. Grant portal access to the sold listing view if not already enabled
       await supabase
@@ -274,7 +273,6 @@ export async function advanceStage(params: {
           enabled_by_agent_id: params.userId,
           enabled_at: new Date().toISOString(),
         }, { onConflict: "contact_id,module_key" })
-        .catch(err => console.error("[stage-progression] portal module upsert failed:", err))
     }
 
     // 4. Mark the listing as sold
@@ -289,8 +287,37 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
-        .catch(err => console.error("[stage-progression] listing sold update failed:", err))
     }
+
+    // 5. Auto-schedule review request draft (5 days post-close)
+    // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
+    void (async () => {
+      try {
+        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
+        await aiGenerateReviewRequest({
+          transactionId: params.transactionId,
+          agentId: params.userId,
+          platform: "google",
+          channel: "email",
+        })
+
+        // Schedule an agent notification 5 days from now to send the review
+        const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
+        await supabase.from("activities").insert({
+          brokerage_id: params.brokerageId,
+          agent_id: params.userId,
+          activity_type: "review_request_scheduled",
+          title: "Review request ready to send",
+          notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
+          entity_type: "transaction",
+          entity_id: params.transactionId,
+          status: "pending",
+          scheduled_at: sendDate.toISOString(),
+        })
+      } catch {
+        // Non-blocking — review request draft failure doesn't affect close
+      }
+    })()
   }
 
   return {

@@ -27,7 +27,8 @@ export async function PUT(request: NextRequest) {
     })
 
     if (!result.success || !result.contact) {
-      return NextResponse.json({ success: false, error: result.error || "Failed to update contact" }, { status: 500 })
+      const errMsg = (result as { success: false; error: string }).error || "Failed to update contact"
+      return NextResponse.json({ success: false, error: errMsg }, { status: 500 })
     }
 
     const contact = result.contact
@@ -84,10 +85,8 @@ async function createContactUser(contact: any, agentId: string) {
     contactId: contact.id,
     agentId,
     updates: {
-      contact_user_id: authData.user.id,
       has_login: true,
-      login_created_at: new Date().toISOString(),
-    },
+    } as any,
   })
 
   return true

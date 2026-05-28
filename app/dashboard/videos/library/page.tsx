@@ -38,7 +38,11 @@ import {
   PresentationIcon,
   Sparkles,
   Filter,
+  Share2,
+  Kanban,
+  BarChart3,
 } from "lucide-react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
@@ -241,6 +245,54 @@ function VideoLibraryContent() {
     }
   }
 
+  // ─── Distribute Script ─────────────────────────────────────────────────────
+
+  async function handleDistribute(script: VideoScript) {
+    const { toast } = await import("sonner")
+
+    // Look up the ai_video_projects record linked to this script-library entry
+    const { data: project, error: projectError } = await supabase
+      .from("ai_video_projects")
+      .select("id")
+      .eq("source_type", "script_library")
+      .eq("source_id", script.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      toast.error("No video project found for this script. Generate a video first.")
+      return
+    }
+
+    const { distributeVideoProjectAction } = await import("@/app/actions/video")
+    const result = await distributeVideoProjectAction({
+      projectId: project.id,
+      channels: ["youtube", "linkedin"],
+      title: script.title,
+      description: script.script_content.slice(0, 200),
+    })
+
+    if (!result.success) {
+      toast.error(result.error ?? "Distribution failed")
+      return
+    }
+
+    const distributions = result.data?.distributions ?? []
+    const failed = distributions.filter(d => d.status === "failed")
+    const succeeded = distributions.filter(d => d.status !== "failed")
+
+    if (failed.length === 0) {
+      toast.success("Video queued for distribution")
+    } else if (succeeded.length === 0) {
+      toast.error(`Distribution failed on all channels: ${failed.map(d => d.channel).join(", ")}`)
+    } else {
+      toast.warning(
+        `Partial distribution: ${succeeded.length} succeeded, ${failed.length} failed (${failed.map(d => `${d.channel}: ${d.error ?? "error"}`).join("; ")})`
+      )
+    }
+  }
+
   // ─── Delete Script ─────────────────────────────────────────────────────────
 
   async function handleDeleteScript(scriptId: string) {
@@ -264,17 +316,42 @@ function VideoLibraryContent() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto py-8 px-4">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-bold text-foreground">Script Library</h1>
+            <h1 className="text-3xl font-bold text-foreground">My Videos</h1>
             <p className="text-muted-foreground mt-1">
-              Manage your AI-generated video scripts
+              Manage your scripts, pipeline, and video analytics
             </p>
           </div>
           <Button onClick={() => router.push("/dashboard/videos/create")}>
             <Plus className="h-4 w-4 mr-2" />
-            Create Script
+            Create Video
           </Button>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex gap-1 border-b mb-8">
+          <Link
+            href="/dashboard/videos/library"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-primary text-primary"
+          >
+            <FileText className="h-4 w-4" />
+            Scripts
+          </Link>
+          <Link
+            href="/dashboard/videos/board"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Kanban className="h-4 w-4" />
+            Pipeline
+          </Link>
+          <Link
+            href="/dashboard/videos/analytics"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <BarChart3 className="h-4 w-4" />
+            Analytics
+          </Link>
         </div>
 
         {/* Stats */}
@@ -465,6 +542,12 @@ function VideoLibraryContent() {
                             <Copy className="h-4 w-4 mr-2" />
                             Copy Script
                           </DropdownMenuItem>
+                          {script.approval_status === "approved" && (
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                              <Share2 className="h-4 w-4 mr-2" />
+                              Distribute
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-red-600"
@@ -570,6 +653,12 @@ function VideoLibraryContent() {
                           <Copy className="h-4 w-4 mr-2" />
                           Copy Script
                         </DropdownMenuItem>
+                        {script.approval_status === "approved" && (
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                            <Share2 className="h-4 w-4 mr-2" />
+                            Distribute
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-red-600"

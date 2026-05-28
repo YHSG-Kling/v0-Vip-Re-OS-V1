@@ -17,12 +17,12 @@ export async function POST(request: NextRequest) {
     // Check user role
     const { data: userData } = await supabase
       .from("users")
-      .select("role, brokerage_id, first_name, last_name")
+      .select("user_type, platform_role, brokerage_id, first_name, last_name")
       .eq("id", user.id)
       .single()
 
     const allowedRoles = ["superadmin", "admin", "broker"]
-    if (!userData || !allowedRoles.includes(userData.role || "")) {
+    if (!userData || (!allowedRoles.includes(userData.user_type || "") && userData.platform_role !== "superadmin")) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 

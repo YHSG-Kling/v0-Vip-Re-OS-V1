@@ -4,7 +4,15 @@
  * Typed helpers for the VAPI REST API.
  * All functions are server-only (use VAPI_API_KEY from env).
  * Never import this file in Client Components.
+ *
+ * TCPA: every initiateCall passes through enforceTCPACompliance BEFORE the
+ * VAPI HTTP request. This closes the AI ISA path which previously bypassed
+ * the lib/providers/messaging gate entirely. Callers MUST supply brokerageId
+ * (used for compliance scope + audit log) and SHOULD supply contactId when
+ * the call targets a known CRM contact.
  */
+
+import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
 
 const VAPI_BASE = "https://api.vapi.ai"
 
@@ -48,6 +56,15 @@ export interface VapiCallParams {
     }
     variableValues?: Record<string, string>
   }
+  // ── TCPA compliance context (required for outbound calls to CRM contacts) ──
+  /** CRM contact (contacts.id) being called. Drives DNC, consent, RND checks. */
+  contactId?: string | null
+  /** Brokerage initiating the call — required for tenant-scoped audit. */
+  brokerageId?: string | null
+  /** auth user.id of the agent / system actor initiating. */
+  initiatedBy?: string | null
+  /** Transactional notices skip EWC but still enforce DNC + quiet-hours + RND. */
+  transactional?: boolean
 }
 
 export interface VapiCallResponse {
@@ -70,6 +87,41 @@ export interface VapiCallStatus {
  * Returns the VAPI call object on success.
  */
 export async function initiateCall(params: VapiCallParams): Promise<VapiCallResponse> {
+  // ── TCPA gate (mandatory) ──────────────────────────────────────────────────
+  // Runs BEFORE the VAPI HTTP request. Throws on block so the AI ISA layer
+  // sees a hard failure (which routes the lead to next-channel fallback).
+  const gate = await enforceTCPACompliance({
+    channel:       "call",
+    phone:         params.phoneNumber,
+    contactId:     params.contactId   ?? null,
+    brokerageId:   params.brokerageId ?? null,
+    initiatedBy:   params.initiatedBy ?? null,
+    transactional: params.transactional ?? false,
+  })
+  if (!gate.allowed) {
+    const err = new Error(gate.message ?? "TCPA gate blocked VAPI call") as Error & { blocked?: true; blockReason?: string; complianceLogId?: string }
+    err.blocked = true
+    err.blockReason = gate.blockReason
+    err.complianceLogId = gate.logEntryId
+    throw err
+  }
+
+  // ── Vendor budget gate ─────────────────────────────────────────────────────
+  // Auto-pause outbound voice when the brokerage is over its monthly platform-vendor
+  // ceiling. Throws a blocked error (same shape as the TCPA block) so the ISA layer
+  // routes to a cheaper next-channel fallback instead of incurring more spend.
+  if (params.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: params.brokerageId, addCost: estimatePlatformVendorCost("vapi", 1) })
+    if (!budget.allowed) {
+      const err = new Error("Vendor budget exceeded — outbound voice paused") as Error & { blocked?: true; blockReason?: string }
+      err.blocked = true
+      err.blockReason = "vendor_budget_exceeded"
+      throw err
+    }
+  }
+
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
   if (!phoneNumberId) throw new Error("VAPI_PHONE_NUMBER_ID is not set")
 

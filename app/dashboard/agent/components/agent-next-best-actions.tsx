@@ -8,7 +8,6 @@ import { ActionPlanCard } from "@/app/components/shared/ActionPlanCard"
 
 interface AgentNextBestActionsProps {
   briefingActions: Array<{ priority: 'high' | 'medium' | 'low'; action: string; context?: string }>
-  hotLeads: Array<{ name: string; status?: string; suggested_action?: string }>
   dealsAtRisk: Array<{ transaction_id: string; address: string; reason?: string }>
   upcomingShowings: Array<{
     id: string
@@ -21,7 +20,6 @@ interface AgentNextBestActionsProps {
 
 export function AgentNextBestActions({
   briefingActions,
-  hotLeads,
   dealsAtRisk,
   upcomingShowings,
   actionPlans
@@ -37,7 +35,7 @@ export function AgentNextBestActions({
     return scheduled >= now && scheduled <= in48Hours
   })
 
-  const hasUrgent = dealsAtRisk.length > 0 || hotLeads.length > 0
+  const hasUrgent = dealsAtRisk.length > 0
   const hasToday = upcomingFiltered.length > 0 || highPriorityActions.length > 0
   const hasRecommendations = otherActions.length > 0
   const hasPlans = actionPlans && actionPlans.length > 0
@@ -83,17 +81,6 @@ export function AgentNextBestActions({
                 </div>
                 <Link href={`/dashboard/transactions/${deal.transaction_id}`} className="text-xs text-primary hover:underline">
                   Open Deal
-                </Link>
-              </div>
-            ))}
-            {hotLeads.map((lead, idx) => (
-              <div key={idx} className="flex items-center justify-between py-1">
-                <div>
-                  <p className="text-sm font-medium">{lead.name}</p>
-                  {lead.suggested_action && <p className="text-xs text-muted-foreground">{lead.suggested_action}</p>}
-                </div>
-                <Link href="/leads" className="text-xs text-primary hover:underline">
-                  Contact Now
                 </Link>
               </div>
             ))}

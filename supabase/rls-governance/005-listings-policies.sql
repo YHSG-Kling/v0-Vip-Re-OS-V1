@@ -1,151 +1,185 @@
 -- =====================================================
--- 005: LISTINGS POLICIES
+-- RLS GOVERNANCE: LISTINGS TABLE POLICIES
 -- =====================================================
--- Governance: Listings belong to brokerages and are managed by agents
--- Compliance: Listings require proper authorization and MLS compliance
+-- Purpose: Control access to listing records
+-- Tables: listings, listing_media
+-- Key Rules:
+--   - listings.agent_id stores agents.id (NOT users.id) — use auth.agent_id()
+--   - Brokerage isolation is always enforced via brokerage_id
+--   - auth_helpers.* was non-existent; all policies now use canonical auth.* schema
+-- =====================================================
 
 -- Enable RLS
 ALTER TABLE listings ENABLE ROW LEVEL SECURITY;
 
+-- Drop all old policies (covers both old auth_helpers and auth naming conventions)
+DROP POLICY IF EXISTS "agents_view_brokerage_listings"      ON listings;
+DROP POLICY IF EXISTS "brokers_view_all_listings"           ON listings;
+DROP POLICY IF EXISTS "admins_view_all_listings"            ON listings;
+DROP POLICY IF EXISTS "tc_view_transaction_listings"        ON listings;
+DROP POLICY IF EXISTS "agents_create_listings"              ON listings;
+DROP POLICY IF EXISTS "brokers_create_listings"             ON listings;
+DROP POLICY IF EXISTS "admins_create_listings"              ON listings;
+DROP POLICY IF EXISTS "agents_update_own_listings"          ON listings;
+DROP POLICY IF EXISTS "brokers_update_brokerage_listings"   ON listings;
+DROP POLICY IF EXISTS "admins_update_all_listings"          ON listings;
+DROP POLICY IF EXISTS "brokers_delete_brokerage_listings"   ON listings;
+DROP POLICY IF EXISTS "admins_delete_all_listings"          ON listings;
+DROP POLICY IF EXISTS "admin_read_all_listings"             ON listings;
+DROP POLICY IF EXISTS "broker_read_brokerage_listings"      ON listings;
+DROP POLICY IF EXISTS "agent_read_own_listings"             ON listings;
+DROP POLICY IF EXISTS "team_leader_read_team_listings"      ON listings;
+DROP POLICY IF EXISTS "compliance_read_brokerage_listings"  ON listings;
+DROP POLICY IF EXISTS "tc_read_brokerage_listings"          ON listings;
+DROP POLICY IF EXISTS "agent_insert_own_listings"           ON listings;
+DROP POLICY IF EXISTS "broker_insert_listings"              ON listings;
+DROP POLICY IF EXISTS "admin_insert_listings"               ON listings;
+DROP POLICY IF EXISTS "agent_update_own_listings"           ON listings;
+DROP POLICY IF EXISTS "broker_update_brokerage_listings"    ON listings;
+DROP POLICY IF EXISTS "admin_update_listings"               ON listings;
+DROP POLICY IF EXISTS "broker_delete_brokerage_listings"    ON listings;
+DROP POLICY IF EXISTS "admin_delete_listings"               ON listings;
+
 -- =====================================================
--- SELECT POLICIES
+-- LISTINGS TABLE: SELECT POLICIES
 -- =====================================================
 
--- Policy: Agents can view their brokerage's listings
-DROP POLICY IF EXISTS "agents_view_brokerage_listings" ON listings;
-CREATE POLICY "agents_view_brokerage_listings"
-  ON listings
-  FOR SELECT
+-- Admin: Read all listings across all brokerages
+CREATE POLICY "admin_read_all_listings"
+  ON listings FOR SELECT
+  USING (auth.is_admin());
+
+-- Broker: Read all listings in their brokerage
+CREATE POLICY "broker_read_brokerage_listings"
+  ON listings FOR SELECT
   USING (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('agent')
+    auth.is_broker()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Brokers can view all listings in their brokerage
-DROP POLICY IF EXISTS "brokers_view_all_listings" ON listings;
-CREATE POLICY "brokers_view_all_listings"
-  ON listings
-  FOR SELECT
+-- Compliance Manager: Read all listings in their brokerage (audit)
+CREATE POLICY "compliance_read_brokerage_listings"
+  ON listings FOR SELECT
   USING (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('broker')
+    auth.is_compliance_manager()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Admins can view all listings across all brokerages
-DROP POLICY IF EXISTS "admins_view_all_listings" ON listings;
-CREATE POLICY "admins_view_all_listings"
-  ON listings
-  FOR SELECT
-  USING (auth_helpers.user_has_role('admin'));
-
--- Policy: Transaction Coordinators can view listings related to their transactions
-DROP POLICY IF EXISTS "tc_view_transaction_listings" ON listings;
-CREATE POLICY "tc_view_transaction_listings"
-  ON listings
-  FOR SELECT
+-- TC: Read listings tied to their brokerage's transactions
+CREATE POLICY "tc_read_brokerage_listings"
+  ON listings FOR SELECT
   USING (
-    auth_helpers.user_has_role('transaction_coordinator')
-    AND EXISTS (
-      SELECT 1 FROM transactions t
-      WHERE t.listing_id = listings.id
-      AND t.brokerage_id = auth_helpers.get_user_brokerage_id()
+    auth.is_tc()
+    AND auth.has_brokerage_access(brokerage_id)
+  );
+
+-- Agent: Read own listings + brokerage listings (agents need to see all brokerage listings for MLS/co-op)
+-- FIX: listings.agent_id stores agents.id — use auth.agent_id()
+CREATE POLICY "agent_read_own_listings"
+  ON listings FOR SELECT
+  USING (
+    auth.is_agent()
+    AND auth.has_brokerage_access(brokerage_id)
+  );
+
+-- Team Leader: Read listings for agents on their team
+-- FIX: listings.agent_id stores agents.id; must join agents -> users for team lookup
+CREATE POLICY "team_leader_read_team_listings"
+  ON listings FOR SELECT
+  USING (
+    auth.is_team_leader()
+    AND (
+      auth.has_brokerage_access(brokerage_id) OR
+      agent_id IN (
+        SELECT a.id FROM agents a
+        JOIN users u ON a.user_id = u.id
+        WHERE u.team_id = auth.user_team_id()
+      )
     )
   );
 
 -- =====================================================
--- INSERT POLICIES
+-- LISTINGS TABLE: INSERT POLICIES
 -- =====================================================
 
--- Policy: Agents can create listings for their brokerage
-DROP POLICY IF EXISTS "agents_create_listings" ON listings;
-CREATE POLICY "agents_create_listings"
-  ON listings
-  FOR INSERT
+-- Admin: Insert any listing
+CREATE POLICY "admin_insert_listings"
+  ON listings FOR INSERT
+  WITH CHECK (auth.is_admin());
+
+-- Broker: Insert listings in their brokerage
+CREATE POLICY "broker_insert_listings"
+  ON listings FOR INSERT
   WITH CHECK (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('agent')
-    AND agent_id = auth_helpers.get_user_agent_id()
+    auth.is_broker()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Brokers can create listings for their brokerage
-DROP POLICY IF EXISTS "brokers_create_listings" ON listings;
-CREATE POLICY "brokers_create_listings"
-  ON listings
-  FOR INSERT
+-- Agent: Insert listings in their brokerage assigned to themselves
+-- FIX: listings.agent_id stores agents.id — use auth.agent_id()
+CREATE POLICY "agent_insert_own_listings"
+  ON listings FOR INSERT
   WITH CHECK (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('broker')
+    auth.is_agent()
+    AND auth.has_brokerage_access(brokerage_id)
+    AND (agent_id = auth.agent_id() OR agent_id IS NULL)
   );
 
--- Policy: Admins can create listings for any brokerage
-DROP POLICY IF EXISTS "admins_create_listings" ON listings;
-CREATE POLICY "admins_create_listings"
-  ON listings
-  FOR INSERT
-  WITH CHECK (auth_helpers.user_has_role('admin'));
-
 -- =====================================================
--- UPDATE POLICIES
+-- LISTINGS TABLE: UPDATE POLICIES
 -- =====================================================
 
--- Policy: Agents can update their own listings
-DROP POLICY IF EXISTS "agents_update_own_listings" ON listings;
-CREATE POLICY "agents_update_own_listings"
-  ON listings
-  FOR UPDATE
+-- Admin: Update any listing
+CREATE POLICY "admin_update_listings"
+  ON listings FOR UPDATE
+  USING (auth.is_admin())
+  WITH CHECK (auth.is_admin());
+
+-- Broker: Update any listing in their brokerage
+CREATE POLICY "broker_update_brokerage_listings"
+  ON listings FOR UPDATE
   USING (
-    agent_id = auth_helpers.get_user_agent_id()
-    AND auth_helpers.user_has_role('agent')
+    auth.is_broker()
+    AND auth.has_brokerage_access(brokerage_id)
   )
   WITH CHECK (
-    agent_id = auth_helpers.get_user_agent_id()
-    AND brokerage_id = auth_helpers.get_user_brokerage_id()
+    auth.is_broker()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Brokers can update any listing in their brokerage
-DROP POLICY IF EXISTS "brokers_update_brokerage_listings" ON listings;
-CREATE POLICY "brokers_update_brokerage_listings"
-  ON listings
-  FOR UPDATE
+-- Agent: Update only their own listings
+-- FIX: listings.agent_id stores agents.id — use auth.agent_id()
+CREATE POLICY "agent_update_own_listings"
+  ON listings FOR UPDATE
   USING (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('broker')
+    auth.is_agent()
+    AND agent_id = auth.agent_id()
   )
   WITH CHECK (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
+    auth.is_agent()
+    AND agent_id = auth.agent_id()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Admins can update any listing
-DROP POLICY IF EXISTS "admins_update_all_listings" ON listings;
-CREATE POLICY "admins_update_all_listings"
-  ON listings
-  FOR UPDATE
-  USING (auth_helpers.user_has_role('admin'))
-  WITH CHECK (auth_helpers.user_has_role('admin'));
-
 -- =====================================================
--- DELETE POLICIES
+-- LISTINGS TABLE: DELETE POLICIES
 -- =====================================================
 
--- Policy: Brokers can delete listings in their brokerage
-DROP POLICY IF EXISTS "brokers_delete_brokerage_listings" ON listings;
-CREATE POLICY "brokers_delete_brokerage_listings"
-  ON listings
-  FOR DELETE
+-- Admin: Delete any listing
+CREATE POLICY "admin_delete_listings"
+  ON listings FOR DELETE
+  USING (auth.is_admin());
+
+-- Broker: Delete listings in their brokerage (soft-delete preferred via status field)
+CREATE POLICY "broker_delete_brokerage_listings"
+  ON listings FOR DELETE
   USING (
-    brokerage_id = auth_helpers.get_user_brokerage_id()
-    AND auth_helpers.user_has_role('broker')
+    auth.is_broker()
+    AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Policy: Admins can delete any listing
-DROP POLICY IF EXISTS "admins_delete_all_listings" ON listings;
-CREATE POLICY "admins_delete_all_listings"
-  ON listings
-  FOR DELETE
-  USING (auth_helpers.user_has_role('admin'));
-
 -- =====================================================
--- LISTING MEDIA POLICIES (if listing_media table exists)
+-- LISTING_MEDIA TABLE POLICIES
 -- =====================================================
 
 DO $$
@@ -153,65 +187,66 @@ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'listing_media') THEN
     ALTER TABLE listing_media ENABLE ROW LEVEL SECURITY;
 
-    -- Agents can view media for listings they can access
-    DROP POLICY IF EXISTS "agents_view_listing_media" ON listing_media;
-    CREATE POLICY "agents_view_listing_media"
-      ON listing_media
-      FOR SELECT
+    DROP POLICY IF EXISTS "agents_view_listing_media"      ON listing_media;
+    DROP POLICY IF EXISTS "agents_create_listing_media"    ON listing_media;
+    DROP POLICY IF EXISTS "agents_update_listing_media"    ON listing_media;
+    DROP POLICY IF EXISTS "brokers_manage_listing_media"   ON listing_media;
+    DROP POLICY IF EXISTS "admins_manage_all_listing_media" ON listing_media;
+    DROP POLICY IF EXISTS "agent_read_listing_media"       ON listing_media;
+    DROP POLICY IF EXISTS "agent_insert_listing_media"     ON listing_media;
+    DROP POLICY IF EXISTS "agent_update_listing_media"     ON listing_media;
+    DROP POLICY IF EXISTS "broker_manage_listing_media"    ON listing_media;
+    DROP POLICY IF EXISTS "admin_manage_listing_media"     ON listing_media;
+
+    -- Agents can view media for their brokerage's listings
+    CREATE POLICY "agent_read_listing_media"
+      ON listing_media FOR SELECT
       USING (
         EXISTS (
           SELECT 1 FROM listings l
           WHERE l.id = listing_media.listing_id
-          AND l.brokerage_id = auth_helpers.get_user_brokerage_id()
+          AND auth.has_brokerage_access(l.brokerage_id)
         )
       );
 
-    -- Agents can create media for their listings
-    DROP POLICY IF EXISTS "agents_create_listing_media" ON listing_media;
-    CREATE POLICY "agents_create_listing_media"
-      ON listing_media
-      FOR INSERT
+    -- Agents can insert/update media for their own listings
+    -- FIX: listings.agent_id stores agents.id — use auth.agent_id()
+    CREATE POLICY "agent_insert_listing_media"
+      ON listing_media FOR INSERT
       WITH CHECK (
         EXISTS (
           SELECT 1 FROM listings l
           WHERE l.id = listing_media.listing_id
-          AND l.agent_id = auth_helpers.get_user_agent_id()
+          AND l.agent_id = auth.agent_id()
         )
       );
 
-    -- Agents can update media for their listings
-    DROP POLICY IF EXISTS "agents_update_listing_media" ON listing_media;
-    CREATE POLICY "agents_update_listing_media"
-      ON listing_media
-      FOR UPDATE
+    CREATE POLICY "agent_update_listing_media"
+      ON listing_media FOR UPDATE
       USING (
         EXISTS (
           SELECT 1 FROM listings l
           WHERE l.id = listing_media.listing_id
-          AND l.agent_id = auth_helpers.get_user_agent_id()
+          AND l.agent_id = auth.agent_id()
         )
       );
 
     -- Brokers can manage all listing media in their brokerage
-    DROP POLICY IF EXISTS "brokers_manage_listing_media" ON listing_media;
-    CREATE POLICY "brokers_manage_listing_media"
-      ON listing_media
-      FOR ALL
+    CREATE POLICY "broker_manage_listing_media"
+      ON listing_media FOR ALL
       USING (
-        auth_helpers.user_has_role('broker')
+        auth.is_broker()
         AND EXISTS (
           SELECT 1 FROM listings l
           WHERE l.id = listing_media.listing_id
-          AND l.brokerage_id = auth_helpers.get_user_brokerage_id()
+          AND auth.has_brokerage_access(l.brokerage_id)
         )
       );
 
     -- Admins can manage all listing media
-    DROP POLICY IF EXISTS "admins_manage_all_listing_media" ON listing_media;
-    CREATE POLICY "admins_manage_all_listing_media"
-      ON listing_media
-      FOR ALL
-      USING (auth_helpers.user_has_role('admin'));
+    CREATE POLICY "admin_manage_listing_media"
+      ON listing_media FOR ALL
+      USING (auth.is_admin());
   END IF;
 END $$;
 
@@ -219,4 +254,4 @@ END $$;
 -- AUDIT LOG
 -- =====================================================
 
-COMMENT ON TABLE listings IS 'RLS Policies Applied: 005-listings-policies.sql - Enforces brokerage isolation, agent ownership, and role-based access for listings';
+COMMENT ON TABLE listings IS 'RLS Policies Applied: 005-listings-policies.sql (rewritten) — uses canonical auth.* helpers; listings.agent_id is agents.id, not users.id; auth_helpers.* removed.';

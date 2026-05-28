@@ -16,8 +16,9 @@ import {
   CloudSun,
   AlertTriangle,
   CheckCircle2,
+  Sparkles,
 } from "lucide-react"
-import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee } from "@/app/actions/seller-open-house"
+import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee, convertAttendeeToContact } from "@/app/actions/seller-open-house"
 import {
   getOpenHouseVisitors,
   fetchWeatherForEvent,
@@ -29,6 +30,8 @@ interface Props {
   listingId: string
   data: any
   onRefresh: (d: any) => void
+  agentId: string
+  userId: string
 }
 
 const INTEREST_COLORS: Record<string, string> = {
@@ -37,7 +40,7 @@ const INTEREST_COLORS: Record<string, string> = {
   cold: "bg-blue-100 text-blue-800 border-blue-200",
 }
 
-export function EventDayTab({ listingId, data, onRefresh }: Props) {
+export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Props) {
   const [endingEventId, setEndingEventId] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
@@ -62,7 +65,7 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
 
   async function loadVisitors(eventId: string) {
     const res = await getOpenHouseVisitors(eventId).catch(() => null)
-    setVisitors(res?.visitors ?? [])
+    setVisitors((res as any)?.visitors ?? [])
   }
 
   useEffect(() => {
@@ -444,7 +447,15 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
                   </span>
                   <div className="flex flex-col gap-1.5">
                     {eventAttendees.map((attendee: any) => (
-                      <AttendeeRow key={attendee.id} attendee={attendee} />
+                      <AttendeeRow
+                        key={attendee.id}
+                        attendee={attendee}
+                        listingId={listingId}
+                        brokerageId={listing.brokerage_id}
+                        agentId={agentId}
+                        userId={userId}
+                        onEnrolled={() => loadVisitors(event.id)}
+                      />
                     ))}
                   </div>
                 </div>
@@ -471,10 +482,49 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
   )
 }
 
-function AttendeeRow({ attendee }: { attendee: any }) {
+function AttendeeRow({
+  attendee,
+  listingId,
+  brokerageId,
+  agentId,
+  userId,
+  onEnrolled,
+}: {
+  attendee: any
+  listingId: string
+  brokerageId: string
+  agentId: string
+  userId: string
+  onEnrolled: () => void
+}) {
   const score = attendee.ai_lead_score ?? 0
   const isHot = score >= 70
   const interest = attendee.interest_level ?? "cold"
+  const [enrolling, setEnrolling] = useState(false)
+  const { toast } = useToast()
+
+  async function handleEnroll() {
+    setEnrolling(true)
+    try {
+      const res = await convertAttendeeToContact({
+        attendeeId: attendee.id,
+        listingId,
+        brokerageId,
+        agentId,
+        userId,
+      })
+      if (res.success) {
+        toast({ title: "Contact enrolled", description: (res as any).isNew ? "New contact created" : "Existing contact updated" })
+        onEnrolled()
+      } else {
+        toast({ title: "Enroll failed", description: (res as any).error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Enroll failed", variant: "destructive" })
+    } finally {
+      setEnrolling(false)
+    }
+  }
 
   return (
     <div
@@ -496,6 +546,20 @@ function AttendeeRow({ attendee }: { attendee: any }) {
               })}
             </span>
           )}
+          {/* Open House Concierge auto-greeting status — stamped by
+              sendInstantOpenHouseGreeting() at /api/open-house/attend. */}
+          {attendee.instant_greeting_sent_at && (
+            <span className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+              <Sparkles className="h-3 w-3" />
+              Auto-{attendee.instant_greeting_channel === "sms" ? "text" : "email"} sent{" "}
+              {(() => {
+                const ms = Date.now() - new Date(attendee.instant_greeting_sent_at).getTime()
+                if (ms < 90_000) return "just now"
+                const min = Math.floor(ms / 60_000)
+                return `${min}m ago`
+              })()}
+            </span>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-2">
@@ -509,13 +573,15 @@ function AttendeeRow({ attendee }: { attendee: any }) {
           {interest}
         </Badge>
         <span className="text-xs font-mono text-muted-foreground w-10 text-right">{score}/100</span>
-        {isHot && (
+        {isHot && !attendee.contact_id && (
           <Button
             size="sm"
             variant="outline"
             className="text-xs h-6 px-2 border-amber-300 text-amber-800 hover:bg-amber-100"
+            disabled={enrolling}
+            onClick={handleEnroll}
           >
-            Enroll
+            {enrolling ? "Enrolling..." : "Enroll"}
           </Button>
         )}
       </div>

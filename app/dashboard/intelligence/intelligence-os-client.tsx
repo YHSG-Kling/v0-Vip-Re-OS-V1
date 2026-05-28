@@ -231,7 +231,7 @@ export function IntelligenceOSClient({
             {/* Center Column - Patterns & Exceptions */}
             <div className="space-y-6">
               <BehaviorPatternsPanel patterns={filteredPatterns} />
-              <ExceptionPatternsPanel exceptions={exceptionPatterns} />
+              <ExceptionPatternsPanel exceptions={exceptionPatterns as any} />
             </div>
 
             {/* Right Column - Motivation & Leaderboard */}
@@ -258,7 +258,7 @@ export function IntelligenceOSClient({
         <TabsContent value="patterns" className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-2">
             <BehaviorPatternsPanel patterns={filteredPatterns} />
-            <ExceptionPatternsPanel exceptions={exceptionPatterns} />
+            <ExceptionPatternsPanel exceptions={exceptionPatterns as any} />
           </div>
           <OperationalInsightsPanel
             insights={operationalInsights}

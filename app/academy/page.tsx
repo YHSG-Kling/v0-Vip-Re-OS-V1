@@ -199,6 +199,25 @@ export default function AcademyPage() {
             />
           </div>
 
+          {/* Education Videos CTA */}
+          <div
+            className="flex items-center justify-between p-4 border rounded-xl bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
+            onClick={() => window.location.href = "/dashboard/videos/education"}
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-primary/10 rounded-lg">
+                <Play className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="font-semibold">Education Videos</p>
+                <p className="text-sm text-muted-foreground">Ready-made buyer &amp; seller education videos with AI narration</p>
+              </div>
+            </div>
+            <Button variant="outline" size="sm" onClick={(e: React.MouseEvent) => { e.stopPropagation(); window.location.href = "/dashboard/videos/education" }}>
+              Browse Videos
+            </Button>
+          </div>
+
           <div className="space-y-3">
             <h3 className="text-lg font-semibold">Popular Resources</h3>
             {loading ? (

@@ -42,15 +42,15 @@ export function AnalyticsTab({ listingId }: Props) {
     const completedEvent = analytics.events.find((e: any) => e.status === "completed")
     if (!completedEvent?.id) return
     getOpenHouseVisitors(completedEvent.id)
-      .then((res) => setEventAttendees(res?.visitors ?? []))
-      .catch(() => null)
+      .then((res) => setEventAttendees((res as any)?.visitors ?? []))
+      .then(() => {}, () => null)
     const supabase = createClient()
     supabase
       .from("open_house_feedback")
       .select("rating, price_opinion, liked_most, concerns, interested_in_offer, has_own_agent, contact_id")
       .eq("event_id", completedEvent.id)
-      .then(({ data }) => setFeedbackData(data ?? []))
-      .catch(() => null)
+      .then(({ data }: { data: any }) => setFeedbackData(data ?? []))
+      .then(() => {}, () => null)
   }, [analytics])
 
   if (loading) {
@@ -401,7 +401,7 @@ export function AnalyticsTab({ listingId }: Props) {
                         {hotProspects.map((f, i) => (
                           <Link
                             key={i}
-                            href={`/crm?contactId=${f.contact_id}`}
+                            href={`/crm?contact=${f.contact_id}`}
                             className="text-xs text-amber-800 underline underline-offset-2 hover:text-amber-900"
                           >
                             View contact {f.contact_id.slice(0, 8)}...

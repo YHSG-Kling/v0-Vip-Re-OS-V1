@@ -15,9 +15,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
 
-    const contacts = await supabaseService.getContacts(agentId)
+    // Resolve brokerageId from users table so getContacts can scope correctly
+    const { data: userData } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    const brokerageId = userData?.brokerage_id ?? undefined
 
-    console.log("[v0] API fetched contacts:", contacts?.length || 0)
+    const contacts = await supabaseService.getContacts(agentId, brokerageId)
 
     return NextResponse.json({
       success: true,

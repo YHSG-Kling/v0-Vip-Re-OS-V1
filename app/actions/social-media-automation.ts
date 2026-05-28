@@ -6,6 +6,7 @@
 // DO NOT use social_media_posts or social_accounts
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateAIResponse } from "@/lib/ai"
 import { isValidUUID } from "@/lib/validations"
@@ -14,6 +15,63 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+/**
+ * Tenant guard — requires authenticated session with a brokerage.
+ * Returns the session's brokerageId/userId/agentId so callers can stop
+ * trusting caller-supplied IDs.
+ */
+async function requireBrokerage(): Promise<
+  | { ok: true; brokerageId: string; userId: string; agentId: string | null }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId }
+}
+
+/** Verify a given agents.id row belongs to brokerageId. Uses service client. */
+async function verifyAgentInBrokerage(agentId: string, brokerageId: string): Promise<boolean> {
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  return !!data && (data as any).brokerage_id === brokerageId
+}
+
+/** Verify a social_media_accounts row belongs to brokerageId. */
+async function verifySocialAccountInBrokerage(
+  socialAccountId: string,
+  brokerageId: string
+): Promise<boolean> {
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("social_media_accounts")
+    .select("id, brokerage_id")
+    .eq("id", socialAccountId)
+    .maybeSingle()
+  return !!data && (data as any).brokerage_id === brokerageId
+}
+
+/** Verify a social_posts row belongs to brokerageId. */
+async function verifySocialPostInBrokerage(
+  postId: string,
+  brokerageId: string
+): Promise<{ ok: boolean; row?: { brokerage_id: string } }> {
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("social_posts")
+    .select("id, brokerage_id")
+    .eq("id", postId)
+    .maybeSingle()
+  if (!data || (data as any).brokerage_id !== brokerageId) return { ok: false }
+  return { ok: true, row: data as any }
+}
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -30,38 +88,47 @@ function parseAIJsonResponse(text: string) {
 // ============================================
 
 export async function connectSocialAccount(params: {
-  agentId: string
-  /** user_id from auth.users — required for RLS */
-  userId?: string
+  agentId?: string // optional — verified to belong to ctx.brokerageId
+  userId?: string // ignored — derived from session
   platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
   accountName: string
   accessToken: string
   refreshToken?: string
   expiresAt?: string
   accountId?: string
-  brokerageId?: string
+  brokerageId?: string // ignored — derived from session
   scope?: "brokerage" | "agent"
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+  // SECURITY: OAuth tokens are brokerage-bound. The caller cannot pick which
+  // brokerage to attach the token to — we always use the authenticated
+  // session's brokerageId. Failing this open would let any tenant attach
+  // OAuth credentials to any other tenant's brokerage.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // If caller supplied an agentId, verify it belongs to the caller's brokerage.
+  // Otherwise fall back to the session's agentId (if any).
+  let effectiveAgentId: string | null = null
+  if (params.agentId !== undefined) {
+    if (!isValidUUID(params.agentId)) {
+      return { success: false, error: "Invalid agent ID" }
+    }
+    const ok = await verifyAgentInBrokerage(params.agentId, auth.brokerageId)
+    if (!ok) return { success: false, error: "Forbidden" }
+    effectiveAgentId = params.agentId
+  } else {
+    effectiveAgentId = auth.agentId
   }
 
   const supabase = await createClient()
-
-  // Resolve caller identity for user_id if not explicitly provided
-  let resolvedUserId = params.userId
-  if (!resolvedUserId) {
-    const { data: { user } } = await supabase.auth.getUser()
-    resolvedUserId = user?.id ?? params.agentId
-  }
 
   try {
     const { data: account, error } = await supabase
       .from("social_media_accounts")
       .insert({
-        agent_id: params.agentId,
-        user_id: resolvedUserId,
-        brokerage_id: params.brokerageId || null,
+        agent_id: effectiveAgentId,
+        user_id: auth.userId, // session-derived, NOT caller-supplied
+        brokerage_id: auth.brokerageId, // session-derived, NOT caller-supplied
         platform: params.platform,
         account_name: params.accountName,
         account_id: params.accountId || null,
@@ -86,21 +153,28 @@ export async function connectSocialAccount(params: {
   }
 }
 
-export async function getConnectedAccounts(agentId?: string, brokerageId?: string) {
+export async function getConnectedAccounts(agentId?: string, _brokerageId?: string) {
+  // brokerageId is IGNORED — always derived from session to prevent
+  // cross-tenant reads of OAuth metadata.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return []
+
   const supabase = await createClient()
 
   let query = supabase
     .from("social_media_accounts")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId) // tenant-scoped at the source
     .eq("is_active", true)
     .order("platform")
 
-  if (agentId && isValidUUID(agentId)) {
+  // Optional narrowing by agentId — but only after verifying that agent
+  // belongs to the caller's brokerage.
+  if (agentId) {
+    if (!isValidUUID(agentId)) return []
+    const ownsAgent = await verifyAgentInBrokerage(agentId, auth.brokerageId)
+    if (!ownsAgent) return []
     query = query.eq("agent_id", agentId)
-  } else if (brokerageId && isValidUUID(brokerageId)) {
-    query = query.eq("brokerage_id", brokerageId)
-  } else {
-    return []
   }
 
   const { data, error } = await query
@@ -146,9 +220,9 @@ export async function disconnectSocialAccount(accountId: string) {
  * - processKernelEvent(SOCIAL_POST_SCHEDULED)
  */
 export async function scheduleSocialPost(params: {
-  brokerageId: string
-  agentId?: string
-  userId: string
+  brokerageId?: string // ignored — derived from session
+  agentId?: string // verified against session brokerage if provided
+  userId?: string // ignored — derived from session
   platform: string
   postType: string
   content: string
@@ -161,23 +235,34 @@ export async function scheduleSocialPost(params: {
   /** Pass true when the brokerage requires broker approval — sets status to pending_approval */
   requiresBrokerApproval?: boolean
 }) {
-  // Validate required UUIDs
-  if (!isValidUUID(params.brokerageId)) {
-    return { success: false, error: "Invalid brokerage ID" }
-  }
-  if (!isValidUUID(params.userId)) {
-    return { success: false, error: "Invalid user ID" }
-  }
+  // Auth gate — derive brokerage/user from session
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.socialAccountId)) {
     return { success: false, error: "Invalid social account ID" }
   }
 
+  // Verify the social account belongs to caller's brokerage
+  const ownsAccount = await verifySocialAccountInBrokerage(params.socialAccountId, auth.brokerageId)
+  if (!ownsAccount) return { success: false, error: "Forbidden" }
+
+  // If caller passed an agentId, verify it belongs to caller's brokerage
+  let effectiveAgentId: string | null = auth.agentId
+  if (params.agentId !== undefined) {
+    if (!isValidUUID(params.agentId)) {
+      return { success: false, error: "Invalid agent ID" }
+    }
+    const ownsAgent = await verifyAgentInBrokerage(params.agentId, auth.brokerageId)
+    if (!ownsAgent) return { success: false, error: "Forbidden" }
+    effectiveAgentId = params.agentId
+  }
+
+  const brokerageId = auth.brokerageId
+  const userId = auth.userId
+
   // Feature access check
-  const canAccess = await canAccessFeature({
-    featureKey: "social_automation",
-    brokerageId: params.brokerageId,
-    userId: params.userId,
-  })
+  const canAccess = await canAccessFeature(userId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }
@@ -188,17 +273,15 @@ export async function scheduleSocialPost(params: {
   try {
     // Apply brand voice — check for violations only; we never rewrite content automatically.
     // BrandVoiceResult.content is the original (unchanged); there is no transformedContent.
-    let processedContent = params.content
+    const processedContent = params.content
     try {
       await applyBrandVoice({
-        brokerageId: params.brokerageId,
-        actorUserId: params.userId,
+        brokerageId,
+        actorUserId: userId,
         actorRole: "agent",
-        journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+        journeyType: "buyer",
+        persona: "first_time",
+        messageType: "social",
         content: params.content,
       })
       // Brand voice result is advisory only — we log but never block scheduling here.
@@ -213,15 +296,13 @@ export async function scheduleSocialPost(params: {
     try {
       const complianceResult = await evaluateOutbound({
         actorContext: {
-          userId: params.userId,
+          userId,
           role: "agent",
-          brokerageId: params.brokerageId,
+          brokerageId,
         },
-        journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+        journeyType: "buyer",
+        persona: "first_time",
+        messageType: "social",
         content: processedContent,
         contact: {
           id: "broadcast",
@@ -249,13 +330,13 @@ export async function scheduleSocialPost(params: {
     // Determine initial status: broker-approval required → pending_approval, otherwise → scheduled
     const initialStatus = params.requiresBrokerApproval ? "pending_approval" : "scheduled"
 
-    // INSERT social_posts
+    // INSERT social_posts — tenant fields are session-derived
     const { data: post, error: insertError } = await supabase
       .from("social_posts")
       .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId || null,
-        user_id: params.userId,
+        brokerage_id: brokerageId,
+        agent_id: effectiveAgentId,
+        user_id: userId,
         platform: params.platform,
         post_type: params.postType,
         content: processedContent,
@@ -279,7 +360,7 @@ export async function scheduleSocialPost(params: {
       const { data: brokerUsers } = await supabase
         .from("users")
         .select("id")
-        .eq("brokerage_id", params.brokerageId)
+        .eq("brokerage_id", brokerageId)
         .in("user_type", ["broker", "admin"])
         .is("deleted_at", null)
         .limit(5)
@@ -287,7 +368,7 @@ export async function scheduleSocialPost(params: {
       for (const broker of brokerUsers ?? []) {
         await supabase.from("notifications").insert({
           user_id: broker.id,
-          brokerage_id: params.brokerageId,
+          brokerage_id: brokerageId,
           type: "social_post_pending_approval",
           title: "Social Post Awaiting Approval",
           body: `A new ${params.platform} post is pending your approval.`,
@@ -307,7 +388,7 @@ export async function scheduleSocialPost(params: {
     // Link to marketing campaign if provided
     if (params.campaignId && isValidUUID(params.campaignId)) {
       await supabase.from("marketing_assets").insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         campaign_id: params.campaignId,
         asset_type: "social_post",
         asset_name: `${params.platform} - ${params.postType}`,
@@ -319,17 +400,14 @@ export async function scheduleSocialPost(params: {
     }
 
     // Increment feature usage
-    await incrementFeatureUsage({
-      featureKey: "social_automation",
-      brokerageId: params.brokerageId,
-      userId: params.userId,
-    }).catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
+    await incrementFeatureUsage(userId, "social_automation")
+      .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
     await supabase.from("lifecycle_events").insert({
       entity_type: "social_post",
       entity_id: post.id,
-      brokerage_id: params.brokerageId,
+      brokerage_id: brokerageId,
       event_type: KernelEvent.SOCIAL_POST_SCHEDULED,
       metadata: {
         platform: params.platform,
@@ -342,7 +420,7 @@ export async function scheduleSocialPost(params: {
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SCHEDULED,
-      brokerageId: params.brokerageId,
+      brokerageId,
       entityType: "social_post",
       entityId: post.id,
     }).catch((err) => console.error("[social-media-automation] Kernel event failed:", err))
@@ -358,13 +436,18 @@ export async function scheduleSocialPost(params: {
 /**
  * Approve a social post
  */
-export async function approveSocialPost(postId: string, approverUserId: string) {
+export async function approveSocialPost(postId: string, _approverUserId?: string) {
   if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid post ID" }
   }
-  if (!isValidUUID(approverUserId)) {
-    return { success: false, error: "Invalid approver user ID" }
-  }
+
+  // approverUserId is IGNORED — always derived from session so callers can't
+  // forge approvals on behalf of another user.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
+  if (!ownsPost.ok) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -373,11 +456,12 @@ export async function approveSocialPost(postId: string, approverUserId: string) 
       .from("social_posts")
       .update({
         approval_status: "approved",
-        approved_by: approverUserId,
+        approved_by: auth.userId,
         approved_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .select()
       .maybeSingle()
 
@@ -394,10 +478,17 @@ export async function approveSocialPost(postId: string, approverUserId: string) 
 /**
  * Reject a social post
  */
-export async function rejectSocialPost(postId: string, rejectorUserId: string, reason?: string) {
+export async function rejectSocialPost(postId: string, _rejectorUserId?: string, reason?: string) {
   if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid post ID" }
   }
+
+  // rejectorUserId is IGNORED — always derived from session.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
+  if (!ownsPost.ok) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -411,6 +502,7 @@ export async function rejectSocialPost(postId: string, rejectorUserId: string, r
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .select()
       .maybeSingle()
 

@@ -1,10 +1,12 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -129,9 +131,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
       entityType: "contact",
       entityId: contactId,
-      agentId,
       brokerageId: contact.brokerage_id,
-      },
     }).catch(() => {})
 
     return { success: true, message }
@@ -152,27 +152,20 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
   error?: string
 }> {
   try {
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
     const { contactId, direction } = params
 
-    // Resolve agent identity
-    const agentId = await resolveAgentId(supabase, user.id)
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
 
-    // Update unread messages
+    const supabase = createServiceClient()
+
+    // Update unread messages — scoped by brokerage so a contact-id collision
+    // across tenants can't be exploited.
     const { data, error: updateError } = await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .eq("direction", direction)
       .eq("read", false)
       .select("id")
@@ -187,9 +180,7 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
       event: KernelEvent.PORTAL_MODULE_VIEWED,
       entityType: "contact",
       entityId: contactId,
-      agentId: agentId || null,
-      brokerageId: null,
-      
+      brokerageId: access.brokerageId,
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }
@@ -208,22 +199,17 @@ export async function getPortalMessages(contactId: string): Promise<{
   error?: string
 }> {
   try {
-    const supabase = await createClient()
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
 
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
+    const supabase = createServiceClient()
 
-    // Fetch messages
+    // Fetch messages — scoped by brokerage
     const { data: messages, error: fetchError } = await supabase
       .from("client_portal_messages")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .order("created_at", { ascending: true })
 
     if (fetchError) {
@@ -254,50 +240,55 @@ export async function generateAIDraft(params: {
   error?: string
 }> {
   try {
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
     const { contactId, transactionId } = params
 
-    // Get contact info — use maybeSingle() so missing rows return null instead of PGRST116
+    // Auth gate — burns paid Claude inference per call. Restricted to
+    // agents/admins in the contact's brokerage (not the contact themselves,
+    // who shouldn't be drafting "agent-side" replies).
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
+    if (access.isContactSelf) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const supabase = createServiceClient()
+
     const { data: contact } = await supabase
       .from("contacts")
       .select("first_name, contact_type, buyer_stage")
       .eq("id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .maybeSingle()
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
 
-    // Get last 3 messages for context
+    // Get last 3 messages for context — scoped to brokerage
     const { data: recentMessages } = await supabase
       .from("client_portal_messages")
       .select("body, direction, created_at")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", access.brokerageId)
       .order("created_at", { ascending: false })
       .limit(3)
 
-    // Get transaction stage if available
+    // Get transaction stage if available — verify it belongs to brokerage
     let stageContext = ""
     if (transactionId) {
-      const { data: milestones } = await supabase
-        .from("transaction_milestones")
-        .select("milestone_name, status")
-        .eq("transaction_id", transactionId)
-        .order("created_at", { ascending: false })
-        .limit(1)
+      const { data: tx } = await supabase
+        .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+      if (tx && tx.brokerage_id === access.brokerageId) {
+        const { data: milestones } = await supabase
+          .from("transaction_milestones")
+          .select("milestone_name, status")
+          .eq("transaction_id", transactionId)
+          .order("created_at", { ascending: false })
+          .limit(1)
 
-      if (milestones?.[0]) {
-        stageContext = `Current transaction stage: ${milestones[0].milestone_name} (${milestones[0].status})`
+        if (milestones?.[0]) {
+          stageContext = `Current transaction stage: ${milestones[0].milestone_name} (${milestones[0].status})`
+        }
       }
     }
 
@@ -337,5 +328,22 @@ Write a brief, helpful message that moves the conversation forward. Be specific 
   } catch (error) {
     console.error("[Portal Messages] AI draft error:", error)
     return { success: false, error: "Failed to generate draft" }
+  }
+}
+
+export async function shareSocialPostWithSeller(contactId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    await sendPortalMessage({
+      contactId,
+      messageBody: "I'd like to share a social post with you — check your portal for the latest marketing update.",
+      direction: "agent_to_client",
+      channel: "portal",
+    })
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? "Failed to share" }
   }
 }

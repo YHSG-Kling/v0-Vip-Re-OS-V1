@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction } from "@/app/actions/lead-magnets"
+import { createLeadMagnetAction, publishLeadMagnetAction } from "@/app/actions/lead-magnets-actions"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -16,7 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { CheckCircle2, Loader2 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
+import { Bell, CheckCircle2, Loader2 } from "lucide-react"
 
 interface Props {
   brokerageId: string
@@ -56,6 +57,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
+  // notifyByEmail: email notifications not yet implemented; kept false until wired up
 
   function toggleChannel(channel: string) {
     setChannels((prev) =>
@@ -69,22 +71,19 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
 
     startTransition(async () => {
       const result = await createLeadMagnetAction({
-        title: title.trim(),
+        name: title.trim(),
+        magnet_type: magnetType,
         description: description.trim(),
-        magnetType,
-        brokerageId,
-        agentId,
-        createdBy: "",
-        tcpaDisclosureText: tcpaText,
-        thankYouMessage,
+        thank_you_message: thankYouMessage.trim(),
+        tcpa_text: tcpaText.trim() || undefined,
       })
 
-      if (!result.success || !result.magnetId || !result.slug) {
+      if (!result.success || !result.magnetId) {
         setError(result.error ?? "Failed to create lead magnet")
         return
       }
 
-      setCreatedMagnet({ magnetId: result.magnetId, slug: result.slug })
+      setCreatedMagnet({ magnetId: result.magnetId, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
       setStep("publish")
     })
   }
@@ -94,13 +93,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
     setError(null)
 
     startTransition(async () => {
-      const result = await publishLeadMagnetAction({
-        magnetId: createdMagnet.magnetId,
-        brokerageId,
-        channels: channels as any,
-        actorUserId: "",
-        baseUrl: "",
-      })
+      const result = await publishLeadMagnetAction(createdMagnet.magnetId)
 
       if (!result.success) {
         setError(result.error ?? "Failed to publish")
@@ -235,6 +228,22 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
             value={tcpaText}
             onChange={(e) => setTcpaText(e.target.value)}
             rows={3}
+          />
+        </div>
+
+        {/* Email notification preference — email delivery is not yet available */}
+        <div className="flex items-center justify-between rounded-lg border p-4 opacity-60">
+          <div className="flex items-center gap-3">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <p className="text-sm font-medium">Email notifications <span className="ml-1 text-xs font-normal text-muted-foreground">(coming soon)</span></p>
+              <p className="text-xs text-muted-foreground">In-app notifications are sent automatically for every submission</p>
+            </div>
+          </div>
+          <Switch
+            checked={false}
+            disabled
+            aria-label="Email notifications coming soon"
           />
         </div>
 

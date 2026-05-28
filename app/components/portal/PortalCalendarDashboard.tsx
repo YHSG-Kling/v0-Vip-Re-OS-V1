@@ -63,7 +63,7 @@ export default function PortalCalendarDashboard({
       id: m.id,
       type: "milestone" as const,
       title: m.milestone_name || m.name || "Milestone",
-      date: m.milestone_date ? new Date(m.milestone_date) : null,
+      date: m.target_date ? new Date(m.target_date) : null,
       status: m.status,
       icon: CheckCircle2,
       color:

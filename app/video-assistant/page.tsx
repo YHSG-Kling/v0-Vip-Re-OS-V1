@@ -347,26 +347,6 @@ export default function VideoAssistantPage() {
                         </>
                       )}
                     </Button>
-
-                    <Button
-                      onClick={() => validateScript(scriptText)}
-                      disabled={!scriptText || validating}
-                      size="lg"
-                      variant="outline"
-                      className="h-auto py-4 border-2"
-                    >
-                      {validating ? (
-                        <>
-                          <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                          Validating...
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="h-5 w-5 mr-2" />
-                          Check Compliance
-                        </>
-                      )}
-                    </Button>
                   </div>
 
                   {showOptions && generatedOptions.length > 0 && (

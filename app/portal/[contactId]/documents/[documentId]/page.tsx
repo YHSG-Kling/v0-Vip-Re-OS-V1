@@ -43,7 +43,7 @@ export default function DocumentViewerPage() {
     async function loadDocument() {
       try {
         // Fetch document with metadata (using canonical schema columns)
-        const { document: doc, analysis: analysisData } = await getDocumentWithAnalysis(documentId)
+        const { document: doc, extractionLog: analysisData } = await getDocumentWithAnalysis(documentId)
         
         if (!doc) {
           setDocument(null)

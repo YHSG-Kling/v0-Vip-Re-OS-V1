@@ -11,7 +11,7 @@ interface Milestone {
   id: string
   milestone_name: string
   status: string
-  milestone_date: string
+  target_date: string
   transaction_id: string
   transactions?: {
     property_address: string
@@ -38,7 +38,7 @@ export function MilestoneQueue({ milestones }: { milestones: Milestone[] }) {
     milestones.forEach((milestone) => {
       const txnId = milestone.transaction_id
       const existing = groups.get(txnId)
-      const isOverdue = milestone.milestone_date ? new Date(milestone.milestone_date) < today : false
+      const isOverdue = milestone.target_date ? new Date(milestone.target_date) < today : false
 
       if (existing) {
         existing.milestones.push(milestone)
@@ -149,7 +149,7 @@ export function MilestoneQueue({ milestones }: { milestones: Milestone[] }) {
                   {/* Milestones */}
                   <div className="space-y-1 pl-5">
                     {pendingMilestones.map((milestone) => {
-                      const overdue = isOverdue(milestone.milestone_date)
+                      const overdue = isOverdue(milestone.target_date)
                       return (
                         <div key={milestone.id} className="flex items-center gap-2 py-1">
                           {getStatusIcon(milestone.status, milestone.id)}
@@ -158,12 +158,12 @@ export function MilestoneQueue({ milestones }: { milestones: Milestone[] }) {
                               {formatMilestoneName(milestone.milestone_name)}
                             </p>
                           </div>
-                          {milestone.milestone_date && (
+                          {milestone.target_date && (
                             <span
                               className={`text-xs flex items-center gap-1 ${overdue ? "text-red-600" : "text-muted-foreground"}`}
                             >
                               <Calendar className="h-3 w-3" />
-                              {new Date(milestone.milestone_date).toLocaleDateString("en-US", {
+                              {new Date(milestone.target_date).toLocaleDateString("en-US", {
                                 month: "short",
                                 day: "numeric",
                               })}

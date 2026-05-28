@@ -23,6 +23,29 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * AI Inside Sales Agent (ISA) System
  * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
  */
+
+// Auth gate — every dashboard-facing function in this file reads/mutates
+// campaign + engagement data and triggers paid outbound (email, SMS, phone,
+// video, direct mail). Previous version accepted brokerageId as a caller
+// param, which let any signed-in user enumerate / mutate ANY brokerage's ISA
+// data simply by passing that brokerage's UUID. Now: brokerage is resolved
+// from the session, params.brokerageId is ignored.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 async function runAiIsaComplianceCheck(params: {
   userId: string
   brokerageId: string
@@ -143,7 +166,7 @@ export async function updateCampaignStatus(campaignId: string, status: "active" 
 
 // ─── NEW: ISA Campaigns page actions ─────────────────────────────────────────
 
-export type CampaignType = "FSBO" | "BUYER_MATCH" | "DIVORCE" | "FORECLOSURE" | "GHOST_RECOVERY"
+export type CampaignType = "fsbo" | "buyer_match" | "divorce" | "foreclosure" | "ghost_recovery" | "social_intent" | "search_intent"
 
 export interface ISACampaignRow {
   id: string
@@ -166,21 +189,22 @@ export interface ISACampaignStats {
   conversionRate: number
 }
 
-/** Fetch all campaigns for a brokerage */
-export async function listISACampaigns(brokerageId: string): Promise<{
+/** Fetch all campaigns for the caller's brokerage */
+export async function listISACampaigns(_brokerageId?: string): Promise<{
   success: boolean
   campaigns: ISACampaignRow[]
   stats: ISACampaignStats
   error?: string
 }> {
-  if (!isValidUUID(brokerageId)) {
-    return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: "Invalid brokerage ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: auth.error }
   }
   const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("ai_isa_campaigns")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) return { success: false, campaigns: [], stats: { activeCampaigns: 0, leadsTargeted: 0, touchesSent: 0, conversionRate: 0 }, error: error.message }
@@ -199,25 +223,24 @@ export async function listISACampaigns(brokerageId: string): Promise<{
   }
 }
 
-/** Create a new ISA campaign */
+/** Create a new ISA campaign — brokerage from session, never params */
 export async function createISACampaign(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   name: string
   campaignType: CampaignType
   channels: string[]
   targetSegment?: Record<string, unknown>
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthenticated" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const service = createServiceClient()
   const { data, error } = await service
     .from("ai_isa_campaigns")
     .insert({
-      brokerage_id:   params.brokerageId,
+      brokerage_id:   auth.brokerageId,
       name:           params.name,
-      campaign_type:  params.campaignType,
+      campaign_type:  params.campaignType.toLowerCase() as CampaignType,
       channels:       params.channels,
       target_segment: params.targetSegment ?? {},
       status:         "draft",
@@ -233,30 +256,44 @@ export async function createISACampaign(params: {
   if (error) return { success: false, error: error.message }
 
   await service.from("lifecycle_events").insert({
-  event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
-  entity_type:   "campaign",
-  entity_id:     data.id,
-  brokerage_id:  params.brokerageId,
-  actor_user_id: user.id,
-  metadata: { campaignType: params.campaignType, channels: params.channels },
-  created_at:    new Date().toISOString(),
+    event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
+    entity_type:   "campaign",
+    entity_id:     data.id,
+    brokerage_id:  auth.brokerageId,
+    actor_user_id: auth.userId,
+    metadata: { campaignType: params.campaignType, channels: params.channels },
+    created_at:    new Date().toISOString(),
   })
 
   return { success: true, campaignId: data.id }
 }
 
-/** Pause or resume a campaign */
+/** Pause or resume a campaign — caller must belong to the campaign's brokerage */
 export async function toggleCampaignStatus(
   campaignId: string,
   currentStatus: "active" | "paused" | "draft" | "completed"
 ): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(campaignId)) return { success: false, error: "Invalid campaign ID" }
   const newStatus = currentStatus === "active" ? "paused" : "active"
   const service = createServiceClient()
+
+  // Verify campaign belongs to caller's brokerage before mutating
+  const { data: existing } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id")
+    .eq("id", campaignId)
+    .maybeSingle()
+  if (!existing) return { success: false, error: "Campaign not found" }
+  if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
   const { error } = await service
     .from("ai_isa_campaigns")
     .update({ status: newStatus, updated_at: new Date().toISOString() })
     .eq("id", campaignId)
+    .eq("brokerage_id", auth.brokerageId)
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
@@ -264,40 +301,47 @@ export async function toggleCampaignStatus(
 /** Send a single test touch for a campaign */
 export async function sendCampaignTestTouch(params: {
   campaignId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   channel: "email" | "video" | "direct_mail" | "sms"
   testRecipientEmail: string
   testRecipientName: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthenticated" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // Verify campaign belongs to caller's brokerage
+  const service = createServiceClient()
+  const { data: campaign } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id")
+    .eq("id", params.campaignId)
+    .maybeSingle()
+  if (!campaign) return { success: false, error: "Campaign not found" }
+  if (campaign.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
   // Compliance gate
-  // Compliance gate
-// Compliance gate
-const compliance = await runAiIsaComplianceCheck({
-  userId: user.id,
-  brokerageId: params.brokerageId,
-  journeyType: "buyer",
-  persona: "other",
-  messageType: "email",
-  content: `Test touch for campaign ${params.campaignId}`,
-  contactId: params.campaignId,
-  contactType: "buyer",
-  status: "new",
-  dncStatus: false,
-  tcpaConsent: true,
-  isaReengageAllowed: false,
-})
+  const compliance = await runAiIsaComplianceCheck({
+    userId: auth.userId,
+    brokerageId: auth.brokerageId,
+    journeyType: "buyer",
+    persona: "other",
+    messageType: "email",
+    content: `Test touch for campaign ${params.campaignId}`,
+    contactId: params.campaignId,
+    contactType: "buyer",
+    status: "new",
+    dncStatus: false,
+    tcpaConsent: true,
+    isaReengageAllowed: false,
+  })
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
 
   if (params.channel === "email") {
     const result = await dispatchEmail({
-      brokerageId: params.brokerageId,
-      userId:      user.id,
+      brokerageId: auth.brokerageId,
+      userId:      auth.userId,
       from:        "noreply@platform.com",
       to:          params.testRecipientEmail,
       subject:     "[TEST] ISA Campaign Touch",
@@ -310,8 +354,8 @@ const compliance = await runAiIsaComplianceCheck({
 
   if (params.channel === "video") {
     const result = await dispatchVideo({
-      brokerageId:    params.brokerageId,
-      userId:         user.id,
+      brokerageId:    auth.brokerageId,
+      userId:         auth.userId,
       templateId:     process.env.HEYGEN_DEFAULT_TEMPLATE_ID ?? "",
       recipientEmail: params.testRecipientEmail,
       recipientName:  params.testRecipientName,
@@ -323,8 +367,8 @@ const compliance = await runAiIsaComplianceCheck({
 
   if (params.channel === "direct_mail") {
     const result = await dispatchDirectMail({
-      brokerageId:    params.brokerageId,
-      userId:         user.id,
+      brokerageId:    auth.brokerageId,
+      userId:         auth.userId,
       recipientName:  params.testRecipientName,
       mailingAddress: "123 Test St",
       city:           "San Francisco",
@@ -378,7 +422,7 @@ export interface EngagementFeedItem {
 }
 
 export async function getEngagementFeed(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   campaignId?: string
   channel?: string
   eventType?: string
@@ -386,7 +430,8 @@ export async function getEngagementFeed(params: {
   dateTo?: string
   limit?: number
 }): Promise<{ success: boolean; items: EngagementFeedItem[]; error?: string }> {
-  if (!isValidUUID(params.brokerageId)) return { success: false, items: [], error: "Invalid brokerage ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, items: [], error: auth.error }
 
   const service = createServiceClient()
   let query = service
@@ -397,21 +442,20 @@ export async function getEngagementFeed(params: {
       campaign_id,
       channel,
       event_type,
-      heygen_video_id,
-      lob_letter_id,
-      created_at,
+      metadata,
+      created_at:event_at,
       contacts (first_name, last_name),
       ai_isa_campaigns (name)
     `)
-    .eq("brokerage_id", params.brokerageId)
-    .order("created_at", { ascending: false })
+    .eq("brokerage_id", auth.brokerageId)
+    .order("event_at", { ascending: false })
     .limit(params.limit ?? 100)
 
   if (params.campaignId) query = query.eq("campaign_id", params.campaignId)
   if (params.channel)    query = query.eq("channel", params.channel)
   if (params.eventType)  query = query.eq("event_type", params.eventType)
-  if (params.dateFrom)   query = query.gte("created_at", params.dateFrom)
-  if (params.dateTo)     query = query.lte("created_at", params.dateTo)
+  if (params.dateFrom)   query = query.gte("event_at", params.dateFrom)
+  if (params.dateTo)     query = query.lte("event_at", params.dateTo)
 
   const { data, error } = await query
   if (error) return { success: false, items: [], error: error.message }
@@ -425,8 +469,8 @@ export async function getEngagementFeed(params: {
     campaign_name:       row.ai_isa_campaigns?.name ?? null,
     channel:             row.channel,
     event_type:          row.event_type,
-    heygen_video_id:     row.heygen_video_id ?? null,
-    lob_letter_id:       row.lob_letter_id ?? null,
+    heygen_video_id:     row.metadata?.heygen_video_id ?? null,
+    lob_letter_id:       row.metadata?.lob_letter_id ?? null,
     created_at:          row.created_at,
   }))
 
@@ -457,7 +501,7 @@ export interface QualificationStats {
   needs_follow_up: number
 }
 
-export async function getQualificationOutcomes(brokerageId: string): Promise<{
+export async function getQualificationOutcomes(_brokerageId?: string): Promise<{
   success: boolean
   outcomes: QualificationOutcome[]
   stats: QualificationStats
@@ -465,7 +509,8 @@ export async function getQualificationOutcomes(brokerageId: string): Promise<{
   error?: string
 }> {
   const empty = { success: false, outcomes: [], stats: { qualified: 0, not_qualified: 0, appointment_set: 0, no_response: 0, needs_follow_up: 0 }, chartData: [], error: "" }
-  if (!isValidUUID(brokerageId)) return { ...empty, error: "Invalid brokerage ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { ...empty, error: auth.error }
 
   const service = createServiceClient()
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -475,19 +520,19 @@ export async function getQualificationOutcomes(brokerageId: string): Promise<{
     .select(`
       id,
       contact_id,
-      score,
+      qualification_score,
       qualification_result,
       qualification_signals,
       assigned_to_agent_id,
       assigned_at,
       notes,
-      created_at,
+      qualified_at,
       contacts (first_name, last_name),
       assigned_agent:users!assigned_to_agent_id (first_name, last_name)
     `)
-    .eq("brokerage_id", brokerageId)
-    .gte("created_at", thirtyDaysAgo)
-    .order("created_at", { ascending: false })
+    .eq("brokerage_id", auth.brokerageId)
+    .gte("qualified_at", thirtyDaysAgo)
+    .order("qualified_at", { ascending: false })
 
   if (error) return { ...empty, error: error.message }
 
@@ -497,7 +542,7 @@ export async function getQualificationOutcomes(brokerageId: string): Promise<{
     contact_id:            r.contact_id,
     contact_first_name:    r.contacts?.first_name ?? null,
     contact_last_name:     r.contacts?.last_name ?? null,
-    score:                 r.score ?? null,
+    score:                 r.qualification_score ?? null,
     qualification_result:  r.qualification_result,
     qualification_signals: Array.isArray(r.qualification_signals) ? r.qualification_signals : [],
     assigned_agent_name:   r.assigned_agent
@@ -505,7 +550,7 @@ export async function getQualificationOutcomes(brokerageId: string): Promise<{
       : null,
     assigned_at:           r.assigned_at ?? null,
     notes:                 r.notes ?? null,
-    created_at:            r.created_at,
+    created_at:            r.qualified_at,
   }))
 
   const stats: QualificationStats = {
@@ -541,12 +586,13 @@ export interface GhostContact {
   stage: "24h" | "48h" | "72h"
 }
 
-export async function getGhostRecoveryQueue(brokerageId: string): Promise<{
+export async function getGhostRecoveryQueue(_brokerageId?: string): Promise<{
   success: boolean
   ghosts: GhostContact[]
   error?: string
 }> {
-  if (!isValidUUID(brokerageId)) return { success: false, ghosts: [], error: "Invalid brokerage ID" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, ghosts: [], error: auth.error }
 
   const service = createServiceClient()
   const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
@@ -559,13 +605,13 @@ export async function getGhostRecoveryQueue(brokerageId: string): Promise<{
       campaign_id,
       channel,
       event_type,
-      created_at,
+      created_at:event_at,
       contacts (first_name, last_name),
       ai_isa_campaigns (name)
     `)
-    .eq("brokerage_id", brokerageId)
-    .lte("created_at", cutoff24h)
-    .order("created_at", { ascending: false })
+    .eq("brokerage_id", auth.brokerageId)
+    .lte("event_at", cutoff24h)
+    .order("event_at", { ascending: false })
 
   if (error) return { success: false, ghosts: [], error: error.message }
 
@@ -616,38 +662,37 @@ export async function getGhostRecoveryQueue(brokerageId: string): Promise<{
 export async function triggerGhostRecovery(params: {
   contactId: string
   campaignId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthenticated" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  // Step 1: Compliance gate — hard stop
-  // Step 1: Compliance gate — hard stop
-const compliance = await runAiIsaComplianceCheck({
-  userId: user.id,
-  brokerageId: params.brokerageId,
-  journeyType: "buyer",
-  persona: "other",
-  messageType: "email",
-  content: "Ghost recovery outreach",
-  contactId: params.contactId,
-  contactType: "buyer",
-  status: "new",
-  dncStatus: false,
-  tcpaConsent: true,
-  isaReengageAllowed: true,
-})
-
-  // Step 2: Fetch contact for dispatch
+  // Step 1: Verify contact + campaign belong to caller's brokerage
   const service = createServiceClient()
   const { data: contact, error: contactErr } = await service
     .from("contacts")
-    .select("email, first_name, lifecycle_state")
+    .select("email, first_name, lifecycle_state, brokerage_id")
     .eq("id", params.contactId)
     .single()
 
   if (contactErr || !contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+  // Step 2: Compliance gate — hard stop
+  const compliance = await runAiIsaComplianceCheck({
+    userId: auth.userId,
+    brokerageId: auth.brokerageId,
+    journeyType: "buyer",
+    persona: "other",
+    messageType: "email",
+    content: "Ghost recovery outreach",
+    contactId: params.contactId,
+    contactType: "buyer",
+    status: "new",
+    dncStatus: false,
+    tcpaConsent: true,
+    isaReengageAllowed: true,
+  })
 
   // Hard stop: blocked lifecycle states
   if (["REPRESENTATION", "ACTIVE_TRANSACTION"].includes(contact.lifecycle_state ?? "")) {
@@ -657,8 +702,8 @@ const compliance = await runAiIsaComplianceCheck({
   // Step 3: Dispatch — assembleEmail() runs inside dispatchEmail(), do NOT pre-assemble.
   const ghostBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>We wanted to check in and see if we can still help you on your real estate journey. No pressure — just here when you're ready.</p>`
   const dispatchResult = await dispatchEmail({
-    brokerageId:    params.brokerageId,
-    userId:         user.id,
+    brokerageId:    auth.brokerageId,
+    userId:         auth.userId,
     from:           "noreply@platform.com",
     to:             contact.email ?? "",
     subject:        "Following up — are you still interested?",
@@ -672,12 +717,12 @@ const compliance = await runAiIsaComplianceCheck({
 
   // Step 4: Insert engagement tracking row
   await service.from("ai_isa_engagement_tracking").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     contact_id:   params.contactId,
     campaign_id:  params.campaignId,
     channel:      "email",
     event_type:   "sent",
-    created_at:   new Date().toISOString(),
+    event_at:     new Date().toISOString(),
   })
 
   return { success: true }
@@ -687,16 +732,29 @@ const compliance = await runAiIsaComplianceCheck({
 export async function skipGhostContact(params: {
   contactId: string
   campaignId: string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
 }): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const service = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await service
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
   const { error } = await service.from("ai_isa_engagement_tracking").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     contact_id:   params.contactId,
     campaign_id:  params.campaignId,
     channel:      "email",
     event_type:   "unsubscribed",
-    created_at:   new Date().toISOString(),
+    event_at:     new Date().toISOString(),
   })
   if (error) return { success: false, error: error.message }
   return { success: true }
@@ -704,42 +762,40 @@ export async function skipGhostContact(params: {
 
 /** Retry ghost contact via specified channel */
 export async function retryGhostContact(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   contactId: string
   channel: "email" | "sms" | "phone"
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthenticated" }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const service = createServiceClient()
 
-  // Get contact info
+  // Get contact info + verify ownership
   const { data: contact, error: contactErr } = await service
     .from("contacts")
-    .select("email, phone, first_name, lifecycle_state")
+    .select("email, phone, first_name, lifecycle_state, brokerage_id")
     .eq("id", params.contactId)
     .single()
 
   if (contactErr || !contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
   // Compliance gate
-  const agentContext = await getAgentContext()
-
-const compliance = await runAiIsaComplianceCheck({
-  userId: user.id,
-  brokerageId: params.brokerageId,
-  journeyType: "buyer",
-  persona: "other",
-  messageType: params.channel === "sms" ? "sms" : params.channel === "phone" ? "phone" : "email",
-  content: "Ghost recovery retry outreach",
-  contactId: params.contactId,
-  contactType: "buyer",
-  status: "new",
-  dncStatus: false,
-  tcpaConsent: true,
-  isaReengageAllowed: true,
-})
+  const compliance = await runAiIsaComplianceCheck({
+    userId: auth.userId,
+    brokerageId: auth.brokerageId,
+    journeyType: "buyer",
+    persona: "other",
+    messageType: params.channel === "sms" ? "sms" : params.channel === "phone" ? "phone" : "email",
+    content: "Ghost recovery retry outreach",
+    contactId: params.contactId,
+    contactType: "buyer",
+    status: "new",
+    dncStatus: false,
+    tcpaConsent: true,
+    isaReengageAllowed: true,
+  })
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
@@ -749,8 +805,8 @@ const compliance = await runAiIsaComplianceCheck({
     // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
     const retryBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>Just checking in to see if you're still looking for help with your real estate needs. Let me know!</p>`
     const result = await dispatchEmail({
-      brokerageId:    params.brokerageId,
-      userId:         user.id,
+      brokerageId:    auth.brokerageId,
+      userId:         auth.userId,
       from:           "noreply@platform.com",
       to:             contact.email,
       subject:        "Quick follow-up",
@@ -764,11 +820,11 @@ const compliance = await runAiIsaComplianceCheck({
 
   // Log engagement event
   await service.from("ai_isa_engagement_tracking").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     contact_id: params.contactId,
     channel: params.channel,
     event_type: "sent",
-    created_at: new Date().toISOString(),
+    event_at: new Date().toISOString(),
   })
 
   return { success: true }
@@ -776,16 +832,29 @@ const compliance = await runAiIsaComplianceCheck({
 
 /** Suppress ghost contact — mark as skipped to stop retries */
 export async function suppressGhostContact(params: {
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
   contactId: string
 }): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const service = createServiceClient()
+
+  // Verify contact belongs to caller's brokerage
+  const { data: contact } = await service
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
   const { error } = await service.from("ai_isa_engagement_tracking").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     contact_id: params.contactId,
     channel: "system",
     event_type: "suppressed",
-    created_at: new Date().toISOString(),
+    event_at: new Date().toISOString(),
   })
   if (error) return { success: false, error: error.message }
   return { success: true }

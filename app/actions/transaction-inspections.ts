@@ -1,17 +1,48 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { scheduleInspection, updateInspection } from "@/lib/application/transactions"
 import { requestQuoteApproval, approveQuote, declineQuote } from "@/lib/transactions/vendor-quote-workflow"
 import { completeMilestone } from "@/lib/transactions/milestone-service"
 import { KernelEvent } from "@/lib/kernel/events"
 
+// ─── AUTH HELPERS ──────────────────────────────────────────────────────────────
+
+async function requireCallerForBrokerage(claimedBrokerageId?: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false as const, error: "Not authenticated" }
+  const { data: profile } = await supabase
+    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+  if (!profile?.brokerage_id) return { ok: false as const, error: "Not authenticated" }
+  if (claimedBrokerageId && profile.brokerage_id !== claimedBrokerageId) {
+    return { ok: false as const, error: "Cannot act on transactions outside your brokerage" }
+  }
+  return {
+    ok: true as const,
+    userId: user.id,
+    brokerageId: profile.brokerage_id as string,
+    userRole: (profile.role ?? profile.user_type ?? "agent") as string,
+  }
+}
+
+async function verifyTransactionInBrokerage(transactionId: string, brokerageId: string) {
+  const svc = createServiceClient()
+  const { data: tx } = await svc
+    .from("transactions")
+    .select("brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  return !!tx && tx.brokerage_id === brokerageId
+}
+
 // ─── SCHEDULE INSPECTION ───────────────────────────────────────────────────────
 
 export async function scheduleInspectionAction(params: {
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   inspectionType: string
   inspectorName: string
   inspectorCompany?: string
@@ -21,6 +52,13 @@ export async function scheduleInspectionAction(params: {
   cost?: number
   notes?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
   const supabase = await createClient()
 
   const result = await scheduleInspection({
@@ -41,7 +79,7 @@ export async function scheduleInspectionAction(params: {
 
   // Emit kernel event
   await supabase.from("lifecycle_events").insert({
-    brokerage_id:  params.brokerageId,
+    brokerage_id:  auth.brokerageId,
     entity_type:   "transaction",
     entity_id:     params.transactionId,
     event_type:    KernelEvent.INSPECTION_ORDERED,
@@ -55,19 +93,18 @@ export async function scheduleInspectionAction(params: {
 
   // If cost provided, request quote approval
   if (params.cost && result.data?.id) {
-    const { data: userData } = await supabase.auth.getUser()
     await requestQuoteApproval({
       transactionId:   params.transactionId,
-      brokerageId:     params.brokerageId,
+      brokerageId:     auth.brokerageId,
       quoteType:       "inspector",
       vendorName:      params.inspectorName,
       quoteAmount:     params.cost,
       quoteDocumentId: result.data.id,
-      requestedBy:     userData.user?.id ?? "system",
+      requestedBy:     auth.userId,
     })
 
     await supabase.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       entity_type:  "transaction",
       entity_id:    params.transactionId,
       event_type:   KernelEvent.INSPECTION_QUOTE_REQUESTED,
@@ -84,25 +121,31 @@ export async function scheduleInspectionAction(params: {
 export async function approveInspectionQuoteAction(params: {
   activityId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   vendorName: string
   notes?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   await approveQuote({
     activityId:    params.activityId,
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
+    brokerageId:   auth.brokerageId,
     vendorName:    params.vendorName,
     quoteType:     "inspector",
-    approvedBy:    userData.user?.id ?? "system",
+    approvedBy:    auth.userId,
     notes:         params.notes,
   })
 
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type:  "transaction",
     entity_id:    params.transactionId,
     event_type:   KernelEvent.INSPECTION_QUOTE_APPROVED,
@@ -118,17 +161,21 @@ export async function approveInspectionQuoteAction(params: {
 export async function declineInspectionQuoteAction(params: {
   activityId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   reason?: string
 }) {
-  const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
 
   await declineQuote({
     activityId:    params.activityId,
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
-    declinedBy:    userData.user?.id ?? "system",
+    brokerageId:   auth.brokerageId,
+    declinedBy:    auth.userId,
     reason:        params.reason,
   })
 
@@ -141,8 +188,26 @@ export async function declineInspectionQuoteAction(params: {
 export async function markInspectionCompleteAction(params: {
   inspectionId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
+  // Verify inspection belongs to this transaction
+  const svc = createServiceClient()
+  const { data: inspection } = await svc
+    .from("transaction_inspections")
+    .select("transaction_id")
+    .eq("id", params.inspectionId)
+    .maybeSingle()
+  if (!inspection || inspection.transaction_id !== params.transactionId) {
+    return { success: false, error: "Inspection not found for this transaction" }
+  }
+
   const result = await updateInspection(params.inspectionId, {
     status: "report_received",
     completed_date: new Date().toISOString(),
@@ -151,6 +216,24 @@ export async function markInspectionCompleteAction(params: {
 
   if (!result.success) {
     return { success: false, error: result.error }
+  }
+
+  // Fan-out to buyer / seller / lender / title portals so each side sees
+  // the inspection completion without polling the inspections table.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.MILESTONE_COMPLETED,
+      brokerageId: auth.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: auth.userId,
+      metadata: {
+        milestone_name: "inspection_completed",
+        inspection_id:  params.inspectionId,
+      },
+    })
+  } catch (err) {
+    console.error("[markInspectionCompleteAction] fan-out failed (non-blocking)", err)
   }
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -162,12 +245,29 @@ export async function markInspectionCompleteAction(params: {
 export async function uploadInspectionReportAction(params: {
   inspectionId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   reportUrl: string
   fileName: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
+  // Verify inspection belongs to this transaction
+  const svc = createServiceClient()
+  const { data: inspection } = await svc
+    .from("transaction_inspections")
+    .select("transaction_id")
+    .eq("id", params.inspectionId)
+    .maybeSingle()
+  if (!inspection || inspection.transaction_id !== params.transactionId) {
+    return { success: false, error: "Inspection not found for this transaction" }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   // Update inspection with report URL
   await updateInspection(params.inspectionId, {
@@ -179,12 +279,12 @@ export async function uploadInspectionReportAction(params: {
   // Add as transaction document
   await supabase.from("transaction_documents").insert({
     transaction_id: params.transactionId,
-    brokerage_id:   params.brokerageId,
+    brokerage_id:   auth.brokerageId,
     doc_type:       "inspection_report",
-    file_name:      params.fileName,
-    file_url:       params.reportUrl,
+    doc_label:      params.fileName,
+    storage_url:    params.reportUrl,
     status:         "uploaded",
-    uploaded_by:    userData.user?.id,
+    uploaded_by:    auth.userId,
     uploaded_at:    new Date().toISOString(),
   })
 
@@ -196,21 +296,27 @@ export async function uploadInspectionReportAction(params: {
 
 export async function requestInsuranceQuoteAction(params: {
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   vendorName: string
   vendorEmail?: string
   vendorPhone?: string
   notes?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   // Insert into vendor services
   const { data, error } = await supabase
     .from("transaction_vendor_services")
     .insert({
       transaction_id: params.transactionId,
-      brokerage_id:   params.brokerageId,
+      brokerage_id:   auth.brokerageId,
       service_type:   "insurance_quote",
       vendor_name:    params.vendorName,
       vendor_email:   params.vendorEmail,
@@ -227,7 +333,7 @@ export async function requestInsuranceQuoteAction(params: {
   }
 
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type:  "transaction",
     entity_id:    params.transactionId,
     event_type:   KernelEvent.INSURANCE_QUOTE_REQUESTED,
@@ -243,12 +349,33 @@ export async function requestInsuranceQuoteAction(params: {
 export async function submitInsuranceQuoteApprovalAction(params: {
   serviceId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   vendorName: string
   quoteAmount: number
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
+  // Verify vendor service belongs to this transaction + brokerage
+  const svc = createServiceClient()
+  const { data: service } = await svc
+    .from("transaction_vendor_services")
+    .select("transaction_id, brokerage_id")
+    .eq("id", params.serviceId)
+    .maybeSingle()
+  if (
+    !service ||
+    service.transaction_id !== params.transactionId ||
+    service.brokerage_id !== auth.brokerageId
+  ) {
+    return { success: false, error: "Vendor service not found for this transaction" }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   // Update service with quote amount
   await supabase
@@ -259,12 +386,12 @@ export async function submitInsuranceQuoteApprovalAction(params: {
   // Request approval through workflow
   await requestQuoteApproval({
     transactionId:   params.transactionId,
-    brokerageId:     params.brokerageId,
+    brokerageId:     auth.brokerageId,
     quoteType:       "insurance",
     vendorName:      params.vendorName,
     quoteAmount:     params.quoteAmount,
     quoteDocumentId: params.serviceId,
-    requestedBy:     userData.user?.id ?? "system",
+    requestedBy:     auth.userId,
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -277,12 +404,33 @@ export async function approveInsuranceQuoteAction(params: {
   activityId: string
   serviceId: string
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   vendorName: string
   notes?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
+  // Verify vendor service belongs to this transaction + brokerage
+  const svc = createServiceClient()
+  const { data: service } = await svc
+    .from("transaction_vendor_services")
+    .select("transaction_id, brokerage_id")
+    .eq("id", params.serviceId)
+    .maybeSingle()
+  if (
+    !service ||
+    service.transaction_id !== params.transactionId ||
+    service.brokerage_id !== auth.brokerageId
+  ) {
+    return { success: false, error: "Vendor service not found for this transaction" }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   // Update service status
   await supabase
@@ -293,15 +441,15 @@ export async function approveInsuranceQuoteAction(params: {
   await approveQuote({
     activityId:    params.activityId,
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
+    brokerageId:   auth.brokerageId,
     vendorName:    params.vendorName,
     quoteType:     "insurance",
-    approvedBy:    userData.user?.id ?? "system",
+    approvedBy:    auth.userId,
     notes:         params.notes,
   })
 
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: auth.brokerageId,
     entity_type:  "transaction",
     entity_id:    params.transactionId,
     event_type:   KernelEvent.INSURANCE_QUOTE_APPROVED,
@@ -316,14 +464,38 @@ export async function approveInsuranceQuoteAction(params: {
 
 export async function updateEarnestMoneyAction(params: {
   transactionId: string
-  brokerageId: string
+  brokerageId?: string
   titleEscrowId?: string
   earnestMoneyAmount?: number
   earnestMoneyHeldBy?: string
   earnestMoneyReceivedDate?: string
 }) {
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage" }
+  }
+
+  // If updating an existing escrow row, verify it belongs to caller's brokerage
+  // and to this transaction before touching it.
+  if (params.titleEscrowId) {
+    const svc = createServiceClient()
+    const { data: escrow } = await svc
+      .from("transaction_title_escrow")
+      .select("transaction_id, brokerage_id")
+      .eq("id", params.titleEscrowId)
+      .maybeSingle()
+    if (
+      !escrow ||
+      escrow.transaction_id !== params.transactionId ||
+      escrow.brokerage_id !== auth.brokerageId
+    ) {
+      return { success: false, error: "Escrow record not found for this transaction" }
+    }
+  }
+
   const supabase = await createClient()
-  const { data: userData } = await supabase.auth.getUser()
 
   const updates: Record<string, unknown> = {}
   if (params.earnestMoneyAmount !== undefined) {
@@ -350,7 +522,7 @@ export async function updateEarnestMoneyAction(params: {
     // Create new record
     const { error } = await supabase.from("transaction_title_escrow").insert({
       transaction_id: params.transactionId,
-      brokerage_id:   params.brokerageId,
+      brokerage_id:   auth.brokerageId,
       ...updates,
     })
 
@@ -362,7 +534,7 @@ export async function updateEarnestMoneyAction(params: {
   // If earnest money received date is set, complete the milestone + emit event
   if (params.earnestMoneyReceivedDate) {
     await supabase.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       entity_type:  "transaction",
       entity_id:    params.transactionId,
       event_type:   KernelEvent.EARNEST_MONEY_RECEIVED,
@@ -376,13 +548,13 @@ export async function updateEarnestMoneyAction(params: {
     // Complete earnest_money_due milestone
     await completeMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   auth.brokerageId,
       milestoneName: "earnest_money_due",
-      completedBy:   userData.user?.id ?? "system",
+      completedBy:   auth.userId,
     })
 
     await supabase.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: auth.brokerageId,
       entity_type:  "transaction",
       entity_id:    params.transactionId,
       event_type:   KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED,
@@ -397,6 +569,13 @@ export async function updateEarnestMoneyAction(params: {
 // ─── GET PENDING QUOTE APPROVALS ───────────────────────────────────────────────
 
 export async function getPendingQuoteApprovalsAction(transactionId: string) {
+  const auth = await requireCallerForBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error, data: [] }
+
+  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage", data: [] }
+  }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -417,6 +596,13 @@ export async function getPendingQuoteApprovalsAction(transactionId: string) {
 // ─── GET INSPECTIONS ───────────────────────────────────────────────────────────
 
 export async function getInspectionsAction(transactionId: string) {
+  const auth = await requireCallerForBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error, data: [] }
+
+  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
+    return { success: false, error: "Transaction not found in your brokerage", data: [] }
+  }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase

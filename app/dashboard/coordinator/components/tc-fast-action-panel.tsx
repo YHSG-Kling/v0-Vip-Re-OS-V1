@@ -25,7 +25,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 interface TcFastActionPanelProps {
-  transactions: Array<{ id: string; property_address: string; stage?: string }>
+  transactions: Array<{ id: string; property_address: string; stage?: string; deal_type?: string }>
   agentId: string
   brokerageId: string
   userRole: string
@@ -48,10 +48,7 @@ export function TcFastActionPanel({
 
   async function handleBatchPass() {
     if (!selectedTxnId) return
-    const checksResult = await getTransactionComplianceChecks({
-      transactionId: selectedTxnId,
-      brokerageId,
-    })
+    const checksResult = await getTransactionComplianceChecks(selectedTxnId, brokerageId)
     const openChecks = (checksResult.checks ?? [])
       .filter((c: any) => c.status === "pending" || c.status === "needs_review")
       .map((c: any) => c.id)
@@ -116,7 +113,8 @@ export function TcFastActionPanel({
                 <SelectContent>
                   {transactions.map((t) => (
                     <SelectItem key={t.id} value={t.id} className="text-xs">
-                      {t.property_address?.substring(0, 35) ?? t.id.slice(0, 8)}
+                      {t.property_address?.substring(0, 30) ?? t.id.slice(0, 8)}
+                      {t.deal_type && ` · ${t.deal_type === "purchase" ? "BUYER" : "SELLER"}`}
                     </SelectItem>
                   ))}
                 </SelectContent>

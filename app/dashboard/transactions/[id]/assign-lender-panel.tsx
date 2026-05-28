@@ -34,14 +34,14 @@ interface AssignLenderPanelProps {
   transactionId: string
   currentLenderId: string | null
   availableLenders: LenderUser[]
-  userRole: string
+  userType: string
 }
 
 export function AssignLenderPanel({
   transactionId,
   currentLenderId,
   availableLenders,
-  userRole,
+  userType,
 }: AssignLenderPanelProps) {
   const [open, setOpen] = useState(false)
   const [selectedLender, setSelectedLender] = useState<string>("")
@@ -49,7 +49,7 @@ export function AssignLenderPanel({
   const { toast } = useToast()
   const router = useRouter()
 
-  const canAssign = ["broker", "admin", "tc", "agent"].includes(userRole)
+  const canAssign = ["broker", "admin", "tc", "agent"].includes(userType)
   if (!canAssign) return null
 
   const currentLender = availableLenders.find((l) => l.id === currentLenderId)

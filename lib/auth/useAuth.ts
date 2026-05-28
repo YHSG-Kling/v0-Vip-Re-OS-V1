@@ -200,6 +200,12 @@ export function useAuth(): AuthState {
   useEffect(() => {
     const client = supabase.current
 
+    // One-time cleanup of the deprecated Zustand auth-storage persist key
+    // (from stores/authStore.tsx which has been superseded by this hook).
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('auth-storage')
+    }
+
     // If Supabase is not configured (dev/demo mode), just stop loading immediately.
     if (!client) {
       setLoading(false)
@@ -212,9 +218,9 @@ export function useAuth(): AuthState {
       if (!mounted) return
     })
 
-    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event: unknown, session: unknown) => {
       if (!mounted) return
-      if (!session?.user) {
+      if (!(session as any)?.user) {
         setUser(null)
         setUserContext(null)
         setUserPersona(null)

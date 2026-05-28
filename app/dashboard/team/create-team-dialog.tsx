@@ -45,7 +45,6 @@ export function CreateTeamDialog({ brokerageId, agents, userRole }: CreateTeamDi
         teamName: teamName.trim(),
         teamLeaderId,
         brokerageId,
-        teamMembers: [teamLeaderId],
       })
       toast({ title: "Team created", description: `${teamName} is ready. Add members from the team detail page.` })
       setOpen(false)

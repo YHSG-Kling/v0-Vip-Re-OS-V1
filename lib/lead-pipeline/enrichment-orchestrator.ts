@@ -66,13 +66,24 @@ export async function processEnrichmentQueue(
   for (const entry of entries as QueueEntry[]) {
     result.processed++
 
+    // Guard: a row must reference a lead or a contact to be enrichable here.
+    // Raw-record rows (both null) are enriched inline by the pipeline, not via
+    // this queue — fail them with a clear reason instead of looping retries.
+    if (!entry.lead_id && !entry.contact_id) {
+      await supabase
+        .from('lead_enrichment_queue')
+        .update({ status: 'failed', error_message: 'No lead_id or contact_id to enrich' })
+        .eq('id', entry.id)
+      continue
+    }
+
     // Step 1: Mark processing
     await supabase
       .from('lead_enrichment_queue')
       .update({ status: 'processing' })
       .eq('id', entry.id)
 
-    // Step 2: Determine entity type — constraint guarantees exactly one is set
+    // Step 2: Determine entity type
     const entityType: EntityType = entry.lead_id ? 'lead' : 'contact'
     const entityId = (entry.lead_id ?? entry.contact_id) as string
 
@@ -166,13 +177,11 @@ export async function processEnrichmentQueue(
 
         // Step 6c: Track vendor usage
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost },
         })
 
         // Step 6d: Lead-specific post-enrichment
@@ -201,7 +210,7 @@ export async function processEnrichmentQueue(
           })
 
           await processKernelEvent({
-            eventType: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
+            event: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
             entityType: 'contact',
             entityId,
             brokerageId,
@@ -222,7 +231,7 @@ export async function processEnrichmentQueue(
               contact_id: entityId,
               brokerage_id: brokerageId,
               score: scoreResult.finalScore,
-              score_factors: scoreResult.factors as unknown as Record<string, unknown>,
+              factors: scoreResult.factors as unknown as Record<string, unknown>,
               scored_at: new Date().toISOString(),
             })
 
@@ -256,13 +265,11 @@ export async function processEnrichmentQueue(
           .eq('id', entry.id)
 
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id, result: 'no_match' },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match' },
         })
 
         result.failed++

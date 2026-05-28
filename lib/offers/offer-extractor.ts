@@ -7,7 +7,6 @@ import { KernelEvent } from "@/lib/kernel/events"
 export interface ExtractedOfferData {
   offer_price: number | null
   earnest_money: number | null
-  earnest_money_amount: number | null
   closing_date: string | null
   financing_type: string | null
   down_payment_amount: number | null
@@ -56,7 +55,6 @@ Required JSON schema:
 {
   "offer_price": number or null,
   "earnest_money": number or null,
-  "earnest_money_amount": number or null,
   "closing_date": "YYYY-MM-DD" or null,
   "financing_type": "conventional" | "fha" | "va" | "cash" | "usda" | "other" or null,
   "down_payment_amount": number or null,
@@ -109,7 +107,6 @@ Required JSON schema:
         // Write individual columns from live schema
         offer_price: extracted.offer_price,
         earnest_money: extracted.earnest_money,
-        earnest_money_amount: extracted.earnest_money_amount,
         closing_date: extracted.closing_date,
         financing_type: extracted.financing_type,
         down_payment_amount: extracted.down_payment_amount,

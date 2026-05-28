@@ -47,13 +47,13 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
       }
 
       const totalReferrals = referrals.length
-      const pendingReferrals = referrals.filter(r => r.status === "pending").length
-      const convertedReferrals = referrals.filter(r => r.status === "converted").length
+      const pendingReferrals = referrals.filter((r: any) => r.status === "pending").length
+      const convertedReferrals = referrals.filter((r: any) => r.status === "converted").length
       const conversionRate = totalReferrals > 0 ? (convertedReferrals / totalReferrals) * 100 : 0
 
       // Calculate top referrers
       const referrerMap = new Map<string, { name: string; count: number }>()
-      referrals.forEach(r => {
+      referrals.forEach((r: any) => {
         if (!r.vendor_id) return
         const existing = referrerMap.get(r.vendor_id) || { 
           name: (r.vendors as any)?.name || "Unknown", 

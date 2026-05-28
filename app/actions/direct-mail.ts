@@ -25,6 +25,7 @@ import {
   processKernelEvent,
   KernelEvent,
 } from "@/lib/kernel"
+import { dispatchDirectMail } from "@/lib/providers/dispatch"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -614,32 +615,82 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "No pending recipients to mail" }
     }
 
-    // ── Simulate Lob API call ──
-    // In production, integrate with Lob API using provider.providerKey and config
-    const lobOrderId = `lob_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+    // ── Call Lob API via dispatchDirectMail() for each recipient ──
+    let firstSuccessfulMessageId: string | undefined
+    let successCount = 0
+    const failedRecipientIds: string[] = []
+    const mailedRecipientIds: string[] = []
+    for (const recipient of recipients) {
+      try {
+        const lobResult = await dispatchDirectMail({
+          brokerageId: params.brokerageId,
+          userId: params.actorUserId,
+          teamId: params.teamId,
+          contactId: recipient.contact_id ?? undefined,
+          systemSource: "direct_mail_campaign",
+          recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
+          mailingAddress: recipient.address_line1,
+          mailingAddress2: recipient.address_line2 ?? undefined,
+          city: recipient.city,
+          state: recipient.state,
+          zip: recipient.zip,
+          templateId: campaign.design_url ?? campaign.id,
+          mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
+          metadata: { campaign_id: params.campaignId },
+        })
+        if (lobResult.success && lobResult.messageId) {
+          if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
+          successCount++
+          mailedRecipientIds.push(recipient.id)
+        } else {
+          failedRecipientIds.push(recipient.id)
+        }
+      } catch {
+        failedRecipientIds.push(recipient.id)
+      }
+    }
 
-    // Update campaign
+    if (successCount === 0) {
+      return { success: false, error: "Direct mail failed: no pieces dispatched via Lob" }
+    }
+
+    const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
+    const campaignStatus = failedRecipientIds.length > 0 ? "partial" : "mailed"
+
+    // Update campaign FIRST — recipients are only marked after this succeeds to keep state consistent
     const { error: updateError } = await supabase
       .from("direct_mail_campaigns")
       .update({
-        status: "mailed",
+        status: campaignStatus,
         mailing_date: new Date().toISOString().slice(0, 10),
         lob_order_id: lobOrderId,
-        pieces_mailed: recipients.length,
+        pieces_mailed: successCount,
       })
       .eq("id", params.campaignId)
 
     if (updateError) throw updateError
 
-    // Update recipients status
-    await supabase
-      .from("direct_mail_recipients")
-      .update({
-        delivery_status: "mailed",
-        mailed_at: new Date().toISOString(),
-      })
-      .eq("campaign_id", params.campaignId)
-      .eq("delivery_status", "pending")
+    // Mark successfully dispatched recipients as mailed
+    if (mailedRecipientIds.length > 0) {
+      const mailedAt = new Date().toISOString()
+      const { error: mailedUpdateError } = await supabase
+        .from("direct_mail_recipients")
+        .update({ delivery_status: "mailed", mailed_at: mailedAt })
+        .in("id", mailedRecipientIds)
+      if (mailedUpdateError) throw mailedUpdateError
+    }
+
+    // Mark failed recipients so they aren't silently re-queried as pending
+    if (failedRecipientIds.length > 0) {
+      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} dispatched for campaign ${params.campaignId}`)
+      const { error: failedUpdateError } = await supabase
+        .from("direct_mail_recipients")
+        .update({ delivery_status: "failed" })
+        .in("id", failedRecipientIds)
+      if (failedUpdateError) {
+        console.error(`[DirectMail] Could not mark failed recipients for campaign ${params.campaignId}:`, failedUpdateError.message)
+      }
+    }
 
     // ── Fire kernel event ──
     await processKernelEvent({
@@ -656,11 +707,72 @@ export async function sendCampaign(params: SendCampaignParams) {
     return {
       success: true,
       lobOrderId,
-      piecesMailed: recipients.length,
+      piecesMailed: successCount,
+      failedCount: failedRecipientIds.length,
+      status: campaignStatus,
       provider: provider.providerKey,
     }
   } catch (error) {
     console.error("[DirectMail] Send campaign error:", error)
     return handleError(error, "sendCampaign")
+  }
+}
+
+// ─── QR SCAN ANALYTICS ────────────────────────────────────────────────────────
+
+export interface QrScanEvent {
+  id: string
+  qr_code_id: string
+  campaign_id: string | null
+  is_first_scan: boolean
+  scanned_at: string
+}
+
+/**
+ * Returns all QR scan events for a direct mail campaign,
+ * aggregated for the Tracking tab analytics section.
+ */
+export async function getCampaignQrScans(campaignId: string): Promise<{
+  success: boolean
+  scans?: QrScanEvent[]
+  totalScans?: number
+  firstScans?: number
+  repeatScans?: number
+  byDay?: { date: string; count: number }[]
+  error?: string
+}> {
+  try {
+    if (!isValidUUID(campaignId)) {
+      return { success: false, error: "Invalid campaign ID" }
+    }
+
+    const supabase = await createClient()
+
+    const { data, error } = await supabase
+      .from("qr_scan_events")
+      .select("id, qr_code_id, campaign_id, is_first_scan, scanned_at")
+      .eq("campaign_id", campaignId)
+      .order("scanned_at", { ascending: true })
+
+    if (error) throw error
+
+    const scans = (data ?? []) as QrScanEvent[]
+    const totalScans = scans.length
+    const firstScans = scans.filter((s) => s.is_first_scan).length
+    const repeatScans = totalScans - firstScans
+
+    // Aggregate by day (YYYY-MM-DD)
+    const dayMap: Record<string, number> = {}
+    for (const scan of scans) {
+      const day = scan.scanned_at.slice(0, 10)
+      dayMap[day] = (dayMap[day] || 0) + 1
+    }
+    const byDay = Object.entries(dayMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }))
+
+    return { success: true, scans, totalScans, firstScans, repeatScans, byDay }
+  } catch (error) {
+    return handleError(error, "getCampaignQrScans")
   }
 }

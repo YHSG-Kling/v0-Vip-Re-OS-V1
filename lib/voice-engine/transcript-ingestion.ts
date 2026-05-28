@@ -16,6 +16,7 @@ export interface IngestTranscriptParams {
   contactId: string
   callMetadata: {
     agentId?: string
+    brokerageId?: string
     transactionId?: string
     listingId?: string
     initiatorRole: 'ai' | 'agent' | 'contact' | 'office'
@@ -84,8 +85,8 @@ export async function ingestVoiceTranscript(
       conversationId: conversation.conversationId,
       contactId: params.contactId,
       agentId: params.callMetadata.agentId,
+      brokerageId: params.callMetadata.brokerageId ?? "",
       transactionId: params.callMetadata.transactionId,
-      listingId: params.callMetadata.listingId,
     })
 
     if (!result.success) {

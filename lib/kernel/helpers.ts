@@ -132,9 +132,9 @@ export async function enforceLifecycle(
   try {
     const result = await transitionLifecycle(params)
     if (!result.success) {
-      return { allowed: false, reason: result.reason ?? "Transition not allowed" }
+      return { allowed: false, reason: result.error ?? "Transition not allowed" }
     }
-    return { allowed: true, newStage: result.newStage as string | undefined }
+    return { allowed: true, newStage: (result as Record<string, unknown>).newStage as string | undefined }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Lifecycle enforcement failed"
     return { allowed: false, reason: message }

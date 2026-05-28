@@ -14,55 +14,43 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export interface AIISASettings {
-  /** Master on/off for the entire brokerage */
-  enabled: boolean
-  /** Allowed outbound channels for LEADS (no TCPA) */
-  lead_allowed_channels: ('email' | 'direct_mail')[]
-  /** Allowed outbound channels for CONTACTS with consent */
-  contact_allowed_channels: ('email' | 'sms' | 'phone' | 'direct_mail')[]
-  /** Days with no contact before a contact is flagged as stale */
-  stale_threshold_days: number
-  /** Days with no reply after outreach before ghosted flag */
-  ghosted_threshold_days: number
-  /** Maximum outreach touches before AI ISA stops */
-  max_touches_lead: number
-  max_touches_contact: number
-  /** Cadence: days between touches */
-  touch_interval_days: number
-  /** Lifecycle states where AI ISA is blocked on contacts */
-  blocked_lifecycle_states: string[]
-  /** Whether to auto-enable AI ISA on newly-captured contacts */
-  auto_enable_on_new_contacts: boolean
-  /** Whether to pause AI ISA when agent is assigned */
-  pause_on_agent_assigned: boolean
-  /** Default handoff action when qualifying outcome is reached */
-  default_handoff_action: 'notify_agent' | 'create_task' | 'both'
-  /** Suppress automation after these negative outcomes */
-  suppress_on_outcomes: string[]
-}
-
-export const DEFAULT_AISA_SETTINGS: AIISASettings = {
-  enabled: true,
-  lead_allowed_channels: ['email', 'direct_mail'],
-  contact_allowed_channels: ['email', 'sms', 'phone', 'direct_mail'],
-  stale_threshold_days: 14,
-  ghosted_threshold_days: 21,
-  max_touches_lead: 5,
-  max_touches_contact: 8,
-  touch_interval_days: 3,
-  blocked_lifecycle_states: ['representation', 'active_transaction', 'closing', 'do_not_contact'],
-  auto_enable_on_new_contacts: false,
-  pause_on_agent_assigned: true,
-  default_handoff_action: 'both',
-  suppress_on_outcomes: ['not_interested', 'do_not_contact', 'do_not_call', 'wrong_number'],
-}
+import {
+  type AIISASettings,
+  type IsaCapability,
+  type IsaCapabilityDescriptor,
+  DEFAULT_AISA_SETTINGS,
+  ISA_CAPABILITY_CATALOG,
+  defaultEnabledCapabilities,
+} from '@/lib/ai-isa/settings-types'
 
 // ── Roles allowed to write settings ─────────────────────────────────────────
 const WRITE_ROLES = new Set(['broker', 'broker_admin', 'admin', 'superadmin'])
+
+// Capability catalog + defaults moved to @/lib/ai-isa/settings-types (no
+// "use server", so it can be imported from client components directly).
+
+/**
+ * Permission check used by every ISA function tool handler. Reads the
+ * brokerage's enabled_capabilities from settings; falls back to defaults.
+ *
+ * Returns true when the capability is explicitly enabled OR is one of the
+ * always-on core capabilities.
+ */
+export async function isCapabilityEnabled(
+  brokerageId: string,
+  capability: IsaCapability
+): Promise<boolean> {
+  const settings = await getAIISASettings(brokerageId)
+
+  // ISA is master-disabled at the brokerage — refuse everything
+  if (settings.enabled === false) return false
+
+  const enabled =
+    (settings.enabled_capabilities as IsaCapability[] | undefined) ??
+    defaultEnabledCapabilities()
+
+  return enabled.includes(capability)
+}
 
 // ── getAIISASettings ──────────────────────────────────────────────────────────
 

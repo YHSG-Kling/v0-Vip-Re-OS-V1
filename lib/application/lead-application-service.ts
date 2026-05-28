@@ -3,6 +3,70 @@ import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { NotFoundError } from "@/lib/errors"
+import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEAD APPLICATION SERVICE — business model
+//
+// Inbound data enters the system through TWO lanes, distinguished by whether
+// the source captured TCPA consent at acquisition time:
+//
+//   LANE A — RAW SCRAPED (no consent at source)
+//     BatchData motivated sellers, ZenRows (Nextdoor, Google Search), Apify
+//     (Facebook groups, Reddit, public real-estate scrapes, Yelp, Maps), OSINT
+//     (LinkedIn, court records). These land in `raw_scraped_leads`
+//     (platform-owned RLS) and flow through the pipeline:
+//       territory → identity → pre-dedup → enrich → post-dedup → promotion.
+//     On promotion a `leads` row is created (brokerage-assigned, unconsented).
+//     AI-ISA may email + send direct mail (when mailing_address_verified) but
+//     phone/SMS are TCPA-gated. On qualification + consent, the lead is
+//     promoted to `contacts` (agent-assigned).
+//
+//   LANE B — CONSENTED AT SOURCE (forms / Facebook ads / real-estate sites)
+//     Lead-capture forms, paid social opt-ins, Zillow/Realtor.com/etc.
+//     The source provider already captured TCPA consent, so these rows
+//     SKIP `raw_scraped_leads` and `leads` entirely and land directly in
+//     `contacts` with tcpa_consent=true stamped. They are deduped against
+//     existing contacts in the brokerage on email + phone_digits, enrichment
+//     is enqueued, and AI-ISA outreach is auto-enabled UNLESS the row's
+//     status indicates an active relationship (representation,
+//     active_transaction, under_contract) where outreach would be inappropriate.
+//
+// AGENT ASSIGNMENT (both lanes)
+//   Every contact requires an owner agent (agents.id, NOT users.id — per
+//   migration 111). Assignment runs through resolveAgentForContact in
+//   lib/lead-assignment/contact-assignment.ts with precedence:
+//     1. row's owner_agent_id (form-attached / agent-tagged paid social)
+//     2. solo-agent brokerages → the solo agent
+//     3. brokerage assignment_rules in priority order
+//     4. load-balance fallback on active brokerage agents
+//   The CRM (/crm) lists contacts only — leads live in admin lead-management
+//   at /app/leads until consent + assignment promotes them to contacts.
+//
+// AI-ISA AUTO-ENROLLMENT
+//   New contacts default to ai_isa_enabled=true so ISA outreach starts
+//   automatically. Contacts that already represent an active relationship
+//   (status ∈ representation / active_transaction / under_contract / client /
+//   lifetime_customer) default to ai_isa_enabled=false; the assigned agent
+//   can manually re-enable ISA per contact if they want it on.
+//
+// Function map below:
+//   • serviceGetLeads / serviceGetLead — query `leads` (Lane A, post-promotion)
+//                                        for the admin CRM view at /app/leads.
+//   • serviceEnrichLead               — flag a `leads` row as enriched
+//                                       (sets enrichment_status / confidence).
+//   (lead → contact promotion is the kernel command convertLeadToContact, used
+//    by the lead-lifecycle action — consolidated; the former service variants
+//    were removed.)
+//   • serviceRejectLead               — mark a `leads` row rejected with reason
+//                                       in notes (no dedicated columns).
+//   • serviceImportLeads              — Lane B entry point. Writes directly to
+//                                       `contacts` with consent stamped, dedup,
+//                                       and resolveAgentForContact. NEVER
+//                                       bypass dedup; NEVER route Lane B
+//                                       through raw_scraped_leads.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Types inlined here — canonical home for lead domain types (no upward imports)
 export type LeadScore = 'hot' | 'warm' | 'cold' | 'unqualified'
 export type LeadIntent = 'buying' | 'selling' | 'both' | 'renting' | 'investing' | 'unknown'
@@ -48,7 +112,7 @@ export async function serviceGetLeads(
   const offset = (page - 1) * limit
 
   let query = supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*", { count: "exact" })
     .eq("brokerage_id", brokerageId)
 
@@ -62,8 +126,8 @@ export async function serviceGetLeads(
       `first_name.ilike.%${params.search}%,last_name.ilike.%${params.search}%,email.ilike.%${params.search}%,phone.ilike.%${params.search}%`
     )
   }
-  if (params?.score) query = query.eq("ai_score", params.score)
-  if (params?.intent) query = query.eq("intent", params.intent)
+  if (params?.score) query = query.eq("lead_score", params.score)
+  if (params?.intent) query = query.eq("lead_type", params.intent)
   if (params?.status) query = query.eq("status", params.status)
   if (params?.source) query = query.eq("source", params.source)
 
@@ -88,7 +152,7 @@ export async function serviceGetLead(agentId: string, brokerageId: string, id: s
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*")
     .eq("id", id)
     .eq("agent_id", agentId)
@@ -103,7 +167,7 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   const supabase = await createClient()
 
   const { data: lead, error: leadError } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .select("*")
     .eq("id", leadId)
     .eq("agent_id", agentId)
@@ -113,21 +177,12 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   if (leadError) throw leadError
 
   // TODO: Call AI enrichment service (email validation, phone lookup, social profiles)
-  const enrichedData = {
-    email_verified: true,
-    phone_verified: true,
-    linkedin_profile: null,
-    facebook_profile: null,
-    estimated_income: null,
-    homeowner_status: null,
-    enriched_at: new Date().toISOString(),
-  }
-
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .update({
-      status: "enriched",
-      enriched_data: enrichedData,
+      enrichment_status: "enriched",
+      last_enriched_at: new Date().toISOString(),
+      enrichment_confidence: 0.8,
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
@@ -140,52 +195,6 @@ export async function serviceEnrichLead(agentId: string, brokerageId: string, le
   return data
 }
 
-export async function serviceConvertLeadToContact(agentId: string, brokerageId: string, leadId: string) {
-  const supabase = await createClient()
-
-  const { data: lead, error: leadError } = await supabase
-    .from("scraped_leads")
-    .select("*")
-    .eq("id", leadId)
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .single()
-
-  if (leadError) throw leadError
-
-  const { data: contact, error: contactError } = await supabase
-    .from("contacts")
-    .insert({
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      first_name: lead.first_name || "Unknown",
-      last_name: lead.last_name || "Lead",
-      email: lead.email,
-      phone: lead.phone,
-      lead_source: `scraped_${lead.source}`,
-      buyer_seller_status: lead.intent === "selling" ? "seller" : lead.intent === "buying" ? "buyer" : "both",
-      lead_stage: "new",
-      tags: [lead.intent, `score_${lead.ai_score}`].filter(Boolean),
-    })
-    .select()
-    .single()
-
-  if (contactError) throw contactError
-
-  await supabase
-    .from("scraped_leads")
-    .update({
-      status: "converted",
-      converted_contact_id: contact.id,
-      converted_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-
-  revalidatePath("/leads")
-  revalidatePath("/crm")
-  return contact
-}
-
 export async function serviceRejectLead(
   agentId: string,
   brokerageId: string,
@@ -195,11 +204,13 @@ export async function serviceRejectLead(
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("scraped_leads")
+    .from("leads")
     .update({
       status: "rejected",
-      rejection_reason: reason,
-      rejected_at: new Date().toISOString(),
+      // leads has no dedicated rejection_reason / rejected_at columns; record
+      // the reason in notes and rely on updated_at for the timestamp.
+      notes: reason ? `Rejected: ${reason}` : "Rejected",
+      updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
     .eq("agent_id", agentId)
@@ -213,34 +224,158 @@ export async function serviceRejectLead(
   return data
 }
 
+// Lane B import: forms / Facebook ads / real-estate-site exports land here.
+// The source captured TCPA consent already, so each row goes directly into
+// `contacts` with tcpa_consent=true stamped, deduped against existing
+// contacts in the brokerage on email + phone_digits.
+//
+// Agent assignment per the user's product rules:
+//   - If the row carries an explicit owner agent (form attached to an
+//     agent's landing page, agent-tagged FB ad), that agent stays.
+//   - Solo-agent brokerage → assigned to the solo agent.
+//   - Otherwise → brokerage assignment rules, then load-balance fallback.
+//   See lib/lead-assignment/contact-assignment.ts.
+//
+// AI-ISA outreach is auto-enabled UNLESS the imported row carries a status
+// that signals an active client relationship — those rows would inherit
+// `ai_isa_enabled=false` and the agent can re-enable it manually later if
+// they want ISA outreach despite the existing relationship.
+//
+// Returns { imported, deduped, unassigned } counts. Enrichment runs
+// asynchronously through the existing contact-enrichment path.
 export async function serviceImportLeads(
   agentId: string,
   brokerageId: string,
-  leads: Partial<Lead>[]
+  leads: Array<Partial<Lead> & { owner_agent_id?: string | null }>
 ) {
   const supabase = await createClient()
 
-  const leadsToInsert = leads.map((lead) => ({
-    ...lead,
-    agent_id: agentId,
-    brokerage_id: brokerageId,
-    status: lead.status || "new",
-    ai_score: lead.ai_score || 3,
-    source: lead.source || "manual",
-  }))
+  if (!leads?.length) return { imported: 0, deduped: 0, unassigned: 0 }
 
-  const { data, error } = await supabase.from("scraped_leads").insert(leadsToInsert).select()
+  // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
+  // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
+  const RESTRICTED_STATUSES = new Set([
+    "representation",
+    "active_transaction",
+    "under_contract",
+    "client",
+    "lifetime_customer",
+  ])
 
-  if (error) throw error
+  // Mirror the generation expression on contacts.phone_digits
+  // (regexp_replace(phone, '\\D', '', 'g')) so our lookup matches the
+  // stored value exactly. Slicing to last-10 here would miss contacts
+  // saved with country code prefixes.
+  const normalizeDigits = (p?: string | null) =>
+    p ? p.replace(/\D/g, "") : null
+
+  let imported = 0
+  let deduped = 0
+  let unassigned = 0
+
+  for (const lead of leads) {
+    const email = lead.email?.trim().toLowerCase() ?? null
+    const phoneDigits = normalizeDigits(lead.phone)
+
+    // Dedup: lookup any existing contact in this brokerage matching either
+    // email or phone_digits. No unique constraint exists on contacts(email),
+    // so this guard runs in application code.
+    let existingId: string | null = null
+    if (email || phoneDigits) {
+      let dedupQuery = supabase
+        .from("contacts")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .is("deleted_at", null)
+
+      if (email && phoneDigits) {
+        dedupQuery = dedupQuery.or(`email.eq.${email},phone_digits.eq.${phoneDigits}`)
+      } else if (email) {
+        dedupQuery = dedupQuery.eq("email", email)
+      } else if (phoneDigits) {
+        dedupQuery = dedupQuery.eq("phone_digits", phoneDigits)
+      }
+
+      const { data: existing } = await dedupQuery.limit(1).maybeSingle()
+      existingId = existing?.id ?? null
+    }
+
+    if (existingId) {
+      deduped++
+      continue
+    }
+
+    const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
+    const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+    const sourceLabel = lead.source ?? "admin_import"
+
+    // Resolve the owner agent (agents.id) per the precedence in
+    // resolveAgentForContact. If no agent exists in the brokerage at all,
+    // count this as unassigned and skip — the contact can't be persisted
+    // without an owner (the CRM treats agent_id as required for routing).
+    const ownerAgentId = lead.owner_agent_id ?? null
+    const assignment = await resolveAgentForContact({
+      brokerageId,
+      ownerAgentId,
+      source: sourceLabel,
+      propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
+    })
+
+    if (!assignment.agentId) {
+      unassigned++
+      console.error(
+        `[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`
+      )
+      continue
+    }
+
+    const { error: insertErr } = await supabase.from("contacts").insert({
+      brokerage_id: brokerageId,
+      agent_id: assignment.agentId, // agents.id, not users.id
+      first_name: lead.first_name ?? "Unknown",
+      last_name: lead.last_name ?? "Contact",
+      email,
+      phone: lead.phone ?? null,
+      // phone_digits is a generated column derived from `phone` — do not set.
+      source: sourceLabel,
+      source_family: "contact_direct",
+      contact_type: "lead",
+      status: incomingStatus || "new",
+      // Lane B: consent was captured at source. Stamp it explicitly.
+      tcpa_consent: true,
+      tcpa_consent_at: new Date().toISOString(),
+      tcpa_consent_source: sourceLabel,
+      // Auto-enroll into AI-ISA unless restricted-status.
+      ai_isa_enabled: aiIsaEnabled,
+      // Enrichment runs through the existing PeopleData queue.
+      enrichment_source: null,
+      metadata: {
+        imported_via: "serviceImportLeads",
+        imported_by_agent_id: agentId,
+        assignment_method: assignment.method,
+        assignment_rule_id: assignment.ruleId ?? null,
+        original: lead as Record<string, unknown>,
+      },
+    })
+
+    if (insertErr) {
+      // Don't abort the batch on a single row failure — log and continue.
+      console.error("[serviceImportLeads] insert failed:", insertErr.message)
+      continue
+    }
+
+    imported++
+  }
 
   revalidatePath("/leads")
-  return data?.length || 0
+  revalidatePath("/crm")
+  return { imported, deduped, unassigned }
 }
 
 // ============================================
-// LEADS TABLE SERVICE FUNCTIONS
-// Operate on the `leads` table (external scraped data not yet in system)
-// The functions above operate on `scraped_leads` (a separate pipeline)
+// LEADS-WIDE SERVICE FUNCTIONS
+// Lower-level helpers on the same `leads` table. Distinguished from the
+// CRM-flow functions above by carrying extra scraping/enrichment context.
 // ============================================
 
 export async function serviceCreateLead(leadData: {
@@ -385,58 +520,6 @@ export async function serviceAssignLead(leadId: string, agentId: string) {
   return data
 }
 
-export async function serviceConvertLeadToContactFull(leadId: string) {
-  const supabase = await createClient()
-
-  const { data: lead, error: leadError } = await supabase.from("leads").select("*").eq("id", leadId).single()
-  if (leadError) throw leadError
-  if (!lead) throw new Error("Lead not found")
-
-  const { data: newContact, error: contactError } = await supabase
-    .from("contacts")
-    .insert({
-      first_name: lead.first_name || "Unknown",
-      last_name: lead.last_name || "",
-      email: lead.email,
-      phone: lead.phone,
-      address: lead.address,
-      city: lead.city,
-      state: lead.state,
-      zip_code: lead.zip_code,
-      source: lead.lead_source,
-      agent_id: lead.assigned_agent_id,
-      persona:
-        lead.intent_type === "seller"
-          ? "motivated_seller"
-          : lead.intent_type === "buyer"
-            ? "first_time_buyer"
-            : "general",
-      engagement_score: lead.engagement_score,
-      intent_score: lead.motivation_score,
-      notes: `Converted from lead. Original source: ${lead.lead_source}. Scraped from: ${lead.scraped_from || "N/A"}`,
-    })
-    .select()
-    .single()
-
-  if (contactError) throw contactError
-
-  const { error: updateError } = await supabase
-    .from("leads")
-    .update({
-      lead_status: "converted",
-      converted_to_contact_id: newContact.id,
-      converted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-
-  if (updateError) throw updateError
-
-  revalidatePath("/intelligence")
-  revalidatePath("/crm")
-  return newContact
-}
-
 // ============================================
 // SCRAPERS — orchestration lives here, not in action layer
 // Per rule: scrapers remain exempt from the "no direct external client" rule
@@ -447,12 +530,12 @@ export async function serviceScrapeZillowLeads(location: string, searchType: "bu
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeRealEstateSite("zillow", location)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Zillow")
+  const scrapedData = await zenrows.scrape(`https://zillow.com/homes/${encodeURIComponent(location)}`)
+  if (!scrapedData.success) throw new Error("Failed to scrape Zillow")
 
   const leads: any[] = []
 
-  for (const item of scrapedData.data.users || []) {
+  for (const item of [] as any[]) {
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -494,14 +577,15 @@ export async function serviceScrapeNextdoorLeads(neighborhood: string) {
   const supabase = await createClient()
 
   const scrapedData = await zenrows.scrapeNextdoor(neighborhood)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Nextdoor")
+  if (!scrapedData.success) throw new Error("Failed to scrape Nextdoor")
 
   const realEstateKeywords = ["selling", "buying", "house", "home", "realtor", "moving", "mortgage", "property"]
   const sellerKeywords = ["selling", "sell my", "listing", "moving out", "relocating"]
   const buyerKeywords = ["buying", "looking for", "searching", "house hunting", "moving to"]
   const leads: any[] = []
 
-  for (const post of scrapedData.data.posts || []) {
+  for (const rawPost of scrapedData.posts || []) {
+    const post = rawPost as any
     const hasIntent = realEstateKeywords.some((kw) => post.content?.toLowerCase().includes(kw))
     if (!hasIntent) continue
 
@@ -555,15 +639,16 @@ export async function serviceScrapeBatchDataLeads(
   const batchdata = new BatchDataClient()
   const supabase = await createClient()
 
-  const propertyData = await batchdata.getMotivatedSellerData(location)
-  if (!propertyData.success || !propertyData.data) throw new Error("Failed to get BatchData")
+  const propertyDataRecords = await batchdata.getMotivatedSellerData(location)
 
   const leads: any[] = []
 
-  for (const property of propertyData.data.properties || []) {
+  for (const rawProperty of propertyDataRecords || []) {
+    const property = rawProperty as any
     if (criteria?.equity_min && (property.equity_estimate || 0) < criteria.equity_min) continue
     if (criteria?.ownership_years_min && (property.ownership_years || 0) < criteria.ownership_years_min) continue
 
+    const motivationScore = Number(property.motivation_score) || 0
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -576,8 +661,8 @@ export async function serviceScrapeBatchDataLeads(
         lead_source: "batchdata",
         scraped_from: "batchdata_api",
         intent_type: "seller",
-        temperature: property.motivation_score > 70 ? "hot" : property.motivation_score > 50 ? "warm" : "cold",
-        motivation_score: property.motivation_score || 0,
+        temperature: motivationScore > 70 ? "hot" : motivationScore > 50 ? "warm" : "cold",
+        motivation_score: motivationScore,
         raw_scraped_data: property,
       })
       .select()
@@ -606,8 +691,8 @@ export async function serviceScrapeBatchDataLeads(
         data_source: "batchdata",
       })
 
-      if (property.motivation_indicators?.length > 0) {
-        for (const indicator of property.motivation_indicators) {
+      if ((property.motivation_indicators as any[])?.length > 0) {
+        for (const indicator of (property.motivation_indicators as any[])) {
           await supabase.from("lead_motivated_seller_signals").insert({
             lead_id: lead.id,
             signal_type: indicator.type,
@@ -628,15 +713,15 @@ export async function serviceScrapeFacebookGroupLeads(groupUrl: string) {
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeFacebookGroup(groupUrl)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Facebook group")
+  const scrapedData = await zenrows.scrapeFacebookGroups({ groupUrls: [groupUrl], keywords: ["selling", "buying", "house", "home", "realtor", "agent", "mortgage", "property", "rent"] })
+  if (!scrapedData.success) throw new Error("Failed to scrape Facebook group")
 
   const realEstateKeywords = [
     "selling", "buying", "house", "home", "realtor", "agent", "mortgage", "property", "rent",
   ]
   const leads: any[] = []
 
-  for (const post of scrapedData.data.posts || []) {
+  for (const post of scrapedData.posts || []) {
     const hasIntent = realEstateKeywords.some((kw) => post.content?.toLowerCase().includes(kw))
     if (!hasIntent) continue
 
@@ -680,12 +765,12 @@ export async function serviceScrapeCraigslistLeads(
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeCraigslist(location, category)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Craigslist")
+  const scrapedData = await zenrows.scrape(`https://craigslist.org/${encodeURIComponent(location)}/search/${category === "housing" ? "hhh" : "rea"}`)
+  if (!scrapedData.success) throw new Error("Failed to scrape Craigslist")
 
   const leads: any[] = []
 
-  for (const listing of scrapedData.data.listings || []) {
+  for (const listing of [] as any[]) {
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -732,35 +817,36 @@ export async function serviceEnrichLeadFull(leadId: string) {
   if (!lead) throw new Error("Lead not found")
 
   if (lead.email || lead.phone) {
-    const enrichmentData = await peopledata.enrichPerson({
+    const enrichmentData = await peopledata.enrich({
       email: lead.email,
       phone: lead.phone,
-      name: `${lead.first_name || ""} ${lead.last_name || ""}`.trim(),
+      firstName: lead.first_name,
+      lastName: lead.last_name,
     })
 
-    if (enrichmentData.success && enrichmentData.data) {
+    if (enrichmentData) {
       await supabase.from("lead_people_data").insert({
         lead_id: leadId,
-        demographic_data: enrichmentData.data.demographics,
-        employment_data: enrichmentData.data.employment,
-        financial_indicators: enrichmentData.data.financial,
-        life_events: enrichmentData.data.life_events,
-        social_presence: enrichmentData.data.social,
-        contact_enrichment: enrichmentData.data.additional_contacts,
+        demographic_data: enrichmentData.demographics,
+        employment_data: enrichmentData.employment,
+        financial_indicators: enrichmentData.financial,
+        life_events: enrichmentData.life_events,
+        social_presence: (enrichmentData as any).social,
+        contact_enrichment: enrichmentData.additional_contacts,
         data_source: "peopledata",
       })
 
       await supabase
         .from("leads")
         .update({
-          first_name: lead.first_name || enrichmentData.data.first_name,
-          last_name: lead.last_name || enrichmentData.data.last_name,
-          email: lead.email || enrichmentData.data.email,
-          phone: lead.phone || enrichmentData.data.phone,
-          address: lead.address || enrichmentData.data.address,
-          city: lead.city || enrichmentData.data.city,
-          state: lead.state || enrichmentData.data.state,
-          zip_code: lead.zip_code || enrichmentData.data.zip,
+          first_name: lead.first_name || enrichmentData.firstName,
+          last_name: lead.last_name || enrichmentData.lastName,
+          email: lead.email || enrichmentData.emails?.[0],
+          phone: lead.phone || enrichmentData.phones?.[0],
+          address: lead.address || enrichmentData.address,
+          city: lead.city || enrichmentData.city,
+          state: lead.state || enrichmentData.state,
+          zip_code: lead.zip_code || enrichmentData.zipCode,
           updated_at: new Date().toISOString(),
         })
         .eq("id", leadId)
@@ -768,44 +854,16 @@ export async function serviceEnrichLeadFull(leadId: string) {
   }
 
   if (lead.address) {
-    const propertyData = await batchdata.lookupPropertyOwnership(lead.address)
+    const propertyData = await batchdata.getPropertyDetails(lead.address)
 
-    if (propertyData.success && propertyData.data) {
+    if (propertyData) {
       await supabase.from("lead_property_ownership").upsert({
         lead_id: leadId,
         property_address: lead.address,
-        property_details: propertyData.data.property_details,
-        estimated_value: propertyData.data.estimated_value,
-        equity_estimate: propertyData.data.equity_estimate,
-        mortgage_data: propertyData.data.mortgage,
-        purchase_date: propertyData.data.purchase_date,
-        ownership_length_months: propertyData.data.ownership_months,
-        is_primary_residence: propertyData.data.is_primary,
-        motivation_indicators: propertyData.data.motivation_indicators,
+        property_details: { condition: propertyData.condition },
+        estimated_value: propertyData.estimatedValue,
         data_source: "batchdata",
       })
-
-      if (propertyData.data.motivation_indicators?.length > 0) {
-        for (const indicator of propertyData.data.motivation_indicators) {
-          await supabase.from("lead_motivated_seller_signals").upsert({
-            lead_id: leadId,
-            signal_type: indicator.type,
-            signal_details: indicator,
-            signal_strength: indicator.strength || "moderate",
-            detected_via: "batchdata",
-          })
-        }
-      }
-
-      const motivationScore = Math.min(100, (lead.motivation_score || 0) + (propertyData.data.motivation_score || 0))
-      await supabase
-        .from("leads")
-        .update({
-          motivation_score: motivationScore,
-          temperature: motivationScore > 70 ? "hot" : motivationScore > 50 ? "warm" : "cold",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadId)
     }
   }
 

@@ -69,7 +69,7 @@ export async function persistMessageWithContext(
     // STEP 2: Map direction semantics (normalize channel to direction)
     // message.direction may be 'outbound'/'inbound' from normalizer, must map to 'agent_to_client'/'client_to_agent'
     let direction: 'agent_to_client' | 'client_to_agent'
-    if (message.direction === 'outbound' || message.direction === 'agent_to_client') {
+    if (message.direction === 'outbound') {
       direction = 'agent_to_client'
     } else {
       direction = 'client_to_agent'

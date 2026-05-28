@@ -295,7 +295,7 @@ export async function listProviderAccounts(params: {
     throw new Error(`Failed to list provider accounts: ${error.message}`)
   }
 
-  return (data ?? []) as CalendarProviderAccountRow[]
+  return (data ?? []) as unknown as CalendarProviderAccountRow[]
 }
 
 export async function listSyncLogs(params: {

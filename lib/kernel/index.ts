@@ -203,7 +203,6 @@ export {
   dedupRawAgainstLeadAndContact,
   enrichRawRecord,
   gateRawRecordToLead,
-  promoteQualifiedRawToLead,
   loadScrapingDiagnostics,
   retryFailedSourceBatch,
 } from "./scraping"
@@ -220,8 +219,6 @@ export type {
   GateRawRecordToLeadParams,
   GatingDecision,
   GateResult,
-  PromoteRawToLeadParams,
-  PromoteResult,
   ScrapingDiagnosticsParams,
   ScrapingDiagnosticsData,
   RetryFailedBatchParams,
@@ -479,7 +476,6 @@ export {
   recordAiIsaOutcome,
   routeHistoryToCanonicalEntity,
   resolveLeadChannel,
-  buildCallContext,
 } from "./ai-isa"
 export type {
   KernelAiIsaResult,
@@ -500,8 +496,6 @@ export type {
   RouteHistoryInput,
   ResolveLeadChannelInput,
   LeadChannelResult,
-  BuildCallContextInput,
-  CallContext,
 } from "./ai-isa"
 
 // ─── REPORTING OS ────────────────────────────────────────────────────────────

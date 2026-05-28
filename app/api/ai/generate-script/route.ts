@@ -1,18 +1,19 @@
 import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { generateAIResponse } from "@/lib/ai"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(req: Request) {
-  const { purpose, persona, contactName, keyPoints } = await req.json()
+  // Auth guard — agentId and brokerageId always from session, never from body
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
 
-  // Get actor context for governance
-  const agentCtx = await getAgentContext()
-  const actorContext = agentCtx
-    ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
-    : undefined
+  try {
+    const { purpose, persona, contactName, keyPoints } = await req.json()
 
-  const response = await generateAIResponse({
-    prompt: `Generate a ${purpose} video script for ${contactName || "a client"} (${persona} persona).
+    const response = await generateAIResponse({
+      prompt: `Generate a ${purpose} video script for ${contactName || "a client"} (${persona} persona).
 
 THEM FIRST STRUCTURE (critical):
 1. First 40% - Acknowledge their feelings and situation with deep empathy
@@ -30,12 +31,16 @@ Rules:
 - Be authentic and empathetic
 
 Generate the script now:`,
-    metadata: {
-      userId: actorContext?.userId,
-      brokerageId: actorContext?.brokerageId,
-      feature: "video_script_generation",
-    },
-  })
+      metadata: {
+        userId: auth.userId,
+        brokerageId: auth.brokerageId,
+        feature: "video_script_generation",
+      },
+    })
 
-  return NextResponse.json({ script: response.text })
+    return NextResponse.json({ script: response.text })
+  } catch (error: any) {
+    console.error("[generate-script] Error:", error)
+    return NextResponse.json({ error: "Failed to generate script", details: error.message }, { status: 500 })
+  }
 }

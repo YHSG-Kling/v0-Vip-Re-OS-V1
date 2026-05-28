@@ -26,43 +26,57 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
-const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls"] as const
+const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
 
+// eSign + transaction options are derived from the unified provider catalog
+// (single source of truth) so the UI offers exactly the IMPLEMENTED providers
+// and never the unimplemented ones (which crash the factory). Adding a provider
+// class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       ["dotloop", "docusign", "skyslope", "none"],
-  transaction: ["skyslope", "dotloop", "brokermint", "none"],
+  esign:       [...getEsignProviders(), "none"],
+  transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["rets", "spark", "bridge"],
+  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
+  accounting:  ["quickbooks", "xero"],
+  crm:         ["gohighlevel", "none"],
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
-  dotloop:    "Dotloop",
-  docusign:   "DocuSign",
-  skyslope:   "SkySlope",
-  brokermint: "Brokermint",
-  twilio:     "Twilio",
-  bandwidth:  "Bandwidth",
-  vonage:     "Vonage",
-  sendgrid:   "SendGrid",
-  mailgun:    "Mailgun",
-  resend:     "Resend",
-  google:     "Google",
-  outlook:    "Outlook / Microsoft",
-  rets:       "RETS",
-  spark:      "Spark API",
-  bridge:     "Bridge Interactive",
-  none:       "None (Disabled)",
+  dotloop:      "Dotloop",
+  docusign:     "DocuSign",
+  skyslope:     "SkySlope",
+  authentisign: "Authentisign",
+  brokermint:   "Brokermint",
+  twilio:       "Twilio",
+  bandwidth:    "Bandwidth",
+  vonage:       "Vonage",
+  sendgrid:     "SendGrid",
+  mailgun:      "Mailgun",
+  resend:       "Resend",
+  google:       "Google",
+  outlook:      "Outlook / Microsoft",
+  rets:         "RETS",
+  spark:        "Spark API",
+  bridge:       "Bridge Interactive",
+  idx_broker:   "IDX Broker",
+  rentcast:     "Rentcast (no IDX needed)",
+  quickbooks:   "QuickBooks",
+  xero:         "Xero",
+  gohighlevel:  "GoHighLevel",
+  none:         "None (Disabled)",
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
+  authentisign: "AS",
   brokermint: "BM",
   twilio:     "TW",
   sendgrid:   "SG",
@@ -77,6 +91,7 @@ const PLATFORM_ICONS: Record<string, string> = {
 // ── Types ──────────────────────────────────────────────────────────────────
 type CredForm = {
   platform: string
+  scope: "agent" | "brokerage"
   api_key: string
   api_url: string
   account_id: string
@@ -88,22 +103,24 @@ type OverrideForm = {
   provider_key: string
 }
 
-const EMPTY_CRED: CredForm = { platform: "", api_key: "", api_url: "", account_id: "", account_name: "" }
+const EMPTY_CRED: CredForm = { platform: "", scope: "brokerage", api_key: "", api_url: "", account_id: "", account_name: "" }
 const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: "dotloop" }
 
 // ── Component ──────────────────────────────────────────────────────────────
 export function IntegrationsClient({
   credentials: initialCreds,
   overrides: initialOverrides,
+  isManager = false,
 }: {
   credentials: PlatformCredential[]
   overrides: ProviderOverride[]
+  isManager?: boolean
 }) {
   const [credentials, setCredentials] = useState(initialCreds)
   const [overrides, setOverrides] = useState(initialOverrides)
   const [showCredDialog, setShowCredDialog] = useState(false)
   const [showOverrideDialog, setShowOverrideDialog] = useState(false)
-  const [credForm, setCredForm] = useState<CredForm>(EMPTY_CRED)
+  const [credForm, setCredForm] = useState<CredForm>({ ...EMPTY_CRED, scope: isManager ? "brokerage" : "agent" })
   const [overrideForm, setOverrideForm] = useState<OverrideForm>(EMPTY_OVERRIDE)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -115,6 +132,7 @@ export function IntegrationsClient({
     startTransition(async () => {
       const res = await upsertPlatformCredential({
         platform:     credForm.platform,
+        scope:        credForm.scope,
         api_key:      credForm.api_key || undefined,
         api_url:      credForm.api_url || undefined,
         account_id:   credForm.account_id || undefined,
@@ -256,7 +274,7 @@ export function IntegrationsClient({
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => {
-            setCredForm(EMPTY_CRED)
+            setCredForm({ ...EMPTY_CRED, scope: isManager ? "brokerage" : "agent" })
             setError(null)
             setShowCredDialog(true)
           }}>
@@ -299,7 +317,7 @@ export function IntegrationsClient({
                         <span className="text-gray-400 italic">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-600 capitalize">{cred.scope}</td>
+                    <td className="px-4 py-3 text-gray-600 capitalize">{cred.owner_type ?? cred.scope}</td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
                       {cred.last_synced_at
                         ? new Date(cred.last_synced_at).toLocaleString()
@@ -349,6 +367,24 @@ export function IntegrationsClient({
                 placeholder="e.g. dotloop, twilio, sendgrid"
                 className="h-9"
               />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1.5">Connection Scope</label>
+              <Select
+                value={credForm.scope}
+                onValueChange={v => setCredForm(f => ({ ...f, scope: v as "agent" | "brokerage" }))}
+              >
+                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="agent">My account (this agent)</SelectItem>
+                  {isManager && <SelectItem value="brokerage">Entire brokerage</SelectItem>}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-gray-400 mt-1">
+                {isManager
+                  ? "Agent-scoped credentials override the brokerage's for that agent."
+                  : "Only your own credential — your account takes precedence over the brokerage's."}
+              </p>
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 block mb-1.5">API Key</label>

@@ -12,6 +12,7 @@ interface MarketingTierReadinessCardProps {
   campaignReady: boolean
   assetsCreated: number
   assetsRequired: number
+  isSuperAdmin?: boolean
 }
 
 export function MarketingTierReadinessCard({
@@ -20,6 +21,7 @@ export function MarketingTierReadinessCard({
   campaignReady,
   assetsCreated,
   assetsRequired,
+  isSuperAdmin = false,
 }: MarketingTierReadinessCardProps) {
   const hasTier = !!currentTier
   const assetsComplete = assetsCreated >= assetsRequired
@@ -28,12 +30,12 @@ export function MarketingTierReadinessCard({
   return (
     <Card className={isReady ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <Megaphone className="h-4 w-4 text-indigo-600" />
+        <CardTitle className="text-sm flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-2 min-w-0 truncate">
+            <Megaphone className="h-4 w-4 text-indigo-600 shrink-0" />
             Marketing Tier
           </span>
-          <Badge variant={isReady ? "default" : "secondary"} className="text-xs">
+          <Badge variant={isReady ? "default" : "secondary"} className="text-xs shrink-0">
             {isReady ? "Campaign Ready" : "Setup Needed"}
           </Badge>
         </CardTitle>
@@ -91,12 +93,14 @@ export function MarketingTierReadinessCard({
           </p>
         )}
 
-        <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
-          <Button size="sm" variant="outline" className="w-full text-xs">
-            <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
-            Marketing Settings
-          </Button>
-        </Link>
+        {isSuperAdmin && (
+          <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
+            <Button size="sm" variant="outline" className="w-full text-xs">
+              <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
+              Marketing Settings
+            </Button>
+          </Link>
+        )}
       </CardContent>
     </Card>
   )

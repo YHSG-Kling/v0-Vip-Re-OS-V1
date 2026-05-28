@@ -1,17 +1,37 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { createServiceClient } from "@/lib/supabase/service"
 import { z } from "zod"
 
 // ============================================================================
 // AI LISTING PRESENTATION GENERATOR
 // Dynamic presentations for seller consultations and listings
 // ============================================================================
+
+// Auth gate — every function here makes paid AI inference. Without auth,
+// unauthenticated callers could burn AI budget at will.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
 
 /**
  * Generate a complete listing presentation package
@@ -41,6 +61,9 @@ export async function generateListingPresentation(params: {
   }
   presentationType?: "full" | "mini" | "digital"
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -48,12 +71,14 @@ export async function generateListingPresentation(params: {
   const supabase = await createClient()
 
   try {
-    // Get agent profile
+    // Get agent profile — must be in caller's brokerage
     const { data: agent } = await supabase
       .from("agents")
       .select("*, brand_voice_profile(*)")
       .eq("id", params.agentId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
+    if (!agent) return { success: false, error: "Agent not found in your brokerage" }
 
     // Get comparable sales
     const { data: comps } = await supabase
@@ -218,10 +243,25 @@ export async function generateSellerNetSheet(params: {
   }
 
   try {
-    // TODO: Commission Engine 8.0 — replace with getDefaultCommissionStructure()
-    // Commission math must not live in presentation layer.
-    const commission = 0
-    const commissionRate = params.commissionRate ?? 3
+    // Resolve commission rate: caller-supplied → brokerage default → 3%
+    let commissionRate = params.commissionRate
+    if (commissionRate == null) {
+      try {
+        const service = createServiceClient()
+        const { data: agentRow } = await service
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .maybeSingle()
+        if (agentRow?.brokerage_id) {
+          const structure = await getDefaultCommissionStructure(agentRow.brokerage_id, params.agentId)
+          commissionRate = structure.grossRateDecimal * 100
+        }
+      } catch {
+        // No default structure configured — fall back to industry default
+      }
+      commissionRate = commissionRate ?? 3
+    }
     
     const { object: netSheet } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -299,6 +339,9 @@ export async function generateVideoScript(params: {
   videoType: "walkthrough" | "highlight" | "neighborhood" | "aerial"
   duration?: number
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -310,7 +353,9 @@ export async function generateVideoScript(params: {
       .from("listings")
       .select("*")
       .eq("id", params.listingId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
+    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
 
     const { object: script } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -379,6 +424,9 @@ export async function generateBrochureContent(params: {
   listingId: string
   brochureType: "luxury" | "standard" | "investment" | "new_construction"
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -390,7 +438,9 @@ export async function generateBrochureContent(params: {
       .from("listings")
       .select("*")
       .eq("id", params.listingId)
+      .eq("brokerage_id", auth.brokerageId)
       .single()
+    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
 
     const { data: agent } = await supabase
       .from("agents")
@@ -439,7 +489,7 @@ Listing:
 ${JSON.stringify(listing || {}, null, 2)}
 
 Agent:
-${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email } || {}, null, 2)}
+${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email }, null, 2)}
 
 Brochure Type: ${params.brochureType}
 

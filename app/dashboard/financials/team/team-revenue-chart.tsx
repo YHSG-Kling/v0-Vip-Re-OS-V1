@@ -59,7 +59,7 @@ const AGENT_COLORS = [
 export function TeamRevenueChart({ earningsHistory, teamAgents }: TeamRevenueChartProps) {
   // Process earnings history into monthly buckets by agent
   const chartData = useMemo(() => {
-    const monthlyData: Record<string, Record<string, number>> = {}
+    const monthlyData: Record<string, Record<string, any>> = {}
 
     // Group by month
     earningsHistory.forEach((record) => {
@@ -85,12 +85,12 @@ export function TeamRevenueChart({ earningsHistory, teamAgents }: TeamRevenueCha
 
     // Convert to array and sort by month
     const sortedData = Object.values(monthlyData)
-      .sort((a, b) => (a.month as string).localeCompare(b.month as string))
+      .sort((a, b) => String(a.month).localeCompare(String(b.month)))
       .slice(-6) // Last 6 months
 
     // Format month labels
     return sortedData.map((item) => {
-      const [year, month] = (item.month as string).split("-")
+      const [year, month] = String(item.month).split("-")
       const date = new Date(parseInt(year), parseInt(month) - 1)
       return {
         ...item,
@@ -137,10 +137,10 @@ export function TeamRevenueChart({ earningsHistory, teamAgents }: TeamRevenueCha
           tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
         />
         <Tooltip
-          formatter={(value: number, name: string) => [
+          formatter={((value: number, name: string) => [
             `$${value.toLocaleString()}`,
             name === "total" ? "Total GCI" : name,
-          ]}
+          ]) as any}
           contentStyle={{
             backgroundColor: "hsl(var(--background))",
             border: "1px solid hsl(var(--border))",

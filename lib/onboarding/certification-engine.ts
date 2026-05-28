@@ -9,6 +9,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import type { EntityType } from "@/lib/kernel/types"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -375,7 +376,7 @@ export async function completeOnboarding(
   // 4. Transition lifecycle (only once, check prevents duplicate)
   await transitionLifecycle({
     brokerageId,
-    entityType: 'agent_onboarding_machine',
+    entityType: 'agent_onboarding_machine' as EntityType,
     entityId: onboarding.id,
     fromState: previousState,
     toState: 'completed',
@@ -425,8 +426,6 @@ export async function completeOnboarding(
       title: 'Agent Onboarding Complete',
       body: `${agentName} has completed onboarding and is ready to start.`,
       is_read: false,
-    }).catch(err => {
-      console.error('[CertificationEngine] Admin notification insert failed:', err)
     })
   }
 

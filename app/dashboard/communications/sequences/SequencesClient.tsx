@@ -39,7 +39,7 @@ interface SequencesClientProps {
 const CAMPAIGN_TYPES = [
   { value: "buyer_nurture",   label: "Buyer Nurture" },
   { value: "seller_nurture",  label: "Seller Nurture" },
-  { value: "past_client",     label: "Past Client" },
+  { value: "lifetime_customer",     label: "Lifetime Customer" },
   { value: "sphere",          label: "Sphere of Influence" },
   { value: "investor",        label: "Investor" },
   { value: "relocation",      label: "Relocation" },
@@ -125,9 +125,9 @@ export default function SequencesClient({
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Sequences</h1>
+          <h1 className="text-2xl font-bold text-foreground">Drip Sequences</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            AI-powered drip campaigns and automated follow-up sequences.
+            Multi-touch nurture sequences for buyers, sellers, and leads (email + SMS + voice drop + AI call).
           </p>
         </div>
         <Button
@@ -245,8 +245,15 @@ export default function SequencesClient({
         </h2>
 
         {campaigns.length === 0 ? (
-          <div className="rounded-lg border border-border bg-card p-10 text-center text-muted-foreground text-sm">
-            No sequences yet. Generate your first AI drip campaign above.
+          <div className="rounded-lg border border-dashed border-border bg-card p-10 text-center space-y-2">
+            <p className="text-sm font-medium text-foreground">No nurture sequences yet</p>
+            <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+              Build multi-touch follow-up sequences to guide buyers, sellers, and leads through their journey — email, SMS, voice drop, and AI calls.
+            </p>
+            <Button size="sm" className="gap-2 mt-2" onClick={() => setShowForm(true)}>
+              <Plus size={14} />
+              Generate AI Drip Campaign
+            </Button>
           </div>
         ) : (
           campaigns.map(c => (

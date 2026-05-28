@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
@@ -51,17 +52,38 @@ export async function initiateAIISAEngagement(
   const supabase = createServiceClient()
 
   try {
+    // ── AUTH GATE ────────────────────────────────────────────────────────
+    // Permitted callers:
+    //   1. Session-authenticated server actions (UI) — verify ctx.brokerageId
+    //      matches the lead row's brokerage_id.
+    //   2. Internal trusted callers (cron, internal server-action chain like
+    //      app/actions/leads.ts post-create). CRON_SECRET must be set so an
+    //      unconfigured deploy does not silently become an open endpoint.
+    const ctx = await getAgentContext()
+    const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
+    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    if (!hasSession && !isTrustedInternal) {
+      return { success: false, reason: 'Unauthorized' }
+    }
+
     // ── Fetch lead with channel fields ──────────────────────────────────────
-    const { data: lead, error: leadError } = await supabase
+    let leadQuery = supabase
       .from('leads')
       .select(
         `*, preferred_channel, call_stop_flag, contact_id`
       )
       .eq('id', leadId)
-      .maybeSingle()
+    if (hasSession && ctx.brokerageId) {
+      leadQuery = leadQuery.eq('brokerage_id', ctx.brokerageId)
+    }
+    const { data: lead, error: leadError } = await leadQuery.maybeSingle()
 
     if (leadError || !lead) {
       throw new Error(`Lead not found: ${leadId}`)
+    }
+
+    if (hasSession && ctx.brokerageId && lead.brokerage_id !== ctx.brokerageId) {
+      return { success: false, reason: 'Forbidden' }
     }
 
     if (lead.agent_id) {
@@ -303,11 +325,15 @@ async function dispatchToChannel(
     const videoResult = await generateHeyGenVideo({
       leadId: lead.id,
       firstName: lead.first_name || 'there',
+      brokerageId: lead.brokerage_id,
+      recipientEmail: lead.email ?? '',
       motivation_type: lead.motivation_type,
       property_interest: lead.property_interest,
       timeline: lead.timeline,
     })
-    const finalEmailBody = await embedVideoInEmail(body, videoResult.videoUrl)
+    // HeyGen rendering is async — videoId is a provider message ID, not a playable URL.
+    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+    const finalEmailBody = await embedVideoInEmail(body, null)
 
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({
@@ -348,9 +374,10 @@ async function dispatchToChannel(
       bodySnippet: finalEmailBody.substring(0, 500),
     })
 
-    // Unified inbox row
+    // Unified inbox row — stamped with brokerage for billing rollups
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'email',
       direction: 'outbound',
       subject,
@@ -369,6 +396,7 @@ async function dispatchToChannel(
     if (shouldSendMail) {
       await triggerDirectMailCampaign({
         leadId: lead.id,
+        brokerageId: lead.brokerage_id,
         firstName: lead.first_name || '',
         lastName: lead.last_name || '',
         motivation_type: lead.motivation_type,
@@ -414,7 +442,7 @@ async function dispatchToChannel(
     })
 
     if (callContext.blocked) {
-      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockedReason)
+      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockReason)
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
@@ -424,6 +452,9 @@ async function dispatchToChannel(
       vapiResponse = await initiateCall({
         phoneNumber:  phone,
         assistantId:  vapiAssistantId,
+        contactId:    contactRow.id,
+        brokerageId:  lead.brokerage_id,
+        initiatedBy:  lead.agent_id ?? null,
         assistantOverrides: {
           name:         callContext.assistantName,
           firstMessage: callContext.firstMessage,
@@ -431,7 +462,7 @@ async function dispatchToChannel(
           ...(callContext.voiceConfig?.voiceId
             ? {
                 voice: {
-                  provider:        callContext.voiceConfig.provider ?? 'elevenlabs',
+                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as any,
                   voiceId:         callContext.voiceConfig.voiceId,
                   stability:       callContext.voiceConfig.stability        ?? 0.7,
                   similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
@@ -448,7 +479,7 @@ async function dispatchToChannel(
     }
 
     // voice_calls row — initiateCall confirmed the call is live
-    const { data: voiceCallRow } = await supabase
+    const voiceCallRow = await supabase
       .from('voice_calls')
       .insert({
         contact_id:  contactRow.id,
@@ -456,14 +487,13 @@ async function dispatchToChannel(
         agent_id:    lead.agent_id ?? null,
         vapi_call_id: vapiResponse.id,
         direction:   'outbound',
-        call_type:   'isa_ai',
+        call_type:   'ai_isa_call',
         status:      'initiated',
         started_at:  new Date().toISOString(),
       })
       .select('id')
       .single()
-      .then((r) => r.data)
-      .catch(() => null)
+      .then((r) => r.data, () => null)
 
     // vapi_voice_calls billing row
     await supabase.from('vapi_voice_calls').insert({
@@ -473,7 +503,7 @@ async function dispatchToChannel(
       assistant_id:  vapiAssistantId,
       agent_id:      lead.agent_id ?? null,
       contact_id:    contactRow.id,
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     // ai_isa_calls — use callPurpose as script_used (not raw systemPrompt)
     await supabase.from('ai_isa_calls').insert({
@@ -484,7 +514,7 @@ async function dispatchToChannel(
       isa_campaign_id: null,
       script_used:     'isa_qualification',
       appointment_set: false,
-    }).catch((err: any) => {
+    }).then(() => {}, (err: any) => {
       console.error('[AI-ISA] ai_isa_calls insert error (phone path):', err?.message)
     })
 
@@ -543,6 +573,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'sms',
       direction: 'outbound',
       body: smsBody,
@@ -563,6 +594,7 @@ async function dispatchToChannel(
 
     await triggerDirectMailCampaign({
       leadId: lead.id,
+      brokerageId: lead.brokerage_id,
       firstName: lead.first_name || '',
       lastName: lead.last_name || '',
       motivation_type: lead.motivation_type,
@@ -578,6 +610,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'direct_mail',
       direction: 'outbound',
       body: 'Direct mail campaign initiated',
@@ -608,6 +641,7 @@ async function dispatchToChannel(
 
     await supabase.from('messages').insert({
       contact_id: leadId,
+      brokerage_id: lead.brokerage_id,
       type: 'social',
       direction: 'outbound',
       body: socialBody,

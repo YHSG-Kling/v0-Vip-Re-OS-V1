@@ -93,7 +93,7 @@ export function NeighborhoodWidget({ data: initialData, listingId }: Neighborhoo
       .select("neighborhood_name, school_ratings, walk_score, transit_score, crime_index, ai_summary, generated_at")
       .eq("listing_id", listingId)
       .maybeSingle()
-      .then(({ data: report }) => {
+      .then(({ data: report }: { data: any }) => {
         setData(report ?? null)
         setLoading(false)
       })

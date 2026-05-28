@@ -1,11 +1,12 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 /**
  * AI Client Gifting System
@@ -30,16 +31,18 @@ export async function aiRecommendGift(params: {
 
   try {
     // Get contact details and history
-    const { data: contact } = await supabase
+    const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select(`
         *,
-        transactions(sale_price, property_type, close_date),
-        interactions(notes)
+        transactions(sale_price, property_type, close_date)
       `)
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
+    if (contactErr) {
+      return { success: false, error: contactErr.message }
+    }
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
@@ -145,7 +148,7 @@ export async function aiPlanBulkGifting(params: {
         transactions(sale_price, close_date)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", ["past_client", "sphere", "referral_partner"])
+      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { tiers: [], totalRecipients: 0 } }
@@ -228,18 +231,18 @@ export async function createGiftOrder(params: {
     const { data: gift } = await supabase
       .from("client_gifts")
       .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        gift_type: params.giftDetails.name,
-        gift_description: params.giftDetails.description,
-        cost: params.giftDetails.cost,
-        vendor: params.giftDetails.vendor,
-        occasion: params.giftDetails.occasion,
-        personal_note: params.giftDetails.personalNote,
-        delivery_address: params.deliveryAddress,
-        scheduled_delivery: params.deliveryDate,
-        status: "pending",
-        created_at: new Date().toISOString(),
+        agent_id:             params.agentId,
+        contact_id:           params.contactId,
+        gift_type:            params.giftDetails.name,
+        gift_name:            params.giftDetails.name,
+        gift_description:     params.giftDetails.description,
+        estimated_cost:       params.giftDetails.cost,
+        vendor_name:          params.giftDetails.vendor,
+        occasion:             params.giftDetails.occasion,
+        personalization_note: params.giftDetails.personalNote ?? null,
+        delivery_address:     params.deliveryAddress ?? null,
+        scheduled_delivery:   params.deliveryDate ?? null,
+        status:               "pending",
       })
       .select()
       .single()
@@ -269,18 +272,21 @@ export async function aiGenerateThankYouNote(params: {
   const supabase = await createClient()
 
   try {
-    const { data: contact } = await supabase
+    const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select(`*, transactions(property_address, close_date)`)
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     const { data: agent } = await supabase
       .from("agents")
       .select("first_name, last_name")
       .eq("id", params.agentId)
-      .single()
+      .maybeSingle()
 
+    if (contactErr) {
+      return { success: false, error: contactErr.message }
+    }
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }

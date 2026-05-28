@@ -3,6 +3,8 @@
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
+import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -20,6 +22,10 @@ import {
   advanceTransactionStage,
   markTransactionLost,
 } from "@/app/actions/transaction-stage-machine"
+import {
+  completeMilestoneAction,
+  overrideMilestoneAction,
+} from "@/app/actions/transaction-milestones"
 import {
   scheduleInspectionAction,
   approveInspectionQuoteAction,
@@ -48,8 +54,17 @@ import {
   Scale,
   ClipboardList,
   PenLine,
+  ArrowLeft,
+  ArrowRight,
+  MapPin,
+  Calendar,
+  Shield,
+  Wrench,
+  CheckSquare,
   Brain,
   TrendingDown,
+  TrendingUp,
+  RefreshCw,
   Landmark,
   ExternalLink,
   Plus,
@@ -81,12 +96,22 @@ import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { AssignTCPanel } from "./assign-tc-panel"
 import { AssignLenderPanel } from "./assign-lender-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
+import { VendorBookingSection } from "@/app/components/transactions/VendorBookingSection"
 import {
   analyzeTransactionDocument,
   generateTransactionDocumentReminders,
   checkTransactionDisclosures,
   shareDocumentAnalysisWithClient,
 } from "@/app/actions/ai-transaction-documents"
+import {
+  resolveFormsProviderAction,
+  loadAvailableFormsAction,
+} from "@/app/actions/forms-kernel"
+import { detectTransactionIssues, detectTransactionDelays } from "@/app/actions/transactions"
+import {
+  TransactionFormEsignFlow,
+  type FormTemplate,
+} from "./components/transaction-form-esign-flow"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -118,16 +143,20 @@ interface TransactionDetailClientProps {
     updated_at: string
   }
   brokerageId: string
-  userRole: string
+  brokerageName?: string
+  brokerageLogoUrl?: string
+  userType: string
   userId: string
   milestones: Array<{
     id: string
     milestone_name: string
-    milestone_date: string | null
+    target_date: string | null
     status: string
     completed_at: string | null
     notes: string | null
     is_client_visible: boolean | null
+    override_at: string | null
+    override_reason: string | null
   }>
   deadlines: Array<{
     id: string
@@ -171,7 +200,19 @@ interface TransactionDetailClientProps {
     score_delta: number | null
     scored_at: string
   } | null
-  unresolvedInterventionsCount: number
+  unresolvedInterventions: Array<{
+    id: string
+    issue_detected: string
+    severity: string
+    ai_recommendation: string | null
+    client_impacted: boolean | null
+    created_at: string
+  }>
+  healthScoreHistory: Array<{
+    overall_score: number
+    risk_level: string
+    scored_at: string
+  }>
   tasks: Array<{
     id: string
     title: string
@@ -341,6 +382,7 @@ interface TransactionDetailClientProps {
     id: string
     display_name: string | null
     max_active_deals: number | null
+    active_transactions_count?: number | null
   }>
   // Lender assignment
   currentLenderId?: string | null
@@ -389,7 +431,9 @@ function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): Loa
 export function TransactionDetailClient({
   transaction,
   brokerageId,
-  userRole,
+  brokerageName,
+  brokerageLogoUrl,
+  userType,
   userId,
   milestones,
   deadlines,
@@ -398,7 +442,8 @@ export function TransactionDetailClient({
   documents,
   documentCountsByStatus,
   healthScore,
-  unresolvedInterventionsCount,
+  unresolvedInterventions,
+  healthScoreHistory,
   tasks,
   timeline,
   titleEscrow,
@@ -426,6 +471,45 @@ export function TransactionDetailClient({
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
+  // Deal Health interactive state — rescan + intervention resolve
+  const [rescanning, setRescanning] = useState(false)
+  const [resolvingId, setResolvingId] = useState<string | null>(null)
+
+  async function handleRescan() {
+    if (rescanning) return
+    setRescanning(true)
+    try {
+      const r = await rescanDealHealthAction({ transactionId: transaction.id })
+      if (r.success) {
+        toast.success(`Health rescored — ${r.overallScore}/100 (${r.riskLevel})`)
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "Rescan failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Rescan failed")
+    } finally {
+      setRescanning(false)
+    }
+  }
+
+  async function handleResolveIntervention(interventionId: string) {
+    setResolvingId(interventionId)
+    try {
+      const r = await resolveInterventionAction({ interventionId })
+      if (r.success) {
+        toast.success("Intervention marked resolved")
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "Could not resolve")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not resolve")
+    } finally {
+      setResolvingId(null)
+    }
+  }
+
   // Local milestones state — allows optimistic visibility toggle updates
   const [localMilestones, setLocalMilestones] = useState(milestones)
 
@@ -436,6 +520,85 @@ export function TransactionDetailClient({
   const [blockers, setBlockers] = useState<string[]>([])
   const [targetStage, setTargetStage] = useState<TransactionStage | null>(null)
   const [advanceReason, setAdvanceReason] = useState("")
+
+  // Manual override state — only shown to user_types with override authority.
+  // Server-side requireOverrideActor enforces the same set; UI gate is for UX
+  // only (no security boundary).
+  const OVERRIDE_USER_TYPES = new Set([
+    "broker", "broker_admin", "admin", "superadmin",
+    "compliance_officer", "compliance_manager",
+  ])
+  const canOverrideStage = OVERRIDE_USER_TYPES.has(userType?.toLowerCase?.() ?? "")
+  const [showOverridePanel, setShowOverridePanel] = useState(false)
+  const [overrideReason, setOverrideReason] = useState("")
+  const [overrideError, setOverrideError] = useState<string | null>(null)
+
+  // Milestone override dialog state — separate from stage override so both
+  // can be in flight independently.
+  const [milestoneOverrideName, setMilestoneOverrideName] = useState<string | null>(null)
+  const [milestoneOverrideReason, setMilestoneOverrideReason] = useState("")
+  const [milestoneOverrideError, setMilestoneOverrideError] = useState<string | null>(null)
+
+  async function handleMilestoneOverride() {
+    if (!milestoneOverrideName) return
+    if (milestoneOverrideReason.trim().length < 10) {
+      setMilestoneOverrideError("Override reason must be at least 10 characters for the audit trail.")
+      return
+    }
+    setMilestoneOverrideError(null)
+    startTransition(async () => {
+      const res = await overrideMilestoneAction({
+        transactionId:  transaction.id,
+        brokerageId,
+        milestoneName:  milestoneOverrideName,
+        overrideReason: milestoneOverrideReason.trim(),
+      })
+      if (res.success) {
+        // Local update — show the override visually (kept as pending but
+        // with override_by stamped server-side; UI distinguishes via a chip
+        // on the next render)
+        setLocalMilestones((prev) =>
+          prev.map((row) =>
+            row.milestone_name === milestoneOverrideName
+              ? { ...row, override_at: new Date().toISOString(), override_reason: milestoneOverrideReason.trim() }
+              : row,
+          ),
+        )
+        setMilestoneOverrideName(null)
+        setMilestoneOverrideReason("")
+        toast.success("Milestone overridden — audit row written")
+      } else {
+        setMilestoneOverrideError(res.error ?? "Override failed")
+      }
+    })
+  }
+
+  async function handleForceAdvance() {
+    if (!targetStage) return
+    if (overrideReason.trim().length < 10) {
+      setOverrideError("Override reason must be at least 10 characters for the audit trail.")
+      return
+    }
+    setOverrideError(null)
+    startTransition(async () => {
+      const result = await advanceTransactionStage({
+        transactionId: transaction.id,
+        brokerageId,
+        targetStage,
+        reason: advanceReason || undefined,
+        overrideReason: overrideReason.trim(),
+      })
+      if (result.success) {
+        setShowBlockersModal(false)
+        setShowOverridePanel(false)
+        setOverrideReason("")
+        setAdvanceReason("")
+        router.refresh()
+      } else {
+        setOverrideError(result.error ?? "Override failed")
+      }
+    })
+  }
 
   // Lost modal state
   const [lostReason, setLostReason] = useState("")
@@ -464,6 +627,42 @@ export function TransactionDetailClient({
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
 
+  // Forms tab state — lazy loaded when tab is first opened
+  const [formsProvider, setFormsProvider] = useState<{ provider_name: string; is_configured: boolean } | null>(null)
+  const [availableForms, setAvailableForms] = useState<Array<{ id: string; name: string; category: string; form_type: string; is_required: boolean; description?: string }>>([])
+  const [formsLoading, setFormsLoading] = useState(false)
+  const [formsLoaded, setFormsLoaded] = useState(false)
+  const [activeTab, setActiveTab] = useState("milestones")
+
+  // E-sign flow sheet state
+  const [esignFlowForm, setEsignFlowForm] = useState<FormTemplate | null>(null)
+
+  // Add Deadline form
+  const [showAddDeadline, setShowAddDeadline] = useState(false)
+  const [newDeadlineLabel, setNewDeadlineLabel] = useState("")
+  const [newDeadlineType, setNewDeadlineType] = useState("contingency_period")
+  const [newDeadlineDate, setNewDeadlineDate] = useState("")
+
+  // Add Participant form
+  const [showAddParticipant, setShowAddParticipant] = useState(false)
+  const [newParticipantName, setNewParticipantName] = useState("")
+  const [newParticipantRole, setNewParticipantRole] = useState("cooperating_agent")
+  const [newParticipantEmail, setNewParticipantEmail] = useState("")
+  const [newParticipantPhone, setNewParticipantPhone] = useState("")
+  const [newParticipantCompany, setNewParticipantCompany] = useState("")
+
+  // Add Commission form
+  const [showAddCommission, setShowAddCommission] = useState(false)
+  const [newCommRecipientName, setNewCommRecipientName] = useState("")
+  const [newCommRecipientType, setNewCommRecipientType] = useState("agent")
+  const [newCommType, setNewCommType] = useState("buyer_side")
+  const [newCommRate, setNewCommRate] = useState("")
+
+  // Submit Repair Request form
+  const [showRepairForm, setShowRepairForm] = useState(false)
+  const [newRepairItem, setNewRepairItem] = useState("")
+  const [newRepairCost, setNewRepairCost] = useState("")
+
   // Deal Health Prediction — loaded once on mount, no blocking
   const [dealPrediction, setDealPrediction] = useState<any>(null)
   const [dealPredLoading, setDealPredLoading] = useState(false)
@@ -474,6 +673,33 @@ export function TransactionDetailClient({
       .then(setDealPrediction)
       .catch(() => null)
       .finally(() => setDealPredLoading(false))
+  }, [transaction.id])
+
+  // Transaction Warnings — issues + delays loaded on mount
+  const [txWarnings, setTxWarnings] = useState<string[]>([])
+
+  useEffect(() => {
+    Promise.all([
+      detectTransactionIssues(transaction.id).catch(() => null),
+      detectTransactionDelays(transaction.id).catch(() => null),
+    ]).then(([issues, delays]) => {
+      const warnings: string[] = []
+      if (issues && typeof issues === "object" && "issues" in issues) {
+        const issueList = (issues as any).issues
+        if (Array.isArray(issueList)) {
+          issueList.forEach((i: any) => warnings.push(typeof i === "string" ? i : i.description ?? i.issue ?? String(i)))
+        }
+      }
+      if (Array.isArray(delays)) {
+        delays.forEach((d: any) => warnings.push(d.description ?? d.delay ?? String(d)))
+      } else if (delays && typeof delays === "object" && "delays" in delays) {
+        const delayList = (delays as any).delays
+        if (Array.isArray(delayList)) {
+          delayList.forEach((d: any) => warnings.push(d.description ?? d.delay ?? String(d)))
+        }
+      }
+      setTxWarnings(warnings)
+    })
   }, [transaction.id])
 
   // E-sign local state (optimistic updates for linked offer)
@@ -499,6 +725,28 @@ export function TransactionDetailClient({
       setTransparencyUpdates(u)
     })
   }, [transaction.id])
+
+  // Lazy-load transaction forms when the Forms tab is first opened
+  useEffect(() => {
+    if (activeTab !== "forms" || formsLoaded || formsLoading) return
+    setFormsLoading(true)
+    Promise.all([
+      resolveFormsProviderAction(),
+      loadAvailableFormsAction({
+        context_type: "transaction",
+        state: transaction.property_state ?? undefined,
+      }),
+    ]).then(([providerRes, formsRes]) => {
+      if (providerRes.success && providerRes.data) {
+        setFormsProvider(providerRes.data)
+      }
+      if (formsRes.success && formsRes.data) {
+        setAvailableForms(formsRes.data.forms)
+      }
+      setFormsLoaded(true)
+      setFormsLoading(false)
+    }).catch(() => setFormsLoading(false))
+  }, [activeTab, formsLoaded, formsLoading, transaction.property_state])
 
   // Deposits state
   const [deposits, setDeposits] = useState<Array<{
@@ -902,12 +1150,27 @@ export function TransactionDetailClient({
         </Alert>
       )}
 
+      {/* AI Warnings Panel */}
+      {txWarnings.length > 0 && (
+        <Alert className="rounded-none border-x-0 border-t-0 border-yellow-300 bg-yellow-50">
+          <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          <AlertTitle className="text-yellow-800">Transaction Warnings</AlertTitle>
+          <AlertDescription>
+            <ul className="list-disc list-inside space-y-0.5 mt-1">
+              {txWarnings.map((w, i) => (
+                <li key={i} className="text-sm text-yellow-700">{w}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Header */}
       <div className="border-b bg-card">
         <div className="container py-4">
           <div className="flex items-center gap-4 mb-3">
             <Link
-              href={userRole === "tc" ? "/dashboard/coordinator" : "/dashboard/transactions"}
+              href={userType === "tc" ? "/dashboard/coordinator" : "/dashboard/transactions"}
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="h-5 w-5" />
@@ -940,6 +1203,120 @@ export function TransactionDetailClient({
           </div>
         </div>
       </div>
+
+      {/* Milestone Timeline Ribbon */}
+      {(() => {
+        const KEY_MILESTONES: Array<{ label: string; owner: string }> = [
+          { label: "Earnest Money", owner: "TC / Buyer" },
+          { label: "Inspection",    owner: "TC / Agent" },
+          { label: "Appraisal",     owner: "Lender" },
+          { label: "Financing",     owner: "Lender" },
+          { label: "Clear to Close", owner: "Lender" },
+          { label: "Final Walkthrough", owner: "Agent" },
+          { label: "Closing Date",  owner: "TC / Title" },
+        ]
+        const now = new Date()
+        const ribbonItems = KEY_MILESTONES.map(({ label, owner }) => {
+          const found = milestones.find((m) =>
+            m.milestone_name?.toLowerCase().includes(label.toLowerCase())
+          ) ?? deadlines.find((d) =>
+            d.deadline_type?.toLowerCase().includes(label.toLowerCase())
+          )
+          const date = found
+            ? new Date((found as any).target_date ?? (found as any).deadline_date ?? "")
+            : null
+          const completed = (found as any)?.status === "completed" || (found as any)?.status === "done"
+          const overdue = !!(date && date < now && !completed)
+          const daysOverdue = overdue && date ? Math.floor((now.getTime() - date.getTime()) / 86400000) : 0
+          return { label, owner, date, completed, overdue, daysOverdue }
+        })
+
+        // Compliance flags derived from available data
+        const hasAllDocs = (documentCountsByStatus?.approved ?? 0) > 0 && (documentCountsByStatus?.missing ?? 0) === 0
+        const tridDoc = documents.find((d) => d.doc_type?.includes("closing_disclosure") || d.doc_type?.includes("trid"))
+        const tridSent = !!tridDoc && tridDoc.status !== "missing" && tridDoc.status !== "rejected"
+
+        return (
+          <div className="border-b bg-muted/30">
+            {/* Milestone dots */}
+            <div className="container pt-3 pb-1 overflow-x-auto">
+              <div className="flex items-start gap-0 min-w-max">
+                {ribbonItems.map((item, i) => (
+                  <div key={item.label} className="flex items-start">
+                    <div className="flex flex-col items-center px-3">
+                      <div
+                        className={cn(
+                          "h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                          item.completed
+                            ? "bg-emerald-500 text-white"
+                            : item.overdue
+                            ? "bg-red-500 text-white"
+                            : "bg-muted border-2 border-border text-muted-foreground"
+                        )}
+                      >
+                        {item.completed ? "✓" : item.overdue ? "!" : i + 1}
+                      </div>
+                      <p className="text-[10px] font-medium mt-1 text-center w-16 leading-tight">
+                        {item.label}
+                      </p>
+                      <p className="text-[9px] text-muted-foreground text-center w-16">{item.owner}</p>
+                      {item.date && (
+                        <p
+                          className={cn(
+                            "text-[9px] tabular-nums",
+                            item.overdue
+                              ? "text-red-600 font-semibold"
+                              : item.completed
+                              ? "text-emerald-600"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {item.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                          {item.overdue && item.daysOverdue > 0 && ` (+${item.daysOverdue}d)`}
+                        </p>
+                      )}
+                      {item.overdue && (
+                        <span className="text-[8px] uppercase tracking-wide text-red-600 font-bold mt-0.5">
+                          OVERDUE
+                        </span>
+                      )}
+                    </div>
+                    {i < ribbonItems.length - 1 && (
+                      <div
+                        className={cn(
+                          "h-px w-8 shrink-0 mt-3",
+                          ribbonItems[i + 1]?.completed
+                            ? "bg-emerald-400"
+                            : ribbonItems[i + 1]?.overdue
+                            ? "bg-red-300"
+                            : "bg-border"
+                        )}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Compliance flags strip */}
+            <div className="container pb-2 flex items-center gap-4 flex-wrap text-[10px]">
+              <span className="text-muted-foreground font-medium uppercase tracking-wide">Compliance:</span>
+              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-600" : "text-amber-600")}>
+                {tridSent ? "✓" : "⚠"} TRID Disclosure
+              </span>
+              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-600" : "text-amber-600")}>
+                {hasAllDocs ? "✓" : "⚠"} All Docs Uploaded
+              </span>
+              <Link
+                href={`/dashboard/transactions/${transaction.id}/cda`}
+                className="flex items-center gap-1 text-primary hover:underline"
+              >
+                → CDA Status
+              </Link>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Main Layout: LEFT / CENTER / RIGHT */}
       <div className="container py-6">
@@ -997,7 +1374,7 @@ export function TransactionDetailClient({
                 {canMarkLost && (
                   <div className="pt-3 border-t mt-3 space-y-1">
                     {/* Close Transaction — sets status=closed, stage=CLOSED */}
-                    {currentStage !== "CLOSED" && currentStage !== "LOST" && (
+                    {(currentStage as string) !== "CLOSED" && (currentStage as string) !== "LOST" && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1025,7 +1402,7 @@ export function TransactionDetailClient({
                       </Button>
                     )}
                     {/* Reopen — only shown when closed; requires broker/admin */}
-                    {currentStage === "CLOSED" && (
+                    {(currentStage as string) === "CLOSED" && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1142,6 +1519,14 @@ export function TransactionDetailClient({
                     <p className="text-muted-foreground">Deal Type</p>
                     <p className="font-medium">{transaction.deal_type ?? "Purchase"}</p>
                   </div>
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Brokerage</p>
+                    {brokerageLogoUrl ? (
+                      <img src={brokerageLogoUrl} alt={brokerageName ?? "Brokerage"} className="h-6 w-auto object-contain mt-1" />
+                    ) : (
+                      <p className="font-medium">{brokerageName ?? "—"}</p>
+                    )}
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1213,10 +1598,100 @@ export function TransactionDetailClient({
                 ) : (
                   <p className="text-sm text-muted-foreground">No health score calculated yet.</p>
                 )}
-                {unresolvedInterventionsCount > 0 && (
-                  <p className="text-xs text-amber-600 mt-2">
-                    {unresolvedInterventionsCount} unresolved intervention(s)
-                  </p>
+                {/* Trend + actions row — always rendered when we have a score */}
+                {healthScore && (
+                  <div className="mt-3 pt-3 border-t flex items-center justify-between gap-2 text-[11px]">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      {typeof healthScore.score_delta === "number" && healthScore.score_delta !== 0 ? (
+                        <span className={cn(
+                          "inline-flex items-center gap-0.5 font-medium",
+                          healthScore.score_delta > 0 ? "text-emerald-600" : "text-red-600",
+                        )}>
+                          {healthScore.score_delta > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                          {healthScore.score_delta > 0 ? "+" : ""}{healthScore.score_delta}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-0.5">— flat</span>
+                      )}
+                      {healthScoreHistory && healthScoreHistory.length > 1 && (
+                        <span className="text-[10px]">
+                          ({healthScoreHistory.length} scores · last {new Date(healthScore.scored_at).toLocaleDateString()})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] gap-1"
+                        disabled={rescanning}
+                        onClick={handleRescan}
+                        title="Trigger fresh deal-health score now"
+                      >
+                        <RefreshCw className={cn("h-3 w-3", rescanning && "animate-spin")} />
+                        Refresh
+                      </Button>
+                      <Link
+                        href={`/dashboard/transactions/${transaction.id}/health`}
+                        className="inline-flex items-center gap-1 h-6 px-2 text-[11px] rounded-md hover:bg-accent"
+                      >
+                        Full report
+                        <ChevronRight className="h-3 w-3" />
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
+                {/* Unresolved interventions list — actionable inline */}
+                {unresolvedInterventions && unresolvedInterventions.length > 0 && (
+                  <div className="mt-3 pt-3 border-t space-y-2">
+                    <p className="text-[11px] font-semibold text-foreground">
+                      {unresolvedInterventions.length} open intervention{unresolvedInterventions.length === 1 ? "" : "s"}
+                    </p>
+                    <ul className="space-y-1.5">
+                      {unresolvedInterventions.slice(0, 3).map((iv) => (
+                        <li key={iv.id} className={cn(
+                          "rounded-md border p-2 text-[11px] space-y-0.5",
+                          iv.severity === "critical" ? "border-red-200 bg-red-50" :
+                          iv.severity === "high"     ? "border-amber-200 bg-amber-50" :
+                                                       "border-input bg-muted/20",
+                        )}>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-medium leading-snug">{iv.issue_detected}</p>
+                            <span className={cn(
+                              "text-[9px] uppercase px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap",
+                              iv.severity === "critical" ? "bg-red-200 text-red-800" :
+                              iv.severity === "high"     ? "bg-amber-200 text-amber-800" :
+                                                           "bg-gray-200 text-gray-700",
+                            )}>
+                              {iv.severity}
+                            </span>
+                          </div>
+                          {iv.ai_recommendation && (
+                            <p className="text-muted-foreground leading-snug">{iv.ai_recommendation}</p>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-5 px-1.5 text-[10px] mt-0.5"
+                            disabled={resolvingId === iv.id}
+                            onClick={() => handleResolveIntervention(iv.id)}
+                          >
+                            {resolvingId === iv.id ? <Loader2 className="h-2.5 w-2.5 animate-spin mr-1" /> : null}
+                            Mark resolved
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                    {unresolvedInterventions.length > 3 && (
+                      <Link
+                        href={`/dashboard/transactions/${transaction.id}/health`}
+                        className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                      >
+                        See all {unresolvedInterventions.length} interventions →
+                      </Link>
+                    )}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -1330,8 +1805,8 @@ export function TransactionDetailClient({
             <AssignTCPanel
               transactionId={transaction.id}
               currentCoordinatorId={currentCoordinatorId}
-              availableTCs={availableTCs}
-              userRole={userRole}
+              availableTCs={(availableTCs ?? []) as any[]}
+              userType={userType}
             />
 
             {/* Assign Lender Panel */}
@@ -1339,7 +1814,7 @@ export function TransactionDetailClient({
               transactionId={transaction.id}
               currentLenderId={currentLenderId}
               availableLenders={availableLenders}
-              userRole={userRole}
+              userType={userType}
             />
 
             {/* Lending Status Card */}
@@ -1574,73 +2049,137 @@ export function TransactionDetailClient({
           </div>
         </div>
 
-        {/* Tabs Section */}
+        {/* Tabs Section — 5 grouped outer tabs with sub-tabs.
+            Inner TabsContent values unchanged so existing content blocks
+            keep rendering as-is. */}
         <div className="mt-6">
-          <Tabs defaultValue="milestones">
-            <TabsList className="flex-wrap h-auto gap-1">
-              <TabsTrigger value="milestones" className="text-xs">
-                <Calendar className="h-3 w-3 mr-1" />
-                Milestones
-              </TabsTrigger>
-              <TabsTrigger value="deadlines" className="text-xs">
-                <Clock className="h-3 w-3 mr-1" />
-                Deadlines
-              </TabsTrigger>
-              <TabsTrigger value="participants" className="text-xs">
-                <Users className="h-3 w-3 mr-1" />
-                Participants
-              </TabsTrigger>
-              <TabsTrigger value="lender" className="text-xs">
-                <Building2 className="h-3 w-3 mr-1" />
-                Lender
-              </TabsTrigger>
-              <TabsTrigger value="title" className="text-xs">
-                <Home className="h-3 w-3 mr-1" />
-                Title & Escrow
-              </TabsTrigger>
-              <TabsTrigger value="deposits" className="text-xs">
-                <Landmark className="h-3 w-3 mr-1" />
-                Deposits &amp; Compliance
-                {(() => {
-                  const overdueCount = complianceTasks.filter(
-                    t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
-                  ).length
-                  return overdueCount > 0 ? (
-                    <Badge variant="destructive" className="ml-1 h-4 px-1 text-xs">
-                      {overdueCount}
-                    </Badge>
-                  ) : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) ? (
-                    <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
-                  ) : null
-                })()}
-              </TabsTrigger>
-              <TabsTrigger value="inspection" className="text-xs">
-                <Shield className="h-3 w-3 mr-1" />
-                Inspection
-              </TabsTrigger>
-              <TabsTrigger value="vendors" className="text-xs">
-                <Wrench className="h-3 w-3 mr-1" />
-                Vendors
-              </TabsTrigger>
-              <TabsTrigger value="documents" className="text-xs">
-                <FileText className="h-3 w-3 mr-1" />
-                Documents
-              </TabsTrigger>
-              <TabsTrigger value="repairs" className="text-xs">
-                Repairs
-              </TabsTrigger>
-              <TabsTrigger value="compliance" className="text-xs">
-                Compliance
-              </TabsTrigger>
-              <TabsTrigger value="commissions" className="text-xs">
-                <DollarSign className="h-3 w-3 mr-1" />
-                Commissions
-              </TabsTrigger>
-              <TabsTrigger value="partners" className="text-xs">
-                <Landmark className="h-3 w-3 mr-1" />
-                Partners
-              </TabsTrigger>
-            </TabsList>
+          {(() => {
+            // Map any existing tab value → outer group
+            const TIMELINE_SUBS = ["milestones", "deadlines", "deposits", "inspection", "repairs"] as const
+            const TEAM_SUBS     = ["participants", "lender", "title", "partners"] as const
+            const DOCS_SUBS     = ["documents", "forms", "compliance"] as const
+            const outerTab =
+              TIMELINE_SUBS.includes(activeTab as any) ? "timeline" :
+              TEAM_SUBS.includes(activeTab as any)     ? "team" :
+              DOCS_SUBS.includes(activeTab as any)     ? "docs" :
+              activeTab === "commissions"              ? "money" :
+              activeTab === "vendors"                  ? "vendors" :
+              "timeline"
+
+            const overdueComplianceCount = complianceTasks.filter(
+              t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+            ).length
+
+            return null
+          })()}
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            {/* OUTER tab navigation — 5 groups */}
+            {(() => {
+              const TIMELINE_SUBS = ["milestones", "deadlines", "deposits", "inspection", "repairs"] as const
+              const TEAM_SUBS     = ["participants", "lender", "title", "partners"] as const
+              const DOCS_SUBS     = ["documents", "forms", "compliance"] as const
+              const outerTab =
+                TIMELINE_SUBS.includes(activeTab as any) ? "timeline" :
+                TEAM_SUBS.includes(activeTab as any)     ? "team" :
+                DOCS_SUBS.includes(activeTab as any)     ? "docs" :
+                activeTab === "commissions"              ? "money" :
+                activeTab === "vendors"                  ? "vendors" :
+                "timeline"
+
+              const overdueComplianceCount = complianceTasks.filter(
+                t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+              ).length
+
+              const outerTabs: Array<{ key: string; label: string; icon: any; defaultSub: string; badge?: React.ReactNode }> = [
+                { key: "timeline", label: "Timeline",  icon: Calendar,      defaultSub: "milestones",
+                  badge: overdueComplianceCount > 0
+                    ? <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">{overdueComplianceCount}</Badge>
+                    : null },
+                { key: "team",     label: "Team",      icon: Users,         defaultSub: "participants" },
+                { key: "docs",     label: "Documents", icon: FileText,      defaultSub: "documents",
+                  badge: formsProvider?.is_configured
+                    ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                    : null },
+                { key: "vendors",  label: "Vendors",   icon: Wrench,        defaultSub: "vendors" },
+                { key: "money",    label: "Money",     icon: DollarSign,    defaultSub: "commissions" },
+              ]
+
+              const subTabsByOuter: Record<string, Array<{ value: string; label: string; icon?: any; badge?: React.ReactNode }>> = {
+                timeline: [
+                  { value: "milestones", label: "Milestones",  icon: Calendar },
+                  { value: "deadlines",  label: "Deadlines",   icon: Clock },
+                  { value: "deposits",   label: "Deposits",    icon: Landmark,
+                    badge: overdueComplianceCount > 0
+                      ? <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">{overdueComplianceCount}</Badge>
+                      : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date())
+                      ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                      : null },
+                  { value: "inspection", label: "Inspection",  icon: Shield },
+                  { value: "repairs",    label: "Repairs" },
+                ],
+                team: [
+                  { value: "participants", label: "Participants", icon: Users },
+                  { value: "lender",       label: "Lender",       icon: Building2 },
+                  { value: "title",        label: "Title & Escrow", icon: Home },
+                  { value: "partners",     label: "Partners",     icon: Landmark },
+                ],
+                docs: [
+                  { value: "documents",  label: "Documents",  icon: FileText },
+                  { value: "forms",      label: "Forms",      icon: ClipboardList,
+                    badge: formsProvider?.is_configured
+                      ? <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                      : null },
+                  { value: "compliance", label: "Compliance" },
+                ],
+              }
+
+              const activeSubs = subTabsByOuter[outerTab]
+
+              return (
+                <>
+                  {/* OUTER tabs — switch active tab to that group's default sub when clicked */}
+                  <div className="flex items-center gap-1 border-b mb-2 overflow-x-auto pb-px">
+                    {outerTabs.map(t => {
+                      const Icon = t.icon
+                      const isActive = outerTab === t.key
+                      return (
+                        <button
+                          key={t.key}
+                          type="button"
+                          onClick={() => setActiveTab(t.defaultSub)}
+                          className={
+                            "px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap -mb-px flex items-center " +
+                            (isActive
+                              ? "border-primary text-primary"
+                              : "border-transparent text-muted-foreground hover:text-foreground")
+                          }
+                        >
+                          <Icon className="h-3.5 w-3.5 mr-1.5" />
+                          {t.label}
+                          {t.badge}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* SUB tabs — only when group has multiple */}
+                  {activeSubs && activeSubs.length > 1 && (
+                    <TabsList className="flex-wrap h-auto gap-1 mb-2">
+                      {activeSubs.map(s => {
+                        const Icon = s.icon
+                        return (
+                          <TabsTrigger key={s.value} value={s.value} className="text-xs">
+                            {Icon && <Icon className="h-3 w-3 mr-1" />}
+                            {s.label}
+                            {s.badge}
+                          </TabsTrigger>
+                        )
+                      })}
+                    </TabsList>
+                  )}
+                </>
+              )
+            })()}
 
             {/* Milestones Tab */}
             <TabsContent value="milestones" className="mt-4">
@@ -1662,8 +2201,8 @@ export function TransactionDetailClient({
                   </div>
                   <div className="space-y-2">
                     {localMilestones.map((m) => {
-                      const isOverdue = m.status !== "completed" && m.milestone_date
-                        ? new Date(m.milestone_date) < new Date()
+                      const isOverdue = m.status !== "completed" && m.target_date
+                        ? new Date(m.target_date) < new Date()
                         : false
                       return (
                       <div key={m.id} className="flex items-center justify-between py-2 border-b last:border-0">
@@ -1687,12 +2226,27 @@ export function TransactionDetailClient({
                           )}>
                             {m.completed_at
                               ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
-                              : m.milestone_date
-                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.milestone_date), "MMM d, yyyy")}`
+                              : m.target_date
+                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.target_date), "MMM d, yyyy")}`
                               : "No date set"}
                           </span>
 
-                          {/* Mark Complete button — only for non-completed milestones */}
+                          {/* Override badge — written when broker forces past blocker */}
+                          {m.override_at && m.status !== "completed" && (
+                            <Badge
+                              variant="outline"
+                              className="h-6 text-[10px] text-amber-700 border-amber-300 bg-amber-50"
+                              title={m.override_reason ?? "Overridden"}
+                            >
+                              <AlertTriangle className="h-3 w-3 mr-1" />
+                              Overridden
+                            </Badge>
+                          )}
+
+                          {/* Mark Complete — uses canonical completeMilestone
+                              so deadline mirror + fan-out to portals + audit
+                              event all fire (Gap #8 wiring). Previously
+                              raw-insert bypassed all that. */}
                           {m.status !== "completed" && (
                             <Button
                               size="sm"
@@ -1701,35 +2255,49 @@ export function TransactionDetailClient({
                               disabled={isPending}
                               onClick={() => {
                                 startTransition(async () => {
-                                  const supabase = createClient()
-                                  const now = new Date().toISOString()
-                                  const { error } = await supabase
-                                    .from("transaction_milestones")
-                                    .update({ status: "completed", completed_at: now })
-                                    .eq("id", m.id)
-                                  if (!error) {
-                                    // Log timeline activity
-                                    await supabase.from("transaction_timeline").insert({
-                                      transaction_id: transaction.id,
-                                      brokerage_id: brokerageId,
-                                      activity_type: "milestone_completed",
-                                      description: `Milestone completed: ${m.milestone_name.replace(/_/g, " ")}`,
-                                      performed_by: userId,
-                                      created_at: now,
-                                    })
+                                  const res = await completeMilestoneAction({
+                                    transactionId: transaction.id,
+                                    brokerageId,
+                                    milestoneName: m.milestone_name,
+                                  })
+                                  if (res.success) {
+                                    const now = new Date().toISOString()
                                     setLocalMilestones((prev) =>
                                       prev.map((row) =>
-                                        row.id === m.id ? { ...row, status: "completed", completed_at: now } : row
-                                      )
+                                        row.id === m.id
+                                          ? { ...row, status: "completed", completed_at: now }
+                                          : row,
+                                      ),
                                     )
                                     toast.success("Milestone marked complete")
                                   } else {
-                                    toast.error("Failed to update milestone")
+                                    toast.error(res.error ?? "Failed to update milestone")
                                   }
                                 })
                               }}
                             >
                               Complete
+                            </Button>
+                          )}
+
+                          {/* Override — only for elevated user_types and only
+                              for non-completed milestones. Lets broker / admin
+                              / compliance push past an overdue or blocked
+                              milestone with an audit-trail reason. */}
+                          {canOverrideStage && m.status !== "completed" && !m.override_at && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2 text-amber-700 hover:bg-amber-50"
+                              disabled={isPending}
+                              onClick={() => {
+                                setMilestoneOverrideName(m.milestone_name)
+                                setMilestoneOverrideReason("")
+                                setMilestoneOverrideError(null)
+                              }}
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5 mr-1" />
+                              Override
                             </Button>
                           )}
 
@@ -1782,16 +2350,116 @@ export function TransactionDetailClient({
             {/* Deadlines Tab */}
             <TabsContent value="deadlines" className="mt-4">
               <Card>
-                <CardContent className="pt-4 space-y-2">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Deadlines</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowAddDeadline((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add Deadline
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {showAddDeadline && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newDeadlineType}
+                            onChange={(e) => setNewDeadlineType(e.target.value)}
+                          >
+                            <option value="contingency_period">Contingency Period</option>
+                            <option value="inspection_deadline">Inspection Deadline</option>
+                            <option value="appraisal_deadline">Appraisal Deadline</option>
+                            <option value="loan_commitment">Loan Commitment</option>
+                            <option value="closing_date">Closing Date</option>
+                            <option value="possession_date">Possession Date</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Date</Label>
+                          <input
+                            type="date"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newDeadlineDate}
+                            onChange={(e) => setNewDeadlineDate(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Label (optional)</Label>
+                        <input
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="Custom label…"
+                          value={newDeadlineLabel}
+                          onChange={(e) => setNewDeadlineLabel(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newDeadlineDate || isPending}
+                        onClick={() => {
+                          if (!newDeadlineDate) return
+                          startTransition(async () => {
+                            const { addDeadline } = await import("@/app/actions/transactions")
+                            const result = await addDeadline({
+                              transaction_id: transaction.id,
+                              deadline_type: newDeadlineType,
+                              notes: newDeadlineLabel || newDeadlineType.replace(/_/g, " "),
+                              deadline_date: newDeadlineDate,
+                            })
+                            if (result?.success) {
+                              toast.success("Deadline added")
+                              setShowAddDeadline(false)
+                              setNewDeadlineDate("")
+                              setNewDeadlineLabel("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add deadline")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save Deadline
+                      </Button>
+                    </div>
+                  )}
                   {deadlines.map((d) => (
                     <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0">
                       <span className="text-sm">{d.deadline_type.replace(/_/g, " ")}</span>
-                      <Badge variant={d.status === "pending" ? "secondary" : "default"}>
-                        {new Date(d.deadline_date).toLocaleDateString()}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={d.status === "completed" ? "default" : "secondary"}>
+                          {new Date(d.deadline_date).toLocaleDateString()}
+                        </Badge>
+                        {d.status !== "completed" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0 text-green-600 hover:text-green-700"
+                            title="Mark complete"
+                            onClick={() => {
+                              startTransition(async () => {
+                                const { completeDeadline } = await import("@/app/actions/transactions")
+                                await completeDeadline(d.id)
+                                router.refresh()
+                              })
+                            }}
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
-                  {deadlines.length === 0 && (
+                  {deadlines.length === 0 && !showAddDeadline && (
                     <p className="text-sm text-muted-foreground">No deadlines defined.</p>
                   )}
                 </CardContent>
@@ -1801,13 +2469,120 @@ export function TransactionDetailClient({
             {/* Participants Tab */}
             <TabsContent value="participants" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Participants</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowAddParticipant((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add Participant
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {showAddParticipant && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Name</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Full name"
+                            value={newParticipantName}
+                            onChange={(e) => setNewParticipantName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Role</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newParticipantRole}
+                            onChange={(e) => setNewParticipantRole(e.target.value)}
+                          >
+                            <option value="cooperating_agent">Cooperating Agent</option>
+                            <option value="listing_agent">Listing Agent</option>
+                            <option value="buyer">Buyer</option>
+                            <option value="seller">Seller</option>
+                            <option value="lender">Lender</option>
+                            <option value="escrow_officer">Escrow Officer</option>
+                            <option value="inspector">Inspector</option>
+                            <option value="attorney">Attorney</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Email</Label>
+                          <input
+                            type="email"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="email@example.com"
+                            value={newParticipantEmail}
+                            onChange={(e) => setNewParticipantEmail(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Phone</Label>
+                          <input
+                            type="tel"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="(555) 000-0000"
+                            value={newParticipantPhone}
+                            onChange={(e) => setNewParticipantPhone(e.target.value)}
+                          />
+                        </div>
+                        <div className="col-span-2 space-y-1">
+                          <Label className="text-xs">Company</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Company name (optional)"
+                            value={newParticipantCompany}
+                            onChange={(e) => setNewParticipantCompany(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newParticipantName || isPending}
+                        onClick={() => {
+                          if (!newParticipantName) return
+                          startTransition(async () => {
+                            const { addParticipant } = await import("@/app/actions/transactions")
+                            const result = await addParticipant({
+                              transaction_id: transaction.id,
+                              name: newParticipantName,
+                              role: newParticipantRole,
+                              email: newParticipantEmail || undefined,
+                              phone: newParticipantPhone || undefined,
+                              company: newParticipantCompany || undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Participant added")
+                              setShowAddParticipant(false)
+                              setNewParticipantName("")
+                              setNewParticipantEmail("")
+                              setNewParticipantPhone("")
+                              setNewParticipantCompany("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add participant")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Add Participant
+                      </Button>
+                    </div>
+                  )}
                   <div className="grid gap-3">
                     {participants.map((p) => (
                       <div key={p.id} className="flex items-center justify-between py-2 border-b last:border-0">
                         <div>
                           <p className="text-sm font-medium">{p.name}</p>
-                          <p className="text-xs text-muted-foreground">{p.role} {p.company ? `at ${p.company}` : ""}</p>
+                          <p className="text-xs text-muted-foreground capitalize">{p.role.replace(/_/g, " ")} {p.company ? `at ${p.company}` : ""}</p>
                         </div>
                         <div className="text-xs text-muted-foreground text-right">
                           {p.email && <p>{p.email}</p>}
@@ -1815,7 +2590,7 @@ export function TransactionDetailClient({
                         </div>
                       </div>
                     ))}
-                    {participants.length === 0 && (
+                    {participants.length === 0 && !showAddParticipant && (
                       <p className="text-sm text-muted-foreground">No participants added.</p>
                     )}
                   </div>
@@ -1973,14 +2748,14 @@ export function TransactionDetailClient({
                     </Button>
 
                     {/* Status Indicator */}
-                    {titleEscrow?.earnest_money_received_at && (
+                    {titleEscrow?.earnest_money_received_date && (
                       <Alert className="border-green-500 bg-green-50">
                         <CheckCircle2 className="h-4 w-4 text-green-600" />
                         <AlertTitle className="text-green-800">Earnest Money Received</AlertTitle>
                         <AlertDescription className="text-green-700">
                           ${titleEscrow.earnest_money_amount?.toLocaleString() ?? emAmount} received on{" "}
-                          {new Date(titleEscrow.earnest_money_received_at).toLocaleDateString()}{" "}
-                          {titleEscrow.earnest_money_holder && `held by ${titleEscrow.earnest_money_holder.replace(/_/g, " ")}`}
+                          {new Date(titleEscrow.earnest_money_received_date).toLocaleDateString()}{" "}
+                          {titleEscrow.earnest_money_held_by && `held by ${titleEscrow.earnest_money_held_by.replace(/_/g, " ")}`}
                         </AlertDescription>
                       </Alert>
                     )}
@@ -2410,8 +3185,15 @@ export function TransactionDetailClient({
               </Card>
             </TabsContent>
 
-            {/* Vendors Tab (Insurance Quotes) */}
-            <TabsContent value="vendors" className="mt-4">
+            {/* Vendors Tab */}
+            <TabsContent value="vendors" className="mt-4 space-y-4">
+              {/* Vendor Bookings */}
+              <VendorBookingSection
+                transactionId={transaction.id}
+                transactionStage={transaction.stage ?? undefined}
+                initialBookings={vendorBookings as any}
+              />
+
               <Card>
                 <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm">Insurance Quotes</CardTitle>
@@ -2568,6 +3350,14 @@ export function TransactionDetailClient({
             <TabsContent value="documents" className="mt-4 space-y-3">
               {/* Transaction-level AI actions */}
               <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => setActiveTab("forms")}
+                  className="text-xs gap-1.5"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" />
+                  Add Form
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -2989,9 +3779,77 @@ export function TransactionDetailClient({
             </TabsContent>
 
             {/* Repairs Tab */}
-            <TabsContent value="repairs" className="mt-4">
+            <TabsContent value="repairs" className="mt-4 space-y-3">
+              <RepairCoPilotPanel
+                transactionId={transaction.id}
+                side={transaction.deal_type === "buyer" ? "buyer" : "seller"}
+              />
               <Card>
-                <CardContent className="pt-4">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Repair Negotiations</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowRepairForm((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Request Repairs
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {showRepairForm && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Item Description</Label>
+                        <input
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="e.g. HVAC unit replacement"
+                          value={newRepairItem}
+                          onChange={(e) => setNewRepairItem(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Estimated Cost ($)</Label>
+                        <input
+                          type="number"
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="0"
+                          value={newRepairCost}
+                          onChange={(e) => setNewRepairCost(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newRepairItem || isPending}
+                        onClick={() => {
+                          if (!newRepairItem) return
+                          startTransition(async () => {
+                            const { submitRepairRequest } = await import("@/app/actions/transactions")
+                            const result = await submitRepairRequest({
+                              transaction_id: transaction.id,
+                              requested_by: "buyer",
+                              item_description: newRepairItem,
+                              estimated_cost: newRepairCost ? Number(newRepairCost) : undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Repair request submitted")
+                              setShowRepairForm(false)
+                              setNewRepairItem("")
+                              setNewRepairCost("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to submit repair request")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Submit Request
+                      </Button>
+                    </div>
+                  )}
                   {repairs.length > 0 ? (
                     <div className="space-y-2">
                       {repairs.map((r) => (
@@ -3002,12 +3860,31 @@ export function TransactionDetailClient({
                               Est: {r.estimated_cost ? `$${r.estimated_cost.toLocaleString()}` : "TBD"}
                             </p>
                           </div>
-                          <Badge>{r.status}</Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge className="capitalize">{r.status}</Badge>
+                            {r.status === "requested" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2"
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const { respondToRepairRequest } = await import("@/app/actions/transactions")
+                                    const res = await respondToRepairRequest(r.id, "accepted")
+                                    if (res?.success) toast.success("Repair request accepted")
+                                    router.refresh()
+                                  })
+                                }}
+                              >
+                                Accept
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No repairs tracked.</p>
+                    !showRepairForm && <p className="text-sm text-muted-foreground">No repairs tracked.</p>
                   )}
                 </CardContent>
               </Card>
@@ -3058,7 +3935,17 @@ export function TransactionDetailClient({
                     <DollarSign className="h-4 w-4" />
                     Commission Summary
                   </CardTitle>
-                  <Button
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs h-7"
+                      onClick={() => setShowAddCommission((v) => !v)}
+                    >
+                      <Plus className="h-3 w-3 mr-1" />
+                      Add Split
+                    </Button>
+                    <Button
                     size="sm"
                     variant="outline"
                     className="text-xs h-7"
@@ -3079,8 +3966,93 @@ export function TransactionDetailClient({
                     {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
                     Recalculate
                   </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
+                  {showAddCommission && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Recipient Name</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Agent or brokerage name"
+                            value={newCommRecipientName}
+                            onChange={(e) => setNewCommRecipientName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Recipient Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newCommRecipientType}
+                            onChange={(e) => setNewCommRecipientType(e.target.value)}
+                          >
+                            <option value="agent">Agent</option>
+                            <option value="brokerage">Brokerage</option>
+                            <option value="referral">Referral</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Commission Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newCommType}
+                            onChange={(e) => setNewCommType(e.target.value)}
+                          >
+                            <option value="buyer_side">Buyer Side</option>
+                            <option value="listing_side">Listing Side</option>
+                            <option value="referral_fee">Referral Fee</option>
+                            <option value="transaction_fee">Transaction Fee</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Rate (%)</Label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="e.g. 2.5"
+                            value={newCommRate}
+                            onChange={(e) => setNewCommRate(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newCommRecipientName || isPending}
+                        onClick={() => {
+                          if (!newCommRecipientName) return
+                          startTransition(async () => {
+                            const { addCommission } = await import("@/app/actions/transactions")
+                            const result = await addCommission({
+                              transaction_id: transaction.id,
+                              recipient_name: newCommRecipientName,
+                              recipient_type: newCommRecipientType,
+                              commission_type: newCommType,
+                              rate_percentage: newCommRate ? Number(newCommRate) : undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Commission split added")
+                              setShowAddCommission(false)
+                              setNewCommRecipientName("")
+                              setNewCommRate("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add commission split")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save Commission Split
+                      </Button>
+                    </div>
+                  )}
                   {/* CLOSED: show commission summary banner */}
                   {currentStage === "CLOSED" && commissions.length > 0 && (
                     <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4">
@@ -3109,21 +4081,45 @@ export function TransactionDetailClient({
                             <p className="text-sm font-medium">{c.recipient_name}</p>
                             <p className="text-xs text-muted-foreground capitalize">{c.recipient_type} · {c.commission_type?.replace(/_/g, " ") ?? "split"}</p>
                           </div>
-                          <div className="text-right">
-                            <p className="text-sm font-medium">
-                              {c.rate_percentage ?? c.split_percentage
-                                ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
-                                : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
-                            </p>
-                            {(c.calculated_amount || c.flat_amount) && (
-                              <p className="text-xs text-muted-foreground">
-                                ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          <div className="flex items-center gap-2">
+                            <div className="text-right">
+                              <p className="text-sm font-medium">
+                                {c.rate_percentage ?? c.split_percentage
+                                  ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
+                                  : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
                               </p>
-                            )}
-                            {c.status && (
-                              <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
-                                {c.status}
-                              </Badge>
+                              {(c.calculated_amount || c.flat_amount) && (
+                                <p className="text-xs text-muted-foreground">
+                                  ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                </p>
+                              )}
+                              {c.status && (
+                                <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
+                                  {c.status}
+                                </Badge>
+                              )}
+                            </div>
+                            {c.status !== "paid" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2 shrink-0"
+                                title="Mark as paid"
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const { markCommissionPaid } = await import("@/app/actions/transactions")
+                                    const result = await markCommissionPaid(c.id, new Date().toISOString().split("T")[0])
+                                    if (result?.success) {
+                                      toast.success("Commission marked paid")
+                                      router.refresh()
+                                    } else {
+                                      toast.error(result?.error ?? "Failed to mark commission paid")
+                                    }
+                                  })
+                                }}
+                              >
+                                Mark Paid
+                              </Button>
                             )}
                           </div>
                         </div>
@@ -3329,12 +4325,176 @@ export function TransactionDetailClient({
             </div>
           </TabsContent>
 
+          {/* Forms Tab — brokerage provider forms (Dotloop, SkySlope, etc.) */}
+          <TabsContent value="forms" className="mt-4 space-y-4">
+            {formsLoading ? (
+              <Card>
+                <CardContent className="pt-6 flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                {/* Provider Connection Banner */}
+                <Card className={formsProvider?.is_configured ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Building2 className="h-4 w-4" />
+                      Transaction Forms Provider
+                      {formsProvider && (
+                        <Badge
+                          variant={formsProvider.is_configured ? "default" : "secondary"}
+                          className="ml-auto capitalize text-xs"
+                        >
+                          {formsProvider.is_configured ? "Connected" : "Not Configured"}
+                        </Badge>
+                      )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium capitalize">
+                          {formsProvider?.provider_name ?? "Dotloop"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formsProvider?.is_configured
+                            ? "Your brokerage has this provider connected. Use the button below to open forms directly in the portal."
+                            : "No forms provider is configured for your brokerage. Connect one under Settings → Integrations."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {formsProvider?.is_configured ? (
+                        <>
+                          <Link href="/dashboard/settings?tab=integrations">
+                            <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                              <PenLine className="h-3 w-3" />
+                              Manage Connection
+                            </Button>
+                          </Link>
+                        </>
+                      ) : (
+                        <Link href="/dashboard/settings?tab=integrations">
+                          <Button size="sm" variant="default" className="gap-1.5 text-xs">
+                            <Plus className="h-3 w-3" />
+                            Connect Forms Provider
+                          </Button>
+                        </Link>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Available Transaction Forms */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm">
+                        Available Transaction Forms
+                      </CardTitle>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableForms.length} form{availableForms.length !== 1 ? "s" : ""}
+                        {transaction.property_state ? ` · ${transaction.property_state}` : ""}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      State-required and brokerage forms for this transaction. Open the provider portal above to complete them.
+                    </p>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {availableForms.length === 0 ? (
+                      <div className="px-4 py-8 text-center">
+                        <FileText className="h-8 w-8 mx-auto text-muted-foreground/40 mb-2" />
+                        <p className="text-sm text-muted-foreground">No forms found for this state.</p>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {availableForms.map((form) => (
+                          <div key={form.id} className="flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors">
+                            <div className="flex items-start gap-3 min-w-0">
+                              <FileText className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className="text-sm font-medium text-foreground">{form.name}</p>
+                                  {form.is_required && (
+                                    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">
+                                      Required
+                                    </Badge>
+                                  )}
+                                </div>
+                                {form.description && (
+                                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{form.description}</p>
+                                )}
+                                <p className="text-[10px] text-muted-foreground capitalize mt-0.5">
+                                  {form.category.replace(/_/g, " ")}
+                                  {form.form_type !== form.category && ` · ${form.form_type}`}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 ml-3 shrink-0">
+                              <Button
+                                size="sm"
+                                className="text-xs h-7 gap-1"
+                                onClick={() => setEsignFlowForm({
+                                  id: form.id,
+                                  name: form.name,
+                                  category: form.category,
+                                  form_type: form.form_type,
+                                  is_required: form.is_required,
+                                  description: form.description,
+                                })}
+                              >
+                                <FileText className="h-3 w-3" />
+                                Use This Form
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+              </>
+            )}
+          </TabsContent>
+
           </Tabs>
         </div>
       </div>
 
+      {/* Transaction Form E-Sign Flow */}
+      {esignFlowForm && (
+        <TransactionFormEsignFlow
+          open={!!esignFlowForm}
+          onOpenChange={open => { if (!open) setEsignFlowForm(null) }}
+          formTemplate={esignFlowForm}
+          contextType="transaction"
+          contextId={transaction.id}
+          providerName={formsProvider?.provider_name}
+          defaultSigners={[
+            ...(transaction.contact_id ? [{ name: transaction.client_name ?? "", email: "", role: "buyer" }] : []),
+          ].filter(s => s.name)}
+          onSuccess={() => {
+            setEsignFlowForm(null)
+            setActiveTab("documents")
+          }}
+        />
+      )}
+
       {/* Blockers Modal */}
-      <Dialog open={showBlockersModal} onOpenChange={setShowBlockersModal}>
+      <Dialog
+        open={showBlockersModal}
+        onOpenChange={(open) => {
+          setShowBlockersModal(open)
+          if (!open) {
+            setShowOverridePanel(false)
+            setOverrideReason("")
+            setOverrideError(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -3353,9 +4513,125 @@ export function TransactionDetailClient({
               </div>
             ))}
           </div>
+
+          {/* Manual override — visible only to broker / admin / compliance.
+              Server-side requireOverrideActor enforces the same gate; this is
+              just UX. Override writes a full audit row with the reason. */}
+          {canOverrideStage && !showOverridePanel && (
+            <div className="border-t pt-3 mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-amber-700 border-amber-300 hover:bg-amber-50"
+                onClick={() => setShowOverridePanel(true)}
+              >
+                <AlertTriangle className="h-4 w-4 mr-1.5" />
+                Force advance with override
+              </Button>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Requires broker / admin / compliance role. Bypasses the blockers above and
+                writes an audit row with your reason.
+              </p>
+            </div>
+          )}
+
+          {canOverrideStage && showOverridePanel && (
+            <div className="border-t pt-3 mt-2 space-y-2">
+              <Label htmlFor="override_reason" className="text-xs font-medium text-amber-700">
+                Override reason (required, min 10 characters)
+              </Label>
+              <Textarea
+                id="override_reason"
+                placeholder="e.g. Lender confirmed CTC by phone — uploading the doc tomorrow"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+                rows={3}
+                className="text-sm"
+              />
+              {overrideError && (
+                <p className="text-xs text-red-600">{overrideError}</p>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                This action is logged as <code className="text-[10px]">transaction.stage_overridden</code>
+                {" "}with your user id + user_type for compliance audit.
+              </p>
+            </div>
+          )}
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowBlockersModal(false)}>
               Close
+            </Button>
+            {canOverrideStage && showOverridePanel && (
+              <Button
+                onClick={handleForceAdvance}
+                disabled={isPending || overrideReason.trim().length < 10}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                {isPending ? "Overriding..." : "Force Advance"}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Milestone Override Dialog */}
+      <Dialog
+        open={!!milestoneOverrideName}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMilestoneOverrideName(null)
+            setMilestoneOverrideReason("")
+            setMilestoneOverrideError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-700">
+              <AlertTriangle className="h-5 w-5" />
+              Override Milestone
+            </DialogTitle>
+            <DialogDescription>
+              Override milestone{" "}
+              <strong>{milestoneOverrideName?.replace(/_/g, " ")}</strong>. The action will be logged as{" "}
+              <code className="text-[11px]">milestone.overridden</code> with your user id +
+              user_type and the reason below — for compliance audit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="milestone_override_reason" className="text-xs font-medium text-amber-700">
+              Override reason (required, min 10 characters)
+            </Label>
+            <Textarea
+              id="milestone_override_reason"
+              placeholder="e.g. Inspection performed on-site by buyer's contractor — formal report uploading by 5pm"
+              value={milestoneOverrideReason}
+              onChange={(e) => setMilestoneOverrideReason(e.target.value)}
+              rows={3}
+              className="text-sm"
+            />
+            {milestoneOverrideError && (
+              <p className="text-xs text-red-600">{milestoneOverrideError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMilestoneOverrideName(null)
+                setMilestoneOverrideReason("")
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleMilestoneOverride}
+              disabled={isPending || milestoneOverrideReason.trim().length < 10}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              {isPending ? "Overriding..." : "Override Milestone"}
             </Button>
           </DialogFooter>
         </DialogContent>

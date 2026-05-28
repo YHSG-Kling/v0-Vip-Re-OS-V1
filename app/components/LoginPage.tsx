@@ -3,7 +3,7 @@
 import React from "react"
 
 import { useState } from "react"
-import { UserRole } from "../../types"
+import { UserRole } from "@/types"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"

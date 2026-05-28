@@ -24,6 +24,19 @@ export interface PriorityAction {
   priority: "high" | "medium" | "low"
   action: string
   context: string
+  /** Optional entity reference so the UI can build a deep link. */
+  entity_type?: "contact" | "transaction" | "listing" | "task" | null
+  entity_id?: string | null
+  /** Optional action verb so the UI knows which sheet/modal to open. */
+  action_type?:
+    | "open_contact"
+    | "draft_followup"
+    | "schedule_appointment"
+    | "view_transaction"
+    | "view_listing"
+    | "complete_task"
+    | "view_lead"
+    | null
 }
 
 export interface HotLead {
@@ -38,6 +51,14 @@ export interface DealAtRisk {
   reason: string
 }
 
+export interface ListingAtRisk {
+  listing_id: string
+  address: string
+  reason: string
+  risk_level: "watch" | "at_risk" | "critical"
+  score: number
+}
+
 export interface DailyBriefing {
   id: string
   agent_id: string
@@ -50,6 +71,7 @@ export interface DailyBriefing {
   todays_events: any[]
   tasks_overdue: number
   deals_at_risk: DealAtRisk[]
+  listings_at_risk: ListingAtRisk[]
   ai_model_used: string
   generated_at: string
   opened_at: string | null
@@ -194,6 +216,54 @@ export async function generateDailyBriefing(
       }
     })
 
+  // Fetch listing health for the agent's active listings — mirrors the
+  // deal-health block above. Surfaces a "listings at risk" section so
+  // the agent's morning briefing covers both sides of the lifecycle.
+  let listingsAtRisk: ListingAtRisk[] = []
+  try {
+    const { data: agentListings } = await supabase
+      .from("listings")
+      .select("id, address, status")
+      .eq("agent_id", agentId)
+      .in("status", ["active", "coming_soon"])
+
+    const listingIds = (agentListings ?? []).map((l) => l.id)
+    if (listingIds.length > 0) {
+      const { data: lhRows } = await supabase
+        .from("listing_health_scores")
+        .select("listing_id, overall_score, risk_level, ai_narrative, flags, scored_at")
+        .in("listing_id", listingIds)
+        .order("scored_at", { ascending: false })
+        .limit(50)
+
+      const seen = new Set<string>()
+      for (const row of (lhRows ?? []) as Array<{
+        listing_id: string
+        overall_score: number
+        risk_level: string
+        ai_narrative: string | null
+        flags: string[] | null
+      }>) {
+        if (seen.has(row.listing_id)) continue
+        seen.add(row.listing_id)
+        if (row.risk_level !== "at_risk" && row.risk_level !== "critical") continue
+        const listing = agentListings?.find((l) => l.id === row.listing_id)
+        const topFlag = row.flags?.[0] ?? null
+        listingsAtRisk.push({
+          listing_id: row.listing_id,
+          address:    listing?.address ?? "Unknown",
+          reason:     row.ai_narrative ?? topFlag ?? `Health score ${row.overall_score}/100`,
+          risk_level: row.risk_level as "at_risk" | "critical",
+          score:      row.overall_score,
+        })
+      }
+      // Cap at 5 for the briefing
+      listingsAtRisk = listingsAtRisk.slice(0, 5)
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] listing-health fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -212,7 +282,14 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
 {
   "summary": "2-3 sentence overview of the day",
   "top_priority_actions": [
-    {"priority": "high" | "medium" | "low", "action": "specific action to take", "context": "why this matters"}
+    {
+      "priority": "high" | "medium" | "low",
+      "action": "specific action to take",
+      "context": "why this matters",
+      "entity_type": "contact" | "transaction" | "listing" | "task" | null,
+      "entity_id": "<uuid from the data snapshot when known, otherwise null>",
+      "action_type": "open_contact" | "draft_followup" | "schedule_appointment" | "view_transaction" | "view_listing" | "complete_task" | "view_lead" | null
+    }
   ],
   "market_pulse": "1 sentence market observation based on the data",
   "hot_leads": [
@@ -225,6 +302,13 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
 
 Rules:
 - top_priority_actions: max 5 items, ordered by urgency
+- For EVERY priority action, populate entity_type + entity_id by looking up
+  the corresponding row in the data snapshot. If the action is about a
+  contact, use that contact's id; if about a deal, the transaction id; etc.
+  Use null only when no specific entity applies.
+- Pick action_type based on what the agent should DO: 'draft_followup' if
+  they should reply to a contact; 'view_transaction' if they should review
+  a deal; 'complete_task' if they should mark a task done; etc.
 - hot_leads: max 3 items
 - deals_at_risk: only include transactions with health issues
 - Be specific and actionable
@@ -246,7 +330,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
       model: anthropic(AI_MODEL),
       system: systemPrompt,
       prompt: userPrompt,
-      maxTokens: MAX_TOKENS,
+      maxOutputTokens: MAX_TOKENS,
       temperature: 0.3,
     })
 
@@ -292,6 +376,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     todays_events: calendarEvents,
     market_pulse: aiResponse.market_pulse,
     deals_at_risk: finalDealsAtRisk,
+    listings_at_risk: listingsAtRisk,
     tasks_overdue: tasksOverdue,
     ai_model_used: AI_MODEL,
     generated_at: new Date().toISOString(),
@@ -348,10 +433,8 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
         tasks_count: tasks.length,
         transactions_count: transactions.length,
         deals_at_risk_count: finalDealsAtRisk.length,
+        listings_at_risk_count: listingsAtRisk.length,
       },
-    })
-    .catch((err) => {
-      console.error("[DailyBriefing] Lifecycle event insert failed:", err)
     })
 
   // 6. Return briefing data

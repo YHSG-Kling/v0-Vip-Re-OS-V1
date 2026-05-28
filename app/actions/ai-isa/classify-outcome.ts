@@ -19,6 +19,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 // ── Outcome catalogue ─────────────────────────────────────────────────────────
 
@@ -88,6 +89,37 @@ export async function classifyISAOutcome(
   const supabase = createServiceClient()
 
   try {
+    // ── AUTH GATE ──────────────────────────────────────────────────────────
+    // Permitted callers:
+    //   1. UI/server-action with session (verify ctx.brokerageId === param)
+    //   2. Trusted system path (actorId === 'system' AND CRON_SECRET set —
+    //      proves we're running in a real deploy not an open endpoint).
+    // We ALSO re-verify the target entity row actually belongs to the given
+    // brokerage before issuing any updates — so a forged brokerageId param
+    // can't suppress communications on records in another tenant.
+    const ctx = await getAgentContext()
+    const isSystemCaller =
+      (actorId === 'system' || actorId === 'ai_isa') && !!process.env.CRON_SECRET
+    if (!isSystemCaller) {
+      if (!ctx.isAuthenticated || !ctx.brokerageId) {
+        return { success: false, error: 'Unauthorized' }
+      }
+      if (ctx.brokerageId !== brokerageId) {
+        return { success: false, error: 'Forbidden' }
+      }
+    }
+
+    // Verify entity belongs to brokerageId
+    const entityTable = entityType === 'contact' ? 'contacts' : 'leads'
+    const { data: entityRow } = await supabase
+      .from(entityTable)
+      .select('brokerage_id')
+      .eq('id', entityId)
+      .maybeSingle()
+    if (!entityRow || entityRow.brokerage_id !== brokerageId) {
+      return { success: false, error: 'Forbidden' }
+    }
+
     const now = new Date().toISOString()
 
     // ── 1. Write outcome to ai_isa_activities ──────────────────────────────
@@ -157,7 +189,11 @@ export async function classifyISAOutcome(
       }
 
       if (Object.keys(contactUpdate).length > 1) {
-        await supabase.from('contacts').update(contactUpdate).eq('id', entityId)
+        await supabase
+          .from('contacts')
+          .update(contactUpdate)
+          .eq('id', entityId)
+          .eq('brokerage_id', brokerageId)
       }
 
       // Write to contact_suppression_list for auditable suppression records
@@ -179,7 +215,7 @@ export async function classifyISAOutcome(
           source:             'ai_isa',
           created_at:         now,
         }) // fire-and-forget: duplicate rows are acceptable
-        .catch(() => {}) // silent fail on duplicate key error
+        .then(() => {}, () => {}) // silent fail on duplicate key error
       }
     } else {
       // Lead-side suppression
@@ -203,7 +239,11 @@ export async function classifyISAOutcome(
       }
 
       if (Object.keys(leadUpdate).length > 1) {
-        await supabase.from('leads').update(leadUpdate).eq('id', entityId)
+        await supabase
+          .from('leads')
+          .update(leadUpdate)
+          .eq('id', entityId)
+          .eq('brokerage_id', brokerageId)
       }
     }
 

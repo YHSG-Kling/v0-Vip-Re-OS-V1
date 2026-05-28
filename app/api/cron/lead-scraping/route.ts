@@ -1,16 +1,41 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
+import { ZenrowsClient, BatchDataClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
+import {
+  buildPropertySearchUrl,
+  parsePropertySearchResults,
+  parseBuyerSavedSearches,
+  parseExpiredListings,
+  normalizeBatchDataRecord,
+} from "@/lib/lead-pipeline/scraper-parsers"
+import {
+  sourceReddit,
+  sourceFacebook,
+  sourceInstagram,
+  sourceCraigslist,
+  sourceCraigslistWanted,
+  sourceGoogle,
+  sourceRentalListings,
+  sourceLinkedInRelocation,
+} from "@/lib/lead-pipeline/social-sourcer"
+import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
+import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
+import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
+import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
+import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
+import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
   type NormalizedScrapedRecord,
   isViableRecord,
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
-import * as cheerio from "cheerio"
-import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
+import { meterVendorSpend, scraperTypeToVendor } from "@/lib/vendor-governance/meter-vendor"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
 import {
@@ -21,15 +46,14 @@ import {
 } from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
+export const maxDuration = 300
 
 // Runs every 6 hours to scrape leads from all configured sources.
 // Kernel OS: cron_execution_logs are opened at entry and closed at every exit path.
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const serviceClient = createServiceClient()
   const cronStartedAt = Date.now()
@@ -62,49 +86,36 @@ export async function GET(request: Request) {
 
   const supabase = await createClient()
 
-  // ── Instantiate all provider clients BEFORE the try block ─────────────────
+  // ── Instantiate the scraper clients used below ────────────────────────────
+  // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
+  // the promotion pass — not here — so only the scrape clients are needed.
   const zenrows   = new ZenrowsClient()
   const batchdata = new BatchDataClient()
-  const peopledata = new PeopleDataClient()
-  const apify     = new ApifyClient()
-
-  const validation = {
-    validateContact: async (params: { email?: string | null; phone?: string | null }) => {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      const phoneRegex = /^\+?[\d\s\-()\\.]{10,15}$/
-      const emailValid  = params.email ? emailRegex.test(params.email) : false
-      const phoneValid  = params.phone ? phoneRegex.test(params.phone) : false
-      return {
-        overall_valid:  emailValid || phoneValid,
-        email_valid:    emailValid,
-        email_status:   emailValid ? 'valid_format' : 'invalid_format',
-        phone_valid:    phoneValid,
-        phone_formatted: params.phone?.replace(/\D/g, '').slice(-10) ?? null,
-        phone_type:     phoneValid ? 'unknown' : null,
-      }
-    },
-  }
-
-  const osint = {
-    searchPerson: async (params: { name?: string; firstName?: string; lastName?: string; city?: string; state?: string; email?: string; phone?: string }) => {
-      const { skipTraceWithPeopleData } = await import('@/lib/external/peopledata-client')
-      const fullName = params.name ?? `${params.firstName ?? ''} ${params.lastName ?? ''}`.trim()
-      return skipTraceWithPeopleData({ name: fullName }).then(r => r.data).catch(() => null)
-    },
-  }
 
   const results = {
     markets_processed: 0,
     total_leads_found: 0,
     total_leads_created: 0,
-    leads_validated: 0,
-    leads_enriched: 0,
-    osint_searches: 0,
+    leads_promoted: 0,
+    recruits_sourced: 0,
+    recruits_promoted: 0,
     errors: [] as string[],
   }
 
   try {
-    // STEP 2 — Load all active territories with their full config from DB only.
+    // STEP 1.5 — SUBSCRIPTION GATE: only scrape territories owned by brokerages
+    // with an ACTIVE subscription, so we never ingest leads that can't be
+    // assigned. Runs automatically every cycle — no manual/admin toggle.
+    const { data: subs } = await supabase
+      .from("subscriptions")
+      .select("brokerage_id, status")
+    const activeBrokerageIds = [...activeSubscriberBrokerageIds(subs ?? [])]
+    if (activeBrokerageIds.length === 0) {
+      console.log("[Lead Scraping Cron] No active-subscription brokerages — nothing to scrape")
+      return NextResponse.json({ message: "No active-subscription brokerages", results })
+    }
+
+    // STEP 2 — Load active territories for ACTIVE-SUBSCRIPTION brokerages only.
     // Zero hardcoded geography — city, state, brokerage_id all come from the record.
     const { data: markets } = await supabase
       .from("lead_scraping_markets")
@@ -117,6 +128,7 @@ export async function GET(request: Request) {
           facebook_group_urls, reddit_subreddits)
       `)
       .eq("is_active", true)
+      .in("brokerage_id", activeBrokerageIds)
       .order("priority", { ascending: false })
 
     if (!markets || markets.length === 0) {
@@ -139,8 +151,10 @@ export async function GET(request: Request) {
         continue
       }
 
-      // STEP 4 — Resolve the set of enabled sources for this territory.
-      const enabledSources = new Set<string>(market.enabled_sources ?? ["batchdata_motivated"])
+      // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
+      // through GATE_TOKEN so the gate matches whether the DB stored short names
+      // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
+      const enabledSources = expandEnabledSources(market.enabled_sources ?? ["batchdata_motivated"])
 
       // Track spend accumulated across all sources in this territory run.
       let territorySpendUsd = 0
@@ -187,22 +201,30 @@ export async function GET(request: Request) {
               sourceCostUsd += scraped.cost ?? 0
 
               if (scraped.success && scraped.html) {
-                // parsePropertySearchResults returns NormalizedScrapedRecord[] filtered by isViableRecord
-                const buyers = parsePropertySearchResults(scraped.html, site, market)
-                sourceItemsFound += buyers.length
+                // Same page yields BOTH online behaviors: FSBO sellers
+                // (parsePropertySearchResults) AND saved-search/favorited buyers
+                // (parseBuyerSavedSearches). Both are filtered by the viability gate.
+                const sellerRecords = parsePropertySearchResults(scraped.html, site, market)
+                const buyerRecords = parseBuyerSavedSearches(scraped.html, site, market)
+                // Expired/withdrawn listings = top motivated sellers (off-market detection).
+                const expiredRecords = enabledSources.has("expired_listing")
+                  ? parseExpiredListings(scraped.html, site, market)
+                  : []
+                const siteRecords = [...sellerRecords, ...buyerRecords, ...expiredRecords]
+                sourceItemsFound += siteRecords.length
 
-                for (const buyer of buyers) {
+                for (const record of siteRecords) {
                   // Write raw record only — enrichment and promotion happen in pipeline-processor
                   const { inserted } = await insertRawRecord({
                     supabase,
-                    record:      buyer,
+                    record,
                     brokerageId: market.brokerage_id,
                     marketId:    market.id,
                     executionId: execRecord?.id ?? null,
                   })
                   if (inserted) { sourceLeadsCreated++; results.total_leads_created++ }
                 }
-                results.total_leads_found += buyers.length
+                results.total_leads_found += siteRecords.length
               }
             }
 
@@ -231,6 +253,15 @@ export async function GET(request: Request) {
             api_cost: sourceCostUsd,
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id)
+
+          // Unified vendor-spend ledger (one gateway for all data-vendor cost).
+          await meterVendorSpend({
+            vendorName: scraperTypeToVendor("zillow_behavior"),
+            usageType: "property_scrape",
+            cost: sourceCostUsd,
+            brokerageId: market.brokerage_id,
+            metadata: { market_id: market.id, scraper_type: "zillow_behavior" },
+          })
 
           territorySpendUsd += sourceCostUsd
         }
@@ -335,8 +366,14 @@ export async function GET(request: Request) {
       const socialSourcesEnabled =
         enabledSources.has("nextdoor") ||
         enabledSources.has("facebook") ||
+        enabledSources.has("instagram") ||
         enabledSources.has("reddit") ||
-        enabledSources.has("craigslist")
+        enabledSources.has("craigslist") ||
+        enabledSources.has("google_phrase_intent") ||
+        enabledSources.has("rental") ||
+        enabledSources.has("linkedin") ||
+        enabledSources.has("exa") ||
+        enabledSources.has("tavily")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -394,9 +431,9 @@ export async function GET(request: Request) {
                     kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
                 )
                 if (matchedKeyword && matchedKeyword.weight >= 3) {
-                  const nameParts = (post.author_name ?? "").split(" ")
+                  const nameParts = ((post as any).author_name ?? "").split(" ")
                   const ndRecord: NormalizedScrapedRecord = {
-                    sourceRecordId:  `nextdoor-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
+                    sourceRecordId:  `nextdoor-${(post as any).post_id ?? `${Date.now()}-${Math.random()}`}`,
                     source:          "nextdoor",
                     behaviorType:    "social_intent",
                     intentType:      matchedKeyword.category === "buying_intent" ? "buyer" : "seller",
@@ -422,176 +459,104 @@ export async function GET(request: Request) {
             }
           }
 
-          // STEP 4 gate
+          const socialMarket = { city: market.city, state: market.state }
+          const insertSocial = async (records: NormalizedScrapedRecord[]) => {
+            for (const record of records) {
+              const { inserted } = await insertRawRecord({
+                supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: execRecord?.id ?? null,
+              })
+              if (inserted) socialLeadsCreated++
+            }
+          }
+
+          // ── Facebook groups (Apify) ──────────────────────────────────────────
           if (enabledSources.has("facebook") && keywordsBySource["facebook"]) {
             const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
               ? motivatedParams.facebook_group_urls
               : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}realestate`]
-
-            const fbResult = await zenrows.scrapeFacebookGroups({ groupUrls, keywords: keywordsBySource["facebook"] })
-              .catch(() => ({ success: false, posts: [], cost: 0 }))
-            sourceCostUsd += (fbResult as any).cost ?? 0
-
-            for (const post of fbResult.posts) {
-              const matched = keywords.find(
-                (kw) =>
-                  kw.sources?.includes("facebook") &&
-                  post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
-              )
-              if (matched && (matched.weight ?? 1) >= 3) {
-                const fbRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `fb-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
-                  source:          "facebook_group",
-                  behaviorType:    "social_intent",
-                  intentType:      "seller",
-                  intentSignals:   [matched.keyword],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: (matched.weight ?? 1) * 15,
-                  rawPayload:      { post, matched_keyword: matched.keyword },
-                }
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      fbRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
+            for (const groupUrl of groupUrls) {
+              const { records, cost } = await sourceFacebook(groupUrl, keywordsBySource["facebook"], socialMarket)
+              sourceCostUsd += cost
+              await insertSocial(records)
             }
           }
 
-          // STEP 4 gate
+          // ── Instagram (Apify) — real-estate hashtags, buyer + seller intent ──
+          if (enabledSources.has("instagram") && keywordsBySource["instagram"]) {
+            const { records, cost } = await sourceInstagram(keywordsBySource["instagram"], socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
+
+          // ── Reddit communities (Apify) ───────────────────────────────────────
           if (enabledSources.has("reddit") && keywordsBySource["reddit"]) {
-            const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
             const subreddits: string[] = motivatedParams?.reddit_subreddits?.length
               ? motivatedParams.reddit_subreddits
-              : [
-                  `${market.city.toLowerCase().replace(/\s+/g, "")}realestate`,
-                  "FirstTimeHomeBuyer",
-                  "moving",
-                ]
-
-            const redditResult = await scrapeRedditPosts({
-              subreddits,
-              keywords: keywordsBySource["reddit"],
-              limit: 50,
-            }).catch(() => ({ posts: [], cost: 0 }))
-
-            for (const post of redditResult.posts) {
-              const matched = keywords.find(
-                (kw) =>
-                  kw.sources?.includes("reddit") &&
-                  `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase().includes(kw.keyword.toLowerCase()),
-              )
-              if (matched && (matched.weight ?? 1) >= 2) {
-                const redditRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `reddit-${post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
-                  source:          "reddit_intent",
-                  behaviorType:    "social_intent",
-                  intentType:      "buyer",
-                  intentSignals:   [matched.keyword],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: (matched.weight ?? 1) * 15,
-                  sourceUrl:       post.url ?? null,
-                  rawPayload:      { post, matched_keyword: matched.keyword },
-                }
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      redditRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
-            }
+              : [`${market.city.toLowerCase().replace(/\s+/g, "")}realestate`, "FirstTimeHomeBuyer", "moving"]
+            const { records, cost } = await sourceReddit(subreddits, keywordsBySource["reddit"], socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
-          // STEP 4 gate
-          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"]) {
-            // STEP 7 — city from market record
-            const craigslistUrl = `https://${market.city.toLowerCase().replace(/ /g, "")}.craigslist.org/search/rea?query=${encodeURIComponent(
-              keywordsBySource["craigslist"].slice(0, 3).join(" "),
-            )}`
-            const scraped = await zenrows.scrape(craigslistUrl, { js_render: false })
-            sourceCostUsd += scraped.cost ?? 0
-
-            if (scraped.success && scraped.html) {
-              // parseCraigslistHtml returns NormalizedScrapedRecord[] filtered by isViableRecord
-              const listings = parseCraigslistHtml(scraped.html)
-              for (const listing of listings) {
-                // listing already has city/state from market; ensure they're set
-                listing.city  = listing.city  ?? market.city
-                listing.state = listing.state ?? market.state
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      listing,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) socialLeadsCreated++
-              }
-            }
+          // ── Craigslist (Apify) — for-sale (seller FSBO) + housing-wanted (buyer) ─
+          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"] && market.city) {
+            const forSale = await sourceCraigslist(
+              market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
+            )
+            sourceCostUsd += forSale.cost
+            await insertSocial(forSale.records)
+            // Buyer intent: "housing wanted" / ISO posts.
+            const wanted = await sourceCraigslistWanted(market.city, socialMarket)
+            sourceCostUsd += wanted.cost
+            await insertSocial(wanted.records)
           }
 
-          // STEP 4 gate — G-5: Google phrase intent
-          // buildTerritoryPhrases() derives buyer+seller search queries from city, state, zip_codes, counties.
+          // ── Google phrase intent (Apify) — buyer + seller searches ───────────
+          // buildTerritoryPhrases() derives buyer+seller search queries from the territory.
           if (enabledSources.has("google_phrase_intent")) {
             const { buyerPhrases, sellerPhrases } = buildTerritoryPhrases({
-              city:      market.city,
-              state:     market.state,
-              zip_codes: market.zip_codes,
-              counties:  market.counties,
+              city: market.city, state: market.state, zip_codes: market.zip_codes, counties: market.counties,
             })
+            const queries = [...sellerPhrases.slice(0, 3), ...buyerPhrases.slice(0, 2)]
+            const { records, cost } = await sourceGoogle(queries, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
 
-            // Sample 3 seller phrases and 2 buyer phrases per run to stay within cost envelope
-            const phrases = [
-              ...sellerPhrases.slice(0, 3).map(p => ({ phrase: p, intentType: 'seller' as const })),
-              ...buyerPhrases.slice(0, 2).map(p => ({ phrase: p, intentType: 'buyer' as const })),
-            ]
+          // ── Rental listings (Apify Craigslist 'apa') — landlord/investor sellers ─
+          // Craigslist 'apa' carries a reply email (real landlord contact);
+          // RentCast is property-data only (no owner contact) so it is NOT used
+          // for seller leads — motivated-seller DETAILS come from BatchData /
+          // OSINT / PropertyRadar.
+          if (enabledSources.has("rental") && market.city) {
+            const { records, cost } = await sourceRentalListings(market.city, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
 
-            for (const { phrase, intentType } of phrases) {
-              const result = await zenrows.googleSearch(phrase, { num: 5 }).catch(() => null)
-              sourceCostUsd += 0.002 // Google SERP costs ~$0.002/call via ZenRows
+          // Expired / off-market sellers: addresses are scraped via
+          // parseExpiredListings (property block) and owner DETAILS come from
+          // BatchData (motivated block) / OSINT distress filings / PropertyRadar.
 
-              if (!result) continue
+          // ── LinkedIn relocation posts (Apify) — inbound relocating buyers ──────
+          if (enabledSources.has("linkedin")) {
+            const { records, cost } = await sourceLinkedInRelocation(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
 
-              // Parse organic result snippets from raw HTML
-              const $g = cheerio.load(result)
-              $g('.g, [data-sokoban-container]').each((_, el) => {
-                const title   = $g(el).find('h3').first().text().trim()
-                const snippet = $g(el).find('.VwiC3b, span.st, .IsZvec').first().text().trim()
-                const link    = $g(el).find('a').first().attr('href') ?? null
+          // ── Exa neural search (AI-native) — buyer-intent content across the web ─
+          if (enabledSources.has("exa")) {
+            const { records, cost } = await sourceExaBuyerIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
+          }
 
-                if (!title || title.length < 5) return
-
-                const gRecord: NormalizedScrapedRecord = {
-                  sourceRecordId:  `google-${Buffer.from(`${phrase}|${link ?? title}`).toString('base64').slice(0, 32)}`,
-                  source:          'google_phrase_intent',
-                  behaviorType:    'search_signal',
-                  intentType,
-                  intentSignals:   [phrase],
-                  city:            market.city,
-                  state:           market.state,
-                  motivationScore: intentType === 'seller' ? 42 : 38,
-                  sourceUrl:       link,
-                  rawPayload:      { phrase, title, snippet, link, market_id: market.id },
-                }
-
-                // Fire and forget — analytics_only identity policy means no enrichment spend
-                insertRawRecord({
-                  supabase,
-                  record:      gRecord,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  executionId: execRecord?.id ?? null,
-                }).then(({ inserted }) => { if (inserted) socialLeadsCreated++ }).catch(() => {})
-              })
-            }
+          // ── Tavily agentic search (AI-native) — buyer / seller / investor intent ─
+          if (enabledSources.has("tavily")) {
+            const { records, cost } = await sourceTavilyIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records)
           }
 
           results.total_leads_created += socialLeadsCreated
@@ -619,9 +584,67 @@ export async function GET(request: Request) {
           leads_created: socialLeadsCreated,
           api_cost: sourceCostUsd,
           error_message: sourceErr?.message ?? null,
-        }).eq("id", execRecord?.id).catch(() => {})
+        }).eq("id", execRecord?.id).then(() => {}, () => {})
+
+        // Unified vendor-spend ledger (Apify + Exa + Tavily social scrape).
+        await meterVendorSpend({
+          vendorName: scraperTypeToVendor("social_intent"),
+          usageType: "social_scrape",
+          cost: sourceCostUsd,
+          brokerageId: market.brokerage_id,
+          metadata: { market_id: market.id, scraper_type: "social_intent" },
+        })
 
         territorySpendUsd += sourceCostUsd
+      }
+
+      // ── OSINT public-records source — distressed-seller filings ─────────────
+      // Divorce / probate / foreclosure / tax-lien / eviction / bankruptcy court
+      // filings in the territory → motivated-seller raw records (platform-owned).
+      if (enabledSources.has("osint_signal")) {
+        try {
+          const { records, cost } = await sourceOsintRecords({
+            city: market.city,
+            state: market.state,
+            county: market.counties?.[0] ?? null,
+          })
+          territorySpendUsd += cost
+          await meterVendorSpend({
+            vendorName: scraperTypeToVendor("osint_signal"),
+            usageType: "public_records",
+            cost,
+            brokerageId: market.brokerage_id,
+            metadata: { market_id: market.id, scraper_type: "osint_signal" },
+          })
+          for (const record of records) {
+            const { inserted } = await insertRawRecord({
+              supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: null,
+            })
+            if (inserted) results.total_leads_created++
+          }
+        } catch (err) {
+          results.errors.push(`OSINT source error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── RECRUITING SOURCE — agents/teams looking to switch brokerages ───────
+      // Platform-owned raw_recruit_prospects (brokerage_id NULL, market_id set);
+      // promoted to brokerage-owned `recruits` in the recruit promotion pass.
+      if (enabledSources.has("recruiting_intent")) {
+        try {
+          const reviewUrls = (market.lead_scraping_motivated_params?.[0] as { brokerage_review_urls?: string[] } | undefined)
+            ?.brokerage_review_urls ?? []
+          const recruitRes = await sourceRecruitProspects({
+            supabase,
+            marketId: market.id,
+            state: market.state,
+            reviewUrls,
+          })
+          results.recruits_sourced += recruitRes.inserted
+          if (recruitRes.errors.length) results.errors.push(...recruitRes.errors)
+        } catch (err) {
+          results.errors.push(`Recruit sourcing error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       // STEP 6 — Update territory spend and last_scraped_at after all sources run.
@@ -632,7 +655,50 @@ export async function GET(request: Request) {
           last_scraped_at: new Date().toISOString(),
         })
         .eq("id", market.id)
-        .catch(() => {})
+        .then(() => {}, () => {})
+    }
+
+    // ── PROMOTION PASS — run scraped raw records through the pipeline ──────────
+    // Scraping above only writes raw_scraped_leads (pending). Promote them to
+    // leads here so the scrape → lead → AI-ISA flow completes in the same
+    // scheduled run. Bounded per run; records that fail a gate stay 'pending'
+    // (the pipeline is retry-safe) and are picked up on the next run.
+    const { data: pendingRaws } = await supabase
+      .from("raw_scraped_leads")
+      .select("id")
+      .eq("processing_status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(100)
+
+    for (const raw of pendingRaws ?? []) {
+      try {
+        // brokerage_id is NULL on platform-scraped raw records; processRawRecord
+        // resolves the owning brokerage from the record's market_id territory.
+        const promo = await processRawRecord(raw.id)
+        if (promo.action === "created") results.leads_promoted++
+      } catch (err) {
+        results.errors.push(`Promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    // ── RECRUIT PROMOTION PASS — promote pending raw recruiting prospects ─────
+    // Mirrors the lead promotion pass: brokerage_id is NULL on platform-sourced
+    // raw_recruit_prospects; processRawRecruit resolves the owning brokerage from
+    // the record's market_id territory and promotes into `recruits`.
+    const { data: pendingRecruits } = await supabase
+      .from("raw_recruit_prospects")
+      .select("id")
+      .eq("processing_status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(100)
+
+    for (const raw of pendingRecruits ?? []) {
+      try {
+        const promo = await processRawRecruit(raw.id)
+        if (promo.action === "created") results.recruits_promoted++
+      } catch (err) {
+        results.errors.push(`Recruit promotion error for ${raw.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
 
     const durationMs = Date.now() - cronStartedAt
@@ -653,7 +719,7 @@ export async function GET(request: Request) {
       brokerage_id: null,
       metadata:     { ...results, duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({ message: "Lead scraping completed", results })
   } catch (error) {
@@ -661,7 +727,7 @@ export async function GET(request: Request) {
     console.error("[Lead Scraping Cron] Fatal error:", error)
 
     // Close cron context — failure
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
 
     await serviceClient.from("lifecycle_events").insert({
       entity_type:  "system",
@@ -670,162 +736,9 @@ export async function GET(request: Request) {
       brokerage_id: null,
       metadata:     { error: String(error), duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({ error: String(error), results, context_id: contextId }, { status: 500 })
-  }
-}
-
-// ============================================
-// ENRICHMENT PIPELINE
-// Runs OSINT, PeopleData enrichment, and contact validation for each lead
-// ============================================
-async function enrichLeadPipeline(
-  leadData: {
-    first_name?: string
-    last_name?: string
-    email?: string
-    phone?: string
-    address?: string
-    city?: string
-    state?: string
-  },
-  clients: {
-    peopledata: PeopleDataClient
-    osint: { searchPerson: (params: Record<string, string | undefined>) => Promise<any> }
-    validation: { validateContact: (params: { email?: string | null; phone?: string | null }) => Promise<any> }
-  },
-  results: { leads_validated: number; leads_enriched: number; osint_searches: number },
-): Promise<any | null> {
-  const enrichedLead = { ...leadData }
-
-  // Step 1: Validate email and phone
-  if (leadData.email || leadData.phone) {
-    const validationResult = await clients.validation.validateContact({
-      email: leadData.email,
-      phone: leadData.phone,
-    })
-    results.leads_validated++
-
-    // Skip if no valid contact method
-    if (!validationResult.overall_valid) {
-      console.log(`[Enrichment] Skipping lead - no valid contact: ${leadData.first_name} ${leadData.last_name}`)
-      return null
-    }
-
-    // Use validated/formatted phone
-    if (validationResult.phone_valid) {
-      enrichedLead.phone = validationResult.phone_formatted
-    }
-    // Store validation metadata
-    ;(enrichedLead as any).validation_data = {
-      email_valid: validationResult.email_valid,
-      email_status: validationResult.email_status,
-      phone_valid: validationResult.phone_valid,
-      phone_type: validationResult.phone_type,
-    }
-  }
-
-  // Step 2: Run OSINT search
-  if (leadData.first_name && leadData.last_name) {
-    try {
-      const osintResult = await clients.osint.searchPerson({
-        firstName: leadData.first_name,
-        lastName: leadData.last_name,
-        city: leadData.city,
-        state: leadData.state,
-        email: leadData.email,
-        phone: leadData.phone,
-      })
-      results.osint_searches++
-      ;(enrichedLead as any).osint_data = {
-        social_profiles: osintResult.social_profiles,
-        public_records: osintResult.public_records,
-        court_records: osintResult.court_records,
-        property_records: osintResult.property_records,
-        life_events: osintResult.life_events,
-        confidence_score: osintResult.confidence_score,
-      }
-
-      // Boost motivation score if life events indicate motivated seller
-      const motivatedEvents = ["divorce", "bankruptcy", "foreclosure", "death_in_family", "inheritance"]
-      const hasMotivatedEvent = osintResult.life_events.some((e) => motivatedEvents.includes(e.event))
-      if (hasMotivatedEvent) {
-        ;(enrichedLead as any).motivation_boost = 25
-      }
-    } catch (error) {
-      console.error("[Enrichment] OSINT error:", error)
-    }
-  }
-
-  // Step 3: Enrich with PeopleData
-  if (leadData.email || leadData.phone) {
-    try {
-      const peopleDataResult = await clients.peopledata.enrich({
-        email: leadData.email,
-        phone: leadData.phone,
-        firstName: leadData.first_name,
-        lastName: leadData.last_name,
-      })
-      results.leads_enriched++
-
-      if (peopleDataResult) {
-        ;(enrichedLead as any).peopledata = {
-          demographics: peopleDataResult.demographics,
-          employment: peopleDataResult.employment,
-          financial: peopleDataResult.financial,
-          life_events: peopleDataResult.lifeEvents,
-          social: peopleDataResult.social,
-        }
-
-        // Fill in missing contact info from PeopleData
-        if (!enrichedLead.email && peopleDataResult.additionalContacts?.email) {
-          enrichedLead.email = peopleDataResult.additionalContacts.email
-        }
-        if (!enrichedLead.phone && peopleDataResult.additionalContacts?.phone) {
-          enrichedLead.phone = peopleDataResult.additionalContacts.phone
-        }
-      }
-    } catch (error) {
-      console.error("[Enrichment] PeopleData error:", error)
-    }
-  }
-
-  return enrichedLead
-}
-
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-function buildPropertySearchUrl(site: string, market: any, params: any): string {
-  const location = encodeURIComponent(`${market.city}, ${market.state}`)
-
-  switch (site) {
-    case "zillow":
-      return `https://www.zillow.com/${market.city.toLowerCase().replace(/ /g, "-")}-${market.state.toLowerCase()}/homes/?searchQueryState=${encodeURIComponent(
-        JSON.stringify({
-          pagination: {},
-          mapBounds: {},
-          filterState: {
-            price: { min: params.min_price, max: params.max_price },
-            beds: { min: params.min_beds },
-            baths: { min: params.min_baths },
-          },
-        }),
-      )}`
-
-    case "realtor":
-      return `https://www.realtor.com/realestateandhomes-search/${market.city.replace(/ /g, "_")}_${market.state}/price-${params.min_price || 0}-${params.max_price || 10000000}/beds-${params.min_beds || 1}`
-
-    case "redfin":
-      return `https://www.redfin.com/city/${market.city.replace(/ /g, "-")}/${market.state}/filter/min-price=${params.min_price || 0},max-price=${params.max_price || 10000000},min-beds=${params.min_beds || 1}`
-
-    case "trulia":
-      return `https://www.trulia.com/${market.state}/${market.city.replace(/ /g, "_")}/`
-
-    default:
-      return `https://www.zillow.com/${location}/`
   }
 }
 
@@ -849,7 +762,10 @@ async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserte
   const { data, error } = await params.supabase
     .from('raw_scraped_leads')
     .insert({
-      brokerage_id:         params.brokerageId,
+      // Platform-owned until promotion: leave brokerage_id NULL. The owning
+      // brokerage is resolved from market_id (the active-subscriber territory
+      // this record was scraped for) when it passes the promotion gate.
+      brokerage_id:         null,
       market_id:            params.marketId,
       source:               params.record.source,
       source_record_id:     params.record.sourceRecordId,
@@ -882,209 +798,4 @@ async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserte
     return { inserted: false }
   }
   return { inserted: true, rawId: data?.id }
-}
-
-/**
- * Parse property search HTML from Zillow, Realtor, Redfin, or Trulia.
- * Returns only records that pass the viability gate.
- */
-function parsePropertySearchResults(
-  html: string,
-  site: string,
-  market: { city: string | null; state: string | null },
-): NormalizedScrapedRecord[] {
-  const $ = cheerio.load(html)
-  const records: NormalizedScrapedRecord[] = []
-
-  if (site === "zillow") {
-    // Zillow embeds listing data in a <script type="application/json"> containing
-    // the key "listResults" (or "cat1.searchResults.listResults" in newer builds).
-    $('script[type="application/json"]').each((_, el) => {
-      try {
-        const raw = $(el).html() ?? ""
-        if (!raw.includes("listResults") && !raw.includes("zpid")) return
-        const json = JSON.parse(raw)
-        // Traverse common nested paths where listResults appears
-        const listResults: unknown[] =
-          json?.cat1?.searchResults?.listResults ??
-          json?.listResults ??
-          json?.searchPageState?.cat1?.searchResults?.listResults ??
-          []
-        for (const item of listResults) {
-          const listing = item as Record<string, unknown>
-          const address = (listing.address as string | undefined) ?? (listing.streetAddress as string | undefined)
-          const zpid   = String(listing.zpid ?? listing.id ?? `zillow-${Date.now()}-${Math.random()}`)
-          if (!address) continue
-          const record: NormalizedScrapedRecord = {
-            sourceRecordId: `zillow-${zpid}`,
-            source: "zillow",
-            behaviorType: "property_view",
-            intentType: "buyer",
-            intentSignals: ["zillow_listing"],
-            propertyAddress: address,
-            city: (listing.city as string | null | undefined) ?? market.city,
-            state: (listing.state as string | null | undefined) ?? market.state,
-            zip: (listing.zipcode as string | null | undefined) ?? null,
-            motivationScore: 40,
-            sourceUrl: listing.detailUrl
-              ? `https://www.zillow.com${listing.detailUrl}`
-              : null,
-            rawPayload: listing,
-          }
-          records.push(record)
-        }
-      } catch {
-        // malformed JSON block — skip silently
-      }
-    })
-  } else if (site === "realtor") {
-    // Realtor.com property cards
-    $('[data-testid="property-card"]').each((_, el) => {
-      const addressEl  = $(el).find('[data-testid="card-address"]')
-      const line1      = addressEl.first().text().trim()
-      const line2      = addressEl.last().text().trim()
-      const address    = line1 ? `${line1}${line2 ? `, ${line2}` : ""}` : null
-      const href       = $(el).find('a').first().attr('href') ?? null
-      const pid        = href?.split('/').filter(Boolean).pop() ?? `realtor-${Date.now()}-${Math.random()}`
-      const priceText  = $(el).find('[data-testid="card-price"]').first().text().replace(/[^0-9]/g, '')
-      if (!address) return
-      const record: NormalizedScrapedRecord = {
-        sourceRecordId: `realtor-${pid}`,
-        source: "realtor",
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: ["realtor_listing"],
-        propertyAddress: address,
-        city: market.city,
-        state: market.state,
-        motivationScore: 40,
-        sourceUrl: href ? `https://www.realtor.com${href}` : null,
-        rawPayload: { address, href, price: priceText ? Number(priceText) : null },
-      }
-      records.push(record)
-    })
-  } else if (site === "redfin") {
-    // Redfin uses data-rf-test-name attributes on listing cards
-    $('[data-rf-test-name="mapHomeCard"], .HomeCard, .home-card').each((_, el) => {
-      const address   = $(el).find('[data-rf-test-name="homecard-address"], .address').first().text().trim() || null
-      const href      = $(el).find('a').first().attr('href') ?? null
-      const pid       = href?.split('/').filter(Boolean).pop() ?? `redfin-${Date.now()}-${Math.random()}`
-      if (!address) return
-      const record: NormalizedScrapedRecord = {
-        sourceRecordId: `redfin-${pid}`,
-        source: "redfin",
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: ["redfin_listing"],
-        propertyAddress: address,
-        city: market.city,
-        state: market.state,
-        motivationScore: 40,
-        sourceUrl: href ? `https://www.redfin.com${href}` : null,
-        rawPayload: { address, href },
-      }
-      records.push(record)
-    })
-  } else {
-    // Generic fallback: grab any element that looks like a property address
-    $('[class*="address"], [class*="Address"]').each((_, el) => {
-      const address = $(el).text().trim()
-      if (address.length < 5 || address.length > 120) return
-      const record: NormalizedScrapedRecord = {
-        sourceRecordId: `${site}-${Date.now()}-${Math.random()}`,
-        source: site,
-        behaviorType: "property_view",
-        intentType: "buyer",
-        intentSignals: [`${site}_listing`],
-        propertyAddress: address,
-        city: market.city,
-        state: market.state,
-        motivationScore: 35,
-        sourceUrl: null,
-        rawPayload: { address },
-      }
-      records.push(record)
-    })
-  }
-
-  return records.filter(isViableRecord)
-}
-
-/**
- * Parse Craigslist real-estate listing HTML.
- * Returns only FSBO / property listing rows that pass the viability gate.
- */
-function parseCraigslistHtml(html: string): NormalizedScrapedRecord[] {
-  const $ = cheerio.load(html)
-  const records: NormalizedScrapedRecord[] = []
-
-  $('.result-row, .cl-search-result').each((_, el) => {
-    const titleEl  = $(el).find('.result-title, .titlestring').first()
-    const title    = titleEl.text().trim()
-    const listingId = ($(el).attr('data-pid') ?? `cl-${Date.now()}-${Math.random()}`).toString()
-    const href     = titleEl.attr('href') ?? $(el).find('a.result-title').first().attr('href') ?? ''
-    const priceText = $(el).find('.result-price').first().text().replace(/[^0-9]/g, '')
-    const isFsbo   = /\b(by owner|fsbo|for sale by owner)\b/i.test(title)
-
-    if (title.length < 5) return
-
-    const record: NormalizedScrapedRecord = {
-      sourceRecordId: listingId,
-      source: "craigslist_fsbo",
-      behaviorType: isFsbo ? "fsbo_listing" : "property_listing",
-      intentType: "seller",
-      intentSignals: isFsbo ? ["fsbo_listed"] : ["craigslist_listing"],
-      propertyAddress: title.slice(0, 100),
-      motivationScore: isFsbo ? 75 : 45,
-      sourceUrl: href.startsWith("http") ? href : `https://craigslist.org${href}`,
-      rawPayload: {
-        title,
-        listing_id: listingId,
-        price: priceText ? Number(priceText) : null,
-      },
-    }
-    records.push(record)
-  })
-
-  return records.filter(isViableRecord)
-}
-
-/**
- * Normalize a raw BatchData motivated-seller record into the canonical shape.
- * The motivationScore is clamped to [0, 100].
- */
-function normalizeBatchDataRecord(
-  record: Record<string, unknown>,
-  market: { city: string | null; state: string | null },
-): NormalizedScrapedRecord {
-  const firstName = (record.firstName ?? record.first_name ?? record.owner_name?.toString().split(' ')[0] ?? '') as string
-  const lastName  = (record.lastName  ?? record.last_name  ??
-    (record.owner_name?.toString().split(' ').slice(1).join(' ') ?? '')) as string
-
-  const rawScore  = record.motivationConfidence ?? record.motivation_score ?? 0.5
-  const score     = Math.min(100, Math.max(0, Math.round(Number(rawScore) * (Number(rawScore) <= 1 ? 100 : 1))))
-
-  const idSlug = `${firstName}-${lastName}-${record.propertyAddress ?? record.property_address ?? ''}`
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-
-  return {
-    sourceRecordId: `batchdata-${idSlug || Date.now()}`,
-    source: "batchdata_motivated",
-    behaviorType: "motivated_seller",
-    intentType: "seller",
-    intentSignals: [(record.motivationType ?? record.motivation_type ?? 'motivated_seller') as string],
-    firstName:       firstName || null,
-    lastName:        lastName  || null,
-    email:           (record.email  as string | null | undefined) ?? null,
-    phone:           (record.phone  as string | null | undefined) ?? null,
-    city:            (record.city   as string | null | undefined) ?? market.city,
-    state:           (record.state  as string | null | undefined) ?? market.state,
-    zip:             (record.zip    as string | null | undefined) ?? null,
-    mailingAddress:  (record.address as string | null | undefined) ?? null,
-    propertyAddress: (record.propertyAddress ?? record.property_address) as string | null | undefined ?? null,
-    motivationScore: score,
-    rawPayload: record,
-  }
 }

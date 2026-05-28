@@ -72,6 +72,16 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     .select("doc_type, filing_folder, requires_review, auto_route")
     .eq("brokerage_id", contact.brokerage_id)
 
+  // STEP 6b — Fetch pending e-sign envelopes the contact needs to sign
+  // (contract_signatures are scoped by brokerage_id; contact match via agent ownership is handled by RLS)
+  const { data: pendingSignatures } = await supabase
+    .from("contract_signatures")
+    .select("id, contract_type, provider_name, document_url, sent_at, esign_status")
+    .eq("brokerage_id", contact.brokerage_id)
+    .in("esign_status", ["sent", "pending", "out_for_signature"])
+    .order("sent_at", { ascending: false })
+    .limit(20)
+
   // STEP 7 — Fetch state compliance requirements for doc types present
   const uniqueDocTypes = [...new Set([
     ...(txDocs?.map(d => d.doc_type).filter(Boolean) ?? []),
@@ -94,6 +104,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
       checklist={checklist ?? []}
       classifications={classifications ?? []}
       stateRequirements={stateRequirements ?? []}
+      pendingSignatures={pendingSignatures ?? []}
     />
   )
 }

@@ -66,17 +66,17 @@ export async function loadBrandVoicePrompt(
   }
 
   // ── Load ai_identity_profiles (new table) ─────────────────────────────
-  const scopeQueries: Promise<{ data: any }>[] = [
-    supabase.from("ai_identity_profiles").select("*").eq("scope_type", "brokerage").eq("scope_id", ctx.brokerageId).maybeSingle() as Promise<{ data: any }>,
+  const scopeQueries = [
+    supabase.from("ai_identity_profiles").select("*").eq("scope_type", "brokerage").eq("scope_id", ctx.brokerageId).maybeSingle(),
   ]
   if (ctx.teamId) {
     scopeQueries.push(
-      supabase.from("ai_identity_profiles").select("*").eq("scope_type", "team").eq("scope_id", ctx.teamId).maybeSingle() as Promise<{ data: any }>
+      supabase.from("ai_identity_profiles").select("*").eq("scope_type", "team").eq("scope_id", ctx.teamId).maybeSingle()
     )
   }
   if (ctx.agentId) {
     scopeQueries.push(
-      supabase.from("ai_identity_profiles").select("*").eq("scope_type", "agent").eq("scope_id", ctx.agentId).maybeSingle() as Promise<{ data: any }>
+      supabase.from("ai_identity_profiles").select("*").eq("scope_type", "agent").eq("scope_id", ctx.agentId).maybeSingle()
     )
   }
   const identityResults = await Promise.all(scopeQueries)

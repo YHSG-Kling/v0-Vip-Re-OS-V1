@@ -60,21 +60,21 @@ export function FarmIntelligencePanel({ brokerageId }: FarmIntelligencePanelProp
           .limit(10),
       ])
 
-      const activeTerritories = (territories || []).filter((t) => t.is_active).length
+      const activeTerritories = (territories || []).filter((t: { is_active: boolean }) => t.is_active).length
       const totalLeadsFromFarms = (territoryMetrics || []).reduce(
-        (sum, m) => sum + (m.lead_count || 0),
+        (sum: number, m: { lead_count: number | null }) => sum + (m.lead_count || 0),
         0
       )
 
       // Map territories with lead counts
       const zipLeadMap = new Map(
-        (territoryMetrics || []).map((m) => [m.zip_code, m.lead_count])
+        (territoryMetrics || []).map((m: { zip_code: string; lead_count: number | null }) => [m.zip_code, m.lead_count])
       )
 
       const topTerritories = (territories || [])
-        .filter((t) => t.is_active)
+        .filter((t: { is_active: boolean }) => t.is_active)
         .slice(0, 3)
-        .map((t) => ({
+        .map((t: { id: string; name: string; city: string | null; is_active: boolean }) => ({
           id: t.id,
           name: t.name,
           city: t.city || "N/A",

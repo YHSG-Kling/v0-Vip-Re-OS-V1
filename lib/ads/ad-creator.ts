@@ -211,7 +211,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
     const { text } = await generateText({
       model: resolveModel("anthropic/claude-sonnet-4-20250514" as Parameters<typeof resolveModel>[0]),
       prompt,
-      maxTokens: 1500,
+      maxOutputTokens: 1500,
     })
 
     // Parse JSON from response

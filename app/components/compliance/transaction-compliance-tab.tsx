@@ -698,9 +698,9 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                         {/* Blocking */}
                         <TableCell>
                           {log.is_blocking ? (
-                            <ShieldX className="h-4 w-4 text-red-500" title="Blocking" />
+                            <ShieldX className="h-4 w-4 text-red-500" />
                           ) : (
-                            <ShieldCheck className="h-4 w-4 text-muted-foreground" title="Non-blocking" />
+                            <ShieldCheck className="h-4 w-4 text-muted-foreground" />
                           )}
                         </TableCell>
 

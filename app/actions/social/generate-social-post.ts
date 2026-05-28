@@ -15,7 +15,7 @@
  * Database: Supabase — uses maybeSingle(), never single().
  */
 
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
@@ -237,11 +237,9 @@ export async function generateSocialPostContent(params: {
 
     const complianceResult = await evaluateOutbound({
       actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
-      journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+      journeyType: "buyer",
+      persona: "first_time",
+      messageType: "social",
       content:       object.content,
       contact:       broadcastContactStub,
     })
@@ -336,13 +334,57 @@ export async function generateWeeklyContentPlan(params: {
       ].filter(Boolean).join("\n"),
     })
 
+    // Persist each day's plan item to campaign_calendar so the Calendar tab shows it
+    try {
+      const supabase = await createClient()
+      const dayOrder: Record<string, number> = {
+        monday: 1, tuesday: 2, wednesday: 3, thursday: 4,
+        friday: 5, saturday: 6, sunday: 0,
+      }
+      // Find the next Monday as the start of this week's plan
+      const now = new Date()
+      const todayDow = now.getDay() // 0=Sun
+      const daysToMonday = todayDow === 0 ? 1 : 8 - todayDow
+      const weekStart = new Date(now)
+      weekStart.setDate(now.getDate() + (todayDow === 1 ? 0 : daysToMonday))
+      weekStart.setHours(0, 0, 0, 0)
+
+      const calendarRows = object.plan.map((item) => {
+        const offset = dayOrder[item.day.toLowerCase()] ?? 0
+        const eventDate = new Date(weekStart)
+        eventDate.setDate(weekStart.getDate() + offset)
+        // Parse suggested time like "9:00 AM"
+        const timeParts = item.suggestedTime.match(/(\d+):(\d+)\s*(AM|PM)/i)
+        if (timeParts) {
+          let hour = parseInt(timeParts[1])
+          const minute = parseInt(timeParts[2])
+          const ampm = timeParts[3].toUpperCase()
+          if (ampm === "PM" && hour < 12) hour += 12
+          if (ampm === "AM" && hour === 12) hour = 0
+          eventDate.setHours(hour, minute, 0, 0)
+        }
+        return {
+          brokerage_id: params.brokerageId,
+          agent_user_id: params.agentId,
+          event_type: item.contentType,
+          channel: item.platform,
+          title: item.hook,
+          scheduled_at: eventDate.toISOString(),
+          notes: `AI-planned: ${item.contentType} — ${item.suggestedTime}`,
+          status: "scheduled",
+        }
+      })
+      await supabase.from("campaign_calendar").insert(calendarRows)
+    } catch (calErr) {
+      // Non-fatal: plan is still returned even if calendar insert fails
+      console.warn("[v0] Failed to persist weekly plan to campaign_calendar:", calErr)
+    }
+
     return { success: true, data: object.plan }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to generate weekly plan" }
   }
 }
-
-// ─── CONTEXTUAL DRAFT (notes, emails, seller updates, etc.) ───────────────────
 
 /**
  * Generic contextual draft generator.
@@ -407,11 +449,9 @@ export async function generateContextualDraft(params: {
 
       const compliance = await evaluateOutbound({
         actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
-        journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+        journeyType: "buyer",
+        persona: "first_time",
+        messageType: "social",
         content:      object.draft,
         contact:      stubContact,
       })

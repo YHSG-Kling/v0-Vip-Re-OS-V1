@@ -89,21 +89,30 @@ export default function BusinessCardsPage() {
     void (async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
-      const { data: profile } = await supabase
-        .from("user_profiles")
-        .select("agent_id, brokerage_id")
+      const { data: agentRecord } = await supabase
+        .from("agents")
+        .select("id, brokerage_id")
         .eq("user_id", user.id)
-        .single()
-      if (!profile) return
-      setAgentId(profile.agent_id)
-      setBrokerageId(profile.brokerage_id)
+        .maybeSingle()
 
-      const history = await getRecentScans({
-        agentId: profile.agent_id,
-        brokerageId: profile.brokerage_id,
-        limit: 20,
-      })
-      setScans(history)
+      if (agentRecord) {
+        setAgentId(agentRecord.id)
+        setBrokerageId(agentRecord.brokerage_id)
+        const history = await getRecentScans({ agentId: agentRecord.id, brokerageId: agentRecord.brokerage_id, limit: 20 })
+        setScans(history)
+      } else {
+        // Non-agent user (broker_admin, TC, etc.) — get brokerage_id from users table
+        const { data: userRow } = await supabase
+          .from("users")
+          .select("brokerage_id")
+          .eq("id", user.id)
+          .maybeSingle()
+        if (!userRow?.brokerage_id) return
+        setAgentId(user.id)
+        setBrokerageId(userRow.brokerage_id)
+        const history = await getRecentScans({ agentId: user.id, brokerageId: userRow.brokerage_id, limit: 20 })
+        setScans(history)
+      }
       setLoadingScans(false)
     })()
   }, [])

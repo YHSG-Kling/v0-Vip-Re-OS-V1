@@ -1,13 +1,14 @@
 import { generateAIResponse } from "@/lib/ai"
 import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import type { InsiderEditInput, InsiderEditNewsletter, InsiderEditSection } from "@/types"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 const THEM_FIRST_SYSTEM_PROMPT = `You are "The Insider," a curated real estate newsletter curator with quiet confidence and specific editorial taste. Your tone is low-stress, high-quality, and micro-editorial.
 
 FORBIDDEN WORDS/PHRASES: "Hurry," "Act fast," "Don't miss out," generic "Luxury," "Amazing," "Spectacular," "Must see"
 
-REQUIRED TONE: 
+REQUIRED TONE:
 - Quiet confidence over hype
 - Specific details over generic praise
 - Curiosity-driven language
@@ -33,6 +34,7 @@ const SECTION_PROMPTS = {
 async function generateSection(
   sectionType: InsiderEditSection["sectionType"],
   context: Partial<InsiderEditInput> & { pressureTestHighlights: string[]; listingAddress?: string },
+  actorContext: { userId: string; brokerageId: string }
 ): Promise<InsiderEditSection> {
   const userPrompt = `${SECTION_PROMPTS[sectionType]}
 
@@ -44,17 +46,11 @@ ${sectionType === "deal" ? `- Unique Features: ${context.pressureTestHighlights.
 
 Generate only the section content, no headers or labels.`
 
-  // Get actor context for governance
-  const agentCtx = await getAgentContext()
-  const actorContext = agentCtx
-    ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
-    : undefined
-
   const response = await generateAIResponse({
     prompt: `${THEM_FIRST_SYSTEM_PROMPT}\n\n${userPrompt}`,
     metadata: {
-      userId: actorContext?.userId,
-      brokerageId: actorContext?.brokerageId,
+      userId: actorContext.userId,
+      brokerageId: actorContext.brokerageId,
       feature: "email_generation",
     },
   })
@@ -77,35 +73,39 @@ Generate only the section content, no headers or labels.`
 }
 
 export async function POST(request: Request) {
+  // Auth guard — caller identity always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
+  const actorContext = { userId: auth.userId, brokerageId: auth.brokerageId }
+
   try {
-    const body = (await request.json()) as InsiderEditInput & { createdByUserId: string }
+    const body = (await request.json()) as InsiderEditInput
 
     // Generate all sections in parallel
     const sections = await Promise.all(
       (["hook", "events", "civic", "deal", "eats"] as const).map((sectionType) =>
-        generateSection(sectionType, {
-          ...body,
-          listingAddress: body.listingUrl.split("/").filter((p) => p)[3] || "Listing",
-        }),
-      ),
+        generateSection(
+          sectionType,
+          {
+            ...body,
+            listingAddress: body.listingUrl.split("/").filter((p) => p)[3] || "Listing",
+          },
+          actorContext
+        )
+      )
     )
 
-    // Extract first section as preview text
     const previewText = sections[0].content.split(".")[0] + "."
-
-    // Generate subject line
-    const agentCtx = await getAgentContext()
-    const actorContext = agentCtx
-      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
-      : undefined
 
     const subjectLineResult = await generateAIResponse({
       prompt: `Generate a compelling, curiosity-driven email subject line (50 chars max) for a real estate newsletter. No hype words. Example: 'The quiet appeal of Williamsburg'
 
 For a neighborhood: ${body.city}, vibe: ${body.vibe}. Subject line:`,
       metadata: {
-        userId: body.createdByUserId,
-        brokerageId: actorContext?.brokerageId,
+        userId: actorContext.userId,
+        brokerageId: actorContext.brokerageId,
         feature: "email_generation",
       },
     })
@@ -124,7 +124,7 @@ For a neighborhood: ${body.city}, vibe: ${body.vibe}. Subject line:`,
       emailPreviewText: previewText,
       status: "draft",
       tone: body.agentPastToneContext ? "custom" : "curator",
-      createdByUserId: body.createdByUserId,
+      createdByUserId: auth.userId,   // always from session — never from body
       createdAt: new Date().toISOString(),
     }
 

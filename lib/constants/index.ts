@@ -112,6 +112,9 @@ export type ContentType = (typeof CONTENT_TYPES)[number]
 export const SOCIAL_PLATFORMS = ["facebook", "instagram", "linkedin", "twitter", "tiktok"] as const
 export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]
 
+/** @deprecated Use SOCIAL_PLATFORMS */
+export const SOCIAL_MEDIA_PLATFORMS = SOCIAL_PLATFORMS
+
 export const EMAIL_TYPES = [
   "welcome",
   "listing_alert",
@@ -271,6 +274,17 @@ export const AI_LIMITS = {
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.7,
   MAX_RETRIES: 3,
+} as const
+
+export const AI_CONFIG = {
+  defaultModel: 'claude-sonnet-4-20250514',
+  maxTokensDefault: 1000,
+  temperatureDefault: 0.7,
+  features: {
+    videoScriptGeneration: true,
+    brandVoiceApplication: true,
+    complianceCheck: true,
+  }
 } as const
 
 

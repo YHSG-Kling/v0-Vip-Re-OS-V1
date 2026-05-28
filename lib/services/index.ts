@@ -53,9 +53,8 @@ export {
 } from "./social-publishing.service"
 
 // ─── TRANSACTION MANAGEMENT ───────────────────────────────────────────────────
-export type { CreateTransactionParams, UpdateTransactionParams } from "./transaction-management.service"
+export type { UpdateTransactionParams } from "./transaction-management.service"
 export {
-  createTransaction,
   updateTransaction,
   getTransactionDetails,
   getAgentTransactions,
@@ -63,22 +62,11 @@ export {
   calculateTransactionCommission,
 } from "./transaction-management.service"
 
-// ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
-export type { VideoProjectParams, VideoGenerationResult } from "./video-generation.service"
-export {
-  createVideoProject,
-  getVideoProjectStatus,
-  generateListingVideoPackage,
-  getListingVideos,
-  deleteVideoProject,
-} from "./video-generation.service"
-
 // ─── COMMUNICATION ────────────────────────────────────────────────────────────
 export type { SendEmailParams, SendSMSParams, LogCommunicationParams } from "./communication.service"
 export {
   sendEmail,
   sendSMS,
-  sendViaGHL,
   logCommunication,
   sendCalculatorResults,
   sendCollaborativeSearchInvite,

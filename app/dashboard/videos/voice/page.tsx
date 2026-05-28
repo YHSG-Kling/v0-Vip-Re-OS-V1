@@ -42,12 +42,15 @@ async function VoiceContent() {
   // Fetch voice profiles for this agent
   const voiceProfiles = await getVoiceProfiles(agentData.id)
 
+  const heygenConfigured = !!process.env.HEYGEN_API_KEY
+
   return (
     <VoiceCloneClient
       agentId={agentData.id}
       brokerageId={agentData.brokerage_id}
       userId={user.id}
       initialProfiles={voiceProfiles}
+      heygenConfigured={heygenConfigured}
     />
   )
 }

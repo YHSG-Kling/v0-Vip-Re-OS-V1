@@ -74,7 +74,7 @@ export default function AgentTransactionDetailPage() {
       .select("id, doc_type, doc_label, status, storage_url, uploaded_at, uploaded_by, notes")
       .eq("transaction_id", transactionId)
       .order("uploaded_at", { ascending: false })
-      .then(({ data: rows }) => {
+      .then(({ data: rows }: { data: any[] | null }) => {
         setDocuments(rows ?? [])
         setDocsLoading(false)
       })

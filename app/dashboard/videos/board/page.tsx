@@ -134,7 +134,7 @@ export default function VideoKanbanBoard() {
       .eq("brokerage_id", brokerage.id)
       .eq("is_active", true)
       .order("platform")
-      .then(({ data }) => {
+      .then(({ data }: { data: any[] | null }) => {
         setSocialAccounts(data ?? [])
         if (data?.[0]) {
           setDistAccountId(data[0].id)
@@ -160,7 +160,7 @@ export default function VideoKanbanBoard() {
         setVideos(data)
 
         // Load streaming statuses for all videos
-        const videoIds = data.map(v => v.id)
+        const videoIds = data.map((v: any) => v.id)
         const { data: statusData } = await supabase
           .from("video_streaming_status")
           .select("*")
@@ -168,7 +168,7 @@ export default function VideoKanbanBoard() {
 
         if (statusData) {
           const statusMap: Record<string, StreamingStatus> = {}
-          statusData.forEach(s => {
+          statusData.forEach((s: any) => {
             statusMap[s.video_project_id] = s
           })
           setStreamingStatuses(statusMap)
@@ -176,8 +176,8 @@ export default function VideoKanbanBoard() {
 
         // Identify videos that need polling
         const needsPolling = data
-          .filter(v => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.heygen_status || ""))
-          .map(v => v.id)
+          .filter((v: any) => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.heygen_status || ""))
+          .map((v: any) => v.id)
         setPollingVideoIds(new Set(needsPolling))
       }
     } catch (error) {
@@ -196,7 +196,7 @@ export default function VideoKanbanBoard() {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "ai_video_projects" },
-        (payload) => {
+        (payload: any) => {
           setVideos((prev) =>
             prev.map((v) => (v.id === payload.new.id ? { ...v, ...payload.new } : v))
           )
@@ -205,14 +205,14 @@ export default function VideoKanbanBoard() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "ai_video_projects" },
-        (payload) => {
+        (payload: any) => {
           setVideos((prev) => [payload.new as VideoProject, ...prev])
         }
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "video_streaming_status" },
-        (payload) => {
+        (payload: any) => {
           const newStatus = payload.new as StreamingStatus
           setStreamingStatuses((prev) => ({
             ...prev,

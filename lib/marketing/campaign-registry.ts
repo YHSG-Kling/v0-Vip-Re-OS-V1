@@ -177,16 +177,17 @@ export async function getCampaignRegistry(
       }
 
       for (const row of data ?? []) {
+        const r = row as any
         items.push({
-          id: row.id,
+          id: r.id,
           sourceTable: table,
-          title: truncateText(row.title ?? `${table} item`, 100),
-          status: row.status ?? "unknown",
-          createdAt: row.created_at,
-          thumbnailUrl: row.thumbnail_url ?? undefined,
-          previewText: truncateText(row.preview_text, 200),
-          channel: row.channel ?? undefined,
-          metadata: row,
+          title: truncateText(r.title ?? `${table} item`, 100) ?? "",
+          status: r.status ?? "unknown",
+          createdAt: r.created_at,
+          thumbnailUrl: r.thumbnail_url ?? undefined,
+          previewText: truncateText(r.preview_text, 200),
+          channel: r.channel ?? undefined,
+          metadata: r as Record<string, unknown>,
         })
       }
     } catch (err) {

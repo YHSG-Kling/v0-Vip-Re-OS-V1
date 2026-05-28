@@ -70,7 +70,7 @@ export async function applyTeamSplit(
 
   return {
     ...context,
-    agentFinalCents,
+    agentFinalNetCents: agentFinalCents,
     teamDistributions
   }
 }

@@ -38,9 +38,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const supabase = createServiceClient()
 
     // ── Step 2: Fetch QR code ─────────────────────────────────────────────────
+    // Schema: qr_codes.agent_id (NOT agent_user_id — old name in earlier
+    // migrations). Previously this select silently failed and agent_user_id
+    // came back undefined, dropping the per-agent attribution on captured
+    // leads.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_user_id, lead_count')
+      .select('id, brokerage_id, agent_id, lead_count')
       .eq('id', qrCodeId)
       .eq('is_active', true)
       .single()
@@ -53,10 +57,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Step 3: captureContact (dedup → merge/create → enrich queue → score) ─
+    // qr_codes.agent_id is agents.id — pass it through directly. captureContact
+    // routes through resolveAgentForContact() so the brokerage's assignment
+    // rules apply when no QR is agent-tagged.
+    const ownerAgentId: string | null = qr.agent_id ?? null
+
     const now = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId: qr.brokerage_id,
-      agentUserId: qr.agent_user_id ?? null,
+      ownerAgentId,
       source: 'qr_scan',
       first_name: first_name || null,
       last_name: last_name || null,
@@ -94,7 +103,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .eq('id', scanEvent.id)
     }
 
-    // ── Step 6: Emit lifecycle event ──────────────────────────────────────────
+    // ── Step 6: Emit lifecycle event + fan out ────────────────────────────────
+    // fanOutKernelEvent fires staff notifications + auto-enrolls any
+    // campaign_sequences with trigger_event='contact_captured' (so e.g.
+    // a "QR-captured lead" nurture drip starts immediately) AND emits a
+    // welcome portal message for the new contact.
     await supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'contact',
@@ -102,6 +115,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       event_type: KernelEvent.CONTACT_CAPTURED,
       metadata: { source: 'qr_scan', slug, qrCodeId, action },
     })
+
+    if (action === 'created') {
+      try {
+        const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
+        await fanOutKernelEvent({
+          event:       KernelEvent.CONTACT_CAPTURED,
+          brokerageId: qr.brokerage_id,
+          entityType:  'contact',
+          entityId:    contactId,
+          contactId,
+          agentUserId: undefined,
+          metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
+        })
+      } catch { /* non-blocking */ }
+    }
 
     return NextResponse.json({ success: true, contactId, action })
   } catch (err) {

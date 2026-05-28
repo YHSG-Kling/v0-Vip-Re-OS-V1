@@ -1,0 +1,140 @@
+// lib/providers/calendar/personal-calendar.ts
+// Per-AGENT calendar via the agent's OWN connected Google / Microsoft account — the SAME
+// OAuth token the email adapter uses (the Google/Microsoft consent already grants calendar
+// scope). This is the calendar path now that Nylas is retired: a solo agent's bookings land
+// on THEIR calendar. Returns null when no personal calendar is connected (index falls back
+// to the mock no-credentials response).
+//
+// No stub — real Google Calendar v3 + Microsoft Graph calls. The pure slot computation is
+// unit-tested in the simulator.
+
+import "server-only"
+import { getFreshPersonalToken } from "@/lib/providers/email/personal-email-adapter"
+import { computeFreeSlots } from "./free-slots"
+import type {
+  CalendarEvent,
+  CreateEventResult,
+  GetAvailabilityParams,
+  GetAvailabilityResult,
+  UpdateEventResult,
+  DeleteEventResult,
+} from "./index"
+
+const GOOGLE_CAL = "https://www.googleapis.com/calendar/v3"
+const GRAPH = "https://graph.microsoft.com/v1.0"
+
+export async function hasPersonalCalendar(agentUserId: string): Promise<boolean> {
+  return (await getFreshPersonalToken(agentUserId).catch(() => null)) != null
+}
+
+export async function createEventViaPersonal(agentUserId: string, event: CalendarEvent): Promise<CreateEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+  if (!tok) return null
+
+  if (tok.provider === "gmail") {
+    const res = await fetch(`${GOOGLE_CAL}/calendars/primary/events?conferenceDataVersion=1`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        summary: event.title,
+        description: event.description,
+        location: event.location,
+        start: { dateTime: event.startTime },
+        end: { dateTime: event.endTime },
+        attendees: event.attendees?.map((a) => ({ email: a.email, displayName: a.name })),
+      }),
+    })
+    if (!res.ok) return { success: false, error: `Google Calendar (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}` }
+    const data = await res.json()
+    return { success: true, eventId: data.id, conferenceUrl: data.hangoutLink }
+  }
+
+  const res = await fetch(`${GRAPH}/me/events`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tok.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      subject: event.title,
+      body: { contentType: "HTML", content: event.description ?? "" },
+      start: { dateTime: event.startTime, timeZone: "UTC" },
+      end: { dateTime: event.endTime, timeZone: "UTC" },
+      location: event.location ? { displayName: event.location } : undefined,
+      attendees: event.attendees?.map((a) => ({ emailAddress: { address: a.email, name: a.name }, type: "required" })),
+    }),
+  })
+  if (!res.ok) return { success: false, error: `Microsoft Graph (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}` }
+  const data = await res.json()
+  return { success: true, eventId: data.id, conferenceUrl: data.onlineMeeting?.joinUrl }
+}
+
+export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams): Promise<GetAvailabilityResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+  if (!tok) return null
+  const timeMin = new Date(params.startDate).toISOString()
+  const timeMax = new Date(params.endDate).toISOString()
+
+  let busy: Array<{ start: number; end: number }> = []
+  if (tok.provider === "gmail") {
+    const res = await fetch(`${GOOGLE_CAL}/freeBusy`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ timeMin, timeMax, items: [{ id: "primary" }] }),
+    })
+    if (!res.ok) return { success: false, slots: [], error: `Google freeBusy (${res.status})` }
+    const data = await res.json()
+    busy = (data.calendars?.primary?.busy ?? []).map((b: any) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }))
+  } else {
+    const url = `${GRAPH}/me/calendarView?startDateTime=${encodeURIComponent(timeMin)}&endDateTime=${encodeURIComponent(timeMax)}&$select=start,end&$top=200`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${tok.accessToken}`, Prefer: 'outlook.timezone="UTC"' } })
+    if (!res.ok) return { success: false, slots: [], error: `Microsoft calendarView (${res.status})` }
+    const data = await res.json()
+    busy = (data.value ?? [])
+      .map((ev: any) => ({ start: Date.parse(`${ev.start?.dateTime}Z`), end: Date.parse(`${ev.end?.dateTime}Z`) }))
+      .filter((b: any) => !Number.isNaN(b.start) && !Number.isNaN(b.end))
+  }
+
+  return { success: true, slots: computeFreeSlots(busy, params) }
+}
+
+export async function updateEventViaPersonal(agentUserId: string, eventId: string, updates: Partial<CalendarEvent>): Promise<UpdateEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+  if (!tok) return null
+
+  if (tok.provider === "gmail") {
+    const body: Record<string, any> = {}
+    if (updates.title) body.summary = updates.title
+    if (updates.description) body.description = updates.description
+    if (updates.location) body.location = updates.location
+    if (updates.startTime) body.start = { dateTime: updates.startTime }
+    if (updates.endTime) body.end = { dateTime: updates.endTime }
+    const res = await fetch(`${GOOGLE_CAL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${tok.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return res.ok ? { success: true } : { success: false, error: `Google Calendar update (${res.status})` }
+  }
+
+  const body: Record<string, any> = {}
+  if (updates.title) body.subject = updates.title
+  if (updates.description) body.body = { contentType: "HTML", content: updates.description }
+  if (updates.location) body.location = { displayName: updates.location }
+  if (updates.startTime) body.start = { dateTime: updates.startTime, timeZone: "UTC" }
+  if (updates.endTime) body.end = { dateTime: updates.endTime, timeZone: "UTC" }
+  const res = await fetch(`${GRAPH}/me/events/${encodeURIComponent(eventId)}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${tok.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  return res.ok ? { success: true } : { success: false, error: `Microsoft Graph update (${res.status})` }
+}
+
+export async function deleteEventViaPersonal(agentUserId: string, eventId: string): Promise<DeleteEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+  if (!tok) return null
+  const url = tok.provider === "gmail"
+    ? `${GOOGLE_CAL}/calendars/primary/events/${encodeURIComponent(eventId)}`
+    : `${GRAPH}/me/events/${encodeURIComponent(eventId)}`
+  const res = await fetch(url, { method: "DELETE", headers: { Authorization: `Bearer ${tok.accessToken}` } })
+  // Google returns 410 if already deleted — treat as success.
+  return res.ok || res.status === 410 ? { success: true } : { success: false, error: `Calendar delete (${res.status})` }
+}

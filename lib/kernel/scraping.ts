@@ -155,26 +155,6 @@ export interface GateResult {
   reason: string
 }
 
-export interface PromoteRawToLeadParams {
-  rawRecordId: string
-  brokerageId: string
-  enriched: EnrichRawResult
-  source: string
-  sourceFamily: string
-  intentType: string
-  motivationScore: number
-  computedScore: number
-  urgencyLevel: string
-  leadType: string
-  motivationType: string | null
-  motivationConfidence: number
-}
-
-export interface PromoteResult {
-  success: boolean
-  leadId: string | null
-  error: string | null
-}
 
 export interface ScrapingDiagnosticsParams {
   brokerageId?: string   // if null, superadmin global view
@@ -342,7 +322,7 @@ export async function runScrapeSourcesChronologically(
       brokerage_id: params.brokerageId ?? null,
       metadata:    { markets_count: markets.length, dry_run: params.dryRun ?? false },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     for (const market of markets) {
       // Budget gate — skip territory if monthly budget exhausted
@@ -355,7 +335,7 @@ export async function runScrapeSourcesChronologically(
           brokerage_id: market.brokerage_id,
           metadata:    { market_name: market.name, spend: market.spend_this_month, budget: market.monthly_budget_usd },
           created_at:  new Date().toISOString(),
-        }).catch(() => {})
+        })
         continue
       }
 
@@ -374,7 +354,7 @@ export async function runScrapeSourcesChronologically(
         duration_ms:      durationMs,
         records_processed: result.totalRawInserted,
         completed_at:     new Date().toISOString(),
-      }).eq('id', cronLogId).catch(() => {})
+      }).eq('id', cronLogId)
     }
 
     await supabase.from('lifecycle_events').insert({
@@ -384,7 +364,7 @@ export async function runScrapeSourcesChronologically(
       brokerage_id: params.brokerageId ?? null,
       metadata:    { ...result, duration_ms: durationMs },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return result
   } catch (err) {
@@ -397,7 +377,7 @@ export async function runScrapeSourcesChronologically(
         duration_ms:  durationMs,
         error_message: msg,
         completed_at: new Date().toISOString(),
-      }).eq('id', cronLogId).catch(() => {})
+      }).eq('id', cronLogId)
     }
 
     await supabase.from('lifecycle_events').insert({
@@ -407,7 +387,7 @@ export async function runScrapeSourcesChronologically(
       brokerage_id: params.brokerageId ?? null,
       metadata:    { error: msg, duration_ms: durationMs },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     result.errors.push(msg)
     return result
@@ -431,7 +411,7 @@ export async function ingestRawSourceBatch(
   }
 
   // Open scraper_executions record for this source batch
-  const { data: execRecord } = await supabase
+  const execRecordResult = await supabase
     .from('scraper_executions')
     .insert({
       brokerage_id:  params.brokerageId,
@@ -441,7 +421,8 @@ export async function ingestRawSourceBatch(
     })
     .select('id')
     .maybeSingle()
-    .catch(() => ({ data: null }))
+    .then(r => r, () => ({ data: null }))
+  const execRecord = execRecordResult?.data
 
   const execId = (execRecord as any)?.id ?? params.executionId
 
@@ -453,7 +434,7 @@ export async function ingestRawSourceBatch(
     brokerage_id: params.brokerageId,
     metadata:    { source: params.source, records_incoming: params.records.length },
     created_at:  new Date().toISOString(),
-  }).catch(() => {})
+  })
 
   let batchError: Error | null = null
 
@@ -522,7 +503,7 @@ export async function ingestRawSourceBatch(
         brokerage_id: params.brokerageId,
         metadata:    { source: record.source, identity_key: identityKey, intent_type: record.intentType },
         created_at:  new Date().toISOString(),
-      }).catch(() => {})
+      })
     }
 
     // Close scraper_executions — completed
@@ -532,7 +513,7 @@ export async function ingestRawSourceBatch(
         total_items_found: params.records.length,
         leads_created:     result.inserted,
         completed_at:      new Date().toISOString(),
-      }).eq('id', execId).catch(() => {})
+      }).eq('id', execId)
     }
 
     await supabase.from('lifecycle_events').insert({
@@ -542,7 +523,7 @@ export async function ingestRawSourceBatch(
       brokerage_id: params.brokerageId,
       metadata:    { source: params.source, inserted: result.inserted, skipped: result.skipped_duplicate + result.skipped_not_viable },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
 
   } catch (err) {
     batchError = err instanceof Error ? err : new Error(String(err))
@@ -552,7 +533,7 @@ export async function ingestRawSourceBatch(
         status:        'failed',
         error_message: batchError.message,
         completed_at:  new Date().toISOString(),
-      }).eq('id', execId).catch(() => {})
+      }).eq('id', execId)
     }
 
     await supabase.from('lifecycle_events').insert({
@@ -562,7 +543,7 @@ export async function ingestRawSourceBatch(
       brokerage_id: params.brokerageId,
       metadata:    { source: params.source, error: batchError.message },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
   }
 
   return result
@@ -757,7 +738,7 @@ async function logDedupDecision(
     duplicate_of_lead_id:    matchType === 'lead'    ? matchId : null,
     duplicate_of_contact_id: matchType === 'contact' ? matchId : null,
     created_at:              new Date().toISOString(),
-  }).catch(() => {})
+  })
 
   await supabase.from('lifecycle_events').insert({
     entity_type: 'raw_scraped_lead',
@@ -766,7 +747,7 @@ async function logDedupDecision(
     brokerage_id: params.brokerageId,
     metadata:    { match_type: matchType, match_id: matchId, stage: params.stage, score: matchScore },
     created_at:  new Date().toISOString(),
-  }).catch(() => {})
+  })
 }
 
 // ─── 5. enrichRawRecord ──────────────────────────────────────────────────────
@@ -812,7 +793,7 @@ export async function enrichRawRecord(
       brokerage_id: params.brokerageId,
       metadata:    { queue_id: queueId },
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return { queued: true, queueId }
   } catch {
@@ -861,7 +842,7 @@ export async function gateRawRecordToLead(
           brokerage_id: params.brokerageId,
           metadata:    { record_city: recordCity, market_city: marketCity },
           created_at:  new Date().toISOString(),
-        }).catch(() => {})
+        })
         return { decision: 'territory_mismatch', reason: `Record city ${recordCity} outside market ${marketCity}, ${marketState}` }
       }
     }
@@ -879,7 +860,7 @@ export async function gateRawRecordToLead(
       brokerage_id: params.brokerageId,
       metadata:    {},
       created_at:  new Date().toISOString(),
-    }).catch(() => {})
+    })
     return { decision: 'insufficient_identity', reason: 'No email, phone, full name+location, or property address' }
   }
 
@@ -890,116 +871,11 @@ export async function gateRawRecordToLead(
     brokerage_id: params.brokerageId,
     metadata:    { decision: 'pass' },
     created_at:  new Date().toISOString(),
-  }).catch(() => {})
+  })
 
   return { decision: 'pass', reason: 'Identity gate passed' }
 }
 
-// ─── 7. promoteQualifiedRawToLead ────────────────────────────────────────────
-// Creates a leads row from a fully enriched, gated raw record.
-// Sets lifecycle_state: 'unconsented' and ai_isa_owner: true.
-// RULE: ai_isa_owner = true enables AI ISA queue pickup ONLY AFTER
-//       handleLeadCaptured() transitions lifecycle_state to 'isa_qualifying'.
-//       This command does NOT assign ISA. It only creates the lead row.
-
-export async function promoteQualifiedRawToLead(
-  params: PromoteRawToLeadParams,
-): Promise<PromoteResult> {
-  const supabase = createServiceClient()
-
-  try {
-    const { data: newLead, error: createError } = await supabase
-      .from('leads')
-      .insert({
-        brokerage_id:           params.brokerageId,
-        first_name:             params.enriched.first_name,
-        last_name:              params.enriched.last_name,
-        email:                  params.enriched.email,
-        phone:                  params.enriched.phone,
-        phone_secondary:        params.enriched.phone_secondary ?? null,
-        source:                 params.source,
-        source_family:          params.sourceFamily,
-        lead_type:              params.leadType,
-        motivation_type:        params.motivationType,
-        motivation_confidence:  params.motivationConfidence,
-        urgency_level:          params.urgencyLevel,
-        lead_score:             params.computedScore,
-        enrichment_status:      'completed',
-        enrichment_confidence:  params.enriched.enrichmentConfidence,
-        enrichment_provider:    params.enriched.enrichmentProvider,
-        last_enriched_at:       new Date().toISOString(),
-        lead_stage:             'new',
-        source_raw_ids:         [params.rawRecordId],
-        // Kernel OS lifecycle ownership
-        lifecycle_state:        'unconsented',
-        ai_isa_owner:           true,
-        minimum_viable_for_isa: !!(params.enriched.email),
-        raw_record_id:          params.rawRecordId,
-        is_active:              true,
-        created_at:             new Date().toISOString(),
-      })
-      .select('id')
-      .maybeSingle()
-
-    if (createError || !newLead) {
-      throw new Error(createError?.message ?? 'Lead insert returned no data')
-    }
-
-    const leadId = (newLead as any).id
-
-    // Update raw_scraped_leads — link lead_id and mark promoted
-    await supabase.from('raw_scraped_leads').update({
-      lead_id:           leadId,
-      processing_status: 'promoted',
-      processed_at:      new Date().toISOString(),
-      updated_at:        new Date().toISOString(),
-    }).eq('id', params.rawRecordId)
-
-    // Emit RAW_RECORD_PROMOTED lifecycle event
-    await supabase.from('lifecycle_events').insert({
-      entity_type: 'raw_scraped_lead',
-      entity_id:   params.rawRecordId,
-      event_type:  KernelEvent.RAW_RECORD_PROMOTED,
-      brokerage_id: params.brokerageId,
-      metadata:    { lead_id: leadId, source: params.source },
-      created_at:  new Date().toISOString(),
-    }).catch(() => {})
-
-    // Write dedup log — action_taken: 'created'
-    await supabase.from('lead_deduplication_log').insert({
-      raw_record_id:             params.rawRecordId,
-      lead_id:                   leadId,
-      brokerage_id:              params.brokerageId,
-      stage:                     'lead_creation',
-      action_taken:              'created',
-      match_score:               0,
-      match_details:             {},
-      new_enrichment_confidence: params.enriched.enrichmentConfidence,
-      created_at:                new Date().toISOString(),
-    }).catch(() => {})
-
-    return { success: true, leadId, error: null }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-
-    await supabase.from('raw_scraped_leads').update({
-      processing_status: 'error',
-      error_message:     msg,
-      updated_at:        new Date().toISOString(),
-    }).eq('id', params.rawRecordId).catch(() => {})
-
-    await supabase.from('lifecycle_events').insert({
-      entity_type: 'raw_scraped_lead',
-      entity_id:   params.rawRecordId,
-      event_type:  KernelEvent.RAW_RECORD_FAILED,
-      brokerage_id: params.brokerageId,
-      metadata:    { error: msg },
-      created_at:  new Date().toISOString(),
-    }).catch(() => {})
-
-    return { success: false, leadId: null, error: msg }
-  }
-}
 
 // ─── 8. loadScrapingDiagnostics ──────────────────────────────────────────────
 // Loads all 9 visibility dimensions required by the diagnostics UI.
@@ -1183,7 +1059,7 @@ export async function retryFailedSourceBatch(
         scraper_type:     (execution as any).scraper_type,
       },
       created_at:   new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return { success: true, rawRecordsRequeued: recordIds.length, error: null }
   } catch (err) {

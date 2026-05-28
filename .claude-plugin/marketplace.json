@@ -1,0 +1,19 @@
+{
+  "name": "vip-re-os-marketplace",
+  "owner": {
+    "name": "The Kling Group"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for the VIP Real Estate OS project."
+  },
+  "plugins": [
+    {
+      "name": "supabase",
+      "source": "./plugins/supabase",
+      "description": "Supabase development toolkit: migrations, RLS governance, type generation, SSR client conventions, plus the official Supabase MCP server.",
+      "version": "0.1.0",
+      "category": "database",
+      "keywords": ["supabase", "postgres", "rls", "migrations", "nextjs", "ssr"]
+    }
+  ]
+}

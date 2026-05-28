@@ -31,11 +31,14 @@ export async function GET(request: NextRequest) {
   // Get user role
   const { data: userData } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .single()
 
-  if (!userData || !ALLOWED_ROLES.includes(userData.role || "")) {
+  if (
+    !userData ||
+    (!ALLOWED_ROLES.includes(userData.user_type || "") && userData.platform_role !== "superadmin")
+  ) {
     return NextResponse.redirect(new URL("/dashboard", request.url))
   }
 
@@ -140,7 +143,7 @@ export async function GET(request: NextRequest) {
 
   // 1. lifecycle_events
   if (entityType === "all" || entityType === "event") {
-    let query = supabase
+    const query = supabase
       .from("lifecycle_events")
       .select("id, entity_type, entity_id, event_type, actor_user_id, metadata, created_at")
       .eq("brokerage_id", brokerageId)

@@ -7,6 +7,10 @@ import {
   saveProviderOverride,
   type ProviderOverrideRow,
 } from '@/app/actions/settings/provider-settings-actions'
+import {
+  getPlatformVideoProvider,
+  setPlatformVideoProvider,
+} from '@/app/actions/settings/global-settings-actions'
 
 // ─── PROVIDER CATALOGUES ──────────────────────────────────────────────────────
 
@@ -62,15 +66,22 @@ export default function ProviderSettingsPage() {
   const [savedChannel, setSavedChannel] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  // Platform video provider state (superadmin only)
+  const [platformProvider, setPlatformProviderState] = useState<'did' | 'heygen'>('did')
+  const [providerSaving, setProviderSaving] = useState(false)
+  const [providerSaved, setProviderSaved] = useState(false)
+  const [providerError, setProviderError] = useState<string | null>(null)
+
   useEffect(() => {
     void (async () => {
       try {
-        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }] =
-          await Promise.all([getProviderSettings(), getSystemProviderStatus()])
+        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }, currentProvider] =
+          await Promise.all([getProviderSettings(), getSystemProviderStatus(), getPlatformVideoProvider()])
 
         setIsSuperadmin(isSA)
         setDirectMailAllowed(directMailEnabled || isSA)
         setVideoAllowed(videoEnabled || isSA)
+        setPlatformProviderState(currentProvider)
 
         setState({
           email:       buildInitial(overrides, 'email'),
@@ -115,6 +126,21 @@ export default function ProviderSettingsPage() {
     })
   }
 
+  async function savePlatformProvider() {
+    setProviderSaving(true)
+    setProviderError(null)
+    setProviderSaved(false)
+    try {
+      await setPlatformVideoProvider(platformProvider)
+      setProviderSaved(true)
+      setTimeout(() => setProviderSaved(false), 2500)
+    } catch (err) {
+      setProviderError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setProviderSaving(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -137,6 +163,62 @@ export default function ProviderSettingsPage() {
       {saveError && (
         <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
           {saveError}
+        </div>
+      )}
+
+      {/* ── Platform Video & Voice Provider (superadmin only) ──────────────── */}
+      {isSuperadmin && (
+        <div className="rounded-xl border bg-white p-6 space-y-4 shadow-sm">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Platform Video &amp; Voice Provider</h2>
+            <p className="mt-0.5 text-sm text-gray-500">
+              Select the video generation stack used by all agents on this platform. The unchosen provider will be hidden from all user UI.
+            </p>
+          </div>
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
+              <input
+                type="radio"
+                name="platform_provider"
+                value="did"
+                checked={platformProvider === 'did'}
+                onChange={() => setPlatformProviderState('did')}
+                className="mt-1"
+              />
+              <div>
+                <p className="font-medium text-gray-900">D-ID + ElevenLabs <span className="ml-2 text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Default — Recommended</span></p>
+                <p className="text-sm text-gray-500 mt-0.5">Agents use their own face and cloned voice. Cost-effective and personal.</p>
+                <p className="text-xs text-gray-400 mt-1">Requires: DID_API_KEY + ELEVENLABS_API_KEY in environment</p>
+              </div>
+            </label>
+            <label className="flex items-start gap-3 p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
+              <input
+                type="radio"
+                name="platform_provider"
+                value="heygen"
+                checked={platformProvider === 'heygen'}
+                onChange={() => setPlatformProviderState('heygen')}
+                className="mt-1"
+              />
+              <div>
+                <p className="font-medium text-gray-900">HeyGen Studio</p>
+                <p className="text-sm text-gray-500 mt-0.5">Professional studio avatars and synthetic voices via HeyGen.</p>
+                <p className="text-xs text-gray-400 mt-1">Requires: HeyGen API key configured per brokerage</p>
+              </div>
+            </label>
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              type="button"
+              disabled={providerSaving}
+              onClick={savePlatformProvider}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+            >
+              {providerSaving ? 'Saving…' : 'Save Provider Settings'}
+            </button>
+            {providerSaved && <span className="text-sm text-green-600 font-medium">Saved</span>}
+            {providerError && <span className="text-sm text-red-600">{providerError}</span>}
+          </div>
         </div>
       )}
 

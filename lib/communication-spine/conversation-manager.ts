@@ -86,12 +86,27 @@ export async function getOrCreateConversation(
       }
     }
 
+    // conversations.agent_id is NOT NULL — resolve the owning agent from the
+    // contact when the caller didn't supply one (e.g. inbound messages).
+    let resolvedAgentId = context.agentId
+    if (!resolvedAgentId) {
+      const { data: contactRow } = await supabase
+        .from('contacts')
+        .select('agent_id')
+        .eq('id', context.contactId)
+        .maybeSingle()
+      resolvedAgentId = contactRow?.agent_id ?? undefined
+    }
+    if (!resolvedAgentId) {
+      return { success: false, error: 'No agent associated with contact — cannot create conversation' }
+    }
+
     // Create new conversation
     const { data: newConv, error: createError } = await supabase
       .from('conversations')
       .insert({
         contact_id: context.contactId,
-        agent_id: context.agentId,
+        agent_id: resolvedAgentId,
         type: context.initialChannel || 'email',
         status: 'active',
         message_count: 0,

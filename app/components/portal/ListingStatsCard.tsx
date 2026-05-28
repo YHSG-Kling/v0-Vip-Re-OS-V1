@@ -70,7 +70,10 @@ export function ListingStatsCard({
   const status = LISTING_STATUS_CONFIG[listing.listing_status ?? listing.status ?? "active"] ?? 
     LISTING_STATUS_CONFIG.active
   const address = listing.address || listing.property_address || "Your Property"
-  const dom = listing.dom ?? calculateDOM(listing.listing_date)
+  // DOM is computed from listings.go_live_date (the public-active date).
+  // listing.dom comes pre-computed from resolve-seller-context when this
+  // card is wired into a seller portal; fall back to computing inline.
+  const dom = listing.dom ?? calculateDOM(listing.go_live_date ?? null)
 
   // Determine banner color based on status
   const isUnderContract = listing.listing_status === "under_contract" || listing.listing_status === "pending"

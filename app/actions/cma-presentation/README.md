@@ -128,9 +128,9 @@ and is not an appraisal. An appraisal can only be performed by a licensed apprai
 - `seller.presentation.video_generated`
 
 **Integration:**
-- Uses existing `video-generation.service.ts`
-- Creates "listing_tour" video project
-- 2-minute duration, professional style
+- Uses the canonical `app/actions/video/create-video-project.ts` (provider resolved by `resolveVideoProvider` — D-ID default)
+- Creates a "listing_tour" video project in `draft` for the agent to confirm avatar/voice and submit
+- 2-minute duration, horizontal format
 
 ---
 

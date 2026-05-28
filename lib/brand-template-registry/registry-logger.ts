@@ -23,7 +23,7 @@ export async function logTemplateClassification(
       entity_type: "content",
       entity_id: contentId,
       activity_type: "template_classified",
-      payload: {
+      metadata: {
         trust_level: classification.trust_level,
         auto_approval_eligible: classification.auto_approval_eligible,
         confidence_score: classification.confidence_score,
@@ -31,7 +31,7 @@ export async function logTemplateClassification(
         matched_template: classification.matched_template,
         classified_at: classification.classified_at,
       },
-      user_id: userId,
+      agent_user_id: userId,
       created_at: new Date().toISOString(),
     })
 
@@ -65,14 +65,14 @@ export async function logBrandRequirements(
       entity_type: "content",
       entity_id: contentId,
       activity_type: "brand_requirements_evaluated",
-      payload: {
+      metadata: {
         required_elements: requirements.required_elements,
         optional_elements: requirements.optional_elements,
         channel_specific_notes: requirements.channel_specific_notes,
         legal_disclaimers: requirements.legal_disclaimers,
         generated_at: requirements.generated_at,
       },
-      user_id: userId,
+      agent_user_id: userId,
       created_at: new Date().toISOString(),
     })
 
@@ -110,13 +110,13 @@ export async function logBrandCompliance(
       entity_type: "content",
       entity_id: contentId,
       activity_type: "brand_compliance_validated",
-      payload: {
+      metadata: {
         is_compliant: validation.is_compliant,
         missing_elements: validation.missing_elements,
         warnings: validation.warnings,
         validated_at: new Date().toISOString(),
       },
-      user_id: userId,
+      agent_user_id: userId,
       created_at: new Date().toISOString(),
     })
 

@@ -4,12 +4,24 @@
 // Layer 9.3 Content Performance Predictor — Server Actions
 
 import { predictContentPerformance, getPrediction, type ContentType } from "@/lib/content/performance-predictor"
-import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { createServiceClient } from "@/lib/supabase/service"
+
+// A small allowlist of tables we'll allow predictions/lookups against.
+// Each entry tells us the column that holds the row's brokerage id.
+const PREDICTABLE_TABLES: Record<string, string> = {
+  social_posts: "brokerage_id",
+  marketing_emails: "brokerage_id",
+  email_campaigns: "brokerage_id",
+  marketing_campaigns: "brokerage_id",
+  newsletter_drafts: "brokerage_id",
+  blog_posts: "brokerage_id",
+  ai_generated_content: "brokerage_id",
+}
 
 export interface PredictPerformanceParams {
-  brokerageId: string
-  userId: string
+  brokerageId?: string // ignored — derived from session
+  userId?: string // ignored — derived from session
   contentType: ContentType
   sourceTable: string
   sourceId: string
@@ -19,10 +31,51 @@ export interface PredictPerformanceParams {
 }
 
 /**
+ * Verifies sourceTable/sourceId row belongs to the caller's brokerage.
+ */
+async function verifySourceOwnership(
+  sourceTable: string,
+  sourceId: string,
+  brokerageId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const tenantCol = PREDICTABLE_TABLES[sourceTable]
+  if (!tenantCol) {
+    return { ok: false, error: `Unsupported source_table: ${sourceTable}` }
+  }
+  const svc = createServiceClient()
+  const { data: row } = await svc
+    .from(sourceTable)
+    .select(`id, ${tenantCol}`)
+    .eq("id", sourceId)
+    .maybeSingle()
+  if (!row || (row as any)[tenantCol] !== brokerageId) {
+    return { ok: false, error: "Forbidden" }
+  }
+  return { ok: true }
+}
+
+/**
  * Server action to predict content performance.
  */
 export async function predictPerformanceAction(params: PredictPerformanceParams) {
-  return predictContentPerformance(params)
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const ownership = await verifySourceOwnership(params.sourceTable, params.sourceId, ctx.brokerageId)
+  if (!ownership.ok) return { success: false, error: ownership.error || "Forbidden" }
+
+  return predictContentPerformance({
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+    contentType: params.contentType,
+    sourceTable: params.sourceTable,
+    sourceId: params.sourceId,
+    contentText: params.contentText,
+    platform: params.platform,
+    scheduledFor: params.scheduledFor,
+  })
 }
 
 /**
@@ -31,9 +84,17 @@ export async function predictPerformanceAction(params: PredictPerformanceParams)
 export async function getPredictionAction(
   sourceTable: string,
   sourceId: string,
-  brokerageId: string
+  _brokerageId?: string // ignored — derived from session
 ) {
-  return getPrediction(sourceTable, sourceId, brokerageId)
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const ownership = await verifySourceOwnership(sourceTable, sourceId, ctx.brokerageId)
+  if (!ownership.ok) return { success: false, error: ownership.error || "Forbidden" }
+
+  return getPrediction(sourceTable, sourceId, ctx.brokerageId)
 }
 
 /**

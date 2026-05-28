@@ -4,6 +4,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { resolveProvider } from '@/lib/kernel/providers'
 
 export interface CallContext {
   blocked: boolean
@@ -87,7 +88,7 @@ export async function buildCallContext(params: {
   const supabase = createServiceClient()
 
   // ── Parallel fetches ───────────────────────────────────────────────────────
-  const [personRow, agentRow, identityRows, brandVoice] = await Promise.all([
+  const [personRow, agentRow, identityRows, brandVoice, brokerageRow] = await Promise.all([
     // Prefer contact over lead — contact record has richer opt-out state
     params.contactId
       ? supabase
@@ -112,7 +113,7 @@ export async function buildCallContext(params: {
     params.agentId
       ? supabase
           .from('agents')
-          .select('first_name, last_name')
+          .select('first_name, last_name, voice_id')
           .eq('id', params.agentId)
           .maybeSingle()
           .then((r) => r.data)
@@ -123,7 +124,7 @@ export async function buildCallContext(params: {
       .select(
         'scope_type, scope_id, assistant_name, persona_label, tone, formality_level, ' +
           'faq_knowledge, objection_library, escalation_rules, prohibited_language, ' +
-          'voice_provider, elevenlabs_voice_id, voice_stability, voice_similarity_boost'
+          'voice_provider, voice_mode, elevenlabs_voice_id, vapi_assistant_id'
       )
       .eq('brokerage_id', params.brokerageId)
       .eq('active', true)
@@ -134,29 +135,68 @@ export async function buildCallContext(params: {
       agentId: params.agentId ?? null,
       teamId: params.teamId ?? null,
     }),
+
+    // Brokerage row — name (display) + default_isa_voice_id (voice fallback)
+    supabase
+      .from('brokerages')
+      .select('name, default_isa_voice_id')
+      .eq('id', params.brokerageId)
+      .maybeSingle()
+      .then((r) => r.data),
   ])
 
   // ── Hard blocks ────────────────────────────────────────────────────────────
   if (!personRow) return { ...BLOCKED_EMPTY, blockReason: 'contact_not_found' }
   if (personRow.call_stop_flag) return { ...BLOCKED_EMPTY, blockReason: 'call_stop_flag' }
 
-  // ── Resolve identity: agent > team > brokerage ─────────────────────────────
+  // ── Resolve identity: pre-assignment vs post-assignment ────────────────────
+  //
+  // Pre-assignment (no agentId provided — ISA is qualifying a raw/unconsented
+  // lead): identify as the BROKERAGE or TEAM. Voice mode must NOT be `clone`
+  // here — projecting a specific agent's identity to someone who hasn't been
+  // assigned to that agent yet is misleading and can violate disclosure rules.
+  // Use 'front_office' (generic brokerage receptionist persona) or 'assistant'
+  // (named virtual assistant) at the brokerage/team scope.
+  //
+  // Post-assignment (agentId provided — qualified lead now belongs to a
+  // specific agent, OR existing contact's known agent): identify as the
+  // ASSIGNED AGENT. Voice mode = 'clone' so the ISA speaks in the agent's
+  // own cloned voice (per ElevenLabs voice clone setup).
   const SCOPE_ORDER: Record<string, number> = { agent: 0, team: 1, brokerage: 2 }
-  const scopeIds = [params.agentId, params.teamId, params.brokerageId].filter(Boolean)
-  const identity =
-    (identityRows as any[])
-      .filter((i) => scopeIds.includes(i.scope_id))
-      .sort(
+  const allScopeIds = [params.agentId, params.teamId, params.brokerageId].filter(Boolean)
+  const isPreAssignment = !params.agentId
+  const eligibleProfiles = (identityRows as any[]).filter((i) =>
+    allScopeIds.includes(i.scope_id)
+  )
+
+  let identity: any = null
+  if (isPreAssignment) {
+    // Filter to non-clone profiles only; prefer team > brokerage scope
+    const preAssignmentEligible = eligibleProfiles.filter(
+      (i) => i.voice_mode === 'front_office' || i.voice_mode === 'assistant' || !i.voice_mode
+    )
+    identity =
+      preAssignmentEligible.sort(
         (a, b) => (SCOPE_ORDER[a.scope_type] ?? 9) - (SCOPE_ORDER[b.scope_type] ?? 9)
       )[0] ?? null
+  } else {
+    // Post-assignment: prefer agent-scoped clone profile; fall back to team/brokerage
+    identity =
+      eligibleProfiles.sort(
+        (a, b) => (SCOPE_ORDER[a.scope_type] ?? 9) - (SCOPE_ORDER[b.scope_type] ?? 9)
+      )[0] ?? null
+  }
 
   // ── Resolve display values ─────────────────────────────────────────────────
   const assistantName = identity?.assistant_name ?? brandVoice.assistantName ?? 'your real estate assistant'
   const tone = brandVoice.tone ?? identity?.tone ?? 'professional'
   const formality = brandVoice.formalityLevel ?? identity?.formality_level ?? 'semi_formal'
-  const agentFirstName = agentRow?.first_name ?? 'your agent'
+  const agentFirstName = agentRow?.first_name ?? 'one of our agents'
   const agentFullName = [agentRow?.first_name, agentRow?.last_name].filter(Boolean).join(' ')
   const contactFirstName = (personRow as any).first_name ?? 'there'
+
+  // Brokerage display name for pre-assignment intros (already loaded in parallel above)
+  const brokerageName = (brokerageRow as any)?.name ?? 'our brokerage'
   // contacts use contact_persona; leads use persona
   const persona =
     (personRow as any).contact_persona ?? (personRow as any).persona ?? ''
@@ -184,8 +224,15 @@ export async function buildCallContext(params: {
   }
 
   // ── Build system prompt ────────────────────────────────────────────────────
+  // Identity disclosure changes based on assignment state:
+  //   - Pre-assignment: identify as the brokerage's virtual assistant (NOT
+  //     a specific agent — that agent hasn't been assigned yet)
+  //   - Post-assignment: identify as calling on behalf of the assigned agent
+  const identityLine = isPreAssignment
+    ? `You are ${assistantName}, the virtual assistant for ${brokerageName}.`
+    : `You are ${assistantName}, an AI real estate assistant calling on behalf of ${agentFullName}.`
   const systemPrompt = [
-    `You are ${assistantName}, an AI real estate assistant calling on behalf of ${agentFullName}.`,
+    identityLine,
     toneGuide[tone] ?? 'Be professional and helpful.',
     formalityGuide[formality] ?? 'Be professional.',
     persona && PERSONA_GUIDANCE[persona]
@@ -217,11 +264,22 @@ export async function buildCallContext(params: {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+  // Voice VENDOR is platform-tier (system-only) — resolved once for the whole
+  // app (superadmin override or the 'elevenlabs' default), never per-tenant. The
+  // per-agent voice ASSET (elevenlabs_voice_id / agents.voice_id /
+  // default_isa_voice_id) remains tenant-scoped below.
+  const { providerKey: voiceVendor } = await resolveProvider({
+    providerType: 'voice_clone',
+    actorContext: { userId: '', brokerageId: params.brokerageId },
+  })
+
   return {
     blocked: false,
     assistantName,
     personaLabel: identity?.persona_label ?? brandVoice.personaLabel ?? 'AI Real Estate Specialist',
-    firstMessage: `Hi ${contactFirstName}, this is ${assistantName} reaching out on behalf of ${agentFirstName}. Do you have just a moment?`,
+    firstMessage: isPreAssignment
+      ? `Hi ${contactFirstName}, this is ${assistantName} from ${brokerageName}. Do you have just a moment?`
+      : `Hi ${contactFirstName}, this is ${assistantName} reaching out on behalf of ${agentFirstName}. Do you have just a moment?`,
     systemPrompt,
     temperature: ['luxury', 'authoritative'].includes(tone)
       ? 0.5
@@ -235,12 +293,34 @@ export async function buildCallContext(params: {
       contact_first_name: contactFirstName,
       contact_persona: persona,
     },
+    // Voice resolution priority:
+    //   1. Identity profile elevenlabs_voice_id (set via Voice & Avatar Setup) —
+    //      most specific (agent → team → brokerage scope, picked above)
+    //   2. agents.voice_id — the agent's own voice clone (post-assignment only;
+    //      pre-assignment must NOT project a specific agent's identity)
+    //   3. brokerages.default_isa_voice_id — brokerage's chosen ISA voice
+    //      (covers pre-assignment and any case where neither above is set)
+    //   4. undefined → VAPI uses its default voice (last resort)
     voiceConfig: identity?.elevenlabs_voice_id
       ? {
-          provider: identity.voice_provider ?? 'elevenlabs',
+          provider: voiceVendor,
           voiceId: identity.elevenlabs_voice_id,
-          stability: identity.voice_stability ?? 0.7,
-          similarityBoost: identity.voice_similarity_boost ?? 0.8,
+          stability: 0.7,
+          similarityBoost: 0.8,
+        }
+      : !isPreAssignment && (agentRow as any)?.voice_id
+      ? {
+          provider: voiceVendor,
+          voiceId: (agentRow as any).voice_id as string,
+          stability: 0.7,
+          similarityBoost: 0.8,
+        }
+      : (brokerageRow as any)?.default_isa_voice_id
+      ? {
+          provider: voiceVendor,
+          voiceId: (brokerageRow as any).default_isa_voice_id as string,
+          stability: 0.7,
+          similarityBoost: 0.8,
         }
       : undefined,
     escalationRules: {

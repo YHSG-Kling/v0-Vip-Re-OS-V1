@@ -36,7 +36,7 @@ import {
 export async function getBuyerJourney(params: {
   contactId: string
   userId?: string
-  source?: 'buyer_portal' | 'agent_dashboard' | 'voice_assistant'
+  source?: 'buyer_portal' | 'agent_action' | 'voice_assistant'
 }) {
   const { contactId, userId, source = 'buyer_portal' } = params
 
@@ -165,7 +165,7 @@ export async function handleBuyerVoiceAssistant(params: {
 export async function lenderConfirmBuyerFinancials(params: {
   contactId: string
   lenderId: string
-  verificationType: 'pre_approval' | 'proof_of_funds' | 'lender_intro'
+  verificationType: 'preapproval' | 'proof_of_funds' | 'lender_intro'
   approvedAmount?: number
   loanType?: string
   interestRate?: number

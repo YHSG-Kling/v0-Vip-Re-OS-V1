@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { getTitleTransactionDetail, TITLE_VISIBLE_MILESTONES } from "@/app/actions/title-portal"
+import { getTitleTransactionDetail } from "@/app/actions/title-portal"
+import { TITLE_VISIBLE_MILESTONES } from "@/lib/title-portal/constants"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -275,9 +276,9 @@ export default async function TitleTransactionDetailPage({
                             <p className="font-medium capitalize">
                               {milestone.milestone_name.replace(/_/g, " ")}
                             </p>
-                            {milestone.milestone_date && (
+                            {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.milestone_date)}
+                                {formatDate(milestone.target_date)}
                               </p>
                             )}
                           </div>
@@ -323,21 +324,21 @@ export default async function TitleTransactionDetailPage({
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="font-medium">
-                  {transaction.contacts.first_name} {transaction.contacts.last_name}
+                  {(transaction.contacts as any).first_name} {(transaction.contacts as any).last_name}
                 </p>
-                {transaction.contacts.email && (
+                {(transaction.contacts as any).email && (
                   <div className="flex items-center gap-2 text-sm">
                     <Mail className="h-4 w-4 text-muted-foreground" />
-                    <a href={`mailto:${transaction.contacts.email}`} className="text-primary hover:underline">
-                      {transaction.contacts.email}
+                    <a href={`mailto:${(transaction.contacts as any).email}`} className="text-primary hover:underline">
+                      {(transaction.contacts as any).email}
                     </a>
                   </div>
                 )}
-                {transaction.contacts.phone && (
+                {(transaction.contacts as any).phone && (
                   <div className="flex items-center gap-2 text-sm">
                     <Phone className="h-4 w-4 text-muted-foreground" />
-                    <a href={`tel:${transaction.contacts.phone}`} className="text-primary hover:underline">
-                      {transaction.contacts.phone}
+                    <a href={`tel:${(transaction.contacts as any).phone}`} className="text-primary hover:underline">
+                      {(transaction.contacts as any).phone}
                     </a>
                   </div>
                 )}
@@ -356,21 +357,21 @@ export default async function TitleTransactionDetailPage({
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="font-medium">
-                  {transaction.agents.first_name} {transaction.agents.last_name}
+                  {(transaction.agents as any).first_name} {(transaction.agents as any).last_name}
                 </p>
-                {transaction.agents.email && (
+                {(transaction.agents as any).email && (
                   <div className="flex items-center gap-2 text-sm">
                     <Mail className="h-4 w-4 text-muted-foreground" />
-                    <a href={`mailto:${transaction.agents.email}`} className="text-primary hover:underline">
-                      {transaction.agents.email}
+                    <a href={`mailto:${(transaction.agents as any).email}`} className="text-primary hover:underline">
+                      {(transaction.agents as any).email}
                     </a>
                   </div>
                 )}
-                {transaction.agents.phone && (
+                {(transaction.agents as any).phone && (
                   <div className="flex items-center gap-2 text-sm">
                     <Phone className="h-4 w-4 text-muted-foreground" />
-                    <a href={`tel:${transaction.agents.phone}`} className="text-primary hover:underline">
-                      {transaction.agents.phone}
+                    <a href={`tel:${(transaction.agents as any).phone}`} className="text-primary hover:underline">
+                      {(transaction.agents as any).phone}
                     </a>
                   </div>
                 )}

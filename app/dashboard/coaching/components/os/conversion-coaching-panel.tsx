@@ -32,15 +32,17 @@ interface ConversionIssue {
 }
 
 interface ConversionCoachingPanelProps {
-  metrics: ConversionMetric[]
-  issues: ConversionIssue[]
-  topImprovement: string | null
+  metrics?: ConversionMetric[]
+  issues?: ConversionIssue[]
+  topImprovement?: string | null
+  agentId?: string
+  brokerageId?: string
 }
 
 export function ConversionCoachingPanel({
-  metrics,
-  issues,
-  topImprovement,
+  metrics = [],
+  issues = [],
+  topImprovement = null,
 }: ConversionCoachingPanelProps) {
   return (
     <Card>
@@ -54,7 +56,7 @@ export function ConversionCoachingPanel({
             <CardDescription>Where opportunities are being lost</CardDescription>
           </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link href="/dashboard/buyers">
+            <Link href="/crm?contact_type=buyer">
               View Pipeline
               <ArrowRight className="ml-1 h-4 w-4" />
             </Link>
@@ -133,7 +135,7 @@ export function ConversionCoachingPanel({
                 </div>
                 {issue.contact_ids.length > 0 && (
                   <Button variant="ghost" size="sm" asChild>
-                    <Link href={`/contacts?ids=${issue.contact_ids.slice(0, 5).join(",")}`}>
+                    <Link href={`/crm/contacts?ids=${issue.contact_ids.slice(0, 5).join(",")}`}>
                       <Users className="mr-1 h-4 w-4" />
                       View
                     </Link>

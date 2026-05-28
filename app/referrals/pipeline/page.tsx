@@ -44,8 +44,8 @@ export default async function ReferralPipelinePage() {
     <div className="container mx-auto p-6 space-y-6">
       {/* OS Pipeline Panel */}
       <PipelineOsClient
-        agentId={agentId}
-        brokerageId={brokerageId}
+        agentId={agentId ?? ""}
+        brokerageId={brokerageId ?? ""}
         referrals={(referrals || []).map((r) => ({
           id: r.id,
           referral_name: r.referred_name,

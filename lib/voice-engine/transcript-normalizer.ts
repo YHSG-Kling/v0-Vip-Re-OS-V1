@@ -53,7 +53,7 @@ export function normalizeVoiceTranscript(
 ): NormalizedTranscript {
   // Build full text with speaker labels
   let fullText = ''
-  const speakers: Array<{ role: string; text: string; timestamp: number }> = []
+  const speakers: Array<{ role: 'contact' | 'ai' | 'agent' | 'office'; text: string; timestamp: number }> = []
 
   for (const segment of rawTranscript.segments) {
     const speakerLabel = segment.speaker.toUpperCase()

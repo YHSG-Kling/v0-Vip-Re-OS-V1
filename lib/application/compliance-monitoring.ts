@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -19,15 +20,22 @@ export async function logAuditEventService(params: {
 }) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("audit_logs").insert({
+  const { error } = await supabase.from("audit_log").insert({
     user_id: params.userId,
-    action_type: params.action,
+    action: params.action,
     entity_type: params.entityType,
     entity_id: params.entityId,
-    changes: params.changes,
-    ip_address: params.ipAddress,
-    user_agent: params.userAgent,
-    compliance_relevant: params.complianceRelevant || false,
+    // audit_log carries before/after JSONB. The legacy `audit_logs` callsite
+    // passed a single `changes` payload; we put it in `after` and fold the
+    // request-context (ip / UA / compliance flag) into the same JSONB so we
+    // don't lose the data on the schema unification.
+    before: null,
+    after: {
+      changes: params.changes ?? null,
+      ip_address: params.ipAddress ?? null,
+      user_agent: params.userAgent ?? null,
+      compliance_relevant: params.complianceRelevant ?? false,
+    },
   })
 
   if (error) {
@@ -79,8 +87,10 @@ export async function checkComplianceStatusService(transactionId: string) {
 // CERTIFICATION TRACKING
 // ============================================
 
-export async function trackCertificationExpirationService(agentId: string) {
-  const supabase = await createClient()
+export async function trackCertificationExpirationService(agentId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so system crons can pass a service-role
+  // client (bypasses RLS); UI callers default to the user-context client.
+  const supabase = client ?? await createClient()
 
   const today = new Date()
   const thirtyDaysFromNow = new Date()
@@ -180,9 +190,21 @@ Focus on detecting:
     }
   }
 
+  // Resolve brokerage from the contact (fallback to agent) so every audit row is
+  // tenant-scoped and visible to brokerage-scoped reads / RLS.
+  const { data: fhContact } = await supabase
+    .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+  let brokerageId: string | null = fhContact?.brokerage_id ?? null
+  if (!brokerageId && params.agentId) {
+    const { data: fhAgent } = await supabase
+      .from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+    brokerageId = fhAgent?.brokerage_id ?? null
+  }
+
   const { error } = await supabase
     .from("fair_housing_logs")
     .insert({
+      brokerage_id: brokerageId,
       contact_id: params.contactId,
       agent_id: params.agentId,
       interaction_type: params.interactionType,
@@ -200,6 +222,7 @@ Focus on detecting:
 
   if (aiAnalysis.risk_score >= 0.6) {
     await supabase.from("compliance_alerts").insert({
+      brokerage_id: brokerageId,
       transaction_id: null,
       alert_type: "FAIR_HOUSING_RISK",
       severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
@@ -211,6 +234,21 @@ Focus on detecting:
         flagged_phrases: aiAnalysis.flagged_content,
         recommendation: aiAnalysis.recommendation,
       },
+    })
+
+    // Surface to compliance_flags — the table the compliance dashboard reads
+    // (filtered by violation_type='fair_housing' + brokerage_id). Without this,
+    // the analysis is invisible to the UI.
+    await supabase.from("compliance_flags").insert({
+      brokerage_id: brokerageId,
+      agent_id: params.agentId,
+      contact_id: params.contactId,
+      content_type: params.interactionType,
+      violation_type: "fair_housing",
+      flagged_content: { text: params.communicationText, ...aiAnalysis },
+      severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
+      status: "flagged",
+      detected_at: new Date().toISOString(),
     })
   }
 
@@ -235,8 +273,10 @@ const getBusinessDays = (startDate: string, endDate: string) => {
   return count
 }
 
-export async function monitorTRIDComplianceService(transactionId: string) {
-  const supabase = await createClient()
+export async function monitorTRIDComplianceService(transactionId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so the compliance cron can pass a
+  // service-role client (bypasses RLS); UI callers default to user context.
+  const supabase = client ?? await createClient()
 
   const { data: timeline } = await supabase
     .from("trid_timeline")
@@ -247,6 +287,11 @@ export async function monitorTRIDComplianceService(transactionId: string) {
   if (!timeline) {
     return { compliant: true, violations: [] }
   }
+
+  // Resolve brokerage from the transaction so alerts are tenant-scoped.
+  const { data: tridTxn } = await supabase
+    .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
+  const tridBrokerageId: string | null = tridTxn?.brokerage_id ?? null
 
   const violations: any[] = []
 
@@ -284,6 +329,7 @@ export async function monitorTRIDComplianceService(transactionId: string) {
 
   for (const violation of violations) {
     await supabase.from("compliance_alerts").insert({
+      brokerage_id: tridBrokerageId,
       transaction_id: transactionId,
       alert_type: violation.type,
       severity: violation.severity,
@@ -394,11 +440,11 @@ export async function exportAuditTrailService(params: {
   const supabase = await createClient()
 
   let query = supabase
-    .from("audit_logs")
+    .from("audit_log")
     .select("*")
-    .gte("timestamp", params.startDate)
-    .lte("timestamp", params.endDate)
-    .order("timestamp", { ascending: false })
+    .gte("created_at", params.startDate)
+    .lte("created_at", params.endDate)
+    .order("created_at", { ascending: false })
 
   if (params.transactionId) {
     query = query.eq("entity_type", "transaction").eq("entity_id", params.transactionId)
@@ -533,10 +579,16 @@ export async function submitContentForApprovalService(data: {
     agentState: data.agentState,
   })
 
+  // Resolve the submitting user's brokerage — the column is brokerage_id, NOT the
+  // user id. (Previously stored data.userId here, corrupting tenant scoping.)
+  const { data: submitterRow } = await supabase
+    .from("users").select("brokerage_id").eq("id", data.userId).maybeSingle()
+
   const { data: approval, error } = await supabase
     .from("activities")
     .insert({
-      brokerage_id: data.userId,
+      brokerage_id: submitterRow?.brokerage_id ?? null,
+      agent_user_id: data.userId,
       activity_type: "content.approval",
       entity_type: "content",
       entity_id: crypto.randomUUID(),
@@ -644,6 +696,11 @@ export async function logCommunicationWithComplianceService(data: {
 }) {
   const supabase = await createClient()
 
+  // Resolve brokerage from the acting user so audit rows are tenant-scoped.
+  const { data: logUser } = await supabase
+    .from("users").select("brokerage_id").eq("id", data.userId).maybeSingle()
+  const logBrokerageId: string | null = logUser?.brokerage_id ?? null
+
   let complianceCheck = { passed: true, warnings: [] as any[] }
 
   if (data.leadTemperature === "cold" && !["email", "print"].includes(data.communicationType)) {
@@ -658,34 +715,38 @@ export async function logCommunicationWithComplianceService(data: {
     }
 
     await supabase.from("compliance_flags").insert({
+      brokerage_id: logBrokerageId,
       user_id: data.userId,
       agent_id: data.agentId,
-      flag_type: "cold_lead_channel_violation",
-      flag_details: {
+      contact_id: data.contactId ?? null,
+      content_type: data.communicationType,
+      violation_type: "cold_lead_channel_violation",
+      flagged_content: {
         channel_used: data.communicationType,
         lead_temperature: data.leadTemperature,
         allowed_channels: ["email", "print"],
       },
       severity: "high",
-      detected_by: "auto_scan",
+      status: "flagged",
+      detected_at: new Date().toISOString(),
     })
   }
 
   const { data: log, error } = await supabase
     .from("communication_audit_log")
     .insert({
+      brokerage_id: logBrokerageId,
       user_id: data.userId,
       agent_id: data.agentId,
       contact_id: data.contactId,
       lead_id: data.leadId,
       communication_type: data.communicationType,
-      content_id: data.contentId,
       lead_temperature: data.leadTemperature,
       was_approved_content: !!data.contentId,
-      content_snapshot: data.contentSnapshot,
-      compliance_check_passed: complianceCheck.passed,
-      compliance_warnings: complianceCheck.warnings,
-      sent_via: data.sentVia,
+      channel: data.sentVia,
+      body_snippet: data.contentSnapshot?.slice(0, 500),
+      compliance_passed: complianceCheck.passed,
+      sent_at: new Date().toISOString(),
     })
     .select()
     .single()
@@ -735,10 +796,24 @@ export async function getApprovedContentLibraryService(filters?: {
 export async function getPendingApprovalsService() {
   const supabase = await createClient()
 
+  // Resolve brokerage_id from session — never trust caller-supplied value
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const brokerageId = userData?.brokerage_id
+  if (!brokerageId) return []
+
   const { data, error } = await supabase
     .from("activities")
     .select("*")
     .eq("activity_type", "content.approval")
+    .eq("brokerage_id", brokerageId)
     .in("status", ["pending", "needs_revision"])
     .order("created_at", { ascending: true })
 
@@ -753,9 +828,23 @@ export async function getPendingApprovalsService() {
 export async function getComplianceViolationsService(agentId?: string, userId?: string) {
   const supabase = await createClient()
 
+  // Resolve brokerage_id from session — never trust caller-supplied value
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const brokerageId = userData?.brokerage_id
+  if (!brokerageId) return []
+
   let query = supabase
     .from("compliance_flags")
     .select(`*, users (id, first_name, last_name, email)`)
+    .eq("brokerage_id", brokerageId)
     .order("detected_at", { ascending: false })
 
   if (agentId) {

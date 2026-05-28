@@ -5,31 +5,48 @@ import { handleError } from "@/lib/errors"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 /**
- * AI-Powered Lead Scoring System
- * Analyzes lead behavior, engagement, and intent to provide actionable scores
+ * LAYER 2 — AI Scoring (nuance refinement of conversational/behavioral signals).
+ *
+ * Refines the AI-nuanced score columns (`engagement_score`, `intent_score`,
+ * `qualification_score`, `motivation_score`, `readiness_level`). When called
+ * via explicit agent UI action ("Run AI Score" button on the CRM), this also
+ * overrides `lead_score` — that's the documented agent-driven override.
+ *
+ * Background / cron callers should NOT overwrite `lead_score` (Layer 1 owns
+ * the deterministic baseline). A future commit will add a `mode: 'override'
+ * | 'refine'` parameter so background callers can opt into refine-only.
+ *
+ * See `lib/lead-scoring/LAYERING.md` for full layering rules and the four
+ * scoring systems that touch these columns.
  */
-
 export async function scoreLeadWithAI(params: {
   contactId: string
   agentId: string
+  /**
+   * Write mode (default 'refine'):
+   *   - 'refine'   — write only AI-nuanced columns (engagement_score,
+   *                  intent_score, qualification_score, motivation_score,
+   *                  readiness_level). DOES NOT touch lead_score baseline.
+   *                  Use for background/cron callers.
+   *   - 'override' — same as refine PLUS overwrite lead_score with the AI
+   *                  overall score. Use ONLY when an agent explicitly
+   *                  triggers this from the UI ("Run AI Score" button on
+   *                  the CRM contact card). Never from background work.
+   */
+  mode?: "refine" | "override"
 }) {
   try {
     const supabase = await createClient()
 
-    // Get contact data with behavioral signals
+    // Get contact data (simple select — embedded relation tables may not exist)
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        behavioral_signals(*),
-        site_activity(*),
-        property_views(*),
-        lead_engagement_scores(*)
-      `)
+      .select("*")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError) throw contactError
+    if (!contact) throw new Error("Contact not found")
 
     // Get interaction history
     const { data: interactions } = await supabase
@@ -55,9 +72,6 @@ Contact Details:
 - Timeline: ${contact.buying_timeline || "Unknown"}
 
 Behavioral Data:
-- Total Sessions: ${contact.behavioral_signals?.[0]?.total_sessions || 0}
-- Pages Viewed: ${contact.site_activity?.length || 0}
-- Properties Viewed: ${contact.property_views?.length || 0}
 - Recent Interactions: ${interactions?.length || 0}
 - Last Contact: ${contact.last_contact_date || "Never"}
 
@@ -75,19 +89,28 @@ Provide a JSON response with:
 }`,
     })
 
-    const scores = JSON.parse(analysis)
+    // Extract JSON robustly — the AI may wrap output in markdown code blocks
+    const jsonMatch = analysis.match(/```(?:json)?\s*([\s\S]*?)```/) ?? analysis.match(/(\{[\s\S]*\})/)
+    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : analysis
+    const scores = JSON.parse(jsonText.trim())
 
-    // Update contact with scores
+    // Update contact with scores. Write boundaries per layering rules:
+    //   - 'override' mode (explicit agent action): writes lead_score baseline
+    //   - 'refine' mode (background, default): only AI-nuanced columns
+    const mode = params.mode ?? "refine"
+    const updates: Record<string, unknown> = {
+      engagement_score: scores.engagement,
+      intent_score: scores.intent,
+      qualification_score: scores.qualification,
+      motivation_score: scores.motivation,
+      readiness_level: scores.readiness,
+    }
+    if (mode === "override") {
+      updates.lead_score = scores.overallScore
+    }
     await supabase
       .from("contacts")
-      .update({
-        lead_score: scores.overallScore,
-        engagement_score: scores.engagement,
-        intent_score: scores.intent,
-        qualification_score: scores.qualification,
-        motivation_score: scores.motivation,
-        readiness_level: scores.readiness,
-      })
+      .update(updates)
       .eq("id", params.contactId)
 
     // Log scoring event
@@ -119,7 +142,7 @@ export async function getLeadInsights(contactId: string) {
   try {
     const supabase = await createClient()
 
-    const { data: contact, error: contactError } = await supabase
+    const { data: rawContact, error: contactError } = await supabase
       .from("contacts")
       .select(`
         *,
@@ -127,20 +150,21 @@ export async function getLeadInsights(contactId: string) {
       `)
       .eq("id", contactId)
       .single()
+    const contact = rawContact as any
 
     if (contactError) throw contactError
 
     return {
       success: true,
       currentScore: {
-        overall: contact.lead_score || 0,
-        engagement: contact.engagement_score || 0,
-        intent: contact.intent_score || 0,
-        qualification: contact.qualification_score || 0,
-        motivation: contact.motivation_score || 0,
-        readiness: contact.readiness_level || "cold",
+        overall: contact?.lead_score || 0,
+        engagement: contact?.engagement_score || 0,
+        intent: contact?.intent_score || 0,
+        qualification: contact?.qualification_score || 0,
+        motivation: contact?.motivation_score || 0,
+        readiness: contact?.readiness_level || "cold",
       },
-      history: contact.lead_score_history || [],
+      history: contact?.lead_score_history || [],
       contact,
     }
   } catch (error) {

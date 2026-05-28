@@ -31,7 +31,7 @@ export interface BuyerInsights {
     predicted_ready_to_offer: boolean
     predicted_fatigue_risk:   boolean
     days_to_predicted_offer:  number | null
-    engagement_velocity:      number | null
+    engagement_velocity:      string | null
     engagement_score:         number
     prediction_factors:       Record<string, unknown>
     ai_reasoning:             string | null
@@ -45,14 +45,27 @@ export interface SignalCounts {
   dismissals: number
 }
 
-async function getBrokerageId(userId: string): Promise<string> {
+async function getBrokerageId(authUserId: string): Promise<string> {
+  // user_role_assignments.user_id stores the app users.id, not the Supabase auth UID.
+  // Look up via the users table first to get the app-level brokerage_id.
   const svc = createServiceClient()
-  const { data } = await svc
-    .from("user_profiles")
+
+  // Try users table directly by auth UID first (works when auth.uid = users.id)
+  const { data: userRow } = await svc
+    .from("users")
     .select("brokerage_id")
-    .eq("user_id", userId)
-    .single()
-  return data?.brokerage_id ?? ""
+    .eq("id", authUserId)
+    .maybeSingle()
+  if (userRow?.brokerage_id) return userRow.brokerage_id
+
+  // Fallback: try user_role_assignments
+  const { data: uraRow } = await svc
+    .from("user_role_assignments")
+    .select("brokerage_id")
+    .eq("user_id", authUserId)
+    .limit(1)
+    .maybeSingle()
+  return uraRow?.brokerage_id ?? ""
 }
 
 export async function getBuyerInsights(
@@ -112,8 +125,8 @@ export async function getBuyerInsights(
   return {
     success: true,
     insights: {
-      preferences: prefsRes.data ?? null,
-      prediction:  predRes.data  ?? null,
+      preferences: (prefsRes.data ?? null) as unknown as BuyerInsights["preferences"],
+      prediction:  (predRes.data  ?? null) as unknown as BuyerInsights["prediction"],
     },
     signalCounts,
   }

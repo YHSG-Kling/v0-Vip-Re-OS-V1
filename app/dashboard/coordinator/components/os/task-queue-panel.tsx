@@ -43,9 +43,9 @@ export function TaskQueuePanel({ brokerageId }: TaskQueuePanelProps) {
           const now = new Date()
           setStats({
             total: data.length,
-            overdue: data.filter(t => new Date(t.due_date) < now && t.status !== 'completed')
+            overdue: data.filter((t: any) => new Date(t.due_date) < now && t.status !== 'completed')
               .length,
-            inProgress: data.filter(t => t.status === 'in_progress').length,
+            inProgress: data.filter((t: any) => t.status === 'in_progress').length,
           })
         }
       } catch (error) {

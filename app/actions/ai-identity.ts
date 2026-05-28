@@ -4,6 +4,35 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 
+// All AI-identity profile actions are brokerage-admin tooling. Previously
+// every read/write trusted caller-supplied scopeId / brokerageId / teamId
+// and never verified caller auth. Any signed-in user could read or
+// overwrite another brokerage's assistant identity (the system prompt
+// applied to all customer-facing AI calls).
+const SAVE_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
+
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; userType: string; teamId: string | null }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type, team_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return {
+    ok: true,
+    userId: user.id,
+    brokerageId: u.brokerage_id,
+    userType: u.user_type ?? "agent",
+    teamId: u.team_id ?? null,
+  }
+}
+
 export interface AIIdentityProfile {
   id: string
   scope_type: "brokerage" | "team" | "agent"
@@ -49,9 +78,12 @@ export async function getAIIdentityProfile(
   scopeType: "brokerage" | "team" | "agent",
   scopeId: string
 ): Promise<{ data: AIIdentityProfile | null; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { data: null, error: auth.error }
+
   try {
-    const supabase = await createClient()
-    const { data, error } = await supabase
+    const svc = createServiceClient()
+    const { data, error } = await svc
       .from("ai_identity_profiles")
       .select("*")
       .eq("scope_type", scopeType)
@@ -59,6 +91,10 @@ export async function getAIIdentityProfile(
       .maybeSingle()
 
     if (error) return { data: null, error: error.message }
+    // Verify the profile belongs to caller's brokerage before returning
+    if (data && (data as any).brokerage_id !== auth.brokerageId) {
+      return { data: null, error: "Forbidden" }
+    }
     return { data: data as AIIdentityProfile | null }
   } catch (err) {
     return { data: null, error: "Failed to load AI identity profile" }
@@ -67,29 +103,34 @@ export async function getAIIdentityProfile(
 
 export async function getParentAIIdentityProfile(
   scopeType: "team" | "agent",
-  brokerageId: string,
+  _brokerageId?: string,  // ignored — derived from session
   teamId?: string | null
 ): Promise<{ data: AIIdentityProfile | null }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { data: null }
+
   try {
-    const supabase = await createClient()
+    const svc = createServiceClient()
 
     if (scopeType === "agent" && teamId) {
-      // Agent: try team profile first, then brokerage
-      const { data: teamProfile } = await supabase
+      // Agent: try team profile first, then brokerage. Team must belong to
+      // caller's brokerage.
+      const { data: teamProfile } = await svc
         .from("ai_identity_profiles")
         .select("*")
         .eq("scope_type", "team")
         .eq("scope_id", teamId)
+        .eq("brokerage_id", auth.brokerageId)
         .maybeSingle()
       if (teamProfile) return { data: teamProfile as AIIdentityProfile }
     }
 
-    // Fall back to brokerage profile
-    const { data: brokProfile } = await supabase
+    // Brokerage profile — always the caller's brokerage
+    const { data: brokProfile } = await svc
       .from("ai_identity_profiles")
       .select("*")
       .eq("scope_type", "brokerage")
-      .eq("scope_id", brokerageId)
+      .eq("scope_id", auth.brokerageId)
       .maybeSingle()
 
     return { data: brokProfile as AIIdentityProfile | null }
@@ -101,16 +142,44 @@ export async function getParentAIIdentityProfile(
 export async function saveAIIdentityProfile(
   input: SaveAIIdentityInput
 ): Promise<{ success: boolean; id?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (!SAVE_ROLES.includes(auth.userType)) {
+    return { success: false, error: "Forbidden" }
+  }
 
-    const { data, error } = await supabase
+  // Verify scopeId belongs to caller's brokerage at the appropriate scope.
+  // - brokerage scope: scopeId must equal caller's brokerage_id
+  // - team scope: team must belong to caller's brokerage
+  // - agent scope: agent must belong to caller's brokerage
+  if (input.scopeType === "brokerage" && input.scopeId !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+  if (input.scopeType === "team") {
+    const svc = createServiceClient()
+    const { data: team } = await svc.from("teams").select("brokerage_id").eq("id", input.scopeId).maybeSingle()
+    if (!team || team.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+  }
+  if (input.scopeType === "agent") {
+    const svc = createServiceClient()
+    const { data: agent } = await svc.from("agents").select("brokerage_id").eq("id", input.scopeId).maybeSingle()
+    if (!agent || agent.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+  }
+
+  try {
+    const svc = createServiceClient()
+
+    const { data, error } = await svc
       .from("ai_identity_profiles")
       .upsert(
         {
           scope_type: input.scopeType,
           scope_id: input.scopeId,
-          brokerage_id: input.brokerageId,
+          brokerage_id: auth.brokerageId,  // always from session
           assistant_name: input.assistantName,
           persona_label: input.personaLabel || null,
           tone: input.tone || null,
@@ -152,6 +221,10 @@ export async function generateIdentityPreview(input: {
   tone: string
   formalityLevel: string
 }): Promise<{ success: boolean; preview?: string; error?: string }> {
+  // Auth gate — preview burns paid AI inference
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
     const prompt = `Generate a short (2-3 sentence) greeting from ${input.assistantName}, a ${input.personaLabel} for a real estate brokerage. Tone: ${input.tone}. Formality style: ${input.formalityLevel.replace("_", "-")}. Write only the greeting text, nothing else.`
@@ -159,7 +232,7 @@ export async function generateIdentityPreview(input: {
     const { text } = await generateTextRouted({
       feature: "ai_isa_response",
       prompt,
-      maxOutputTokens: 400
+      maxTokens: 400
     })
 
     return { success: true, preview: text }

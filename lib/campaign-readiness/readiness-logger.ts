@@ -7,7 +7,13 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ReadinessOutput } from "./readiness-evaluator"
 
 /**
- * Log single readiness evaluation to activities table
+ * Log single readiness evaluation to activities table.
+ *
+ * `activities` requires brokerage_id, agent_id, title (all NOT NULL) and
+ * stores arbitrary structured data in `metadata` (jsonb) — there is no
+ * `payload` column. Callers MUST pass brokerage_id and agent_id in
+ * additionalContext; missing context returns a clear error rather than
+ * silently no-oping with a broken INSERT.
  */
 export async function logReadinessEvaluation(
   contentId: string,
@@ -15,27 +21,45 @@ export async function logReadinessEvaluation(
   additionalContext?: Record<string, unknown>
 ): Promise<{ success: boolean; activity_id?: string; error?: string }> {
   try {
+    const brokerageId = (additionalContext?.brokerage_id ?? additionalContext?.brokerageId) as string | undefined
+    const agentId = (additionalContext?.agent_id ?? additionalContext?.agentId) as string | undefined
+    if (!brokerageId || !agentId) {
+      return {
+        success: false,
+        error: "brokerage_id and agent_id are required in additionalContext to log readiness evaluation",
+      }
+    }
+
     const supabase = await createServiceClient()
 
     const activityType =
       readinessOutput.readiness_status === "ready" ? "campaign_ready" : "campaign_blocked"
 
-    const payload = {
+    const title =
+      readinessOutput.readiness_status === "ready"
+        ? "Campaign content ready"
+        : `Campaign content blocked: ${(readinessOutput.blocking_reasons ?? []).slice(0, 2).join("; ") || "unknown reason"}`
+
+    const metadata = {
       readiness_status: readinessOutput.readiness_status,
       blocking_reasons: readinessOutput.blocking_reasons,
       ready_for_channels: readinessOutput.ready_for_channels,
       evaluated_at: readinessOutput.evaluated_at,
-      metadata: readinessOutput.metadata,
+      ...readinessOutput.metadata,
       ...additionalContext,
     }
 
     const { data, error } = await supabase
       .from("activities")
       .insert({
+        brokerage_id: brokerageId,
+        agent_id: agentId,
         entity_type: "content",
         entity_id: contentId,
         activity_type: activityType,
-        payload,
+        title,
+        metadata,
+        status: "completed",
       })
       .select("id")
       .single()
@@ -111,7 +135,7 @@ export async function getReadinessHistory(
   evaluations?: Array<{
     id: string
     activity_type: string
-    payload: Record<string, unknown>
+    metadata: Record<string, unknown>
     created_at: string
   }>
   error?: string
@@ -121,7 +145,7 @@ export async function getReadinessHistory(
 
     const { data, error } = await supabase
       .from("activities")
-      .select("id, activity_type, payload, created_at")
+      .select("id, activity_type, metadata, created_at")
       .eq("entity_type", "content")
       .eq("entity_id", contentId)
       .in("activity_type", ["campaign_ready", "campaign_blocked"])
@@ -165,7 +189,7 @@ export async function getReadinessStatistics(
 
     const { data, error } = await supabase
       .from("activities")
-      .select("activity_type, payload")
+      .select("activity_type, metadata")
       .eq("entity_type", "content")
       .in("activity_type", ["campaign_ready", "campaign_blocked"])
       .gte("created_at", startDate)
@@ -185,7 +209,7 @@ export async function getReadinessStatistics(
     const blockingReasonMap = new Map<string, number>()
     for (const activity of data || []) {
       if (activity.activity_type === "campaign_blocked") {
-        const reasons = (activity.payload as any)?.blocking_reasons || []
+        const reasons = (activity.metadata as any)?.blocking_reasons || []
         for (const reason of reasons) {
           blockingReasonMap.set(reason, (blockingReasonMap.get(reason) || 0) + 1)
         }
@@ -217,18 +241,24 @@ export async function getReadinessStatistics(
 }
 
 /**
- * Log channel-specific readiness check
+ * Log channel-specific readiness check. Same activities constraints as
+ * logReadinessEvaluation — brokerageId + agentId are required.
  */
 export async function logChannelReadinessCheck(
   contentId: string,
   channel: string,
   isReady: boolean,
-  reason?: string
+  reason: string | undefined,
+  context: { brokerageId: string; agentId: string }
 ): Promise<{ success: boolean; activity_id?: string; error?: string }> {
   try {
+    if (!context?.brokerageId || !context?.agentId) {
+      return { success: false, error: "brokerageId and agentId required" }
+    }
+
     const supabase = await createServiceClient()
 
-    const payload = {
+    const metadata = {
       channel,
       is_ready: isReady,
       reason,
@@ -238,10 +268,14 @@ export async function logChannelReadinessCheck(
     const { data, error } = await supabase
       .from("activities")
       .insert({
+        brokerage_id: context.brokerageId,
+        agent_id: context.agentId,
         entity_type: "content",
         entity_id: contentId,
         activity_type: "channel_readiness_check",
-        payload,
+        title: `Channel readiness: ${channel} → ${isReady ? "ready" : "blocked"}`,
+        metadata,
+        status: "completed",
       })
       .select("id")
       .single()

@@ -132,14 +132,14 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     }
     // Fallback: fetch from client if page was not rendered as a server component
     const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(({ data: { user } }: { data: { user: any } }) => {
       if (!user) return
       supabase
         .from("users")
         .select("brokerage_id")
         .eq("id", user.id)
         .maybeSingle()
-        .then(({ data }) => {
+        .then(({ data }: { data: any }) => {
           if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
         })
     })
@@ -216,7 +216,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   }
 
   async function handleResearchKeywords() {
-    const result = await researchKeywords("trending real estate 2026", userId, userRole) // Updated keyword query
+    const result = await researchKeywords("trending real estate 2026", userId) // Updated keyword query
     if (result.success && result.keywords) {
       setKeywords(result.keywords)
     }
@@ -313,7 +313,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           brokerageId: brokerageId,
           agentId: userId,
           topic,
-          targetAudience: "past_clients",
+          targetAudience: "lifetime_customers",
           tone: "friendly",
         }),
         aiGenerateSubjectLines({

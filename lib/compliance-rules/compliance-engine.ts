@@ -6,6 +6,7 @@ import {
   evaluateBrandCompliance,
   evaluateAISafetyCompliance,
 } from "./rule-evaluators"
+import { evaluateStateProtectedClasses, resolveBrokerageState } from "./state-fair-housing"
 
 // ============================================
 // SYSTEM 4.2 – COMPLIANCE ENGINE
@@ -35,12 +36,22 @@ export interface ComplianceVerdict {
 export async function evaluateContentCompliance(input: ComplianceContentInput): Promise<ComplianceVerdict> {
   const violations: RuleViolation[] = []
 
+  // Resolve state — explicit state_code wins; else look up the brokerage's state.
+  // Skips entirely when neither is provided (e.g. internal-only AI summaries).
+  let resolvedState: string | null = input.state_code ?? null
+  if (!resolvedState && input.brokerage_id) {
+    resolvedState = await resolveBrokerageState(input.brokerage_id)
+  }
+
   // Run all rule evaluations in parallel
-  const [regulatoryViolations, brokerageViolations, brandViolations, aiSafetyViolations] = await Promise.all([
+  const [regulatoryViolations, brokerageViolations, brandViolations, aiSafetyViolations, stateViolations] = await Promise.all([
     Promise.resolve(evaluateRegulatoryCompliance(input)),
     Promise.resolve(evaluateBrokeragePolicyCompliance(input)),
     Promise.resolve(evaluateBrandCompliance(input)),
     Promise.resolve(evaluateAISafetyCompliance(input)),
+    resolvedState
+      ? evaluateStateProtectedClasses({ content: input.raw_content, stateCode: resolvedState })
+      : Promise.resolve([] as RuleViolation[]),
   ])
 
   violations.push(
@@ -48,6 +59,7 @@ export async function evaluateContentCompliance(input: ComplianceContentInput): 
     ...brokerageViolations,
     ...brandViolations,
     ...aiSafetyViolations,
+    ...stateViolations,
   )
 
   // Determine compliance status

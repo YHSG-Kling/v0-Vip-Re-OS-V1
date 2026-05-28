@@ -148,7 +148,7 @@ export function EngagementFeed({ brokerageId, campaigns, initialItems }: Props) 
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <a
-                    href={`/contacts/${item.contact_id}`}
+                    href={`/crm/contacts/${item.contact_id}`}
                     className="text-sm font-medium text-foreground hover:underline truncate"
                   >
                     {contactName}

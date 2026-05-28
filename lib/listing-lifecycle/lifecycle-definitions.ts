@@ -48,6 +48,7 @@ export type ListingStage =
 
 export type ReadinessCheckType =
   | "documents_verified"
+  | "provider_signatures"
   | "dotloop_signatures"
   | "media_approved"
   | "repairs_completed"

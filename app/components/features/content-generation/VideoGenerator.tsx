@@ -1,3 +1,2 @@
-// Canonical implementation lives in app/components/AI/VideoGenerator.tsx
-// This file re-exports it to maintain backward-compatible import paths.
-export { default } from "@/app/components/AI/VideoGenerator"
+// Canonical implementation lives in app/components/ai/VideoGenerator.tsx
+export { default } from "@/app/components/ai/VideoGenerator"

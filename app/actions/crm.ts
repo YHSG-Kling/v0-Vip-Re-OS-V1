@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { 
+import {
   createContact as createContactService,
   updateContact as updateContactService,
   deleteContact as deleteContactService,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * CRM-specific actions - uses consolidated contact service
@@ -29,27 +30,27 @@ export async function updateContactStage(params: {
     const result = await updateContactService({
       contactId: params.contactId,
       agentId: params.agentId,
-      updates: { stage: params.newStage }
+      updates: { stage: params.newStage } as any
     })
 
     if (!result.success) {
       return result
     }
 
-    // Log the stage change as an interaction
     if (params.notes) {
       const supabase = await createClient()
-      await supabase.from("interactions").insert({
-        contact_id: params.contactId,
-        interaction_type: "stage_change",
-        interaction_date: new Date().toISOString(),
-        notes: `Stage changed to ${params.newStage}. ${params.notes}`,
-        outcome: "completed",
+      await supabase.from("activities").insert({
+        contact_id:    params.contactId,
+        activity_type: "stage_change",
+        title:         `Stage changed to ${params.newStage}`,
+        notes:         params.notes,
+        outcome:       "completed",
+        status:        "completed",
       })
     }
 
-    revalidatePath("/contacts")
-    revalidatePath(`/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    revalidatePath(`/crm/contacts/${params.contactId}`)
     revalidatePath("/dashboard")
 
     return result
@@ -88,7 +89,33 @@ export async function createContact(contact: {
   })
 }
 
+/**
+ * Soft-delete a contact. Verifies ownership (agent_id) or admin role before
+ * delegating to the service layer (which uses the admin client and would
+ * otherwise blindly trust the IDs passed from the client).
+ */
+const CRM_ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+
 export async function deleteContact(contactId: string, agentId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  // Resolve who actually owns the contact + the caller's role.
+  const [{ data: contact }, { data: callerRow }, { data: callerAgent }] = await Promise.all([
+    supabase.from("contacts").select("id, agent_id, brokerage_id").eq("id", contactId).maybeSingle(),
+    supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle(),
+    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
+  ])
+  if (!contact) return { success: false, error: "Contact not found" }
+
+  const isAdmin = callerRow && CRM_ADMIN_ROLES.has((callerRow.user_type ?? "") as string)
+  const isOwner = callerAgent?.id && callerAgent.id === contact.agent_id
+  const sameBrokerage = callerRow?.brokerage_id === contact.brokerage_id
+
+  if (!sameBrokerage) return { success: false, error: "Forbidden: cross-brokerage" }
+  if (!isOwner && !isAdmin) return { success: false, error: "Forbidden: not your contact" }
+
   return deleteContactService(contactId, agentId)
 }
 
@@ -97,7 +124,9 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
 }
 
 export async function getContactById(contactId: string) {
-  return getContact(contactId)
+  const { agentId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "Not authenticated" }
+  return getContact(contactId, agentId)
 }
 
 export async function searchContacts(params: { agentId: string; query: string }) {
@@ -124,13 +153,12 @@ export async function getContactTimeline(contactId: string) {
   try {
     const supabase = await createClient()
 
-    // Fetch interactions, tasks, communications, and notes
     const [interactions, tasks, communications, notes] = await Promise.all([
       supabase
-        .from("interactions")
-        .select("*")
+        .from("activities")
+        .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
         .eq("contact_id", contactId)
-        .order("interaction_date", { ascending: false }),
+        .order("created_at", { ascending: false }),
       supabase
         .from("tasks")
         .select("*")
@@ -150,7 +178,7 @@ export async function getContactTimeline(contactId: string) {
 
     // Combine all timeline events
     const timeline = [
-      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.interaction_date })),
+      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.created_at })),
       ...(tasks.data || []).map((t: any) => ({ ...t, type: "task", date: t.created_at })),
       ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.sent_at })),
       ...(notes.data || []).map((n: any) => ({ ...n, type: "note", date: n.created_at }))

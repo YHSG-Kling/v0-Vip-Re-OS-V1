@@ -1,5 +1,10 @@
 'use server'
 
+// AI-ISA personalized intro video generator.
+// Routes through dispatchVideo, which uses D-ID + ElevenLabs by default
+// (per kernel-OS plan FIX 0C.6) and falls back to HeyGen only when the
+// platform-level video provider is set to "heygen".
+
 import { createServiceClient } from '@/lib/supabase/service'
 import { dispatchVideo } from '@/lib/providers/dispatch'
 
@@ -13,6 +18,10 @@ export interface VideoGenerationContext {
   motivation_type?: string
   property_interest?: string
   timeline?: string
+}
+
+export async function generateAvatarVideo(context: VideoGenerationContext) {
+  return generateHeyGenVideo(context)
 }
 
 export async function generateHeyGenVideo(context: VideoGenerationContext) {
@@ -44,7 +53,7 @@ export async function generateHeyGenVideo(context: VideoGenerationContext) {
       provider_message_id: result.messageId ?? null,
       provider_status:     result.success ? 'sent' : 'failed',
       error_message:       result.error ?? null,
-    }).then(() => {}).catch(() => {})
+    })
 
     return {
       success:  result.success,

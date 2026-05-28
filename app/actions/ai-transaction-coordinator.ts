@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
@@ -709,5 +709,7 @@ Create a comprehensive plan including:
   }
 }
 
-// Backward compatibility alias
-export const getClosingPrep = prepareForClosing
+// Backward compatibility alias — wrapped because "use server" rejects `const = fn`
+export async function getClosingPrep(...args: Parameters<typeof prepareForClosing>) {
+  return prepareForClosing(...args)
+}

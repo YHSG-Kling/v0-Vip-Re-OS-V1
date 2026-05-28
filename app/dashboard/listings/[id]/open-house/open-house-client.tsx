@@ -12,9 +12,11 @@ import { IntelligenceTab } from "./tabs/intelligence-tab"
 interface Props {
   listingId: string
   initialData: Awaited<ReturnType<typeof import("@/app/actions/seller-open-house").getOpenHouseDashboard>>
+  agentId: string
+  userId: string
 }
 
-export function OpenHouseClient({ listingId, initialData }: Props) {
+export function OpenHouseClient({ listingId, initialData, agentId, userId }: Props) {
   const [data, setData] = useState(initialData!)
   const listing = data.listing!
 
@@ -68,7 +70,7 @@ export function OpenHouseClient({ listingId, initialData }: Props) {
         </TabsContent>
 
         <TabsContent value="event-day" className="mt-6">
-          <EventDayTab listingId={listingId} data={data} onRefresh={setData} />
+          <EventDayTab listingId={listingId} data={data} onRefresh={setData} agentId={agentId} userId={userId} />
         </TabsContent>
 
         <TabsContent value="intelligence" className="mt-6">

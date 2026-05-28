@@ -61,7 +61,7 @@ export async function classifyIntent(
   const { object: result } = await generateObject({
     model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: classificationSchema,
-    maxTokens: 200,
+    maxOutputTokens: 200,
     system: `You are a real estate message intent classifier. Classify the incoming message into exactly one primary intent and optionally one secondary intent.
 
 Valid intents:

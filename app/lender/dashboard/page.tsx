@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
+import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
+import { generateUserTypeBrief } from '@/lib/intelligence/user-type-briefs'
 import {
   ExternalPartnerCommandStrip,
   ExternalActiveFilesPanel,
@@ -20,28 +22,36 @@ export default async function LenderDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get lender/vendor ID for this user
-  const { data: vendor } = await supabase
-    .from('vendors')
-    .select('id')
+  // Get this lender's portal record (lenders are users with user_type='lender')
+  const { data: lenderPortal } = await supabase
+    .from('lender_portal_users')
+    .select('id, lender_company, brokerage_id')
     .eq('user_id', user.id)
-    .eq('category', 'lender')
     .maybeSingle()
 
-  const lenderId = vendor?.id || user.id
+  const lenderId = lenderPortal?.id ?? user.id
 
-  // Fetch lender's transactions
+  // Fetch transactions assigned to this lender via transactions.lender_id
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, contract_price, client_name, close_date, transaction_type')
+    .eq('lender_id', lenderId)
     .order('created_at', { ascending: false })
     .limit(20)
 
   const active = (transactions || []).filter((t: any) => !['closed', 'cancelled'].includes(t.status))
   const closing = (transactions || []).filter((t: any) => t.status === 'pending')
 
+  // Today's AI brief for this lender
+  const lenderBrief = await generateUserTypeBrief({
+    userType: 'lender',
+    userId: user.id,
+    brokerageId: lenderPortal?.brokerage_id ?? null,
+  })
+
   return (
     <div className="p-6 space-y-6">
+      <TodaysFocusCard brief={lenderBrief} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Lender Dashboard</h1>
@@ -133,10 +143,10 @@ export default async function LenderDashboardPage() {
           urgency: 'medium',
           actionRequired: false,
         }))} />
-        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} />
+        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={[]} />
       </div>
 
-      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} />
+      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} messages={[]} />
     </div>
   )
 }

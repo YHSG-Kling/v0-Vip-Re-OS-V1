@@ -41,7 +41,7 @@ export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, cost
     setSheet("break-even")
     startTransition(async () => {
       const result = await getBreakEvenAnalysis(brokerageId).catch(() => liveBreakEven)
-      setLiveBreakEven(result)
+      setLiveBreakEven(result as any)
     })
   }
 

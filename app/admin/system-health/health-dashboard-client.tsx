@@ -58,7 +58,7 @@ export function HealthDashboardClient({
         })
       }
 
-      setPreviousCriticalKeys(newCriticalKeys)
+      setPreviousCriticalKeys(new Set(Array.from(newCriticalKeys).filter((v): v is string => typeof v === 'string')))
     } catch (error) {
       console.error("Error polling health status:", error)
     }

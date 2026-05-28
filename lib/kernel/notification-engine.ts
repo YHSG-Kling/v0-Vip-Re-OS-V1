@@ -43,19 +43,18 @@ export async function processKernelEvent(params: {
     throw error
   }
 
-  if (!rules || rules.length === 0) {
-    console.log(`[NotificationEngine] No active rules for event: ${params.event}`)
-    return
-  }
-
-  console.log(`[NotificationEngine] Found ${rules.length} rules for ${params.event}`)
+  // Per-brokerage rules take precedence; otherwise fall back to sensible
+  // defaults so notifications deliver out-of-the-box (no brokerage has seeded
+  // notification_rules yet — without this, no event ever notifies anyone).
+  const effectiveRules: Array<{ recipient_role: string }> =
+    rules && rules.length > 0 ? rules : defaultRulesForEvent(params.event)
 
   // 2. Resolve recipients based on entity type and assignment.
   const recipients = await resolveRecipients(params)
   console.log(`[NotificationEngine] Resolved ${recipients.length} recipients`)
 
   // 3. For each rule, filter recipients by role and create notifications.
-  for (const rule of rules) {
+  for (const rule of effectiveRules) {
     const matchingRecipients = recipients.filter(r => r.role === rule.recipient_role)
 
     if (matchingRecipients.length === 0) {
@@ -124,30 +123,37 @@ async function resolveRecipients(params: {
   ) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("assigned_agent_id")
+      .select("agent_id, tc_user_id, compliance_officer_id")
       .eq("id", params.entityId)
       .single()
 
-    if (contact?.assigned_agent_id) {
-      recipients.push({
-        user_id: contact.assigned_agent_id,
-        role: "agent",
-      })
+    if (contact?.agent_id) {
+      recipients.push({ user_id: contact.agent_id, role: "agent" })
+    }
+    // Per-contact Transaction Coordinator (not in the brokerage-level pool).
+    // Role casing must match notification_rules.recipient_role CHECK ('TC').
+    if (contact?.tc_user_id) {
+      recipients.push({ user_id: contact.tc_user_id, role: "TC" })
+    }
+    // Named compliance officer for this contact (in addition to brokerage-wide).
+    if (contact?.compliance_officer_id) {
+      recipients.push({ user_id: contact.compliance_officer_id, role: "compliance_officer" })
     }
   }
 
-  // TC assigned to transaction.
+  // Owning agent of the transaction (there is no separate assigned_tc_id column;
+  // the responsible party is transactions.agent_id).
   if (params.entityType === "transaction") {
     const { data: transaction } = await supabase
       .from("transactions")
-      .select("assigned_tc_id")
+      .select("agent_id")
       .eq("id", params.entityId)
       .single()
 
-    if (transaction?.assigned_tc_id) {
+    if (transaction?.agent_id) {
       recipients.push({
-        user_id: transaction.assigned_tc_id,
-        role: "TC",
+        user_id: transaction.agent_id,
+        role: "agent",
       })
     }
   }
@@ -157,24 +163,13 @@ async function resolveRecipients(params: {
   if (params.entityType === "listing_stage_machine") {
     const { data: listing } = await supabase
       .from("listings")
-      .select("assigned_agent_id, assigned_tc_id, brokerage_id")
+      .select("agent_id, brokerage_id")
       .eq("id", params.entityId)
       .single()
 
     // Agent always receives listing sub-event notifications
-    if (listing?.assigned_agent_id) {
-      recipients.push({ user_id: listing.assigned_agent_id, role: "agent" })
-    }
-
-    // TC routing — required for repair events and admin submission
-    const tcEvents: KernelEvent[] = [
-      KernelEvent.LISTING_REPAIR_REQUIRED,
-      KernelEvent.LISTING_REPAIR_COMPLETED,
-      KernelEvent.LISTING_REPAIR_FAILED,
-      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
-    ]
-    if (listing?.assigned_tc_id && tcEvents.includes(params.event)) {
-      recipients.push({ user_id: listing.assigned_tc_id, role: "TC" })
+    if (listing?.agent_id) {
+      recipients.push({ user_id: listing.agent_id, role: "agent" })
     }
 
     // Seller channel — only if brokerage policy allows it
@@ -229,6 +224,23 @@ async function resolveRecipients(params: {
   }
 
   return recipients
+}
+
+// ─── DEFAULT NOTIFICATION RULES ───────────────────────────────────────────────
+// Used when a brokerage has not configured notification_rules. Keeps the
+// notification system functional out-of-the-box: the assigned agent is always
+// notified; the per-contact TC on transaction/closing-cycle events; compliance
+// officers on compliance events (they are also in the brokerage-level pool).
+function defaultRulesForEvent(event: KernelEvent): Array<{ recipient_role: string }> {
+  const e = String(event).toLowerCase()
+  const roles = new Set<string>(["agent"])
+  if (/(transaction|contract|closing|inspection|financing|appraisal|walkthrough|cd_|deal_closed|offer)/.test(e)) {
+    roles.add("TC")
+  }
+  if (e.includes("compliance")) {
+    roles.add("compliance_officer")
+  }
+  return Array.from(roles).map((recipient_role) => ({ recipient_role }))
 }
 
 // ─── TITLE / BODY GENERATORS ──────────────────────────────────────────────────

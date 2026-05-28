@@ -15,8 +15,8 @@ import {
   Video,
   Calendar,
 } from "lucide-react"
-import type { TransparencyUpdate, TransparencyVideo } from "../types"
-import { supabaseService } from "../services/supabaseService"
+import type { TransparencyUpdate, TransparencyVideo } from "@/types"
+import { supabaseService } from "@/services/supabaseService"
 
 interface TransparencyFeedProps {
   contactId: string

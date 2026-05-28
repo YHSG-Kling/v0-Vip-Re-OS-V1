@@ -1,19 +1,20 @@
 export const dynamic = "force-dynamic"
 
-import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import {
+NextRequest, NextResponse } from "next/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
   recordCronStartAction,
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "automation-error-monitor",
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     const { count, error } = await supabase
       .from("automation_errors")
@@ -53,7 +54,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error("[automation-error-monitor] error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       { error: "Monitor failed", details: error instanceof Error ? error.message : "Unknown", context_id: contextId },
       { status: 500 }

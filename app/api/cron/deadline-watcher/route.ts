@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { checkUpcomingDeadlines } from "@/lib/kernel"
 import {
   createCronRunContextAction,
@@ -6,14 +7,14 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "deadline-watcher",
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: true }, { status: 200 })
   } catch (err) {
     console.error("[cron/deadline-watcher] Failed:", err)
-    await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })
     return NextResponse.json({ ok: false, context_id: contextId }, { status: 500 })
   }
 }

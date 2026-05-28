@@ -182,7 +182,7 @@ export async function qualifyLead(leadId: string) {
       description: `Lifecycle moved to isa_qualifying`,
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -230,7 +230,7 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       assignment_method: "manual",
       claimed: false,
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     await supabase.from("activities").insert({
       activity_type: "lead_assigned",
@@ -242,86 +242,11 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       description: `Agent ID: ${agentId}`,
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
     console.error("[leads] assignLeadToAgent:", err.message)
-    return { success: false, error: err.message }
-  }
-}
-
-export async function convertLeadToContact(leadId: string) {
-  try {
-    const { userId, brokerageId, userType, agentId } = await getAgentContext()
-    assertISARole(userType)
-    if (!brokerageId) return { success: false, error: "No brokerage context" }
-
-    const supabase = await createClient()
-
-    const { data: lead, error: fetchErr } = await supabase
-      .from("leads")
-      .select("*")
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
-
-    if (fetchErr || !lead) return { success: false, error: "Lead not found" }
-    if (lead.contact_id) return { success: false, error: "Lead already converted", contactId: lead.contact_id }
-
-    // Create contact row
-    const { data: contact, error: contactErr } = await supabase
-      .from("contacts")
-      .insert({
-        first_name: lead.first_name ?? null,
-        last_name: lead.last_name ?? null,
-        email: lead.email ?? null,
-        phone: lead.phone ?? null,
-        contact_type: lead.lead_type === "seller" ? "seller" : "buyer",
-        status: "active",
-        source: lead.source ?? null,
-        brokerage_id: brokerageId,
-        agent_id: lead.agent_id ?? agentId ?? null,
-        tcpa_consent: lead.tcpa_consent ?? false,
-        tcpa_consent_date: lead.tcpa_consent_at ?? null,
-        preferred_channel: lead.preferred_channel ?? "email",
-        call_stop_flag: lead.call_stop_flag ?? false,
-        isa_reengage_allowed: true,
-        dnc_status: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (contactErr || !contact) return { success: false, error: contactErr?.message ?? "Failed to create contact" }
-
-    // Link lead → contact and mark converted
-    await supabase
-      .from("leads")
-      .update({
-        contact_id: contact.id,
-        lifecycle_state: "representation",
-        converted_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId)
-
-    await supabase.from("activities").insert({
-      activity_type: "lead_converted",
-      entity_type: "lead",
-      contact_id: contact.id,
-      agent_id: userId,
-      brokerage_id: brokerageId,
-      title: "Lead converted to contact",
-      description: `Contact ID: ${contact.id}`,
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).catch(() => {})
-
-    return { success: true, contactId: contact.id }
-  } catch (err: any) {
-    console.error("[leads] convertLeadToContact:", err.message)
     return { success: false, error: err.message }
   }
 }
@@ -352,7 +277,7 @@ export async function pauseAIISA(leadId: string) {
       title: "AI-ISA outreach paused",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -385,7 +310,7 @@ export async function resumeAIISA(leadId: string) {
       title: "AI-ISA outreach resumed",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {
@@ -403,7 +328,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
     const supabase = await createClient()
 
     // If a specific agent is given, verify they belong to the brokerage
-    let resolvedAgentId = targetAgentId ?? null
+    const resolvedAgentId = targetAgentId ?? null
     if (targetAgentId) {
       const { data: agentRow } = await supabase
         .from("agents")
@@ -434,14 +359,15 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       brokerage_id: brokerageId,
       entity_type: "lead",
       entity_id: leadId,
-      from_agent_type: "ai_isa",
+      // CHECK enum: isa_agent | tc_agent | coaching_agent | content_agent | router | human
+      from_agent_type: "isa_agent",
       to_agent_type: "human",
       human_agent_id: resolvedAgentId,
       handoff_reason: "manual_handoff",
       handoff_status: "completed",
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     await supabase.from("activities").insert({
       activity_type: "ai_isa_handoff",
@@ -453,7 +379,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
       status: "completed",
       created_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true }
   } catch (err: any) {

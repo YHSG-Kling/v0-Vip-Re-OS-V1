@@ -17,8 +17,8 @@ import {
   TrendingUp,
   CheckCircle2,
 } from "lucide-react"
-import { supabaseService } from "../services/supabaseService"
-import type { PersonaType, JourneyStage, JourneyTool } from "../types"
+import { supabaseService } from "@/services/supabaseService"
+import type { PersonaType, JourneyStage, JourneyTool } from "@/types"
 import { toast } from "sonner"
 
 interface PersonaToolsProps {

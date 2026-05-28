@@ -7,21 +7,16 @@ export * from './content-generation'
 
 // Dashboard
 export * from './dashboard/agent'
-export * from './dashboard/coordinator'
-export * from './dashboard/brokerage'
 export * from './dashboard/lender'
 export * from './dashboard/cards'
 
 // Client Portal
 export * from './portal/base'
 export * from './portal/buyer'
-export * from './portal/seller'
 export * from './portal/tools'
 export * from './portal/widgets'
-export * from './portal/persona'
 export * from './portal/calendar'
 export * from './portal/social'
-export * from './portal/views'
 export * from './portal/settings'
 export * from './portal/ai'
 

@@ -136,8 +136,8 @@ export function LessonDetailDrawer({
     setLoadingContent(true)
     getLessonByKey(lesson.key, contactId)
       .then(r => {
-        if (r?.lesson?.body_markdown) {
-          setContent(r.lesson.body_markdown)
+        if (r?.description) {
+          setContent(r.description)
         } else {
           setContent("Lesson content will be available soon.")
         }
@@ -207,6 +207,53 @@ export function LessonDetailDrawer({
         </SheetHeader>
 
         <Separator className="my-4" />
+
+        {/*
+          Video player block — Sprint 9 cont. v2.
+          When format='video', extract a URL from the content (first http(s)
+          URL or a markdown image/link) and render an HTML5 <video> when
+          it's a direct video file, or an <iframe> for YouTube/Vimeo. Falls
+          back to a "pending" notice when the URL is still 'pending://heygen'
+          (Sprint 7 video fan-out before HeyGen finishes).
+        */}
+        {lesson.format === "video" && !loadingContent && (() => {
+          const urlMatch = content.match(/https?:\/\/\S+/i)
+          const url = urlMatch?.[0] ?? null
+          if (!url || url.startsWith("pending://")) {
+            return (
+              <div className="rounded-md border border-dashed bg-muted/40 p-4 text-sm text-muted-foreground mb-3">
+                Your video is still being generated. We&apos;ll send a portal alert when it&apos;s ready to watch.
+              </div>
+            )
+          }
+          const isYouTube = /youtu\.?be/i.test(url)
+          const isVimeo   = /vimeo\.com/i.test(url)
+          if (isYouTube || isVimeo) {
+            const embedUrl = isYouTube
+              ? url.replace("watch?v=", "embed/").replace("youtu.be/", "youtube.com/embed/")
+              : url.replace("vimeo.com/", "player.vimeo.com/video/")
+            return (
+              <div className="aspect-video w-full overflow-hidden rounded-md bg-black mb-3">
+                <iframe
+                  src={embedUrl}
+                  title={lesson.title}
+                  className="w-full h-full"
+                  allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            )
+          }
+          return (
+             
+            <video
+              src={url}
+              controls
+              className="w-full aspect-video rounded-md bg-black mb-3"
+              preload="metadata"
+            />
+          )
+        })()}
 
         {/* Lesson Content */}
         <div className="prose prose-sm max-w-none dark:prose-invert">

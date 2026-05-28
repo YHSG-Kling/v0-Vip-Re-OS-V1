@@ -89,7 +89,7 @@ const INVESTOR_BUYER_STAGES = [
   },
 ]
 
-export default function InvestorBuyerJourneyPage({ params }: { params: { contactId: string } }) {
+export default function InvestorBuyerJourneyPage({ params }: { params: Promise<{ contactId: string }> }) {
   const [currentStage, setCurrentStage] = useState(3)
   const progress = (currentStage / INVESTOR_BUYER_STAGES.length) * 100
 

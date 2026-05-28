@@ -47,35 +47,6 @@ export function EmailCampaignPanel({ transactionId, campaigns = [] }: EmailCampa
             <EmailCampaignCard key={campaign.id} {...campaign} />
           ))
         )}
-
-        {/* Example campaigns for demo */}
-        {campaigns.length === 0 && (
-          <>
-            <EmailCampaignCard
-              id="demo-1"
-              type="Coming Soon Announcement"
-              recipients={234}
-              opens={156}
-              clicks={34}
-              replies={8}
-              status="sent"
-              sent_date="Jan 15"
-            />
-            <EmailCampaignCard
-              id="demo-2"
-              type="MLS Launch Notification"
-              recipients={450}
-              status="scheduled"
-              scheduled_date="Jan 18"
-            />
-            <EmailCampaignCard
-              id="demo-3"
-              type="Open House Invitation"
-              recipients={89}
-              status="draft"
-            />
-          </>
-        )}
       </CardContent>
     </Card>
   )

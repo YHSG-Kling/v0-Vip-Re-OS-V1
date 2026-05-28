@@ -10,14 +10,14 @@ import {
   getMarketTrends,
   getMarketDataSources,
 } from "@/lib/intelligence/market-insight-generator"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 
 // ─── Get Market Sources ──────────────────────────────────────────────────────
 
 export async function getAgentMarketSources() {
   const { brokerageId } = await getAgentContext()
-  return getMarketDataSources(brokerageId)
+  return getMarketDataSources(brokerageId!)
 }
 
 // ─── Add Market Source ───────────────────────────────────────────────────────
@@ -38,9 +38,9 @@ export async function addMarketSource(params: {
       market_area: params.marketArea,
       city: params.city || null,
       state: params.state || null,
-      zip_code: params.zipCode || null,
+      zip_codes: params.zipCode ? [params.zipCode] : [],
       is_active: true,
-      source_type: "manual",
+      source_type: "manual_import",
     })
     .select("id")
     .single()
@@ -51,7 +51,7 @@ export async function addMarketSource(params: {
 
   // Trigger initial data refresh
   await refreshMarketData(
-    brokerageId,
+    brokerageId!,
     params.marketArea,
     params.zipCode,
     params.city,
@@ -76,7 +76,7 @@ export async function refreshMarketDataAction(marketArea: string) {
     .single()
 
   const result = await refreshMarketData(
-    brokerageId,
+    brokerageId!,
     marketArea,
     source?.zip_code,
     source?.city,
@@ -104,8 +104,8 @@ export async function generateInsightAction(
     .single()
 
   const result = await generateMarketInsight({
-    brokerageId,
-    agentId,
+    brokerageId: brokerageId!,
+    agentId: agentId!,
     marketArea,
     zipCode: source?.zip_code,
     forceRegenerate,
@@ -118,21 +118,21 @@ export async function generateInsightAction(
 
 export async function getCurrentInsight(marketArea: string) {
   const { brokerageId } = await getAgentContext()
-  return getLatestMarketInsight(brokerageId, marketArea)
+  return getLatestMarketInsight(brokerageId!, marketArea)
 }
 
 // ─── Get Market Stats ────────────────────────────────────────────────────────
 
 export async function getCurrentMarketData(marketArea: string) {
   const { brokerageId } = await getAgentContext()
-  return getMarketData(brokerageId, marketArea)
+  return getMarketData(brokerageId!, marketArea)
 }
 
 // ─── Get Trend Data ──────────────────────────────────────────────────────────
 
 export async function getTrendData(marketArea: string) {
   const { brokerageId } = await getAgentContext()
-  return getMarketTrends(brokerageId, marketArea, 6)
+  return getMarketTrends(brokerageId!, marketArea, 6)
 }
 
 // ─── Get Recent CMA Reports ──────────────────────────────────────────────────
@@ -162,7 +162,7 @@ export async function generateMarketUpdateEmail(
   const supabase = await createClient()
 
   // Get insight
-  const insight = await getLatestMarketInsight(brokerageId, marketArea)
+  const insight = await getLatestMarketInsight(brokerageId!, marketArea)
   if (!insight) {
     throw new Error("No insight available for this market")
   }
@@ -181,7 +181,6 @@ export async function generateMarketUpdateEmail(
       subject: z.string(),
       body: z.string(),
     }),
-    maxOutputTokens: 400,
     system:
       "You are a real estate agent writing a professional market update email to clients. Be informative but concise. Include a call to action.",
     prompt: `Generate a market update email for ${marketArea}.

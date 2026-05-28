@@ -1,16 +1,27 @@
-import { generateText } from "ai"
+import { generateText, Output, stepCountIs } from "ai"
+import type { z } from "zod"
+import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
 import { resolveAIModel } from "@/lib/kernel/ai-model"
-import { 
-  logAIUsage, 
-  calculateCost, 
-  estimateTokens, 
+import {
+  logAIUsage,
+  calculateCost,
+  estimateTokens,
   checkPlatformAIEnabled,
-  type AIModel 
+  type AIModel
 } from "./cost-tracking"
+import { checkAIFairUse } from "./fair-use"
+
+export type { AIModel } from "./cost-tracking"
+
+function toGatewayModel(modelStr: string) {
+  const key = process.env.AI_GATEWAY_API_KEY
+  if (!key) throw new Error("AI_GATEWAY_API_KEY is not configured")
+  return createGateway({ apiKey: key })(modelStr)
+}
 
 const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
   "claude-sonnet": { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
@@ -72,6 +83,8 @@ export const AI_TASK_ROUTING: Record<string, {
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
+  smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },
+  communication_summary_generation: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Summarize communication history for agent quick reference" },
   listing_presentation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Seller presentation content — high stakes, brand quality" },
   cma_narrative:             { model: "claude-sonnet", fallback: "gpt-4o",       reason: "CMA written analysis — professional, data-driven narrative" },
   offer_analysis:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Offer comparison narrative for buyer — decision-critical" },
@@ -79,6 +92,7 @@ export const AI_TASK_ROUTING: Record<string, {
   portal_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client portal messages — relationship-critical, client-facing" },
   ai_isa_response:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "ISA conversation replies — empathy + conversion critical" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
+  live_avatar_conversation:  { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "D-ID Agents real-time conversational turns — latency-critical, short replies" },
 
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
   market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
@@ -86,8 +100,10 @@ export const AI_TASK_ROUTING: Record<string, {
   competitive_monitoring:    { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live competitor listings + market positioning" },
   pricing_research:          { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Current comp sales data — live MLS/web context" },
   home_value_estimate:       { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Live AVM + recent sales context" },
+  lead_enrichment_research:  { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Web-research gap-fill for lead contact/identity when skip-trace is thin" },
 
   // ── STRUCTURED DATA EXTRACTION + JSON OUTPUT ──────────────────────────────
+  // (offer_analysis lives above under decision-critical tasks; reuses same key)
   offer_data_extraction:     { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Extract structured fields from offer documents — schema strict" },
   document_parsing:          { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Parse contracts/forms into structured data" },
   lead_data_extraction:      { model: "gpt-4o", fallback: "claude-haiku",   reason: "Extract contact fields from raw lead payloads" },
@@ -148,7 +164,8 @@ export interface ComplianceContext {
 export interface AIRequest {
   model?: AIModel
   system?: string
-  prompt: string
+  prompt?: string
+  messages?: Array<{ role: string; content: unknown }>
   temperature?: number
   maxTokens?: number
   fallbackModel?: AIModel
@@ -234,19 +251,18 @@ async function checkCompliance(
     if (context.requiresFairHousingCheck) {
       try {
         const fairHousingResult = await evaluateContentCompliance({
-          content,
-          contentType: context.contentType || "internal",
-          userId: context.userId || "",
-          brokerageId: context.brokerageId || ""
+          raw_content: content,
+          content_type: context.contentType || "internal",
+          channel_intent: context.contentType || "internal",
         })
         
-        if (!fairHousingResult.compliant && fairHousingResult.violations) {
+        if (fairHousingResult.compliance_status !== "pass" && fairHousingResult.violations) {
           for (const v of fairHousingResult.violations) {
             const violation: ComplianceViolation = {
               type: "fair_housing",
               severity: v.severity as "low" | "medium" | "high" | "critical",
-              message: v.message,
-              blockSending: v.severity === "high" || v.severity === "critical"
+              message: v.description,
+              blockSending: (v.severity as string) === "high" || (v.severity as string) === "critical"
             }
             violations.push(violation)
             
@@ -276,11 +292,12 @@ async function checkCompliance(
       try {
         const themFirstResult = await validateThemFirstContent(content, "email")
         
-        if (themFirstResult.score < 0.6) {
+        if (!themFirstResult.passed || (themFirstResult as any).score < 0.6) {
+          const score = (themFirstResult as any).score ?? 0
           const violation: ComplianceViolation = {
             type: "them_first",
-            severity: themFirstResult.score < 0.3 ? "medium" : "low",
-            message: `Content is too agent-focused (score: ${themFirstResult.score.toFixed(2)}). Consider rewriting to focus on client benefits.`,
+            severity: score < 0.3 ? "medium" : "low",
+            message: `Content is too agent-focused (score: ${score.toFixed(2)}). Consider rewriting to focus on client benefits.`,
             blockSending: false // Them-First is advisory, not blocking
           }
           violations.push(violation)
@@ -335,9 +352,9 @@ async function executeModelCall(
     })
     modelInstance = perplexity(config.modelId)
   } else {
-    // All other providers: build "provider/modelId" and resolve via utility
+    // All other providers: build "provider/modelId", resolve alias, wrap with gateway
     const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
-    modelInstance = resolveModel(modelStr)
+    modelInstance = toGatewayModel(resolveModel(modelStr) as string)
   }
 
   const result = await generateText({
@@ -350,8 +367,8 @@ async function executeModelCall(
   
   return {
     text: result.text,
-    inputTokens: result.usage?.promptTokens || estimateTokens(prompt + (system || "")),
-    outputTokens: result.usage?.completionTokens || estimateTokens(result.text),
+    inputTokens: (result.usage as any)?.inputTokens ?? (result.usage as any)?.promptTokens ?? estimateTokens(prompt + (system || "")),
+    outputTokens: (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text),
     modelUsed: model
   }
 }
@@ -368,7 +385,22 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   if (!platformCheck.enabled) {
     throw new Error(platformCheck.reason || "AI features are disabled")
   }
-  
+
+  // Fair-use quota pre-flight (subscription-included AI — protects platform margin).
+  // Estimate the call's token cost from the prompt + system so we trip BEFORE the
+  // call rather than after the counter actually exceeds. Background jobs without
+  // brokerageId are uncapped (handled inside checkAIFairUse).
+  const estimatedTokens = estimateTokens(
+    (request.prompt ?? "") + (request.system ?? "")
+  ) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({
+    brokerageId: request.metadata.brokerageId,
+    addTokens:   estimatedTokens,
+  })
+  if (!fairUse.allowed) {
+    throw new Error(fairUse.message ?? "AI fair-use limit reached for this billing period.")
+  }
+
   // Resolve model through kernel cascade.
   // Priority: governance caps > explicit caller request > feature routing > platform default.
   // Explicit caller models are NOT exempt from governance — caps always apply when
@@ -415,7 +447,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     executionResult = await executeModelCall(
       model,
       request.system,
-      request.prompt,
+      request.prompt ?? "",
       temperature,
       maxTokens
     )
@@ -428,7 +460,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
         executionResult = await executeModelCall(
           resolvedFallback,
           request.system,
-          request.prompt,
+          request.prompt ?? "",
           temperature,
           maxTokens
         )
@@ -460,9 +492,9 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Log usage
   await logAIUsage({
     userId: request.metadata.userId,
-    brokerageId: request.metadata.brokerageId,
-    teamId: request.metadata.teamId,
-    agentId: request.metadata.agentId,
+    brokerageId: request.metadata.brokerageId ?? "",
+    teamId: request.metadata.teamId ?? "",
+    agentId: request.metadata.agentId ?? "",
     model: executionResult.modelUsed,
     inputTokens: executionResult.inputTokens,
     outputTokens: executionResult.outputTokens,
@@ -521,18 +553,42 @@ export interface RoutedTextRequest {
   userId?: string
   brokerageId?: string | null
   agentId?: string
+  /** Tools the model can invoke — same shape as AI SDK's tool() helper.
+   *  When omitted, behaves as a plain text-generation call (current default). */
+  tools?: Record<string, unknown>
+  /** Multi-step tool calling: stop after N steps. Defaults to 1 (text only)
+   *  in the SDK; set higher for tool-using flows (typical: 5). */
+  maxSteps?: number
 }
 
-export async function generateTextRouted(
-  request: RoutedTextRequest
-): Promise<{ text: string }> {
+/**
+ * Structured-output variant of generateTextRouted — same routing, fallback,
+ * and gateway wrapping as the text version, but returns a typed object via
+ * the AI SDK's experimental_output schema.
+ *
+ * Use this instead of importing `generateText` from "ai" when you need
+ * structured JSON output. Bypassing this skips brokerage routing + fallback +
+ * gateway billing.
+ */
+export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
+  request: RoutedTextRequest & { schema: TSchema }
+): Promise<{ object: z.infer<TSchema> }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
-  // Resolve primary model to provider instance via resolveModel utility
+  // Fair-use pre-flight (skipped for background jobs without brokerageId)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
   const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
-  const primaryInstance = resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0])
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  let modelUsed: AIModel = routedModel
+  let inputTokens = 0
+  let outputTokens = 0
+  let resultObject: z.infer<TSchema>
 
   try {
     const result = await generateText({
@@ -542,13 +598,15 @@ export async function generateTextRouted(
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
+      experimental_output: Output.object({ schema: request.schema }),
     })
-    return { text: result.text }
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? 0
+    resultObject = result.experimental_output as z.infer<TSchema>
   } catch {
-    // Automatic fallback to secondary model via resolveModel
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
     const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
-    const fallbackInstance = resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0])
+    const fallbackInstance = toGatewayModel(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
     const result = await generateText({
       model: fallbackInstance,
       prompt: request.prompt,
@@ -556,9 +614,102 @@ export async function generateTextRouted(
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
+      experimental_output: Output.object({ schema: request.schema }),
     })
-    return { text: result.text }
+    modelUsed    = fallback
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? 0
+    resultObject = result.experimental_output as z.infer<TSchema>
   }
+
+  if (request.userId && request.brokerageId) {
+    await logAIUsage({
+      userId:       request.userId,
+      brokerageId:  request.brokerageId,
+      agentId:      request.agentId ?? null,
+      model:        modelUsed,
+      inputTokens,
+      outputTokens,
+      feature,
+    })
+  }
+
+  return { object: resultObject }
+}
+
+export async function generateTextRouted(
+  request: RoutedTextRequest
+): Promise<{ text: string }> {
+  const feature = request.feature ?? 'unspecified'
+  const { model: routedModel, fallback } = selectModelForTask(feature)
+
+  // Fair-use pre-flight (skipped for background jobs without brokerageId)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
+  // Resolve primary model to gateway-wrapped provider instance
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  // When tools are present we need multi-step support; default to 5 steps so
+  // the model can call a tool, see the result, and produce a final reply.
+  const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
+
+  let modelUsed: AIModel = routedModel
+  let inputTokens = 0
+  let outputTokens = 0
+  let resultText = ""
+
+  try {
+    const result = await generateText({
+      model: primaryInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+      tools: request.tools as any,
+      stopWhen,
+    })
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
+    resultText   = result.text
+  } catch {
+    // Automatic fallback to secondary model via gateway
+    const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
+    const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const fallbackInstance = toGatewayModel(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
+    const result = await generateText({
+      model: fallbackInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+      tools: request.tools as any,
+      stopWhen,
+    })
+    modelUsed    = fallback
+    inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+    outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
+    resultText   = result.text
+  }
+
+  if (request.userId && request.brokerageId) {
+    await logAIUsage({
+      userId:       request.userId,
+      brokerageId:  request.brokerageId,
+      agentId:      request.agentId ?? null,
+      model:        modelUsed,
+      inputTokens,
+      outputTokens,
+      feature,
+    })
+  }
+
+  return { text: resultText }
 }
 
 /**

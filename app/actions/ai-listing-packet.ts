@@ -1,10 +1,35 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+
+// Stage values that indicate the listing is live on MLS and eligible for packet generation
+const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale", "MLS_ACTIVE"]
+
+// All packet-generation actions burn paid AI inference and access seller PII.
+// Previously every function trusted caller-supplied listingId / agentId /
+// packetId. Any signed-in user could trigger packet generation against any
+// listing in any brokerage, drain AI budget, and read the resulting
+// packet (which embeds seller contact data and disclosures).
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
 
 // =====================================================
 // AI LISTING PACKET SYSTEM
@@ -30,7 +55,7 @@ interface PacketDocument {
   type: string
   name: string
   url?: string
-  content?: string
+  content?: string | Record<string, unknown> | null
   status: "pending" | "generated" | "error"
   generatedAt?: string
 }
@@ -40,46 +65,80 @@ interface PacketDocument {
 // =====================================================
 
 export async function generateListingPacket(config: ListingPacketConfig) {
-  if (!isValidUUID(config.listingId) || !isValidUUID(config.agentId)) {
-    return { success: false, error: "Invalid listing or agent ID" }
+  // Auth gate — paid AI inference + seller PII access
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(config.listingId)) {
+    return { success: false, error: "Invalid listing ID" }
   }
 
+  // Use service client for listing lookup — packet generation is an admin action
+  // that must work regardless of RLS policies on the listings table.
+  const service = createServiceClient()
   const supabase = await createClient()
 
   try {
-    // Get listing details
-    const { data: listing, error: listingError } = await supabase
+    // Get listing details (service client bypasses RLS)
+    const { data: listing, error: listingError } = await service
       .from("listings")
-      .select(`
-        *,
-        contacts:contact_id (first_name, last_name, email, phone),
-        agents:agent_id (first_name, last_name, email, phone, license_number)
-      `)
+      .select("*")
       .eq("id", config.listingId)
       .single()
 
     if (listingError || !listing) {
+      console.error("Listing fetch error:", listingError)
       return { success: false, error: "Listing not found" }
     }
 
-    // Verify listing is live
-    if (listing.stage !== "live") {
+    // Verify listing belongs to caller's brokerage
+    if (listing.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    // Fetch contact separately if listing has a contact_id
+    let contactData: Record<string, unknown> | null = null
+    if (listing.contact_id) {
+      const { data: contact } = await service
+        .from("contacts")
+        .select("first_name, last_name, email, phone")
+        .eq("id", listing.contact_id)
+        .single()
+      contactData = contact
+    }
+
+    // Fetch agent separately if listing has an agent_id
+    let agentData: Record<string, unknown> | null = null
+    if (listing.agent_id) {
+      const { data: agent } = await service
+        .from("agents")
+        .select("first_name, last_name, email, phone, license_number")
+        .eq("id", listing.agent_id)
+        .single()
+      agentData = agent
+    }
+
+    // Reconstruct the data object that the rest of the function expects
+    const listingWithRelations = {
+      ...listing,
+      contacts: contactData,
+      agents: agentData,
+    }
+
+    // Verify listing is in an MLS-active state
+    const listingStage = (listing.stage ?? listing.status ?? "").toLowerCase()
+    const isLive = MLS_LIVE_STAGES.some(s => s.toLowerCase() === listingStage) ||
+      listingStage.includes("active") || listingStage.includes("live")
+    if (!isLive) {
       return { success: false, error: "Listing must be live on MLS before generating packet" }
     }
 
-    // Get agent's brokerage_id for the job record
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("user_id", config.agentId)
-      .single()
-
-    // Create packet job record
+    // Create packet job record — brokerage from session, never params
     const { data: packet, error: packetError } = await supabase
       .from("listing_packet_jobs")
       .insert({
         listing_id: config.listingId,
-        brokerage_id: agent?.brokerage_id,
+        brokerage_id: auth.brokerageId,
         agent_user_id: config.agentId,
         job_type: "full_packet",
         status: "queued",
@@ -94,32 +153,32 @@ export async function generateListingPacket(config: ListingPacketConfig) {
 
     // Generate each requested document
     if (config.includeFlyer) {
-      const flyer = await generateListingFlyer(listing)
+      const flyer = await generateListingFlyer(listingWithRelations)
       documents.push(flyer)
     }
 
     if (config.includeSellerDisclosure) {
-      const disclosure = await compileSellerDisclosure(listing)
+      const disclosure = await compileSellerDisclosure(listingWithRelations)
       documents.push(disclosure)
     }
 
     if (config.includeUtilitiesForm) {
-      const utilities = await generateUtilitiesForm(listing)
+      const utilities = await generateUtilitiesForm(listingWithRelations)
       documents.push(utilities)
     }
 
     if (config.includeGISReport) {
-      const gisReport = await fetchGISPropertyReport(listing)
+      const gisReport = await fetchGISPropertyReport(listingWithRelations)
       documents.push(gisReport)
     }
 
     if (config.includeTaxRecord) {
-      const taxRecord = await fetchTaxRecordReport(listing)
+      const taxRecord = await fetchTaxRecordReport(listingWithRelations)
       documents.push(taxRecord)
     }
 
     if (config.includeAppraiserReport) {
-      const appraiserReport = await fetchAppraiserSiteReport(listing)
+      const appraiserReport = await fetchAppraiserSiteReport(listingWithRelations)
       documents.push(appraiserReport)
     }
 
@@ -154,6 +213,10 @@ export async function generateListingPacket(config: ListingPacketConfig) {
 // =====================================================
 
 export async function generateListingFlyer(listing: any) {
+  // Auth gate — burns paid AI inference even without DB access
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "listing_flyer", name: "Marketing Flyer", status: "error" as const }
+
   try {
     const { text: flyerContent } = await generateText({
       model: "openai/gpt-4o",
@@ -220,6 +283,10 @@ Return as JSON:
 // =====================================================
 
 export async function compileSellerDisclosure(listing: any) {
+  // Auth gate — paid AI inference + reads disclosures
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "seller_disclosure", name: "Seller Disclosure", status: "error" as const }
+
   const supabase = await createClient()
 
   try {
@@ -284,6 +351,9 @@ Return JSON:
 // =====================================================
 
 export async function generateUtilitiesForm(listing: any) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "utilities_form", name: "Utilities Form", status: "error" as const }
+
   try {
     const { text: utilitiesContent } = await generateText({
       model: "openai/gpt-4o-mini",
@@ -326,6 +396,9 @@ Return as JSON with form fields and any pre-filled information based on the loca
 // =====================================================
 
 export async function fetchGISPropertyReport(listing: any) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "gis_report", name: "GIS Property Report", status: "error" as const }
+
   try {
     // In production, this would call actual GIS APIs
     // For now, generate AI-enhanced property report
@@ -376,6 +449,9 @@ Return as JSON with sections for each category.`,
 // =====================================================
 
 export async function fetchTaxRecordReport(listing: any) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "tax_record", name: "Property Tax Record", status: "error" as const }
+
   try {
     // In production, integrate with county assessor APIs
     const { text: taxContent } = await generateText({
@@ -425,6 +501,9 @@ Return as JSON.`,
 // =====================================================
 
 export async function fetchAppraiserSiteReport(listing: any) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { type: "appraiser_report", name: "Appraiser Property Report", status: "error" as const }
+
   try {
     const { text: appraiserContent } = await generateText({
       model: "openai/gpt-4o",
@@ -483,13 +562,26 @@ export async function getListingPacketStatus(listingId: string) {
     return { success: false, error: "Invalid listing ID" }
   }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
+    // Verify listing belongs to caller's brokerage
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", listingId)
+      .maybeSingle()
+    if (!listing) return { success: false, error: "Listing not found" }
+    if (listing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
     const { data: packets, error } = await supabase
       .from("listing_packet_jobs")
       .select("*")
       .eq("listing_id", listingId)
+      .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
 
     if (error) throw error
@@ -510,6 +602,10 @@ export async function aiPacketQualityCheck(packetId: string) {
     return { success: false, error: "Invalid packet ID" }
   }
 
+  // Auth gate — burns paid AI inference
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
@@ -517,6 +613,11 @@ export async function aiPacketQualityCheck(packetId: string) {
 
     if (!packet) {
       return { success: false, error: "Packet not found" }
+    }
+
+    // Verify packet belongs to caller's brokerage
+    if (packet.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
     }
 
     // Extract documents from config.content
@@ -564,6 +665,7 @@ Return JSON:
         },
       })
       .eq("id", packetId)
+      .eq("brokerage_id", auth.brokerageId)
 
     return { success: true, qualityCheck }
   } catch (error) {
@@ -585,6 +687,10 @@ export async function regeneratePacketDocument(params: {
     return { success: false, error: "Invalid packet ID" }
   }
 
+  // Auth gate — paid AI inference
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
@@ -596,6 +702,11 @@ export async function regeneratePacketDocument(params: {
 
     if (!packet) {
       return { success: false, error: "Packet not found" }
+    }
+
+    // Verify packet belongs to caller's brokerage
+    if (packet.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Forbidden" }
     }
 
     let newDocument: PacketDocument
@@ -639,6 +750,7 @@ export async function regeneratePacketDocument(params: {
         },
       })
       .eq("id", params.packetId)
+      .eq("brokerage_id", auth.brokerageId)
 
     return { success: true, document: newDocument }
   } catch (error) {

@@ -30,7 +30,10 @@ export function UsageByTypeChart({ data }: UsageByTypeChartProps) {
           <YAxis 
             tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
             axisLine={{ stroke: "hsl(var(--border))" }}
-            tickFormatter={(value) => value.toLocaleString()}
+            tickFormatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return v.toLocaleString()
+            }}
           />
           <Tooltip
             contentStyle={{
@@ -39,7 +42,10 @@ export function UsageByTypeChart({ data }: UsageByTypeChartProps) {
               borderRadius: "8px",
             }}
             labelStyle={{ color: "hsl(var(--foreground))" }}
-            formatter={(value: number) => [value.toLocaleString(), "Usage"]}
+            formatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return [v.toLocaleString(), "Usage"]
+            }}
           />
           <Bar dataKey="value" radius={[4, 4, 0, 0]}>
             {data.map((_, index) => (

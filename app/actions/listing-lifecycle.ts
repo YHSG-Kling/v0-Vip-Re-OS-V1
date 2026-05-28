@@ -103,13 +103,68 @@ export async function advanceListingStage(
   listingId: string,
   toStage: string,
   agentId: string,
-  notes?: string
+  notes?: string,
+  /** Manual override — requires broker / admin / superadmin / compliance role
+   *  + min 10-char reason. Bypasses stage prerequisite checks; writes audit
+   *  row with the override reason + actor for compliance. */
+  overrideReason?: string,
 ) {
   if (!listingId || !toStage || !agentId) throw new Error("listingId, toStage, and agentId are required")
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+
+  if (overrideReason) {
+    const { requireOverrideActor, PortalAuthError } = await import("@/lib/kernel/portal-auth")
+    let overrideCtx
+    try {
+      overrideCtx = await requireOverrideActor(overrideReason)
+    } catch (err) {
+      if (err instanceof PortalAuthError) throw err
+      throw err
+    }
+
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    // Verify listing scope
+    const { data: listing } = await svc
+      .from("listings")
+      .select("id, brokerage_id, lifecycle_stage")
+      .eq("id", listingId)
+      .eq("brokerage_id", overrideCtx.brokerageId)
+      .maybeSingle()
+    if (!listing) throw new Error("Listing not found in your brokerage")
+
+    // Force stage transition
+    const { error: updateErr } = await svc
+      .from("listings")
+      .update({ lifecycle_stage: toStage, updated_at: new Date().toISOString() })
+      .eq("id", listingId)
+      .eq("brokerage_id", overrideCtx.brokerageId)
+    if (updateErr) throw updateErr
+
+    // Audit trail
+    await svc.from("lifecycle_events").insert({
+      brokerage_id:  overrideCtx.brokerageId,
+      entity_type:   "listing",
+      entity_id:     listingId,
+      event_type:    "listing.stage_overridden",
+      actor_user_id: overrideCtx.userId,
+      metadata: {
+        from_stage:           listing.lifecycle_stage,
+        to_stage:             toStage,
+        override_reason:      overrideCtx.reason,
+        override_actor:       overrideCtx.userId,
+        override_user_type:   overrideCtx.userType,
+        notes:                notes ?? null,
+      },
+      created_at: new Date().toISOString(),
+    })
+
+    return { success: true, listingId, fromStage: listing.lifecycle_stage, toStage }
+  }
 
   return advanceListingStageService(listingId, toStage, agentId, notes)
 }
@@ -177,3 +232,65 @@ export async function sendReviewRequest(requestId: string, platform: string) {
 
 // Export for orchestrator
 export { scheduleClosingGift }
+
+// ─── Portal Visibility ────────────────────────────────────────────────────────
+
+/**
+ * Set portal_visible flag on the most recent lifecycle_event for a given stage.
+ * Agents use this to share milestone updates with the buyer/seller portal.
+ */
+export async function setMilestonePortalVisibility(
+  listingId: string,
+  stage: string,
+  visible: boolean
+) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+  // Verify the listing belongs to caller's brokerage before changing portal visibility
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing) return { success: false, error: "Listing not found" }
+  if (listing.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  // Find the most recent event for this stage — scoped to caller's brokerage
+  const { data: evt, error: fetchError } = await supabase
+    .from("lifecycle_events")
+    .select("id, metadata")
+    .eq("listing_id", listingId)
+    .eq("brokerage_id", callerRow.brokerage_id)
+    .eq("metadata->>to_state", stage)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (fetchError || !evt) {
+    return { success: false, error: fetchError?.message ?? "Event not found" }
+  }
+
+  const updatedMetadata = { ...(evt.metadata ?? {}), portal_visible: visible }
+
+  const { error: updateError } = await supabase
+    .from("lifecycle_events")
+    .update({ metadata: updatedMetadata })
+    .eq("id", evt.id)
+    .eq("brokerage_id", callerRow.brokerage_id)
+
+  if (updateError) {
+    return { success: false, error: updateError.message }
+  }
+
+  return { success: true }
+}

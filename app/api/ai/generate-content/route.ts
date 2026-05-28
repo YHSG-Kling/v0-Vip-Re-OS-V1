@@ -6,9 +6,18 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { agentId, contentType, platform, topic, targetAudience, tone, keywords, propertyDetails, contactId } = body
+    // agentId is intentionally NOT read from body — derived from session below.
+    const { contentType, platform, topic, targetAudience, tone, keywords, propertyDetails, contactId } = body
 
     const supabase = await createClient()
+
+    // Resolve actor identity from session — never trust client-supplied agentId.
+    const agentCtx = await getAgentContext()
+    if (!agentCtx.isAuthenticated || !agentCtx.agentId) {
+      return Response.json({ success: false, error: "Unauthorized" }, { status: 401 })
+    }
+    const agentId = agentCtx.agentId
+    const brokerageId = agentCtx.brokerageId
 
     // Get brand voice profile
     const { data: brandVoice } = await supabase
@@ -50,20 +59,14 @@ Target Contact Profile:
 
     const startTime = Date.now()
 
-    // Get actor context for governance
-    const agentCtx = await getAgentContext()
-    const actorContext = agentCtx
-      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
-      : undefined
-
     // Generate content using AI SDK
     const response = await generateAIResponse({
       prompt,
       temperature: 0.7,
-      maxOutputTokens: 400: contentType === "blog_post" ? 2000 : 500,
+      maxTokens: contentType === "blog_post" ? 2000 : 500,
       metadata: {
-        userId: agentId,
-        brokerageId: actorContext?.brokerageId,
+        userId: agentCtx.userId,
+        brokerageId,
         feature: "email_generation",
       },
     })
@@ -76,8 +79,8 @@ Target Contact Profile:
       agentId,
       contentType,
       prompt,
-      model: response.modelUsed || "email_generation",
-      tokensUsed: (response.inputTokens || 0) + (response.outputTokens || 0),
+      model: response.model || "email_generation",
+      tokensUsed: (response.tokensUsed?.input || 0) + (response.tokensUsed?.output || 0),
       generationTime,
       success: true,
     })
@@ -100,24 +103,11 @@ Target Contact Profile:
       content: text,
       hashtags,
       seoKeywords,
-      tokensUsed: usage?.totalTokens || 0,
+      tokensUsed: response.tokensUsed?.total || 0,
       generationTime,
     })
   } catch (error: any) {
     console.error("Content generation error:", error)
-
-    // Log failed generation
-    const body = await request.json() // Declare body variable here
-    if (body?.agentId) {
-      await logContentGeneration({
-        agentId: body.agentId,
-        contentType: body.contentType,
-        prompt: body.topic || "",
-        success: false,
-        errorMessage: error.message,
-      })
-    }
-
     return Response.json({ success: false, error: error.message }, { status: 500 })
   }
 }

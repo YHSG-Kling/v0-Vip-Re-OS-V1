@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   enrichContact,
@@ -6,6 +7,7 @@ import {
   getUnenrichedContacts,
   getContactsNeedingLifeChangeCheck,
 } from "@/app/actions/contact-enrichment"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -21,11 +23,9 @@ export const maxDuration = 300 // 5 minutes
  * Runs every 6 hours
  */
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "contact-enrichment",
@@ -101,15 +101,21 @@ export async function GET(request: Request) {
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    // Log results
-    const { error: logError } = await supabase.from("audit_log").insert({
-      log_type: "cron_job",
-      source: "contact-enrichment",
-      message: "Contact enrichment cron completed",
-      metadata: {
-        ...results,
-        duration_ms: Date.now() - startTime,
-      },
+    // Log results. The generic audit_log table is (user_id, entity_type,
+    // entity_id, action, before, after) — wrong shape for cron telemetry.
+    // cron_execution_logs is the purpose-built sink (cron_path, status,
+    // records_processed, duration_ms, metadata).
+    const totalProcessed = (results.newEnrichments?.success ?? 0)
+      + (results.lifeChangeChecks?.success ?? 0)
+      + (results.ghlSyncEnrichments?.success ?? 0)
+    const { error: logError } = await supabase.from("cron_execution_logs").insert({
+      cron_path: "contact-enrichment",
+      cron_name: "Contact enrichment",
+      status: "completed",
+      duration_ms: Date.now() - startTime,
+      records_processed: totalProcessed,
+      metadata: results,
+      completed_at: new Date().toISOString(),
     })
 
     if (logError) {
@@ -132,7 +138,7 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     console.error("[ContactEnrichmentCron] Error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json({ error: String(error), context_id: contextId }, { status: 500 })
   }
 }

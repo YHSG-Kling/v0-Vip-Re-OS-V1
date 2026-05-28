@@ -193,6 +193,7 @@ export function CalendarQuickCreatePanel({ agentId, brokerageId, onClose, onCrea
     startTransition(async () => {
       const res = await createAppointment({
         agentId,
+        brokerageId,
         title: form.title,
         startTime: startDateTime,
         endTime: endDateTime,

@@ -170,7 +170,7 @@ export interface Milestone {
   id: string
   transaction_id: string
   milestone_name: string
-  milestone_date: string | null
+  target_date: string | null
   status: string
   notes: string | null
   created_at: string

@@ -68,25 +68,35 @@ export async function createContact(params: CreateContactParams) {
       throw new ValidationError("Contact with this email already exists")
     }
 
-    // Create contact
+    // Resolve the owning brokerage from the agent. contacts has no
+    // brokerage_id auto-denorm trigger, so it must be stamped explicitly
+    // (business rule: brokerage_id required on every contact row).
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+    if (!agentRow?.brokerage_id) {
+      throw new ValidationError("Agent is not associated with a brokerage")
+    }
+
+    // Create contact. NOTE: contacts has no full_name/lead_score/
+    // preferred_cities/tags columns — those are intentionally omitted.
     const { data: contact, error } = await supabase
       .from("contacts")
       .insert({
         agent_id: params.agentId,
+        brokerage_id: agentRow.brokerage_id,
         first_name: params.firstName,
         last_name: params.lastName,
-        full_name: `${params.firstName} ${params.lastName || ""}`.trim(),
         email: params.email,
         phone: params.phone,
         source: params.source || "manual",
         status: params.status || "active",
         lead_temperature: "cool",
-        lead_score: 50,
         budget_min: params.budgetMin,
         budget_max: params.budgetMax,
-        preferred_cities: params.preferredCities,
         notes: params.notes,
-        tags: params.tags,
         created_at: new Date().toISOString(),
       })
       .select()
@@ -98,12 +108,12 @@ export async function createContact(params: CreateContactParams) {
 
     // Calculate initial lead score
     await calculateLeadScore({
-      contactId: contact.id,
+      id: contact.id,
       agentId: params.agentId,
     })
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
+    revalidatePath("/crm/contacts")
 
     return { success: true, contact }
   } catch (error) {
@@ -181,15 +191,15 @@ export async function updateContact(params: UpdateContactParams) {
 
     if (hasSignificantChanges) {
       await calculateLeadScore({
-        contactId: params.contactId,
+        id: params.contactId,
         agentId: params.agentId,
         recalculate: true,
       })
     }
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
-    revalidatePath(`/dashboard/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    revalidatePath(`/crm/contacts/${params.contactId}`)
 
     return { success: true, contact }
   } catch (error) {
@@ -235,7 +245,7 @@ export async function deleteContact(contactId: string, agentId: string) {
     }
 
     revalidatePath("/dashboard/crm")
-    revalidatePath("/dashboard/contacts")
+    revalidatePath("/crm/contacts")
 
     return { success: true }
   } catch (error) {

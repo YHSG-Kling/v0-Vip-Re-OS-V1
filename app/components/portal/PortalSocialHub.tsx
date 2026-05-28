@@ -374,29 +374,50 @@ export default function PortalSocialHub({ contact, contactId, listing, socialPos
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Pre-written captions for sellers to use */}
-              {[
-                {
-                  title: "Announcement Post",
-                  content: `Big news! Our beautiful home at ${listing.address || "123 Main St"} is now on the market! ${listing.bedrooms || 3} beds, ${listing.bathrooms || 2} baths, and so many amazing features. Know anyone looking? Send them our way! 🏡`,
-                  hashtags: ["justlisted", "homeforsale", "realestate", "dreamhome"],
-                },
-                {
-                  title: "Feature Highlight",
-                  content: `One of our favorite features of ${listing.address || "our home"} is the ${listing.property_type === "condo" ? "stunning views" : "beautiful backyard"}. Perfect for ${listing.property_type === "condo" ? "morning coffee with a view" : "summer BBQs and family gatherings"}! ☀️`,
-                  hashtags: ["homefeatures", "realestate", "homeforsale"],
-                },
-                {
-                  title: "Open House Invite",
-                  content: `You're invited! Come see our home at ${listing.address || "123 Main St"} this weekend. We'd love for our friends and family to spread the word! 🏠✨`,
-                  hashtags: ["openhouse", "homeforsale", "realestate"],
-                },
-                {
-                  title: "Price Mention",
-                  content: `Looking for a great home at $${(listing.price || listing.list_price || 450000).toLocaleString()}? Our ${listing.bedrooms || 3}BR/${listing.bathrooms || 2}BA at ${listing.address || "123 Main St"} might be perfect! Share with anyone you know who's house hunting! 🏡💕`,
-                  hashtags: ["realestate", "homeforsale", "pricedjustright"],
-                },
-              ].map((template, idx) => (
+              {/* Pre-written captions built from the seller's real listing data.
+                  Facts we don't have (price, bed/bath) are omitted rather than
+                  invented — never fabricate listing details. */}
+              {(() => {
+                const addr = listing.address || listing.property_address || ""
+                const beds = listing.bedrooms ?? null
+                const baths = listing.bathrooms ?? null
+                const price = listing.price ?? listing.list_price ?? null
+                const specs = [
+                  beds != null ? `${beds} bed${beds === 1 ? "" : "s"}` : null,
+                  baths != null ? `${baths} bath${baths === 1 ? "" : "s"}` : null,
+                ].filter(Boolean).join(", ")
+                const bedBath = [
+                  beds != null ? `${beds}BR` : null,
+                  baths != null ? `${baths}BA` : null,
+                ].filter(Boolean).join("/")
+                const at = addr ? ` at ${addr}` : ""
+                const feature = listing.property_type === "condo"
+                  ? "stunning views — perfect for morning coffee with a view"
+                  : "beautiful outdoor space — perfect for gatherings"
+                const templates = [
+                  {
+                    title: "Announcement Post",
+                    content: `Big news! Our home${at} is now on the market!${specs ? ` ${specs}.` : ""} Know anyone looking? Send them our way! 🏡`,
+                    hashtags: ["justlisted", "homeforsale", "realestate", "dreamhome"],
+                  },
+                  {
+                    title: "Feature Highlight",
+                    content: `One of our favorite things about ${addr || "our home"} is the ${feature}! ☀️`,
+                    hashtags: ["homefeatures", "realestate", "homeforsale"],
+                  },
+                  {
+                    title: "Open House Invite",
+                    content: `You're invited! Come see our home${at} this weekend. We'd love for our friends and family to spread the word! 🏠✨`,
+                    hashtags: ["openhouse", "homeforsale", "realestate"],
+                  },
+                  ...(price != null ? [{
+                    title: "Price Mention",
+                    content: `Looking for a great home at $${price.toLocaleString()}?${bedBath ? ` Our ${bedBath}${at}` : at ? ` Our home${at}` : ""} might be perfect! Share with anyone house hunting! 🏡💕`,
+                    hashtags: ["realestate", "homeforsale", "pricedjustright"],
+                  }] : []),
+                ]
+                return templates
+              })().map((template, idx) => (
                 <div key={idx} className="p-4 border rounded-lg">
                   <div className="flex justify-between items-start mb-2">
                     <h4 className="font-medium">{template.title}</h4>

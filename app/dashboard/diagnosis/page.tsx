@@ -15,5 +15,5 @@ export default async function DiagnosisPage() {
 
   const { agentId, brokerageId } = await getAgentContext()
 
-  return <DiagnosisClient agentId={agentId} brokerageId={brokerageId} userId={user.id} />
+  return <DiagnosisClient agentId={agentId ?? ""} brokerageId={brokerageId ?? ""} userId={user.id} />
 }

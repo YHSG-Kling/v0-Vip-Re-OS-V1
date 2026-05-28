@@ -2,11 +2,15 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { resolveConnectWriteScope } from "@/lib/connections/scope"
 
 export type PlatformCredential = {
   id: string
   brokerage_id: string
   agent_user_id: string | null
+  owner_type: string | null
+  owner_id: string | null
   platform: string
   scope: string
   access_token: string | null
@@ -38,9 +42,24 @@ export type ProviderOverride = {
 async function getBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
-  return { userId: user.id, brokerageId: profile.brokerage_id }
+  return {
+    userId: user.id,
+    brokerageId: profile.brokerage_id,
+    isManager: isAdminOrBroker(profile),
+  }
+}
+
+/** Whether the signed-in user may write a brokerage-wide credential (vs only their own). */
+export async function getConnectionContext(): Promise<{ isManager: boolean }> {
+  const supabase = await createClient()
+  const { isManager } = await getBrokerageId(supabase)
+  return { isManager }
 }
 
 export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
@@ -103,7 +122,9 @@ export async function upsertProviderOverride(params: {
 
 export async function upsertPlatformCredential(params: {
   platform: string
-  scope?: string
+  /** Ownership scope to write the credential at. "brokerage" requires a manager;
+   *  anyone may write "agent" (their own). Defaults to "brokerage". */
+  scope?: "agent" | "brokerage"
   api_key?: string
   api_url?: string
   account_id?: string
@@ -111,24 +132,39 @@ export async function upsertPlatformCredential(params: {
   config?: Record<string, unknown>
 }): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
-  const { brokerageId } = await getBrokerageId(supabase)
+  const { userId, brokerageId, isManager } = await getBrokerageId(supabase)
+
+  // Resolve the ownership scope. Non-managers can only write their own (agent)
+  // credentials; managers may choose agent (their own) or brokerage-wide.
+  const { ownerType, ownerId } = resolveConnectWriteScope({
+    requested: params.scope ?? "brokerage",
+    isManager,
+    userId,
+    brokerageId,
+  })
+  // agent_user_id is part of the (brokerage_id, agent_user_id, platform) natural key:
+  // NULL for brokerage-wide rows, the user's id for agent-scoped rows.
+  const agentUserId = ownerType === "agent" ? userId : null
 
   const { error } = await supabase
     .from("platform_credentials")
     .upsert(
       {
-        brokerage_id:  brokerageId,
-        platform:      params.platform,
-        scope:         params.scope ?? "brokerage",
-        api_key:       params.api_key ?? null,
-        api_url:       params.api_url ?? null,
-        account_id:    params.account_id ?? null,
-        account_name:  params.account_name ?? null,
-        config:        params.config ?? {},
-        is_active:     true,
-        updated_at:    new Date().toISOString(),
+        brokerage_id:   brokerageId,
+        agent_user_id:  agentUserId,
+        owner_type:     ownerType,
+        owner_id:       ownerId,
+        platform:       params.platform,
+        scope:          ownerType,
+        api_key:        params.api_key ?? null,
+        api_url:        params.api_url ?? null,
+        account_id:     params.account_id ?? null,
+        account_name:   params.account_name ?? null,
+        config:         params.config ?? {},
+        is_active:      true,
+        updated_at:     new Date().toISOString(),
       },
-      { onConflict: "brokerage_id,platform,scope" }
+      { onConflict: "brokerage_id,agent_user_id,platform" }
     )
 
   if (error) return { success: false, error: error.message }

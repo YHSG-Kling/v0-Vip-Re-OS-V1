@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -17,9 +18,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Truck, Package, CheckCircle, AlertCircle, Clock } from "lucide-react"
+import { Truck, Package, CheckCircle, AlertCircle, Clock, QrCode, ScanLine } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import type { Campaign, TrackingRecord } from "../mail-dashboard"
+import { getCampaignQrScans, type QrScanEvent } from "@/app/actions/direct-mail"
 
 interface TrackingTabProps {
   tracking: TrackingRecord[]
@@ -49,6 +51,29 @@ export function TrackingTab({
   loading,
 }: TrackingTabProps) {
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId)
+
+  const [qrData, setQrData] = useState<{
+    totalScans: number
+    firstScans: number
+    repeatScans: number
+    byDay: { date: string; count: number }[]
+  } | null>(null)
+  const [qrLoading, setQrLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedCampaignId) { setQrData(null); return }
+    setQrLoading(true)
+    getCampaignQrScans(selectedCampaignId).then((res) => {
+      if (res.success) {
+        setQrData({
+          totalScans: res.totalScans ?? 0,
+          firstScans: res.firstScans ?? 0,
+          repeatScans: res.repeatScans ?? 0,
+          byDay: res.byDay ?? [],
+        })
+      }
+    }).finally(() => setQrLoading(false))
+  }, [selectedCampaignId])
 
   // Calculate summary stats
   const stats = tracking.reduce(
@@ -151,6 +176,72 @@ export function TrackingTab({
               </CardHeader>
             </Card>
           </div>
+
+          {/* QR Scan Analytics */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <QrCode className="h-4 w-4 text-primary" />
+                QR Code Performance
+              </CardTitle>
+              <CardDescription>Scans from the campaign tracking QR code</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {qrLoading ? (
+                <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                  <ScanLine className="h-4 w-4 animate-pulse" />
+                  Loading scan data…
+                </div>
+              ) : !qrData || qrData.totalScans === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">
+                  No QR scans recorded yet for this campaign. Tracking activates when the first piece is mailed.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-lg border p-3 text-center">
+                      <p className="text-2xl font-bold">{qrData.totalScans}</p>
+                      <p className="text-xs text-muted-foreground">Total Scans</p>
+                    </div>
+                    <div className="rounded-lg border p-3 text-center">
+                      <p className="text-2xl font-bold text-blue-600">{qrData.firstScans}</p>
+                      <p className="text-xs text-muted-foreground">First Scans</p>
+                    </div>
+                    <div className="rounded-lg border p-3 text-center">
+                      <p className="text-2xl font-bold text-amber-600">{qrData.repeatScans}</p>
+                      <p className="text-xs text-muted-foreground">Repeat Scans</p>
+                    </div>
+                  </div>
+                  {qrData.byDay.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-2">Scans by Day</p>
+                      {(() => {
+                        const maxCount = Math.max(...qrData.byDay.map((d) => d.count), 1)
+                        return (
+                          <div className="space-y-1">
+                            {qrData.byDay.map((d) => (
+                              <div key={d.date} className="flex items-center gap-2 text-xs">
+                                <span className="w-20 text-muted-foreground shrink-0">
+                                  {format(new Date(d.date + "T00:00:00"), "MMM d")}
+                                </span>
+                                <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
+                                  <div
+                                    className="h-2 bg-primary rounded-full"
+                                    style={{ width: `${(d.count / maxCount) * 100}%` }}
+                                  />
+                                </div>
+                                <span className="w-6 text-right font-medium">{d.count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Tracking Table */}
           <Card>

@@ -78,9 +78,10 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
     setDrawerOpen(true)
   }, [])
 
-  // Handle lesson read — optimistic update + cross-system persistence + 100% agent notification
+  // Handle lesson read — optimistic update + cross-system persistence + 100% agent notification.
+  // Post-1043: persists via markResourceCompleted → learning_assignments (status='completed').
+  // The `lessonKey` param is now a learning_modules.id (uuid).
   const handleLessonRead = useCallback(async (lessonKey: string) => {
-    // Persist to contact_education_progress via ai-client-portal action
     await markResourceCompleted({ contactId, resourceId: lessonKey }).catch(() => {})
 
     // Optimistically update the local SWR state

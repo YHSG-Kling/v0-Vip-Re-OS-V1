@@ -10,8 +10,14 @@ import { Slider } from "@/components/ui/slider"
 import { Mail, MessageSquare, Video, FileText } from "lucide-react"
 import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
 
-const CAMPAIGN_TYPES: CampaignType[] = [
-  "FSBO", "BUYER_MATCH", "DIVORCE", "FORECLOSURE", "GHOST_RECOVERY",
+const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
+  { value: "fsbo", label: "FSBO" },
+  { value: "buyer_match", label: "Buyer Match" },
+  { value: "divorce", label: "Divorce" },
+  { value: "foreclosure", label: "Foreclosure" },
+  { value: "ghost_recovery", label: "Ghost Recovery" },
+  { value: "social_intent", label: "Social Intent" },
+  { value: "search_intent", label: "Search Intent" },
 ]
 
 interface Props {
@@ -33,7 +39,7 @@ export function CreateCampaignDrawer({
 }: Props) {
   const [isPending, startTransition] = useTransition()
   const [name, setName]                 = useState("")
-  const [campaignType, setCampaignType] = useState<CampaignType>("FSBO")
+  const [campaignType, setCampaignType] = useState<CampaignType>("fsbo")
   const [emailOn, setEmailOn]           = useState(true)           // always on
   const [smsOn, setSmsOn]               = useState(false)
   const [videoOn, setVideoOn]           = useState(false)
@@ -71,7 +77,7 @@ export function CreateCampaignDrawer({
       onCreated()
       onClose()
       // reset
-      setName(""); setCampaignType("FSBO"); setSmsOn(false); setVideoOn(false)
+      setName(""); setCampaignType("fsbo"); setSmsOn(false); setVideoOn(false)
       setDirectMailOn(false); setScoreThreshold(50); setMaxTouches(5); setTouchInterval(3)
     })
   }
@@ -106,7 +112,7 @@ export function CreateCampaignDrawer({
               </SelectTrigger>
               <SelectContent>
                 {CAMPAIGN_TYPES.map(t => (
-                  <SelectItem key={t} value={t}>{t.replace(/_/g, " ")}</SelectItem>
+                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

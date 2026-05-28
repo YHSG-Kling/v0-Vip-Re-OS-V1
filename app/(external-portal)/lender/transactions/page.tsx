@@ -57,7 +57,7 @@ export default async function LenderTransactionsPage() {
         id,
         milestone_name,
         status,
-        milestone_date,
+        target_date,
         completed_at
       )
     `)
@@ -77,7 +77,7 @@ export default async function LenderTransactionsPage() {
       id: m.id,
       milestone_name: m.milestone_name,
       status: m.status,
-      milestone_date: m.milestone_date,
+      target_date: m.target_date,
       completed_at: m.completed_at,
     })),
   }))

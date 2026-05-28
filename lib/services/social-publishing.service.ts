@@ -40,7 +40,7 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
 
     // Get post details
     const { data: post, error: fetchError } = await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .select("*")
       .eq("id", params.postId)
       .single()
@@ -64,7 +64,7 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
     // Update post status
     const allSucceeded = results.every(r => r.success)
     await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .update({
         status: allSucceeded ? "published" : "failed",
         published_at: allSucceeded ? new Date().toISOString() : null
@@ -76,7 +76,8 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
       results
     }
   } catch (error) {
-    return handleError(error, "publishToSocialMedia")
+    const err = handleError(error, "publishToSocialMedia") as { success: false; error: string }
+    return { ...err, results: [] }
   }
 }
 
@@ -142,7 +143,7 @@ export async function schedulePost(params: {
 
     // Update post with schedule
     const { error } = await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .update({
         status: "scheduled",
         scheduled_for: params.scheduledFor
@@ -280,7 +281,7 @@ export async function cancelScheduledPost(postId: string): Promise<{ success: bo
 
     // Update post status
     await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .update({ status: "draft", scheduled_for: null })
       .eq("id", postId)
 

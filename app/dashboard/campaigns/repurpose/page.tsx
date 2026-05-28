@@ -6,6 +6,7 @@ import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
+import { VideoUrlRepurposeCard } from "./video-url-repurpose-card"
 import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
 
 export const dynamic = "force-dynamic"
@@ -18,24 +19,25 @@ export const metadata = {
 export default async function RepurposePage() {
   try {
     const agentContext = await getAgentContext()
-    const { userId, brokerageId, teamId } = agentContext
+    const { userId, brokerageId } = agentContext
+    const teamId: string | null = (agentContext as any).teamId ?? null
     const supabase = await createClient()
 
     // Get user profile with role
     const { data: profile } = await supabase
       .from("users")
-      .select("role, first_name, last_name, user_type")
+      .select("first_name, last_name, user_type")
       .eq("id", userId)
       .maybeSingle()
 
     // Fetch pipelines and history in parallel
     const [pipelinesResult, historyResult] = await Promise.all([
-      getPipelines(brokerageId),
-      getRepurposeHistory(brokerageId),
+      getPipelines(brokerageId ?? ""),
+      getRepurposeHistory(brokerageId ?? ""),
     ])
 
-    // Fetch available source content
-    const [videoProjects, blogPosts, podcastEpisodes, scripts] = await Promise.all([
+    // Fetch available source content + connected social channels
+    const [videoProjects, blogPosts, podcastEpisodes, scripts, socialAccounts] = await Promise.all([
       supabase
         .from("ai_video_projects")
         .select("id, title, video_url, status, duration_seconds, created_at")
@@ -64,7 +66,16 @@ export default async function RepurposePage() {
         .eq("is_active", true)
         .order("created_at", { ascending: false })
         .limit(20),
+      supabase
+        .from("social_media_accounts")
+        .select("platform")
+        .eq("brokerage_id", brokerageId ?? "")
+        .eq("is_active", true),
     ])
+
+    const connectedPlatforms = Array.from(
+      new Set((socialAccounts.data ?? []).map((a: { platform: string }) => a.platform)),
+    )
 
     const sources = {
       video_project: videoProjects.data || [],
@@ -75,11 +86,14 @@ export default async function RepurposePage() {
 
     return (
       <Suspense fallback={<div>Loading...</div>}>
+        <div className="p-6 pb-0">
+          <VideoUrlRepurposeCard connectedPlatforms={connectedPlatforms} />
+        </div>
         <RepurposeDashboardClient
           userId={userId}
-          brokerageId={brokerageId}
+          brokerageId={brokerageId ?? ""}
           teamId={teamId}
-          userRole={profile?.role || "agent"}
+          userRole={profile?.user_type || "agent"}
           pipelines={pipelinesResult.success ? pipelinesResult.pipelines : []}
           history={historyResult.success ? historyResult.history : []}
           sources={sources}

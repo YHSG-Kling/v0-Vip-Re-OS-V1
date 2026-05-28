@@ -42,6 +42,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   initiateVoiceCall,
   completeVoiceCall,
@@ -58,6 +59,7 @@ export interface ProcessVoiceCallParams {
     callType: 'inbound' | 'outbound'
     initiatorRole: 'ai' | 'agent' | 'contact' | 'office'
     durationSeconds: number
+    /** ignored — derived from session */
     agentId?: string
     transactionId?: string
     listingId?: string
@@ -88,12 +90,22 @@ export interface ProcessVoiceCallResult {
 export async function processVoiceCall(
   params: ProcessVoiceCallParams
 ): Promise<ProcessVoiceCallResult> {
+  // SECURITY: require an authenticated session. The Vapi webhook handler at
+  // app/api/webhooks/vapi/route.ts performs its own HMAC signature check; any
+  // future webhook-style caller should likewise verify upstream and call a
+  // dedicated entry point — this server action MUST not be reachable from
+  // unauthenticated clients.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+
   const supabase = createServiceClient()
 
   try {
     console.log(`[v0] [VOICE ENGINE] Processing ${params.callMetadata.callType} call for contact ${params.contactId}`)
 
-    // STEP 1: Validate contact
+    // STEP 1: Validate contact AND verify it belongs to the caller's brokerage
     const { data: contact, error: contactError } = await supabase
       .from('contacts')
       .select('id, brokerage_id, phone, first_name')
@@ -107,13 +119,42 @@ export async function processVoiceCall(
       }
     }
 
+    if (contact.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: 'Forbidden' }
+    }
+
+    // Derive agentId from session; ignore caller-supplied value
+    const resolvedAgentId = ctx.agentId ?? undefined
+
+    // If caller passed a transactionId/listingId, verify ownership before use
+    if (params.callMetadata.transactionId) {
+      const { data: txn } = await supabase
+        .from('transactions')
+        .select('brokerage_id')
+        .eq('id', params.callMetadata.transactionId)
+        .maybeSingle()
+      if (!txn || txn.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: 'Forbidden (transaction)' }
+      }
+    }
+    if (params.callMetadata.listingId) {
+      const { data: listing } = await supabase
+        .from('listings')
+        .select('brokerage_id')
+        .eq('id', params.callMetadata.listingId)
+        .maybeSingle()
+      if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: 'Forbidden (listing)' }
+      }
+    }
+
     // STEP 2: Initiate call (log metadata)
     const callMetadata: CallMetadata = {
       contactId: params.contactId,
       initiatorRole: params.callMetadata.initiatorRole,
       callType: params.callMetadata.callType,
       vendor: params.callMetadata.vendor,
-      agentId: params.callMetadata.agentId,
+      agentId: resolvedAgentId,
       transactionId: params.callMetadata.transactionId,
       listingId: params.callMetadata.listingId,
     }
@@ -145,7 +186,7 @@ export async function processVoiceCall(
         rawTranscript: params.rawTranscript,
         contactId: params.contactId,
         callMetadata: {
-          agentId: params.callMetadata.agentId,
+          agentId: resolvedAgentId,
           transactionId: params.callMetadata.transactionId,
           listingId: params.callMetadata.listingId,
           initiatorRole: params.callMetadata.initiatorRole,
@@ -159,7 +200,7 @@ export async function processVoiceCall(
         // STEP 5: Emit AI ISA handoff signal
         if (conversationId) {
           const summary = `Voice call completed with ${contact.first_name || 'contact'}. Transcript available for review.`
-          await emitVoiceHandoffSignal(params.contactId, conversationId, summary)
+          await emitVoiceHandoffSignal(params.contactId, conversationId, summary, resolvedAgentId ?? "", contact.brokerage_id ?? "")
         }
       } else {
         console.error('[v0] [VOICE ENGINE] Failed to ingest transcript:', transcriptResult.error)
@@ -177,7 +218,7 @@ export async function processVoiceCall(
       callDurationSeconds: params.callMetadata.durationSeconds,
       transcriptionWordCount: wordCount,
       contactId: params.contactId,
-      agentId: params.callMetadata.agentId,
+      agentId: resolvedAgentId,
       brokerageId: contact.brokerage_id,
     })
 
@@ -189,7 +230,7 @@ export async function processVoiceCall(
       status: 'completed',
       priority: 'normal',
       contact_id: params.contactId,
-      agent_id: params.callMetadata.agentId,
+      agent_id: resolvedAgentId,
       transaction_id: params.callMetadata.transactionId,
       duration_minutes: Math.ceil(params.callMetadata.durationSeconds / 60),
       notes: JSON.stringify({

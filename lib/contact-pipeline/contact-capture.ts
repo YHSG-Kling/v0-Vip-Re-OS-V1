@@ -9,6 +9,7 @@ import { processKernelEvent } from '@/lib/kernel/notification-engine'
 import { createServiceClient } from '@/lib/supabase/service'
 import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
+import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,7 +43,23 @@ const LEAD_CONVERSION_SOURCES = new Set([
 
 export interface CaptureContactParams {
   brokerageId: string
-  agentUserId?: string | null    // references users.id (NOT agents.id)
+  /**
+   * agents.id of the owning agent. contacts.agent_id is agents.id per
+   * migration 111 — passing users.id here used to silently break agent
+   * RLS visibility (auth.agent_id() returns agents.id).
+   *
+   * If omitted, lib/lead-assignment/contact-assignment.ts picks the owner
+   * via the same precedence used elsewhere: solo-agent shortcut →
+   * assignment_rules → load-balance fallback.
+   */
+  ownerAgentId?: string | null
+  /**
+   * @deprecated Pass `ownerAgentId` (agents.id) instead. Kept for source
+   * compatibility with callers that pre-dated the contract correction;
+   * when set, the value is treated as users.id and converted internally
+   * to agents.id via the agents table.
+   */
+  agentUserId?: string | null
   source: ContactCaptureSource
   /** Set to the originating lead ID when this contact is being created from
    *  a lead record. Dedup and enrichment are skipped — the lead was already
@@ -83,6 +100,21 @@ export async function captureContact(
     )
   }
 
+  // ── Normalize owner hint (contacts.agent_id is agents.id) ────────────────
+  // Accept either `ownerAgentId` (agents.id, the correct contract) or the
+  // legacy `agentUserId` (users.id). If only the legacy field is set, look
+  // up the matching agents.id via the agents table.
+  let ownerAgentHint: string | null = params.ownerAgentId ?? null
+  if (!ownerAgentHint && params.agentUserId) {
+    const { data: agentRow } = await supabase
+      .from('agents')
+      .select('id')
+      .eq('user_id', params.agentUserId)
+      .eq('brokerage_id', params.brokerageId)
+      .maybeSingle()
+    ownerAgentHint = agentRow?.id ?? null
+  }
+
   // ── Lead-conversion fast path ────────────────────────────────────────────
   // When a contact is being promoted from a lead record the lead was already
   // deduplicated and enriched. Skip directly to CREATE and skip enrichment
@@ -91,24 +123,22 @@ export async function captureContact(
     !!params.fromLeadId || LEAD_CONVERSION_SOURCES.has(params.source)
 
   if (isLeadConversion) {
-    let resolvedAgentUserId = params.agentUserId ?? null
-    if (!resolvedAgentUserId) {
-      const { data: primaryAgent } = await supabase
-        .from('agents')
-        .select('user_id')
-        .eq('brokerage_id', params.brokerageId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle()
-      if (primaryAgent?.user_id) resolvedAgentUserId = primaryAgent.user_id
+    const assignment = await resolveAgentForContact({
+      brokerageId: params.brokerageId,
+      ownerAgentId: ownerAgentHint,
+      source: params.source,
+    })
+    if (!assignment.agentId) {
+      throw new Error(
+        `captureContact (lead-conversion): no eligible agent in brokerage ${params.brokerageId}`,
+      )
     }
 
     const { data: created, error: createError } = await supabase
       .from('contacts')
       .insert({
         brokerage_id: params.brokerageId,
-        agent_id: resolvedAgentUserId,
+        agent_id: assignment.agentId, // agents.id
         first_name: params.first_name ?? null,
         last_name: params.last_name ?? null,
         email: params.email ?? null,
@@ -186,18 +216,16 @@ export async function captureContact(
   if (bestId !== null && bestScore >= DEDUP_THRESHOLD) {
     const existing = (candidates ?? []).find((x) => x.id === bestId)
 
-    // Resolve agent to assign on merge if existing contact has none
-    let mergeAgentId = params.agentUserId ?? null
-    if (!mergeAgentId && !existing?.agent_id) {
-      const { data: primaryAgent } = await supabase
-        .from('agents')
-        .select('user_id')
-        .eq('brokerage_id', params.brokerageId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle()
-      if (primaryAgent?.user_id) mergeAgentId = primaryAgent.user_id
+    // Resolve agent to assign on merge if existing contact has none.
+    // agents.id (NOT users.id) — contacts.agent_id is agents.id.
+    let mergeAgentId: string | null = null
+    if (!existing?.agent_id) {
+      const assignment = await resolveAgentForContact({
+        brokerageId: params.brokerageId,
+        ownerAgentId: ownerAgentHint,
+        source: params.source,
+      })
+      mergeAgentId = assignment.agentId
     }
 
     await supabase
@@ -246,26 +274,25 @@ export async function captureContact(
   }
 
   // ── CREATE path ──────────────────────────────────────────────────────────
-  // If no agent was passed from metadata, resolve the brokerage's primary active
-  // agent (earliest created_at) so every contact always has an owner.
-  let resolvedAgentUserId = params.agentUserId ?? null
-  if (!resolvedAgentUserId) {
-    const { data: primaryAgent } = await supabase
-      .from('agents')
-      .select('user_id')
-      .eq('brokerage_id', params.brokerageId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle()
-    if (primaryAgent?.user_id) resolvedAgentUserId = primaryAgent.user_id
+  // Resolve owner via the assignment helper so the same precedence applies
+  // (owner hint → solo-agent → assignment_rules → load-balance fallback).
+  // contacts.agent_id is agents.id per migration 111.
+  const createAssignment = await resolveAgentForContact({
+    brokerageId: params.brokerageId,
+    ownerAgentId: ownerAgentHint,
+    source: params.source,
+  })
+  if (!createAssignment.agentId) {
+    throw new Error(
+      `captureContact: no eligible agent in brokerage ${params.brokerageId}`,
+    )
   }
 
   const { data: created, error: createError } = await supabase
     .from('contacts')
     .insert({
       brokerage_id: params.brokerageId,
-      agent_id: resolvedAgentUserId,   // references users.id NOT agents.id
+      agent_id: createAssignment.agentId, // agents.id
       first_name: params.first_name ?? null,
       last_name: params.last_name ?? null,
       email: params.email ?? null,

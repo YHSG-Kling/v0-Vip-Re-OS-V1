@@ -60,12 +60,12 @@ export default function SLAMonitorPage() {
 
   // Load brokerage from session
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data }) => {
+    supabase.auth.getUser().then(async ({ data }: { data: any }) => {
       if (!data.user) return
       const { data: profile } = await supabase
-        .from("user_profiles")
+        .from("users")
         .select("brokerage_id")
-        .eq("user_id", data.user.id)
+        .eq("id", data.user.id)
         .single()
       if (profile) setBrokerageId(profile.brokerage_id)
     })
@@ -76,24 +76,52 @@ export default function SLAMonitorPage() {
     if (!brokerageId) return
     setLoading(true)
     startTransition(async () => {
-      // Fetch breached rows joined with lead + agent names
+      // Fetch breached rows joined with lead names
       const { data: slaData } = await supabase
         .from("lead_sla_tracking")
         .select(`
           id, lead_id, brokerage_id, sla_type, target_at, completed_at,
           breached, breach_notified,
-          leads!lead_id ( first_name, last_name, agent_id,
-            user_profiles!agent_id ( first_name, last_name )
-          )
+          leads!lead_id ( first_name, last_name, agent_id )
         `)
         .eq("brokerage_id", brokerageId)
         .eq("breached", true)
         .order("target_at", { ascending: false })
         .limit(200)
 
+      // Collect unique agent IDs to look up agent names separately
+      const agentIds = Array.from(
+        new Set(
+          (slaData ?? [])
+            .map((r: Record<string, unknown>) => {
+              const lead = r.leads as Record<string, unknown> | null
+              return lead?.agent_id as string | null
+            })
+            .filter(Boolean) as string[]
+        )
+      )
+
+      // Fetch agent → user name mapping
+      const agentNameMap: Record<string, { first_name: string | null; last_name: string | null }> = {}
+      if (agentIds.length > 0) {
+        const { data: agentsData } = await supabase
+          .from("agents")
+          .select("id, users!user_id ( first_name, last_name )")
+          .in("id", agentIds)
+        for (const agent of agentsData ?? []) {
+          const a = agent as Record<string, unknown>
+          const u = a.users as Record<string, unknown> | null
+          agentNameMap[a.id as string] = {
+            first_name: (u?.first_name as string) ?? null,
+            last_name:  (u?.last_name as string) ?? null,
+          }
+        }
+      }
+
       const mapped: SLARow[] = (slaData ?? []).map((r: Record<string, unknown>) => {
         const lead = r.leads as Record<string, unknown> | null
-        const agentProfile = lead?.user_profiles as Record<string, unknown> | null
+        const agentId = lead?.agent_id as string | null
+        const agentName = agentId ? agentNameMap[agentId] : null
         return {
           id:               r.id as string,
           lead_id:          r.lead_id as string,
@@ -105,8 +133,8 @@ export default function SLAMonitorPage() {
           breach_notified:  r.breach_notified as boolean,
           lead_first_name:  (lead?.first_name as string) ?? null,
           lead_last_name:   (lead?.last_name as string) ?? null,
-          agent_first_name: (agentProfile?.first_name as string) ?? null,
-          agent_last_name:  (agentProfile?.last_name as string) ?? null,
+          agent_first_name: agentName?.first_name ?? null,
+          agent_last_name:  agentName?.last_name ?? null,
         }
       })
       setRows(mapped)

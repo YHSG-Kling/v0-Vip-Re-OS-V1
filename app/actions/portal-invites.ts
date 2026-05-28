@@ -1,27 +1,48 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { randomUUID } from "crypto"
 
 export async function createPortalInviteForContact(params: {
   contactId: string
-  brokerageId: string
-  invitedByUserId: string // MUST be users.id, not agents.id
+  brokerageId?: string  // ignored — derived from contact + verified against session
+  invitedByUserId?: string  // ignored — derived from session
   sendMagicLink?: boolean
 }): Promise<{ success: boolean; inviteId?: string; error?: string }> {
-  const { contactId, brokerageId, invitedByUserId, sendMagicLink = false } = params
-  const supabase = await createClient()
+  const { contactId, sendMagicLink = false } = params
+
+  // Auth gate — previously open. Any caller could create portal invites
+  // for any contact in any brokerage, with arbitrary brokerageId stamping
+  // and forged "invited_by" attribution. The magic-link path even sent
+  // real auth-OTP emails to those contacts' addresses.
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized" }
+
+  const supabase = createServiceClient()
 
   // 1. Load contact
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, email, first_name, contact_type, contact_persona")
+    .select("id, email, first_name, contact_type, contact_persona, brokerage_id")
     .eq("id", contactId)
     .maybeSingle()
 
   if (contactError || !contact) {
     return { success: false, error: "Contact not found" }
   }
+
+  // Verify caller is an agent/admin in the contact's brokerage. Contact-self
+  // self-invites don't make sense (they'd already be authed) so we don't
+  // allow them here.
+  const { data: callerRow } = await supabase
+    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+  if (!callerRow?.brokerage_id || callerRow.brokerage_id !== contact.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
+  const brokerageId = contact.brokerage_id as string
+  const invitedByUserId = authUser.id
 
   // 2. Require valid email
   if (!contact.email) {

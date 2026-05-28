@@ -10,6 +10,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { syncContactToGHL } from "@/services/goHighLevelService"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
+import { syncContactToLofty } from "@/lib/crm/providers/lofty"
 
 export interface CRMContactPayload {
   firstName: string
@@ -40,21 +43,36 @@ export async function syncContactToCRM(
 ): Promise<CRMSyncResult> {
   const { brokerageId } = payload
 
-  // ── Resolve active CRM provider from brokerage_integrations ──────────────────
+  // ── Resolve active CRM provider: the AGENT's own CRM first (per-agent stack), then the
+  //    brokerage default (brokerage_integrations), then the system default. ───────────────
   let providerKey = "ghl" // system default
 
   try {
     const supabase = await createClient()
-    const { data: integration } = await supabase
-      .from("brokerage_integrations")
-      .select("provider_name, status")
-      .eq("brokerage_id", brokerageId)
-      .eq("provider_type", "crm")
-      .eq("status", "active")
-      .maybeSingle()
 
-    if (integration?.provider_name) {
-      providerKey = integration.provider_name
+    if (payload.agentId) {
+      const { data: agentCrm } = await supabase
+        .from("agent_api_credentials")
+        .select("service_name")
+        .eq("agent_id", payload.agentId)
+        .eq("service_type", "crm_sync")
+        .eq("is_active", true)
+        .limit(1)
+        .maybeSingle()
+      if (agentCrm?.service_name) providerKey = agentCrm.service_name
+    }
+
+    if (providerKey === "ghl") {
+      const { data: integration } = await supabase
+        .from("brokerage_integrations")
+        .select("provider_name, status")
+        .eq("brokerage_id", brokerageId)
+        .eq("provider_type", "crm")
+        .eq("status", "active")
+        .maybeSingle()
+      if (integration?.provider_name) {
+        providerKey = integration.provider_name
+      }
     }
   } catch {
     // Non-blocking — fall through to system default
@@ -86,6 +104,31 @@ export async function syncContactToCRM(
       }
     } catch (err: any) {
       return { success: false, providerKey, error: err?.message ?? "GHL sync failed" }
+    }
+  }
+
+  // ── Lofty + Follow Up Boss — sync-OUT via the connector-gateway ──────────────
+  if (providerKey === "followupboss" || providerKey === "lofty") {
+    const conn = await resolveScopedConnection(providerKey, { brokerageId, agentId: payload.agentId }).catch(() => null)
+    const contact = {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phone: payload.phone,
+      source: payload.source ?? "kernel",
+      tags: payload.tags ?? [],
+    }
+    const result =
+      providerKey === "followupboss"
+        ? await syncContactToFollowUpBoss(contact, conn?.apiKey ?? null)
+        : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null)
+    return {
+      success: result.success,
+      contactId: result.contactId,
+      action: result.action,
+      providerKey,
+      error: result.error,
+      requiresConfiguration: result.requiresConfiguration,
     }
   }
 

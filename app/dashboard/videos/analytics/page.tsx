@@ -60,7 +60,8 @@ interface PerformanceStats {
 }
 
 export default function VideoAnalyticsPage() {
-  const { user, brokerageId } = useAuth()
+  const { user, userContext } = useAuth()
+  const brokerageId = userContext?.brokerageId
   const [dateRange, setDateRange] = useState("30d")
   const [stats, setStats] = useState<PerformanceStats | null>(null)
   const [loading, setLoading] = useState(true)

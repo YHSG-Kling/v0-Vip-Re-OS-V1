@@ -20,12 +20,31 @@ import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 import { NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { openai } from "@ai-sdk/openai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 
 export const runtime = "nodejs"
+
+// Non-blocking write result logger. The webhook must stay resilient (VAPI
+// retries are noisy), so these post-call side-effect writes don't throw — but
+// silently discarding their result (the old `.then(() => {}, () => {})`
+// pattern) hid DNC / call_stop_flag compliance-write failures, a TCPA risk.
+// This surfaces failures in ops logs while keeping the handler non-blocking.
+// Usage: `await supabase.from(...).update(...).eq(...).then(...logWrite("contact DNC"))`
+function logWrite(
+  label: string,
+): readonly [(r: { error?: unknown } | null) => void, (e: unknown) => void] {
+  return [
+    (r) => {
+      if (r?.error) console.error(`[vapi-webhook] ${label} write failed:`, r.error)
+    },
+    (e) => console.error(`[vapi-webhook] ${label} write threw:`, e),
+  ] as const
+}
+
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -45,13 +64,17 @@ const RESTRICTED_STATES = new Set([
 // ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // 1. Validate webhook secret
+  // 1. Validate webhook secret. REQUIRED — without it, any caller can trigger
+  // the voice-call-bridge handlers below. An unconfigured deploy (no env var)
+  // must reject all webhooks rather than fall through to "no check".
   const secret = process.env.VAPI_WEBHOOK_SECRET
-  if (secret) {
-    const incoming = req.headers.get("x-vapi-secret")
-    if (incoming !== secret) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  if (!secret) {
+    console.warn("[vapi-webhook] VAPI_WEBHOOK_SECRET not set — rejecting request")
+    return NextResponse.json({ error: "Webhook secret not configured" }, { status: 401 })
+  }
+  const incoming = req.headers.get("x-vapi-secret")
+  if (incoming !== secret) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   let payload: Record<string, any>
@@ -68,6 +91,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const { searchParams } = new URL(req.url)
   const brokerageId: string | null = searchParams.get("brokerage_id") ?? null
+
+  // contacts.brokerage_id is NOT NULL; voice_calls.brokerage_id is NOT NULL.
+  // Without the query param the entire flow would silently write NULL into
+  // those columns and fail constraints — fail fast with a 400 instead so
+  // VAPI's retry/alerting surfaces the misconfiguration.
+  if (!brokerageId) {
+    console.warn("[vapi-webhook] missing brokerage_id query param — rejecting")
+    return NextResponse.json(
+      { error: "Missing brokerage_id query param" },
+      { status: 400 },
+    )
+  }
 
   const supabase = createServiceClient()
 
@@ -94,6 +129,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .maybeSingle()
 
       if (existingContact) {
+        // Resolve the per-brokerage AI-ISA system actor — replaces the
+        // previous literal "system" string which violated the UUID type on
+        // actor_user_id and silently broke audit writes (migration 037+).
+        const isaActorId = await getIsaSystemUserIdCached(supabase, brokerageId)
+
         // Known contact — update record to reflect inbound call, stamp TCPA consent
         // (the act of calling in IS consent for that communication)
         await supabase
@@ -109,7 +149,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Block if DNC / call_stop_flag / restricted state that has opted out
         const complianceResult = await evaluateKernelOutbound({
   actorContext: {
-    userId: "system",
+    userId: isaActorId ?? "system",
     brokerageId,
     role: "isa",
   },
@@ -135,7 +175,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           violations,
           blocked_reason: violations[0] ?? null,
           actor_role: "isa",
-          actor_user_id: "system",
+          actor_user_id: isaActorId,
           entity_type: "contact",
           entity_id: existingContact.id,
           message_type: "phone",
@@ -146,7 +186,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             brokerage_id: brokerageId,
             vapi_call_id: callId,
             direction,
-            call_type: "isa_ai",
+            call_type: "ai_isa_call",
             contact_id: existingContact.id,
             phone_from: callerPhone,
             phone_to: phoneTo,
@@ -187,7 +227,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               brokerage_id: brokerageId,
               vapi_call_id: callId,
               direction,
-              call_type: "isa_ai",
+              call_type: "ai_isa_call",
               lead_id: resolvedLeadId,
               contact_id: resolvedContactId,
               phone_from: callerPhone,
@@ -206,7 +246,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
         } else {
           // 3. Unknown caller — calling is consent; create a contact record immediately
-          const { data: newContact } = await supabase
+          const { data: newContact, error: newContactError } = await supabase
             .from("contacts")
             .insert({
               brokerage_id: brokerageId,
@@ -223,7 +263,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .select("id")
             .single()
 
-          if (newContact?.id) {
+          if (newContactError || !newContact?.id) {
+            // Don't fail-silent: log the INSERT failure so it surfaces in
+            // ops. The downstream voice_calls write tolerates NULL
+            // contact_id, but losing visibility on contact creation
+            // failures hides upstream config bugs (RLS / FK / brokerage).
+            console.error(
+              "[vapi-webhook] failed to create inbound-call contact",
+              { brokerageId, callerPhone, error: newContactError?.message },
+            )
+          } else {
             resolvedContactId = newContact.id
             // Queue enrichment for the new contact
             await supabase.from("contact_enrichment_queue").insert({
@@ -242,7 +291,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       brokerage_id: brokerageId,
       vapi_call_id: callId,
       direction,
-      call_type: "isa_ai",
+      call_type: "ai_isa_call",
       contact_id: resolvedContactId,
       lead_id: resolvedLeadId ?? null,
       phone_from: direction === "inbound" ? callerPhone : phoneTo,
@@ -268,7 +317,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           voice_call_id: voiceCallRow.id,
           script_used: "inbound",
           appointment_set: false,
-        }).catch(() => {})
+        }).then(...logWrite("ai_isa_calls insert (call-started)"))
       }
     }
 
@@ -338,6 +387,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .select("id, brokerage_id, agent_id, contact_id, lead_id, direction")
       .eq("vapi_call_id", callId)
       .maybeSingle()
+
+    // Unified vendor-spend ledger — use Vapi's real reported cost when present,
+    // else estimate from billed minutes. Platform-owned vendor, attributed per brokerage.
+    if (voiceCall?.brokerage_id) {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "vapi",
+        usageType: "voice_call",
+        cost: (call.cost ?? 0) > 0 ? call.cost : estimatePlatformVendorCost("vapi", minutesBilled),
+        unitCount: minutesBilled,
+        brokerageId: voiceCall.brokerage_id,
+        systemSource: "voice",
+        metadata: { vapi_call_id: callId, duration_seconds: durationSeconds, ended_reason: endedReason },
+      })
+    }
 
     if (voiceCall) {
       // 2. Update voice_calls
@@ -444,7 +508,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             ...(appointmentSet ? { appointment_datetime: new Date().toISOString() } : {}),
           })
           .eq("id", isaCall.id)
-          .catch(() => {})
+          .then(...logWrite("ai_isa_calls update (quality)"))
 
         // Notify agent when lead is highly qualified but appointment not yet set
         if (!appointmentSet && qualScore >= 60 && voiceCall.contact_id && voiceCall.agent_id) {
@@ -456,7 +520,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             body:         `Score: ${qualScore}/100. Intent: ${intentPrimary?.replace(/_/g, " ")}.`,
             entity_type:  "contact",
             entity_id:    voiceCall.contact_id,
-          }).catch(() => {})
+          }).then(...logWrite("qualified-lead notification"))
         }
       }
 
@@ -491,10 +555,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (isPositiveOutcome) {
           // Positive: assign agent + convert lead to contact for further follow-up
           const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")
+          const handoffActorId = await getIsaSystemUserIdCached(supabase, voiceCall.brokerage_id ?? null)
           await acceptAIISAHandoff({
             leadId: voiceCall.lead_id,
             brokerageId: voiceCall.brokerage_id ?? "",
-            actorUserId: "system",
+            actorUserId: handoffActorId ?? "system",
           }).catch(() => {})
         } else if (isNegativeOutcome) {
           // Negative: notes only, block phone + SMS, do NOT convert to contact
@@ -507,23 +572,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.lead_id)
-            .catch(() => {})
+            .then(...logWrite("lead call_stop_flag"))
 
+          // This is a LEAD, not a contact. activities.contact_id is a FK to
+          // contacts(id), so writing a lead UUID there violates the constraint
+          // and the insert silently fails. Attribute via the generic
+          // entity_type/entity_id pair instead.
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
-            contact_id: voiceCall.lead_id,
+            entity_type: "lead",
+            entity_id: voiceCall.lead_id,
             activity_type: "call_negative_outcome",
             title: "Lead requested no further contact via phone",
             description: callNoteSummary,
             status: "completed",
-          }).catch(() => {})
+          }).then(...logWrite("lead negative-outcome activity"))
         } else {
           // Neutral: add notes, keep lead in AI queue
           await supabase
             .from("leads")
             .update({ notes: callNoteSummary, updated_at: new Date().toISOString() })
             .eq("id", voiceCall.lead_id)
-            .catch(() => {})
+            .then(...logWrite("lead notes"))
         }
 
       } else if (voiceCall.contact_id) {
@@ -540,7 +610,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .catch(() => {})
+            .then(...logWrite("contact DNC/call_stop_flag"))
 
           await supabase.from("activities").insert({
             brokerage_id: voiceCall.brokerage_id,
@@ -549,7 +619,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             title: "Contact requested no further phone/SMS contact",
             description: callNoteSummary,
             status: "completed",
-          }).catch(() => {})
+          }).then(...logWrite("contact negative-outcome activity"))
 
         } else {
           // Positive or neutral: update contact with call notes
@@ -560,7 +630,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               updated_at: new Date().toISOString(),
             })
             .eq("id", voiceCall.contact_id)
-            .catch(() => {})
+            .then(...logWrite("contact last_contacted"))
 
           // Notify assigned agent on strong positive signal
           if (isPositiveOutcome && voiceCall.agent_id) {
@@ -572,7 +642,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               body: callNoteSummary,
               entity_type: "contact",
               entity_id: voiceCall.contact_id,
-            }).catch(() => {})
+            }).then(...logWrite("contact positive-outcome activity"))
           }
         }
       }
@@ -646,7 +716,7 @@ async function schedulePostCallFollowUp(params: {
 
   // Generate follow-up message using AI SDK
   const { text: followUpMessage } = await generateText({
-    model: openai('gpt-4o-mini'),
+      model: resolveModel('openai/gpt-4o-mini'),
     system: [
       "You are a real estate ISA (Inside Sales Agent) AI assistant.",
       "Write a short, warm, personalized follow-up message to send after a voice call.",

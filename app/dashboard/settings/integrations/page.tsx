@@ -1,6 +1,7 @@
 import {
   getPlatformCredentials,
   getProviderOverrides,
+  getConnectionContext,
 } from "@/app/actions/settings/integrations"
 import { IntegrationsClient } from "./integrations-client"
 
@@ -9,11 +10,13 @@ export const metadata = { title: "Integrations | Settings" }
 export default async function IntegrationsPage() {
   let credentials: Awaited<ReturnType<typeof getPlatformCredentials>> = []
   let overrides: Awaited<ReturnType<typeof getProviderOverrides>> = []
+  let isManager = false
 
   try {
-    ;[credentials, overrides] = await Promise.all([
+    ;[credentials, overrides, { isManager }] = await Promise.all([
       getPlatformCredentials(),
       getProviderOverrides(),
+      getConnectionContext(),
     ])
   } catch {
     return (
@@ -23,5 +26,5 @@ export default async function IntegrationsPage() {
     )
   }
 
-  return <IntegrationsClient credentials={credentials} overrides={overrides} />
+  return <IntegrationsClient credentials={credentials} overrides={overrides} isManager={isManager} />
 }

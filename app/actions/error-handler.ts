@@ -88,7 +88,7 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
     .from("activities")
     .insert({
       brokerage_id: brokerageId,
-      user_id: userId,
+      agent_user_id: userId,
       activity_type: "error_group_dismissed",
       status: "completed",
       metadata: { error_group_id: groupId, reason },
@@ -122,7 +122,7 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
     .from("activities")
     .insert({
       brokerage_id: brokerageId,
-      user_id: userId,
+      agent_user_id: userId,
       activity_type: "error_group_resolved",
       status: "completed",
       metadata: { error_group_id: groupId, solution },

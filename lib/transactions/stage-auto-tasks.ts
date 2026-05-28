@@ -36,7 +36,7 @@ const STAGE_AUTO_TASKS: Record<string, Array<{
   ],
   CLOSED: [
     { title: 'Generate post-closing follow-up plan', description: 'Create referral and nurture touchpoints.', priority: 'medium', category: 'post_close', assigned_to: 'agent', due_days: 1 },
-    { title: 'Request client review', description: 'Ask for testimonial or online review.', priority: 'medium', category: 'post_close', assigned_to: 'agent', due_days: 7 },
+    { title: 'Send client review request', description: 'Review request draft auto-generated — send to client now (5 days post-close).', priority: 'medium', category: 'post_close', assigned_to: 'agent', due_days: 5 },
     { title: 'Schedule 30-day check-in', description: 'Create first post-closing touchpoint.', priority: 'low', category: 'post_close', assigned_to: 'agent', due_days: 1 },
   ],
   LOST: [],

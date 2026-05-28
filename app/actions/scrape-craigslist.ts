@@ -5,14 +5,34 @@ import { runApifyActor } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { analyzeLead, analyzePropertyImages } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 export async function scrapeCraigslist(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   targetCities: string[]
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+
   const supabase = await createClient()
-  const { brokerageId, targetCities } = params
-  
+
+  // Admin-only: scraping burns money + OpenAI vision is HIGH cost.
+  const { data: u } = await supabase
+    .from('users')
+    .select('user_type')
+    .eq('id', ctx.userId)
+    .maybeSingle()
+  const isAdmin = ['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(
+    u?.user_type ?? ''
+  )
+  if (!isAdmin) return { success: false, error: 'Forbidden: admin only' }
+
+  const brokerageId = ctx.brokerageId
+  const { targetCities } = params
+
   const results = {
     fsboListings: 0,
     housingWanted: 0,
@@ -67,7 +87,7 @@ export async function scrapeCraigslist(params: {
 
         if (rawRecord?.id) {
           const pipelineResult = await processRawRecord(rawRecord.id, brokerageId)
-          
+
           if (pipelineResult.action === 'created') {
             results.leadsCreated++
           }

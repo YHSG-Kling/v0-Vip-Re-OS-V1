@@ -2,7 +2,7 @@
 
 import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
-import { sendEmail } from "./communications"
+import { dispatchEmail } from "@/lib/providers/dispatch"
 
 // PDF Generation using jsPDF for client-side or Puppeteer for server-side
 // For production, integrate with Puppeteer or similar for high-quality PDFs
@@ -37,7 +37,7 @@ export async function generateAndStorePDF(options: PDFGenerationOptions): Promis
     // Get agent details for branding
     const { data: agent } = await supabase
       .from("users")
-      .select("first_name, last_name, email, phone, license_number, brokerage")
+      .select("first_name, last_name, email, phone, license_number, brokerage_id, brokerage:brokerages(name)")
       .eq("id", options.agentId)
       .single()
 
@@ -93,6 +93,9 @@ export async function generateAndStorePDF(options: PDFGenerationOptions): Promis
           pdfUrl: blob.url,
           agentName: `${agent.first_name} ${agent.last_name}`,
           agentEmail: agent.email,
+          brokerageId: agent.brokerage_id,
+          contactId: options.contactId,
+          agentId: options.agentId,
         })
         if (emailResult.success) emailsSent++
       }
@@ -176,7 +179,7 @@ async function generateDocumentHTML(options: PDFGenerationOptions, agent: any): 
           <div class="header">
             <h1>Comparative Market Analysis</h1>
             <p>${data.address || "Property Address"}</p>
-            <p>Prepared by ${agent.first_name} ${agent.last_name} | ${agent.brokerage || ""}</p>
+            <p>Prepared by ${agent.first_name} ${agent.last_name} | ${(agent.brokerage as any)?.name || ""}</p>
             <p>${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>
           </div>
 
@@ -353,6 +356,9 @@ async function sendDocumentEmail(params: {
   pdfUrl: string
   agentName: string
   agentEmail: string
+  brokerageId: string
+  contactId?: string
+  agentId?: string
 }) {
   const documentNames: Record<string, string> = {
     cma: "Comparative Market Analysis",
@@ -386,11 +392,15 @@ async function sendDocumentEmail(params: {
     </div>
   `
 
-  return await sendEmail({
+  return await dispatchEmail({
+    brokerageId: params.brokerageId,
     to: params.to,
     subject,
-    body,
+    html: body,
     from: params.agentEmail,
+    contactId: params.contactId,
+    agentId: params.agentId,
+    channelPurpose: "transactional",
   })
 }
 

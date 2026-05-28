@@ -291,7 +291,6 @@ export async function createOrRepairUserDomainRecords(
             start_date:           new Date().toISOString().slice(0, 10),
             created_at:           new Date().toISOString(),
           })
-          .catch(() => {})
 
         created.push("agent_onboarding")
       }
@@ -313,7 +312,6 @@ export async function createOrRepairUserDomainRecords(
           },
           { onConflict: "user_id" }
         )
-        .catch(() => {})
 
       if (!existingRole) created.push("user_role_assignments")
     }
@@ -410,11 +408,9 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
 // ─── assignUserRoleAndEntitlements ────────────────────────────────────────────
 
 /**
- * Updates a user's role across both users table and user_role_assignments.
- * Enforces:
- *   - Non-superadmin callers cannot grant superadmin
- *   - Role change emits USER_ROLE_CHANGED event
- *   - Syncs role field in both users.user_type AND users.role (legacy compat)
+ * Updates a user's role across the users table and user_role_assignments.
+ * users.user_type is the single source of truth; users.role is legacy and
+ * no longer written (migration 036+).
  */
 export async function assignUserRoleAndEntitlements(
   params: RoleAssignmentParams
@@ -422,12 +418,10 @@ export async function assignUserRoleAndEntitlements(
   const service = createServiceClient()
 
   try {
-    // Update users table — keep both user_type and role in sync
     const { error: userErr } = await service
       .from("users")
       .update({
         user_type:  params.newRole,
-        role:       params.newRole,
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.userId)
@@ -449,7 +443,6 @@ export async function assignUserRoleAndEntitlements(
           },
           { onConflict: "user_id" }
         )
-        .catch(() => {})
     }
 
     await emitUserProvisionedEvent({
@@ -488,14 +481,12 @@ export async function assignUserToBrokerage(params: {
     .from("agents")
     .update({ brokerage_id: params.brokerageId })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   // Update user_role_assignments
   await service
     .from("user_role_assignments")
     .update({ brokerage_id: params.brokerageId, updated_at: new Date().toISOString() })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -530,7 +521,6 @@ export async function assignUserToTeam(params: {
     .from("agents")
     .update({ team_id: params.teamId })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -622,5 +612,4 @@ export async function emitUserProvisionedEvent(params: {
       metadata:      params.metadata ?? {},
       created_at:    new Date().toISOString(),
     })
-    .catch(() => {}) // Non-fatal — audit trail should not block provisioning
 }

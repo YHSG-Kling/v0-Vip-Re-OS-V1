@@ -124,7 +124,7 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
   const priceRecommendation = await getPriceRecommendation(listingId)
 
   const sellerName = listing.contacts
-    ? `${listing.contacts.first_name} ${listing.contacts.last_name}`
+    ? `${(listing.contacts as any).first_name} ${(listing.contacts as any).last_name}`
     : "Seller"
 
   const fullAddress = `${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}`
@@ -189,8 +189,8 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
               <div>
                 <p className="text-sm text-muted-foreground">Avg Feedback</p>
                 <p className="font-semibold">
-                  {feedbackData.all && feedbackData.all.length > 0
-                    ? `${(feedbackData.all.reduce((sum, f) => sum + (f.sentiment_score || 3), 0) / feedbackData.all.length).toFixed(1)}/5`
+                  {(feedbackData as any).all && (feedbackData as any).all.length > 0
+                    ? `${((feedbackData as any).all.reduce((sum: number, f: any) => sum + (f.sentiment_score || 3), 0) / (feedbackData as any).all.length).toFixed(1)}/5`
                     : "No data"}
                 </p>
               </div>
@@ -202,7 +202,7 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
       {/* Section 2: Weekly Update Composer */}
       <SellerUpdateComposer
         listingId={listingId}
-        agentId={agentId}
+        agentId={agentId ?? ''}
         listingAddress={fullAddress}
         sellerName={sellerName}
       />
@@ -224,27 +224,27 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
             <div className="flex items-center gap-2">
               <ThumbsUp className="h-4 w-4 text-green-600" />
               <span className="text-sm">
-                Positive: <strong>{feedbackData.counts?.positive || 0}</strong>
+                Positive: <strong>{(feedbackData as any).counts?.positive || 0}</strong>
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Minus className="h-4 w-4 text-amber-600" />
               <span className="text-sm">
-                Neutral: <strong>{feedbackData.counts?.neutral || 0}</strong>
+                Neutral: <strong>{(feedbackData as any).counts?.neutral || 0}</strong>
               </span>
             </div>
             <div className="flex items-center gap-2">
               <ThumbsDown className="h-4 w-4 text-red-600" />
               <span className="text-sm">
-                Negative: <strong>{feedbackData.counts?.negative || 0}</strong>
+                Negative: <strong>{(feedbackData as any).counts?.negative || 0}</strong>
               </span>
             </div>
           </div>
 
           {/* Feedback list */}
-          {feedbackData.all && feedbackData.all.length > 0 ? (
+          {(feedbackData as any).all && (feedbackData as any).all.length > 0 ? (
             <div className="space-y-2">
-              {feedbackData.all.slice(0, 5).map((feedback) => {
+              {(feedbackData as any).all.slice(0, 5).map((feedback: any) => {
                 const sentimentScore = feedback.sentiment_score || 3
                 const sentimentColor =
                   sentimentScore >= 4

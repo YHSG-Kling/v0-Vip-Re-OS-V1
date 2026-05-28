@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Receipt, ArrowLeft, TrendingDown } from 'lucide-react'
 import Link from 'next/link'
+import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
   ExpenseIntelligencePanel,
   FinancialActionStack,
@@ -33,8 +34,8 @@ export default async function ExpensesPage() {
 
   const expenseData = expenses || []
   const totalExpenses = expenseData.reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
-  const mtdExpenses = expenseData.filter(e => {
-    const expenseMonth = new Date(e.expense_date ?? e.date).getMonth() + 1
+  const mtdExpenses = expenseData.filter((e: any) => {
+    const expenseMonth = new Date(e.expense_date).getMonth() + 1
     return expenseMonth === currentMonth
   }).reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
@@ -91,7 +92,10 @@ export default async function ExpensesPage() {
             <p className="text-muted-foreground">Track and categorize your business expenses for tax purposes</p>
           </div>
         </div>
-        <AddExpenseDialog agentId={user.id} />
+        <div className="flex items-center gap-2">
+          <ExportCSVButton agentId={user.id} type="expenses" />
+          <AddExpenseDialog agentId={user.id} />
+        </div>
       </div>
 
       {/* KPI Row */}
@@ -123,7 +127,7 @@ export default async function ExpensesPage() {
       </div>
 
       {/* Expense Intelligence Panel */}
-      <ExpenseIntelligencePanel expenses={expenseData} userId={user.id} />
+      {(() => { const Panel = ExpenseIntelligencePanel as any; return <Panel expenses={expenseData} userId={user.id} /> })()}
 
       {/* Category Breakdown */}
       {Object.keys(byCategory).length > 0 && (

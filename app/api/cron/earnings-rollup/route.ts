@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -6,13 +7,12 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get("authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "earnings-rollup",
@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
                 },
                 { onConflict: "agent_id,month_year" }
               )
-              .catch(() => {})
+              .then(() => {}, () => {})
 
             processed++
           }
@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
     errors.push(`Earnings rollup failed: ${err.message}`)
     void supabase
       .from("automation_errors")
-      .insert({ cron_job: "earnings-rollup", error_message: err.message, occurred_at: ranAt })
+      .insert({ workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

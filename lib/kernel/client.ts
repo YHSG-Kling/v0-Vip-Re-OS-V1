@@ -8,5 +8,6 @@ export type {
   AutomationErrorRow,
   CalendarSyncLogRow,
   OnboardingStepRow,
-  CommissionRecord,
 } from "@/lib/kernel/types"
+
+export type { CommissionRecord } from "@/lib/kernel/financial"

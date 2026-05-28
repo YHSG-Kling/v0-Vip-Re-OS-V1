@@ -36,12 +36,9 @@ export function AIDraftSuggestion({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Only show for agents
-  if (!isAgent) return null
-
   // Load draft on mount
   useEffect(() => {
-    if (isDismissed) return
+    if (isDismissed || !isAgent) return
 
     async function loadDraft() {
       setIsLoading(true)
@@ -61,7 +58,10 @@ export function AIDraftSuggestion({
     }
 
     loadDraft()
-  }, [contactId, transactionId, isDismissed])
+  }, [contactId, transactionId, isDismissed, isAgent])
+
+  // Only show for agents
+  if (!isAgent) return null
 
   // If dismissed, don't render
   if (isDismissed) return null

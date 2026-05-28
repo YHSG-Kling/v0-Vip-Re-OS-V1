@@ -54,7 +54,7 @@ export async function logStageTransition(
     brokerageId:  event.brokerageId,
     entityType:   'listing_stage_machine',
     entityId:     event.listingId,
-    fromState:    event.fromStage ?? null,
+    fromState:    event.fromStage ?? "",
     toState:      event.toStage,
     actorUserId:  event.userId,
     // Milestone stages get high-signal events; all others get LISTING_STAGE_CHANGED

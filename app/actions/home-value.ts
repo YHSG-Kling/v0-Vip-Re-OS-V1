@@ -105,7 +105,6 @@ export async function convertValuationRequestToContact(params: {
         last_name: lastName,
         email,
         phone,
-        phone_digits: phoneDigits,
         contact_type: "seller",
         source: "home_value",
         agent_id: params.agentId,
@@ -232,7 +231,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       .from("contacts")
       .select("id")
       .eq("brokerage_id", resolvedBrokerageId)
-      .or(`email.eq.${email},phone_digits.eq.${normalizedPhone}`)
+      .or(`email.eq.${email},phone.eq.${phone}`)
       .maybeSingle()
 
     let contactId: string
@@ -250,7 +249,6 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           email,
           // Only store phone if TCPA consent given; otherwise omit to prevent calling
           phone: tcpaConsent ? phone : null,
-          phone_digits: tcpaConsent ? normalizedPhone : null,
           preferred_channel: tcpaConsent ? "phone" : "email",
           contact_type: "seller",
           source: "home_value_tool",
@@ -280,17 +278,19 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           .select("user_id")
           .eq("id", resolvedAgentId)
           .maybeSingle()
-          .then(({ data: agentRow }) => {
-            if (agentRow?.user_id) {
-              createPortalInviteForContact({
-                contactId: newContact.id,
-                brokerageId: resolvedBrokerageId!,
-                invitedByUserId: agentRow.user_id,
-                sendMagicLink: true,
-              }).catch(() => {})
-            }
-          })
-          .catch(() => {})
+          .then(
+            ({ data: agentRow }) => {
+              if (agentRow?.user_id) {
+                createPortalInviteForContact({
+                  contactId: newContact.id,
+                  brokerageId: resolvedBrokerageId!,
+                  invitedByUserId: agentRow.user_id,
+                  sendMagicLink: true,
+                }).then(() => {}, () => {})
+              }
+            },
+            (err) => console.error("[home-value] background task failed:", err)
+          )
       }
     } else {
       contactId = existingContact.id
@@ -351,7 +351,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         entity_type: "contact",
         status: "pending",
         priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     // Step 5: Generate AI estimate using Claude

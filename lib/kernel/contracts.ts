@@ -91,7 +91,7 @@ export interface CoordinatorMilestoneContract {
   id: string
   milestone_name: string
   status: string
-  milestone_date?: string
+  target_date?: string
   transaction_id: string
   transactions?: { property_address: string }
 }

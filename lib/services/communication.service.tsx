@@ -21,6 +21,13 @@ export interface SendEmailParams {
   from?: string
   replyTo?: string
   metadata?: any
+  /** Optional audit context. Required to land a row in
+   *  message_provider_logs (brokerage_id is NOT NULL there). If neither
+   *  is supplied, the email still sends — the audit log is just skipped. */
+  brokerageId?: string
+  contactId?: string
+  /** agents.id — recorded but not strictly required. */
+  agentId?: string
 }
 
 export interface SendSMSParams {
@@ -28,25 +35,56 @@ export interface SendSMSParams {
   message: string
   from?: string
   metadata?: any
+  brokerageId?: string
+  contactId?: string
+  agentId?: string
 }
 
 export interface LogCommunicationParams {
   contactId?: string
+  /** agents.id of the sending agent. OPTIONAL — outbound to a raw `lead`
+   *  has no assigned agent (ISA owns those); outbound to a `contact`
+   *  may have one. Audit row stores agent_id as nullable. */
   agentId?: string
-  communicationType: "email" | "sms" | "notification"
+  /** Communication channels supported in this product:
+   *  email, sms — transactional + agent ↔ contact
+   *  ai_social_dm — outbound AI DM on IG/FB/LinkedIn/Twitter
+   *  portal — agent ↔ client message in the client portal
+   *  notification — push-style in-app notification
+   *  GHL is intentionally NOT a channel — it's a one-way contact-data
+   *  sync target (push), not a message transport. */
+  communicationType: "email" | "sms" | "ai_social_dm" | "portal" | "notification"
   subject?: string
   content: string
   status: "sent" | "failed" | "queued"
   metadata?: any
 }
 
+// Resolve brokerage_id from explicit param, falling back to a contact lookup.
+// Returns null when neither path yields a brokerage; callers MUST skip the
+// audit-log INSERT in that case (message_provider_logs.brokerage_id NOT NULL).
+async function resolveAuditBrokerageId(
+  supabase: any,
+  brokerageId?: string,
+  contactId?: string,
+): Promise<string | null> {
+  if (brokerageId) return brokerageId
+  if (!contactId) return null
+  const { data } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  return data?.brokerage_id ?? null
+}
+
 /**
- * Send email via your email provider (SendGrid, Resend, etc.)
- * Currently logs to database - integrate with actual provider
+ * Send email through the configured provider chain (personal email →
+ * SendGrid) and append a message_provider_logs row when brokerage context
+ * is supplied. The send itself runs regardless; audit is best-effort.
  */
 export async function sendEmail(params: SendEmailParams) {
   try {
-    // Delegate to lib/providers/messaging (SendGrid)
     const result = await providerSendEmail({
       to: params.to,
       subject: params.subject,
@@ -55,17 +93,25 @@ export async function sendEmail(params: SendEmailParams) {
       from: params.from,
     })
 
-    // Log to communications table regardless of provider outcome
+    // Audit. Skip entirely if we can't resolve a brokerage — the table's
+    // brokerage_id is NOT NULL and fabricating a value would corrupt
+    // tenancy. The provider send already happened above.
     const supabase = await createClient()
-    await supabase.from("communications_log").insert({
-      recipient: params.to,
-      type: "email",
-      subject: params.subject,
-      content: params.htmlBody,
-      status: result.success ? "sent" : "failed",
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
+    const brokerageId = await resolveAuditBrokerageId(
+      supabase, params.brokerageId, params.contactId,
+    )
+    if (brokerageId) {
+      await supabase.from("message_provider_logs").insert({
+        brokerage_id: brokerageId,
+        channel: "email",
+        direction: "outbound",
+        provider_key: result.provider ?? "sendgrid",
+        provider_status: result.success ? "sent" : "failed",
+        error_message: result.success ? null : (result.error ?? null),
+        sent_at: result.success ? new Date().toISOString() : null,
+        provider_response: { recipient: params.to, subject: params.subject, ...(params.metadata ?? {}) },
+      })
+    }
 
     return result
   } catch (error) {
@@ -75,27 +121,33 @@ export async function sendEmail(params: SendEmailParams) {
 }
 
 /**
- * Send SMS via your SMS provider (Twilio, GHL, etc.)
- * Currently logs to database - integrate with actual provider
+ * Send SMS through the configured provider chain. Audit-logs to
+ * message_provider_logs when brokerage context can be resolved.
  */
 export async function sendSMS(params: SendSMSParams) {
   try {
-    // Delegate to lib/providers/messaging (Twilio)
     const result = await providerSendSMS({
       to: params.to,
       message: params.message,
     })
 
-    // Log to communications table regardless of provider outcome
     const supabase = await createClient()
-    await supabase.from("communications_log").insert({
-      recipient: params.to,
-      type: "sms",
-      content: params.message,
-      status: result.success ? "sent" : "failed",
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
+    const brokerageId = await resolveAuditBrokerageId(
+      supabase, params.brokerageId, params.contactId,
+    )
+    if (brokerageId) {
+      const providerKey = ((result as any)?.provider as string | undefined) ?? "twilio"
+      await supabase.from("message_provider_logs").insert({
+        brokerage_id: brokerageId,
+        channel: "sms",
+        direction: "outbound",
+        provider_key: providerKey,
+        provider_status: result.success ? "sent" : "failed",
+        error_message: result.success ? null : (result.error ?? null),
+        sent_at: result.success ? new Date().toISOString() : null,
+        provider_response: { recipient: params.to, message_excerpt: params.message.slice(0, 200), ...(params.metadata ?? {}) },
+      })
+    }
 
     return result
   } catch (error) {
@@ -104,64 +156,11 @@ export async function sendSMS(params: SendSMSParams) {
   }
 }
 
-/**
- * Send via GoHighLevel (if integrated)
- */
-export async function sendViaGHL(params: {
-  contactId: string
-  type: "email" | "sms"
-  message: string
-  subject?: string
-}) {
-  try {
-    const supabase = await createClient()
-
-    // Get GHL contact ID
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("ghl_contact_id, email, phone")
-      .eq("id", params.contactId)
-      .single()
-
-    if (!contact) {
-      throw new Error("Contact not found")
-    }
-
-    console.log(`[v0] Sending ${params.type} via GHL to contact ${params.contactId}`)
-
-    // TODO: Replace with actual GHL API integration
-    /*
-    const ghlResponse = await fetch('https://rest.gohighlevel.com/v1/conversations/messages', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: params.type,
-        contactId: contact.ghl_contact_id,
-        message: params.message,
-      }),
-    })
-    */
-
-    // Log the communication
-    await supabase.from("communications_log").insert({
-      contact_id: params.contactId,
-      recipient: params.type === "email" ? contact.email : contact.phone,
-      type: params.type,
-      subject: params.subject,
-      content: params.message,
-      status: "sent",
-      sent_at: new Date().toISOString(),
-      provider: "gohighlevel",
-    })
-
-    return { success: true }
-  } catch (error) {
-    return handleError(error, "sendViaGHL")
-  }
-}
+// sendViaGHL was removed. GoHighLevel is NOT a message-send channel in
+// this product — it's a one-way contact-data sync target (push). Outbound
+// contact communication routes through email / sms / ai_social_dm / portal.
+// GHL sync is owned by lib/services/platform-sync.service.ts and
+// lib/ghl-integration.ts (PUT/POST contact updates to GHL's REST API).
 
 /**
  * Log communication to database and optionally to contact interactions
@@ -170,26 +169,67 @@ export async function logCommunication(params: LogCommunicationParams) {
   try {
     const supabase = await createClient()
 
-    await supabase.from("communications_log").insert({
-      contact_id: params.contactId || null,
-      agent_id: params.agentId || null,
-      type: params.communicationType,
-      subject: params.subject,
-      content: params.content,
-      status: params.status,
-      sent_at: new Date().toISOString(),
-      metadata: params.metadata,
-    })
-
-    // Also log as interaction if contact is specified
+    // Write to communication_audit_log (the canonical communication content
+    // audit table — carries subject/body_snippet/channel/compliance state).
+    // brokerage_id is NOT NULL there; look it up from the contact when the
+    // caller didn't supply it.
+    let auditBrokerageId: string | null = null
+    let contactRow: { agent_id: string | null; brokerage_id: string | null } | null = null
     if (params.contactId && isValidUUID(params.contactId)) {
-      await supabase.from("interactions").insert({
-        contact_id: params.contactId,
-        interaction_type: params.communicationType === "email" ? "email" : "sms",
-        interaction_date: new Date().toISOString(),
-        notes: params.subject || params.content.substring(0, 100),
-        outcome: params.status === "sent" ? "completed" : "failed",
+      const { data } = await supabase
+        .from("contacts")
+        .select("agent_id, brokerage_id")
+        .eq("id", params.contactId)
+        .maybeSingle()
+      contactRow = data ?? null
+      auditBrokerageId = contactRow?.brokerage_id ?? null
+    }
+
+    if (auditBrokerageId) {
+      // channel column is free-text; pass the canonical value through.
+      // `notification` is mapped to in_app for transport consistency with
+      // message_provider_logs.channel CHECK.
+      const channel =
+        params.communicationType === "notification" ? "in_app" : params.communicationType
+      await supabase.from("communication_audit_log").insert({
+        brokerage_id: auditBrokerageId,
+        contact_id: params.contactId ?? null,
+        agent_id: params.agentId ?? contactRow?.agent_id ?? null,
+        communication_type: params.communicationType,
+        channel,
+        subject: params.subject ?? null,
+        body_snippet: params.content.slice(0, 500),
+        compliance_passed: params.status === "sent" ? true : null,
+        sent_at: params.status === "sent" ? new Date().toISOString() : null,
       })
+    }
+
+    // Also log as an activity (the agent-facing communication-event log)
+    // when both agent_id and brokerage_id can be resolved from the contact.
+    if (params.contactId && isValidUUID(params.contactId)) {
+
+      const agentId = (params.agentId && isValidUUID(params.agentId))
+        ? params.agentId
+        : contactRow?.agent_id ?? null
+      const brokerageId = contactRow?.brokerage_id ?? null
+      const channel =
+        params.communicationType === "notification" ? "in_app" : params.communicationType
+      const notes = params.subject || params.content.substring(0, 100)
+
+      if (agentId && brokerageId) {
+        await supabase.from("activities").insert({
+          contact_id: params.contactId,
+          agent_id: agentId,
+          brokerage_id: brokerageId,
+          entity_type: "contact",
+          activity_type: `communication_${channel}`,
+          channel,
+          title: notes,
+          notes,
+          outcome: params.status === "sent" ? "completed" : "failed",
+          status: params.status === "sent" ? "completed" : "failed",
+        })
+      }
     }
 
     return { success: true }

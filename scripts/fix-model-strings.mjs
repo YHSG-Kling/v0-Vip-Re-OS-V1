@@ -60,7 +60,7 @@ for (const dir of dirs) {
     // Skip certain files
     if (SKIP_PATTERNS.some((p) => file.endsWith(p))) { skipped++; continue }
 
-    let src = readFileSync(file, "utf-8")
+    const src = readFileSync(file, "utf-8")
 
     // Only process files that import directly from "ai" (generateObject/Text/streamText)
     const hasDirectAIImport = /from ["']ai["']/.test(src)
