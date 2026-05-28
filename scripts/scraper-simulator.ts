@@ -83,6 +83,7 @@ import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
+import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType } from "../lib/connections/field-spec"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -673,6 +674,15 @@ async function testVendorGateway() {
   check("domainsForScope: agent sees the full provider-backed set (no documents/marketing)", (() => { const ds = domainsForScope("agent"); return ds.includes("email") && ds.includes("transaction") && ds.includes("listing") && ds.includes("showing") && !ds.includes("documents") && !ds.includes("marketing") })())
   check("selectableConnectionsForScope(contact) only exposes allowed domains with providers", (() => { const m = selectableConnectionsForScope("contact"); return Object.keys(m).sort().join(",") === "calendar,financial,social" && (m.calendar as readonly string[]).includes("outlook") })())
   check("every registry provider id is lowercase canonical (no spaces/aliases)", Object.values(CONNECTOR_PROVIDERS).every((list) => list.every((p) => /^[a-z0-9_]+$/.test(p))))
+
+  // ── Connection field-spec: auth method + resolver-correct credential mapping ─
+  check("field-spec: email/calendar/social are OAuth; phone/esign are api_key", isOAuthConnection("email", "gmail") && isOAuthConnection("calendar", "outlook") && isOAuthConnection("social", "facebook") && !isOAuthConnection("phone", "twilio") && !isOAuthConnection("esign", "docusign"))
+  check("field-spec: financial quickbooks=OAuth, stripe=api_key", isOAuthConnection("financial", "quickbooks") && !isOAuthConnection("financial", "stripe"))
+  check("field-spec: oauthStartPath routes email/calendar via integrations, social via social", oauthStartPath("email", "gmail") === "/api/integrations/oauth/gmail" && oauthStartPath("social", "facebook") === "/api/social/oauth/facebook" && oauthStartPath("financial", "quickbooks") === "/api/integrations/oauth/quickbooks")
+  check("field-spec: phone write maps SID/auth/from to resolver shape", (() => { const w = buildCredentialWrite("phone", { accountSid: "AC1", authToken: "tok", fromNumber: "+15551112222" }); return !!w && w.api_key === "AC1" && (w.config as any).auth_token === "tok" && (w.config as any).from_number === "+15551112222" })())
+  check("field-spec: esign write maps profileId to config.profile_id + account_id", (() => { const w = buildCredentialWrite("esign", { apiKey: "k", profileId: "p1" }); return !!w && w.api_key === "k" && w.account_id === "p1" && (w.config as any).profile_id === "p1" })())
+  check("field-spec: missing required field rejected (returns null)", buildCredentialWrite("phone", { accountSid: "AC1" }) === null && buildCredentialWrite("listing", {}) === null)
+  check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/superadmin)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("superadmin").scope === "platform")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

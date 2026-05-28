@@ -10,7 +10,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { syncContactToGHL } from "@/services/goHighLevelService"
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
 import { syncContactToLofty } from "@/lib/crm/providers/lofty"
 
@@ -74,6 +74,37 @@ export async function syncContactToCRM(
         providerKey = integration.provider_name
       }
     }
+
+    // Owner-scoped connection (the per-tier Connection Center writes CRM creds to
+    // platform_credentials by owner scope). Detect a CRM provider connected at the AGENT's own
+    // scope first, then the brokerage's, so a Connection-Center CRM selection is honored. Only
+    // applies when nothing more specific was selected above.
+    if (providerKey === "ghl") {
+      const crmPlatforms = ["gohighlevel", "ghl", "followupboss", "lofty"]
+      let userId: string | null = null
+      if (payload.agentId) {
+        const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", payload.agentId).maybeSingle()
+        userId = (agentRow?.user_id as string | null) ?? null
+      }
+      const owners: Array<{ ownerType: string; ownerId: string }> = []
+      if (userId) owners.push({ ownerType: "agent", ownerId: userId })
+      owners.push({ ownerType: "brokerage", ownerId: brokerageId })
+      for (const owner of owners) {
+        const { data: scopedCrm } = await supabase
+          .from("platform_credentials")
+          .select("platform")
+          .eq("owner_type", owner.ownerType)
+          .eq("owner_id", owner.ownerId)
+          .in("platform", crmPlatforms)
+          .eq("is_active", true)
+          .limit(1)
+          .maybeSingle()
+        if (scopedCrm?.platform) {
+          providerKey = scopedCrm.platform === "gohighlevel" ? "ghl" : scopedCrm.platform
+          break
+        }
+      }
+    }
   } catch {
     // Non-blocking — fall through to system default
   }
@@ -109,7 +140,15 @@ export async function syncContactToCRM(
 
   // ── Lofty + Follow Up Boss — sync-OUT via the connector-gateway ──────────────
   if (providerKey === "followupboss" || providerKey === "lofty") {
-    const conn = await resolveConnection({ brokerageId, provider: providerKey, agentId: payload.agentId }).catch(() => null)
+    // Credential via the unified owner cascade (agent → team → brokerage → platform, legacy
+    // fallback preserved) so a Connection-Center CRM connection at any scope is honored.
+    let agentUserId: string | null = null
+    if (payload.agentId) {
+      const supabase = await createClient()
+      const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", payload.agentId).maybeSingle()
+      agentUserId = (agentRow?.user_id as string | null) ?? null
+    }
+    const conn = await resolveScopedConnection(providerKey, { agentUserId, brokerageId, agentId: payload.agentId }).catch(() => null)
     const contact = {
       firstName: payload.firstName,
       lastName: payload.lastName,
