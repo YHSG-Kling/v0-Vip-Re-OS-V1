@@ -29,8 +29,9 @@ export interface GatewayRequest {
   auth: GatewayAuth
   /** Optional response shape — when present, the response is adapted + drift is reported. */
   shape?: ConnectorShapeSpec
-  /** "json" (default) parses the body as JSON; "text" returns the raw string (HTML scrapers). */
-  responseType?: "json" | "text"
+  /** "json" (default) parses the body as JSON; "text" returns the raw string (HTML scrapers);
+   *  "arraybuffer" returns the raw bytes as a Buffer (binary responses, e.g. TTS audio). */
+  responseType?: "json" | "text" | "arraybuffer"
   timeoutMs?: number
 }
 
@@ -89,6 +90,16 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
       const text = await res.text().catch(() => "")
       if (!res.ok) return { ok: false, status: res.status, data: null, drift: null, error: `HTTP ${res.status}` }
       return { ok: true, status: res.status, data: text as unknown as T, drift: null, error: null }
+    }
+    // Binary responses (e.g. TTS audio) → raw bytes as a Buffer. On failure the (text) error body
+    // is surfaced so callers can map provider error codes (auth / quota / voice-not-found / …).
+    if (req.responseType === "arraybuffer") {
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "")
+        return { ok: false, status: res.status, data: null, drift: null, error: errText || `HTTP ${res.status}` }
+      }
+      const ab = await res.arrayBuffer().catch(() => null)
+      return { ok: true, status: res.status, data: (ab ? Buffer.from(ab) : null) as unknown as T, drift: null, error: null }
     }
     const raw = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok) {

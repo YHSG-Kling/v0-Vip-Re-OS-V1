@@ -14,6 +14,9 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
+const ELEVENLABS_BASE = "https://api.elevenlabs.io"
 
 export interface VoiceSettings {
   stability?: number          // 0-1, lower = more variable
@@ -78,31 +81,31 @@ export async function synthesizeSpeech(
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
   try {
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "audio/mpeg",
-          "Content-Type": "application/json",
-          "xi-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          text: input.text,
-          model_id: input.modelId ?? "eleven_monolingual_v1",
-          voice_settings: settings,
-        }),
-      }
-    )
+    // PLATFORM-owned connector — one ELEVENLABS_API_KEY; per-subscriber voice rides as voiceId.
+    // Buffered synthesis egresses through the single gateway (arraybuffer mode → raw mp3 bytes).
+    const res = await callConnector<Buffer>({
+      connector: "elevenlabs",
+      baseUrl: ELEVENLABS_BASE,
+      path: `v1/text-to-speech/${voiceId}`,
+      method: "POST",
+      auth: { style: "header", name: "xi-api-key", value: apiKey },
+      headers: { Accept: "audio/mpeg" },
+      responseType: "arraybuffer",
+      body: {
+        text: input.text,
+        model_id: input.modelId ?? "eleven_monolingual_v1",
+        voice_settings: settings,
+      },
+    })
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "")
+    if (!res.ok || !res.data) {
+      const body = res.error ?? ""
       const code: SynthesizeSpeechResult["errorCode"] =
-        response.status === 401 || response.status === 403
+        res.status === 401 || res.status === 403
           ? "auth"
-          : response.status === 422 && /voice/i.test(body)
+          : res.status === 422 && /voice/i.test(body)
           ? "voice_not_found"
-          : response.status === 429
+          : res.status === 429
           ? "rate_limit"
           : /quota/i.test(body)
           ? "quota"
@@ -110,11 +113,11 @@ export async function synthesizeSpeech(
       return {
         success: false,
         errorCode: code,
-        error: `ElevenLabs (${response.status}): ${body || response.statusText}`,
+        error: `ElevenLabs (${res.status ?? "—"}): ${body || "request failed"}`,
       }
     }
 
-    const arrayBuffer = await response.arrayBuffer()
+    const arrayBuffer = res.data
     // Unified vendor-spend ledger — ElevenLabs bills per character synthesized.
     if (input.brokerageId) {
       const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
@@ -137,6 +140,10 @@ export async function synthesizeSpeech(
 /**
  * Streaming variant — returns the raw fetch Response so callers can pipe
  * the audio chunks directly to the client (lower TTFB for assistant TTS).
+ *
+ * Intentionally NOT routed through the connector-gateway: the gateway returns a
+ * buffered/parsed body, but this path must hand back the live Response to stream
+ * chunks. Streaming is the documented exception to the single-egress rule.
  */
 export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Promise<{
   success: boolean

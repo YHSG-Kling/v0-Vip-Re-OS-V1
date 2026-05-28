@@ -79,7 +79,7 @@ import { CONNECTED_CAPABILITY_REGISTRY, isConnectedCapability } from "../lib/age
 import { deriveConnectivityStatus, transportFor, summarizeConnectivity, needsAttention, EXPIRY_WARNING_DAYS, type ConnectorHealth } from "../lib/agentic-os/connectivity-agent"
 import { inferTransport, assessShape, adaptResponse, shapeHealthy, type ConnectorShapeSpec } from "../lib/agentic-os/connector-shape"
 import { classifyProbe, PROBE_SPECS } from "../lib/agentic-os/connector-probe"
-import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
+import { buildAuthedRequest, callConnector } from "../lib/agentic-os/connector-gateway"
 import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
@@ -330,6 +330,23 @@ async function testVendorConnectors() {
   check("HubSpot uses Bearer auth", !!hsReq && (hsReq as any).auth === "Bearer HSTOKEN")
   check("HubSpot returns contactId from results[0].id", hsRes.success && hsRes.contactId === "hs-123")
   check("HubSpot without token → requiresConfiguration", (await syncContactToHubSpot({ firstName: "X", lastName: "Y" }, null)).requiresConfiguration === true)
+
+  // Gateway arraybuffer mode (binary egress, e.g. ElevenLabs TTS audio) — returns raw bytes as Buffer.
+  let ttsReq: { url: string; header: string } | null = null
+  globalThis.fetch = (async (url: any, init: any) => {
+    ttsReq = { url: String(url), header: init?.headers?.["xi-api-key"] ?? "" }
+    return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("MP3BYTES").buffer }
+  }) as unknown as typeof fetch
+  const abRes = await callConnector<Buffer>({
+    connector: "elevenlabs", baseUrl: "https://api.elevenlabs.io", path: "v1/text-to-speech/voice123",
+    method: "POST", auth: { style: "header", name: "xi-api-key", value: "XL_KEY" },
+    headers: { Accept: "audio/mpeg" }, responseType: "arraybuffer", body: { text: "hi" },
+  })
+  check("gateway arraybuffer: returns Buffer bytes on 200", abRes.ok && Buffer.isBuffer(abRes.data) && abRes.data!.toString() === "MP3BYTES")
+  check("gateway arraybuffer: routed to elevenlabs with header auth", !!ttsReq && (ttsReq as any).url === "https://api.elevenlabs.io/v1/text-to-speech/voice123" && (ttsReq as any).header === "XL_KEY")
+  globalThis.fetch = (async () => ({ ok: false, status: 401, text: async () => "quota exceeded" })) as unknown as typeof fetch
+  const abErr = await callConnector({ connector: "elevenlabs", baseUrl: "https://api.elevenlabs.io", path: "x", method: "POST", auth: { style: "header", name: "xi-api-key", value: "K" }, responseType: "arraybuffer", body: {} })
+  check("gateway arraybuffer: surfaces error body on failure", !abErr.ok && abErr.status === 401 && abErr.error === "quota exceeded")
 
   globalThis.fetch = realFetch
 }
