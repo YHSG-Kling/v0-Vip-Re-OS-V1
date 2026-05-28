@@ -84,7 +84,7 @@ import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
-import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType } from "../lib/connections/field-spec"
+import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported } from "../lib/connections/field-spec"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -684,7 +684,7 @@ async function testVendorGateway() {
   check("provider gating: crm is sync-out set {gohighlevel, followupboss, lofty, hubspot}", CONNECTOR_PROVIDERS.crm.join(",") === "gohighlevel,followupboss,lofty,hubspot")
   check("provider gating: unknown provider rejected for a valid domain", !isProviderAllowedForScope("brokerage", "transaction", "notarize"))
   check("provider gating: vendor may pick stripe (financial) but NOT a transaction provider", isProviderAllowedForScope("vendor", "financial", "stripe") && !isProviderAllowedForScope("vendor", "transaction", "dotloop"))
-  check("provider gating: contact may pick a calendar/social provider only", isProviderAllowedForScope("contact", "calendar", "gmail") && isProviderAllowedForScope("contact", "social", "instagram") && !isProviderAllowedForScope("contact", "email", "gmail"))
+  check("provider gating: contact may pick a calendar/social provider only", isProviderAllowedForScope("contact", "calendar", "gmail") && isProviderAllowedForScope("contact", "social", "meta") && !isProviderAllowedForScope("contact", "email", "gmail"))
   check("domainsForScope: vendor sees exactly calendar+social+financial", domainsForScope("vendor").sort().join(",") === "calendar,financial,social")
   check("domainsForScope: agent sees the full provider-backed set (no documents/marketing)", (() => { const ds = domainsForScope("agent"); return ds.includes("email") && ds.includes("transaction") && ds.includes("listing") && ds.includes("showing") && !ds.includes("documents") && !ds.includes("marketing") })())
   check("selectableConnectionsForScope(contact) only exposes allowed domains with providers", (() => { const m = selectableConnectionsForScope("contact"); return Object.keys(m).sort().join(",") === "calendar,financial,social" && (m.calendar as readonly string[]).includes("outlook") })())
@@ -698,6 +698,16 @@ async function testVendorGateway() {
   check("field-spec: esign write maps profileId to config.profile_id + account_id", (() => { const w = buildCredentialWrite("esign", { apiKey: "k", profileId: "p1" }); return !!w && w.api_key === "k" && w.account_id === "p1" && (w.config as any).profile_id === "p1" })())
   check("field-spec: missing required field rejected (returns null)", buildCredentialWrite("phone", { accountSid: "AC1" }) === null && buildCredentialWrite("listing", {}) === null)
   check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/superadmin)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("superadmin").scope === "platform")
+
+  // ── Connect availability (honest UI: no connect path that silently no-ops) ──
+  const agentCaps = { canOwn: true, hasAgentId: true, isBrokerageManager: false }
+  const vendorCaps = { canOwn: true, hasAgentId: false, isBrokerageManager: false }
+  const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false }
+  check("availability: api_key always supported when actor can own (vendor stripe)", isConnectSupported("financial", "stripe", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
+  check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
+  check("availability: calendar OAuth needs an agent identity (vendor = unavailable)", isConnectSupported("calendar", "gmail", agentCaps).available && !isConnectSupported("calendar", "gmail", vendorCaps).available)
+  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: nothing is connectable without an owner id", !isConnectSupported("financial", "stripe", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────

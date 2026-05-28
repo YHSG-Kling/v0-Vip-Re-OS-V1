@@ -7,7 +7,12 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { connectApiKeyProvider, disconnectProvider, type ConnectionCenter } from "@/app/actions/connections/connection-center"
+import {
+  connectApiKeyProvider,
+  disconnectProvider,
+  type ConnectionCenter,
+  type OwnerHint,
+} from "@/app/actions/connections/connection-center"
 
 const DOMAIN_LABELS: Record<string, string> = {
   email: "Email", phone: "Phone / SMS", calendar: "Calendar", social: "Social",
@@ -17,9 +22,9 @@ const DOMAIN_LABELS: Record<string, string> = {
 
 const PROVIDER_LABELS: Record<string, string> = {
   gmail: "Google", outlook: "Microsoft", twilio: "Twilio", telnyx: "Telnyx", bandwidth: "Bandwidth",
-  facebook: "Facebook", instagram: "Instagram", linkedin: "LinkedIn", twitter: "X / Twitter",
+  meta: "Meta (Facebook & Instagram)", linkedin: "LinkedIn", twitter: "X / Twitter",
   tiktok: "TikTok", youtube: "YouTube", pinterest: "Pinterest", google_business: "Google Business",
-  gohighlevel: "GoHighLevel", followupboss: "Follow Up Boss", lofty: "Lofty",
+  gohighlevel: "GoHighLevel", followupboss: "Follow Up Boss", lofty: "Lofty", hubspot: "HubSpot",
   quickbooks: "QuickBooks", stripe: "Stripe", idxbroker: "IDX Broker",
   dotloop: "Dotloop", formsimplicity: "Form Simplicity", docusign: "DocuSign",
   skyslope: "SkySlope", brokermint: "Brokermint", authentisign: "Authentisign", showingtime: "ShowingTime",
@@ -33,14 +38,12 @@ function label(map: Record<string, string>, key: string) {
 }
 
 function ApiKeyForm({
-  domain,
-  provider,
-  fields,
-  onDone,
+  domain, provider, fields, owner, onDone,
 }: {
   domain: Domain["domain"]
   provider: string
   fields: Domain["fields"]
+  owner?: OwnerHint
   onDone: () => void
 }) {
   const [values, setValues] = useState<Record<string, string>>({})
@@ -54,7 +57,7 @@ function ApiKeyForm({
         e.preventDefault()
         setError(null)
         startTransition(async () => {
-          const res = await connectApiKeyProvider({ domain, provider, fields: values })
+          const res = await connectApiKeyProvider({ domain, provider, fields: values, owner })
           if (res.ok) onDone()
           else setError(res.error)
         })
@@ -80,7 +83,7 @@ function ApiKeyForm({
   )
 }
 
-function ProviderRow({ domain, provider, fields }: { domain: Domain["domain"]; provider: Provider; fields: Domain["fields"] }) {
+function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["domain"]; provider: Provider; fields: Domain["fields"]; owner?: OwnerHint }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
@@ -88,7 +91,7 @@ function ProviderRow({ domain, provider, fields }: { domain: Domain["domain"]; p
 
   const refresh = () => { setOpen(false); router.refresh() }
   const onDisconnect = () =>
-    startTransition(async () => { await disconnectProvider({ domain, provider: provider.provider }); router.refresh() })
+    startTransition(async () => { await disconnectProvider({ domain, provider: provider.provider, owner }); router.refresh() })
 
   return (
     <div className="rounded-md border p-3">
@@ -98,9 +101,14 @@ function ProviderRow({ domain, provider, fields }: { domain: Domain["domain"]; p
           {provider.connected && (
             <Badge variant="default">connected{provider.detail ? ` · ${provider.detail}` : ""}</Badge>
           )}
+          {!provider.available && !provider.connected && (
+            <span className="text-xs text-muted-foreground">{provider.unavailableReason}</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          {provider.auth === "oauth" && provider.oauthStartPath ? (
+          {!provider.available ? (
+            <Button size="sm" variant="outline" disabled>Unavailable</Button>
+          ) : provider.auth === "oauth" && provider.oauthStartPath ? (
             <Button asChild size="sm" variant={provider.connected ? "outline" : "default"}>
               <a href={provider.oauthStartPath}>{provider.connected ? "Reconnect" : "Connect"}</a>
             </Button>
@@ -114,14 +122,14 @@ function ProviderRow({ domain, provider, fields }: { domain: Domain["domain"]; p
           )}
         </div>
       </div>
-      {open && provider.auth === "api_key" && (
-        <ApiKeyForm domain={domain} provider={provider.provider} fields={fields} onDone={refresh} />
+      {open && provider.available && provider.auth === "api_key" && (
+        <ApiKeyForm domain={domain} provider={provider.provider} fields={fields} owner={owner} onDone={refresh} />
       )}
     </div>
   )
 }
 
-export function ConnectionCenterClient({ data }: { data: ConnectionCenter }) {
+export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter; owner?: OwnerHint }) {
   if (!data.ok) {
     return <p className="text-sm text-muted-foreground">{data.error ?? "Unable to load connections."}</p>
   }
@@ -138,7 +146,7 @@ export function ConnectionCenterClient({ data }: { data: ConnectionCenter }) {
           </CardHeader>
           <CardContent className="space-y-2">
             {d.providers.map((p) => (
-              <ProviderRow key={p.provider} domain={d.domain} provider={p} fields={d.fields} />
+              <ProviderRow key={p.provider} domain={d.domain} provider={p} fields={d.fields} owner={owner} />
             ))}
           </CardContent>
         </Card>

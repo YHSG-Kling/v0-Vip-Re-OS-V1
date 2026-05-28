@@ -36,7 +36,7 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   email:       ["gmail", "outlook"],
   phone:       ["twilio", "telnyx", "bandwidth"],
   calendar:    ["gmail", "outlook"],
-  social:      ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"],
+  social:      ["meta", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"], // meta = Facebook+Instagram (matches the social OAuth route's platform keys)
   crm:         ["gohighlevel", "followupboss", "lofty", "hubspot"], // all sync-out only
   financial:   ["quickbooks", "stripe"],
   listing:     ["idxbroker"],

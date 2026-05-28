@@ -6,13 +6,20 @@
 // vendor/contact can never wire email/crm/etc. Writes land in the exact shape dispatch resolvers
 // read (see lib/connections/field-spec.ts), so a connection made here is immediately usable.
 //
+// Works for internal actors (agent/team/brokerage) AND, when an `owner` is supplied, for a
+// VENDOR or CONTACT in their portal — ownership is verified via the existing portal auth gates
+// (requireVendorActor / requireContactAccess), never trusted from the client.
+//
 // No stubs: status is read from the real tables dispatch uses (agent_api_credentials for personal
-// email/calendar OAuth, social_media_accounts for social, platform_credentials for the rest).
+// email/calendar OAuth, social_media_accounts for social, platform_credentials for the rest), and
+// each provider carries an `available` flag so the UI never shows a connect path that no-ops.
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
+import { requireVendorActor } from "@/lib/kernel/portal-auth"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { canonicalProvider, aliasesFor } from "@/lib/integrations/connection-manager"
 import {
   CONNECTOR_PROVIDERS,
@@ -25,9 +32,13 @@ import {
   DOMAIN_AUTH,
   isOAuthConnection,
   oauthStartPath,
+  isConnectSupported,
   buildCredentialWrite,
   connectionScopeForUserType,
 } from "@/lib/connections/field-spec"
+
+/** A vendor/contact portal passes this so the center acts on their owner scope (verified server-side). */
+export type OwnerHint = { scope: "vendor" | "contact"; id: string }
 
 export interface ProviderStatus {
   domain: ConnectorDomain
@@ -36,13 +47,14 @@ export interface ProviderStatus {
   detail: string | null
   auth: "oauth" | "api_key"
   oauthStartPath: string | null
+  available: boolean
+  unavailableReason: string | null
 }
 
 export interface ConnectionCenter {
   ok: boolean
   error?: string
   scope: ConnectionScope
-  /** domain → field spec for rendering api_key forms. */
   domains: Array<{
     domain: ConnectorDomain
     method: "oauth" | "api_key"
@@ -55,37 +67,58 @@ interface Actor {
   userId: string
   agentId: string | null
   brokerageId: string | null
-  teamId: string | null
   scope: ConnectionScope
+  ownerId: string | null
   isBrokerageManager: boolean
 }
 
-async function resolveActor(): Promise<Actor | null> {
+async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
+  // Vendor / contact portal — ownership verified by the portal auth gate.
+  if (owner?.scope === "vendor") {
+    try {
+      const v = await requireVendorActor(owner.id)
+      return { userId: v.userId, agentId: null, brokerageId: v.brokerageId, scope: "vendor", ownerId: v.vendorId, isBrokerageManager: false }
+    } catch {
+      // Fallback: the vendor row is linked directly to this auth user (vendors.user_id).
+      try {
+        const supabase = await createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return null
+        const svc = createServiceClient()
+        const { data: vendorRow } = await svc
+          .from("vendors").select("id, brokerage_id").eq("id", owner.id).eq("user_id", user.id).maybeSingle()
+        if (!vendorRow?.brokerage_id) return null
+        return { userId: user.id, agentId: null, brokerageId: vendorRow.brokerage_id as string, scope: "vendor", ownerId: vendorRow.id as string, isBrokerageManager: false }
+      } catch {
+        return null
+      }
+    }
+  }
+  if (owner?.scope === "contact") {
+    const c = await requireContactAccess(owner.id)
+    if (!c.ok || !c.isContactSelf) return null // only the contact connects their own accounts
+    return { userId: c.userId, agentId: null, brokerageId: c.brokerageId, scope: "contact", ownerId: owner.id, isBrokerageManager: false }
+  }
+
+  // Internal actor (agent / team / brokerage).
   const ctx = await getAgentContext().catch(() => null)
   if (!ctx?.isAuthenticated) return null
-  // team_id isn't on AgentContext; read it directly for team-scoped ownership.
-  let teamId: string | null = null
-  try {
-    const supabase = await createClient()
-    const { data } = await supabase.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
-    teamId = (data?.team_id as string | null) ?? null
-  } catch {
-    teamId = null
-  }
   const { scope, isBrokerageManager } = connectionScopeForUserType(ctx.userType)
-  return { userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, teamId, scope, isBrokerageManager }
-}
-
-/** owner_id for the actor's scope, or null when this surface can't own it (vendor/contact use
- *  their portal identity; platform requires a brokerage anchor for the NOT NULL FK). */
-function ownerIdFor(actor: Actor): string | null {
-  switch (actor.scope) {
-    case "agent":     return actor.userId
-    case "team":      return actor.teamId
-    case "brokerage": return actor.brokerageId
-    case "platform":  return "platform"
-    default:          return null // vendor / contact — managed in their portal, not here
+  let teamId: string | null = null
+  if (scope === "team") {
+    try {
+      const supabase = await createClient()
+      const { data } = await supabase.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
+      teamId = (data?.team_id as string | null) ?? null
+    } catch { teamId = null }
   }
+  const ownerId =
+    scope === "agent" ? ctx.userId
+    : scope === "team" ? teamId
+    : scope === "brokerage" ? ctx.brokerageId
+    : scope === "platform" ? "platform"
+    : null
+  return { userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, scope, ownerId, isBrokerageManager }
 }
 
 async function isProviderConnected(
@@ -96,7 +129,6 @@ async function isProviderConnected(
   const svc = createServiceClient()
   const aliases = aliasesFor(provider)
 
-  // Personal email/calendar OAuth lives in agent_api_credentials (what dispatch sends through).
   if ((domain === "email" || domain === "calendar") && actor.agentId) {
     const { data } = await svc
       .from("agent_api_credentials")
@@ -110,20 +142,23 @@ async function isProviderConnected(
   }
 
   if (domain === "social") {
-    let q = svc.from("social_media_accounts").select("account_name, is_active").eq("platform", provider).eq("is_active", true)
-    q = actor.agentId ? q.eq("agent_id", actor.agentId) : q.eq("user_id", actor.userId)
-    const { data } = await q.limit(1).maybeSingle()
+    const { data } = await svc
+      .from("social_media_accounts")
+      .select("account_name, is_active")
+      .eq("platform", provider)
+      .eq("user_id", actor.userId)
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle()
     return { connected: !!data, detail: (data?.account_name as string) ?? null }
   }
 
-  // Everything else: owner-scoped platform_credentials.
-  const ownerId = ownerIdFor(actor)
-  if (!ownerId) return { connected: false, detail: null }
+  if (!actor.ownerId) return { connected: false, detail: null }
   const { data } = await svc
     .from("platform_credentials")
     .select("account_name, is_active")
     .eq("owner_type", actor.scope)
-    .eq("owner_id", ownerId)
+    .eq("owner_id", actor.ownerId)
     .in("platform", aliases)
     .eq("is_active", true)
     .limit(1)
@@ -131,10 +166,11 @@ async function isProviderConnected(
   return { connected: !!data, detail: (data?.account_name as string) ?? null }
 }
 
-export async function getConnectionCenter(): Promise<ConnectionCenter> {
-  const actor = await resolveActor()
-  if (!actor) return { ok: false, error: "Not authenticated", scope: "agent", domains: [] }
+export async function getConnectionCenter(owner?: OwnerHint): Promise<ConnectionCenter> {
+  const actor = await resolveActor(owner)
+  if (!actor) return { ok: false, error: "Not authorized", scope: owner?.scope ?? "agent", domains: [] }
 
+  const caps = { canOwn: actor.ownerId != null, hasAgentId: actor.agentId != null, isBrokerageManager: actor.isBrokerageManager }
   const selectable = selectableConnectionsForScope(actor.scope)
   const domains: ConnectionCenter["domains"] = []
 
@@ -143,6 +179,7 @@ export async function getConnectionCenter(): Promise<ConnectionCenter> {
     const providers: ProviderStatus[] = []
     for (const provider of CONNECTOR_PROVIDERS[domain]) {
       const status = await isProviderConnected(actor, domain, provider)
+      const support = isConnectSupported(domain, provider, caps)
       providers.push({
         domain,
         provider,
@@ -150,6 +187,8 @@ export async function getConnectionCenter(): Promise<ConnectionCenter> {
         detail: status.detail,
         auth: isOAuthConnection(domain, provider) ? "oauth" : "api_key",
         oauthStartPath: oauthStartPath(domain, provider),
+        available: support.available,
+        unavailableReason: support.reason ?? null,
       })
     }
     domains.push({ domain, method: spec.method, fields: spec.fields, providers })
@@ -162,9 +201,10 @@ export async function connectApiKeyProvider(params: {
   domain: ConnectorDomain
   provider: string
   fields: Record<string, string>
+  owner?: OwnerHint
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const actor = await resolveActor()
-  if (!actor) return { ok: false, error: "Not authenticated" }
+  const actor = await resolveActor(params.owner)
+  if (!actor) return { ok: false, error: "Not authorized" }
 
   const provider = canonicalProvider(params.provider)
   if (!isProviderAllowedForScope(actor.scope, params.domain, provider)) {
@@ -173,8 +213,7 @@ export async function connectApiKeyProvider(params: {
   if (isOAuthConnection(params.domain, provider)) {
     return { ok: false, error: `${provider} uses a Connect (OAuth) flow, not an API key.` }
   }
-  const ownerId = ownerIdFor(actor)
-  if (!ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
+  if (!actor.ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
 
   const write = buildCredentialWrite(params.domain, params.fields)
@@ -185,7 +224,7 @@ export async function connectApiKeyProvider(params: {
     brokerage_id: actor.brokerageId,
     agent_user_id: actor.scope === "agent" ? actor.userId : null,
     owner_type: actor.scope,
-    owner_id: ownerId,
+    owner_id: actor.ownerId,
     platform: provider,
     scope: actor.scope === "agent" ? "agent" : actor.scope === "team" ? "team" : "brokerage",
     api_key: write.api_key,
@@ -196,13 +235,11 @@ export async function connectApiKeyProvider(params: {
     updated_at: new Date().toISOString(),
   }
 
-  // Update-or-insert by (owner_type, owner_id, platform) — the partial owner index can't be an
-  // ON CONFLICT target, so resolve the existing row explicitly to avoid duplicates.
   const { data: existing } = await svc
     .from("platform_credentials")
     .select("id")
     .eq("owner_type", actor.scope)
-    .eq("owner_id", ownerId)
+    .eq("owner_id", actor.ownerId)
     .eq("platform", provider)
     .maybeSingle()
   const { error } = existing
@@ -217,9 +254,10 @@ export async function connectApiKeyProvider(params: {
 export async function disconnectProvider(params: {
   domain: ConnectorDomain
   provider: string
+  owner?: OwnerHint
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const actor = await resolveActor()
-  if (!actor) return { ok: false, error: "Not authenticated" }
+  const actor = await resolveActor(params.owner)
+  if (!actor) return { ok: false, error: "Not authorized" }
   const provider = canonicalProvider(params.provider)
   const svc = createServiceClient()
   const aliases = aliasesFor(provider)
@@ -229,15 +267,13 @@ export async function disconnectProvider(params: {
       .eq("agent_id", actor.agentId).in("service_name", aliases)
     if (error) return { ok: false, error: error.message }
   } else if (params.domain === "social") {
-    let q = svc.from("social_media_accounts").update({ is_active: false }).eq("platform", provider)
-    q = actor.agentId ? q.eq("agent_id", actor.agentId) : q.eq("user_id", actor.userId)
-    const { error } = await q
+    const { error } = await svc.from("social_media_accounts").update({ is_active: false })
+      .eq("platform", provider).eq("user_id", actor.userId)
     if (error) return { ok: false, error: error.message }
   } else {
-    const ownerId = ownerIdFor(actor)
-    if (!ownerId) return { ok: false, error: "Not available for your account type." }
+    if (!actor.ownerId) return { ok: false, error: "Not available for your account type." }
     const { error } = await svc.from("platform_credentials").update({ is_active: false })
-      .eq("owner_type", actor.scope).eq("owner_id", ownerId).in("platform", aliases)
+      .eq("owner_type", actor.scope).eq("owner_id", actor.ownerId).in("platform", aliases)
     if (error) return { ok: false, error: error.message }
   }
 

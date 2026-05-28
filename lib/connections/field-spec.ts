@@ -148,6 +148,40 @@ export function buildCredentialWrite(
   }
 }
 
+/** Actor capabilities that determine whether a connect FLOW is wired for the current scope. */
+export interface ConnectCaps {
+  /** We can persist an owner-scoped credential (owner id resolves). */
+  canOwn: boolean
+  /** The actor has an agents.id — required for personal email/calendar OAuth (agent_api_credentials). */
+  hasAgentId: boolean
+  /** The actor manages brokerage-level connections (broker/admin) — required for brokerage OAuth. */
+  isBrokerageManager: boolean
+}
+
+/**
+ * Pure: is the CONNECT flow for a (domain, provider) actually wired for an actor with these caps?
+ * Keeps the UI honest — providers whose flow isn't available at this scope are shown disabled with
+ * a reason instead of a button that silently no-ops. Mirrors where each flow stores tokens:
+ *   - api_key  → owner-scoped platform_credentials (any actor that canOwn)
+ *   - social   → social_media_accounts keyed by user_id (any authenticated user)
+ *   - email/calendar OAuth → agent_api_credentials keyed by agentId (needs hasAgentId)
+ *   - QuickBooks OAuth → brokerage-scoped callback (needs isBrokerageManager)
+ */
+export function isConnectSupported(
+  domain: ConnectorDomain,
+  canonicalProviderId: string,
+  caps: ConnectCaps,
+): { available: boolean; reason?: string } {
+  if (!caps.canOwn) return { available: false, reason: "Not available for your account type." }
+  if (!isOAuthConnection(domain, canonicalProviderId)) return { available: true } // api_key → owner-scoped write
+  if (domain === "social") return { available: true } // stored by user_id — any signed-in user
+  if (domain === "financial" && canonicalProviderId === "quickbooks") {
+    return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }
+  }
+  // email / calendar OAuth → personal mailbox tokens (agent_api_credentials).
+  return caps.hasAgentId ? { available: true } : { available: false, reason: "Available soon for your account type." }
+}
+
 /** Pure: map an app userType to its connection ownership scope + whether it manages brokerage-level
  *  connections. Vendors/contacts are leaf actors; brokers/admins manage the brokerage; team leads own
  *  team-level; superadmin owns platform defaults; everyone else (agent/tc/isa) is agent-scoped. */
