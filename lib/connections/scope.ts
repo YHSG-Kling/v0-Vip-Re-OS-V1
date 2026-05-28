@@ -11,6 +11,8 @@
 //
 // Pure — no I/O — so cascade + gating are unit-tested. The live read lives in resolve-scoped.ts.
 
+import { getTransactionFormProviders, getEsignProviders } from "@/lib/integrations/providers/catalog"
+
 export type ConnectionScope = "platform" | "brokerage" | "team" | "agent" | "vendor" | "contact"
 
 /** Connector domains a scope is permitted to own. Agent/team/brokerage/platform = anything;
@@ -39,13 +41,17 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   social:      ["meta", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"], // meta = Facebook+Instagram (matches the social OAuth route's platform keys)
   crm:         ["gohighlevel", "followupboss", "lofty", "hubspot"], // all sync-out only
   financial:   ["quickbooks", "stripe"],
-  listing:     ["idxbroker"],
-  transaction: ["dotloop", "formsimplicity", "docusign", "skyslope", "brokermint"],
-  esign:       ["dotloop", "docusign", "skyslope", "authentisign"],
+  // transaction + esign are DERIVED from the provider catalog (the single source of truth) so the
+  // selectable lists can never drift from what's actually implemented (transaction = every
+  // implemented transaction-forms provider; esign = every implemented e-sign provider).
+  transaction: getTransactionFormProviders(),
+  esign:       getEsignProviders(),
+  // IDX / RentCast are PLATFORM-managed (env / platform config) — not a per-tier user connection.
+  listing:     [],
   showing:     ["showingtime"],
   documents:   [], // surface reserved; no user-selectable document provider yet
   marketing:   [], // system-managed; not a user-selectable connection
-} as const
+}
 
 /** Pure: may this owner scope connect a given connector domain? Vendor/contact are leaf actors
  *  limited to calendar + social + financial; everyone else may connect any domain that has at
