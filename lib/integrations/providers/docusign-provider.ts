@@ -42,6 +42,7 @@ import type {
   ListFormsResponse,
   ProviderForm,
 } from "./transaction-provider.interface"
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 export class DocusignProvider implements ITransactionProvider {
   readonly name = "docusign"
@@ -58,40 +59,43 @@ export class DocusignProvider implements ITransactionProvider {
     this.baseUri     = (credentials.baseUri ?? "https://www.docusign.net").replace(/\/$/, "")
   }
 
-  private url(path: string): string {
-    return `${this.baseUri}/restapi/v2.1/accounts/${this.accountId}${path}`
-  }
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...extra,
-    }
+  /** Single egress choke point — every DocuSign API call leaves through the connector-gateway
+   *  (Bearer OAuth token). Arbitrary form/document URL downloads are NOT provider calls and stay
+   *  on plain fetch. */
+  private request<T = any>(
+    subpath: string,
+    opts: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<GatewayResponse<T>> {
+    return callConnector<T>({
+      connector: "docusign",
+      baseUrl: this.baseUri,
+      path: `restapi/v2.1/accounts/${this.accountId}${subpath}`,
+      method: opts.method,
+      body: opts.body,
+      query: opts.query,
+      auth: { style: "bearer", token: this.accessToken },
+    })
   }
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
       // Create a draft envelope; documents + recipients are added in
       // subsequent calls so the AI cockpit can stream them in.
-      const res = await fetch(this.url("/envelopes"), {
+      const res = await this.request<{ envelopeId?: string }>("/envelopes", {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           emailSubject: `${request.propertyAddress} — ${request.transactionType === "purchase" ? "Purchase Agreement" : "Listing Agreement"}`,
           emailBlurb:   `This is a real estate transaction envelope for ${request.propertyAddress}.`,
           status:       "created",   // 'created' = draft; flips to 'sent' on sendForSignature
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `DocuSign createEnvelope ${res.status}: ${await res.text()}` }
+        return { success: false, error: `DocuSign createEnvelope ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      if (!data.envelopeId) {
+      if (!res.data?.envelopeId) {
         return { success: false, error: "DocuSign returned no envelopeId" }
       }
-      return { success: true, externalTransactionId: data.envelopeId }
+      return { success: true, externalTransactionId: res.data.envelopeId }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "DocuSign createTransaction failed" }
     }
@@ -136,13 +140,12 @@ export class DocusignProvider implements ITransactionProvider {
         return { success: true, attachedCount: 0 }
       }
 
-      const res = await fetch(this.url(`/envelopes/${request.externalTransactionId}/documents`), {
+      const res = await this.request(`/envelopes/${request.externalTransactionId}/documents`, {
         method: "PUT",   // DocuSign uses PUT for bulk add
-        headers: this.headers(),
-        body: JSON.stringify({ documents }),
+        body: { documents },
       })
       if (!res.ok) {
-        return { success: false, error: `DocuSign attachForms ${res.status}: ${await res.text()}` }
+        return { success: false, error: `DocuSign attachForms ${res.status}: ${res.error}` }
       }
       return { success: true, attachedCount: attached }
     } catch (err: any) {
@@ -160,26 +163,24 @@ export class DocusignProvider implements ITransactionProvider {
         routingOrder: String(i + 1),
         roleName:     s.role,
       }))
-      const recipientsRes = await fetch(this.url(`/envelopes/${request.externalTransactionId}/recipients`), {
+      const recipientsRes = await this.request(`/envelopes/${request.externalTransactionId}/recipients`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ signers }),
+        body: { signers },
       })
       if (!recipientsRes.ok) {
-        return { success: false, error: `DocuSign addRecipients ${recipientsRes.status}: ${await recipientsRes.text()}` }
+        return { success: false, error: `DocuSign addRecipients ${recipientsRes.status}: ${recipientsRes.error}` }
       }
 
       // 2. Flip status='sent' to actually email signers
-      const sendRes = await fetch(this.url(`/envelopes/${request.externalTransactionId}`), {
+      const sendRes = await this.request(`/envelopes/${request.externalTransactionId}`, {
         method: "PUT",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           status:       "sent",
           emailSubject: request.message ?? "Please review and sign",
-        }),
+        },
       })
       if (!sendRes.ok) {
-        return { success: false, error: `DocuSign sendEnvelope ${sendRes.status}: ${await sendRes.text()}` }
+        return { success: false, error: `DocuSign sendEnvelope ${sendRes.status}: ${sendRes.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -189,14 +190,11 @@ export class DocusignProvider implements ITransactionProvider {
 
   async getSignatureStatus(externalTransactionId: string): Promise<SignatureStatusResponse> {
     try {
-      const res = await fetch(this.url(`/envelopes/${externalTransactionId}/recipients`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ signers?: any[] }>(`/envelopes/${externalTransactionId}/recipients`)
       if (!res.ok) {
         return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: `DocuSign getRecipients ${res.status}` }
       }
-      const data = await res.json()
-      const signers: any[] = data.signers ?? []
+      const signers: any[] = res.data?.signers ?? []
       const total = signers.length
       const signed = signers.filter(s => s.status === "completed" || s.status === "signed").length
       return {
@@ -213,16 +211,15 @@ export class DocusignProvider implements ITransactionProvider {
 
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
-      const res = await fetch(this.url(`/envelopes/${request.externalTransactionId}`), {
+      const res = await this.request(`/envelopes/${request.externalTransactionId}`, {
         method: "PUT",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           status:       "voided",
           voidedReason: request.reason ?? "Cancelled by agent",
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `DocuSign voidEnvelope ${res.status}: ${await res.text()}` }
+        return { success: false, error: `DocuSign voidEnvelope ${res.status}: ${res.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -242,15 +239,14 @@ export class DocusignProvider implements ITransactionProvider {
       const fileExtension = m ? m[1].toLowerCase() : "pdf"
       const documentId = String(Date.now())
 
-      const res = await fetch(this.url(`/envelopes/${request.externalTransactionId}/documents`), {
+      const res = await this.request(`/envelopes/${request.externalTransactionId}/documents`, {
         method: "PUT",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           documents: [{ documentBase64, name: request.documentName, fileExtension, documentId }],
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `DocuSign uploadDocument ${res.status}: ${await res.text()}` }
+        return { success: false, error: `DocuSign uploadDocument ${res.status}: ${res.error}` }
       }
       return { success: true, externalDocumentId: documentId }
     } catch (err: any) {
@@ -262,19 +258,14 @@ export class DocusignProvider implements ITransactionProvider {
     try {
       // DocuSign's form library lives as Templates. /templates returns the
       // account's saved templates which can be reused as offer/listing forms.
-      const params = new URLSearchParams()
-      if (request.query)    params.set("search_text", request.query)
-      params.set("count", String(request.pageSize ?? 100))
-      params.set("order_by", "name")
+      const query: Record<string, string> = { count: String(request.pageSize ?? 100), order_by: "name" }
+      if (request.query) query.search_text = request.query
 
-      const res = await fetch(this.url(`/templates?${params.toString()}`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ envelopeTemplates?: any[] }>("/templates", { query })
       if (!res.ok) {
-        return { success: false, error: `DocuSign listTemplates ${res.status}: ${await res.text()}` }
+        return { success: false, error: `DocuSign listTemplates ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      let forms: ProviderForm[] = (data.envelopeTemplates ?? []).map((t: any) => {
+      let forms: ProviderForm[] = (res.data?.envelopeTemplates ?? []).map((t: any) => {
         const name = String(t.name ?? "Template")
         // Infer state + category from template name when possible (DocuSign
         // doesn't expose structured taxonomy on templates).
@@ -311,14 +302,11 @@ export class DocusignProvider implements ITransactionProvider {
 
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
-      const res = await fetch(this.url(`/envelopes/${request.externalTransactionId}/documents`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ envelopeDocuments?: any[] }>(`/envelopes/${request.externalTransactionId}/documents`)
       if (!res.ok) {
         return { success: false, syncedCount: 0, documents: [], error: `DocuSign listDocuments ${res.status}` }
       }
-      const data = await res.json()
-      const documents: ProviderDocument[] = (data.envelopeDocuments ?? []).map((d: any) => ({
+      const documents: ProviderDocument[] = (res.data?.envelopeDocuments ?? []).map((d: any) => ({
         externalDocumentId: d.documentId,
         documentName:       d.name,
         folderName:         "Documents",
