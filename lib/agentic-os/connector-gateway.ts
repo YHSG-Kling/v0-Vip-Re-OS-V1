@@ -114,7 +114,12 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
     }
     const raw = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok) {
-      const msg = (raw?.error as any)?.message || (raw?.message as string) || `HTTP ${res.status}`
+      // Prefer a structured message; otherwise surface the raw error body (a JSON snippet) so
+      // providers with non-standard error envelopes (e.g. QuickBooks `{Fault:{Error:[…]}}`) keep
+      // their diagnostic detail instead of collapsing to a bare "HTTP <status>".
+      const structured = (raw?.error as any)?.message || (raw?.message as string)
+      const snippet = structured || (raw && Object.keys(raw).length ? JSON.stringify(raw) : "")
+      const msg = snippet ? `${snippet}` : `HTTP ${res.status}`
       return { ok: false, status: res.status, data: null, drift: null, error: String(msg).slice(0, 300) }
     }
     let data: any = raw

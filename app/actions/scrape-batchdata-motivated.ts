@@ -6,13 +6,14 @@ import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { processRawRecord } from '@/lib/lead-pipeline'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
+// BatchData-pullable motivation types only — each maps to a real BatchData quickList.
+// 'divorce' is intentionally absent: BatchData has no divorce quickList, so divorce leads are
+// sourced via OSINT court records (lib/lead-pipeline/osint-sourcer.ts), not here.
 const MOTIVATION_TYPES = [
   'probate',
-  'divorce',
   'foreclosure',
   'tax_lien',
   'pre_foreclosure',
-  'distressed',
 ]
 
 export async function scrapeBatchDataMotivated(params: {

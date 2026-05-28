@@ -110,6 +110,10 @@ export async function syncContactToCRM(
     // Non-blocking — fall through to system default
   }
 
+  // Normalize the GoHighLevel alias so a brokerage_integrations.provider_name of "gohighlevel"
+  // (vs the literal "ghl") still dispatches to the GHL path instead of "unsupported".
+  if (providerKey === "gohighlevel") providerKey = "ghl"
+
   // ── Dispatch to the resolved provider ────────────────────────────────────────
   if (providerKey === "ghl") {
     try {

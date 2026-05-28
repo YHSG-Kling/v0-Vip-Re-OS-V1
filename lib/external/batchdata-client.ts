@@ -202,13 +202,15 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
   cost: number
   recordsFound: number
 }> {
+  // Label default MUST match buildPropertySearchBody's default (the trio) — otherwise records get
+  // tagged with a motivationType the search never targeted (e.g. labeled 'probate' while the query
+  // pulled high-equity/preforeclosure/absentee).
   const types = params.motivationTypes && params.motivationTypes.length > 0
     ? params.motivationTypes
-    : [...BATCHDATA_MOTIVATION_TYPES]
+    : [...DEFAULT_MOTIVATION_TRIO]
 
   // BatchData v1 Property Search — POST /api/v1/property/search. Motivated-seller triggers are
-  // expressed as `searchCriteria.quickLists`; structured filters (beds/value/equity/…) expand
-  // searchCriteria via the pure builder.
+  // expressed as quickLists/orQuickLists by the pure builder (which uses the same default).
   const data = await batchDataPropertySearch(
     buildPropertySearchBody(params),
     "BatchData API error",

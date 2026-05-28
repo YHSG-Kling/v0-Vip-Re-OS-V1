@@ -748,13 +748,15 @@ async function testVendorGateway() {
   check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/superadmin)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("superadmin").scope === "platform")
 
   // ── Connect availability (honest UI: no connect path that silently no-ops) ──
-  const agentCaps = { canOwn: true, hasAgentId: true, isBrokerageManager: false }
-  const vendorCaps = { canOwn: true, hasAgentId: false, isBrokerageManager: false }
-  const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false }
-  check("availability: api_key always supported when actor can own (vendor stripe)", isConnectSupported("financial", "stripe", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
+  const agentCaps = { canOwn: true, hasAgentId: true, isBrokerageManager: false, hasBrokerage: true }
+  const vendorCaps = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
+  const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
+  const platformNoBrokerage = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }
+  check("availability: api_key supported when actor can own + has a brokerage (vendor stripe)", isConnectSupported("financial", "stripe", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
   check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
   check("availability: calendar OAuth needs an agent identity (vendor = unavailable)", isConnectSupported("calendar", "gmail", agentCaps).available && !isConnectSupported("calendar", "gmail", vendorCaps).available)
-  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("financial", "stripe", platformNoBrokerage).available && !isConnectSupported("esign", "docusign", platformNoBrokerage).available)
   check("availability: nothing is connectable without an owner id", !isConnectSupported("financial", "stripe", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }
 

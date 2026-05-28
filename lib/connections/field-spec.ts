@@ -156,6 +156,9 @@ export interface ConnectCaps {
   hasAgentId: boolean
   /** The actor manages brokerage-level connections (broker/admin) — required for brokerage OAuth. */
   isBrokerageManager: boolean
+  /** The actor has a brokerage anchor — platform_credentials.brokerage_id is NOT NULL, so an
+   *  api-key write is impossible without it (e.g. a superadmin/platform actor with no brokerage). */
+  hasBrokerage: boolean
 }
 
 /**
@@ -173,7 +176,11 @@ export function isConnectSupported(
   caps: ConnectCaps,
 ): { available: boolean; reason?: string } {
   if (!caps.canOwn) return { available: false, reason: "Not available for your account type." }
-  if (!isOAuthConnection(domain, canonicalProviderId)) return { available: true } // api_key → owner-scoped write
+  if (!isOAuthConnection(domain, canonicalProviderId)) {
+    // api_key → owner-scoped platform_credentials write, which requires a brokerage anchor
+    // (brokerage_id is NOT NULL). A platform/superadmin actor without a brokerage can't store it here.
+    return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
+  }
   if (domain === "social") return { available: true } // stored by user_id — any signed-in user
   if (domain === "financial" && canonicalProviderId === "quickbooks") {
     return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }

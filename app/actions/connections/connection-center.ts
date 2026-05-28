@@ -170,7 +170,7 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
   const actor = await resolveActor(owner)
   if (!actor) return { ok: false, error: "Not authorized", scope: owner?.scope ?? "agent", domains: [] }
 
-  const caps = { canOwn: actor.ownerId != null, hasAgentId: actor.agentId != null, isBrokerageManager: actor.isBrokerageManager }
+  const caps = { canOwn: actor.ownerId != null, hasAgentId: actor.agentId != null, isBrokerageManager: actor.isBrokerageManager, hasBrokerage: actor.brokerageId != null }
   const selectable = selectableConnectionsForScope(actor.scope)
   const domains: ConnectionCenter["domains"] = []
 

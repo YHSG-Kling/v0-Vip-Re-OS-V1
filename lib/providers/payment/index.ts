@@ -146,8 +146,13 @@ export async function createConnectedAccount(email: string): Promise<CreateConne
       type: "account_onboarding",
     },
   })
+  // The account exists even if the onboarding link failed — surface the link error so the caller
+  // doesn't dead-end with an undefined onboardingUrl and a misleading success:true.
+  if (!linkRes.ok || !linkRes.data?.url) {
+    return { success: false, accountId: account.id, error: linkRes.error || "Stripe account_links error" }
+  }
 
-  return { success: true, accountId: account.id, onboardingUrl: linkRes.data?.url }
+  return { success: true, accountId: account.id, onboardingUrl: linkRes.data.url }
 }
 
 // ─── Account health / balance / payouts ─────────────────────────────────────────
