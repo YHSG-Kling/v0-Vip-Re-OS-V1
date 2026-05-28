@@ -65,6 +65,7 @@ import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housin
 import { BATCHDATA_MOTIVATION_TYPES, BATCHDATA_QUICKLISTS, fetchMotivatedSellers, normalizeBatchDataProperty, buildPropertySearchBody } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
 import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
+import { publishToSocialPlatform } from "../lib/social/publisher"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
@@ -375,6 +376,20 @@ async function testVendorConnectors() {
   check("gateway form: Content-Type is x-www-form-urlencoded", !!formReq && (formReq as any).ct === "application/x-www-form-urlencoded")
   check("gateway form: body is urlencoded (incl bracket keys)", !!formReq && (formReq as any).body.includes("amount=5000") && (formReq as any).body.includes("metadata%5Btxn%5D=abc"))
   check("gateway form: bearer auth + parsed json response", !!formReq && (formReq as any).auth === "Bearer sk_test" && formRes.ok && (formRes.data as any).id === "tr_1")
+
+  // Social publisher now egresses through the connector-gateway — verify routing + auth per platform.
+  let socReq: { url: string; auth: string; restli: string } | null = null
+  globalThis.fetch = (async (url: any, init: any) => {
+    socReq = { url: String(url), auth: init?.headers?.Authorization ?? "", restli: init?.headers?.["X-Restli-Protocol-Version"] ?? "" }
+    return { ok: true, status: 200, json: async () => ({ id: "post_1" }) }
+  }) as unknown as typeof fetch
+  const fb = await publishToSocialPlatform("facebook", { content: "hi", accessToken: "FBTOK", accountId: "123" })
+  check("social: Facebook routes through gateway to graph.facebook.com w/ access_token query", !!socReq && (socReq as any).url.startsWith("https://graph.facebook.com/v18.0/123/feed") && (socReq as any).url.includes("access_token=FBTOK") && fb.success && fb.externalPostId === "post_1")
+  const li = await publishToSocialPlatform("linkedin", { content: "hi", accessToken: "LITOK", accountId: "u1" })
+  check("social: LinkedIn uses Bearer + X-Restli header through the gateway", !!socReq && (socReq as any).url === "https://api.linkedin.com/v2/ugcPosts" && (socReq as any).auth === "Bearer LITOK" && (socReq as any).restli === "2.0.0" && li.success)
+  globalThis.fetch = (async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad page" } }) })) as unknown as typeof fetch
+  const fbErr = await publishToSocialPlatform("facebook", { content: "x", accessToken: "T", accountId: "1" })
+  check("social: gateway error surfaces provider message (success:false)", !fbErr.success && (fbErr.error ?? "").includes("bad page"))
 
   globalThis.fetch = realFetch
 }
