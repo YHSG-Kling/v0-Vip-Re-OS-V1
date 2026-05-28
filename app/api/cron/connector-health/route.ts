@@ -15,7 +15,7 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
-import { probeConnector } from "@/lib/agentic-os/connector-probe"
+import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 
 const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_drift"])
 
@@ -78,6 +78,49 @@ export async function GET(req: Request) {
         brokerage_id: brokerageId, provider: c.provider, transport: c.transport,
         status, drifted, http_status: httpStatus, detail, error, checked_at: now.toISOString(),
       })
+    }
+  }
+
+  // Owner-scoped self-heal — the per-brokerage scan above resolves brokerage-level credentials
+  // only, so a VENDOR / TEAM / AGENT that connected its own account would never be probed and its
+  // connection error (auth_failed / shape_drift = the vendor changed/updated their API) would go
+  // undetected. Probe every active owner-scoped credential that has a health spec so those errors
+  // surface in the same attention feed. (Live probe only.)
+  if (probeLive) {
+    const { data: ownerRows } = await svc
+      .from("platform_credentials")
+      .select("brokerage_id, owner_type, owner_id, platform, api_key, refresh_token, access_token, config")
+      .in("owner_type", ["vendor", "contact", "team", "agent"])
+      .eq("is_active", true)
+      .limit(2000)
+
+    for (const r of ownerRows ?? []) {
+      const provider = r.platform as string
+      if (!PROBE_SPECS[provider]) continue // only providers with a known liveness endpoint
+      try {
+        const probe = await probeConnector(provider, {
+          apiKey: (r.api_key as string) ?? null,
+          apiSecret: ((r.config as any)?.api_secret as string) ?? null,
+          accessToken: (r.access_token as string) ?? null,
+          config: (r.config as Record<string, unknown>) ?? null,
+        })
+        if (!probe) continue
+        const isAttention = ATTENTION.has(probe.status) || probe.drifted
+        if (isAttention) attention++
+        rows.push({
+          brokerage_id: r.brokerage_id, provider, transport: "owner",
+          status: probe.status, drifted: probe.drifted, http_status: probe.httpStatus,
+          detail: { owner_type: r.owner_type, owner_id: r.owner_id, ...(probe.drift ? { drift: probe.drift } : {}) },
+          error: probe.error, checked_at: now.toISOString(),
+        })
+      } catch (err) {
+        rows.push({
+          brokerage_id: r.brokerage_id, provider, transport: "owner",
+          status: "unreachable", drifted: false, http_status: null,
+          detail: { owner_type: r.owner_type, owner_id: r.owner_id },
+          error: err instanceof Error ? err.message : String(err), checked_at: now.toISOString(),
+        })
+      }
     }
   }
 
