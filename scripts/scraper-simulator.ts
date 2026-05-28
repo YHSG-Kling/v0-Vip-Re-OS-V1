@@ -306,17 +306,15 @@ async function testVendorConnectors() {
   check("BatchData maps high_equity → 'high-equity' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("high-equity"))
   check("BatchData options.take = limit", !!captured && (captured as any).body.options.take === 25)
 
-  // buildPropertySearchBody (pure) — quickLists list-pull + expanded structured searchCriteria.
-  const sc = buildPropertySearchBody({
-    state: "FL", city: "Tampa", zip: "33602", motivationTypes: ["high_equity", "absentee"],
-    filters: { bedrooms: { min: 3 }, estimatedValue: { min: 200000, max: 600000 }, equityPercent: { min: 40 }, propertyType: "SFR" },
-    limit: 50, skip: 100,
-  }).searchCriteria as any
-  check("BatchData builder: quickLists from motivation types (high-equity + absentee-owner)", sc.quickLists.includes("high-equity") && sc.quickLists.includes("absentee-owner"))
-  check("BatchData builder: query joins city/zip/state", sc.query === "Tampa, 33602, FL")
-  check("BatchData builder: structured beds/value/equity ranges as {min,max}", sc.bedrooms.min === 3 && sc.estimatedValue.min === 200000 && sc.estimatedValue.max === 600000 && sc.equityPercent.min === 40 && sc.propertyType === "SFR")
-  check("BatchData builder: empty range omitted, pagination via options.skip", buildPropertySearchBody({ state: "FL", filters: { bathrooms: {} }, skip: 100 }).options.skip === 100 && !("bathrooms" in (buildPropertySearchBody({ state: "FL", filters: { bathrooms: {} } }).searchCriteria as any)))
-  check("BatchData builder: searchCriteria passthrough overrides/extends (escape hatch)", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { county: "Hillsborough", quickLists: ["vacant"] } }).searchCriteria as any; return b.county === "Hillsborough" && b.quickLists[0] === "vacant" })())
+  // buildPropertySearchBody (pure) — quickLists ARE the lead descriptors; query is the geography.
+  const built = buildPropertySearchBody({ state: "FL", city: "Tampa", zip: "33602", motivationTypes: ["high_equity", "absentee"], limit: 50, skip: 100 })
+  const sc = built.searchCriteria as any
+  check("BatchData builder: quickLists describe the leads (high-equity + absentee-owner)", sc.quickLists.includes("high-equity") && sc.quickLists.includes("absentee-owner"))
+  check("BatchData builder: query carries the geography (city/zip/state)", sc.query === "Tampa, 33602, FL")
+  check("BatchData builder: only query + quickLists by default (no param bloat)", Object.keys(sc).sort().join(",") === "query,quickLists")
+  check("BatchData builder: pagination via options.take/skip", built.options.take === 50 && built.options.skip === 100)
+  check("BatchData builder: default pulls the full motivated-seller quickList set", ((buildPropertySearchBody({ state: "FL" }).searchCriteria as any).quickLists as string[]).length >= 10)
+  check("BatchData builder: searchCriteria passthrough is the structured 'third type' escape hatch", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { quickLists: ["vacant"] } }).searchCriteria as any; return b.quickLists[0] === "vacant" })())
 
   // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
   let apifyUrl = ""

@@ -106,49 +106,26 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   }
 }
 
-/** A {min,max} numeric range — BatchData expresses bedroom/value/equity/etc. filters this way. */
-export interface NumericRange { min?: number; max?: number }
-
-/** Structured property filters layered on top of the quickList list-pull. Field names follow the
- *  BatchData v1 Property Search `searchCriteria` convention; anything not covered here can be
- *  supplied verbatim via `searchCriteria` (the escape hatch) so a verified field never needs a
- *  code change. */
-export interface BatchDataPropertyFilters {
-  bedrooms?: NumericRange
-  bathrooms?: NumericRange
-  estimatedValue?: NumericRange
-  equityPercent?: NumericRange
-  squareFeet?: NumericRange
-  yearBuilt?: NumericRange
-  propertyType?: string | string[]
-}
-
 export interface FetchMotivatedSellersOptions {
   state: string
   city?: string
   zip?: string
+  /** Internal motivation types → BatchData quickList slugs (the named lead descriptors). */
   motivationTypes?: string[]
-  /** Structured filters merged into searchCriteria (beds/baths/value/equity/sqft/year/type). */
-  filters?: BatchDataPropertyFilters
-  /** Advanced escape hatch — BatchData-native searchCriteria merged verbatim (no guessing). */
+  /** Advanced "third search type": BatchData-native searchCriteria fields merged verbatim
+   *  (structured/geo filters) — an escape hatch so a verified field works without a code change. */
   searchCriteria?: Record<string, unknown>
   limit?: number
   skip?: number
 }
 
-/** Drop undefined ends from a range; omit entirely when empty. */
-function range(r?: NumericRange): NumericRange | undefined {
-  if (!r) return undefined
-  const out: NumericRange = {}
-  if (typeof r.min === "number") out.min = r.min
-  if (typeof r.max === "number") out.max = r.max
-  return Object.keys(out).length ? out : undefined
-}
-
 /**
- * PURE: build the BatchData Property Search request body. The motivated-seller triggers become
- * `quickLists` (the list-pull mechanism) and the structured filters expand `searchCriteria`
- * (beds/baths/value/equity/sqft/year/type) with `{min,max}` ranges. Unit-tested in the simulator.
+ * PURE: build the BatchData Property Search request body. BatchData's searchCriteria is driven by
+ * `quickLists` (the named business-rule queries that DESCRIBE the leads — high-equity, absentee,
+ * preforeclosure, …) scoped by a `query` string (the geography). The motivated-seller intent maps
+ * to the best quickList(s) via QUICKLIST_SLUG — so the caller picks intent, not a pile of filters.
+ * Any extra BatchData-native structured criteria can be supplied verbatim via `searchCriteria`.
+ * Unit-tested in the simulator.
  */
 export function buildPropertySearchBody(opts: FetchMotivatedSellersOptions): { searchCriteria: Record<string, unknown>; options: { take: number; skip: number } } {
   const types = opts.motivationTypes && opts.motivationTypes.length > 0
@@ -157,17 +134,8 @@ export function buildPropertySearchBody(opts: FetchMotivatedSellersOptions): { s
   const quickLists = [...new Set(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean))]
   const query = [opts.city, opts.zip, opts.state].filter(Boolean).join(", ") || opts.state
 
-  const f = opts.filters ?? {}
-  const searchCriteria: Record<string, unknown> = { query, quickLists }
-  const beds = range(f.bedrooms);          if (beds) searchCriteria.bedrooms = beds
-  const baths = range(f.bathrooms);        if (baths) searchCriteria.bathrooms = baths
-  const value = range(f.estimatedValue);   if (value) searchCriteria.estimatedValue = value
-  const equity = range(f.equityPercent);   if (equity) searchCriteria.equityPercent = equity
-  const sqft = range(f.squareFeet);        if (sqft) searchCriteria.squareFeet = sqft
-  const year = range(f.yearBuilt);         if (year) searchCriteria.yearBuilt = year
-  if (f.propertyType) searchCriteria.propertyType = f.propertyType
-  // Verbatim passthrough wins last so callers can override / add any BatchData-native field.
-  Object.assign(searchCriteria, opts.searchCriteria ?? {})
+  // query (geography) + quickLists (the lead descriptors); verbatim passthrough wins last.
+  const searchCriteria: Record<string, unknown> = { query, quickLists, ...(opts.searchCriteria ?? {}) }
 
   return { searchCriteria, options: { take: opts.limit ?? 100, skip: opts.skip ?? 0 } }
 }
