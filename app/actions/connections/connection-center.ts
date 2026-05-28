@@ -21,6 +21,7 @@ import { revalidatePath } from "next/cache"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { canonicalProvider, aliasesFor } from "@/lib/integrations/connection-manager"
+import { createConnectedAccount, createAccountLink } from "@/lib/providers/payment"
 import {
   CONNECTOR_PROVIDERS,
   selectableConnectionsForScope,
@@ -249,6 +250,62 @@ export async function connectApiKeyProvider(params: {
 
   revalidatePath("/settings/connections")
   return { ok: true }
+}
+
+/**
+ * Generalized Stripe Connect onboarding for ANY tier (agent / team / brokerage / vendor). Creates
+ * (or reuses) an owner-scoped Connect account, stores its acct_… id in platform_credentials so it
+ * cascades like every other financial connection, and returns the Stripe onboarding URL. All Stripe
+ * calls egress through the gateway (createConnectedAccount / createAccountLink).
+ */
+export async function startStripeConnect(owner?: OwnerHint): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const actor = await resolveActor(owner)
+  if (!actor || !actor.ownerId) return { ok: false, error: "Not authorized" }
+  if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
+
+  const svc = createServiceClient()
+  const { data: existing } = await svc
+    .from("platform_credentials")
+    .select("id, account_id")
+    .eq("owner_type", actor.scope)
+    .eq("owner_id", actor.ownerId)
+    .eq("platform", "stripe")
+    .maybeSingle()
+
+  // Existing Connect account → just mint a fresh onboarding/resume link.
+  if (existing?.account_id) {
+    const link = await createAccountLink(existing.account_id as string)
+    if (!link.success || !link.onboardingUrl) return { ok: false, error: link.error || "Stripe onboarding failed" }
+    return { ok: true, url: link.onboardingUrl }
+  }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const created = await createConnectedAccount(user?.email ?? "")
+  if (!created.success || !created.accountId || !created.onboardingUrl) {
+    return { ok: false, error: created.error || "Stripe onboarding failed" }
+  }
+
+  const row = {
+    brokerage_id: actor.brokerageId,
+    agent_user_id: actor.scope === "agent" ? actor.userId : null,
+    owner_type: actor.scope,
+    owner_id: actor.ownerId,
+    platform: "stripe",
+    scope: actor.scope === "agent" ? "agent" : actor.scope === "team" ? "team" : "brokerage",
+    account_id: created.accountId,
+    config: { stripe_onboarding_complete: false },
+    is_active: true,
+    test_status: "pending",
+    updated_at: new Date().toISOString(),
+  }
+  const { error } = existing?.id
+    ? await svc.from("platform_credentials").update(row).eq("id", existing.id)
+    : await svc.from("platform_credentials").insert(row)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/settings/connections")
+  return { ok: true, url: created.onboardingUrl }
 }
 
 export async function disconnectProvider(params: {

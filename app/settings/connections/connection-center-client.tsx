@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import {
   connectApiKeyProvider,
   disconnectProvider,
+  startStripeConnect,
   type ConnectionCenter,
   type OwnerHint,
 } from "@/app/actions/connections/connection-center"
@@ -89,9 +90,15 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
   const [pending, startTransition] = useTransition()
   const name = label(PROVIDER_LABELS, provider.provider)
 
+  const isStripeConnect = domain === "financial" && provider.provider === "stripe"
   const refresh = () => { setOpen(false); router.refresh() }
   const onDisconnect = () =>
     startTransition(async () => { await disconnectProvider({ domain, provider: provider.provider, owner }); router.refresh() })
+  const onStripeConnect = () =>
+    startTransition(async () => {
+      const res = await startStripeConnect(owner)
+      if (res.ok) window.location.href = res.url
+    })
 
   return (
     <div className="rounded-md border p-3">
@@ -108,6 +115,10 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
         <div className="flex items-center gap-2">
           {!provider.available ? (
             <Button size="sm" variant="outline" disabled>Unavailable</Button>
+          ) : isStripeConnect ? (
+            <Button size="sm" variant={provider.connected ? "outline" : "default"} disabled={pending} onClick={onStripeConnect}>
+              {provider.connected ? "Reconnect" : "Connect"}
+            </Button>
           ) : provider.auth === "oauth" && provider.oauthStartPath ? (
             <Button asChild size="sm" variant={provider.connected ? "outline" : "default"}>
               <a href={provider.oauthStartPath}>{provider.connected ? "Reconnect" : "Connect"}</a>

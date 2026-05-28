@@ -155,6 +155,27 @@ export async function createConnectedAccount(email: string): Promise<CreateConne
   return { success: true, accountId: account.id, onboardingUrl: linkRes.data.url }
 }
 
+/** Create a fresh Account Link to (re)onboard an EXISTING Connect account. Used when the owner
+ *  already has a stripe account_id and needs to resume/refresh onboarding. */
+export async function createAccountLink(
+  accountId: string,
+  returnPath = "/settings/payments",
+): Promise<{ success: boolean; onboardingUrl?: string; error?: string }> {
+  const secretKey = getStripeKey()
+  if (!secretKey) return { success: false, error: "Stripe not configured." }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  const res = await stripeReq<{ url: string }>(secretKey, "v1/account_links", {
+    form: {
+      account: accountId,
+      refresh_url: `${appUrl}${returnPath}?stripe=refresh`,
+      return_url: `${appUrl}${returnPath}?stripe=complete`,
+      type: "account_onboarding",
+    },
+  })
+  if (!res.ok || !res.data?.url) return { success: false, error: res.error || "Stripe account_links error" }
+  return { success: true, onboardingUrl: res.data.url }
+}
+
 // ─── Account health / balance / payouts ─────────────────────────────────────────
 
 export interface StripeAccountStatus {
