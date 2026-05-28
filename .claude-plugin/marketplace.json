@@ -14,6 +14,14 @@
       "version": "0.1.0",
       "category": "database",
       "keywords": ["supabase", "postgres", "rls", "migrations", "nextjs", "ssr"]
+    },
+    {
+      "name": "ecc",
+      "source": "./plugins/ecc",
+      "description": "ECC operator layer: api-connector-builder, agentic-os, gateguard, mcp-server-patterns + 230 engineering skills, 75 commands, 60 agents, hooks and rules. Vendored into the repo so cloud sessions load it from a fresh clone.",
+      "version": "2.0.0-rc.1",
+      "category": "workflow",
+      "keywords": ["agents", "skills", "hooks", "commands", "code-review", "connectors", "gateway"]
     }
   ]
 }
