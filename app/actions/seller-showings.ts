@@ -7,6 +7,7 @@ import { isValidUUID } from "@/lib/validations"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 
 // Auth gate — write actions in this file stamp brokerage_id / agent_user_id
 // onto lifecycle_events and listing-stage mutations. Without a session-derived
@@ -33,30 +34,17 @@ export async function resolveShowingMode(params: {
   listingId: string
   agentUserId: string
   brokerageId: string
+  teamId?: string | null
 }): Promise<{ mode: "showingtime" | "manual"; credentialId?: string }> {
-  const supabase = await createClient()
-
-  // Agent-level first, then brokerage-level fallback
-  const { data: agentCred } = await supabase
-    .from("platform_credentials")
-    .select("id")
-    .eq("agent_user_id", params.agentUserId)
-    .eq("platform", "showingtime")
-    .eq("is_active", true)
-    .maybeSingle()
-
-  if (agentCred) return { mode: "showingtime", credentialId: agentCred.id }
-
-  const { data: brokerageCred } = await supabase
-    .from("platform_credentials")
-    .select("id")
-    .is("agent_user_id", null)
-    .eq("brokerage_id", params.brokerageId)
-    .eq("platform", "showingtime")
-    .eq("is_active", true)
-    .maybeSingle()
-
-  if (brokerageCred) return { mode: "showingtime", credentialId: brokerageCred.id }
+  // Unified ownership cascade (agent → team → brokerage → platform, legacy fallback) so a
+  // ShowingTime connection from the Connection Center resolves at any tier — including TEAM,
+  // which the old agent/brokerage-only read skipped.
+  const conn = await resolveScopedConnection("showingtime", {
+    agentUserId: params.agentUserId,
+    teamId: params.teamId ?? null,
+    brokerageId: params.brokerageId,
+  })
+  if (conn) return { mode: "showingtime", credentialId: conn.credentialId }
 
   return { mode: "manual" }
 }

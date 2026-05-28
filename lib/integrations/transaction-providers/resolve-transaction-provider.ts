@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { getTransactionProvider, type TransactionProvider } from "@/lib/brokerage/get-brokerage-settings"
 import { getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
@@ -13,49 +13,25 @@ export interface ResolvedTransactionProvider {
 const TRANSACTION_PLATFORMS = getTransactionFormProviders()
 
 /**
- * Resolves the transaction provider for a given agent with fallback:
- *   1. Agent-scoped platform_credentials (scope='agent', agent_user_id)
- *   2. Brokerage-scoped platform_credentials (scope='brokerage', brokerage_id)
- *   3. global_settings.additional_settings.transaction_provider
+ * Resolves the transaction provider for an actor through the unified ownership cascade
+ * (resolveScopedConnection: agent → team → brokerage → platform, with the legacy
+ * connection-manager fallback), then the brokerage's global_settings default.
  *
- * NOTE: platform_credentials is keyed by agent_user_id / brokerage_id + scope —
- * there is no `owner_id` column (the prior query used one, so it always errored
- * and silently fell through to the global_settings fallback) and no team scope.
+ * This replaces the old per-column read (agent_user_id / brokerage_id only) — so an
+ * owner-scoped connection from the Connection Center, including TEAM scope, now resolves.
  */
 export async function resolveTransactionProvider(params: {
   agentUserId: string
   teamId?: string | null
   brokerageId: string
 }): Promise<ResolvedTransactionProvider | null> {
-  const { agentUserId, brokerageId } = params
-  const supabase = await createClient()
+  const { agentUserId, teamId, brokerageId } = params
 
-  const { data: agentCreds } = await supabase
-    .from("platform_credentials")
-    .select("id, platform")
-    .in("platform", TRANSACTION_PLATFORMS)
-    .eq("scope", "agent")
-    .eq("agent_user_id", agentUserId)
-    .eq("is_active", true)
-    .limit(1)
-    .maybeSingle()
-
-  if (agentCreds) {
-    return { provider: agentCreds.platform as TransactionProvider, credentialsId: agentCreds.id }
-  }
-
-  const { data: brokerageCreds } = await supabase
-    .from("platform_credentials")
-    .select("id, platform")
-    .in("platform", TRANSACTION_PLATFORMS)
-    .eq("scope", "brokerage")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-    .limit(1)
-    .maybeSingle()
-
-  if (brokerageCreds) {
-    return { provider: brokerageCreds.platform as TransactionProvider, credentialsId: brokerageCreds.id }
+  for (const platform of TRANSACTION_PLATFORMS) {
+    const conn = await resolveScopedConnection(platform, { agentUserId, teamId: teamId ?? null, brokerageId })
+    if (conn) {
+      return { provider: conn.provider as TransactionProvider, credentialsId: conn.credentialId }
+    }
   }
 
   // Final fallback: global_settings.additional_settings.transaction_provider.
