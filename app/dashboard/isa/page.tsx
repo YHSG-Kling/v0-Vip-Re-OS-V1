@@ -131,7 +131,7 @@ export default async function AIISAOperationsConsolePage() {
   // Augment leads with call_analyses via voice_calls grouped by contact_id
   // We fetch voice_calls with analyses for all contacts from this lead set
   const contactIds = leads.map((l: any) => l.contact_id).filter(Boolean)
-  let callAnalysesByContact: Record<string, any[]> = {}
+  const callAnalysesByContact: Record<string, any[]> = {}
 
   if (contactIds.length > 0) {
     const { data: vcData } = await supabase

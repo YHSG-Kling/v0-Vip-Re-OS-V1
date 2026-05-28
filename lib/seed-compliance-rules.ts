@@ -315,7 +315,7 @@ export async function getProhibitedPhrases() {
 export async function getRequiredDisclosures(channel: string, state?: string) {
   const supabase = createServiceClient()
 
-  let query = supabase
+  const query = supabase
     .from("required_disclosures")
     .select("*")
     .eq("is_active", true)

@@ -67,7 +67,7 @@ export async function processVoiceCommand(params: {
   sessionId?: string
 }) {
   const { commandText, context, sessionId } = params
-  let { contactId } = params
+  const { contactId } = params
 
   const caller = await resolveCallerAgentId()
   if (!caller.isAuthenticated) {

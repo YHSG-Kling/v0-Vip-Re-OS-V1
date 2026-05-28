@@ -207,7 +207,7 @@ export async function getLifetimeCustomers({
     (engagementScores || []).map(e => [e.contact_id, e])
   )
 
-  let pastClients = filteredContacts
+  const pastClients = filteredContacts
     .filter(c => transactionMap.has(c.id)) // Only include contacts with closed transactions
     .map(c => ({
       ...c,

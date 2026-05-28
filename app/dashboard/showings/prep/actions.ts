@@ -52,7 +52,7 @@ export async function loadUpcomingShowingsForAgent(): Promise<{ rows: UpcomingSh
     .limit(50)
 
   const ids = (showings ?? []).map((s: { id: string }) => s.id)
-  let briefingMap = new Map<string, string>()
+  const briefingMap = new Map<string, string>()
   if (ids.length > 0) {
     const { data: existing } = await svc
       .from("showing_briefings")

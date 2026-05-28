@@ -189,7 +189,7 @@ export async function calculateRevenueProtection(input: {
   }
 
   // ─── Saved GCI: resolved interventions in period ────────────────────────
-  let dealSavesQuery = supabase
+  const dealSavesQuery = supabase
     .from("proactive_interventions")
     .select("transaction_id, severity, resolved_at, issue_detected")
     .eq("brokerage_id", input.brokerageId)

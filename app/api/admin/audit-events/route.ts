@@ -143,7 +143,7 @@ export async function GET(request: NextRequest) {
 
   // 1. lifecycle_events
   if (entityType === "all" || entityType === "event") {
-    let query = supabase
+    const query = supabase
       .from("lifecycle_events")
       .select("id, entity_type, entity_id, event_type, actor_user_id, metadata, created_at")
       .eq("brokerage_id", brokerageId)

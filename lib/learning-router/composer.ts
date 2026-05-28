@@ -59,7 +59,7 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
   let personas: string[] = []
   let generations: string[] = []
   let ageSegs: string[] = []
-  let stageTags: string[] = []
+  const stageTags: string[] = []
   let gapTags: string[] = []
   let completedIds: string[] = []
   let signalSource = "general"

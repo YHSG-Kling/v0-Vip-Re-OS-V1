@@ -245,7 +245,7 @@ export function LessonDetailDrawer({
             )
           }
           return (
-            // eslint-disable-next-line jsx-a11y/media-has-caption
+             
             <video
               src={url}
               controls

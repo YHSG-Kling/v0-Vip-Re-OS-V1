@@ -88,7 +88,7 @@ export async function runDailySphereResonanceScan(opts?: RunOptions): Promise<{
     : await brokerageQ
   if (!brokerages) return zeroResult()
 
-  let summary = zeroResult()
+  const summary = zeroResult()
 
   for (const b of brokerages as Array<{ id: string }>) {
     try {

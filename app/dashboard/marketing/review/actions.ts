@@ -108,7 +108,7 @@ export async function loadMarketingReview(params: {
   }
 
   // 3. Listing media awaiting approval — joined to listings for the address
-  let mediaQuery = svc
+  const mediaQuery = svc
     .from("listing_media")
     .select(`
       id, listing_id, media_type, file_url, thumbnail_url, created_at,
@@ -121,7 +121,7 @@ export async function loadMarketingReview(params: {
     .limit(30)
 
   // 4. Recently minted QR codes (listings, opens, events). agent scope handled below
-  let qrQuery = svc
+  const qrQuery = svc
     .from("qr_codes")
     .select("id, label, slug, target_url, purpose, listing_id, scan_count, created_at, agent_id")
     .eq("brokerage_id", params.brokerageId)

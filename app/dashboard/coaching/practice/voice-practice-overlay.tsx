@@ -165,7 +165,7 @@ export function VoicePracticeOverlay({ scenarioKey, scenarioLabel, open, onClose
       conversationRef.current?.endSession().catch(() => {})
       conversationRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [open, scenarioKey])
 
   // ── Mic mute ────────────────────────────────────────────────────────────

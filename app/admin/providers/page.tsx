@@ -139,7 +139,7 @@ export default async function ProviderHealthPage() {
 
     // Count settings-based connections
     let liveCount = 0
-    let totalBrokerages = allSettings?.length ?? 0
+    const totalBrokerages = allSettings?.length ?? 0
 
     if (def.settingsKey && allSettings) {
       allSettings.forEach((s: Record<string, unknown>) => {

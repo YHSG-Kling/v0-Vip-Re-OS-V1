@@ -59,7 +59,7 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   let peopleData: unknown = null
   let motivatedSellerSignals: unknown[] = []
   let propertyInteractions: unknown[] = []
-  let chatSessions: unknown[] = []
+  const chatSessions: unknown[] = []
 
   // Get base lead data - try leads table first, then contacts
   const { data: leadData, error: leadError } = await supabase

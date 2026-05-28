@@ -213,7 +213,7 @@ export async function loadCMAPageData(listingId: string): Promise<CMAPageData> {
 
   const cmaRow = cmaRes.data
   let comparables: CMAComparable[] = []
-  let compScores: Record<string, AICompScore> = {}
+  const compScores: Record<string, AICompScore> = {}
   let riskFlags: CompRiskFlag[] = []
 
   if (cmaRow) {

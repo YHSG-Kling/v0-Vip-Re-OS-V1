@@ -933,7 +933,7 @@ async function testActorResilience() {
   check("pickActors falls back to primary if all dead", pickActors("reddit", Object.fromEntries(reddit.map((a) => [a, false])))[0] === reddit[0])
 
   // Runtime fallback: first actor errors (gone), second succeeds.
-  let calls: string[] = []
+  const calls: string[] = []
   const runner = async (actorId: string) => {
     calls.push(actorId)
     if (actorId === reddit[0]) throw new Error("Actor not found (404)")

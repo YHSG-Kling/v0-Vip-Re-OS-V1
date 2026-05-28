@@ -40,7 +40,7 @@ export default async function VoiceIntelligencePage() {
 
   // Pull contact names in one batch.
   const contactIds = Array.from(new Set(calls.map((c) => c.contact_id).filter(Boolean) as string[]))
-  let contactMap = new Map<string, { first_name: string | null; last_name: string | null }>()
+  const contactMap = new Map<string, { first_name: string | null; last_name: string | null }>()
   if (contactIds.length > 0) {
     const { data: contacts } = await supabase
       .from("contacts")

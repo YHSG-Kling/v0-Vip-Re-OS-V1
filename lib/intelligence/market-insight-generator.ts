@@ -101,7 +101,7 @@ async function scrapeZillowNeighborhoodData(
 
     // Parse Zillow neighborhood stats from HTML using string matching
     const html = result.html
-    let stats: ScrapedMarketStats = {}
+    const stats: ScrapedMarketStats = {}
 
     // Look for median price patterns
     if (html.includes('Median listing price')) {

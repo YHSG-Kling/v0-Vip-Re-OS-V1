@@ -65,7 +65,7 @@ export default async function FormsLibraryPage() {
     .order("created_at", { ascending: false })
 
   // 3. Form submissions — scoped by role
-  let submissionsQuery = supabase
+  const submissionsQuery = supabase
     .from("form_submissions")
     .select("id, form_id, submitted_at, source, brokerage_id, contact_id")
     .eq("brokerage_id", brokerageId)

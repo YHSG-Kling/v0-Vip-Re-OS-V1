@@ -29,7 +29,7 @@ export const videoAdapter: ChannelAdapter = {
 
     // Resolve agent voice + avatar via voice-resolver
     let voiceId: string | undefined
-    let avatarImageUrl: string | null = null
+    const avatarImageUrl: string | null = null
     let avatarActorId: string | null = null
     if (agentUserId) {
       try {

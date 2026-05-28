@@ -205,7 +205,7 @@ async function applyAction(input: {
       // Flip ai_isa_enabled=true on the agent's contacts where eligibility
       // is met (not dnc, not opted out). Bounded write to avoid surprise.
       const onlyExisting = action.type === "enable_ai_isa_on_existing_leads"
-      let q = svc.from("contacts")
+      const q = svc.from("contacts")
         .update({ ai_isa_enabled: true })
         .eq("brokerage_id", brokerageId)
         .eq("agent_id", agentId)

@@ -67,7 +67,7 @@ async function readCredential(params: {
   credentialId: string
 } | null> {
   const svc = createServiceClient()
-  let q = svc
+  const q = svc
     .from("platform_credentials")
     .select("id, platform, api_key, account_id, access_token, refresh_token, config")
     .eq(params.scopeColumn, params.scopeId)

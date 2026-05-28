@@ -93,7 +93,7 @@ export async function listMarketingCampaigns(params: {
 
     // Fetch ROI data for campaigns
     const campaignIds = (campaigns ?? []).map((c) => c.id)
-    let roiMap: Record<string, any> = {}
+    const roiMap: Record<string, any> = {}
 
     if (campaignIds.length > 0) {
       const { data: roiRows } = await supabase

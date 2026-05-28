@@ -125,7 +125,7 @@ async function resolvePersonaContext(
     if (!agent) return ""
 
     const persona = (agent as any).personas
-    let contextLines: string[] = []
+    const contextLines: string[] = []
 
     if (persona) {
       contextLines.push(`AGENT PERSONA: ${persona.persona_name}`)
@@ -210,7 +210,7 @@ async function resolveBrandVoice(
     if (!brokerage) return ""
 
     const profile = (brokerage as any).brand_voice_profile
-    let snippetLines: string[] = []
+    const snippetLines: string[] = []
 
     if (profile) {
       snippetLines.push(`BRAND VOICE (${brokerage.name}):`)

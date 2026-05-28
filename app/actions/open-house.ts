@@ -359,7 +359,7 @@ export async function getOpenHouseFeedback(openHouseId: string): Promise<{
     if (!fbError && fbRows) {
       // Enrich with attendee name/email
       const attendeeIds = fbRows.map((f) => f.attendee_id).filter(Boolean)
-      let attendeeMap: Record<string, { name: string | null; email: string | null }> = {}
+      const attendeeMap: Record<string, { name: string | null; email: string | null }> = {}
       if (attendeeIds.length > 0) {
         const { data: attendeeRows } = await service
           .from("open_house_attendees")

@@ -54,7 +54,7 @@ export async function resolveRequiredDocuments(
   if (!ctx.brokerageId) return []
 
   // Pull all rows for the brokerage matching deal_type (+ optional state)
-  let q = supabase
+  const q = supabase
     .from("brokerage_required_documents")
     .select("classification, scope_type, scope_id, block_on_missing, description, deal_type, state_code")
     .eq("brokerage_id", ctx.brokerageId)

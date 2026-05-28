@@ -124,7 +124,7 @@ function AttendeesTab({ eventId }: { eventId: string }) {
       }
       setLoaded(true)
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [eventId])
 
   const [showAddForm, setShowAddForm] = useState(false)
@@ -304,7 +304,7 @@ function FeedbackTab({ eventId }: { eventId: string }) {
       }
       setLoaded(true)
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [eventId])
 
   if (isPending && !loaded) {

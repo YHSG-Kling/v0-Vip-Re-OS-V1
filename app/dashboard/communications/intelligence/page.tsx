@@ -298,7 +298,7 @@ export default async function IntelligencePage() {
   const voiceInsightRows = voiceInsightsRes.data ?? []
   const voiceConversationIds = voiceInsightRows.map((r: any) => r.conversations?.id).filter(Boolean)
 
-  let voiceCallMap: Record<string, { recording_url: string | null; transcription: string | null }> = {}
+  const voiceCallMap: Record<string, { recording_url: string | null; transcription: string | null }> = {}
   if (voiceConversationIds.length > 0) {
     // voice_calls does not have a direct conversation_id FK; join via agent_id + contact_id proximity.
     // Best available match: fetch voice_calls for the brokerage, match by contact_id from the conversation.

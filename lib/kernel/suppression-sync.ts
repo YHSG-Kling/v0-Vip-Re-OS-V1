@@ -41,7 +41,7 @@ export async function syncSuppressionState(
   const supabase = await createServiceClient()
   const fieldsUpdated: string[] = []
   let targetId = ""
-  let targetType: "lead" | "contact" = input.sourceType === "lead" ? "contact" : "lead"
+  const targetType: "lead" | "contact" = input.sourceType === "lead" ? "contact" : "lead"
 
   try {
     // ─── FIND LINKED RECORD ────────────────────────────────────────────────

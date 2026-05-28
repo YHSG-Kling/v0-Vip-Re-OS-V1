@@ -60,7 +60,7 @@ async function readCredential(params: {
   preferredPlatform: string | null
 }) {
   const svc = createServiceClient()
-  let q = svc
+  const q = svc
     .from("platform_credentials")
     .select("id, platform, api_key, account_id, config")
     .eq(params.scopeColumn, params.scopeId)

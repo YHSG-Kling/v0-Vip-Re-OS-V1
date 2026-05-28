@@ -157,7 +157,7 @@ export function CreateEpisodeDialog({
 
   useEffect(() => {
     if (!open) resetAll()
-  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open])  
 
   function resetAll() {
     setCurrentStep(0)

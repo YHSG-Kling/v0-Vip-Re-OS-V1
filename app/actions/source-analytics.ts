@@ -228,7 +228,7 @@ export async function getSourcePerformance(
       ].filter(Boolean))
     ]
 
-    let agentNames: Record<string, string> = {}
+    const agentNames: Record<string, string> = {}
     if (allAgentIds.length > 0) {
       const { data: agentRows } = await supabase
         .from("users")
@@ -244,7 +244,7 @@ export async function getSourcePerformance(
         ...(leads?.map(l => l.campaign_attribution_id).filter(Boolean) ?? []),
       ])
     ]
-    let campaignNames: Record<string, string> = {}
+    const campaignNames: Record<string, string> = {}
     if (campaignIds.length > 0) {
       const { data: campaigns } = await supabase
         .from("marketing_campaigns")
@@ -409,7 +409,7 @@ export async function getSourcePerformance(
       }
     }
 
-    let sources = Array.from(sourceMap.values())
+    const sources = Array.from(sourceMap.values())
 
     // Sort
     const sortFn: Record<string, (a: SourceMetrics, b: SourceMetrics) => number> = {
@@ -536,7 +536,7 @@ export async function getSourceDrilldown(
       ...(recentContacts?.map(c => c.agent_id).filter(Boolean) ?? []),
       ...(txData?.map(t => t.agent_id).filter(Boolean) ?? []),
     ])]
-    let agentNames: Record<string, string> = {}
+    const agentNames: Record<string, string> = {}
     if (agentIds.length > 0) {
       const { data: agentRows } = await supabase
         .from("users")

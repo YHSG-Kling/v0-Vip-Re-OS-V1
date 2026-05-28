@@ -328,7 +328,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
     const supabase = await createClient()
 
     // If a specific agent is given, verify they belong to the brokerage
-    let resolvedAgentId = targetAgentId ?? null
+    const resolvedAgentId = targetAgentId ?? null
     if (targetAgentId) {
       const { data: agentRow } = await supabase
         .from("agents")

@@ -49,7 +49,7 @@ export async function getActivePatterns(
   const { brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
-  let query = supabase
+  const query = supabase
     .from("pattern_detections")
     .select(
       `

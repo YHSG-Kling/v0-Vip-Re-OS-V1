@@ -67,7 +67,7 @@ export async function runDailyWealthScan(opts?: RunOptions): Promise<{
   const brokerages = (brokeragesData ?? []) as unknown as Array<{ id: string }>
   if (brokerages.length === 0) return zeroResult()
 
-  let totals = zeroResult()
+  const totals = zeroResult()
 
   for (const b of brokerages) {
     const r = await processBrokerageWealthScan(b.id, marketRate, limit)

@@ -273,7 +273,7 @@ export async function scheduleSocialPost(params: {
   try {
     // Apply brand voice — check for violations only; we never rewrite content automatically.
     // BrandVoiceResult.content is the original (unchanged); there is no transformedContent.
-    let processedContent = params.content
+    const processedContent = params.content
     try {
       await applyBrandVoice({
         brokerageId,

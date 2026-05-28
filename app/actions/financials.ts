@@ -30,7 +30,7 @@ export async function generateAIForecast(params: {
 
   // Force agentId to caller's own agent unless they're an admin of the
   // same brokerage as the target agent.
-  let targetAgentId: string | null = params.agentId ?? ctx.agentId ?? null
+  const targetAgentId: string | null = params.agentId ?? ctx.agentId ?? null
   if (!targetAgentId) return { success: false, error: "No agent context" }
 
   if (targetAgentId !== ctx.agentId) {

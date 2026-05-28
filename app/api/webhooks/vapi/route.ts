@@ -353,7 +353,7 @@ async function handleRequestShowingInHouseListing(params: {
   }
 
   // 2. Verify unrepresented buyer (no contact yet, or contact has no agent_id)
-  let contactId = params.contact_id ?? null
+  const contactId = params.contact_id ?? null
   if (contactId) {
     const { data: contact } = await supabase
       .from("contacts")
