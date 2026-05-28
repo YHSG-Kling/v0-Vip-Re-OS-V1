@@ -37,7 +37,7 @@ export const PLATFORM_VENDORS = new Set<string>([
 // connectivity scan and connection gate recognize every name a connection may be stored under.
 export const USER_CONNECTED_VENDORS = new Set<string>([
   "idxbroker",                                                   // IDX / MLS listings
-  "gohighlevel", "lofty", "followupboss",                        // CRM sync-out (egress)
+  "gohighlevel", "lofty", "followupboss", "hubspot",             // CRM sync-out (egress)
   "sendgrid", "gmail", "outlook", "resend", "postmark", "mailgun", // email
   "twilio", "telnyx", "bandwidth", "plivo", "sinch",             // phone + SMS
   "nylas", "google_calendar",                                    // calendar (Google products etc.)

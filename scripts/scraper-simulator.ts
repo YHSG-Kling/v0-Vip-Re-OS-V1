@@ -64,6 +64,7 @@ import {
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
 import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
+import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
@@ -315,6 +316,20 @@ async function testVendorConnectors() {
   check("Apify slug '/'→'~' normalized in path", apifyUrl.includes("acts/apify~facebook-posts-scraper"))
   check("Apify uses run-sync-get-dataset-items endpoint", apifyUrl.endsWith("/run-sync-get-dataset-items"))
   check("Apify returns dataset items array", Array.isArray(apifyRes.data) && apifyRes.data.length === 1)
+
+  // HubSpot CRM sync-out (gateway) — upsert by email, Bearer auth, result mapping.
+  let hsReq: { url: string; body: any; auth: string } | null = null
+  globalThis.fetch = (async (url: any, init: any) => {
+    hsReq = { url: String(url), body: JSON.parse(init.body), auth: init.headers?.Authorization ?? init.headers?.authorization ?? "" }
+    return { ok: true, status: 200, json: async () => ({ results: [{ id: "hs-123" }] }) }
+  }) as unknown as typeof fetch
+  const hsRes = await syncContactToHubSpot({ firstName: "Dana", lastName: "Buyer", email: "dana@example.com", phone: "+15557654321" }, "HSTOKEN")
+  check("HubSpot upserts via /crm/v3/objects/contacts/batch/upsert", !!hsReq && (hsReq as any).url.endsWith("/crm/v3/objects/contacts/batch/upsert"))
+  check("HubSpot upsert keyed by email idProperty", !!hsReq && (hsReq as any).body.inputs[0].idProperty === "email" && (hsReq as any).body.inputs[0].id === "dana@example.com")
+  check("HubSpot maps name/email/phone to properties", !!hsReq && (hsReq as any).body.inputs[0].properties.firstname === "Dana" && (hsReq as any).body.inputs[0].properties.email === "dana@example.com" && (hsReq as any).body.inputs[0].properties.phone === "+15557654321")
+  check("HubSpot uses Bearer auth", !!hsReq && (hsReq as any).auth === "Bearer HSTOKEN")
+  check("HubSpot returns contactId from results[0].id", hsRes.success && hsRes.contactId === "hs-123")
+  check("HubSpot without token → requiresConfiguration", (await syncContactToHubSpot({ firstName: "X", lastName: "Y" }, null)).requiresConfiguration === true)
 
   globalThis.fetch = realFetch
 }
@@ -666,7 +681,7 @@ async function testVendorGateway() {
 
   // ── Connection provider registry + per-actor provider gating ────────────────
   check("provider gating: agent may pick docusign for esign, but not for crm", isProviderAllowedForScope("agent", "esign", "docusign") && !isProviderAllowedForScope("agent", "crm", "docusign"))
-  check("provider gating: crm is sync-out set {gohighlevel, followupboss, lofty}", CONNECTOR_PROVIDERS.crm.join(",") === "gohighlevel,followupboss,lofty")
+  check("provider gating: crm is sync-out set {gohighlevel, followupboss, lofty, hubspot}", CONNECTOR_PROVIDERS.crm.join(",") === "gohighlevel,followupboss,lofty,hubspot")
   check("provider gating: unknown provider rejected for a valid domain", !isProviderAllowedForScope("brokerage", "transaction", "notarize"))
   check("provider gating: vendor may pick stripe (financial) but NOT a transaction provider", isProviderAllowedForScope("vendor", "financial", "stripe") && !isProviderAllowedForScope("vendor", "transaction", "dotloop"))
   check("provider gating: contact may pick a calendar/social provider only", isProviderAllowedForScope("contact", "calendar", "gmail") && isProviderAllowedForScope("contact", "social", "instagram") && !isProviderAllowedForScope("contact", "email", "gmail"))

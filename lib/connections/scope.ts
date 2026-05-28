@@ -37,7 +37,7 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   phone:       ["twilio", "telnyx", "bandwidth"],
   calendar:    ["gmail", "outlook"],
   social:      ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"],
-  crm:         ["gohighlevel", "followupboss", "lofty"], // hubspot: pending a sync-out adapter
+  crm:         ["gohighlevel", "followupboss", "lofty", "hubspot"], // all sync-out only
   financial:   ["quickbooks", "stripe"],
   listing:     ["idxbroker"],
   transaction: ["dotloop", "formsimplicity", "docusign", "skyslope", "brokermint"],

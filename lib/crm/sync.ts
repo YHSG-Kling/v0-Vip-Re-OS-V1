@@ -13,6 +13,7 @@ import { syncContactToGHL } from "@/services/goHighLevelService"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
 import { syncContactToLofty } from "@/lib/crm/providers/lofty"
+import { syncContactToHubSpot } from "@/lib/crm/providers/hubspot"
 
 export interface CRMContactPayload {
   firstName: string
@@ -80,7 +81,7 @@ export async function syncContactToCRM(
     // scope first, then the brokerage's, so a Connection-Center CRM selection is honored. Only
     // applies when nothing more specific was selected above.
     if (providerKey === "ghl") {
-      const crmPlatforms = ["gohighlevel", "ghl", "followupboss", "lofty"]
+      const crmPlatforms = ["gohighlevel", "ghl", "followupboss", "lofty", "hubspot"]
       let userId: string | null = null
       if (payload.agentId) {
         const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", payload.agentId).maybeSingle()
@@ -138,8 +139,8 @@ export async function syncContactToCRM(
     }
   }
 
-  // ── Lofty + Follow Up Boss — sync-OUT via the connector-gateway ──────────────
-  if (providerKey === "followupboss" || providerKey === "lofty") {
+  // ── Follow Up Boss + Lofty + HubSpot — sync-OUT via the connector-gateway ─────
+  if (providerKey === "followupboss" || providerKey === "lofty" || providerKey === "hubspot") {
     // Credential via the unified owner cascade (agent → team → brokerage → platform, legacy
     // fallback preserved) so a Connection-Center CRM connection at any scope is honored.
     let agentUserId: string | null = null
@@ -160,7 +161,9 @@ export async function syncContactToCRM(
     const result =
       providerKey === "followupboss"
         ? await syncContactToFollowUpBoss(contact, conn?.apiKey ?? null)
-        : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null)
+        : providerKey === "hubspot"
+          ? await syncContactToHubSpot(contact, conn?.apiKey ?? null)
+          : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null)
     return {
       success: result.success,
       contactId: result.contactId,
@@ -171,7 +174,7 @@ export async function syncContactToCRM(
     }
   }
 
-  // Future CRM providers (HubSpot, Salesforce, etc.) go here
+  // Future CRM providers (Salesforce, etc.) go here
   return {
     success: false,
     providerKey,

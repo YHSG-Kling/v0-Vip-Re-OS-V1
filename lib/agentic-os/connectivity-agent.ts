@@ -44,7 +44,7 @@ export const CONNECTOR_TRANSPORT: Record<string, Transport> = {
   idxbroker: "api_key", sendgrid: "api_key", resend: "api_key", postmark: "api_key",
   mailgun: "api_key", twilio: "api_key", telnyx: "api_key", bandwidth: "api_key",
   plivo: "api_key", sinch: "api_key",
-  lofty: "api_key", followupboss: "api_key", // CRM sync-out
+  lofty: "api_key", followupboss: "api_key", hubspot: "api_key", // CRM sync-out
   skyslope: "api_key", authentisign: "api_key", brokermint: "api_key",
   formsimplicity: "api_key", showingtime: "api_key", podcast_syndicator: "api_key",
 }
