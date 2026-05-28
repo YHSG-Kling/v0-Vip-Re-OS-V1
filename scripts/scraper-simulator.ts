@@ -82,6 +82,7 @@ import { buildAuthedRequest } from "../lib/agentic-os/connector-gateway"
 import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
+import { scopeCascade, isConnectionAllowed, writeScopeFor } from "../lib/connections/scope"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -647,6 +648,19 @@ async function testVendorGateway() {
     return slots.length === 7 && !slots.some((s) => new Date(s.startTime).getHours() === 9)
   })())
   check("free-slots: respects duration (30-min slots still 8 in 9-17 hourly grid)", computeFreeSlots([], { startDate: calStart, endDate: calEnd, durationMinutes: 30 }).length === 8)
+
+  // ── Unified connection ownership scope (agent→team→brokerage→platform) ──────
+  check("scope cascade: agent → team → brokerage → platform (most-specific first)", (() => {
+    const c = scopeCascade({ agentUserId: "u1", teamId: "t1", brokerageId: "b1" })
+    return c.map((o) => o.ownerType).join(",") === "agent,team,brokerage,platform"
+  })())
+  check("scope cascade: brokerage-only actor → brokerage → platform", scopeCascade({ brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "brokerage,platform")
+  check("scope cascade: vendor is a leaf → vendor → platform (no brokerage cascade)", scopeCascade({ vendorId: "v1", brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "vendor,platform")
+  check("scope cascade: contact is a leaf → contact → platform", scopeCascade({ contactId: "c1", brokerageId: "b1" }).map((o) => o.ownerType).join(",") === "contact,platform")
+  check("vendor/contact may connect ONLY social + calendar", isConnectionAllowed("vendor", "social") && isConnectionAllowed("vendor", "calendar") && !isConnectionAllowed("vendor", "email") && !isConnectionAllowed("contact", "phone") && !isConnectionAllowed("contact", "crm"))
+  check("agent/team/brokerage/platform may connect any domain", (["agent", "team", "brokerage", "platform"] as const).every((s) => isConnectionAllowed(s, "email") && isConnectionAllowed(s, "financial") && isConnectionAllowed(s, "calendar")))
+  check("writeScope: agent writes agent scope; broker-manager writes brokerage", writeScopeFor({ agentUserId: "u1", brokerageId: "b1" })?.ownerType === "agent" && writeScopeFor({ agentUserId: "u1", brokerageId: "b1", isBrokerageManager: true })?.ownerType === "brokerage")
+  check("writeScope: vendor/contact write to themselves", writeScopeFor({ vendorId: "v1" })?.ownerType === "vendor" && writeScopeFor({ contactId: "c1" })?.ownerType === "contact")
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
