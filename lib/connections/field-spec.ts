@@ -62,9 +62,12 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
     ],
   },
   financial: {
-    // Stripe = api_key (secret); QuickBooks is OAuth and handled by the integrations OAuth route.
-    method: "api_key",
-    fields: [{ key: "apiKey", label: "Secret Key", required: true, secret: true, placeholder: "sk_live_…" }],
+    // Both financial providers are OAuth/Connect — NEVER a pasted secret key. Per Stripe Apps API
+    // auth (platform key / OAuth / restricted key), our platform uses the PLATFORM-KEY model for
+    // charging (env STRIPE_SECRET_KEY) and Stripe CONNECT account onboarding for per-actor payouts
+    // (initiateStripeConnectOnboarding → /settings/payments). QuickBooks is OAuth 2.0.
+    method: "oauth",
+    fields: [],
   },
   listing: {
     method: "api_key",
@@ -92,19 +95,20 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
   marketing: { method: "api_key", fields: [] },
 }
 
-/** OAuth (QuickBooks) financial providers handled by the redirect flow rather than an api_key form. */
-const FINANCIAL_OAUTH_PROVIDERS = new Set(["quickbooks"])
-
-/** Pure: is this (domain, provider) connected via OAuth redirect rather than an API-key form? */
-export function isOAuthConnection(domain: ConnectorDomain, canonicalProviderId: string): boolean {
-  if (domain === "financial") return FINANCIAL_OAUTH_PROVIDERS.has(canonicalProviderId)
+/** Pure: is this (domain, provider) connected via OAuth/Connect redirect rather than an API-key
+ *  form? Financial (Stripe Connect + QuickBooks OAuth) is always redirect-based. */
+export function isOAuthConnection(domain: ConnectorDomain, _canonicalProviderId: string): boolean {
   return DOMAIN_AUTH[domain].method === "oauth"
 }
 
-/** Pure: the OAuth start path for an OAuth provider (email/calendar/social, or QuickBooks). */
+/** Pure: the OAuth/Connect start path for a redirect-based provider. QuickBooks → the integrations
+ *  OAuth route; Stripe → the Stripe Connect onboarding surface (initiateStripeConnectOnboarding);
+ *  email/calendar/social → their OAuth routes. */
 export function oauthStartPath(domain: ConnectorDomain, canonicalProviderId: string): string | null {
-  if (domain === "financial" && canonicalProviderId === "quickbooks") {
-    return "/api/integrations/oauth/quickbooks"
+  if (domain === "financial") {
+    if (canonicalProviderId === "quickbooks") return "/api/integrations/oauth/quickbooks"
+    if (canonicalProviderId === "stripe") return "/settings/payments" // Stripe Connect onboarding lives here
+    return null
   }
   const tmpl = DOMAIN_AUTH[domain].oauthStartPath
   return tmpl ? tmpl.replace("{provider}", canonicalProviderId) : null
@@ -130,7 +134,7 @@ export function buildCredentialWrite(
     case "crm":
       if (!has("apiKey")) return null
       return { api_key: trim("apiKey"), account_id: has("accountId") ? trim("accountId") : null, config: {} }
-    case "financial":
+    // financial is OAuth/Connect (no api-key write) — handled by the redirect flow, not here.
     case "listing":
     case "showing":
       if (!has("apiKey")) return null
@@ -182,8 +186,13 @@ export function isConnectSupported(
     return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
   }
   if (domain === "social") return { available: true } // stored by user_id — any signed-in user
-  if (domain === "financial" && canonicalProviderId === "quickbooks") {
-    return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }
+  if (domain === "financial") {
+    // QuickBooks OAuth is brokerage-scoped; Stripe is Connect onboarding (any actor can onboard a
+    // payout account via the platform key — no per-actor brokerage anchor needed).
+    if (canonicalProviderId === "quickbooks") {
+      return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }
+    }
+    return { available: true } // stripe → Connect onboarding
   }
   // email / calendar OAuth → personal mailbox tokens (agent_api_credentials).
   return caps.hasAgentId ? { available: true } : { available: false, reason: "Available soon for your account type." }

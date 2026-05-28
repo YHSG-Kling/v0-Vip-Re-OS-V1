@@ -740,8 +740,8 @@ async function testVendorGateway() {
 
   // ── Connection field-spec: auth method + resolver-correct credential mapping ─
   check("field-spec: email/calendar/social are OAuth; phone/esign are api_key", isOAuthConnection("email", "gmail") && isOAuthConnection("calendar", "outlook") && isOAuthConnection("social", "facebook") && !isOAuthConnection("phone", "twilio") && !isOAuthConnection("esign", "docusign"))
-  check("field-spec: financial quickbooks=OAuth, stripe=api_key", isOAuthConnection("financial", "quickbooks") && !isOAuthConnection("financial", "stripe"))
-  check("field-spec: oauthStartPath routes email/calendar via integrations, social via social", oauthStartPath("email", "gmail") === "/api/integrations/oauth/gmail" && oauthStartPath("social", "facebook") === "/api/social/oauth/facebook" && oauthStartPath("financial", "quickbooks") === "/api/integrations/oauth/quickbooks")
+  check("field-spec: financial is OAuth/Connect (quickbooks OAuth + stripe Connect), no key paste", isOAuthConnection("financial", "quickbooks") && isOAuthConnection("financial", "stripe") && buildCredentialWrite("financial", { apiKey: "sk_x" }) === null)
+  check("field-spec: oauthStartPath — email/calendar via integrations, social via social, stripe→Connect, qbo→oauth", oauthStartPath("email", "gmail") === "/api/integrations/oauth/gmail" && oauthStartPath("social", "facebook") === "/api/social/oauth/facebook" && oauthStartPath("financial", "quickbooks") === "/api/integrations/oauth/quickbooks" && oauthStartPath("financial", "stripe") === "/settings/payments")
   check("field-spec: phone write maps SID/auth/from to resolver shape", (() => { const w = buildCredentialWrite("phone", { accountSid: "AC1", authToken: "tok", fromNumber: "+15551112222" }); return !!w && w.api_key === "AC1" && (w.config as any).auth_token === "tok" && (w.config as any).from_number === "+15551112222" })())
   check("field-spec: esign write maps profileId to config.profile_id + account_id", (() => { const w = buildCredentialWrite("esign", { apiKey: "k", profileId: "p1" }); return !!w && w.api_key === "k" && w.account_id === "p1" && (w.config as any).profile_id === "p1" })())
   check("field-spec: missing required field rejected (returns null)", buildCredentialWrite("phone", { accountSid: "AC1" }) === null && buildCredentialWrite("listing", {}) === null)
@@ -752,12 +752,13 @@ async function testVendorGateway() {
   const vendorCaps = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
   const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
   const platformNoBrokerage = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }
-  check("availability: api_key supported when actor can own + has a brokerage (vendor stripe)", isConnectSupported("financial", "stripe", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
+  check("availability: api_key supported when actor can own + has a brokerage (esign docusign)", isConnectSupported("esign", "docusign", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
+  check("availability: stripe Connect available to any owner; quickbooks needs brokerage manager", isConnectSupported("financial", "stripe", vendorCaps).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
   check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
   check("availability: calendar OAuth needs an agent identity (vendor = unavailable)", isConnectSupported("calendar", "gmail", agentCaps).available && !isConnectSupported("calendar", "gmail", vendorCaps).available)
   check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
-  check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("financial", "stripe", platformNoBrokerage).available && !isConnectSupported("esign", "docusign", platformNoBrokerage).available)
-  check("availability: nothing is connectable without an owner id", !isConnectSupported("financial", "stripe", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
+  check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("esign", "docusign", platformNoBrokerage).available && !isConnectSupported("transaction", "dotloop", platformNoBrokerage).available)
+  check("availability: nothing is connectable without an owner id", !isConnectSupported("esign", "docusign", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }
 
 // ── 9. Source → intent mapping (the vendor/intent model) ─────────────────────
