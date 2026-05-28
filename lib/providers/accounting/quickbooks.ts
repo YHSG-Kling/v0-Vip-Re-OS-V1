@@ -9,6 +9,7 @@
 // returns the new token set so the caller persists it (the connector itself is stateless).
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 const QBO_API_BASE = "https://quickbooks.api.intuit.com/v3/company"
@@ -95,22 +96,22 @@ export class QuickBooksProvider implements IAccountingProvider {
     return { accessToken: json.access_token, refreshToken: json.refresh_token, tokenExpiresAt }
   }
 
+  /** Single egress choke point — every QBO API call leaves through the connector-gateway (Bearer).
+   *  The OAuth token exchange (refreshAccessToken) stays a raw fetch: it is form-urlencoded with
+   *  HTTP Basic auth, the documented exception to the JSON single-egress path. */
   private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-    const url = `${QBO_API_BASE}/${this.creds.realmId}/${path}`
-    const res = await fetch(url, {
+    const res = await callConnector<T>({
+      connector: "quickbooks",
+      baseUrl: `${QBO_API_BASE}/${this.creds.realmId}`,
+      path,
       method,
-      headers: {
-        Authorization: `Bearer ${this.creds.accessToken}`,
-        Accept: "application/json",
-        ...(body ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      body,
+      auth: { style: "bearer", token: this.creds.accessToken },
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => "")
-      throw new Error(`QuickBooks ${method} ${path} failed (${res.status}): ${text.slice(0, 300)}`)
+    if (!res.ok || res.data == null) {
+      throw new Error(`QuickBooks ${method} ${path} failed (${res.status ?? "—"}): ${res.error ?? ""}`)
     }
-    return (await res.json()) as T
+    return res.data
   }
 
   async getCompanyInfo(): Promise<CompanyInfo> {

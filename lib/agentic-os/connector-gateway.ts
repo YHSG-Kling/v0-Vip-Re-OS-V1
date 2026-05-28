@@ -32,6 +32,10 @@ export interface GatewayRequest {
   /** "json" (default) parses the body as JSON; "text" returns the raw string (HTML scrapers);
    *  "arraybuffer" returns the raw bytes as a Buffer (binary responses, e.g. TTS audio). */
   responseType?: "json" | "text" | "arraybuffer"
+  /** How the request body is encoded. "json" (default) → JSON.stringify; "form" →
+   *  application/x-www-form-urlencoded (Stripe, Intuit-style APIs). Body must be a flat
+   *  string/number map when "form" (nested keys pre-flattened, e.g. "metadata[id]"). */
+  bodyType?: "json" | "form"
   timeoutMs?: number
 }
 
@@ -50,7 +54,9 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
   for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v)
 
   const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) }
-  if (req.body !== undefined) headers["Content-Type"] = "application/json"
+  if (req.body !== undefined) {
+    headers["Content-Type"] = req.bodyType === "form" ? "application/x-www-form-urlencoded" : "application/json"
+  }
 
   switch (req.auth.style) {
     case "bearer":
@@ -78,11 +84,16 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
  */
 export async function callConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
   const { url, headers } = buildAuthedRequest(req)
+  const serializedBody = req.body === undefined
+    ? undefined
+    : req.bodyType === "form"
+      ? new URLSearchParams(req.body as Record<string, string>).toString()
+      : JSON.stringify(req.body)
   try {
     const res = await fetch(url, {
       method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
       headers,
-      ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+      ...(serializedBody !== undefined ? { body: serializedBody } : {}),
       signal: AbortSignal.timeout(req.timeoutMs ?? 15_000),
     })
     // Text responses (HTML scrapers) bypass JSON parsing + shape adaptation.

@@ -106,6 +106,72 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   }
 }
 
+/** A {min,max} numeric range — BatchData expresses bedroom/value/equity/etc. filters this way. */
+export interface NumericRange { min?: number; max?: number }
+
+/** Structured property filters layered on top of the quickList list-pull. Field names follow the
+ *  BatchData v1 Property Search `searchCriteria` convention; anything not covered here can be
+ *  supplied verbatim via `searchCriteria` (the escape hatch) so a verified field never needs a
+ *  code change. */
+export interface BatchDataPropertyFilters {
+  bedrooms?: NumericRange
+  bathrooms?: NumericRange
+  estimatedValue?: NumericRange
+  equityPercent?: NumericRange
+  squareFeet?: NumericRange
+  yearBuilt?: NumericRange
+  propertyType?: string | string[]
+}
+
+export interface FetchMotivatedSellersOptions {
+  state: string
+  city?: string
+  zip?: string
+  motivationTypes?: string[]
+  /** Structured filters merged into searchCriteria (beds/baths/value/equity/sqft/year/type). */
+  filters?: BatchDataPropertyFilters
+  /** Advanced escape hatch — BatchData-native searchCriteria merged verbatim (no guessing). */
+  searchCriteria?: Record<string, unknown>
+  limit?: number
+  skip?: number
+}
+
+/** Drop undefined ends from a range; omit entirely when empty. */
+function range(r?: NumericRange): NumericRange | undefined {
+  if (!r) return undefined
+  const out: NumericRange = {}
+  if (typeof r.min === "number") out.min = r.min
+  if (typeof r.max === "number") out.max = r.max
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * PURE: build the BatchData Property Search request body. The motivated-seller triggers become
+ * `quickLists` (the list-pull mechanism) and the structured filters expand `searchCriteria`
+ * (beds/baths/value/equity/sqft/year/type) with `{min,max}` ranges. Unit-tested in the simulator.
+ */
+export function buildPropertySearchBody(opts: FetchMotivatedSellersOptions): { searchCriteria: Record<string, unknown>; options: { take: number; skip: number } } {
+  const types = opts.motivationTypes && opts.motivationTypes.length > 0
+    ? opts.motivationTypes
+    : [...BATCHDATA_MOTIVATION_TYPES]
+  const quickLists = [...new Set(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean))]
+  const query = [opts.city, opts.zip, opts.state].filter(Boolean).join(", ") || opts.state
+
+  const f = opts.filters ?? {}
+  const searchCriteria: Record<string, unknown> = { query, quickLists }
+  const beds = range(f.bedrooms);          if (beds) searchCriteria.bedrooms = beds
+  const baths = range(f.bathrooms);        if (baths) searchCriteria.bathrooms = baths
+  const value = range(f.estimatedValue);   if (value) searchCriteria.estimatedValue = value
+  const equity = range(f.equityPercent);   if (equity) searchCriteria.equityPercent = equity
+  const sqft = range(f.squareFeet);        if (sqft) searchCriteria.squareFeet = sqft
+  const year = range(f.yearBuilt);         if (year) searchCriteria.yearBuilt = year
+  if (f.propertyType) searchCriteria.propertyType = f.propertyType
+  // Verbatim passthrough wins last so callers can override / add any BatchData-native field.
+  Object.assign(searchCriteria, opts.searchCriteria ?? {})
+
+  return { searchCriteria, options: { take: opts.limit ?? 100, skip: opts.skip ?? 0 } }
+}
+
 // Single egress: all BatchData Property Search calls route through the connector-gateway
 // (one way in/out). Throws on error to preserve the callers' contract.
 async function batchDataPropertySearch(body: unknown, errorLabel: string): Promise<any> {
@@ -122,12 +188,7 @@ async function batchDataPropertySearch(body: unknown, errorLabel: string): Promi
   return res.data
 }
 
-export async function fetchMotivatedSellers(params: {
-  state: string
-  city?: string
-  motivationTypes?: string[]
-  limit?: number
-}): Promise<{
+export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions): Promise<{
   records: BatchDataRecord[]
   cost: number
   recordsFound: number
@@ -135,13 +196,12 @@ export async function fetchMotivatedSellers(params: {
   const types = params.motivationTypes && params.motivationTypes.length > 0
     ? params.motivationTypes
     : [...BATCHDATA_MOTIVATION_TYPES]
-  const quickLists = [...new Set(types.map((t) => QUICKLIST_SLUG[t]).filter(Boolean))]
-  const query = [params.city, params.state].filter(Boolean).join(', ') || params.state
 
-  // BatchData v1 Property Search — POST /api/v1/property/search.
-  // Motivated-seller triggers are expressed as `searchCriteria.quickLists`.
+  // BatchData v1 Property Search — POST /api/v1/property/search. Motivated-seller triggers are
+  // expressed as `searchCriteria.quickLists`; structured filters (beds/value/equity/…) expand
+  // searchCriteria via the pure builder.
   const data = await batchDataPropertySearch(
-    { searchCriteria: { query, quickLists }, options: { take: params.limit ?? 100, skip: 0 } },
+    buildPropertySearchBody(params),
     "BatchData API error",
   )
   const properties: any[] = data?.results?.properties ?? data?.results ?? []

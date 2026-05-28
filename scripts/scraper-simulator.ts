@@ -62,7 +62,7 @@ import {
   factualNarrative,
 } from "../lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "../lib/compliance-rules/fair-housing-patterns"
-import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty } from "../lib/external/batchdata-client"
+import { BATCHDATA_MOTIVATION_TYPES, fetchMotivatedSellers, normalizeBatchDataProperty, buildPropertySearchBody } from "../lib/external/batchdata-client"
 import { runApifyActor } from "../lib/external/apify-client"
 import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
 import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
@@ -306,6 +306,18 @@ async function testVendorConnectors() {
   check("BatchData maps high_equity → 'high-equity' slug", !!captured && (captured as any).body.searchCriteria.quickLists.includes("high-equity"))
   check("BatchData options.take = limit", !!captured && (captured as any).body.options.take === 25)
 
+  // buildPropertySearchBody (pure) — quickLists list-pull + expanded structured searchCriteria.
+  const sc = buildPropertySearchBody({
+    state: "FL", city: "Tampa", zip: "33602", motivationTypes: ["high_equity", "absentee"],
+    filters: { bedrooms: { min: 3 }, estimatedValue: { min: 200000, max: 600000 }, equityPercent: { min: 40 }, propertyType: "SFR" },
+    limit: 50, skip: 100,
+  }).searchCriteria as any
+  check("BatchData builder: quickLists from motivation types (high-equity + absentee-owner)", sc.quickLists.includes("high-equity") && sc.quickLists.includes("absentee-owner"))
+  check("BatchData builder: query joins city/zip/state", sc.query === "Tampa, 33602, FL")
+  check("BatchData builder: structured beds/value/equity ranges as {min,max}", sc.bedrooms.min === 3 && sc.estimatedValue.min === 200000 && sc.estimatedValue.max === 600000 && sc.equityPercent.min === 40 && sc.propertyType === "SFR")
+  check("BatchData builder: empty range omitted, pagination via options.skip", buildPropertySearchBody({ state: "FL", filters: { bathrooms: {} }, skip: 100 }).options.skip === 100 && !("bathrooms" in (buildPropertySearchBody({ state: "FL", filters: { bathrooms: {} } }).searchCriteria as any)))
+  check("BatchData builder: searchCriteria passthrough overrides/extends (escape hatch)", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { county: "Hillsborough", quickLists: ["vacant"] } }).searchCriteria as any; return b.county === "Hillsborough" && b.quickLists[0] === "vacant" })())
+
   // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
   let apifyUrl = ""
   globalThis.fetch = (async (url: any) => {
@@ -347,6 +359,21 @@ async function testVendorConnectors() {
   globalThis.fetch = (async () => ({ ok: false, status: 401, text: async () => "quota exceeded" })) as unknown as typeof fetch
   const abErr = await callConnector({ connector: "elevenlabs", baseUrl: "https://api.elevenlabs.io", path: "x", method: "POST", auth: { style: "header", name: "xi-api-key", value: "K" }, responseType: "arraybuffer", body: {} })
   check("gateway arraybuffer: surfaces error body on failure", !abErr.ok && abErr.status === 401 && abErr.error === "quota exceeded")
+
+  // Gateway form-urlencoded body mode (Stripe/Intuit style) — body is x-www-form-urlencoded.
+  let formReq: { ct: string; body: string; auth: string } | null = null
+  globalThis.fetch = (async (_url: any, init: any) => {
+    formReq = { ct: init?.headers?.["Content-Type"] ?? "", body: String(init?.body ?? ""), auth: init?.headers?.Authorization ?? "" }
+    return { ok: true, status: 200, json: async () => ({ id: "tr_1", amount: 5000 }) }
+  }) as unknown as typeof fetch
+  const formRes = await callConnector<{ id: string }>({
+    connector: "stripe", baseUrl: "https://api.stripe.com", path: "v1/transfers", method: "POST",
+    auth: { style: "bearer", token: "sk_test" }, bodyType: "form",
+    body: { amount: "5000", currency: "usd", "metadata[txn]": "abc" },
+  })
+  check("gateway form: Content-Type is x-www-form-urlencoded", !!formReq && (formReq as any).ct === "application/x-www-form-urlencoded")
+  check("gateway form: body is urlencoded (incl bracket keys)", !!formReq && (formReq as any).body.includes("amount=5000") && (formReq as any).body.includes("metadata%5Btxn%5D=abc"))
+  check("gateway form: bearer auth + parsed json response", !!formReq && (formReq as any).auth === "Bearer sk_test" && formRes.ok && (formRes.data as any).id === "tr_1")
 
   globalThis.fetch = realFetch
 }
