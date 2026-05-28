@@ -7,21 +7,24 @@ export class BatchDataClient {
     return fetchMotivatedSellers({ state }).then(r => r.records)
   }
   async getMotivatedSellers(filters: { city: string; state?: string; minEquity?: number }) {
-    return fetchMotivatedSellers({ state: filters.state || "" }).then(r => r.records)
+    // minEquity intent → bias the pull toward the high-equity quickList.
+    const motivationTypes = (filters.minEquity ?? 0) > 0 ? ["high_equity", "pre_foreclosure", "absentee"] : undefined
+    return fetchMotivatedSellers({ state: filters.state || "", city: filters.city, motivationTypes }).then(r => r.records)
   }
   async getPropertyDetails(propertyId: string) {
     return enrichPropertyWithBatchData(propertyId).then(r => r)
   }
   /**
    * Alias used by the lead-scraping cron.
-   * Accepts a "City, State" string, splits it, and delegates to fetchMotivatedSellers.
+   * Accepts a "City, State" string, splits it, and delegates to fetchMotivatedSellers — passing
+   * BOTH city and state so the BatchData `query` scopes to the city, not just the state.
    * Returns the records array directly so callers can iterate without unwrapping.
    */
   async getMotivatedSellerData(location: string): Promise<BatchDataRecord[]> {
     const [city, state] = location.includes(',')
       ? location.split(',').map(s => s.trim())
-      : [location, '']
-    return fetchMotivatedSellers({ state: state || location }).then(r => r.records)
+      : ['', location]
+    return fetchMotivatedSellers({ state: state || location, city: city || undefined }).then(r => r.records)
   }
 }
 

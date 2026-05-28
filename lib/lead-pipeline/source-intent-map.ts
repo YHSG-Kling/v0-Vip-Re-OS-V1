@@ -427,8 +427,10 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
  * Vendor routing contract — which scraping vendor owns each source.
  *   • zenrows  — expensive; reserved for real-estate sites + Nextdoor only.
  *   • apify    — Facebook / Instagram / Craigslist / Reddit / Google.
- *   • batchdata — FSBO / divorce / probate / motivated-seller property data.
- *   • osint    — public + court records (divorce / probate / foreclosure).
+ *   • batchdata — motivated-seller property data via quickLists (high-equity, preforeclosure,
+ *                 absentee, tax-default, vacant, tired-landlord, inherited, expired-listing).
+ *                 NOTE: BatchData has no divorce quickList — divorce is sourced via OSINT.
+ *   • osint    — public + court records (divorce / probate / foreclosure / tax-lien / eviction).
  *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
  */
 export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily'
