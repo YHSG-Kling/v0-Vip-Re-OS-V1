@@ -16,6 +16,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { logActivity } from "@/app/actions/activities"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
 
@@ -111,23 +112,23 @@ export async function createDotloopLoopForOffer(
   }
 
   try {
-    // Create Dotloop loop
-    const response = await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop`, {
+    // Create Dotloop loop through the connector-gateway
+    const response = await callConnector<{ data?: { loop_id?: string } }>({
+      connector: "dotloop",
+      baseUrl: DOTLOOP_API_BASE,
+      path: `/profile/${DOTLOOP_PROFILE_ID}/loop`,
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+      auth: { style: "bearer", token: DOTLOOP_API_KEY },
+      body: {
         name: `Buyer Offer - ${propertyAddress}`,
         status: "Active",
         transaction_type: "Purchase",
         street_address: propertyAddress,
-      }),
+      },
     })
 
     if (!response.ok) {
-      const errorText = await response.text()
+      const errorText = response.error ?? ""
       console.error("[buyer-offer] Dotloop API error:", errorText)
 
       // Emit fallback event
@@ -151,12 +152,12 @@ export async function createDotloopLoopForOffer(
 
       return {
         success: false,
-        error: `Dotloop API error: ${response.statusText}`,
+        error: `Dotloop API error: ${response.error ?? response.status}`,
         errorCode: "dotloop_api_error",
       }
     }
 
-    const result = await response.json()
+    const result = response.data ?? {}
     const loopId = result.data?.loop_id
 
     if (!loopId) {

@@ -16,6 +16,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── Brokerage-level settings ────────────────────────────────────────────────
 
@@ -130,20 +131,18 @@ export async function autoProvisionAgentPhone(params: {
   }
 
   // Search available numbers in area code
-  const searchUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/AvailablePhoneNumbers/US/Local.json${
-    params.areaCode ? `?AreaCode=${params.areaCode}` : ""
-  }`
-
   let availableNumber: string | null = null
   try {
-    const searchRes = await fetch(searchUrl, {
-      headers: { Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}` },
+    const searchRes = await callConnector<{ available_phone_numbers?: Array<{ phone_number?: string }> }>({
+      connector: "twilio", baseUrl: "https://api.twilio.com",
+      path: `/2010-04-01/Accounts/${accountSid}/AvailablePhoneNumbers/US/Local.json`, method: "GET",
+      ...(params.areaCode ? { query: { AreaCode: String(params.areaCode) } } : {}),
+      auth: { style: "basic", username: accountSid, password: authToken },
     })
     if (!searchRes.ok) {
       return { success: false, error: `Twilio number search failed: ${searchRes.status}` }
     }
-    const searchData = await searchRes.json()
-    availableNumber = searchData?.available_phone_numbers?.[0]?.phone_number ?? null
+    availableNumber = searchRes.data?.available_phone_numbers?.[0]?.phone_number ?? null
     if (!availableNumber) {
       return { success: false, error: `No available numbers found${params.areaCode ? ` in area code ${params.areaCode}` : ""}` }
     }
@@ -154,19 +153,14 @@ export async function autoProvisionAgentPhone(params: {
   // Purchase
   let purchasedSid: string | null = null
   try {
-    const purchaseRes = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: `PhoneNumber=${encodeURIComponent(availableNumber)}`,
-      }
-    )
+    const purchaseRes = await callConnector<{ sid?: string }>({
+      connector: "twilio", baseUrl: "https://api.twilio.com",
+      path: `/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers.json`, method: "POST",
+      auth: { style: "basic", username: accountSid, password: authToken },
+      bodyType: "form", body: { PhoneNumber: availableNumber },
+    })
     if (!purchaseRes.ok) {
-      const body = await purchaseRes.text().catch(() => "")
+      const body = purchaseRes.error ?? ""
       await logProvisionEvent(svc, {
         brokerageId: ctx.brokerageId,
         agentId: params.agentId,
@@ -176,8 +170,7 @@ export async function autoProvisionAgentPhone(params: {
       })
       return { success: false, error: `Twilio purchase failed (${purchaseRes.status}): ${body}` }
     }
-    const purchaseData = await purchaseRes.json()
-    purchasedSid = purchaseData?.sid ?? null
+    purchasedSid = purchaseRes.data?.sid ?? null
   } catch (err: any) {
     return { success: false, error: `Twilio purchase error: ${err?.message ?? String(err)}` }
   }

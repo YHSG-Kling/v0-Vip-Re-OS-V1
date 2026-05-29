@@ -7,6 +7,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -367,32 +368,22 @@ export async function publishToWordPress(
 
   // ── 3. Call WordPress REST API ──────────────────────────────────────────────
   try {
-    const wpEndpoint = `${credentials.api_url}/wp-json/wp/v2/posts`
     const authHeader = credentials.access_token
       ? `Bearer ${credentials.access_token}`
       : `Basic ${Buffer.from(`admin:${credentials.api_key}`).toString("base64")}`
 
-    const response = await fetch(wpEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: authHeader,
-      },
-      body: JSON.stringify({
-        title: post.title,
-        content: post.content,
-        excerpt: post.excerpt,
-        status: "publish",
-      }),
+    const response = await callConnector<{ id?: string | number }>({
+      connector: "wordpress", baseUrl: credentials.api_url, path: "/wp-json/wp/v2/posts", method: "POST",
+      auth: { style: "header", name: "Authorization", value: authHeader },
+      body: { title: post.title, content: post.content, excerpt: post.excerpt, status: "publish" },
     })
 
     if (!response.ok) {
-      const errorText = await response.text()
-      console.error("[publishToWordPress] WordPress API error:", errorText)
+      console.error("[publishToWordPress] WordPress API error:", response.error)
       return { success: false, error: "WordPress API error" }
     }
 
-    const wpPost = await response.json()
+    const wpPost = response.data ?? {}
 
     // ── 4. Update blog_posts with wordpress_post_id ───────────────────────────
     await supabase

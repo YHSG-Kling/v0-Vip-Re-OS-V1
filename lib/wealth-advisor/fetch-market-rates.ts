@@ -10,6 +10,8 @@
 // The parser is split out (parseFredLatestPercent) so it can be unit-tested
 // without a network call.
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 const FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
 
 export interface FetchedMarketRate {
@@ -49,16 +51,15 @@ const percentToBps = (p: number): number => Math.round(p * 100)
 async function fetchSeries(
   seriesId: string,
 ): Promise<{ percent: number; date: string } | null> {
-  const res = await fetch(`${FRED_CSV}${seriesId}`, {
-    headers: { Accept: "text/csv" },
-    // FRED is a static CSV; a short cache is fine and avoids hammering it.
-    next: { revalidate: 3600 },
+  const res = await callConnector<string>({
+    connector: "fred", baseUrl: "https://fred.stlouisfed.org", path: "/graph/fredgraph.csv",
+    query: { id: seriesId }, method: "GET", auth: { style: "none" },
+    headers: { Accept: "text/csv" }, responseType: "text",
   })
-  if (!res.ok) {
+  if (!res.ok || res.data == null) {
     throw new Error(`FRED ${seriesId} returned ${res.status}`)
   }
-  const csv = await res.text()
-  return parseFredLatestPercent(csv)
+  return parseFredLatestPercent(res.data)
 }
 
 /**
