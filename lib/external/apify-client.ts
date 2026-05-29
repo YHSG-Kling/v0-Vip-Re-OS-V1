@@ -1,4 +1,5 @@
 import { runApifyTask } from './apify-actors'
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
 export class ApifyClient {
@@ -24,7 +25,6 @@ export class ApifyClient {
 }
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!
-const APIFY_API_URL = 'https://api.apify.com/v2'
 
 export async function runApifyActor(
   actorId: string,
@@ -40,21 +40,22 @@ export async function runApifyActor(
   // run-sync-get-dataset-items: starts the actor, waits for it to finish, and
   // returns the default dataset items in one call — the Apify-recommended pattern
   // for synchronous scrapes. Avoids manual run polling + dataset-id resolution.
-  const runResponse = await fetch(`${APIFY_API_URL}/acts/${id}/run-sync-get-dataset-items`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
+  const runResponse = await callConnector<any>({
+    connector: "apify",
+    baseUrl: "https://api.apify.com",
+    path: `/v2/acts/${id}/run-sync-get-dataset-items`,
+    method: "POST",
+    auth: { style: "bearer", token: APIFY_API_TOKEN },
+    body: input,
+    timeoutMs: 60_000,
   })
 
   // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {
-    throw new Error(`Apify actor run error: ${runResponse.status} ${runResponse.statusText}`)
+    throw new Error(`Apify actor run error: ${runResponse.status} ${runResponse.error ?? ""}`)
   }
 
-  const results = await runResponse.json()
+  const results = runResponse.data
 
   return {
     data: Array.isArray(results) ? results : [],

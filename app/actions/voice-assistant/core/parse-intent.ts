@@ -7,6 +7,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { resolveEntities } from './resolve-entities'
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export interface ParsedIntent {
   intent_type: 'query' | 'execute'
@@ -131,14 +132,14 @@ Return format:
 }`
 
   try {
-    // Call LLM (replace with actual API call)
-    const response = await fetch(`${process.env.AI_GATEWAY_URL || 'https://gateway.ai.cloudflare.com'}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.AI_GATEWAY_API_KEY}`
-      },
-      body: JSON.stringify({
+    const gw = new URL(process.env.AI_GATEWAY_URL || 'https://gateway.ai.cloudflare.com')
+    const response = await callConnector<{ choices?: Array<{ message?: { content?: string } }> }>({
+      connector: "ai-gateway",
+      baseUrl: gw.origin,
+      path: `${gw.pathname.replace(/\/$/, "")}/v1/chat/completions`,
+      method: "POST",
+      auth: { style: "bearer", token: process.env.AI_GATEWAY_API_KEY ?? "" },
+      body: {
         model: 'openai/gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
@@ -146,15 +147,15 @@ Return format:
         ],
         temperature: 0.2,
         max_tokens: 500
-      })
+      },
     })
 
     if (!response.ok) {
       throw new Error('LLM API call failed')
     }
 
-    const data = await response.json()
-    const content = data.choices[0]?.message?.content
+    const data = response.data ?? {}
+    const content = data.choices?.[0]?.message?.content
 
     if (!content) {
       throw new Error('No response from LLM')

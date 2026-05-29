@@ -23,6 +23,7 @@
 import "server-only"
 import { put } from "@vercel/blob"
 import sharp from "sharp"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export type ImageSize = "1024x1024" | "1792x1024" | "1024x1792"
 export type ImageQuality = "standard" | "hd"
@@ -151,14 +152,13 @@ async function callGptImage1Gateway(
   if (!gatewayKey) return null
 
   // Vercel AI Gateway endpoint (OpenAI-compatible image generation API)
-  const base = "https://ai-gateway.vercel.sh/v1"
-  const res = await fetch(`${base}/images/generations`, {
+  const res = await callConnector<any>({
+    connector: "vercel-ai-gateway",
+    baseUrl: "https://ai-gateway.vercel.sh",
+    path: "/v1/images/generations",
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${gatewayKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+    auth: { style: "bearer", token: gatewayKey },
+    body: {
       model: "openai/gpt-image-1",
       prompt,
       size,
@@ -168,12 +168,12 @@ async function callGptImage1Gateway(
       response_format: "b64_json",
       // Flex routing lets the gateway pick the fastest available capacity
       routing: "flex",
-    }),
+    },
   })
 
   if (!res.ok) return null // let caller fall back to DALL-E 3
 
-  const data = await res.json()
+  const data = res.data ?? {}
   const b64 = data?.data?.[0]?.b64_json as string | undefined
   if (!b64) return null
 
@@ -211,25 +211,25 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
 
     let dalleResp: { url: string; revisedPrompt: string } | null = null
     try {
-      const base = input.endpointBase ?? "https://api.openai.com/v1"
-      const res = await fetch(`${base}/images/generations`, {
+      const base = new URL(input.endpointBase ?? "https://api.openai.com/v1")
+      const res = await callConnector<any>({
+        connector: "openai",
+        baseUrl: base.origin,
+        path: `${base.pathname.replace(/\/$/, "")}/images/generations`,
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+        auth: { style: "bearer", token: apiKey },
+        body: {
           model: "dall-e-3",
           prompt: fullPrompt,
           size,
           quality,
           style,
           n: 1,
-        }),
+        },
       })
 
       if (!res.ok) {
-        const body = await res.text().catch(() => "")
+        const body = res.error ?? ""
         const code: GenerateImageResult["errorCode"] =
           res.status === 401 || res.status === 403
             ? "auth"
@@ -241,11 +241,11 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
         return {
           success: false,
           errorCode: code,
-          error: `DALL-E (${res.status}): ${body || res.statusText}`,
+          error: `DALL-E (${res.status}): ${body}`,
         }
       }
 
-      const data = await res.json()
+      const data = res.data ?? {}
       const item = data?.data?.[0]
       if (!item?.url) {
         return { success: false, errorCode: "unknown", error: "DALL-E returned no image" }

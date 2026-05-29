@@ -8,6 +8,7 @@ import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // Auth gate — write actions in this file stamp brokerage_id / agent_user_id
 // onto lifecycle_events and listing-stage mutations. Without a session-derived
@@ -86,14 +87,14 @@ export async function syncShowingTimeShowings(params: {
   }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
-  const resp = await fetch(
-    `${baseUrl}/showings?listing_id=${params.listingId}`,
-    { headers: { Authorization: `Bearer ${cred.api_key}`, "Content-Type": "application/json" } }
-  )
+  const resp = await callConnector<{ showings?: any[] }>({
+    connector: "showingtime", baseUrl, path: "/showings", method: "GET",
+    query: { listing_id: params.listingId }, auth: { style: "bearer", token: cred.api_key },
+  })
 
   if (!resp.ok) return { success: false, error: `ShowingTime API error: ${resp.status}` }
 
-  const stShowings: any[] = (await resp.json()).showings ?? []
+  const stShowings: any[] = resp.data?.showings ?? []
 
   for (const s of stShowings) {
     await supabase
@@ -156,9 +157,9 @@ export async function showingTimeConfirm(params: { showingId: string; credential
   }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
-  const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/confirm`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${cred.api_key}`, "Content-Type": "application/json" },
+  const resp = await callConnector({
+    connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/confirm`, method: "POST",
+    auth: { style: "bearer", token: cred.api_key }, body: {},
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime confirm failed: ${resp.status}` }
@@ -205,10 +206,10 @@ export async function showingTimeReschedule(params: {
   }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
-  const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/reschedule`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${cred.api_key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ proposed_times: params.proposedTimes, reason: params.reason }),
+  const resp = await callConnector({
+    connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/reschedule`, method: "POST",
+    auth: { style: "bearer", token: cred.api_key },
+    body: { proposed_times: params.proposedTimes, reason: params.reason },
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime reschedule failed: ${resp.status}` }
@@ -256,10 +257,9 @@ export async function showingTimeDecline(params: {
   }
 
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
-  const resp = await fetch(`${baseUrl}/showings/${showing.showingtime_id}/decline`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${cred.api_key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ reason: params.reason }),
+  const resp = await callConnector({
+    connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/decline`, method: "POST",
+    auth: { style: "bearer", token: cred.api_key }, body: { reason: params.reason },
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime decline failed: ${resp.status}` }
