@@ -53,40 +53,30 @@ export interface KernelEventContext {
   lifecycleEventId?: string
 }
 
+// Thin forwarder. All three fan-out channels (staff notifications + campaign_sequences enrollment +
+// client portal) now live behind processKernelEvent → the kernel reactor, so EVERY emitter gets them
+// uniformly — not just the handful that call this wrapper. fanOutKernelEvent simply forwards its
+// richer client context (buyer/seller/transaction/listing/agent) so the reactor doesn't have to
+// re-resolve it. The reactor's portal writer is template-gated + idempotent, so routing through it
+// here adds no duplicate cards.
 export async function fanOutKernelEvent(ctx: KernelEventContext): Promise<void> {
-  // 1. Internal staff notifications (existing — leave behaviour unchanged).
   try {
     await processKernelEvent({
-      event:             ctx.event,
-      brokerageId:       ctx.brokerageId,
-      entityType:        ctx.entityType,
-      entityId:          ctx.entityId,
-      lifecycleEventId:  ctx.lifecycleEventId,
+      event:            ctx.event,
+      brokerageId:      ctx.brokerageId,
+      entityType:       ctx.entityType,
+      entityId:         ctx.entityId,
+      lifecycleEventId: ctx.lifecycleEventId,
+      contactId:        ctx.contactId,
+      buyerContactId:   ctx.buyerContactId,
+      sellerContactId:  ctx.sellerContactId,
+      transactionId:    ctx.transactionId,
+      listingId:        ctx.listingId,
+      agentUserId:      ctx.agentUserId,
+      metadata:         ctx.metadata ?? null,
     })
   } catch (e) {
     console.error("[fanOutKernelEvent] processKernelEvent failed", e)
-  }
-
-  // Both client-side fan-outs need at least one contact id.
-  const contactIds = uniq([ctx.contactId, ctx.buyerContactId, ctx.sellerContactId].filter(Boolean) as string[])
-
-  // 2. Auto-enroll matching campaign sequences for the contact(s).
-  if (contactIds.length > 0) {
-    try {
-      await enrollMatchingSequences(ctx.event, ctx.brokerageId, contactIds, ctx.agentUserId)
-    } catch (e) {
-      console.error("[fanOutKernelEvent] sequence enrollment failed", e)
-    }
-  }
-
-  // 3. Portal update for client(s) — transparency_updates + portal message
-  //    + contact-targeted notification.
-  if (contactIds.length > 0) {
-    try {
-      await writePortalUpdate(ctx, contactIds)
-    } catch (e) {
-      console.error("[fanOutKernelEvent] portal update failed", e)
-    }
   }
 }
 
@@ -147,6 +137,11 @@ export async function enrollMatchingSequences(
 }
 
 // ─── 3. Portal update writer ─────────────────────────────────────────────────
+
+// Idempotency window: a card identical in (contact + event + title) inside this span is treated as a
+// duplicate and skipped. Sized to absorb the reactor/fanOut overlap, retries, and rapid double-emits
+// while still allowing genuinely distinct later milestones of the same event type to post.
+const PORTAL_DEDUPE_WINDOW_MS = 10 * 60 * 1000
 
 interface PortalUpdateTemplate {
   title:                  string
@@ -301,16 +296,210 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
       },
     },
   },
+
+  // ── Transaction milestones (under-contract → close) ──────────────────────────
+  // The "same page" core: keep buyer + seller informed through the most anxious
+  // stretch of the deal, where the portal otherwise goes quiet.
+  [KernelEvent.OFFER_OS_ACCEPTED]: {
+    title: "Your offer was accepted!",
+    plainLanguageSummary:
+      "Congratulations — the seller accepted your offer. The deal moves into due diligence: inspection, appraisal, and financing are next.",
+    responsibleParty: "agent",
+    nextStep: "Earnest money due, inspection scheduled.",
+    chatBody: "Great news — your offer was accepted! I'll send the next steps shortly.",
+    perRole: {
+      seller: {
+        title: "You accepted an offer!",
+        plainLanguageSummary:
+          "You've accepted an offer on your home. Next is the buyer's due-diligence period — inspection, appraisal, financing.",
+        chatBody: "Offer accepted — congratulations! I'll keep you posted as the buyer completes due diligence.",
+      },
+    },
+  },
+  [KernelEvent.EARNEST_MONEY_RECEIVED]: {
+    title: "Earnest money received",
+    plainLanguageSummary:
+      "The buyer's earnest money deposit has been received and is held in escrow. This is the buyer's good-faith commitment to the purchase.",
+    responsibleParty: "title",
+    nextStep: "Inspection period begins.",
+    perRole: {
+      buyer: {
+        title: "Earnest money confirmed",
+        plainLanguageSummary:
+          "Your earnest money deposit has been received and is safely held in escrow. It will be applied toward your costs at closing.",
+        chatBody: "Your earnest money is in and held in escrow — one more box checked.",
+      },
+    },
+  },
+  [KernelEvent.INSPECTION_ORDERED]: {
+    title: "Home inspection scheduled",
+    plainLanguageSummary:
+      "The home inspection has been scheduled. The inspector will assess the property's condition and provide a report.",
+    responsibleParty: "inspector",
+    nextStep: "Review inspection findings, then negotiate repairs if needed.",
+    perRole: {
+      buyer: {
+        title: "Your inspection is scheduled",
+        plainLanguageSummary:
+          "Your home inspection is on the calendar. Once the report is in, we'll review it together and decide on any repair requests.",
+        chatBody: "Your inspection is scheduled — I'll walk you through the report once it's back.",
+      },
+    },
+  },
+  [KernelEvent.APPRAISAL_ORDERED]: {
+    title: "Appraisal ordered",
+    plainLanguageSummary:
+      "The lender has ordered the appraisal to confirm the home's value supports the loan amount.",
+    responsibleParty: "appraiser",
+    nextStep: "Await appraisal results.",
+  },
+  [KernelEvent.APPRAISAL_COMPLETED]: {
+    title: "Appraisal complete",
+    plainLanguageSummary:
+      "The appraisal is finished. Your agent will review the value with you and discuss any impact on the deal.",
+    responsibleParty: "agent",
+    nextStep: "Financing moves toward final approval.",
+    chatBody: "The appraisal is in — let's review the results together.",
+  },
+  [KernelEvent.FINANCING_CLEAR_TO_CLOSE]: {
+    title: "You're clear to close!",
+    plainLanguageSummary:
+      "The lender has issued the final approval — financing is fully cleared. The closing can now be scheduled.",
+    responsibleParty: "lender",
+    nextStep: "Schedule closing + final walkthrough.",
+    chatBody: "Big milestone — you're clear to close! We're in the home stretch now.",
+  },
+  [KernelEvent.CD_RECEIVED]: {
+    title: "Closing Disclosure ready",
+    plainLanguageSummary:
+      "Your Closing Disclosure is available. It itemizes your final loan terms and the exact funds due at closing. Review it carefully before signing.",
+    responsibleParty: "lender",
+    nextStep: "Review the figures, then proceed to closing.",
+    chatBody: "Your Closing Disclosure is ready — review the numbers and let me know if anything looks off.",
+  },
+  [KernelEvent.CLOSING_SCHEDULED]: {
+    title: "Closing scheduled",
+    plainLanguageSummary:
+      "Your closing appointment is set. Bring a government-issued ID and any funds required per your Closing Disclosure.",
+    responsibleParty: "title",
+    nextStep: "Final walkthrough, then sign at closing.",
+    chatBody: "Closing is on the calendar — almost there! I'll send what to bring.",
+  },
+  [KernelEvent.TRANSACTION_STAGE_CHANGED]: {
+    title: "Deal update",
+    plainLanguageSummary: "Your transaction moved to a new stage on the path to closing.",
+    responsibleParty: "agent",
+  },
+
+  // ── Buyer home-search (RealScout-style) ──────────────────────────────────────
+  [KernelEvent.PROPERTY_MATCH_FOUND]: {
+    title: "New homes matching your search",
+    plainLanguageSummary:
+      "New listings just hit the market that match what you're looking for. Open your portal to view photos, details, and request a tour.",
+    responsibleParty: "client",
+    nextStep: "Review matches and tell your agent which to tour.",
+    chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to see.",
+  },
+  [KernelEvent.SEARCH_ALERT_TRIGGERED]: {
+    title: "New homes for you",
+    plainLanguageSummary:
+      "A new home matching your saved search is available. Check your portal for the full details.",
+    responsibleParty: "client",
+    chatBody: "A new home matching your search just listed — want me to set up a showing?",
+  },
+  [KernelEvent.PROPERTY_ALERT_MATCHED]: {
+    title: "A home matched your alert",
+    plainLanguageSummary:
+      "A property matched one of your saved alerts. View it in your portal and let your agent know if you'd like to tour it.",
+    responsibleParty: "client",
+    chatBody: "One of your saved alerts just matched a new listing — let me know if it's worth a look.",
+  },
+  [KernelEvent.TOUR_SCHEDULED]: {
+    title: "Your tour is scheduled",
+    plainLanguageSummary:
+      "Your home tour is on the calendar. You'll find the date, time, and address in your portal.",
+    responsibleParty: "client",
+    nextStep: "See you at the showing.",
+    chatBody: "Your tour is set — details are in your portal. Looking forward to it!",
+  },
+  [KernelEvent.SHOWING_SCHEDULED]: {
+    title: "Your showing is scheduled",
+    plainLanguageSummary:
+      "A showing has been scheduled for you. The date, time, and address are in your portal.",
+    responsibleParty: "client",
+    chatBody: "Your showing is booked — details are in your portal.",
+  },
+
+  // ── E-sign & documents ───────────────────────────────────────────────────────
+  [KernelEvent.OFFER_OS_ESIGN_COMPLETED]: {
+    title: "Your offer is signed",
+    plainLanguageSummary:
+      "All parties have e-signed the offer. It's now fully executed and on file.",
+    responsibleParty: "agent",
+    nextStep: "Offer is delivered to the other side.",
+    chatBody: "Your offer is fully signed — sending it over now.",
+  },
+  [KernelEvent.ESIGN_SIGNED_COMPLETED]: {
+    title: "Document signed",
+    plainLanguageSummary:
+      "A document you needed to sign is now complete. A copy is saved to your portal for your records.",
+    responsibleParty: "client",
+    chatBody: "Thanks — that document is signed and saved to your portal.",
+  },
+  [KernelEvent.DOCUMENT_REQUESTED]: {
+    title: "Action needed: document requested",
+    plainLanguageSummary:
+      "Your agent needs a document from you to keep things moving. Open your portal to see what's requested and upload it.",
+    responsibleParty: "client",
+    nextStep: "Upload the requested document in your portal.",
+    chatBody: "When you have a moment, I need a quick document from you — details are in your portal.",
+  },
+
+  // ── Lifetime / post-close touchpoints ────────────────────────────────────────
+  [KernelEvent.REVIEW_REQUEST_SENT]: {
+    title: "How did we do?",
+    plainLanguageSummary:
+      "We'd love your feedback on your experience. A quick review helps other buyers and sellers and means a lot to us.",
+    responsibleParty: "client",
+    chatBody: "If you have a minute, I'd be grateful for a quick review of how things went!",
+  },
+  [KernelEvent.ANNIVERSARY_TRIGGERED]: {
+    title: "Happy home anniversary!",
+    plainLanguageSummary:
+      "It's been another year in your home — congratulations! Your portal has an updated look at your home's value and equity.",
+    responsibleParty: "agent",
+    chatBody: "Happy home anniversary! I pulled a fresh look at your home's value for you.",
+  },
+  [KernelEvent.MARKET_UPDATE_SENT]: {
+    title: "Your market update is ready",
+    plainLanguageSummary:
+      "A fresh update on your neighborhood's market — recent sales, trends, and what your home may be worth — is available in your portal.",
+    responsibleParty: "agent",
+    chatBody: "Your latest neighborhood market update is in your portal — some interesting movement this period.",
+  },
+  [KernelEvent.SELLER_UPDATE_SENT]: {
+    title: "Listing activity update",
+    plainLanguageSummary:
+      "Here's the latest on your listing — recent showings, feedback, and market activity are summarized in your portal.",
+    responsibleParty: "agent",
+    chatBody: "I posted your latest listing activity update — showings and feedback are summarized for you.",
+  },
 }
 
-async function writePortalUpdate(
+// Exported so the kernel reactor (lib/kernel/event-reactor) runs the SAME template-gated portal
+// write for every emitter. Returns true when at least one client card was written. Template-gated
+// (events without a PORTAL_UPDATE_TEMPLATES entry — i.e. all internal events — are a no-op) and
+// idempotent (an identical card for the same contact + event + entity within PORTAL_DEDUPE_WINDOW_MS
+// is skipped, so reactor + fanOut overlap, retries, and double-emits never create duplicate cards).
+export async function writePortalUpdate(
   ctx:        KernelEventContext,
   contactIds: string[],
-): Promise<void> {
+): Promise<boolean> {
   const tpl = PORTAL_UPDATE_TEMPLATES[ctx.event]
-  if (!tpl) return  // event has no client-facing template; skip
+  if (!tpl) return false  // event has no client-facing template; skip
 
   const supabase = createServiceClient()
+  let wrote = false
 
   for (const contactId of contactIds) {
     // Resolve role — buyer / seller / lifetime — so per-role overrides apply.
@@ -319,6 +508,23 @@ async function writePortalUpdate(
       ...tpl,
       ...(role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
     }
+
+    // Idempotency: skip if an identical card (same contact + event + entity + title) was written
+    // within the dedupe window. Title is part of the key so genuinely distinct later milestones of
+    // the same event type (e.g. successive LISTING_STAGE_CHANGED stages) still post.
+    const sinceIso = new Date(Date.now() - PORTAL_DEDUPE_WINDOW_MS).toISOString()
+    const { data: dupe } = await supabase
+      .from("transparency_updates")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("update_type", ctx.event)
+      .eq("title", merged.title)
+      .gte("created_at", sinceIso)
+      .limit(1)
+      .maybeSingle()
+    if (dupe) continue
+
+    wrote = true
 
     // 3a. transparency_update — the canonical "what happened on my deal" card.
     await supabase.from("transparency_updates").insert({
@@ -368,6 +574,8 @@ async function writePortalUpdate(
       is_read:      false,
     }).then(() => null, () => null)
   }
+
+  return wrote
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -392,8 +600,4 @@ async function resolveContactRole(
   if (t.includes("seller"))            return "seller"
   if (t === "lifetime_customer")       return "lifetime"
   return null
-}
-
-function uniq<T>(arr: T[]): T[] {
-  return Array.from(new Set(arr))
 }

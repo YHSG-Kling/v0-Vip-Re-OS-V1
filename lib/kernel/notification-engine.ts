@@ -25,6 +25,15 @@ export async function processKernelEvent(params: {
   lifecycleEventId?: string
   complianceEventId?: string
   activityId?: string
+  // Optional client-side context — forwarded to the reactor for portal + sequence fan-out.
+  // Present when called via fanOutKernelEvent; absent for direct staff-notification callers.
+  contactId?: string
+  buyerContactId?: string
+  sellerContactId?: string
+  transactionId?: string
+  listingId?: string
+  agentUserId?: string
+  metadata?: Record<string, unknown> | null
 }): Promise<void> {
 
   const supabase = createServiceClient()
@@ -91,10 +100,17 @@ export async function processKernelEvent(params: {
   try {
     const { dispatchKernelEvent } = await import("@/lib/kernel/event-reactor")
     await dispatchKernelEvent({
-      event:       params.event,
-      brokerageId: params.brokerageId,
-      entityType:  params.entityType,
-      entityId:    params.entityId,
+      event:           params.event,
+      brokerageId:     params.brokerageId,
+      entityType:      params.entityType,
+      entityId:        params.entityId,
+      metadata:        params.metadata ?? null,
+      contactId:       params.contactId,
+      buyerContactId:  params.buyerContactId,
+      sellerContactId: params.sellerContactId,
+      transactionId:   params.transactionId,
+      listingId:       params.listingId,
+      agentUserId:     params.agentUserId,
     })
   } catch (err) {
     console.error("[NotificationEngine] reactor dispatch failed:", err)
