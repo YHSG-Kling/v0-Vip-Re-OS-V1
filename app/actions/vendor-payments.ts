@@ -5,6 +5,11 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
 import { stripe } from "@/lib/stripe"
+import {
+  readVendorStripeConnect,
+  upsertVendorStripeAccount,
+  setVendorStripeOnboarding,
+} from "@/lib/connections/vendor-stripe"
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 //
@@ -307,27 +312,26 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
 
   const svc = createServiceClient()
 
-  // vendor_marketplace_profiles is a GLOBAL catalog (no brokerage_id) —
-  // tenant scope was already enforced by requireVendorActor() above.
-  const { data: profile } = await svc
-    .from("vendor_marketplace_profiles")
-    .select("stripe_account_id, stripe_onboarding_complete")
-    .eq("id", vendorId)
-    .maybeSingle()
+  // The vendor's Connect account lives on the unified owner model
+  // (platform_credentials, owner_type="vendor") — the same record the
+  // Connection Center writes, so onboarding via either surface is one account.
+  const connect = await readVendorStripeConnect(svc, vendorId)
 
   let accountId: string
 
-  if (profile?.stripe_account_id) {
-    accountId = profile.stripe_account_id
+  if (connect.accountId) {
+    accountId = connect.accountId
   } else {
     // Create a Stripe Express account
     const account = await stripe.accounts.create({ type: "express" })
     accountId = account.id
 
-    await svc
-      .from("vendor_marketplace_profiles")
-      .update({ stripe_account_id: accountId })
-      .eq("id", vendorId)
+    const { error } = await upsertVendorStripeAccount(svc, {
+      vendorId,
+      brokerageId: actor.brokerageId,
+      accountId,
+    })
+    if (error) return { success: false, error }
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
@@ -391,22 +395,18 @@ export async function initiateVendorPayout(params: {
   let stripeTransferId: string | undefined
 
   if (method === "stripe") {
-    // vendor_marketplace_profiles is a GLOBAL catalog — tenant scope
-    // was already enforced by verifyVendorInCallerBrokerage above.
-    const { data: profile } = await svc
-      .from("vendor_marketplace_profiles")
-      .select("stripe_account_id, stripe_onboarding_complete")
-      .eq("id", params.vendorId)
-      .maybeSingle()
+    // Vendor Connect account on the unified owner model — tenant scope was
+    // already enforced by verifyVendorInCallerBrokerage above.
+    const connect = await readVendorStripeConnect(svc, params.vendorId)
 
-    if (!profile?.stripe_account_id || !profile.stripe_onboarding_complete) {
+    if (!connect.accountId || !connect.onboardingComplete) {
       return { success: false, error: "Vendor Stripe account not set up" }
     }
 
     const transfer = await stripe.transfers.create({
       amount: Math.round(params.amount * 100), // cents
       currency: "usd",
-      destination: profile.stripe_account_id,
+      destination: connect.accountId,
       metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
     })
     stripeTransferId = transfer.id
@@ -545,26 +545,19 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
 
   const svc = createServiceClient()
 
-  // vendor_marketplace_profiles is global; tenant scope enforced via
+  // Connect account on the unified owner model; tenant scope enforced via
   // requireVendorActor() above.
-  const { data: profile } = await svc
-    .from("vendor_marketplace_profiles")
-    .select("stripe_account_id")
-    .eq("id", vendorId)
-    .maybeSingle()
+  const connect = await readVendorStripeConnect(svc, vendorId)
 
-  if (!profile?.stripe_account_id) {
+  if (!connect.accountId) {
     return { success: false, error: "No Stripe account found" }
   }
 
   // Verify the account is actually onboarded in Stripe
-  const account = await stripe.accounts.retrieve(profile.stripe_account_id)
-  const complete = account.details_submitted && account.charges_enabled
+  const account = await stripe.accounts.retrieve(connect.accountId)
+  const complete = Boolean(account.details_submitted && account.charges_enabled)
 
-  await svc
-    .from("vendor_marketplace_profiles")
-    .update({ stripe_onboarding_complete: complete })
-    .eq("id", vendorId)
+  await setVendorStripeOnboarding(svc, vendorId, complete)
 
   return { success: complete, error: complete ? undefined : "Onboarding not yet complete in Stripe" }
 }

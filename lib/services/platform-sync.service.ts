@@ -769,44 +769,6 @@ export async function syncMLSListings(params: {
 // PLATFORM CREDENTIAL MANAGEMENT
 // ============================================================================
 
-export async function savePlatformCredentials(params: {
-  agentId: string
-  platform: string
-  accessToken: string
-  refreshToken?: string
-  expiresAt?: string
-  apiUrl?: string
-  realmId?: string
-  additionalData?: Record<string, any>
-}): Promise<{ success: boolean; error?: string }> {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    await supabase.from("platform_credentials").upsert({
-      agent_id: params.agentId,
-      platform: params.platform,
-      access_token: params.accessToken,
-      refresh_token: params.refreshToken,
-      expires_at: params.expiresAt,
-      api_url: params.apiUrl,
-      realm_id: params.realmId,
-      additional_data: params.additionalData,
-      updated_at: new Date().toISOString(),
-    }, {
-      onConflict: "agent_id,platform",
-    })
-
-    return { success: true }
-  } catch (error) {
-    console.error("[v0] Save credentials error:", error)
-    return handleError(error, "savePlatformCredentials")
-  }
-}
-
 export async function getPlatformStatus(params: {
   agentId: string
 }): Promise<{ success: boolean; platforms?: Record<string, boolean>; error?: string }> {

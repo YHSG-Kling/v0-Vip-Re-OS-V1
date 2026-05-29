@@ -50,7 +50,8 @@ export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
   const { data, error } = await supabase
     .from("platform_credentials")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("owner_type", "brokerage")
+    .eq("owner_id", brokerageId)
     .order("platform")
 
   if (error) throw new Error(error.message)
@@ -151,7 +152,8 @@ export async function togglePlatformCredential(
     .from("platform_credentials")
     .update({ is_active: isActive, updated_at: new Date().toISOString() })
     .eq("id", id)
-    .eq("brokerage_id", brokerageId)
+    .eq("owner_type", "brokerage")
+    .eq("owner_id", brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/integrations")

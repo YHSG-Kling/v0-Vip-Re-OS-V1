@@ -38,7 +38,6 @@ export {
   syncGoogleCalendarEvent,
   syncShowingTimeAppointments,
   syncMLSListings,
-  savePlatformCredentials,
   getPlatformStatus,
 } from "./platform-sync.service"
 

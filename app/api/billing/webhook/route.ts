@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/stripe"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
+import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import Stripe from "stripe"
 
 // Stripe webhook handler
@@ -217,10 +218,7 @@ export async function POST(request: NextRequest) {
       case "account.updated": {
         const account = event.data.object as Stripe.Account
         if (account.details_submitted && account.charges_enabled) {
-          await supabase
-            .from("vendor_marketplace_profiles")
-            .update({ stripe_onboarding_complete: true })
-            .eq("stripe_account_id", account.id)
+          await setStripeOnboardingByAccount(supabase, account.id, true)
         }
         break
       }
