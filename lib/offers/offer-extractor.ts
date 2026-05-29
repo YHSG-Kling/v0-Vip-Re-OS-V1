@@ -2,6 +2,7 @@ import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ── Extracted offer shape matching exact offers table columns ─────────────────
 export interface ExtractedOfferData {
@@ -41,11 +42,13 @@ export async function extractOfferFromPdf(params: {
     .eq("id", offerId)
 
   try {
-    // Fetch the PDF as base64 for vision-capable model
-    const pdfResp = await fetch(pdfUrl)
-    if (!pdfResp.ok) throw new Error(`PDF fetch failed: ${pdfResp.status}`)
-    const pdfBuffer = await pdfResp.arrayBuffer()
-    const base64Pdf = Buffer.from(pdfBuffer).toString("base64")
+    // Fetch the PDF as base64 for vision-capable model (gateway url-override download)
+    const pdfResp = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: pdfUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!pdfResp.ok || !pdfResp.data) throw new Error(`PDF fetch failed: ${pdfResp.status}`)
+    const base64Pdf = pdfResp.data.toString("base64")
 
     const response = await generateAIResponse({
       prompt: `You are a real estate document parser. Extract ONLY the following fields from this offer document.

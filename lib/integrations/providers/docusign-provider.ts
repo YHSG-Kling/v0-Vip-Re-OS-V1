@@ -114,10 +114,12 @@ export class DocusignProvider implements ITransactionProvider {
         let documentBase64: string | null = null
         let fileExtension = "pdf"
         if (form.formUrl) {
-          const f = await fetch(form.formUrl)
-          if (!f.ok) continue
-          const buf = Buffer.from(await f.arrayBuffer())
-          documentBase64 = buf.toString("base64")
+          const f = await callConnector<Buffer>({
+            connector: "asset-download", baseUrl: "", path: "", url: form.formUrl,
+            method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+          })
+          if (!f.ok || !f.data) continue
+          documentBase64 = f.data.toString("base64")
           const m = form.formUrl.match(/\.([a-zA-Z0-9]{2,5})(?:\?|#|$)/)
           if (m) fileExtension = m[1].toLowerCase()
         } else if (form.formData) {
@@ -229,12 +231,14 @@ export class DocusignProvider implements ITransactionProvider {
 
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
-      const f = await fetch(request.documentUrl)
-      if (!f.ok) {
+      const f = await callConnector<Buffer>({
+        connector: "asset-download", baseUrl: "", path: "", url: request.documentUrl,
+        method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+      })
+      if (!f.ok || !f.data) {
         return { success: false, error: `Could not fetch document from ${request.documentUrl}` }
       }
-      const buf = Buffer.from(await f.arrayBuffer())
-      const documentBase64 = buf.toString("base64")
+      const documentBase64 = f.data.toString("base64")
       const m = request.documentUrl.match(/\.([a-zA-Z0-9]{2,5})(?:\?|#|$)/)
       const fileExtension = m ? m[1].toLowerCase() : "pdf"
       const documentId = String(Date.now())

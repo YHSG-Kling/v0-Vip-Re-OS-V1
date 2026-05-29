@@ -7,6 +7,7 @@
 // transcript for page links (YouTube/Vimeo) or oversized files.
 
 import { openai } from "@ai-sdk/openai"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const MAX_BYTES = 25 * 1024 * 1024 // Whisper hard limit
 const MEDIA_CT = /^(audio|video)\//i
@@ -24,31 +25,28 @@ export async function transcribeFromUrl(url: string): Promise<TranscribeResult> 
   }
 
   try {
-    const res = await fetch(url)
-    if (!res.ok) {
+    const res = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!res.ok || !res.data) {
       return { success: false, reason: "fetch_failed", message: `Could not fetch the URL (${res.status})` }
     }
 
-    const contentType = res.headers.get("content-type") ?? ""
+    const contentType = res.headers["content-type"] ?? ""
     if (!MEDIA_CT.test(contentType)) {
       // HTML pages (YouTube/Vimeo links), etc. — not transcribable here.
       return { success: false, reason: "not_media", message: "That link isn't a direct audio/video file" }
     }
 
-    const lengthHeader = res.headers.get("content-length")
-    if (lengthHeader && Number(lengthHeader) > MAX_BYTES) {
-      return { success: false, reason: "too_large", message: "File is larger than 25MB" }
-    }
-
-    const buffer = await res.arrayBuffer()
-    if (buffer.byteLength > MAX_BYTES) {
+    if (res.data.byteLength > MAX_BYTES) {
       return { success: false, reason: "too_large", message: "File is larger than 25MB" }
     }
 
     const { experimental_transcribe } = await import("ai")
     const result = await experimental_transcribe({
       model: openai.transcription("whisper-1"),
-      audio: new Uint8Array(buffer),
+      audio: new Uint8Array(res.data),
     })
     const transcript = (result.text ?? "").trim()
     if (!transcript) {

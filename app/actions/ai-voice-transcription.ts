@@ -5,6 +5,7 @@ import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { openai } from "@ai-sdk/openai"
 import { z } from "zod"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
@@ -339,16 +340,18 @@ export async function transcribeAudio(params: {
       return { success: false, error: "voice_call not found" }
     }
 
-    const audioResponse = await fetch(params.audioUrl)
-    if (!audioResponse.ok) {
+    const audioResponse = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: params.audioUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!audioResponse.ok || !audioResponse.data) {
       return { success: false, error: "Could not fetch audio file from URL" }
     }
-    const audioBuffer = await audioResponse.arrayBuffer()
 
     const { experimental_transcribe } = await import("ai")
     const result = await experimental_transcribe({
       model: openai.transcription("whisper-1"),
-      audio: new Uint8Array(audioBuffer),
+      audio: new Uint8Array(audioResponse.data),
     })
     const transcriptText = result.text
 

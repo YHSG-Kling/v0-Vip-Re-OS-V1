@@ -85,6 +85,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePermission } from "@/lib/security"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
@@ -473,23 +474,21 @@ export async function scrapeSocialSignalsWithZenRows(location: {
     // Construct Nextdoor URL for the location
     const nextdoorUrl = `https://nextdoor.com/city/${location.state.toLowerCase()}/${location.city.toLowerCase().replace(/\s+/g, "-")}/`
 
-    // ZenRows API endpoint
-    const zenrowsUrl = `https://api.zenrows.com/v1/?url=${encodeURIComponent(nextdoorUrl)}&apikey=${zenrowsApiKey}&js_render=true&premium_proxy=true`
-
     console.log("[v0] Scraping Nextdoor via ZenRows for:", location)
 
-    const response = await fetch(zenrowsUrl, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
+    const response = await callConnector<string>({
+      connector: "zenrows", baseUrl: "https://api.zenrows.com", path: "/v1/", method: "GET",
+      query: { url: nextdoorUrl, apikey: zenrowsApiKey, js_render: "true", premium_proxy: "true" },
+      auth: { style: "none" }, responseType: "text",
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      timeoutMs: 60_000,
     })
 
-    if (!response.ok) {
-      throw new Error(`ZenRows API error: ${response.status} ${response.statusText}`)
+    if (!response.ok || response.data == null) {
+      throw new Error(`ZenRows API error: ${response.status} ${response.error ?? ""}`)
     }
 
-    const html = await response.text()
+    const html = response.data
 
     // Parse HTML to extract Nextdoor posts (simplified - would use cheerio or similar)
     const posts = parseNextdoorPosts(html, location)

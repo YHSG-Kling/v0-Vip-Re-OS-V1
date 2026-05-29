@@ -25,6 +25,7 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { OSINTClient } from "@/lib/osint-client"
 import { BatchDataClient, searchProperties } from "@/lib/external/batchdata-client"
 import { generateObject } from "@/lib/ai/generate"
@@ -65,10 +66,13 @@ async function tryOsintEnrichment(address: string): Promise<PropertyEnrichmentRe
   let lat: number | null = null
   let lon: number | null = null
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`
-    const res = await fetch(url, { headers: { "User-Agent": "VipRealEstateOS/1.0 (real-estate)" } })
+    const res = await callConnector<Array<{ lat: string; lon: string }>>({
+      connector: "nominatim", baseUrl: "https://nominatim.openstreetmap.org", path: "/search", method: "GET",
+      query: { format: "json", q: address, limit: "1" },
+      auth: { style: "none" }, headers: { "User-Agent": "VipRealEstateOS/1.0 (real-estate)" }, timeoutMs: 8000,
+    })
     if (res.ok) {
-      const arr = await res.json() as Array<{ lat: string; lon: string }>
+      const arr = (res.data ?? []) as Array<{ lat: string; lon: string }>
       if (arr[0]) {
         lat = parseFloat(arr[0].lat)
         lon = parseFloat(arr[0].lon)

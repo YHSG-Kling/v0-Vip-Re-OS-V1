@@ -22,6 +22,7 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const MAX_OCR_CHARS = 24_000   // ~6k tokens; enough for a multi-page contract
 
@@ -57,22 +58,16 @@ export async function ocrDocumentFromUrl(params: {
 }): Promise<OcrResult> {
   const { storageUrl } = params
 
-  let fetched: Response
-  try {
-    const controller = new AbortController()
-    const t = setTimeout(() => controller.abort(), 10_000)
-    fetched = await fetch(storageUrl, { signal: controller.signal })
-    clearTimeout(t)
-  } catch (err: any) {
-    return { success: false, text: "", mime: null, error: `fetch failed: ${err?.message ?? err}` }
-  }
-  if (!fetched.ok) {
-    return { success: false, text: "", mime: null, error: `fetch ${fetched.status}` }
+  const fetched = await callConnector<Buffer>({
+    connector: "asset-download", baseUrl: "", path: "", url: storageUrl,
+    method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 10_000,
+  })
+  if (!fetched.ok || !fetched.data) {
+    return { success: false, text: "", mime: null, error: `fetch ${fetched.status ?? "failed"}` }
   }
 
-  const mime = (fetched.headers.get("content-type") ?? "").toLowerCase().split(";")[0].trim() || null
-  const arrayBuf = await fetched.arrayBuffer()
-  const buf = Buffer.from(arrayBuf)
+  const mime = (fetched.headers["content-type"] ?? "").toLowerCase().split(";")[0].trim() || null
+  const buf = fetched.data
 
   // ── PDF: try the lightweight pdf-parse first ───────────────────────────
   if (mime === "application/pdf" || (storageUrl.toLowerCase().endsWith(".pdf"))) {

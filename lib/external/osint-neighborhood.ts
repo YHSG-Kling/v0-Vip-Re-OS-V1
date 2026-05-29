@@ -29,6 +29,8 @@ export interface OSINTNeighborhoodData {
   dataSource: "openstreetmap+census" | "openstreetmap" | "none"
 }
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
 const OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
 const CENSUS_BASE = "https://api.census.gov"
@@ -49,17 +51,15 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
 /** Geocode an address using Nominatim (OpenStreetMap). Returns null on failure. */
 async function geocodeAddress(address: string, city: string, state: string, zip: string): Promise<{ lat: number; lon: number } | null> {
   try {
-    const query = encodeURIComponent(`${address}, ${city}, ${state} ${zip}, USA`)
-    const url = `${NOMINATIM_BASE}/search?q=${query}&format=json&limit=1&countrycodes=us`
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "RealEstateOS/1.0 (neighborhood-reports)",
-        "Accept-Language": "en",
-      },
-      signal: AbortSignal.timeout(5000),
+    const res = await callConnector<any[]>({
+      connector: "nominatim", baseUrl: NOMINATIM_BASE, path: "/search", method: "GET",
+      query: { q: `${address}, ${city}, ${state} ${zip}, USA`, format: "json", limit: "1", countrycodes: "us" },
+      auth: { style: "none" },
+      headers: { "User-Agent": "RealEstateOS/1.0 (neighborhood-reports)", "Accept-Language": "en" },
+      timeoutMs: 5000,
     })
     if (!res.ok) return null
-    const data = await res.json()
+    const data = res.data
     if (!Array.isArray(data) || data.length === 0) return null
     return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) }
   } catch {
@@ -95,14 +95,12 @@ async function queryOverpassAmenities(
   `.trim()
 
   try {
-    const res = await fetch(OVERPASS_BASE, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `data=${encodeURIComponent(overpassQuery)}`,
-      signal: AbortSignal.timeout(12000),
+    const res = await callConnector<any>({
+      connector: "overpass", baseUrl: "", path: "", url: OVERPASS_BASE, method: "POST",
+      auth: { style: "none" }, bodyType: "form", body: { data: overpassQuery }, timeoutMs: 12000,
     })
     if (!res.ok) return amenities
-    const data = await res.json()
+    const data = res.data ?? {}
 
     for (const el of data.elements ?? []) {
       const elLat = el.lat ?? el.center?.lat
@@ -148,10 +146,13 @@ async function queryOverpassAmenities(
 async function fetchCensusMedianHomeValue(zip: string): Promise<number | null> {
   try {
     // B25077_001E = Median value of owner-occupied housing units
-    const url = `${CENSUS_BASE}/data/2022/acs/acs5?get=B25077_001E&for=zip%20code%20tabulation%20area:${zip}&key=DEMO_KEY`
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+    const res = await callConnector<any[]>({
+      connector: "census", baseUrl: CENSUS_BASE, path: "/data/2022/acs/acs5", method: "GET",
+      query: { get: "B25077_001E", for: `zip code tabulation area:${zip}`, key: "DEMO_KEY" },
+      auth: { style: "none" }, timeoutMs: 8000,
+    })
     if (!res.ok) return null
-    const data = await res.json()
+    const data = res.data
     // data[0] = header row, data[1] = first result
     if (!Array.isArray(data) || data.length < 2) return null
     const valueStr = data[1][0]
