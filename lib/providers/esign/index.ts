@@ -7,6 +7,8 @@
 
 export { DotloopProvider } from "@/lib/integrations/providers/dotloop-provider"
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 // ─── DOTLOOP DIRECT HELPERS ───────────────────────────────────────────────────
 // Thin functional wrappers around DotloopProvider for callers that don't want
 // to instantiate the class directly.
@@ -19,11 +21,22 @@ function getDotloopCredentials() {
   return apiKey && profileId ? { apiKey, profileId } : null
 }
 
-function dotloopHeaders(apiKey: string) {
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-  }
+/** All Dotloop egress through the connector-gateway (bearer auth). */
+async function dotloopRequest<T = any>(
+  apiKey: string,
+  path: string,
+  method: "GET" | "POST",
+  body?: unknown,
+): Promise<{ ok: boolean; data: T | null; error: string | null }> {
+  const res = await callConnector<T>({
+    connector: "dotloop",
+    baseUrl: DOTLOOP_API_BASE,
+    path,
+    method,
+    auth: { style: "bearer", token: apiKey },
+    ...(body !== undefined ? { body } : {}),
+  })
+  return { ok: res.ok, data: res.data, error: res.error }
 }
 
 export interface CreateLoopParams {
@@ -46,24 +59,18 @@ export async function createLoop(params: CreateLoopParams): Promise<CreateLoopRe
 
   const { apiKey, profileId } = credentials
 
-  const response = await fetch(`${DOTLOOP_API_BASE}/profile/${profileId}/loop`, {
-    method: "POST",
-    headers: dotloopHeaders(apiKey),
-    body: JSON.stringify({
-      name: `${params.propertyAddress} - ${params.transactionType}`,
-      status: "Active",
-      transaction_type: params.transactionType === "purchase" ? "Purchase" : "Listing for Sale",
-      street_address: params.propertyAddress,
-    }),
+  const response = await dotloopRequest<{ data?: { loop_id?: string } }>(apiKey, `/profile/${profileId}/loop`, "POST", {
+    name: `${params.propertyAddress} - ${params.transactionType}`,
+    status: "Active",
+    transaction_type: params.transactionType === "purchase" ? "Purchase" : "Listing for Sale",
+    street_address: params.propertyAddress,
   })
 
   if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Dotloop API error: ${response.statusText} - ${errorText}`)
+    throw new Error(`Dotloop API error: ${response.error ?? "request failed"}`)
   }
 
-  const result = await response.json()
-  const loopId = result.data?.loop_id
+  const loopId = response.data?.data?.loop_id
 
   if (!loopId) throw new Error("No loop_id returned from Dotloop")
 
@@ -84,21 +91,14 @@ export async function addParticipant(params: AddParticipantParams): Promise<{ su
 
   const { apiKey, profileId } = credentials
 
-  const response = await fetch(
-    `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${params.loopId}/participant`,
-    {
-      method: "POST",
-      headers: dotloopHeaders(apiKey),
-      body: JSON.stringify({
-        email: params.email,
-        full_name: params.name,
-        role: params.role,
-      }),
-    }
-  )
+  const response = await dotloopRequest(apiKey, `/profile/${profileId}/loop/${params.loopId}/participant`, "POST", {
+    email: params.email,
+    full_name: params.name,
+    role: params.role,
+  })
 
   if (!response.ok) {
-    throw new Error(`Dotloop addParticipant error: ${response.statusText}`)
+    throw new Error(`Dotloop addParticipant error: ${response.error ?? "request failed"}`)
   }
 
   return { success: true }
@@ -122,14 +122,11 @@ export async function getLoopSignatureStatus(loopId: string): Promise<GetLoopSta
 
   const { apiKey, profileId } = credentials
 
-  const response = await fetch(
-    `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${loopId}/folder`,
-    { headers: dotloopHeaders(apiKey) }
-  )
+  const response = await dotloopRequest<{ data?: any[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/folder`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop API error: ${response.statusText}`)
+  if (!response.ok) throw new Error(`Dotloop API error: ${response.error ?? "request failed"}`)
 
-  const folders = await response.json()
+  const folders = response.data ?? {}
   let totalDocs = 0
   let signedDocs = 0
 
@@ -178,16 +175,11 @@ export async function syncLoopDocuments(loopId: string): Promise<SyncLoopDocumen
 
   const { apiKey, profileId } = credentials
 
-  const response = await fetch(
-    `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${loopId}/folder`,
-    { headers: dotloopHeaders(apiKey) }
-  )
+  const response = await dotloopRequest<{ data?: LoopFolder[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/folder`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop syncLoopDocuments error: ${response.statusText}`)
+  if (!response.ok) throw new Error(`Dotloop syncLoopDocuments error: ${response.error ?? "request failed"}`)
 
-  const data = await response.json()
-
-  return { success: true, folders: data.data || [] }
+  return { success: true, folders: response.data?.data || [] }
 }
 
 // ─── UPLOAD LOOP DOCUMENT ──────────────────────────────────────────────────────
@@ -217,23 +209,16 @@ export async function uploadLoopDocument(
   const { apiKey, profileId } = credentials
   const folder = params.folderName || "Documents"
 
-  const response = await fetch(
-    `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${params.loopId}/folder/${folder}/document`,
-    {
-      method: "POST",
-      headers: dotloopHeaders(apiKey),
-      body: JSON.stringify({
-        name: params.documentName,
-        file_url: params.fileUrl,
-      }),
-    }
+  const response = await dotloopRequest<{ data?: { document_id?: string } }>(
+    apiKey,
+    `/profile/${profileId}/loop/${params.loopId}/folder/${folder}/document`,
+    "POST",
+    { name: params.documentName, file_url: params.fileUrl },
   )
 
-  if (!response.ok) throw new Error(`Dotloop uploadLoopDocument error: ${response.statusText}`)
+  if (!response.ok) throw new Error(`Dotloop uploadLoopDocument error: ${response.error ?? "request failed"}`)
 
-  const result = await response.json()
-
-  return { success: true, dotloopDocumentId: result.data?.document_id }
+  return { success: true, dotloopDocumentId: response.data?.data?.document_id }
 }
 
 // ─── GET LOOP ACTIVITY ─────────────────────────────────────────────────────────
@@ -253,14 +238,9 @@ export async function getLoopActivity(loopId: string): Promise<GetLoopActivityRe
 
   const { apiKey, profileId } = credentials
 
-  const response = await fetch(
-    `${DOTLOOP_API_BASE}/profile/${profileId}/loop/${loopId}/activity`,
-    { headers: dotloopHeaders(apiKey) }
-  )
+  const response = await dotloopRequest<{ data?: any[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/activity`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop getLoopActivity error: ${response.statusText}`)
+  if (!response.ok) throw new Error(`Dotloop getLoopActivity error: ${response.error ?? "request failed"}`)
 
-  const data = await response.json()
-
-  return { success: true, activities: data.data || [] }
+  return { success: true, activities: response.data?.data || [] }
 }
