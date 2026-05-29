@@ -108,6 +108,11 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     let contactIds = Array.from(new Set(explicit))
     let transactionId = params.transactionId
     let listingId     = params.listingId
+    // Role hints passed to the portal writer so it can resolve buyer/seller WITHOUT depending on
+    // contacts.contact_type (which is often null/"lead") — otherwise audience-gated seller/buyer cards
+    // get silently skipped when the role can't be confirmed.
+    let buyerHint  = params.buyerContactId
+    let sellerHint = params.sellerContactId
     if (contactIds.length === 0) {
       try {
         const r = await resolveEventContacts(svc, params.entityType, params.entityId)
@@ -116,6 +121,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         ))
         transactionId ??= r.transactionId
         listingId     ??= r.listingId
+        buyerHint     ??= r.buyerContactId
+        sellerHint    ??= r.sellerContactId
       } catch (err) {
         console.error("[event-reactor] contact resolution failed:", err)
       }
@@ -143,8 +150,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             entityType:     params.entityType,
             entityId:       params.entityId,
             contactId:      params.contactId,
-            buyerContactId: params.buyerContactId,
-            sellerContactId:params.sellerContactId,
+            buyerContactId: buyerHint,
+            sellerContactId:sellerHint,
             transactionId,
             listingId,
             agentUserId:    params.agentUserId,

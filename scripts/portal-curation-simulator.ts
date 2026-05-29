@@ -97,6 +97,10 @@ ok(renderTemplateText("no tokens here", { a: 1 }) === "no tokens here",
    "renderTemplateText leaves token-free text unchanged")
 ok(renderTemplateText("{earnest_money_due} & {inspection_deadline}", { earnest_money_due: "6/1", inspection_deadline: "6/10" }) === "6/1 & 6/10",
    "renderTemplateText fills multiple tokens")
+ok(renderTemplateText("held by {title_company}", { title_company: { name: "x" } }) === "held by TBD",
+   "renderTemplateText renders an object value as TBD (never [object Object])")
+ok(renderTemplateText("paid {amount}", { amount: 0 }) === "paid 0",
+   "renderTemplateText renders numeric 0 (not TBD)")
 
 // 5. Audience gating — domain semantics: listings/showings = seller side; properties/tours = buyer side.
 function blockOf(eventName: string): string {

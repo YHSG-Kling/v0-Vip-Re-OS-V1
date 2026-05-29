@@ -119,10 +119,17 @@ export async function createTransactionFromOffer(params: {
   // earnest_money_due_days); the title/escrow company is extracted onto the scanned signed contract
   // (documents.extracted_fields.title_company). These feed both the EMD milestone date and the
   // proactive "under contract" portal card.
+  // TZ-safe: derive the calendar due date from the execution (contract) date + "N days from
+  // execution" via pure UTC date arithmetic — NOT new Date(timestamptz).toISOString(), which would
+  // shift a money-sensitive deadline by a day for non-UTC stored times. Fall back to the stored
+  // value's literal date portion, then to any caller-provided term.
+  const dueDays = (offer as any).earnest_money_due_days as number | null
   const earnestDueDate: string | undefined =
-    (offer as any).earnest_money_due_at
-      ? new Date((offer as any).earnest_money_due_at).toISOString().split("T")[0]
-      : params.contractTerms.earnestMoneyDue ?? undefined
+    (params.contractDate && typeof dueDays === "number")
+      ? addDaysToDateString(params.contractDate.split("T")[0], dueDays)
+      : (offer as any).earnest_money_due_at
+        ? String((offer as any).earnest_money_due_at).slice(0, 10)
+        : params.contractTerms.earnestMoneyDue ?? undefined
   let titleCompany: string | null = null
   try {
     const { data: doc } = await supabase
@@ -213,4 +220,13 @@ export async function createTransactionFromOffer(params: {
   }
 
   return { success: true, transactionId: transaction.id }
+}
+
+/** Add N calendar days to a "YYYY-MM-DD" date string using pure UTC arithmetic (no local-timezone
+ *  drift), returning "YYYY-MM-DD". */
+function addDaysToDateString(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number)
+  const dt = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1))
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().split("T")[0]
 }

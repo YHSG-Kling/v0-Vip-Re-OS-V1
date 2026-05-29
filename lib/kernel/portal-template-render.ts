@@ -15,6 +15,10 @@ export function renderTemplateText(
   if (!text || !text.includes("{")) return text
   return text.replace(/\{([a-z0-9_]+)\}/gi, (_m, key: string) => {
     const v = metadata?.[key]
-    return v === undefined || v === null || v === "" ? "TBD" : String(v)
+    // Only interpolate primitives — an object/array value would stringify to "[object Object]" in a
+    // client-facing card; treat those (and missing/blank) as "TBD".
+    const t = typeof v
+    if (v === undefined || v === null || v === "" || (t !== "string" && t !== "number" && t !== "boolean")) return "TBD"
+    return String(v)
   })
 }

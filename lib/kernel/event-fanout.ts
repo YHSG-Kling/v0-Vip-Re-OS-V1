@@ -123,7 +123,7 @@ export async function enrollMatchingSequences(
         sequence_id:  seq.id,
         contact_id:   contactId,
         brokerage_id: brokerageId,
-        enrolled_by:  enrolledBy ?? null,
+        enrolled_by:  enrolledBy || null,  // "" (system actor) must not hit the uuid FK
         current_step: 0,
         status:       "active",
         enrolled_at:  new Date().toISOString(),
@@ -578,7 +578,9 @@ export async function writePortalUpdate(
       contact_id:               contactId,
       transaction_id:           ctx.transactionId ?? null,
       listing_id:               ctx.listingId ?? null,
-      agent_id:                 ctx.agentUserId ?? null,
+      // `|| null` (not `?? null`): a system actor passes agentUserId="" — an empty string would fail
+      // the uuid FK to users and the swallowed insert would silently drop the whole card.
+      agent_id:                 ctx.agentUserId || null,
       title:                    title,
       plain_language_summary:   summary,
       stage:                    merged.stage ?? null,
