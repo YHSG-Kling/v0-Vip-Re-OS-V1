@@ -391,6 +391,25 @@ async function testVendorConnectors() {
   const fbErr = await publishToSocialPlatform("facebook", { content: "x", accessToken: "T", accountId: "1" })
   check("social: gateway error surfaces provider message (success:false)", !fbErr.success && (fbErr.error ?? "").includes("bad page"))
 
+  // ShowingTime scheduling now egresses through the connector-gateway (was a bespoke fetch).
+  // Verify the connector contract: bearer auth, POST /v2/appointments, json appointment body.
+  let stReq: { url: string; auth: string; ct: string; body: any } | null = null
+  globalThis.fetch = (async (url: any, init: any) => {
+    stReq = { url: String(url), auth: init?.headers?.Authorization ?? "", ct: init?.headers?.["Content-Type"] ?? "", body: JSON.parse(init.body) }
+    return { ok: true, status: 200, json: async () => ({ id: "appt_42" }) }
+  }) as unknown as typeof fetch
+  const stRes = await callConnector<{ id?: string }>({
+    connector: "showingtime", baseUrl: "https://api.showingtime.com", path: "/v2/appointments", method: "POST",
+    auth: { style: "bearer", token: "ST_KEY" },
+    body: { property: { address: "123 Main St", city: "Tampa", state: "FL", zip: "33602" }, duration_minutes: 30, buyer_agent_name: "Dana Agent" },
+  })
+  check("ShowingTime routes through gateway to /v2/appointments", !!stReq && (stReq as any).url === "https://api.showingtime.com/v2/appointments")
+  check("ShowingTime uses Bearer auth + json body", !!stReq && (stReq as any).auth === "Bearer ST_KEY" && (stReq as any).ct === "application/json" && (stReq as any).body.property.zip === "33602")
+  check("ShowingTime returns appointment id on 200", stRes.ok && stRes.data?.id === "appt_42")
+  globalThis.fetch = (async () => ({ ok: false, status: 403, json: async () => ({ message: "partner access required" }) })) as unknown as typeof fetch
+  const stErr = await callConnector({ connector: "showingtime", baseUrl: "https://api.showingtime.com", path: "/v2/appointments", method: "POST", auth: { style: "bearer", token: "ST_KEY" }, body: {} })
+  check("ShowingTime non-200 → not ok (caller falls back to manual draft)", !stErr.ok && stErr.status === 403)
+
   globalThis.fetch = realFetch
 }
 

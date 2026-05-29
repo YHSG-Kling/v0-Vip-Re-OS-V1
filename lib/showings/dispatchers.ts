@@ -20,6 +20,7 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
  * Channels:
@@ -97,14 +98,15 @@ export interface DispatchResult {
 // ─── ShowingTime ─────────────────────────────────────────────────────────────
 
 /**
- * Calls the ShowingTime API to schedule a showing. Requires a brokerage-level
- * ShowingTime API key on the brokerage_credentials table. Returns the
- * ShowingTime appointment ID on success.
+ * Calls the ShowingTime API to schedule a showing. The api key is resolved by the caller
+ * through the unified ownership cascade (resolveScopedConnection: agent → team → brokerage →
+ * platform), so a ShowingTime key connected in the Connection Center is what's used here.
+ * Egress goes through the connector-gateway (callConnector) like every other provider — never a
+ * bespoke fetch. Returns the ShowingTime appointment ID on success.
  *
- * NOTE: ShowingTime's public API is partner-only. This implementation uses
- * the published REST shape (POST /v2/appointments). When the brokerage has
- * no credentials we still return a stable draft so the agent can manually
- * create the request inside ShowingTime's web UI.
+ * NOTE: ShowingTime's public API is partner-only. This implementation uses the published REST
+ * shape (POST /v2/appointments). When no credential is connected we still return a stable draft
+ * so the agent can manually create the request inside ShowingTime's web UI.
  */
 export async function dispatchViaShowingTime(
   ctx: DispatchContext,
@@ -121,45 +123,37 @@ export async function dispatchViaShowingTime(
     return { providerRef: null, draft, sent: false }
   }
 
-  try {
-    const res = await fetch("https://api.showingtime.com/v2/appointments", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+  const res = await callConnector<{ id?: string }>({
+    connector: "showingtime",
+    baseUrl:   "https://api.showingtime.com",
+    path:      "/v2/appointments",
+    method:    "POST",
+    auth:      { style: "bearer", token: apiKey },
+    body: {
+      property: {
+        address: ctx.stop.property_address,
+        city:    ctx.stop.city,
+        state:   ctx.stop.state,
+        zip:     ctx.stop.zip,
       },
-      body: JSON.stringify({
-        property: {
-          address: ctx.stop.property_address,
-          city:    ctx.stop.city,
-          state:   ctx.stop.state,
-          zip:     ctx.stop.zip,
-        },
-        requested_at:        ctx.tour.tour_date && ctx.stop.suggested_time
-          ? `${ctx.tour.tour_date}T${ctx.stop.suggested_time}`
-          : null,
-        duration_minutes:    ctx.stop.suggested_duration_minutes ?? 30,
-        buyer_agent_name:    ctx.buyerAgent.fullName,
-        buyer_agent_phone:   ctx.buyerAgent.phone,
-        buyer_agent_email:   ctx.buyerAgent.email,
-        buyer_agent_license: ctx.buyerAgent.licenseNumber,
-        buyer_brokerage:     ctx.buyerAgent.brokerageName,
-        notes:               draftBody,
-      }),
-    })
-    if (!res.ok) {
-      // Fall back to draft on any non-200; agent can complete manually
-      return { providerRef: null, draft, sent: false }
-    }
-    const data = await res.json().catch(() => null) as { id?: string } | null
-    return {
-      providerRef: data?.id ?? null,
-      draft,
-      sent:        !!data?.id,
-    }
-  } catch {
+      requested_at:        ctx.tour.tour_date && ctx.stop.suggested_time
+        ? `${ctx.tour.tour_date}T${ctx.stop.suggested_time}`
+        : null,
+      duration_minutes:    ctx.stop.suggested_duration_minutes ?? 30,
+      buyer_agent_name:    ctx.buyerAgent.fullName,
+      buyer_agent_phone:   ctx.buyerAgent.phone,
+      buyer_agent_email:   ctx.buyerAgent.email,
+      buyer_agent_license: ctx.buyerAgent.licenseNumber,
+      buyer_brokerage:     ctx.buyerAgent.brokerageName,
+      notes:               draftBody,
+    },
+  })
+
+  // Fall back to draft on any non-200; agent can complete manually.
+  if (!res.ok || !res.data?.id) {
     return { providerRef: null, draft, sent: false }
   }
+  return { providerRef: res.data.id, draft, sent: true }
 }
 
 // ─── SMS ─────────────────────────────────────────────────────────────────────
