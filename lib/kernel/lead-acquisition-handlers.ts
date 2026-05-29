@@ -528,13 +528,14 @@ export async function handleLeadAssigned(params: {
 
   if (contactType === 'buyer' || contactType === 'seller' || contactType === 'investor') {
     try {
-      const { createPortalInviteForContact } = await import(
-        '@/app/actions/portal-invites'
-      )
-      await createPortalInviteForContact({
-        contactId: contact.id,
-        brokerageId,
-        invitedByUserId: agentUserId,
+      // System path (server-only, not a client action): createPortalInviteForContact required a
+      // logged-in session and silently failed here in the background assignment context.
+      // createSystemPortalInvite authorizes via the assigned agent's user id; the core
+      // compliance-gates the email on opt-out / unsubscribe.
+      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
+      await createSystemPortalInvite({
+        contactId:   contact.id,
+        agentUserId: agentUserId,
         sendMagicLink: true,
       })
     } catch {
