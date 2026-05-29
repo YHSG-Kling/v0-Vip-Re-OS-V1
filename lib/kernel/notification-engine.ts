@@ -81,6 +81,24 @@ export async function processKernelEvent(params: {
       }
     }
   }
+
+  // ─── AGENTIC REACTOR ──────────────────────────────────────────────────────────
+  // Fan this SAME event into the kernel reactor so marketing/automation react in real time
+  // (campaign enrollment), not just notify a human. Isolated in its own try/catch — a reactor
+  // failure must never break the notification path above. The safety-net cron still sweeps
+  // lifecycle_events, and the reactor's enrollment is cooldown-idempotent, so the two never
+  // double-enroll. Side-effecting sends stay gated downstream in the channel adapters.
+  try {
+    const { dispatchKernelEvent } = await import("@/lib/kernel/event-reactor")
+    await dispatchKernelEvent({
+      event:       params.event,
+      brokerageId: params.brokerageId,
+      entityType:  params.entityType,
+      entityId:    params.entityId,
+    })
+  } catch (err) {
+    console.error("[NotificationEngine] reactor dispatch failed:", err)
+  }
 }
 
 // ─── RECIPIENT RESOLVER ───────────────────────────────────────────────────────

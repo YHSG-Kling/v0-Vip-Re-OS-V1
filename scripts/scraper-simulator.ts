@@ -87,6 +87,7 @@ import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
+import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 
 let passed = 0
 let failed = 0
@@ -680,6 +681,25 @@ async function testVendorGateway() {
   check("MCP read executors map to manifest capabilities that exist", MCP_READ_CAPS.every((c) => full.some((a) => a.capability === c)))
   check("MCP read executors are all NON-mutating (mutations stay gated over MCP)", MCP_READ_CAPS.every((c) => full.find((a) => a.capability === c)?.mutates === false))
   check("MCP new reads carry the expected scopes", requiredScope("comparable_sales") === "valuation:read" && requiredScope("market_stats") === "market:read" && requiredScope("lead_skip_trace") === "lead:enrich" && APP_CAPABILITY_REGISTRY.connectivity_scan.scope === "connectivity:read")
+
+  // ── Kernel event reactor (Phase 1) — pure trigger matching + cooldown ────────
+  const trig = (over: Partial<LifecycleTrigger>): LifecycleTrigger => ({ id: "t1", brokerage_id: "b1", campaign_id: "c1", trigger_value: "offer_accepted", channel: "email", cooldown_days: 7, audience_filter: {}, ...over })
+  const triggerSet: LifecycleTrigger[] = [
+    trig({ id: "t1", trigger_value: "offer_accepted", brokerage_id: "b1" }),
+    trig({ id: "t2", trigger_value: "deal_closed",    brokerage_id: "b1" }),
+    trig({ id: "t3", trigger_value: "offer_accepted", brokerage_id: "b2" }), // other brokerage
+  ]
+  check("reactor: matchTriggersForEvent matches on event_type + brokerage (tenant-isolated)", (() => {
+    const m = matchTriggersForEvent(triggerSet, "offer_accepted", "b1")
+    return m.length === 1 && m[0].id === "t1"
+  })())
+  check("reactor: no cross-brokerage trigger leak", matchTriggersForEvent(triggerSet, "offer_accepted", "b1").every(t => t.brokerage_id === "b1"))
+  check("reactor: unmatched event yields no triggers", matchTriggersForEvent(triggerSet, "listing_created", "b1").length === 0)
+  const now = Date.parse("2026-01-10T00:00:00Z")
+  check("reactor: cooldown active inside window (idempotent re-fire is skipped)", isCooldownActive("2026-01-08T00:00:00Z", 7, now) === true)
+  check("reactor: cooldown expired outside window", isCooldownActive("2025-12-20T00:00:00Z", 7, now) === false)
+  check("reactor: no prior touchpoint → never in cooldown", isCooldownActive(null, 7, now) === false)
+  check("reactor: cooldown_days<=0 → never throttle (re-enroll allowed)", isCooldownActive("2026-01-09T23:59:00Z", 0, now) === false)
 
   // Expansive-domain coverage (marketing / social / reporting / education / portal / etc.).
   const appDomains = new Set(appManifest.map((a) => a.category))
