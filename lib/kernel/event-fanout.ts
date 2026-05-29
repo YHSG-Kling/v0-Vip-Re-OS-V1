@@ -509,6 +509,18 @@ export async function writePortalUpdate(
       ...(role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
     }
 
+    // Resolve the agents.id for the (optional) companion chat. client_portal_messages.agent_id is
+    // NOT NULL with an FK to *agents* (not users), and contacts.agent_id is the agents.id — so use
+    // that. ctx.agentUserId is a users.id (the actor) and is the WRONG id space here; feeding it in
+    // is why every prior chat insert silently failed the FK. Used ONLY for the chat ping — the
+    // transparency card's agent_id is a separate FK to users (ctx.agentUserId).
+    const { data: chatAgentRow } = await supabase
+      .from("contacts")
+      .select("agent_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    const chatAgentId: string | null = chatAgentRow?.agent_id ?? null
+
     // Idempotency: skip if an identical card (same contact + event + entity + title) was written
     // within the dedupe window. Title is part of the key so genuinely distinct later milestones of
     // the same event type (e.g. successive LISTING_STAGE_CHANGED stages) still post.
@@ -528,6 +540,7 @@ export async function writePortalUpdate(
 
     // 3a. transparency_update — the canonical "what happened on my deal" card.
     await supabase.from("transparency_updates").insert({
+      brokerage_id:             ctx.brokerageId,
       contact_id:               contactId,
       transaction_id:           ctx.transactionId ?? null,
       listing_id:               ctx.listingId ?? null,
@@ -545,14 +558,15 @@ export async function writePortalUpdate(
       created_at:               new Date().toISOString(),
     }).then(() => null, () => null)
 
-    // 3b. Companion portal chat message (only when template provides one).
-    if (merged.chatBody) {
+    // 3b. Companion portal chat message (only when template provides one AND an agent is resolvable
+    //     — client_portal_messages.agent_id is NOT NULL).
+    if (merged.chatBody && chatAgentId) {
       await supabase.from("client_portal_messages").insert({
         brokerage_id:   ctx.brokerageId,
         contact_id:     contactId,
-        agent_id:       ctx.agentUserId ?? null,
+        agent_id:       chatAgentId,
         transaction_id: ctx.transactionId ?? null,
-        direction:      "outbound",
+        direction:      "agent_to_client",
         body:           merged.chatBody,
         channel:        "portal",
         read:           false,
