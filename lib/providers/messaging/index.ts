@@ -18,6 +18,7 @@
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
 import { resolveSMSProviderForActor } from "./resolve-sms-provider"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
@@ -308,13 +309,13 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     }
   }
 
-  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+  const response = await callConnector({
+    connector: "sendgrid",
+    baseUrl: "https://api.sendgrid.com",
+    path: "/v3/mail/send",
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+    auth: { style: "bearer", token: apiKey },
+    body: {
       personalizations: [{ to: [{ email: params.to }] }],
       from: { email: params.from || defaultFrom },
       subject: params.subject,
@@ -322,12 +323,11 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
         { type: "text/html", value: params.html },
       ],
-    }),
+    },
   })
 
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(error || "SendGrid API error")
+    throw new Error(response.error || "SendGrid API error")
   }
 
   return { success: true, status: "sent", provider: "sendgrid" }

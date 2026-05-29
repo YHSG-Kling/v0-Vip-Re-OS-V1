@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -705,21 +706,21 @@ async function checkHeyGenJobStatus(jobId: string): Promise<{
   const apiKey = process.env.HEYGEN_API_KEY
   if (!apiKey) return { status: "unknown" }
 
-  try {
-    const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(jobId)}`, {
-      headers: { "X-Api-Key": apiKey },
-    })
-    if (!res.ok) return { status: "unknown" }
+  const res = await callConnector<{ data?: { status?: string; video_url?: string } }>({
+    connector: "heygen",
+    baseUrl: "https://api.heygen.com",
+    path: "/v1/video_status.get",
+    method: "GET",
+    query: { video_id: jobId },
+    auth: { style: "header", name: "X-Api-Key", value: apiKey },
+  })
+  if (!res.ok) return { status: "unknown" }
 
-    const data = await res.json()
-    // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
-    // data.data.video_url when completed
-    return {
-      status: data.data?.status ?? "unknown",
-      videoUrl: data.data?.video_url ?? undefined,
-    }
-  } catch {
-    return { status: "unknown" }
+  // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
+  // data.data.video_url when completed
+  return {
+    status: res.data?.data?.status ?? "unknown",
+    videoUrl: res.data?.data?.video_url ?? undefined,
   }
 }
 

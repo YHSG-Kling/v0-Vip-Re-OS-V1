@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
  * Call Whisper Bridge & Vapi Voice Bot System
@@ -264,14 +265,14 @@ export async function triggerVapiVoiceBot(params: {
       }
     }
 
-    // Call Vapi.ai API
-    const response = await fetch("https://api.vapi.ai/call/phone", {
+    // Call Vapi.ai API through the connector-gateway
+    const response = await callConnector<{ id?: string; status?: string }>({
+      connector: "vapi",
+      baseUrl: "https://api.vapi.ai",
+      path: "/call/phone",
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${vapiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+      auth: { style: "bearer", token: vapiApiKey },
+      body: {
         phoneNumber: contact.phone,
         assistantId: vapiAssistantId,
         customer: {
@@ -280,14 +281,14 @@ export async function triggerVapiVoiceBot(params: {
         assistantOverrides: {
           firstMessage,
         },
-      }),
+      },
     })
 
-    const callData = await response.json()
-
     if (!response.ok) {
-      throw new Error(callData.message || "Vapi API error")
+      throw new Error(response.error || "Vapi API error")
     }
+
+    const callData = response.data ?? {}
 
     // Log Vapi call. `vapi_voice_calls` carries the billing + provider
     // pointer; the conversational metadata (trigger_event, initial status)

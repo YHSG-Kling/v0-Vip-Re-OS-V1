@@ -8,6 +8,7 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export interface SMSAdapterResult {
   success: boolean
@@ -53,26 +54,19 @@ export async function sendViaTwilio(
     }
   }
 
-  const res = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        To: input.to,
-        From: fromNumber,
-        Body: input.message,
-      }),
-    }
-  )
-  const data = await res.json()
+  const res = await callConnector<{ sid?: string; status?: string }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${accountSid}/Messages.json`,
+    method: "POST",
+    auth: { style: "basic", username: accountSid, password: authToken },
+    bodyType: "form",
+    body: { To: input.to, From: fromNumber, Body: input.message },
+  })
   if (!res.ok) {
-    return { success: false, provider: "twilio", error: data.message ?? `Twilio API error (${res.status})` }
+    return { success: false, provider: "twilio", error: res.error ?? `Twilio API error (${res.status})` }
   }
-  return { success: true, provider: "twilio", messageId: data.sid, status: data.status }
+  return { success: true, provider: "twilio", messageId: res.data?.sid, status: res.data?.status }
 }
 
 // ─── TELNYX ──────────────────────────────────────────────────────────────────
@@ -100,23 +94,22 @@ export async function sendViaTelnyx(
   if (fromNumber)         body.from = fromNumber
   if (messagingProfileId) body.messaging_profile_id = messagingProfileId
 
-  const res = await fetch("https://api.telnyx.com/v2/messages", {
+  const res = await callConnector<{ data?: { id?: string; status?: string } }>({
+    connector: "telnyx",
+    baseUrl: "https://api.telnyx.com",
+    path: "/v2/messages",
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    auth: { style: "bearer", token: apiKey },
+    body,
   })
-  const data = await res.json()
   if (!res.ok) {
-    return { success: false, provider: "telnyx", error: data?.errors?.[0]?.detail ?? `Telnyx API error (${res.status})` }
+    return { success: false, provider: "telnyx", error: res.error ?? `Telnyx API error (${res.status})` }
   }
   return {
     success: true,
     provider: "telnyx",
-    messageId: data?.data?.id,
-    status:    data?.data?.status,
+    messageId: res.data?.data?.id,
+    status:    res.data?.data?.status,
   }
 }
 
@@ -140,30 +133,26 @@ export async function sendViaBandwidth(
     }
   }
 
-  const res = await fetch(
-    `https://messaging.bandwidth.com/api/v2/users/${accountId}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        applicationId,
-        to: [input.to],
-        from: fromNumber,
-        text: input.message,
-      }),
-    }
-  )
-  const data = await res.json()
+  const res = await callConnector<{ id?: string }>({
+    connector: "bandwidth",
+    baseUrl: "https://messaging.bandwidth.com",
+    path: `/api/v2/users/${accountId}/messages`,
+    method: "POST",
+    auth: { style: "basic", username, password },
+    body: {
+      applicationId,
+      to: [input.to],
+      from: fromNumber,
+      text: input.message,
+    },
+  })
   if (!res.ok) {
-    return { success: false, provider: "bandwidth", error: data?.message ?? `Bandwidth API error (${res.status})` }
+    return { success: false, provider: "bandwidth", error: res.error ?? `Bandwidth API error (${res.status})` }
   }
   return {
     success: true,
     provider: "bandwidth",
-    messageId: data?.id,
+    messageId: res.data?.id,
     status:    "queued",
   }
 }

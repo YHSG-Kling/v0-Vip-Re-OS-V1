@@ -20,6 +20,7 @@ import {
   withRecordingDisclosure,
 } from "@/lib/communication/call-compliance"
 import type { KernelContact } from "@/lib/kernel/types"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // Auth guard — agentId and brokerageId always from session, never from body
@@ -214,21 +215,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
     }
 
-    const vapiRes = await fetch("https://api.vapi.ai/call", {
+    const vapiRes = await callConnector({
+      connector: "vapi",
+      baseUrl: "https://api.vapi.ai",
+      path: "/call",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${vapiKey}`,
-      },
-      body: JSON.stringify(vapiBody),
+      auth: { style: "bearer", token: vapiKey },
+      body: vapiBody,
     })
 
     if (!vapiRes.ok) {
-      const errText = await vapiRes.text()
-      return NextResponse.json({ error: `VAPI error: ${errText}` }, { status: 502 })
+      return NextResponse.json({ error: `VAPI error: ${vapiRes.error ?? `HTTP ${vapiRes.status}`}` }, { status: 502 })
     }
 
-    vapiResponse = await vapiRes.json()
+    vapiResponse = vapiRes.data
   } catch {
     return NextResponse.json({ error: "Failed to reach VAPI" }, { status: 502 })
   }

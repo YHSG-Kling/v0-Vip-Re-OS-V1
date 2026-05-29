@@ -6,6 +6,7 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export const voiceDropAdapter: ChannelAdapter = {
   channel: "voice_drop",
@@ -40,13 +41,13 @@ export const voiceDropAdapter: ChannelAdapter = {
       }
 
       // Vapi REST call for voicedrop (ringless voicemail delivery)
-      const response = await fetch("https://api.vapi.ai/call/phone", {
+      const response = await callConnector<{ id?: string }>({
+        connector: "vapi",
+        baseUrl: "https://api.vapi.ai",
+        path: "/call/phone",
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${vapiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+        auth: { style: "bearer", token: vapiKey },
+        body: {
           phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID,
           customer: { number: contact.phone },
           assistantOverrides: {
@@ -56,15 +57,14 @@ export const voiceDropAdapter: ChannelAdapter = {
           // Vapi voicedrop flag — deliver without ringing
           voicemailDetectionEnabled: true,
           metadata: { voicedrop: true, brokerageId, contactId: contact.id },
-        }),
+        },
       })
 
       if (!response.ok) {
-        const err = await response.text()
-        return { status: "error", providerKey: "vapi", error: `Vapi error: ${err}` }
+        return { status: "error", providerKey: "vapi", error: `Vapi error: ${response.error ?? `HTTP ${response.status}`}` }
       }
 
-      const data = await response.json()
+      const data = response.data ?? {}
       return {
         status: "sent",
         providerKey: "vapi",

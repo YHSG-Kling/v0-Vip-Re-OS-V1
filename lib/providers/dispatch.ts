@@ -21,6 +21,7 @@ import {
   placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
@@ -654,22 +655,26 @@ async function dispatchVideoViaDID({
   ) || JSON.stringify(params.scriptVars ?? {})
 
   // ─── 1. Generate audio via ElevenLabs TTS ───────────────────────────────────
-  const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + didProfile.elevenlabs_voice_id, {
+  const ttsRes = await callConnector<Buffer>({
+    connector: "elevenlabs",
+    baseUrl: "https://api.elevenlabs.io",
+    path: `/v1/text-to-speech/${didProfile.elevenlabs_voice_id}`,
     method: "POST",
-    headers: { "xi-api-key": elApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-    body: JSON.stringify({ text: renderedScript, model_id: "eleven_multilingual_v2" }),
+    auth: { style: "header", name: "xi-api-key", value: elApiKey },
+    headers: { Accept: "audio/mpeg" },
+    responseType: "arraybuffer",
+    body: { text: renderedScript, model_id: "eleven_multilingual_v2" },
   })
 
-  if (!ttsRes.ok) {
-    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: HTTP ${ttsRes.status}` }
+  if (!ttsRes.ok || !ttsRes.data) {
+    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: ${ttsRes.error ?? `HTTP ${ttsRes.status}`}` }
   }
 
   // For D-ID we need a hosted audio URL — write to Supabase storage.
-  const audioBuf = await ttsRes.arrayBuffer()
   const audioPath = `isa-videos/${agentUserId}/${Date.now()}.mp3`
   const { error: uploadError } = await supabase.storage
     .from("media")
-    .upload(audioPath, new Uint8Array(audioBuf), { contentType: "audio/mpeg", upsert: false })
+    .upload(audioPath, new Uint8Array(ttsRes.data), { contentType: "audio/mpeg", upsert: false })
   if (uploadError) {
     return { success: false, providerKey: "did", error: `Failed to host audio: ${uploadError.message}` }
   }
@@ -677,7 +682,6 @@ async function dispatchVideoViaDID({
   const audioUrl = pub.publicUrl
 
   // ─── 2. Submit to D-ID ──────────────────────────────────────────────────────
-  const endpoint = isVideoSource ? "https://api.d-id.com/clips" : "https://api.d-id.com/talks"
   const didPayload = isVideoSource
     ? {
         source_url: sourceUrl,
@@ -691,22 +695,20 @@ async function dispatchVideoViaDID({
         config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
       }
 
-  const didRes = await fetch(endpoint, {
+  const didRes = await callConnector<{ id?: string }>({
+    connector: "did",
+    baseUrl: "https://api.d-id.com",
+    path: isVideoSource ? "/clips" : "/talks",
     method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(didPayload),
+    auth: { style: "basic", username: didApiKey, password: "" },
+    body: didPayload,
   })
 
   if (!didRes.ok) {
-    const errBody = await didRes.text()
-    return { success: false, providerKey: "did", error: `D-ID API error: ${errBody}` }
+    return { success: false, providerKey: "did", error: `D-ID API error: ${didRes.error ?? `HTTP ${didRes.status}`}` }
   }
 
-  const didData = (await didRes.json()) as { id?: string }
+  const didData = didRes.data ?? {}
 
   void logVendorUsage({
     vendorName: "did",
@@ -746,18 +748,20 @@ async function dispatchVideoViaHeyGen({
     }
   }
 
-  const response = await fetch("https://api.heygen.com/v2/video/generate", {
+  const response = await callConnector<{ video_id?: string }>({
+    connector: "heygen",
+    baseUrl: "https://api.heygen.com",
+    path: "/v2/video/generate",
     method: "POST",
-    headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({ template_id: params.templateId, variables: params.scriptVars ?? {} }),
+    auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
+    body: { template_id: params.templateId, variables: params.scriptVars ?? {} },
   })
 
   if (!response.ok) {
-    const body = await response.text()
-    return { success: false, providerKey, error: `HeyGen API error: ${body}` }
+    return { success: false, providerKey, error: `HeyGen API error: ${response.error ?? `HTTP ${response.status}`}` }
   }
 
-  const data = (await response.json()) as { video_id?: string }
+  const data = response.data ?? {}
 
   void logVendorUsage({
     vendorName: providerKey,
