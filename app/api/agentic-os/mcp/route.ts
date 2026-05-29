@@ -24,7 +24,9 @@ function rpcError(id: unknown, code: number, message: string, status = 200) {
 }
 
 // The only auto-executable read tools (same set as the REST invoke route). Everything else
-// is returned as a gated plan — side-effecting actions never auto-fire over MCP.
+// is returned as a gated plan — side-effecting actions never auto-fire over MCP. Each is still
+// scope-gated by the caller's token below, and every call audit-logs. All vendor egress here goes
+// through the connector-gateway (web search, RentCast, PeopleData) — never a bespoke fetch.
 const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) => Promise<unknown>> = {
   web_research: async (args) => {
     const { webSearch } = await import("@/lib/ai/web-search")
@@ -33,6 +35,27 @@ const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) =
   property_valuation: async (args, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
     return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false })
+  },
+  comparable_sales: async (args, ctx) => {
+    const { getRentcastComps } = await import("@/lib/property/rentcast")
+    return getRentcastComps({ brokerageId: ctx.brokerageId, address: String(args.address ?? ""), limit: args.limit != null ? Number(args.limit) : undefined })
+  },
+  market_stats: async (args, ctx) => {
+    const { getRentcastMarketStats } = await import("@/lib/property/rentcast")
+    return getRentcastMarketStats({ brokerageId: ctx.brokerageId, zipCode: String(args.zipCode ?? "") })
+  },
+  lead_skip_trace: async (args) => {
+    const { skipTraceWithPeopleData } = await import("@/lib/external/peopledata-client")
+    return skipTraceWithPeopleData({
+      name: args.name != null ? String(args.name) : undefined,
+      phone: args.phone != null ? String(args.phone) : undefined,
+      email: args.email != null ? String(args.email) : undefined,
+      address: args.address != null ? String(args.address) : undefined,
+    })
+  },
+  connectivity_scan: async (_args, ctx) => {
+    const { scanConnectivity } = await import("@/lib/agentic-os/resolve-connectivity")
+    return scanConnectivity({ brokerageId: ctx.brokerageId })
   },
 }
 

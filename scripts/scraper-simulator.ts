@@ -674,6 +674,13 @@ async function testVendorGateway() {
   check("unified manifest sorted by intentWeight desc", full.every((a, i) => i === 0 || full[i - 1].intentWeight >= a.intentWeight))
   check("listing_publish (PUBLISH) is highest-weight write", full[0].mutates === true)
 
+  // MCP read-executor extension: the auto-runnable read tools must all be real, non-mutating
+  // capabilities present in the unified manifest (the MCP route only auto-fires reads).
+  const MCP_READ_CAPS = ["web_research", "property_valuation", "comparable_sales", "market_stats", "lead_skip_trace", "connectivity_scan"]
+  check("MCP read executors map to manifest capabilities that exist", MCP_READ_CAPS.every((c) => full.some((a) => a.capability === c)))
+  check("MCP read executors are all NON-mutating (mutations stay gated over MCP)", MCP_READ_CAPS.every((c) => full.find((a) => a.capability === c)?.mutates === false))
+  check("MCP new reads carry the expected scopes", requiredScope("comparable_sales") === "valuation:read" && requiredScope("market_stats") === "market:read" && requiredScope("lead_skip_trace") === "lead:enrich" && APP_CAPABILITY_REGISTRY.connectivity_scan.scope === "connectivity:read")
+
   // Expansive-domain coverage (marketing / social / reporting / education / portal / etc.).
   const appDomains = new Set(appManifest.map((a) => a.category))
   check("app registry now spans expansive domains", ["marketing", "social", "reporting", "education", "portal", "reputation", "communications"].every((d) => appDomains.has(d)))
