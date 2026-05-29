@@ -178,17 +178,10 @@ export async function acceptOffer(params: {
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
 
-  // Canonical fan-out: records the lifecycle event, notifies staff, and writes
-  // the buyer + seller portal updates (transparency feed + chat + notification)
-  // by resolving both contacts from the offer + listing.
-  await emitTransactionEvent({
-    event:       KernelEvent.OFFER_ACCEPTED,
-    entityType:  "offer",
-    brokerageId,
-    entityId:    offerId,
-    actorUserId: agentUserId,
-    metadata:    { listing_id: listingId },
-  }).catch(() => {})
+  // OFFER_ACCEPTED is now emitted once, from the shared chokepoint createTransactionFromOffer (below),
+  // which carries the real contract dates (earnest money / inspection / closing) in metadata so the
+  // proactive "under contract" card is date-specific. Emitting here too would write a date-less card
+  // first and the portal writer's title-dedupe would then suppress the rich one — so we don't.
 
   // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT
   await transitionLifecycle({

@@ -16,6 +16,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { renderTemplateText } from "../lib/kernel/portal-template-render"
 
 const ROOT = process.cwd()
 const eventsSrc  = readFileSync(join(ROOT, "lib/kernel/events.ts"), "utf8")
@@ -84,6 +85,30 @@ for (const e of EXPECTED_CLIENT) {
   ok(allEvents.has(e), `expected client event missing from enum: ${e}`)
   ok(templated.has(e), `expected client milestone lost its portal template: ${e}`)
 }
+
+// 4. Metadata interpolation (the real renderTemplateText) — proactive, date-specific notices.
+ok(renderTemplateText("due {earnest_money_due}", { earnest_money_due: "2026-06-01" }) === "due 2026-06-01",
+   "renderTemplateText fills a present key")
+ok(renderTemplateText("close {closing_date}", {}) === "close TBD",
+   "renderTemplateText renders a missing key as TBD")
+ok(renderTemplateText("close {closing_date}", { closing_date: "" }) === "close TBD",
+   "renderTemplateText renders a blank key as TBD")
+ok(renderTemplateText("no tokens here", { a: 1 }) === "no tokens here",
+   "renderTemplateText leaves token-free text unchanged")
+ok(renderTemplateText("{earnest_money_due} & {inspection_deadline}", { earnest_money_due: "6/1", inspection_deadline: "6/10" }) === "6/1 & 6/10",
+   "renderTemplateText fills multiple tokens")
+
+// 5. Audience gating — domain semantics: listings/showings = seller side; properties/tours = buyer side.
+function blockOf(eventName: string): string {
+  const start = fanoutSrc.indexOf(`[KernelEvent.${eventName}]`)
+  if (start < 0) return ""
+  const next = fanoutSrc.indexOf("[KernelEvent.", start + 1)
+  return fanoutSrc.slice(start, next < 0 ? start + 600 : next)
+}
+const SELLER_AUDIENCE = ["SHOWING_SCHEDULED", "SHOWING_FEEDBACK_RECEIVED", "OPEN_HOUSE_SCHEDULED"]
+const BUYER_AUDIENCE  = ["TOUR_SCHEDULED", "PROPERTY_MATCH_FOUND", "SEARCH_ALERT_TRIGGERED", "PROPERTY_ALERT_MATCHED"]
+for (const e of SELLER_AUDIENCE) ok(/audience:\s*"seller"/.test(blockOf(e)), `${e} must be audience:"seller" (listing/showing = seller side)`)
+for (const e of BUYER_AUDIENCE)  ok(/audience:\s*"buyer"/.test(blockOf(e)),  `${e} must be audience:"buyer" (property/tour = buyer side)`)
 
 console.log(`[portal-curation] events=${allEvents.size} templated=${templated.size} expectedClient=${EXPECTED_CLIENT.length}`)
 console.log(`[portal-curation] internal events in enum (gated off portal): ${Array.from(allEvents).filter(isInternal).length}`)

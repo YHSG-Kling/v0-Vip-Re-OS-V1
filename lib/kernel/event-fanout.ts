@@ -27,6 +27,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
+import { renderTemplateText } from "./portal-template-render"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -143,6 +144,8 @@ export async function enrollMatchingSequences(
 // while still allowing genuinely distinct later milestones of the same event type to post.
 const PORTAL_DEDUPE_WINDOW_MS = 10 * 60 * 1000
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 interface PortalUpdateTemplate {
   title:                  string
   plainLanguageSummary:   string
@@ -154,6 +157,13 @@ interface PortalUpdateTemplate {
    *  the update warrants a conversational ping in addition to the milestone
    *  card. Keep short (one sentence). */
   chatBody?:              string
+  /** Which represented side this notice is FOR. "seller" = our listing side
+   *  (listings, showings); "buyer" = our buyer side (properties, tours). When
+   *  set, the card is written ONLY to a contact resolved to that role — so a
+   *  seller-side event never posts to a buyer (and vice-versa), and we never
+   *  message a side we don't represent (their contact is absent anyway).
+   *  Defaults to "both" (deal-wide milestones: under contract, closed, etc.). */
+  audience?:              "buyer" | "seller" | "both"
   /** Buyer-side milestones often differ from seller-side for the same
    *  underlying event. When set, applied per-contact role. */
   perRole?:               Partial<Record<"buyer" | "seller" | "lifetime", Partial<PortalUpdateTemplate>>>
@@ -163,15 +173,15 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
   [KernelEvent.OFFER_ACCEPTED]: {
     title: "You're under contract!",
     plainLanguageSummary:
-      "The offer was accepted. The deal is now in the due-diligence phase — inspection, appraisal, and financing are next.",
+      "The offer was accepted — you're under contract! Key dates: earnest money due {earnest_money_due}, inspection deadline {inspection_deadline}, estimated closing {closing_date}. Up next is due diligence — inspection, appraisal, and financing.",
     responsibleParty: "agent",
-    nextStep: "Earnest money due, inspection scheduled.",
+    nextStep: "Earnest money due {earnest_money_due}; inspection by {inspection_deadline}.",
     chatBody: "Great news — your offer was accepted! I'll send the next steps shortly.",
     perRole: {
       seller: {
         title: "Your home is under contract!",
         plainLanguageSummary:
-          "An offer was accepted on your home. Next we move into the buyer's due-diligence period — inspection, appraisal, financing.",
+          "An offer was accepted on your home — you're under contract! Key dates: earnest money due {earnest_money_due}, inspection deadline {inspection_deadline}, estimated closing {closing_date}. Next is the buyer's due-diligence period — inspection, appraisal, financing.",
         chatBody: "Congrats — your home is under contract! I'll keep you posted as the buyer completes their due diligence.",
       },
     },
@@ -247,14 +257,16 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
   },
   [KernelEvent.OPEN_HOUSE_SCHEDULED]: {
     title: "Open house scheduled",
-    plainLanguageSummary: "An open house has been scheduled. We'll share attendee count + feedback after.",
+    plainLanguageSummary: "An open house has been scheduled on your listing. We'll share attendee count + feedback after.",
     responsibleParty: "agent",
+    audience: "seller",  // open houses are our listing (seller) side
     chatBody: "Open house is on the calendar — I'll share who came through afterward.",
   },
   [KernelEvent.SHOWING_FEEDBACK_RECEIVED]: {
     title: "Showing feedback received",
-    plainLanguageSummary: "A buyer's agent shared feedback after a recent showing.",
+    plainLanguageSummary: "A buyer's agent shared feedback after a recent showing of your listing.",
     responsibleParty: "agent",
+    audience: "seller",  // showings happen on our listing — feedback is for the seller
   },
   [KernelEvent.OFFER_SUBMITTED]: {
     title: "Offer submitted",
@@ -395,39 +407,46 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
   [KernelEvent.PROPERTY_MATCH_FOUND]: {
     title: "New homes matching your search",
     plainLanguageSummary:
-      "New listings just hit the market that match what you're looking for. Open your portal to view photos, details, and request a tour.",
+      "New properties just hit the market that match what you're looking for. Open your portal to view photos, details, and request a tour.",
     responsibleParty: "client",
+    audience: "buyer",  // property search is the buyer side
     nextStep: "Review matches and tell your agent which to tour.",
-    chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to see.",
+    chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to tour.",
   },
   [KernelEvent.SEARCH_ALERT_TRIGGERED]: {
     title: "New homes for you",
     plainLanguageSummary:
-      "A new home matching your saved search is available. Check your portal for the full details.",
+      "A new property matching your saved search is available. Check your portal for the full details.",
     responsibleParty: "client",
-    chatBody: "A new home matching your search just listed — want me to set up a showing?",
+    audience: "buyer",
+    chatBody: "A new property matching your search just listed — want me to set up a tour?",
   },
   [KernelEvent.PROPERTY_ALERT_MATCHED]: {
     title: "A home matched your alert",
     plainLanguageSummary:
       "A property matched one of your saved alerts. View it in your portal and let your agent know if you'd like to tour it.",
     responsibleParty: "client",
-    chatBody: "One of your saved alerts just matched a new listing — let me know if it's worth a look.",
+    audience: "buyer",
+    chatBody: "One of your saved alerts just matched a new property — let me know if it's worth a tour.",
   },
   [KernelEvent.TOUR_SCHEDULED]: {
     title: "Your tour is scheduled",
     plainLanguageSummary:
-      "Your home tour is on the calendar. You'll find the date, time, and address in your portal.",
+      "Your property tour is on the calendar. You'll find the date, time, and address in your portal.",
     responsibleParty: "client",
-    nextStep: "See you at the showing.",
+    audience: "buyer",  // tours / tour planner are the buyer side
+    nextStep: "See you at the tour.",
     chatBody: "Your tour is set — details are in your portal. Looking forward to it!",
   },
+  // SHOWING_SCHEDULED is the SELLER side — a buyer's agent booked a showing on OUR listing. (Buyer-side
+  // property visits are TOUR_SCHEDULED above.)
   [KernelEvent.SHOWING_SCHEDULED]: {
-    title: "Your showing is scheduled",
+    title: "A showing is scheduled on your listing",
     plainLanguageSummary:
-      "A showing has been scheduled for you. The date, time, and address are in your portal.",
-    responsibleParty: "client",
-    chatBody: "Your showing is booked — details are in your portal.",
+      "A buyer's agent booked a showing of your home. We'll pass along any feedback afterward.",
+    responsibleParty: "agent",
+    audience: "seller",
+    chatBody: "Good news — a showing was just booked on your listing. I'll share feedback once it's done.",
   },
 
   // ── E-sign & documents ───────────────────────────────────────────────────────
@@ -509,6 +528,21 @@ export async function writePortalUpdate(
       ...(role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
     }
 
+    // Audience gating (representation + domain semantics): a seller-side notice (our listing /
+    // showings) never posts to a buyer, a buyer-side notice (properties / tours) never posts to a
+    // seller. When the role can't be confirmed, a side-specific card is skipped rather than risk
+    // reaching the wrong party. Deal-wide milestones (audience "both") post to every resolved side
+    // we represent — the unrepresented side simply has no contact and was already filtered out.
+    const audience = merged.audience ?? "both"
+    if (audience !== "both" && role !== audience) continue
+
+    // Proactive, specific copy: fill {key} tokens from the event metadata (e.g. real contract dates).
+    const meta = ctx.metadata ?? undefined
+    const title    = renderTemplateText(merged.title, meta)!
+    const summary  = renderTemplateText(merged.plainLanguageSummary, meta)!
+    const nextStep = renderTemplateText(merged.nextStep, meta)
+    const chatBody = renderTemplateText(merged.chatBody, meta)
+
     // Resolve the agents.id for the (optional) companion chat. client_portal_messages.agent_id is
     // NOT NULL with an FK to *agents* (not users), and contacts.agent_id is the agents.id — so use
     // that. ctx.agentUserId is a users.id (the actor) and is the WRONG id space here; feeding it in
@@ -521,7 +555,7 @@ export async function writePortalUpdate(
       .maybeSingle()
     const chatAgentId: string | null = chatAgentRow?.agent_id ?? null
 
-    // Idempotency: skip if an identical card (same contact + event + entity + title) was written
+    // Idempotency: skip if an identical card (same contact + event + rendered title) was written
     // within the dedupe window. Title is part of the key so genuinely distinct later milestones of
     // the same event type (e.g. successive LISTING_STAGE_CHANGED stages) still post.
     const sinceIso = new Date(Date.now() - PORTAL_DEDUPE_WINDOW_MS).toISOString()
@@ -530,7 +564,7 @@ export async function writePortalUpdate(
       .select("id")
       .eq("contact_id", contactId)
       .eq("update_type", ctx.event)
-      .eq("title", merged.title)
+      .eq("title", title)
       .gte("created_at", sinceIso)
       .limit(1)
       .maybeSingle()
@@ -545,14 +579,14 @@ export async function writePortalUpdate(
       transaction_id:           ctx.transactionId ?? null,
       listing_id:               ctx.listingId ?? null,
       agent_id:                 ctx.agentUserId ?? null,
-      title:                    merged.title,
-      plain_language_summary:   merged.plainLanguageSummary,
+      title:                    title,
+      plain_language_summary:   summary,
       stage:                    merged.stage ?? null,
       responsible_party:        merged.responsibleParty ?? null,
       responsible_party_name:   merged.responsiblePartyName ?? null,
-      next_step:                merged.nextStep ?? null,
+      next_step:                nextStep ?? null,
       update_type:              ctx.event,
-      message:                  merged.plainLanguageSummary,
+      message:                  summary,
       is_visible_to_client:     true,
       metadata:                 ctx.metadata ?? {},
       created_at:               new Date().toISOString(),
@@ -560,29 +594,31 @@ export async function writePortalUpdate(
 
     // 3b. Companion portal chat message (only when template provides one AND an agent is resolvable
     //     — client_portal_messages.agent_id is NOT NULL).
-    if (merged.chatBody && chatAgentId) {
+    if (chatBody && chatAgentId) {
       await supabase.from("client_portal_messages").insert({
         brokerage_id:   ctx.brokerageId,
         contact_id:     contactId,
         agent_id:       chatAgentId,
         transaction_id: ctx.transactionId ?? null,
         direction:      "agent_to_client",
-        body:           merged.chatBody,
+        body:           chatBody,
         channel:        "portal",
         read:           false,
         created_at:     new Date().toISOString(),
       }).then(() => null, () => null)
     }
 
-    // 3c. Notification on the contact's portal bell.
+    // 3c. Notification on the contact's portal bell. entity_id is a uuid column — only set it when
+    //     ctx.entityId is actually a uuid (some emitters pass composite/string ids), else the whole
+    //     bell insert fails the uuid cast (silently, via the swallow) and the client gets no ping.
     await supabase.from("notifications").insert({
       contact_id:   contactId,
       brokerage_id: ctx.brokerageId,
       type:         ctx.event,
-      title:        merged.title,
-      body:         merged.plainLanguageSummary,
+      title:        title,
+      body:         summary,
       entity_type:  ctx.entityType,
-      entity_id:    ctx.entityId,
+      entity_id:    UUID_RE.test(ctx.entityId ?? "") ? ctx.entityId : null,
       priority:     "high",
       channel:      "in_app",
       is_read:      false,
