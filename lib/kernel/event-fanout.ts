@@ -92,7 +92,10 @@ export async function fanOutKernelEvent(ctx: KernelEventContext): Promise<void> 
 
 // ─── 2. Sequence auto-enrollment ─────────────────────────────────────────────
 
-async function enrollMatchingSequences(
+// Exported so the kernel reactor (lib/kernel/event-reactor) can run the SAME canonical enrollment
+// for every emitter — not just the ~10 that call fanOutKernelEvent. Idempotent (skips active
+// enrollments), so the reactor + fanOut overlapping on one event never double-enrolls.
+export async function enrollMatchingSequences(
   event:        KernelEvent,
   brokerageId:  string,
   contactIds:   string[],

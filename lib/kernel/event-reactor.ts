@@ -17,13 +17,17 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processOneLifecycleEvent } from "@/lib/marketing/trigger-engine"
+import { processOneLifecycleEvent, resolveContactFromEvent } from "@/lib/marketing/trigger-engine"
+import { enrollMatchingSequences } from "@/lib/kernel/event-fanout"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export interface ReactorResult {
   matched:  number
   enrolled: number
   skipped:  number
   errors:   number
+  /** Canonical campaign_sequences enrolled for the resolved contact (idempotent). */
+  sequencesEnrolled: boolean
 }
 
 export interface DispatchKernelEventParams {
@@ -40,9 +44,12 @@ export interface DispatchKernelEventParams {
  * phases add capability routes (AI-ISA, video/podcast/social) onto the same dispatch.
  */
 export async function dispatchKernelEvent(params: DispatchKernelEventParams): Promise<ReactorResult> {
+  const svc = createServiceClient()
+
+  // (B) Marketing-trigger enrollment — the reactive replacement for the marketing-trigger cron poll.
+  let mk: { matched: number; enrolled: number; skipped: number; errors: number }
   try {
-    const svc = createServiceClient()
-    return await processOneLifecycleEvent(svc, {
+    mk = await processOneLifecycleEvent(svc, {
       event_type:   params.event,
       entity_type:  params.entityType,
       entity_id:    params.entityId,
@@ -50,7 +57,24 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       metadata:     params.metadata ?? null,
     })
   } catch (err) {
-    console.error("[event-reactor] dispatch failed:", err)
-    return { matched: 0, enrolled: 0, skipped: 0, errors: 1 }
+    console.error("[event-reactor] marketing-trigger enrollment failed:", err)
+    mk = { matched: 0, enrolled: 0, skipped: 0, errors: 1 }
   }
+
+  // (A) CANONICAL campaign_sequences enrollment — previously only ran for the ~10 emitters that
+  // call fanOutKernelEvent. Running it here means EVERY emitter (all ~98, via processKernelEvent)
+  // reactively enrolls the contact's lifecycle drips. Idempotent (skips active enrollments), so the
+  // overlap with fanOutKernelEvent's own call for its 10 sites never double-enrolls.
+  let sequencesEnrolled = false
+  try {
+    const contactId = await resolveContactFromEvent(svc, params.entityType, params.entityId, params.metadata ?? null)
+    if (contactId) {
+      await enrollMatchingSequences(params.event as KernelEvent, params.brokerageId, [contactId])
+      sequencesEnrolled = true
+    }
+  } catch (err) {
+    console.error("[event-reactor] sequence enrollment failed:", err)
+  }
+
+  return { ...mk, sequencesEnrolled }
 }

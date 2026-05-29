@@ -155,7 +155,7 @@ export async function processLifecycleEventTriggers(
  *   listing        → seller_contact_id
  *   offer          → contact_id
  */
-async function resolveContactFromEvent(
+export async function resolveContactFromEvent(
   svc:        SupabaseClient,
   entityType: string | null,
   entityId:   string,
