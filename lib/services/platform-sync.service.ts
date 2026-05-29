@@ -4,6 +4,9 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
+const DOTLOOP_BASE = "https://api-gateway.dotloop.com"
 
 /**
  * Platform Sync Service
@@ -45,21 +48,16 @@ export async function syncDotloopLoop(params: {
     }
 
     // Fetch loop details from Dotloop API
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/loop/${params.loopId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          "Content-Type": "application/json",
-        },
-      }
-    )
+    const response = await callConnector<any>({
+      connector: "dotloop", baseUrl: DOTLOOP_BASE, path: `/public/v2/loop/${params.loopId}`, method: "GET",
+      auth: { style: "bearer", token: credentials.access_token },
+    })
 
     if (!response.ok) {
       throw new Error(`Dotloop API error: ${response.status}`)
     }
 
-    const loopData = await response.json()
+    const loopData = response.data ?? {}
 
     // Store sync record
     await supabase.from("platform_sync_logs").insert({
@@ -117,33 +115,26 @@ export async function createDotloopLoop(params: {
     }
 
     // Create loop in Dotloop
-    const response = await fetch(
-      "https://api-gateway.dotloop.com/public/v2/loop",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: params.loopName,
-          transactionType: params.transactionType === "listing" ? "LISTING_FOR_SALE" : "PURCHASE_OFFER",
-          status: "PRIVATE",
-          loopDetails: {
-            propertyAddress: {
-              streetName: params.propertyAddress,
-            },
+    const response = await callConnector<{ data?: { id?: string } }>({
+      connector: "dotloop", baseUrl: DOTLOOP_BASE, path: "/public/v2/loop", method: "POST",
+      auth: { style: "bearer", token: credentials.access_token },
+      body: {
+        name: params.loopName,
+        transactionType: params.transactionType === "listing" ? "LISTING_FOR_SALE" : "PURCHASE_OFFER",
+        status: "PRIVATE",
+        loopDetails: {
+          propertyAddress: {
+            streetName: params.propertyAddress,
           },
-        }),
-      }
-    )
+        },
+      },
+    })
 
     if (!response.ok) {
       throw new Error(`Dotloop API error: ${response.status}`)
     }
 
-    const loopData = await response.json()
-    const loopId = loopData.data?.id
+    const loopId = response.data?.data?.id
 
     // Update transaction with loop ID
     await supabase
@@ -183,21 +174,16 @@ export async function getDotloopDocuments(params: {
       return { success: false, error: "Dotloop not connected" }
     }
 
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/loop/${params.loopId}/document`,
-      {
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-        },
-      }
-    )
+    const response = await callConnector<{ data?: any[] }>({
+      connector: "dotloop", baseUrl: DOTLOOP_BASE, path: `/public/v2/loop/${params.loopId}/document`, method: "GET",
+      auth: { style: "bearer", token: credentials.access_token },
+    })
 
     if (!response.ok) {
       throw new Error(`Dotloop API error: ${response.status}`)
     }
 
-    const data = await response.json()
-    return { success: true, documents: data.data || [] }
+    return { success: true, documents: response.data?.data || [] }
   } catch (error) {
     console.error("[v0] Get Dotloop documents error:", error)
     return handleError(error, "getDotloopDocuments")
@@ -244,29 +230,24 @@ export async function syncGHLContact(params: {
       }
 
       // Push to GHL
-      const response = await fetch(
-        `${credentials.api_url}/crm/contacts/`,
-        {
-          method: contact.ghl_contact_id ? "PUT" : "POST",
-          headers: {
-            Authorization: `Bearer ${credentials.access_token}`,
-            "Content-Type": "application/json",
+      const response = await callConnector<{ contact?: { id?: string } }>({
+        connector: "ghl", baseUrl: credentials.api_url, path: "/crm/contacts/",
+        method: contact.ghl_contact_id ? "PUT" : "POST",
+        auth: { style: "bearer", token: credentials.access_token },
+        body: {
+          firstName: contact.first_name,
+          lastName: contact.last_name,
+          email: contact.email,
+          phone: contact.phone,
+          tags: [contact.contact_type, contact.status].filter(Boolean),
+          customFields: {
+            source: contact.source,
+            timeline: contact.timeline,
           },
-          body: JSON.stringify({
-            firstName: contact.first_name,
-            lastName: contact.last_name,
-            email: contact.email,
-            phone: contact.phone,
-            tags: [contact.contact_type, contact.status].filter(Boolean),
-            customFields: {
-              source: contact.source,
-              timeline: contact.timeline,
-            },
-          }),
-        }
-      )
+        },
+      })
 
-      const ghlData = await response.json()
+      const ghlData = response.data ?? {}
 
       // Update contact with GHL ID
       if (ghlData.contact?.id) {
@@ -289,17 +270,12 @@ export async function syncGHLContact(params: {
         return { success: false, error: "No GHL contact linked" }
       }
 
-      const response = await fetch(
-        `${credentials.api_url}/crm/contacts/${contact.ghl_contact_id}`,
-        {
-          headers: {
-            Authorization: `Bearer ${credentials.access_token}`,
-          },
-        }
-      )
+      const response = await callConnector<any>({
+        connector: "ghl", baseUrl: credentials.api_url, path: `/crm/contacts/${contact.ghl_contact_id}`, method: "GET",
+        auth: { style: "bearer", token: credentials.access_token },
+      })
 
-      const ghlData = await response.json()
-      return { success: true, data: ghlData }
+      return { success: true, data: response.data ?? {} }
     }
   } catch (error) {
     console.error("[v0] GHL sync error:", error)
@@ -340,15 +316,11 @@ export async function triggerGHLWorkflow(params: {
       return { success: false, error: "Contact not synced to GHL" }
     }
 
-    await fetch(
-      `${credentials.api_url}/crm/contacts/${contact.ghl_contact_id}/workflow/${params.workflowId}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-        },
-      }
-    )
+    await callConnector({
+      connector: "ghl", baseUrl: credentials.api_url,
+      path: `/crm/contacts/${contact.ghl_contact_id}/workflow/${params.workflowId}`, method: "POST",
+      auth: { style: "bearer", token: credentials.access_token },
+    })
 
     return { success: true }
   } catch (error) {
@@ -394,36 +366,30 @@ export async function syncQuickBooksExpense(params: {
     }
 
     // Create expense in QuickBooks
-    const response = await fetch(
-      `${credentials.api_url}/v3/company/${credentials.realm_id}/purchase`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          PaymentType: "Cash",
-          TotalAmt: expense.amount,
-          TxnDate: expense.expense_date,
-          Line: [
-            {
-              DetailType: "AccountBasedExpenseLineDetail",
-              Amount: expense.amount,
-              AccountBasedExpenseLineDetail: {
-                AccountRef: {
-                  name: expense.category,
-                },
+    const response = await callConnector<{ Purchase?: { Id?: string } }>({
+      connector: "quickbooks", baseUrl: credentials.api_url,
+      path: `/v3/company/${credentials.realm_id}/purchase`, method: "POST",
+      auth: { style: "bearer", token: credentials.access_token },
+      body: {
+        PaymentType: "Cash",
+        TotalAmt: expense.amount,
+        TxnDate: expense.expense_date,
+        Line: [
+          {
+            DetailType: "AccountBasedExpenseLineDetail",
+            Amount: expense.amount,
+            AccountBasedExpenseLineDetail: {
+              AccountRef: {
+                name: expense.category,
               },
-              Description: expense.description,
             },
-          ],
-        }),
-      }
-    )
+            Description: expense.description,
+          },
+        ],
+      },
+    })
 
-    const qbData = await response.json()
+    const qbData = response.data ?? {}
 
     // Update expense with QB ID
     if (qbData.Purchase?.Id) {
@@ -473,35 +439,29 @@ export async function syncQuickBooksCommission(params: {
     }
 
     // Create income in QuickBooks
-    const response = await fetch(
-      `${credentials.api_url}/v3/company/${credentials.realm_id}/salesreceipt`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          TotalAmt: commission.net_amount,
-          TxnDate: commission.paid_date || commission.created_at,
-          Line: [
-            {
-              DetailType: "SalesItemLineDetail",
-              Amount: commission.net_amount,
-              SalesItemLineDetail: {
-                ItemRef: {
-                  name: "Commission Income",
-                },
+    const response = await callConnector<{ SalesReceipt?: { Id?: string } }>({
+      connector: "quickbooks", baseUrl: credentials.api_url,
+      path: `/v3/company/${credentials.realm_id}/salesreceipt`, method: "POST",
+      auth: { style: "bearer", token: credentials.access_token },
+      body: {
+        TotalAmt: commission.net_amount,
+        TxnDate: commission.paid_date || commission.created_at,
+        Line: [
+          {
+            DetailType: "SalesItemLineDetail",
+            Amount: commission.net_amount,
+            SalesItemLineDetail: {
+              ItemRef: {
+                name: "Commission Income",
               },
-              Description: `Commission - ${commission.transactions?.property_address || "Transaction"}`,
             },
-          ],
-        }),
-      }
-    )
+            Description: `Commission - ${commission.transactions?.property_address || "Transaction"}`,
+          },
+        ],
+      },
+    })
 
-    const qbData = await response.json()
+    const qbData = response.data ?? {}
 
     if (qbData.SalesReceipt?.Id) {
       await supabase
@@ -575,20 +535,18 @@ export async function syncGoogleCalendarEvent(params: {
           : [],
       }
 
-      const url = showing.google_event_id
-        ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${showing.google_event_id}`
-        : "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-
-      const response = await fetch(url, {
+      const response = await callConnector<{ id?: string }>({
+        connector: "google_calendar",
+        baseUrl: "https://www.googleapis.com",
+        path: showing.google_event_id
+          ? `/calendar/v3/calendars/primary/events/${showing.google_event_id}`
+          : "/calendar/v3/calendars/primary/events",
         method: showing.google_event_id ? "PUT" : "POST",
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(eventBody),
+        auth: { style: "bearer", token: credentials.access_token },
+        body: eventBody,
       })
 
-      const eventData = await response.json()
+      const eventData = response.data ?? {}
 
       if (eventData.id) {
         await supabase
@@ -634,7 +592,7 @@ export async function syncShowingTimeAppointments(params: {
     }
 
     // Fetch showings from ShowingTime API
-    let url = `${credentials.api_url}/showings`
+    const query: Record<string, string> = {}
     if (params.listingId) {
       const { data: listing } = await supabase
         .from("listings")
@@ -642,17 +600,17 @@ export async function syncShowingTimeAppointments(params: {
         .eq("id", params.listingId)
         .single()
       if (listing?.mls_number) {
-        url += `?mlsNumber=${listing.mls_number}`
+        query.mlsNumber = String(listing.mls_number)
       }
     }
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${credentials.access_token}`,
-      },
+    const response = await callConnector<{ showings?: any[] }>({
+      connector: "showingtime", baseUrl: credentials.api_url, path: "/showings", method: "GET",
+      ...(Object.keys(query).length ? { query } : {}),
+      auth: { style: "bearer", token: credentials.access_token },
     })
 
-    const showingsData = await response.json()
+    const showingsData = response.data ?? {}
 
     // Sync to our database
     for (const showing of showingsData.showings || []) {
@@ -719,17 +677,13 @@ export async function syncMLSListings(params: {
     }
 
     // Fetch listings from MLS (RESO Web API format)
-    const response = await fetch(
-      `${credentials.api_url}/Property?$filter=ListAgentMlsId eq '${mlsAgentId}'&$top=100`,
-      {
-        headers: {
-          Authorization: `Bearer ${credentials.access_token}`,
-          Accept: "application/json",
-        },
-      }
-    )
+    const response = await callConnector<{ value?: any[] }>({
+      connector: "mls", baseUrl: credentials.api_url, path: "/Property", method: "GET",
+      query: { "$filter": `ListAgentMlsId eq '${mlsAgentId}'`, "$top": "100" },
+      auth: { style: "bearer", token: credentials.access_token },
+    })
 
-    const mlsData = await response.json()
+    const mlsData = response.data ?? {}
     let syncCount = 0
 
     for (const property of mlsData.value || []) {
