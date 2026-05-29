@@ -28,6 +28,9 @@ export interface SendPersonalEmailInput {
   replyToMessageId?: string  // Gmail thread ID or Outlook conversation ID for threading
   cc?: string[]
   bcc?: string[]
+  /** When set, send from this OWNER's connected mailbox (vendor/contact/team/brokerage) instead of
+   *  resolving the agent's personal account by agentUserId. */
+  owner?: EmailOwner
 }
 
 export interface SendPersonalEmailResult {
@@ -60,7 +63,9 @@ export async function sendPersonalEmail(
     return { success: false, reason: "invalid_input", error: "to/subject/htmlBody required" }
   }
 
-  const cred = await loadActivePersonalCred(input.agentUserId)
+  const cred = input.owner
+    ? await loadOwnerEmailCred(input.owner)
+    : await loadActivePersonalCred(input.agentUserId)
   if (!cred) {
     return { success: false, reason: "no_personal_account" }
   }
@@ -90,8 +95,9 @@ export async function sendPersonalEmail(
  */
 export async function getFreshPersonalToken(
   agentUserId: string,
+  owner?: EmailOwner,
 ): Promise<{ provider: PersonalProvider; accessToken: string; email: string | null } | null> {
-  const cred = await loadActivePersonalCred(agentUserId)
+  const cred = owner ? await loadOwnerEmailCred(owner) : await loadActivePersonalCred(agentUserId)
   if (!cred) return null
   const accessToken = await ensureFreshAccessToken(cred)
   if (!accessToken) return null
@@ -105,38 +111,61 @@ interface PersonalCred {
   refresh_token: string | null
   token_expires_at: string | null
   email: string | null
+  /** Which table the cred came from — token refresh writes back to the same place. */
+  source: "agent_api_credentials" | "platform_credentials"
 }
+
+/** An owner scope (vendor/contact/agent/team/brokerage) whose connected mailbox to use. */
+export type EmailOwner = { ownerType: string; ownerId: string }
 
 async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred | null> {
   const svc = createServiceClient()
 
-  // First resolve the agent record (agent_api_credentials uses agent_id, not user_id)
-  const { data: agent } = await svc
-    .from("agents")
-    .select("id")
-    .eq("user_id", agentUserId)
-    .maybeSingle()
-  if (!agent?.id) return null
+  // Agent path: agent_api_credentials uses agent_id, not user_id.
+  const { data: agent } = await svc.from("agents").select("id").eq("user_id", agentUserId).maybeSingle()
+  if (agent?.id) {
+    const { data: creds } = await svc
+      .from("agent_api_credentials")
+      .select("id, service_name, access_token, refresh_token, token_expires_at, config")
+      .eq("agent_id", agent.id)
+      .in("service_name", ["gmail", "outlook"])
+      .eq("is_active", true)
+    if (creds?.length) {
+      const ordered = creds.sort((a: any, b: any) => (a.service_name === "gmail" ? -1 : 1))
+      const c: any = ordered[0]
+      return { id: c.id, service_name: c.service_name, access_token: c.access_token, refresh_token: c.refresh_token, token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+    }
+  }
 
-  const { data: creds } = await svc
-    .from("agent_api_credentials")
-    .select("id, service_name, access_token, refresh_token, token_expires_at, config")
-    .eq("agent_id", agent.id)
-    .in("service_name", ["gmail", "outlook"])
+  // Fallback: owner-scoped mailbox stored in platform_credentials at AGENT scope (owner_id = userId).
+  return loadOwnerEmailCred({ ownerType: "agent", ownerId: agentUserId })
+}
+
+/**
+ * Owner-scoped mailbox loader — reads the connected gmail/outlook from platform_credentials by
+ * (owner_type, owner_id). This is what lets a VENDOR or CONTACT (no agents row) use their OWN
+ * connected mailbox; agent/team/brokerage owner scopes resolve here too.
+ */
+export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
+  const svc = createServiceClient()
+  const { data: rows } = await svc
+    .from("platform_credentials")
+    .select("id, platform, access_token, refresh_token, token_expires_at, config")
+    .eq("owner_type", owner.ownerType)
+    .eq("owner_id", owner.ownerId)
+    .in("platform", ["gmail", "outlook"])
     .eq("is_active", true)
-
-  if (!creds?.length) return null
-
-  // Prefer Gmail when both exist; agent can disable one if they want a specific path
-  const ordered = creds.sort((a: any, b: any) => (a.service_name === "gmail" ? -1 : 1))
+  if (!rows?.length) return null
+  const ordered = rows.sort((a: any, b: any) => (a.platform === "gmail" ? -1 : 1))
   const c: any = ordered[0]
   return {
     id: c.id,
-    service_name: c.service_name,
+    service_name: c.platform,
     access_token: c.access_token,
     refresh_token: c.refresh_token,
     token_expires_at: c.token_expires_at,
-    email: c.config?.email ?? null,
+    email: (c.config?.email as string) ?? null,
+    source: "platform_credentials",
   }
 }
 
@@ -161,10 +190,10 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
       : await refreshMicrosoft(cred.refresh_token)
   if (!refreshed) return null
 
-  // Save back the new token
+  // Save the new token back to whichever table the cred came from.
   const svc = createServiceClient()
   await svc
-    .from("agent_api_credentials")
+    .from(cred.source)
     .update({
       access_token: refreshed.accessToken,
       token_expires_at: new Date(Date.now() + refreshed.expiresInSec * 1000).toISOString(),

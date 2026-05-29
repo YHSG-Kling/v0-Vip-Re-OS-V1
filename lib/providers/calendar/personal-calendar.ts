@@ -9,7 +9,7 @@
 // unit-tested in the simulator.
 
 import "server-only"
-import { getFreshPersonalToken } from "@/lib/providers/email/personal-email-adapter"
+import { getFreshPersonalToken, type EmailOwner } from "@/lib/providers/email/personal-email-adapter"
 import { computeFreeSlots } from "./free-slots"
 import type {
   CalendarEvent,
@@ -23,12 +23,12 @@ import type {
 const GOOGLE_CAL = "https://www.googleapis.com/calendar/v3"
 const GRAPH = "https://graph.microsoft.com/v1.0"
 
-export async function hasPersonalCalendar(agentUserId: string): Promise<boolean> {
-  return (await getFreshPersonalToken(agentUserId).catch(() => null)) != null
+export async function hasPersonalCalendar(agentUserId: string, owner?: EmailOwner): Promise<boolean> {
+  return (await getFreshPersonalToken(agentUserId, owner).catch(() => null)) != null
 }
 
-export async function createEventViaPersonal(agentUserId: string, event: CalendarEvent): Promise<CreateEventResult | null> {
-  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+export async function createEventViaPersonal(agentUserId: string, event: CalendarEvent, owner?: EmailOwner): Promise<CreateEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
 
   if (tok.provider === "gmail") {
@@ -66,8 +66,8 @@ export async function createEventViaPersonal(agentUserId: string, event: Calenda
   return { success: true, eventId: data.id, conferenceUrl: data.onlineMeeting?.joinUrl }
 }
 
-export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams): Promise<GetAvailabilityResult | null> {
-  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams, owner?: EmailOwner): Promise<GetAvailabilityResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
   const timeMin = new Date(params.startDate).toISOString()
   const timeMax = new Date(params.endDate).toISOString()
@@ -95,8 +95,8 @@ export async function getAvailabilityViaPersonal(agentUserId: string, params: Ge
   return { success: true, slots: computeFreeSlots(busy, params) }
 }
 
-export async function updateEventViaPersonal(agentUserId: string, eventId: string, updates: Partial<CalendarEvent>): Promise<UpdateEventResult | null> {
-  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+export async function updateEventViaPersonal(agentUserId: string, eventId: string, updates: Partial<CalendarEvent>, owner?: EmailOwner): Promise<UpdateEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
 
   if (tok.provider === "gmail") {
@@ -128,8 +128,8 @@ export async function updateEventViaPersonal(agentUserId: string, eventId: strin
   return res.ok ? { success: true } : { success: false, error: `Microsoft Graph update (${res.status})` }
 }
 
-export async function deleteEventViaPersonal(agentUserId: string, eventId: string): Promise<DeleteEventResult | null> {
-  const tok = await getFreshPersonalToken(agentUserId).catch(() => null)
+export async function deleteEventViaPersonal(agentUserId: string, eventId: string, owner?: EmailOwner): Promise<DeleteEventResult | null> {
+  const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
   const url = tok.provider === "gmail"
     ? `${GOOGLE_CAL}/calendars/primary/events/${encodeURIComponent(eventId)}`
