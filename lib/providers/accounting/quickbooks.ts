@@ -75,30 +75,28 @@ export class QuickBooksProvider implements IAccountingProvider {
    *  the app's client id/secret + grant_type=refresh_token. Returns the new token set. */
   async refreshAccessToken(): Promise<RefreshedTokens> {
     if (!this.creds.refreshToken) throw new Error("QuickBooks: refreshToken required to refresh")
-    const basic = Buffer.from(`${this.creds.clientId}:${this.creds.clientSecret}`).toString("base64")
-    const res = await fetch(INTUIT_TOKEN_URL, {
+    const tokenUrl = new URL(INTUIT_TOKEN_URL)
+    const res = await callConnector<{ access_token: string; refresh_token: string; expires_in: number }>({
+      connector: "quickbooks-oauth",
+      baseUrl: tokenUrl.origin,
+      path: tokenUrl.pathname,
       method: "POST",
-      headers: {
-        Authorization: `Basic ${basic}`,
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: this.creds.refreshToken }),
+      auth: { style: "basic", username: this.creds.clientId, password: this.creds.clientSecret },
+      bodyType: "form",
+      body: { grant_type: "refresh_token", refresh_token: this.creds.refreshToken },
     })
-    if (!res.ok) {
-      const body = await res.text().catch(() => "")
-      throw new Error(`QuickBooks token refresh failed (${res.status}): ${body.slice(0, 200)}`)
+    if (!res.ok || !res.data) {
+      throw new Error(`QuickBooks token refresh failed (${res.status}): ${res.error ?? ""}`)
     }
-    const json = (await res.json()) as { access_token: string; refresh_token: string; expires_in: number }
+    const json = res.data
     const tokenExpiresAt = new Date(Date.now() + (json.expires_in ?? 3600) * 1000).toISOString()
     // Keep the in-memory creds current so subsequent calls on this instance use the new token.
     this.creds = { ...this.creds, accessToken: json.access_token, refreshToken: json.refresh_token, tokenExpiresAt }
     return { accessToken: json.access_token, refreshToken: json.refresh_token, tokenExpiresAt }
   }
 
-  /** Single egress choke point — every QBO API call leaves through the connector-gateway (Bearer).
-   *  The OAuth token exchange (refreshAccessToken) stays a raw fetch: it is form-urlencoded with
-   *  HTTP Basic auth, the documented exception to the JSON single-egress path. */
+  /** Single egress choke point — every QBO call (API + OAuth token refresh) leaves through the
+   *  connector-gateway. API calls use Bearer; the token refresh uses Basic auth + form body. */
   private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const res = await callConnector<T>({
       connector: "quickbooks",

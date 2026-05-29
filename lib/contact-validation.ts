@@ -1,6 +1,7 @@
 // Email and Phone Validation Client
 // Uses ZeroBounce for email, Twilio Lookup for phone validation (via lib/providers/messaging)
 import { lookupPhone as twilioLookupPhone } from "@/lib/providers/messaging"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export class ContactValidationClient {
   private zeroBounceKey: string
@@ -27,24 +28,21 @@ export class ContactValidationClient {
 
     // If ZeroBounce API key is configured, do deep validation
     if (this.zeroBounceKey) {
-      try {
-        const response = await fetch(
-          `https://api.zerobounce.net/v2/validate?api_key=${this.zeroBounceKey}&email=${encodeURIComponent(email)}`,
-        )
+      const response = await callConnector<any>({
+        connector: "zerobounce", baseUrl: "https://api.zerobounce.net", path: "/v2/validate", method: "GET",
+        query: { api_key: this.zeroBounceKey, email }, auth: { style: "none" },
+      })
 
-        if (response.ok) {
-          const result = await response.json()
-          return {
-            valid: result.status === "valid",
-            status: result.status,
-            disposable: result.sub_status === "disposable",
-            toxic: result.sub_status === "toxic",
-            catch_all: result.sub_status === "catch_all",
-            suggested_correction: result.did_you_mean || undefined,
-          }
+      if (response.ok && response.data) {
+        const result = response.data
+        return {
+          valid: result.status === "valid",
+          status: result.status,
+          disposable: result.sub_status === "disposable",
+          toxic: result.sub_status === "toxic",
+          catch_all: result.sub_status === "catch_all",
+          suggested_correction: result.did_you_mean || undefined,
         }
-      } catch (error) {
-        console.error("[ContactValidation] ZeroBounce error:", error)
       }
     }
 
