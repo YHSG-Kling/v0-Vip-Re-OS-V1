@@ -171,50 +171,13 @@ export async function emitTransactionEvent(params: {
     metadata:      metadata ?? {},
   })
 
-  // ── Enrich the event with contact + transaction + listing context so
-  //    fanOutKernelEvent can fire portal updates and sequence enrollment
-  //    for both buyer and seller without each call site re-resolving.
-  let contactId: string | undefined
-  let buyerContactId: string | undefined
-  let sellerContactId: string | undefined
-  let transactionId: string | undefined
-  let listingId: string | undefined
-
-  try {
-    if (entityType === "transaction") {
-      transactionId = entityId
-      const { data: tx } = await supabase
-        .from("transactions")
-        .select("buyer_contact_id, seller_contact_id, contact_id, listing_id")
-        .eq("id", entityId)
-        .maybeSingle()
-      buyerContactId  = tx?.buyer_contact_id  ?? undefined
-      sellerContactId = tx?.seller_contact_id ?? undefined
-      contactId       = tx?.contact_id        ?? undefined
-      listingId       = tx?.listing_id        ?? undefined
-    } else if (entityType === "offer") {
-      const { data: o } = await supabase
-        .from("offers")
-        .select("contact_id, listing_id, transaction_id")
-        .eq("id", entityId)
-        .maybeSingle()
-      buyerContactId = o?.contact_id ?? undefined
-      contactId      = o?.contact_id ?? undefined
-      listingId      = o?.listing_id ?? undefined
-      transactionId  = o?.transaction_id ?? undefined
-      if (listingId) {
-        const { data: l } = await supabase
-          .from("listings").select("seller_contact_id").eq("id", listingId).maybeSingle()
-        sellerContactId = l?.seller_contact_id ?? undefined
-      }
-    } else if (entityType === "listing") {
-      listingId = entityId
-      const { data: l } = await supabase
-        .from("listings").select("seller_contact_id").eq("id", entityId).maybeSingle()
-      sellerContactId = l?.seller_contact_id ?? undefined
-      contactId       = l?.seller_contact_id ?? undefined
-    }
-  } catch { /* enrichment is best-effort */ }
+  // ── Enrich the event with contact + transaction + listing context (shared resolver — the SAME
+  //    logic the kernel reactor uses for bare processKernelEvent callers, so there's one resolution
+  //    path, no drift) so fanOutKernelEvent can fire portal updates + sequence enrollment for both
+  //    buyer and seller without each call site re-resolving.
+  const { resolveEventContacts } = await import("./resolve-event-contacts")
+  const { contactId, buyerContactId, sellerContactId, listingId, transactionId } =
+    await resolveEventContacts(supabase, entityType, entityId)
 
   // Single canonical fan-out (replaces direct processKernelEvent call) —
   // notifications + sequence auto-enroll + portal update happen here.

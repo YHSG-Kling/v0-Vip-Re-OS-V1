@@ -34,6 +34,8 @@ export async function processKernelEvent(params: {
   listingId?: string
   agentUserId?: string
   metadata?: Record<string, unknown> | null
+  /** Set by the sequence engine's own emits so its events don't re-trigger enrollment (feedback loop). */
+  suppressEnrollment?: boolean
 }): Promise<void> {
 
   const supabase = createServiceClient()
@@ -111,6 +113,7 @@ export async function processKernelEvent(params: {
       transactionId:   params.transactionId,
       listingId:       params.listingId,
       agentUserId:     params.agentUserId,
+      suppressEnrollment: params.suppressEnrollment,
     })
   } catch (err) {
     console.error("[NotificationEngine] reactor dispatch failed:", err)

@@ -99,6 +99,7 @@ export async function executeSequenceStep(
       brokerageId,
       entityType: "contact",
       entityId: contactId ?? enrollmentId,
+      suppressEnrollment: true,
     }).catch(() => {})
 
     return { status: "completed" }
@@ -138,6 +139,7 @@ export async function executeSequenceStep(
         brokerageId,
         entityType: "contact",
         entityId: contactId,
+        suppressEnrollment: true,
       }).catch(() => {})
 
       return { status: "authority_blocked", reason: gateResult.reason }
@@ -337,6 +339,7 @@ export async function executeSequenceStep(
       brokerageId,
       entityType: "contact",
       entityId: contactId ?? enrollmentId,
+      suppressEnrollment: true,
     })
   }
 
@@ -402,6 +405,7 @@ async function advanceEnrollment(
       brokerageId: enrollment.brokerage_id,
       entityType: "contact",
       entityId: enrollment.contact_id ?? enrollment.id,
+      suppressEnrollment: true,
     }).catch(() => {})
   }
 

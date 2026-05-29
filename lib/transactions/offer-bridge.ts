@@ -36,7 +36,7 @@ export async function createTransactionFromOffer(params: {
   //       offer.buyer_id does NOT exist — live FK is offer.contact_id.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address")
+    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days")
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -114,16 +114,38 @@ export async function createTransactionFromOffer(params: {
     },
   })
   
+  // Earnest-money due date + title company come from the compliance review gate's contract read:
+  // offers.earnest_money_due_at is the scanner-resolved calendar date (contract_date +
+  // earnest_money_due_days); the title/escrow company is extracted onto the scanned signed contract
+  // (documents.extracted_fields.title_company). These feed both the EMD milestone date and the
+  // proactive "under contract" portal card.
+  const earnestDueDate: string | undefined =
+    (offer as any).earnest_money_due_at
+      ? new Date((offer as any).earnest_money_due_at).toISOString().split("T")[0]
+      : params.contractTerms.earnestMoneyDue ?? undefined
+  let titleCompany: string | null = null
+  try {
+    const { data: doc } = await supabase
+      .from("documents")
+      .select("extracted_fields")
+      .eq("contact_id", (offer as any).contact_id)
+      .eq("classification", "signed_contract")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    titleCompany = ((doc?.extracted_fields as any)?.title_company as string) ?? null
+  } catch { /* title company is best-effort enrichment */ }
+
   // ensureRequiredMilestones looks up dates by snake_case milestone_name key
   // e.g. contractTerms["closing_date"], contractTerms["inspection_deadline"]
   // Normalise camelCase keys from the offer bridge params before passing in
   const normalisedTerms: Record<string, string> = {}
-  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline, earnestMoneyDue } = params.contractTerms
+  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = params.contractTerms
   if (closingDate)        normalisedTerms["closing_date"]        = closingDate
   if (inspectionDeadline) normalisedTerms["inspection_deadline"] = inspectionDeadline
   if (appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = appraisalDeadline
   if (financingDeadline)  normalisedTerms["financing_deadline"]  = financingDeadline
-  if (earnestMoneyDue)    normalisedTerms["earnest_money_due"]   = earnestMoneyDue
+  if (earnestDueDate)     normalisedTerms["earnest_money_due"]   = earnestDueDate
 
   await ensureRequiredMilestones(
     transaction.id,
@@ -166,10 +188,12 @@ export async function createTransactionFromOffer(params: {
       entityId:    transaction.id,
       actorUserId: "",
       metadata: {
-        earnest_money_due:   params.contractTerms.earnestMoneyDue ?? null,
-        inspection_deadline: params.contractTerms.inspectionDeadline ?? null,
-        closing_date:        params.contractTerms.closingDate ?? null,
-        created_from_offer:  params.offerId,
+        earnest_money_due:      earnestDueDate ?? null,
+        earnest_money_due_days: (offer as any).earnest_money_due_days ?? null,
+        title_company:          titleCompany,
+        inspection_deadline:    params.contractTerms.inspectionDeadline ?? null,
+        closing_date:           params.contractTerms.closingDate ?? null,
+        created_from_offer:     params.offerId,
       },
     })
   } catch (err) {

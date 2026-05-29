@@ -173,15 +173,15 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
   [KernelEvent.OFFER_ACCEPTED]: {
     title: "You're under contract!",
     plainLanguageSummary:
-      "The offer was accepted — you're under contract! Key dates: earnest money due {earnest_money_due}, inspection deadline {inspection_deadline}, estimated closing {closing_date}. Up next is due diligence — inspection, appraisal, and financing.",
+      "The offer was accepted — you're under contract! Earnest money is due {earnest_money_due}, held by {title_company}. Inspection deadline {inspection_deadline}; estimated closing {closing_date}. Up next is due diligence — inspection, appraisal, and financing.",
     responsibleParty: "agent",
-    nextStep: "Earnest money due {earnest_money_due}; inspection by {inspection_deadline}.",
+    nextStep: "Earnest money due {earnest_money_due} to {title_company}; inspection by {inspection_deadline}.",
     chatBody: "Great news — your offer was accepted! I'll send the next steps shortly.",
     perRole: {
       seller: {
         title: "Your home is under contract!",
         plainLanguageSummary:
-          "An offer was accepted on your home — you're under contract! Key dates: earnest money due {earnest_money_due}, inspection deadline {inspection_deadline}, estimated closing {closing_date}. Next is the buyer's due-diligence period — inspection, appraisal, financing.",
+          "An offer was accepted on your home — you're under contract! The buyer's earnest money is due {earnest_money_due}, held by {title_company}. Inspection deadline {inspection_deadline}; estimated closing {closing_date}. Next is the buyer's due-diligence period — inspection, appraisal, financing.",
         chatBody: "Congrats — your home is under contract! I'll keep you posted as the buyer completes their due diligence.",
       },
     },

@@ -124,6 +124,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     brokerageId: params.brokerageId,
     entityType: "contact",
     entityId: params.contactId,
+    suppressEnrollment: true,
   }).catch(() => {})
 
   return { success: true, enrollmentId: enrollment.id }
