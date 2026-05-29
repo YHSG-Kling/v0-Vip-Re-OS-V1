@@ -139,10 +139,49 @@ existing `listing_presentations` row).
 1. Normalize `lifecycle_events.event_type` writes to `KernelEvent` values + add a dotted→KernelEvent
    compatibility map so the marketing cron stops missing dotted rows.
 2. Point the three ad-hoc UI trigger pickers at the canonical `WORKFLOW_TRIGGERS` catalog.
+   *(DONE for the two `campaign_sequences`-backed pickers: `workflow-builder`, `SequenceBuilder`.
+   `automations-client` feeds a separate `workflow_automations` system — pending its own migration.)*
 3. Decide chain initiation: keep agent-initiated, OR add a system-context, idempotent
    `KernelEvent → chain` bridge so the reactor can drive selected chains.
+   *(Chain-run idempotency landed — `lib/workflow-orchestrator/run-dedupe.ts` — so the bridge is now
+   safe to add once approved.)*
 4. Fold the 9 dotted `lib/events` sites + the `lib/orchestrator` dispatcher onto the canonical spine
    (keep the orchestrator's chain engine; feed it from one emit path).
+
+### 6a. DISPATCHER FRAGMENTATION (HIGH PRIORITY — investigated 2026-05-29)
+
+`fanOutKernelEvent` (`lib/kernel/event-fanout.ts`) is the **canonical** "what happens when a kernel
+event fires" router — it runs THREE channels: (1) staff notifications via `processKernelEvent`,
+(2) `campaign_sequences` auto-enrollment (`enrollMatchingSequences`), (3) **client portal updates**
+(`transparency_updates` + `client_portal_messages` + contact notifications).
+
+**The drift:** only **~10 of ~98 emitters call `fanOutKernelEvent`**; the other **88 call
+`processKernelEvent` directly**, so they notify staff but **skip `campaign_sequences` enrollment AND
+the client portal**. This violates the business invariant "every meaningful state change reaches the
+contact's portal so the client always knows where the deal stands."
+
+**Recommended resolution (the canonical model):**
+- `fanOutKernelEvent` is THE single dispatcher. Migrate the 88 direct `processKernelEvent` callers to
+  it (or move its three channels into `processKernelEvent` and make `fanOut` a thin context-forwarder),
+  resolving the contact via the shared `resolveContactFromEvent` so the portal + enrollment fan out
+  uniformly. `enrollMatchingSequences` is already idempotent (checks `sequence_enrollments`); add
+  portal-write idempotency before broadening coverage.
+- This is behavior-broadening for 88 sites (more sequence enrollments + portal writes) — intended, but
+  must be staged + tested, not flipped blind.
+
+### 6b. TWO CAMPAIGN-ENROLLMENT SYSTEMS (DECISION REQUIRED — investigated 2026-05-29)
+
+| System | Tables | Enrolled by | Sent by | Footprint |
+|---|---|---|---|---|
+| **A — Sequences** (canonical) | `campaign_sequences` / `sequence_enrollments` | `fanOutKernelEvent → enrollMatchingSequences` (matches `trigger_event = KernelEvent`) | `campaign-sequence-steps` cron | 14 sites |
+| **B — Marketing triggers** | `marketing_campaign_triggers` / `marketing_campaign_touchpoints` | `marketing-trigger-engine` cron + the Phase-1 kernel reactor | `marketing-campaign-scheduler` / `marketing-attribution-engine` | 3 sites |
+
+Both auto-enroll a contact into a multi-touch campaign on a lifecycle event — overlapping purpose.
+**Decision needed (keep one / merge):** recommendation is **A (`campaign_sequences`) is canonical**
+(richer, documented, 14 sites, drives the portal). Either fold B into A (migrate the 3 trigger rows +
+retire the cron) or keep B strictly for *paid-ad* campaigns and rename to avoid the overlap. Until
+this is decided, the Phase-1 reactor enrolls B; it should be re-pointed at A (or removed) once chosen.
+This is destructive to live drips, so it requires explicit broker/admin sign-off.
 
 ---
 
