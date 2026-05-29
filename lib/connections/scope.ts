@@ -22,7 +22,7 @@ export type ConnectorDomain =
   | "email" | "phone" | "calendar" | "social" | "crm" | "financial"
   | "listing" | "transaction" | "esign" | "showing" | "documents" | "marketing"
 
-const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["calendar", "social", "financial"])
+const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["email", "calendar", "social", "financial"])
 
 /**
  * SINGLE source of truth for which providers a domain may be connected to. Values are the

@@ -204,8 +204,10 @@ export function isConnectSupported(
     }
     return { available: true } // stripe → Connect onboarding
   }
-  // email / calendar OAuth → personal mailbox tokens (agent_api_credentials).
-  return caps.hasAgentId ? { available: true } : { available: false, reason: "Available soon for your account type." }
+  // email / calendar OAuth — the OAuth callback stores tokens owner-scoped (platform_credentials),
+  // so any actor with a brokerage anchor (agent/team/brokerage/staff/vendor/contact) can connect
+  // their own mailbox. Needs the brokerage anchor (brokerage_id is NOT NULL on the stored row).
+  return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
 }
 
 /** Pure: map an app userType to its connection ownership scope + whether it manages brokerage-level
@@ -218,7 +220,7 @@ export function connectionScopeForUserType(
   const t = (userType ?? "").toLowerCase()
   if (EXTERNAL_PARTNER_ROLES.has(t)) return { scope: "vendor", isBrokerageManager: false }
   if (t === "contact") return { scope: "contact", isBrokerageManager: false }
-  if (t === "superadmin") return { scope: "platform", isBrokerageManager: false }
+  if (t === "superadmin" || t === "system") return { scope: "platform", isBrokerageManager: false }
   if (["broker", "broker_owner", "admin"].includes(t)) return { scope: "brokerage", isBrokerageManager: true }
   if (["team_lead", "team_leader"].includes(t)) return { scope: "team", isBrokerageManager: false }
   return { scope: "agent", isBrokerageManager: false } // staff + agents own at agent scope

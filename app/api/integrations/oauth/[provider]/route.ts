@@ -13,6 +13,7 @@ import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
+import { connectionScopeForUserType } from "@/lib/connections/field-spec"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -233,39 +234,44 @@ export async function GET(
         ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
         : null
 
-      // Store tokens in platform_credentials
-      const { error: credError } = await supabase
-        .from("platform_credentials")
-        .upsert({
-          brokerage_id: stateData.brokerageId,
-          owner_type: "brokerage",
-          owner_id: stateData.brokerageId,
-          platform: provider,
-          // Canonical token columns — what every resolver (resolveScopedConnection / connection-
-          // manager) reads. account_id carries the QBO realmId (company id). config keeps the same
-          // fields for back-compat + provider extras.
+      // Store tokens OWNER-SCOPED in platform_credentials (owner_type/owner_id from the state the
+      // initiate resolved from the connecting user's role) so a vendor/contact/agent connects their
+      // OWN mailbox and it resolves via the owner cascade. Canonical token columns are what every
+      // resolver reads; account_id carries the QBO realmId; config keeps the same fields for compat.
+      const ownerType = (stateData as any).ownerType ?? "brokerage"
+      const ownerId = (stateData as any).ownerId ?? stateData.brokerageId
+      const credRow = {
+        brokerage_id: stateData.brokerageId,
+        owner_type: ownerType,
+        owner_id: ownerId,
+        agent_user_id: ownerType === "agent" ? stateData.userId : null,
+        platform: provider,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
+        config: {
           access_token: tokens.access_token,
           refresh_token: tokens.refresh_token,
-          ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
-          config: {
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            token_type: tokens.token_type,
-            scope: tokens.scope,
-            // Provider-specific fields
-            ...(tokens.realmId && { realm_id: tokens.realmId }),
-            ...(tokens.x_refresh_token_expires_in && {
-              refresh_token_expires_in: tokens.x_refresh_token_expires_in
-            }),
-          },
-          token_expires_at: expiresAt,
-          is_active: true,
-          test_status: "pass", // OAuth success = connection verified
-          last_tested_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "brokerage_id,platform",
-        })
+          token_type: tokens.token_type,
+          scope: tokens.scope,
+          ...(tokens.realmId && { realm_id: tokens.realmId }),
+          ...(tokens.x_refresh_token_expires_in && { refresh_token_expires_in: tokens.x_refresh_token_expires_in }),
+        },
+        token_expires_at: expiresAt,
+        is_active: true,
+        test_status: "pass", // OAuth success = connection verified
+        last_tested_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      // Owner-keyed update-or-insert (the unique key is (owner_type, owner_id, platform)).
+      const { data: existingCred } = await supabase
+        .from("platform_credentials")
+        .select("id")
+        .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", provider)
+        .maybeSingle()
+      const { error: credError } = existingCred
+        ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+        : await supabase.from("platform_credentials").insert(credRow)
 
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)
@@ -376,22 +382,50 @@ export async function GET(
       return redirectWithResult(baseUrl, false, provider, `OAuth not configured for ${metadata.displayName}`)
     }
 
-    // Get user's brokerage_id
+    // Resolve the connecting actor's OWNER scope so the callback stores tokens owner-scoped
+    // (agent/team/brokerage/staff/vendor/contact) — not always brokerage. This is what lets a
+    // vendor/contact connect their OWN email/calendar and have it resolve via the owner cascade.
     const { data: userData } = await supabase
       .from("users")
-      .select("brokerage_id")
+      .select("brokerage_id, user_type, team_id")
       .eq("id", user.id)
-      .single()
+      .maybeSingle()
 
-    if (!userData?.brokerage_id) {
-      return redirectWithResult(baseUrl, false, provider, "User not associated with a brokerage")
+    const { scope } = connectionScopeForUserType((userData?.user_type as string) ?? "")
+    let ownerType: string = scope
+    let ownerId: string | null = null
+    let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
+
+    if (scope === "vendor") {
+      const { data: v } = await supabase.from("vendors").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+      ownerId = (v?.id as string | null) ?? null
+      brokerageId = brokerageId ?? ((v?.brokerage_id as string | null) ?? null)
+    } else if (scope === "contact") {
+      const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
+      ownerId = (c?.id as string | null) ?? null
+      brokerageId = brokerageId ?? ((c?.brokerage_id as string | null) ?? null)
+    } else if (scope === "team") {
+      ownerId = (userData?.team_id as string | null) ?? null
+    } else if (scope === "brokerage" || scope === "platform") {
+      ownerId = brokerageId
+    } else {
+      ownerId = user.id // agent / staff → personal (owner_type 'agent')
     }
 
-    // Generate state for CSRF protection
+    if (!brokerageId) {
+      return redirectWithResult(baseUrl, false, provider, "User not associated with a brokerage")
+    }
+    if (!ownerId) {
+      return redirectWithResult(baseUrl, false, provider, "Could not resolve your account for this connection")
+    }
+
+    // Generate state for CSRF protection (carries the resolved owner scope through the callback).
     const newState = Buffer.from(JSON.stringify({
       provider,
-      brokerageId: userData.brokerage_id,
+      brokerageId,
       userId: user.id,
+      ownerType,
+      ownerId,
       nonce: crypto.randomUUID(),
     })).toString("base64url")
 

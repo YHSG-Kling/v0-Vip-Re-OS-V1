@@ -113,25 +113,27 @@ export async function upsertPlatformCredential(params: {
   const supabase = await createClient()
   const { brokerageId } = await getBrokerageId(supabase)
 
-  const { error } = await supabase
+  // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+  const credRow = {
+    brokerage_id:  brokerageId,
+    owner_type:    "brokerage",
+    owner_id:      brokerageId,
+    platform:      params.platform,
+    scope:         params.scope ?? "brokerage",
+    api_key:       params.api_key ?? null,
+    api_url:       params.api_url ?? null,
+    account_id:    params.account_id ?? null,
+    account_name:  params.account_name ?? null,
+    config:        params.config ?? {},
+    is_active:     true,
+    updated_at:    new Date().toISOString(),
+  }
+  const { data: existingCred } = await supabase
     .from("platform_credentials")
-    .upsert(
-      {
-        brokerage_id:  brokerageId,
-        owner_type:    "brokerage",
-        owner_id:      brokerageId,
-        platform:      params.platform,
-        scope:         params.scope ?? "brokerage",
-        api_key:       params.api_key ?? null,
-        api_url:       params.api_url ?? null,
-        account_id:    params.account_id ?? null,
-        account_name:  params.account_name ?? null,
-        config:        params.config ?? {},
-        is_active:     true,
-        updated_at:    new Date().toISOString(),
-      },
-      { onConflict: "brokerage_id,platform,scope" }
-    )
+    .select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).eq("platform", params.platform).maybeSingle()
+  const { error } = existingCred
+    ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+    : await supabase.from("platform_credentials").insert(credRow)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/integrations")

@@ -63,25 +63,18 @@ export async function connectPhoneAction(params: {
     updated_at: new Date().toISOString(),
   }
 
-  if (member.agentScoped) {
-    // Unique (brokerage_id, agent_user_id, platform) → clean upsert for the agent's own line.
-    const { error } = await svc.from("platform_credentials").upsert(row, { onConflict: "brokerage_id,agent_user_id,platform" })
-    if (error) return { ok: false, error: error.message }
-  } else {
-    // Brokerage scope (agent_user_id NULL) — NULLs are distinct in the unique index, so
-    // update-or-insert manually to avoid duplicate brokerage rows.
-    const { data: existing } = await svc
-      .from("platform_credentials")
-      .select("id")
-      .eq("brokerage_id", member.brokerageId)
-      .is("agent_user_id", null)
-      .eq("platform", platform)
-      .maybeSingle()
-    const { error } = existing
-      ? await svc.from("platform_credentials").update(row).eq("id", existing.id)
-      : await svc.from("platform_credentials").insert(row)
-    if (error) return { ok: false, error: error.message }
-  }
+  // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+  const ownerType = owner?.ownerType ?? (member.agentScoped ? "agent" : "brokerage")
+  const ownerId = owner?.ownerId ?? (member.agentScoped ? member.userId : member.brokerageId)
+  const { data: existing } = await svc
+    .from("platform_credentials")
+    .select("id")
+    .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", platform)
+    .maybeSingle()
+  const { error } = existing
+    ? await svc.from("platform_credentials").update(row).eq("id", existing.id)
+    : await svc.from("platform_credentials").insert(row)
+  if (error) return { ok: false, error: error.message }
 
   revalidatePath("/settings/phone")
   return { ok: true, scope: member.agentScoped ? "agent" : "brokerage" }
