@@ -234,6 +234,28 @@ export async function GET(
         ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
         : null
 
+      // CANONICAL platform id every resolver reads: google→gmail, microsoft→outlook (the route
+      // param `provider` is google_calendar/outlook_calendar); QuickBooks/others keep their id.
+      const storedPlatform =
+        oauthProvider === "google" ? "gmail"
+        : oauthProvider === "microsoft" ? "outlook"
+        : provider
+
+      // For Google/Microsoft, resolve the connected mailbox address up front so it is stored on the
+      // owner-scoped row (used as the From address) AND mirrored to the agent row below.
+      let connectedEmail: string | null = null
+      if (oauthProvider === "google" || oauthProvider === "microsoft") {
+        try {
+          if (oauthProvider === "google") {
+            const ui = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: { Authorization: `Bearer ${tokens.access_token}` } })
+            if (ui.ok) connectedEmail = (await ui.json())?.email ?? null
+          } else {
+            const ui = await fetch("https://graph.microsoft.com/v1.0/me", { headers: { Authorization: `Bearer ${tokens.access_token}` } })
+            if (ui.ok) { const me = await ui.json(); connectedEmail = me?.mail ?? me?.userPrincipalName ?? null }
+          }
+        } catch {}
+      }
+
       // Store tokens OWNER-SCOPED in platform_credentials (owner_type/owner_id from the state the
       // initiate resolved from the connecting user's role) so a vendor/contact/agent connects their
       // OWN mailbox and it resolves via the owner cascade. Canonical token columns are what every
@@ -245,7 +267,7 @@ export async function GET(
         owner_type: ownerType,
         owner_id: ownerId,
         agent_user_id: ownerType === "agent" ? stateData.userId : null,
-        platform: provider,
+        platform: storedPlatform,
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
@@ -254,6 +276,7 @@ export async function GET(
           refresh_token: tokens.refresh_token,
           token_type: tokens.token_type,
           scope: tokens.scope,
+          ...(connectedEmail ? { email: connectedEmail } : {}),
           ...(tokens.realmId && { realm_id: tokens.realmId }),
           ...(tokens.x_refresh_token_expires_in && { refresh_token_expires_in: tokens.x_refresh_token_expires_in }),
         },
@@ -267,7 +290,7 @@ export async function GET(
       const { data: existingCred } = await supabase
         .from("platform_credentials")
         .select("id")
-        .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", provider)
+        .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", storedPlatform)
         .maybeSingle()
       const { error: credError } = existingCred
         ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
@@ -278,48 +301,20 @@ export async function GET(
         return redirectWithResult(baseUrl, false, provider, "Failed to store credentials")
       }
 
-      // For Google + Microsoft: ALSO persist agent-scoped tokens to
-      // agent_api_credentials so the personal-email adapter can send
-      // mail through this agent's actual mailbox. Each agent connects
-      // their own account, so this is per-agent (not per-brokerage).
-      const oauthProvKey = String(provider)
-      if (oauthProvKey === "google" || oauthProvKey === "microsoft") {
+      // For an AGENT connecting Google/Microsoft, ALSO mirror to agent_api_credentials so the
+      // personal-email adapter's agent path sends from their mailbox. ONLY for owner_type 'agent'
+      // — a vendor/contact/team/brokerage owner must NOT get a personal agent mailbox row.
+      if ((oauthProvider === "google" || oauthProvider === "microsoft") && ownerType === "agent") {
         try {
-          const { data: agentRow } = await supabase
-            .from("agents")
-            .select("id")
-            .eq("user_id", stateData.userId)
-            .maybeSingle()
-
-          // Resolve the email address from a userinfo lookup so the agent
-          // sees which mailbox is connected
-          let connectedEmail: string | null = null
-          try {
-            if (oauthProvKey === "google") {
-              const ui = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-                headers: { Authorization: `Bearer ${tokens.access_token}` },
-              })
-              if (ui.ok) connectedEmail = (await ui.json())?.email ?? null
-            } else {
-              const ui = await fetch("https://graph.microsoft.com/v1.0/me", {
-                headers: { Authorization: `Bearer ${tokens.access_token}` },
-              })
-              if (ui.ok) {
-                const me = await ui.json()
-                connectedEmail = me?.mail ?? me?.userPrincipalName ?? null
-              }
-            }
-          } catch {}
-
+          const { data: agentRow } = await supabase.from("agents").select("id").eq("user_id", stateData.userId).maybeSingle()
           if (agentRow?.id) {
-            const serviceName = oauthProvKey === "google" ? "gmail" : "outlook"
             await supabase
               .from("agent_api_credentials")
               .upsert(
                 {
                   agent_id: agentRow.id,
                   brokerage_id: stateData.brokerageId,
-                  service_name: serviceName,
+                  service_name: storedPlatform,
                   service_type: "personal_email",
                   access_token: tokens.access_token,
                   refresh_token: tokens.refresh_token,
@@ -333,7 +328,7 @@ export async function GET(
           }
         } catch (agentCredErr) {
           console.error("[OAuth] Failed to mirror agent-scoped credential:", agentCredErr)
-          // Non-fatal — brokerage-level token is still saved
+          // Non-fatal — owner-scoped token is still saved
         }
       }
 

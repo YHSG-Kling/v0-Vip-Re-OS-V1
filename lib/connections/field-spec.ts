@@ -120,6 +120,14 @@ export function oauthStartPath(domain: ConnectorDomain, canonicalProviderId: str
     if (canonicalProviderId === "stripe") return "/vendor/earnings" // Stripe Connect onboarding surface
     return null
   }
+  // email/calendar canonical providers are gmail/outlook, but the OAuth route's PROVIDER_METADATA
+  // keys them as google_calendar/outlook_calendar — map to the route param so the flow initiates.
+  if (domain === "email" || domain === "calendar") {
+    const routeProvider = canonicalProviderId === "gmail" ? "google_calendar"
+      : canonicalProviderId === "outlook" ? "outlook_calendar"
+      : canonicalProviderId
+    return `/api/integrations/oauth/${routeProvider}`
+  }
   const tmpl = DOMAIN_AUTH[domain].oauthStartPath
   return tmpl ? tmpl.replace("{provider}", canonicalProviderId) : null
 }
