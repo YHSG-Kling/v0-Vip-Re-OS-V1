@@ -28,17 +28,7 @@ export {
 
 // ─── PLATFORM SYNC ────────────────────────────────────────────────────────────
 export {
-  syncDotloopLoop,
-  createDotloopLoop,
-  getDotloopDocuments,
-  syncGHLContact,
   triggerGHLWorkflow,
-  syncQuickBooksExpense,
-  syncQuickBooksCommission,
-  syncGoogleCalendarEvent,
-  syncShowingTimeAppointments,
-  syncMLSListings,
-  getPlatformStatus,
 } from "./platform-sync.service"
 
 // ─── SOCIAL PUBLISHING ────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 
 export const scheduleShowingAdapter: ChannelAdapter = {
   channel: "schedule_showing",
@@ -53,15 +54,24 @@ export const scheduleShowingAdapter: ChannelAdapter = {
         return { status: "error", providerKey: "showings", error: "In-house listing not found" }
       }
 
-      const { data: integration } = await supabase
-        .from("brokerage_integrations")
-        .select("metadata, status")
-        .eq("brokerage_id", brokerageId)
-        .eq("provider_type", "showingtime")
-        .eq("status", "active")
-        .maybeSingle()
-
-      const integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key
+      // Resolve the ShowingTime key through the unified ownership cascade (the same primary the
+      // tour-stop dispatcher uses), falling back to the legacy brokerage_integrations metadata key.
+      const scoped = await resolveScopedConnection("showingtime", {
+        agentUserId: agentId ?? null,
+        teamId: null,
+        brokerageId,
+      }).catch(() => null)
+      let integrationApiKey = scoped?.apiKey ?? null
+      if (!integrationApiKey) {
+        const { data: integration } = await supabase
+          .from("brokerage_integrations")
+          .select("metadata, status")
+          .eq("brokerage_id", brokerageId)
+          .eq("provider_type", "showingtime")
+          .eq("status", "active")
+          .maybeSingle()
+        integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key ?? null
+      }
 
       if (integrationApiKey) {
         const stRes = await callConnector<{ id?: string }>({
