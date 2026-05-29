@@ -5,7 +5,17 @@
 // dispatch RESOLVERS already read — so a credential connected in the UI is immediately usable by
 // dispatch with no per-provider glue scattered around. Unit-tested in the simulator.
 
-import type { ConnectionScope, ConnectorDomain } from "./scope"
+import { domainsForScope, type ConnectionScope, type ConnectorDomain } from "./scope"
+
+/** External-partner roles — vendor-type actors (landscapers, lenders, title, etc.). Leaf scope:
+ *  they may only own calendar/social/financial (their own scheduling/presence/payout). */
+const EXTERNAL_PARTNER_ROLES = new Set(["vendor", "lender", "title", "inspector", "photographer", "contractor"])
+
+/** Brokerage STAFF (transaction coordinators, ISAs, compliance, assistants). They operate on the
+ *  brokerage's connections for everything EXCEPT their own email/calendar — so they self-connect
+ *  ONLY email + calendar; phone/CRM/transaction/etc. are consumed from the brokerage via cascade. */
+const STAFF_ROLES = new Set(["tc", "isa", "compliance", "compliance_officer", "staff", "assistant"])
+const STAFF_SELF_CONNECT: ConnectorDomain[] = ["email", "calendar"]
 
 export type AuthMethod = "oauth" | "api_key"
 
@@ -199,16 +209,28 @@ export function isConnectSupported(
 }
 
 /** Pure: map an app userType to its connection ownership scope + whether it manages brokerage-level
- *  connections. Vendors/contacts are leaf actors; brokers/admins manage the brokerage; team leads own
- *  team-level; superadmin owns platform defaults; everyone else (agent/tc/isa) is agent-scoped. */
+ *  connections. External partners (vendor/lender/title/…) are leaf actors; brokers/admins manage the
+ *  brokerage; team leads own team-level; superadmin owns platform defaults; STAFF and solo/team
+ *  agents are agent-scoped for ownership (staff's self-connect surface is narrowed separately). */
 export function connectionScopeForUserType(
   userType: string,
 ): { scope: ConnectionScope; isBrokerageManager: boolean } {
   const t = (userType ?? "").toLowerCase()
-  if (t === "vendor") return { scope: "vendor", isBrokerageManager: false }
+  if (EXTERNAL_PARTNER_ROLES.has(t)) return { scope: "vendor", isBrokerageManager: false }
   if (t === "contact") return { scope: "contact", isBrokerageManager: false }
   if (t === "superadmin") return { scope: "platform", isBrokerageManager: false }
   if (["broker", "broker_owner", "admin"].includes(t)) return { scope: "brokerage", isBrokerageManager: true }
   if (["team_lead", "team_leader"].includes(t)) return { scope: "team", isBrokerageManager: false }
-  return { scope: "agent", isBrokerageManager: false }
+  return { scope: "agent", isBrokerageManager: false } // staff + agents own at agent scope
+}
+
+/** Pure: the domains a user may SELF-CONNECT in the Connection Center, given their role + scope.
+ *  Staff connect only their own email/calendar (the rest is the brokerage's); everyone else gets the
+ *  full provider-backed set their scope allows (vendor/contact already limited by domainsForScope). */
+export function selfConnectableDomains(userType: string, scope: ConnectionScope): ConnectorDomain[] {
+  const allowed = domainsForScope(scope)
+  if (STAFF_ROLES.has((userType ?? "").toLowerCase())) {
+    return allowed.filter((d) => STAFF_SELF_CONNECT.includes(d))
+  }
+  return allowed
 }

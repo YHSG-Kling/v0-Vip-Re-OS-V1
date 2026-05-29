@@ -85,7 +85,7 @@ import { outcomeForDecision } from "../lib/agentic-os/invocation-log"
 import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agentic-os/mcp-tools"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
-import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported } from "../lib/connections/field-spec"
+import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 
 let passed = 0
@@ -761,6 +761,11 @@ async function testVendorGateway() {
   check("field-spec: esign write maps profileId to config.profile_id + account_id", (() => { const w = buildCredentialWrite("esign", { apiKey: "k", profileId: "p1" }); return !!w && w.api_key === "k" && w.account_id === "p1" && (w.config as any).profile_id === "p1" })())
   check("field-spec: missing required field rejected (returns null)", buildCredentialWrite("phone", { accountSid: "AC1" }) === null && buildCredentialWrite("listing", {}) === null)
   check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/superadmin)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("superadmin").scope === "platform")
+  check("field-spec: external partners (lender/title) map to vendor scope (not agent)", connectionScopeForUserType("lender").scope === "vendor" && connectionScopeForUserType("title").scope === "vendor")
+  check("field-spec: staff (tc/isa/compliance) own at agent scope", connectionScopeForUserType("tc").scope === "agent" && connectionScopeForUserType("isa").scope === "agent" && connectionScopeForUserType("compliance").scope === "agent")
+  check("field-spec: staff self-connect ONLY email+calendar (rest is brokerage-managed)", selfConnectableDomains("tc", "agent").sort().join(",") === "calendar,email")
+  check("field-spec: a solo/team agent self-connects the full set (incl phone/crm/transaction)", (() => { const d = selfConnectableDomains("agent", "agent"); return d.includes("phone") && d.includes("crm") && d.includes("transaction") && d.includes("email") })())
+  check("field-spec: external partner (vendor scope) self-connects calendar/social/financial only", selfConnectableDomains("lender", "vendor").sort().join(",") === "calendar,financial,social")
 
   // ── Connect availability (honest UI: no connect path that silently no-ops) ──
   const agentCaps = { canOwn: true, hasAgentId: true, isBrokerageManager: false, hasBrokerage: true }

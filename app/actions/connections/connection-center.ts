@@ -24,7 +24,6 @@ import { canonicalProvider, aliasesFor } from "@/lib/integrations/connection-man
 import { createConnectedAccount, createAccountLink } from "@/lib/providers/payment"
 import {
   CONNECTOR_PROVIDERS,
-  selectableConnectionsForScope,
   isProviderAllowedForScope,
   type ConnectionScope,
   type ConnectorDomain,
@@ -36,6 +35,7 @@ import {
   isConnectSupported,
   buildCredentialWrite,
   connectionScopeForUserType,
+  selfConnectableDomains,
 } from "@/lib/connections/field-spec"
 
 /** A vendor/contact portal passes this so the center acts on their owner scope (verified server-side). */
@@ -71,6 +71,8 @@ interface Actor {
   scope: ConnectionScope
   ownerId: string | null
   isBrokerageManager: boolean
+  /** App role (userType) — drives the self-connectable domain surface (e.g. staff = email/calendar). */
+  userType: string
 }
 
 async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
@@ -78,7 +80,7 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
   if (owner?.scope === "vendor") {
     try {
       const v = await requireVendorActor(owner.id)
-      return { userId: v.userId, agentId: null, brokerageId: v.brokerageId, scope: "vendor", ownerId: v.vendorId, isBrokerageManager: false }
+      return { userId: v.userId, agentId: null, brokerageId: v.brokerageId, scope: "vendor", ownerId: v.vendorId, isBrokerageManager: false, userType: "vendor" }
     } catch {
       // Fallback: the vendor row is linked directly to this auth user (vendors.user_id).
       try {
@@ -89,7 +91,7 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
         const { data: vendorRow } = await svc
           .from("vendors").select("id, brokerage_id").eq("id", owner.id).eq("user_id", user.id).maybeSingle()
         if (!vendorRow?.brokerage_id) return null
-        return { userId: user.id, agentId: null, brokerageId: vendorRow.brokerage_id as string, scope: "vendor", ownerId: vendorRow.id as string, isBrokerageManager: false }
+        return { userId: user.id, agentId: null, brokerageId: vendorRow.brokerage_id as string, scope: "vendor", ownerId: vendorRow.id as string, isBrokerageManager: false, userType: "vendor" }
       } catch {
         return null
       }
@@ -98,7 +100,7 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
   if (owner?.scope === "contact") {
     const c = await requireContactAccess(owner.id)
     if (!c.ok || !c.isContactSelf) return null // only the contact connects their own accounts
-    return { userId: c.userId, agentId: null, brokerageId: c.brokerageId, scope: "contact", ownerId: owner.id, isBrokerageManager: false }
+    return { userId: c.userId, agentId: null, brokerageId: c.brokerageId, scope: "contact", ownerId: owner.id, isBrokerageManager: false, userType: "contact" }
   }
 
   // Internal actor (agent / team / brokerage).
@@ -119,7 +121,7 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
     : scope === "brokerage" ? ctx.brokerageId
     : scope === "platform" ? "platform"
     : null
-  return { userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, scope, ownerId, isBrokerageManager }
+  return { userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, scope, ownerId, isBrokerageManager, userType: ctx.userType }
 }
 
 async function isProviderConnected(
@@ -172,10 +174,12 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
   if (!actor) return { ok: false, error: "Not authorized", scope: owner?.scope ?? "agent", domains: [] }
 
   const caps = { canOwn: actor.ownerId != null, hasAgentId: actor.agentId != null, isBrokerageManager: actor.isBrokerageManager, hasBrokerage: actor.brokerageId != null }
-  const selectable = selectableConnectionsForScope(actor.scope)
+  // Role-aware self-connect surface: staff see only email/calendar (the rest is the brokerage's);
+  // external partners (vendor scope) see calendar/social/financial; everyone else gets their full set.
+  const allowedDomains = selfConnectableDomains(actor.userType, actor.scope)
   const domains: ConnectionCenter["domains"] = []
 
-  for (const domain of Object.keys(selectable) as ConnectorDomain[]) {
+  for (const domain of allowedDomains) {
     const spec = DOMAIN_AUTH[domain]
     const providers: ProviderStatus[] = []
     for (const provider of CONNECTOR_PROVIDERS[domain]) {
@@ -210,6 +214,10 @@ export async function connectApiKeyProvider(params: {
   const provider = canonicalProvider(params.provider)
   if (!isProviderAllowedForScope(actor.scope, params.domain, provider)) {
     return { ok: false, error: `Your account may not connect ${provider} for ${params.domain}.` }
+  }
+  // Role surface: staff may only self-connect email/calendar; the rest is brokerage-managed.
+  if (!selfConnectableDomains(actor.userType, actor.scope).includes(params.domain)) {
+    return { ok: false, error: `Your account connects ${params.domain} through the brokerage, not directly.` }
   }
   if (isOAuthConnection(params.domain, provider)) {
     return { ok: false, error: `${provider} uses a Connect (OAuth) flow, not an API key.` }
@@ -262,6 +270,9 @@ export async function startStripeConnect(owner?: OwnerHint): Promise<{ ok: true;
   const actor = await resolveActor(owner)
   if (!actor || !actor.ownerId) return { ok: false, error: "Not authorized" }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
+  if (!selfConnectableDomains(actor.userType, actor.scope).includes("financial")) {
+    return { ok: false, error: "Your account doesn't manage a Stripe payout connection here." }
+  }
 
   const svc = createServiceClient()
   const { data: existing } = await svc
