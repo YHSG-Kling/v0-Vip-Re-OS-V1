@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
@@ -282,21 +283,20 @@ Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": nu
 
   let parsed: any
   try {
-    const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
+    const aiRes = await callConnector<{ content?: Array<{ text?: string }> }>({
+      connector: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      path: "/v1/messages",
       method: "POST",
-      headers: {
-        "x-api-key":         process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-        "content-type":      "application/json",
-      },
-      body: JSON.stringify({
+      auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
+      headers: { "anthropic-version": "2023-06-01" },
+      body: {
         model:      "claude-opus-4-5",
         max_tokens: 1024,
         messages:   [{ role: "user", content: prompt }],
-      }),
+      },
     })
-    const raw  = await aiRes.json()
-    const text = raw?.content?.[0]?.text ?? ""
+    const text = aiRes.data?.content?.[0]?.text ?? ""
     const match = text.match(/\{[\s\S]*\}/)
     parsed = match ? JSON.parse(match[0]) : null
   } catch {

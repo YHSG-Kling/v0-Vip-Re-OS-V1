@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -57,14 +58,14 @@ export async function uploadBusinessCard(params: {
   const raw_image_url = pub.publicUrl
 
   // 2) Call Claude Vision — JSON extraction only
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await callConnector<{ content?: Array<{ text?: string }> }>({
+    connector: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    path: "/v1/messages",
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
+    auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
+    headers: { "anthropic-version": "2023-06-01" },
+    body: {
       model: "claude-sonnet-4-20250514",
       max_tokens: 300,
       messages: [
@@ -86,12 +87,10 @@ export async function uploadBusinessCard(params: {
           ],
         },
       ],
-    }),
+    },
   })
 
-  const aiData = await response.json() as {
-    content?: Array<{ text?: string }>
-  }
+  const aiData = response.data ?? {}
 
   let extracted: Record<string, string> = {}
   try {

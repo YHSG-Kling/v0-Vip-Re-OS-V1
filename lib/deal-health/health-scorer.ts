@@ -38,6 +38,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { callConnector }       from "@/lib/agentic-os/connector-gateway"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -969,26 +970,25 @@ ${issuesSummary || "No major issues identified."}
 Write a concise, actionable summary for the agent/broker. Focus on what needs attention.`
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await callConnector<{ content?: Array<{ text?: string }> }>({
+      connector: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      path: "/v1/messages",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
+      auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
+      headers: { "anthropic-version": "2023-06-01" },
+      body: {
         model: "claude-sonnet-4-20250514",
         max_tokens: 200,
         messages: [{ role: "user", content: prompt }],
-      }),
+      },
     })
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status}`)
+      throw new Error(`Anthropic API error: ${response.error ?? response.status}`)
     }
 
-    const data = await response.json()
-    const text = data.content?.[0]?.text ?? ""
+    const text = response.data?.content?.[0]?.text ?? ""
     return text.trim()
   } catch {
     // Fallback narrative
