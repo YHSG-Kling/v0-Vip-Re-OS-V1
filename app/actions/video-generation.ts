@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -1328,29 +1329,29 @@ export async function generateVideoFromScript(params: {
     // Call HeyGen API to start generation (non-fatal if API key not yet configured)
     const heygenApiKey = process.env.HEYGEN_API_KEY
     if (heygenApiKey && params.avatarId && params.voiceId) {
-      try {
-        const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
-          method: "POST",
-          headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            video_inputs: [{
-              character: { type: "avatar", avatar_id: params.avatarId, avatar_style: "normal" },
-              voice: { type: "text", input_text: params.script, voice_id: params.voiceId },
-            }],
-            dimension: { width: 1920, height: 1080 },
-          }),
-        })
-        if (heygenRes.ok) {
-          const heygenData = await heygenRes.json()
-          const heygenVideoId = heygenData.data?.video_id
-          if (heygenVideoId) {
-            await supabase.from("video_generation_queue")
-              .update({ heygen_video_id: heygenVideoId, status: "generating" })
-              .eq("id", queueRecord.id)
-          }
+      const heygenRes = await callConnector<{ data?: { video_id?: string } }>({
+        connector: "heygen",
+        baseUrl: "https://api.heygen.com",
+        path: "/v2/video/generate",
+        method: "POST",
+        auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
+        body: {
+          video_inputs: [{
+            character: { type: "avatar", avatar_id: params.avatarId, avatar_style: "normal" },
+            voice: { type: "text", input_text: params.script, voice_id: params.voiceId },
+          }],
+          dimension: { width: 1920, height: 1080 },
+        },
+      })
+      if (heygenRes.ok) {
+        const heygenVideoId = heygenRes.data?.data?.video_id
+        if (heygenVideoId) {
+          await supabase.from("video_generation_queue")
+            .update({ heygen_video_id: heygenVideoId, status: "generating" })
+            .eq("id", queueRecord.id)
         }
-      } catch (heygenErr) {
-        console.warn("[v0] HeyGen API call failed, video stays queued:", heygenErr)
+      } else {
+        console.warn("[v0] HeyGen API call failed, video stays queued:", heygenRes.error)
       }
     }
 
@@ -1461,10 +1462,13 @@ export async function createAvatarVideo(params: {
       return { success: false, error: "HeyGen API key not configured. Contact your administrator." }
     }
 
-    const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
+    const heygenRes = await callConnector<{ data?: { video_id?: string } }>({
+      connector: "heygen",
+      baseUrl: "https://api.heygen.com",
+      path: "/v2/video/generate",
       method: "POST",
-      headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
+      auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
+      body: {
         video_inputs: [{
           character: {
             type: "avatar",
@@ -1478,15 +1482,14 @@ export async function createAvatarVideo(params: {
           },
         }],
         dimension: { width: 1920, height: 1080 },
-      }),
+      },
     })
 
-    const heygenData = await heygenRes.json()
     if (!heygenRes.ok) {
-      throw new Error(heygenData.message || heygenData.error || "HeyGen API error")
+      throw new Error(heygenRes.error || "HeyGen API error")
     }
 
-    const heygenVideoId = heygenData.data?.video_id
+    const heygenVideoId = heygenRes.data?.data?.video_id
 
     // SCHEMA DRIFT: video_scripts_library has no video_status /
     // video_heygen_id / video_generated_at columns — these inserts are

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -255,13 +256,13 @@ async function generateScriptFromKeywords(keywords: string[], category?: string,
   Format: Return only the script text, no additional formatting.`
 
   try {
-    const response = await fetch("https://api.x.ai/v1/chat/completions", {
+    const response = await callConnector<{ choices?: Array<{ message?: { content?: string } }> }>({
+      connector: "xai",
+      baseUrl: "https://api.x.ai",
+      path: "/v1/chat/completions",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-      },
-      body: JSON.stringify({
+      auth: { style: "bearer", token: process.env.XAI_API_KEY ?? "" },
+      body: {
         model: "grok-beta",
         messages: [
           {
@@ -274,17 +275,16 @@ async function generateScriptFromKeywords(keywords: string[], category?: string,
           },
         ],
         temperature: 0.7,
-      }),
+      },
     })
 
     if (!response.ok) {
-      throw new Error(`Script API request failed: ${response.status} ${response.statusText}`)
+      throw new Error(`Script API request failed: ${response.error ?? `HTTP ${response.status}`}`)
     }
-    const data = await response.json()
-    if (!data.choices?.[0]?.message?.content) {
+    if (!response.data?.choices?.[0]?.message?.content) {
       throw new Error("Invalid API response: missing content")
     }
-    return data.choices[0].message.content
+    return response.data.choices[0].message.content
   } catch (error) {
     console.error("[v0] Error generating script:", error)
     throw new Error("Failed to generate script from keywords")
@@ -562,50 +562,48 @@ async function synthesizeVoice(
     if (!process.env.HEYGEN_API_KEY) {
       throw new Error("HEYGEN_API_KEY is not configured. Contact your administrator to enable HeyGen voice synthesis.")
     }
-    const response = await fetch("https://api.heygen.com/v1/voice/tts", {
+    const response = await callConnector<Buffer>({
+      connector: "heygen",
+      baseUrl: "https://api.heygen.com",
+      path: "/v1/voice/tts",
       method: "POST",
-      headers: {
-        Accept: "audio/mpeg",
-        "Content-Type": "application/json",
-        "X-Api-Key": process.env.HEYGEN_API_KEY,
-      },
-      body: JSON.stringify({ text, voice_id: voiceId, output_format: "mp3" }),
+      auth: { style: "header", name: "X-Api-Key", value: process.env.HEYGEN_API_KEY },
+      headers: { Accept: "audio/mpeg" },
+      responseType: "arraybuffer",
+      body: { text, voice_id: voiceId, output_format: "mp3" },
     })
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "")
-      throw new Error(`HeyGen voice synthesis failed (${response.status}): ${body || response.statusText}`)
+    if (!response.ok || !response.data) {
+      throw new Error(`HeyGen voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
     }
 
-    const arrayBuffer = await response.arrayBuffer()
-    return Buffer.from(arrayBuffer)
+    return response.data
   }
 
   // ElevenLabs
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
   }
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+  const response = await callConnector<Buffer>({
+    connector: "elevenlabs",
+    baseUrl: "https://api.elevenlabs.io",
+    path: `/v1/text-to-speech/${voiceId}`,
     method: "POST",
-    headers: {
-      Accept: "audio/mpeg",
-      "Content-Type": "application/json",
-      "xi-api-key": process.env.ELEVENLABS_API_KEY,
-    },
-    body: JSON.stringify({
+    auth: { style: "header", name: "xi-api-key", value: process.env.ELEVENLABS_API_KEY },
+    headers: { Accept: "audio/mpeg" },
+    responseType: "arraybuffer",
+    body: {
       text,
       model_id: "eleven_monolingual_v1",
       voice_settings: settings,
-    }),
+    },
   })
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "")
-    throw new Error(`ElevenLabs voice synthesis failed (${response.status}): ${body || response.statusText}`)
+  if (!response.ok || !response.data) {
+    throw new Error(`ElevenLabs voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
   }
 
-  const arrayBuffer = await response.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return response.data
 }
 
 // Get all podcast episodes for agent

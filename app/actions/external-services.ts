@@ -8,6 +8,7 @@
 
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
 import { createTransfer } from "@/lib/providers/payment"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // HEYGEN VIDEO GENERATION
 // HeyGen is a video-specific provider — kept inline until lib/providers/video is created.
@@ -28,13 +29,13 @@ export async function generateHeyGenVideo(params: {
   }
 
   try {
-    const response = await fetch("https://api.heygen.com/v2/video/generate", {
+    const response = await callConnector<{ data?: { video_id?: string } }>({
+      connector: "heygen",
+      baseUrl: "https://api.heygen.com",
+      path: "/v2/video/generate",
       method: "POST",
-      headers: {
-        "X-Api-Key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+      auth: { style: "header", name: "X-Api-Key", value: apiKey },
+      body: {
         video_inputs: [
           {
             character: {
@@ -50,16 +51,14 @@ export async function generateHeyGenVideo(params: {
           },
         ],
         dimension: { width: 1920, height: 1080 },
-      }),
+      },
     })
 
-    const data = await response.json()
-
     if (!response.ok) {
-      throw new Error(data.error?.message || "HeyGen API error")
+      throw new Error(response.error || "HeyGen API error")
     }
 
-    return { success: true, videoId: data.data?.video_id, status: "processing" }
+    return { success: true, videoId: response.data?.data?.video_id, status: "processing" }
   } catch (error: any) {
     console.error("[External Services] HeyGen error:", error)
     return { success: false, error: error.message }
@@ -73,20 +72,22 @@ export async function getHeyGenVideoStatus(videoId: string) {
     return { success: false, error: "HeyGen API key not configured" }
   }
 
-  try {
-    const response = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${videoId}`, {
-      headers: { "X-Api-Key": apiKey },
-    })
+  const response = await callConnector<{ data?: { status?: string; video_url?: string } }>({
+    connector: "heygen",
+    baseUrl: "https://api.heygen.com",
+    path: "/v1/video_status.get",
+    method: "GET",
+    query: { video_id: videoId },
+    auth: { style: "header", name: "X-Api-Key", value: apiKey },
+  })
 
-    const data = await response.json()
-
-    return {
-      success: true,
-      status: data.data?.status,
-      videoUrl: data.data?.video_url,
-    }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  if (!response.ok) {
+    return { success: false, error: response.error ?? "HeyGen status error" }
+  }
+  return {
+    success: true,
+    status: response.data?.data?.status,
+    videoUrl: response.data?.data?.video_url,
   }
 }
 
