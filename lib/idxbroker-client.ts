@@ -2,6 +2,7 @@
 // Tracks what properties leads view, save, and share on IDX sites
 
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export interface NormalizedIdxListing {
   externalId: string
@@ -53,40 +54,44 @@ export class IDXBrokerClient {
     return !!this.apiKey
   }
 
+  /** All egress through the connector-gateway: accesskey header + outputtype=json. */
+  private async request<T = any>(path: string, query?: Record<string, string>): Promise<{ ok: boolean; data: T | null }> {
+    const res = await callConnector<T>({
+      connector: "idxbroker",
+      baseUrl: this.baseUrl,
+      path,
+      method: "GET",
+      query,
+      auth: { style: "header", name: "accesskey", value: this.apiKey },
+      headers: { outputtype: "json" },
+    })
+    return { ok: res.ok, data: res.data }
+  }
+
   async getLeadActivity(email: string) {
     if (!this.apiKey) throw new Error("IDXBroker API key not configured")
 
     try {
       // First, find the lead by email
-      const leadResponse = await fetch(`${this.baseUrl}/leads/lead?email=${encodeURIComponent(email)}`, {
-        headers: {
-          accesskey: this.apiKey,
-          outputtype: "json",
-        },
-      })
+      const leadResponse = await this.request<any>("/leads/lead", { email })
 
       if (!leadResponse.ok) {
         console.warn("[IDXBroker] Lead not found:", email)
         return []
       }
 
-      const lead = await leadResponse.json()
+      const lead = leadResponse.data
 
       if (!lead || !lead.id) {
         return []
       }
 
       // Get lead's property activity
-      const activityResponse = await fetch(`${this.baseUrl}/leads/activity?leadID=${lead.id}`, {
-        headers: {
-          accesskey: this.apiKey,
-          outputtype: "json",
-        },
-      })
+      const activityResponse = await this.request<any[]>("/leads/activity", { leadID: String(lead.id) })
 
-      if (!activityResponse.ok) return []
+      if (!activityResponse.ok || !activityResponse.data) return []
 
-      const activities = await activityResponse.json()
+      const activities = activityResponse.data
 
       return activities.map((activity: any) => ({
         mlsID: activity.mlsID,
@@ -114,16 +119,9 @@ export class IDXBrokerClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/clients/featured`, {
-        headers: {
-          accesskey: this.apiKey,
-          outputtype: "json",
-        },
-      })
-
+      const response = await this.request<any>("/clients/featured")
       if (!response.ok) return []
-
-      return await response.json()
+      return response.data ?? []
     } catch (error) {
       console.error("[IDXBroker] Properties fetch error:", error)
       return []
@@ -155,11 +153,9 @@ export class IDXBrokerClient {
 
     let raw: any
     try {
-      const response = await fetch(`${this.baseUrl}/clients/featured`, {
-        headers: { accesskey: this.apiKey, outputtype: "json" },
-      })
+      const response = await this.request<any>("/clients/featured")
       if (!response.ok) return []
-      raw = await response.json()
+      raw = response.data
     } catch (error) {
       console.error("[IDXBroker] searchActiveListings error:", error)
       return []
@@ -215,16 +211,9 @@ export class IDXBrokerClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/clients/search?query=${encodeURIComponent(query)}`, {
-        headers: {
-          accesskey: this.apiKey,
-          outputtype: "json",
-        },
-      })
-
+      const response = await this.request<any>("/clients/search", { query })
       if (!response.ok) return []
-
-      return await response.json()
+      return response.data ?? []
     } catch (error) {
       console.error("[IDXBroker] Search error:", error)
       return []

@@ -5,6 +5,7 @@
  */
 
 import { createServiceClient } from "./supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
  * Queue a contact for background enrichment via the database.
@@ -53,6 +54,23 @@ export class GHLIntegration {
     this.apiKey = apiKey || process.env.GHL_API_KEY || ""
   }
 
+  /** All egress through the connector-gateway with bearer auth. */
+  private async request<T = any>(
+    path: string,
+    method: "GET" | "POST" | "PUT",
+    body?: unknown,
+  ): Promise<{ ok: boolean; data: T | null; error: string | null }> {
+    const res = await callConnector<T>({
+      connector: "ghl",
+      baseUrl: this.baseUrl,
+      path,
+      method,
+      auth: { style: "bearer", token: this.apiKey },
+      ...(body !== undefined ? { body } : {}),
+    })
+    return { ok: res.ok, data: res.data, error: res.error }
+  }
+
   // DISABLED: GHL is SYNC-OUT ONLY. The app pushes contact/detail updates OUT to GoHighLevel
   // and never ingests contacts from a CRM (no CRM syncs into the app — product decision).
   async syncContactFromGHL(_ghlContactData: any): Promise<{ success: boolean; contactId?: string; error?: string }> {
@@ -91,41 +109,27 @@ export class GHLIntegration {
       // Check if contact exists in GHL
       if (contact.ghl_contact_id) {
         // Update existing contact
-        const response = await fetch(`${this.baseUrl}/crm/contacts/${contact.ghl_contact_id}`, {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(ghlContact),
-        })
+        const response = await this.request(`/crm/contacts/${contact.ghl_contact_id}`, "PUT", ghlContact)
 
         if (!response.ok) {
-          throw new Error(`GHL API error: ${response.statusText}`)
+          throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
         }
 
         return { success: true, ghlContactId: contact.ghl_contact_id }
       } else {
         // Create new contact
-        const response = await fetch(`${this.baseUrl}/crm/contacts`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(ghlContact),
-        })
+        const response = await this.request<{ contact?: { id?: string } }>("/crm/contacts", "POST", ghlContact)
 
         if (!response.ok) {
-          throw new Error(`GHL API error: ${response.statusText}`)
+          throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
         }
 
-        const result = await response.json()
+        const result = response.data ?? {}
 
         // Save GHL contact ID back to Supabase
-        await supabase.from("contacts").update({ ghl_contact_id: result.contact.id }).eq("id", contactId)
+        await supabase.from("contacts").update({ ghl_contact_id: result.contact?.id }).eq("id", contactId)
 
-        return { success: true, ghlContactId: result.contact.id }
+        return { success: true, ghlContactId: result.contact?.id }
       }
     } catch (error) {
       console.error("[v0] GHL sync error:", error)
@@ -175,17 +179,10 @@ export class GHLIntegration {
         direction: message.sender_type === "agent" ? "outbound" : "inbound",
       }
 
-      const response = await fetch(`${this.baseUrl}/conversations/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(ghlMessage),
-      })
+      const response = await this.request("/conversations/messages", "POST", ghlMessage)
 
       if (!response.ok) {
-        throw new Error(`GHL API error: ${response.statusText}`)
+        throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
       }
 
       // Mark message as synced
@@ -262,26 +259,19 @@ export class GHLIntegration {
       }
 
       // Send email via GHL
-      const response = await fetch(`${this.baseUrl}/conversations/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          type: "Email",
-          contactId: ghlContactId,
-          subject: data.subject,
-          message: data.body,
-          emailFrom: data.fromEmail || process.env.GHL_DEFAULT_EMAIL,
-        }),
+      const response = await this.request<{ messageId?: string }>("/conversations/messages", "POST", {
+        type: "Email",
+        contactId: ghlContactId,
+        subject: data.subject,
+        message: data.body,
+        emailFrom: data.fromEmail || process.env.GHL_DEFAULT_EMAIL,
       })
 
       if (!response.ok) {
-        throw new Error(`GHL API error: ${response.statusText}`)
+        throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
       }
 
-      const result = await response.json()
+      const result = response.data ?? {}
 
       // Log the communication with compliance metadata.
       // Live schema columns: brokerage_id, agent_id, user_id, contact_id,
@@ -324,16 +314,9 @@ export class GHLIntegration {
     compliancePassed: boolean
   }): Promise<{ success: boolean; error?: string }> {
     try {
-      await fetch(`${this.baseUrl}/crm/contacts/${data.ghlContactId}/notes`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          body: `[Compliance ${data.compliancePassed ? "PASSED" : "FAILED"}] ${data.communicationType}: ${data.message.slice(0, 200)}...`,
-          userId: "system",
-        }),
+      await this.request(`/crm/contacts/${data.ghlContactId}/notes`, "POST", {
+        body: `[Compliance ${data.compliancePassed ? "PASSED" : "FAILED"}] ${data.communicationType}: ${data.message.slice(0, 200)}...`,
+        userId: "system",
       })
 
       return { success: true }
