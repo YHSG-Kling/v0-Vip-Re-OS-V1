@@ -101,6 +101,13 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
     method: "api_key",
     fields: [{ key: "apiKey", label: "API Key", required: true, secret: true }],
   },
+  podcast: {
+    method: "api_key",
+    fields: [
+      { key: "apiKey", label: "API Key", required: true, secret: true },
+      { key: "showId", label: "Show ID", required: true, placeholder: "Transistor show id" },
+    ],
+  },
   documents: { method: "api_key", fields: [] },
   marketing: { method: "api_key", fields: [] },
 }
@@ -165,6 +172,10 @@ export function buildCredentialWrite(
         account_id: has("profileId") ? trim("profileId") : null,
         config: has("profileId") ? { profile_id: trim("profileId") } : {},
       }
+    case "podcast":
+      // Distributor (Transistor): API key + the show id episodes publish into.
+      if (!has("apiKey") || !has("showId")) return null
+      return { api_key: trim("apiKey"), account_id: trim("showId"), config: { show_id: trim("showId") } }
     default:
       return null
   }

@@ -5,6 +5,8 @@ import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -629,6 +631,18 @@ export async function getPodcastEpisodes(filters?: { status?: string; category?:
 // Optional `scheduledAt` (ISO string) — if in the future, the episode is set to
 // status="scheduled" with `scheduled_at` populated; a separate cron job actually
 // fires the distribution at the scheduled time.
+async function loadPodcastTeamId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<string | null> {
+  try {
+    const { data } = await supabase.from("users").select("team_id").eq("id", userId).maybeSingle()
+    return (data?.team_id as string | null) ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function publishPodcastEpisode(
   episodeId: string,
   channels: string[],
@@ -726,14 +740,36 @@ export async function publishPodcastEpisode(
       .eq("brokerage_id", brokerageId)
       .eq("is_enabled", true)
 
-    // Create distribution log entries for each channel
-    const distributionResults: { channel: string; success: boolean; error?: string }[] = []
+    void distributionChannels // informational; actual channel reach is handled by the host's RSS
 
+    // Resolve the per-tier podcast distributor through the unified ownership cascade
+    // (agent → team → brokerage → platform) and syndicate ONCE. A host like Transistor publishes
+    // the episode to its managed RSS, which fans out to Spotify / Apple / etc — so a single real
+    // publish covers every requested channel (no per-channel API + no simulated success).
+    const teamId = await loadPodcastTeamId(supabase, userId)
+    const distributor = await resolveScopedConnection("transistor", {
+      agentUserId: userId,
+      teamId,
+      brokerageId,
+    }).catch(() => null)
+
+    let syndication: SyndicateEpisodeResult
+    if (!distributor?.apiKey) {
+      syndication = { ok: false, error: "No podcast distributor connected. Connect one in the Connection Center." }
+    } else {
+      syndication = await syndicateEpisode({
+        apiKey: distributor.apiKey,
+        showId: ((distributor.config as Record<string, unknown> | null)?.show_id as string) ?? distributor.accountId ?? "",
+        title: episode.title ?? "Episode",
+        summary: episode.description ?? episode.summary ?? "",
+        audioUrl: episode.audio_url ?? "",
+      })
+    }
+
+    // One log row per requested channel, all reflecting the single real syndication result.
+    const distributionResults: { channel: string; success: boolean; error?: string }[] = []
     for (const channel of channels) {
-      const channelConfig = distributionChannels?.find(c => c.channel_name === channel)
-      
-      // Insert distribution log entry
-      const { data: logEntry, error: logError } = await supabase
+      const { data: logEntry } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -743,64 +779,37 @@ export async function publishPodcastEpisode(
         })
         .select()
         .single()
-      if (logError || !logEntry) {
-        distributionResults.push({ channel, success: false, error: logError?.message ?? "Failed to create log entry" })
-        continue
-      }
 
-      if (channelConfig) {
-        // Attempt distribution (actual implementation would call external APIs)
-        try {
-          // Simulate distribution attempt
-          const externalEpisodeId = `ext_${episodeId}_${channel}_${Date.now()}`
-
-          // Update log entry as published
+      if (syndication.ok) {
+        if (logEntry) {
           await supabase
             .from("podcast_distribution_log")
             .update({
               distribution_status: "published",
               published_at: new Date().toISOString(),
-              external_episode_id: externalEpisodeId,
-              provider_response: { status: "success", timestamp: new Date().toISOString() },
+              external_episode_id: syndication.episodeId,
+              provider_response: { provider: "transistor", share_url: syndication.shareUrl ?? null },
             })
             .eq("id", logEntry.id)
-
-          distributionResults.push({ channel, success: true })
-
-          // ══════════════════════════════════════════════════════════════════════
-          // KERNEL: Process Distribution Success Event
-          // ══════════════════════════════════════════════════════════════════════
-          await processKernelEvent({
-            event: KernelEvent.PODCAST_EPISODE_DISTRIBUTED,
-            brokerageId,
-            entityType: "podcast_episode",
-            entityId: episodeId,
-          }).catch((err) => console.error("[podcast] kernel event PODCAST_EPISODE_DISTRIBUTED failed:", err))
-
-        } catch (distError: any) {
-          // Update log entry as failed
+        }
+        distributionResults.push({ channel, success: true })
+      } else {
+        if (logEntry) {
           await supabase
             .from("podcast_distribution_log")
-            .update({
-              distribution_status: "failed",
-              error_message: distError.message,
-            })
+            .update({ distribution_status: "failed", error_message: syndication.error })
             .eq("id", logEntry.id)
-
-          distributionResults.push({ channel, success: false, error: distError.message })
-
-          // ══════════════════════════════════════════════════════════════════════
-          // KERNEL: Process Distribution Failure Event
-          // ══════════════════════════════════════════════════════════════════════
-          await processKernelEvent({
-            event: KernelEvent.PODCAST_EPISODE_FAILED,
-            brokerageId,
-            entityType: "podcast_episode",
-            entityId: episodeId,
-          }).catch((err) => console.error("[podcast] kernel event distribution PODCAST_EPISODE_FAILED failed:", err))
         }
+        distributionResults.push({ channel, success: false, error: syndication.error })
       }
     }
+
+    await processKernelEvent({
+      event: syndication.ok ? KernelEvent.PODCAST_EPISODE_DISTRIBUTED : KernelEvent.PODCAST_EPISODE_FAILED,
+      brokerageId,
+      entityType: "podcast_episode",
+      entityId: episodeId,
+    }).catch((err) => console.error("[podcast] kernel distribution event failed:", err))
 
     return { success: true, distributionResults }
   } catch (error: any) {

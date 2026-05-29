@@ -440,6 +440,28 @@ async function testVendorConnectors() {
   check("gateway binary body passes the Buffer through (not JSON-stringified)", !!binReq && Buffer.isBuffer((binReq as any).body) && (binReq as any).body.toString() === "VIDEOBYTES")
   check("gateway binary keeps caller Content-Type (not application/json)", !!binReq && (binReq as any).ct === "video/*" && binRes.ok)
 
+  // Podcast syndication (Transistor) — create episode then publish, x-api-key header, form body.
+  let txReqs: Array<{ url: string; key: string; ct: string; body: string }> = []
+  globalThis.fetch = (async (url: any, init: any) => {
+    txReqs.push({ url: String(url), key: init?.headers?.["x-api-key"] ?? "", ct: init?.headers?.["Content-Type"] ?? "", body: String(init?.body ?? "") })
+    const isPublish = String(url).endsWith("/publish")
+    return { ok: true, status: 200, json: async () => isPublish ? ({ data: { attributes: { share_url: "https://share.transistor.fm/e/abc" } } }) : ({ data: { id: "ep_99" } }) }
+  }) as unknown as typeof fetch
+  const txCreate = await callConnector<{ data?: { id?: string } }>({
+    connector: "transistor", baseUrl: "https://api.transistor.fm", path: "/v1/episodes", method: "POST",
+    auth: { style: "header", name: "x-api-key", value: "TX_KEY" }, bodyType: "form",
+    body: { "episode[show_id]": "show_1", "episode[title]": "Market Update", "episode[summary]": "s", "episode[audio_url]": "https://cdn/x.mp3" },
+  })
+  check("Transistor create → /v1/episodes with x-api-key + form body (bracket keys)", txReqs[0]?.url === "https://api.transistor.fm/v1/episodes" && txReqs[0]?.key === "TX_KEY" && txReqs[0]?.ct === "application/x-www-form-urlencoded" && txReqs[0]?.body.includes("episode%5Bshow_id%5D=show_1") && txCreate.data?.data?.id === "ep_99")
+  const txPub = await callConnector<{ data?: { attributes?: { share_url?: string } } }>({
+    connector: "transistor", baseUrl: "https://api.transistor.fm", path: "/v1/episodes/ep_99/publish", method: "PATCH",
+    auth: { style: "header", name: "x-api-key", value: "TX_KEY" }, bodyType: "form", body: { "episode[status]": "published" },
+  })
+  check("Transistor publish → PATCH /publish returns share_url", txReqs[1]?.url.endsWith("/v1/episodes/ep_99/publish") && txPub.data?.data?.attributes?.share_url === "https://share.transistor.fm/e/abc")
+  globalThis.fetch = (async () => ({ ok: false, status: 422, json: async () => ({ errors: [{ title: "show not found" }] }) })) as unknown as typeof fetch
+  const txErr = await callConnector({ connector: "transistor", baseUrl: "https://api.transistor.fm", path: "/v1/episodes", method: "POST", auth: { style: "header", name: "x-api-key", value: "K" }, bodyType: "form", body: {} })
+  check("Transistor non-2xx → not ok (caller marks distribution failed)", !txErr.ok && txErr.status === 422)
+
   globalThis.fetch = realFetch
 }
 
@@ -801,6 +823,9 @@ async function testVendorGateway() {
   check("registry: IDX Broker is per-tier (agent/team/brokerage/platform), not vendor/contact", CONNECTOR_PROVIDERS.listing.join(",") === "idxbroker" && isConnectionAllowed("agent", "listing") && isConnectionAllowed("brokerage", "listing") && !isConnectionAllowed("vendor", "listing") && !isConnectionAllowed("contact", "listing"))
   check("selectableConnectionsForScope(contact) only exposes allowed domains with providers", (() => { const m = selectableConnectionsForScope("contact"); return Object.keys(m).sort().join(",") === "calendar,email,financial,social" && (m.calendar as readonly string[]).includes("outlook") })())
   check("every registry provider id is lowercase canonical (no spaces/aliases)", Object.values(CONNECTOR_PROVIDERS).every((list) => list.every((p) => /^[a-z0-9_]+$/.test(p))))
+  check("registry: podcast is per-tier (agent/team/brokerage/platform), not vendor/contact", CONNECTOR_PROVIDERS.podcast.join(",") === "transistor" && isConnectionAllowed("agent", "podcast") && isConnectionAllowed("brokerage", "podcast") && !isConnectionAllowed("vendor", "podcast") && !isConnectionAllowed("contact", "podcast"))
+  check("field-spec: podcast write maps apiKey→api_key + showId→config.show_id (rejects missing showId)", (() => { const w = buildCredentialWrite("podcast", { apiKey: "TX", showId: "show_1" }); return !!w && w.api_key === "TX" && w.account_id === "show_1" && (w.config as any).show_id === "show_1" && buildCredentialWrite("podcast", { apiKey: "TX" }) === null })())
+  check("field-spec: agent may pick transistor for podcast, not for esign", isProviderAllowedForScope("agent", "podcast", "transistor") && !isProviderAllowedForScope("agent", "esign", "transistor"))
 
   // ── Connection field-spec: auth method + resolver-correct credential mapping ─
   check("field-spec: email/calendar/social are OAuth; phone/esign are api_key", isOAuthConnection("email", "gmail") && isOAuthConnection("calendar", "outlook") && isOAuthConnection("social", "facebook") && !isOAuthConnection("phone", "twilio") && !isOAuthConnection("esign", "docusign"))

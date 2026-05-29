@@ -20,7 +20,7 @@ export type ConnectionScope = "platform" | "brokerage" | "team" | "agent" | "ven
  *  surface — they bring their own scheduling, social presence, and payout/accounting). */
 export type ConnectorDomain =
   | "email" | "phone" | "calendar" | "social" | "crm" | "financial"
-  | "listing" | "transaction" | "esign" | "showing" | "documents" | "marketing"
+  | "listing" | "transaction" | "esign" | "showing" | "documents" | "marketing" | "podcast"
 
 const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["email", "calendar", "social", "financial"])
 
@@ -50,6 +50,10 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   // (env/platform config) and is intentionally NOT a user connection.
   listing:     ["idxbroker"],
   showing:     ["showingtime"],
+  // Podcast distributor (host-agnostic via an API-first host). Transistor publishes one episode and
+  // syndicates to Spotify/Apple/etc through its managed RSS — so one per-tier connection covers all
+  // channels. Owner-cascade: agent → team → brokerage → platform.
+  podcast:     ["transistor"],
   documents:   [], // surface reserved; no user-selectable document provider yet
   marketing:   [], // system-managed; not a user-selectable connection
 }
