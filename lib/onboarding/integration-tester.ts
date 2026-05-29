@@ -5,6 +5,8 @@
 // Tests provider connections without logging raw credentials
 // Each provider has a specific test function
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 export interface TestResult {
   pass: boolean
   detail: string
@@ -92,23 +94,22 @@ async function testTwilio(credentials: Record<string, string>): Promise<TestResu
     return { pass: false, detail: "Account SID and Auth Token are required" }
   }
   
-  const auth = Buffer.from(`${account_sid}:${auth_token}`).toString("base64")
-  
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${account_sid}/IncomingPhoneNumbers.json?PageSize=1`,
-    {
-      headers: { Authorization: `Basic ${auth}` },
-    }
-  )
-  
+  const response = await callConnector({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${account_sid}/IncomingPhoneNumbers.json`,
+    method: "GET",
+    query: { PageSize: "1" },
+    auth: { style: "basic", username: account_sid, password: auth_token },
+  })
+
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    return { 
-      pass: false, 
-      detail: error.message || `Twilio API returned ${response.status}` 
+    return {
+      pass: false,
+      detail: response.error || `Twilio API returned ${response.status}`
     }
   }
-  
+
   return { pass: true, detail: "Twilio credentials verified - phone numbers accessible" }
 }
 
@@ -119,17 +120,18 @@ async function testSendGrid(credentials: Record<string, string>): Promise<TestRe
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.sendgrid.com/v3/user/profile", {
-    headers: { Authorization: `Bearer ${api_key}` },
+  const response = await callConnector({
+    connector: "sendgrid", baseUrl: "https://api.sendgrid.com", path: "/v3/user/profile", method: "GET",
+    auth: { style: "bearer", token: api_key },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `SendGrid API returned ${response.status} - verify API key` 
+    return {
+      pass: false,
+      detail: `SendGrid API returned ${response.status} - verify API key`
     }
   }
-  
+
   return { pass: true, detail: "SendGrid credentials verified - account accessible" }
 }
 
@@ -142,18 +144,19 @@ async function testDocuSign(credentials: Record<string, string>): Promise<TestRe
   
   // If we have an access token, verify it
   if (access_token) {
-    const baseUrl = environment === "sandbox" 
-      ? "https://demo.docusign.net/restapi" 
+    const baseUrl = environment === "sandbox"
+      ? "https://demo.docusign.net/restapi"
       : "https://na3.docusign.net/restapi"
-    
-    const response = await fetch(`${baseUrl}/v2.1/accounts/${account_id}`, {
-      headers: { Authorization: `Bearer ${access_token}` },
+
+    const response = await callConnector({
+      connector: "docusign", baseUrl, path: `/v2.1/accounts/${account_id}`, method: "GET",
+      auth: { style: "bearer", token: access_token },
     })
-    
+
     if (!response.ok) {
-      return { 
-        pass: false, 
-        detail: "DocuSign access token invalid or expired" 
+      return {
+        pass: false,
+        detail: "DocuSign access token invalid or expired"
       }
     }
     
@@ -174,17 +177,16 @@ async function testDotLoop(credentials: Record<string, string>): Promise<TestRes
     return { pass: false, detail: "Access Token is required" }
   }
   
-  const response = await fetch("https://api-gateway.dotloop.com/public/v2/profile", {
-    headers: { 
-      Authorization: `Bearer ${access_token}`,
-      ...(partner_key && { "X-Partner-Key": partner_key }),
-    },
+  const response = await callConnector({
+    connector: "dotloop", baseUrl: "https://api-gateway.dotloop.com", path: "/public/v2/profile", method: "GET",
+    auth: { style: "bearer", token: access_token },
+    headers: { ...(partner_key && { "X-Partner-Key": partner_key }) },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `DotLoop API returned ${response.status} - verify access token` 
+    return {
+      pass: false,
+      detail: `DotLoop API returned ${response.status} - verify access token`
     }
   }
   
@@ -198,14 +200,15 @@ async function testHeyGen(credentials: Record<string, string>): Promise<TestResu
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.heygen.com/v1/avatars", {
-    headers: { "X-Api-Key": api_key },
+  const response = await callConnector({
+    connector: "heygen", baseUrl: "https://api.heygen.com", path: "/v1/avatars", method: "GET",
+    auth: { style: "header", name: "X-Api-Key", value: api_key },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `HeyGen API returned ${response.status} - verify API key` 
+    return {
+      pass: false,
+      detail: `HeyGen API returned ${response.status} - verify API key`
     }
   }
   
@@ -219,14 +222,12 @@ async function testGoHighLevel(credentials: Record<string, string>): Promise<Tes
     return { pass: false, detail: "Agency API Key is required" }
   }
   
-  const url = location_id 
-    ? `https://rest.gohighlevel.com/v1/locations/${location_id}`
-    : "https://rest.gohighlevel.com/v1/locations"
-  
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${agency_api_key}` },
+  const response = await callConnector({
+    connector: "ghl", baseUrl: "https://rest.gohighlevel.com",
+    path: location_id ? `/v1/locations/${location_id}` : "/v1/locations", method: "GET",
+    auth: { style: "bearer", token: agency_api_key },
   })
-  
+
   if (!response.ok) {
     return { 
       pass: false, 
@@ -245,11 +246,12 @@ async function testGoogleCalendar(credentials: Record<string, string>): Promise<
   }
   
   if (access_token) {
-    const response = await fetch(
-      "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    )
-    
+    const response = await callConnector({
+      connector: "google_calendar", baseUrl: "https://www.googleapis.com",
+      path: "/calendar/v3/users/me/calendarList", method: "GET", query: { maxResults: "1" },
+      auth: { style: "bearer", token: access_token },
+    })
+
     if (!response.ok) {
       if (response.status === 401) {
         return { pass: false, detail: "Google token expired - reconnection required" }
@@ -271,11 +273,12 @@ async function testOutlookCalendar(credentials: Record<string, string>): Promise
   }
   
   if (access_token) {
-    const response = await fetch(
-      "https://graph.microsoft.com/v1.0/me/calendars?$top=1",
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    )
-    
+    const response = await callConnector({
+      connector: "outlook_calendar", baseUrl: "https://graph.microsoft.com",
+      path: "/v1.0/me/calendars", method: "GET", query: { "$top": "1" },
+      auth: { style: "bearer", token: access_token },
+    })
+
     if (!response.ok) {
       if (response.status === 401) {
         return { pass: false, detail: "Microsoft token expired - reconnection required" }
@@ -300,16 +303,12 @@ async function testQuickBooks(credentials: Record<string, string>): Promise<Test
     return { pass: true, detail: "QuickBooks OAuth configured - connection required" }
   }
   
-  const response = await fetch(
-    `https://quickbooks.api.intuit.com/v3/company/${realm_id}/companyinfo/${realm_id}`,
-    {
-      headers: { 
-        Authorization: `Bearer ${access_token}`,
-        Accept: "application/json",
-      },
-    }
-  )
-  
+  const response = await callConnector({
+    connector: "quickbooks", baseUrl: "https://quickbooks.api.intuit.com",
+    path: `/v3/company/${realm_id}/companyinfo/${realm_id}`, method: "GET",
+    auth: { style: "bearer", token: access_token },
+  })
+
   if (!response.ok) {
     return { pass: false, detail: `QuickBooks API returned ${response.status}` }
   }
@@ -328,10 +327,11 @@ async function testXero(credentials: Record<string, string>): Promise<TestResult
     return { pass: true, detail: "Xero OAuth configured - connection required" }
   }
   
-  const response = await fetch("https://api.xero.com/connections", {
-    headers: { Authorization: `Bearer ${access_token}` },
+  const response = await callConnector({
+    connector: "xero", baseUrl: "https://api.xero.com", path: "/connections", method: "GET",
+    auth: { style: "bearer", token: access_token },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `Xero API returned ${response.status}` }
   }
@@ -346,13 +346,12 @@ async function testIdxBroker(credentials: Record<string, string>): Promise<TestR
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.idxbroker.com/partners/accounttype", {
-    headers: { 
-      accesskey: api_key,
-      ...(partner_key && { partnerkey: partner_key }),
-    },
+  const response = await callConnector({
+    connector: "idxbroker", baseUrl: "https://api.idxbroker.com", path: "/partners/accounttype", method: "GET",
+    auth: { style: "header", name: "accesskey", value: api_key },
+    headers: { ...(partner_key && { partnerkey: partner_key }) },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `IDX Broker API returned ${response.status}` }
   }
@@ -369,12 +368,11 @@ async function testLob(credentials: Record<string, string>): Promise<TestResult>
     return { pass: false, detail: `${environment || "test"} API Key is required` }
   }
   
-  const auth = Buffer.from(`${apiKey}:`).toString("base64")
-  
-  const response = await fetch("https://api.lob.com/v1/accounts", {
-    headers: { Authorization: `Basic ${auth}` },
+  const response = await callConnector({
+    connector: "lob", baseUrl: "https://api.lob.com", path: "/v1/accounts", method: "GET",
+    auth: { style: "basic", username: apiKey, password: "" },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `Lob API returned ${response.status}` }
   }
@@ -427,8 +425,9 @@ async function testSkySlope(credentials: Record<string, string>): Promise<TestRe
   const { api_key } = credentials
   if (!api_key) return { pass: false, detail: "API Key is required" }
   // SkySlope REST API health check
-  const response = await fetch("https://api.skyslope.com/v3/transactions?pageSize=1", {
-    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  const response = await callConnector({
+    connector: "skyslope", baseUrl: "https://api.skyslope.com", path: "/v3/transactions", method: "GET",
+    query: { pageSize: "1" }, auth: { style: "bearer", token: api_key },
   })
   if (response.status === 401) return { pass: false, detail: "Invalid SkySlope API Key" }
   if (!response.ok && response.status !== 403) {
@@ -441,11 +440,10 @@ async function testBrokermint(credentials: Record<string, string>): Promise<Test
   const { api_key, office_id } = credentials
   if (!api_key) return { pass: false, detail: "API Key is required" }
   // Brokermint API health check
-  const url = office_id
-    ? `https://brokermint.com/api/v1/offices/${office_id}`
-    : "https://brokermint.com/api/v1/offices"
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${api_key}`, Accept: "application/json" },
+  const response = await callConnector({
+    connector: "brokermint", baseUrl: "https://brokermint.com",
+    path: office_id ? `/api/v1/offices/${office_id}` : "/api/v1/offices", method: "GET",
+    auth: { style: "bearer", token: api_key },
   })
   if (response.status === 401) return { pass: false, detail: "Invalid Brokermint API Key" }
   if (!response.ok && response.status !== 403) {
