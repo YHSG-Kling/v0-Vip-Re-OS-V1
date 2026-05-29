@@ -531,35 +531,6 @@ export async function linkOfferToTransaction(params: {
   return { success: true, data: { linked: true } }
 }
 
-// ─── 6. EMIT OFFER ACCEPTED EVENT ────────────────────────────────────────────
-/**
- * Emits OFFER_ACCEPTED lifecycle event + kernel notification.
- * Called after offer status is written to 'accepted'.
- */
-export async function emitOfferAcceptedEvent(params: {
-  offerId:      string
-  listingId:    string
-  brokerageId:  string
-  agentId:      string
-  offerPrice:   number
-}): Promise<KernelTxResult<void>> {
-  const { offerId, listingId, brokerageId, agentId, offerPrice } = params
-
-  try {
-    await emitTransactionEvent({
-      event:       KernelEvent.OFFER_ACCEPTED,
-      entityType:  "offer",
-      brokerageId,
-      entityId:    offerId,
-      actorUserId: agentId,
-      metadata:    { listing_id: listingId, offer_price: offerPrice },
-    })
-    return { success: true }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
 // ─── 7. EMIT TRANSACTION INITIATED EVENT ─────────────────────────────────────
 /**
  * Emits TRANSACTION_CREATED (or LISTING_UNDER_CONTRACT) lifecycle event.

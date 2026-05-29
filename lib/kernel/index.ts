@@ -331,7 +331,6 @@ export {
   createTransactionFromCompliantAcceptedOffer,
   seedTransactionMilestones,
   linkOfferToTransaction,
-  emitOfferAcceptedEvent,
   emitTransactionInitiatedEvent,
   loadComplianceBridgeStatus,
   // ─── CANONICAL TRANSACTION OS COMMANDS ───────────────────────────────────────
