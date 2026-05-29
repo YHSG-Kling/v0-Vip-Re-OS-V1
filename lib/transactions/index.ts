@@ -84,7 +84,6 @@ export { seedTransactionComplianceChecks } from './compliance-checks-seeder'
 
 // ─── CLASSES ──────────────────────────────────────────────────────────────────
 export { TransactionOrchestrator } from './transaction-orchestrator'
-export { TransparencyService } from './transparency-service'
 export { NotificationService } from './notification-service'
 export { ActivityFactory } from './activity-factory'
 export type { TransactionOrchestratorParams } from './transaction-orchestrator'

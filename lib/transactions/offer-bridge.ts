@@ -1,5 +1,4 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import type { TransactionStage } from "./transaction-stages"
 import { ensureRequiredMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
@@ -151,20 +150,31 @@ export async function createTransactionFromOffer(params: {
     created_at:     new Date().toISOString(),
   })
   
-  // Create transparency update for client
-  await supabase.from("transparency_updates").insert({
-    transaction_id: transaction.id,
-    brokerage_id: params.brokerageId,
-    update_type: "stage_change",
-    title: "Under Contract",
-    message: `Congratulations! Your offer has been accepted and the contract is fully executed. 
-    
-Earnest money due: ${params.contractTerms.earnestMoneyDue || 'TBD'}
-Inspection deadline: ${params.contractTerms.inspectionDeadline || 'TBD'}
-Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
-    is_visible_to_client: true,
-    created_at: new Date().toISOString()
-  })
+  // Client-facing "under contract" card now flows through the canonical kernel template path
+  // (idempotent + buyer/seller-aware) instead of a one-off direct transparency_updates write — this
+  // is the single chokepoint all four accept flows share, so emitting here gives every flow the same
+  // notification + sequence-enrollment + portal card. For the seller-accept path (which also emits
+  // OFFER_ACCEPTED) the portal writer's idempotency collapses the two into one card. Best-effort:
+  // never break transaction creation on a fan-out failure. Contract dates surface as their own
+  // milestone cards (earnest money, inspection, closing) as the deal progresses.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.OFFER_ACCEPTED,
+      brokerageId: params.brokerageId,
+      entityId:    transaction.id,
+      actorUserId: "",
+      metadata: {
+        earnest_money_due:   params.contractTerms.earnestMoneyDue ?? null,
+        inspection_deadline: params.contractTerms.inspectionDeadline ?? null,
+        closing_date:        params.contractTerms.closingDate ?? null,
+        created_from_offer:  params.offerId,
+      },
+    })
+  } catch (err) {
+    console.error("[offer-bridge] emitTransactionEvent(OFFER_ACCEPTED) failed", err)
+  }
 
   // Auto-populate transaction_participants from offer + listing + brokerage
   // preferred-vendor directory. Never inserts placeholders — only rows for
