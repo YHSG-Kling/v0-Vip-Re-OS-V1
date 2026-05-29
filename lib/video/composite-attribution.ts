@@ -34,6 +34,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export interface VideoAttributionBrand {
   brokerageName?: string | null
@@ -109,9 +110,12 @@ export async function compositeVideoAttribution(opts: {
     let hasLogo = false
     if (opts.brand.logoUrl) {
       try {
-        const logoRes = await fetch(opts.brand.logoUrl)
-        if (logoRes.ok) {
-          const logoBuf  = Buffer.from(await logoRes.arrayBuffer())
+        const logoRes = await callConnector<Buffer>({
+          connector: "asset-download", baseUrl: "", path: "", url: opts.brand.logoUrl,
+          method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 20_000,
+        })
+        if (logoRes.ok && logoRes.data) {
+          const logoBuf  = logoRes.data
           // Normalize to PNG so ffmpeg's overlay filter always works
           const logoPng = await sharp(logoBuf).png().toBuffer()
           await writeFile(logoPath, logoPng)
@@ -497,9 +501,12 @@ export async function compositeExplainerVideo(opts: {
     let hasLogo = false
     if (opts.brand.logoUrl) {
       try {
-        const logoRes = await fetch(opts.brand.logoUrl)
-        if (logoRes.ok) {
-          const logoBuf = Buffer.from(await logoRes.arrayBuffer())
+        const logoRes = await callConnector<Buffer>({
+          connector: "asset-download", baseUrl: "", path: "", url: opts.brand.logoUrl,
+          method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 20_000,
+        })
+        if (logoRes.ok && logoRes.data) {
+          const logoBuf = logoRes.data
           const logoPng = await sharp(logoBuf).png().toBuffer()
           await writeFile(logoPath, logoPng)
           hasLogo = true

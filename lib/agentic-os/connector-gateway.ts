@@ -21,6 +21,10 @@ export interface GatewayRequest {
   connector: string
   baseUrl: string
   path: string
+  /** Absolute URL override. When set, baseUrl/path are ignored and this exact URL is used —
+   *  for dynamic targets a connector spec can't express: signed asset-download URLs and the
+   *  resumable-upload URLs vendors hand back in a response header. Query/auth/headers still apply. */
+  url?: string
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   query?: Record<string, string>
   body?: unknown
@@ -33,9 +37,10 @@ export interface GatewayRequest {
    *  "arraybuffer" returns the raw bytes as a Buffer (binary responses, e.g. TTS audio). */
   responseType?: "json" | "text" | "arraybuffer"
   /** How the request body is encoded. "json" (default) → JSON.stringify; "form" →
-   *  application/x-www-form-urlencoded (Stripe, Intuit-style APIs). Body must be a flat
-   *  string/number map when "form" (nested keys pre-flattened, e.g. "metadata[id]"). */
-  bodyType?: "json" | "form"
+   *  application/x-www-form-urlencoded (Stripe, Intuit-style APIs); "binary" → the body is sent
+   *  as-is (Buffer/Uint8Array) and Content-Type is taken from `headers` (resumable byte uploads).
+   *  Body must be a flat string/number map when "form" (nested keys pre-flattened, e.g. "metadata[id]"). */
+  bodyType?: "json" | "form" | "binary"
   timeoutMs?: number
 }
 
@@ -43,6 +48,9 @@ export interface GatewayResponse<T = any> {
   ok: boolean
   status: number | null
   data: T | null
+  /** Lowercased response headers — some vendors return the result identifier (SendGrid
+   *  x-message-id) or the next-step URL (resumable-upload Location) only in a header. */
+  headers: Record<string, string>
   /** Shape drift detected on the response (vendor renamed/dropped fields), when a shape was given. */
   drift: ShapeDrift | null
   error: string | null
@@ -50,13 +58,16 @@ export interface GatewayResponse<T = any> {
 
 /** Pure: build the request URL + headers for an auth style. Exported for tests. */
 export function buildAuthedRequest(req: GatewayRequest): { url: string; headers: Record<string, string> } {
-  const url = new URL(req.path.replace(/^\//, ""), req.baseUrl.endsWith("/") ? req.baseUrl : `${req.baseUrl}/`)
+  const url = req.url
+    ? new URL(req.url)
+    : new URL(req.path.replace(/^\//, ""), req.baseUrl.endsWith("/") ? req.baseUrl : `${req.baseUrl}/`)
   for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v)
 
   const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) }
-  if (req.body !== undefined) {
+  if (req.body !== undefined && req.bodyType !== "binary") {
     headers["Content-Type"] = req.bodyType === "form" ? "application/x-www-form-urlencoded" : "application/json"
   }
+  // binary: Content-Type is whatever the caller put in `headers` (e.g. video/*); never overridden.
 
   switch (req.auth.style) {
     case "bearer":
@@ -88,7 +99,9 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
     ? undefined
     : req.bodyType === "form"
       ? new URLSearchParams(req.body as Record<string, string>).toString()
-      : JSON.stringify(req.body)
+      : req.bodyType === "binary"
+        ? (req.body as BodyInit)
+        : JSON.stringify(req.body)
   try {
     const res = await fetch(url, {
       method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
@@ -96,21 +109,25 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
       ...(serializedBody !== undefined ? { body: serializedBody } : {}),
       signal: AbortSignal.timeout(req.timeoutMs ?? 15_000),
     })
+    const respHeaders: Record<string, string> = {}
+    if (res.headers && typeof res.headers.forEach === "function") {
+      res.headers.forEach((v, k) => { respHeaders[k.toLowerCase()] = v })
+    }
     // Text responses (HTML scrapers) bypass JSON parsing + shape adaptation.
     if (req.responseType === "text") {
       const text = await res.text().catch(() => "")
-      if (!res.ok) return { ok: false, status: res.status, data: null, drift: null, error: `HTTP ${res.status}` }
-      return { ok: true, status: res.status, data: text as unknown as T, drift: null, error: null }
+      if (!res.ok) return { ok: false, status: res.status, data: null, headers: respHeaders, drift: null, error: `HTTP ${res.status}` }
+      return { ok: true, status: res.status, data: text as unknown as T, headers: respHeaders, drift: null, error: null }
     }
-    // Binary responses (e.g. TTS audio) → raw bytes as a Buffer. On failure the (text) error body
-    // is surfaced so callers can map provider error codes (auth / quota / voice-not-found / …).
+    // Binary responses (e.g. TTS audio, asset downloads) → raw bytes as a Buffer. On failure the
+    // (text) error body is surfaced so callers can map provider error codes.
     if (req.responseType === "arraybuffer") {
       if (!res.ok) {
         const errText = await res.text().catch(() => "")
-        return { ok: false, status: res.status, data: null, drift: null, error: errText || `HTTP ${res.status}` }
+        return { ok: false, status: res.status, data: null, headers: respHeaders, drift: null, error: errText || `HTTP ${res.status}` }
       }
       const ab = await res.arrayBuffer().catch(() => null)
-      return { ok: true, status: res.status, data: (ab ? Buffer.from(ab) : null) as unknown as T, drift: null, error: null }
+      return { ok: true, status: res.status, data: (ab ? Buffer.from(ab) : null) as unknown as T, headers: respHeaders, drift: null, error: null }
     }
     const raw = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok) {
@@ -120,7 +137,7 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
       const structured = (raw?.error as any)?.message || (raw?.message as string)
       const snippet = structured || (raw && Object.keys(raw).length ? JSON.stringify(raw) : "")
       const msg = snippet ? `${snippet}` : `HTTP ${res.status}`
-      return { ok: false, status: res.status, data: null, drift: null, error: String(msg).slice(0, 300) }
+      return { ok: false, status: res.status, data: null, headers: respHeaders, drift: null, error: String(msg).slice(0, 300) }
     }
     let data: any = raw
     let drift: ShapeDrift | null = null
@@ -129,8 +146,8 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
       data = adapted.value
       drift = adapted.drift
     }
-    return { ok: true, status: res.status, data: data as T, drift, error: null }
+    return { ok: true, status: res.status, data: data as T, headers: respHeaders, drift, error: null }
   } catch (err) {
-    return { ok: false, status: null, data: null, drift: null, error: err instanceof Error ? err.message : String(err) }
+    return { ok: false, status: null, data: null, headers: {}, drift: null, error: err instanceof Error ? err.message : String(err) }
   }
 }

@@ -199,68 +199,65 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
     throw new Error("YouTube requires video media")
   }
 
-  // YouTube uses a resumable upload: the init call returns an upload URL in the Location response
-  // HEADER, then video bytes are PUT to that URL. The connector-gateway returns a parsed body with
-  // no header access and can't PUT binary to an arbitrary URL, so this flow stays on raw fetch —
-  // the documented exception to single-egress (same class as ElevenLabs streaming).
+  // YouTube uses a resumable upload: the init call returns the upload URL in the Location response
+  // HEADER, then video bytes are PUT to that URL. Now fully on the gateway — the init reads
+  // res.headers.location, and the byte PUT uses the gateway's absolute-url override.
   const description = params.hashtags?.length
     ? `${params.content}\n\n${params.hashtags.map((h) => `#${h}`).join(" ")}`
     : params.content
 
   // Initialize upload
-  const initResponse = await fetch(
-    "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.accessToken}`,
-        "Content-Type": "application/json",
-        "X-Upload-Content-Type": "video/*",
+  const initResponse = await callConnector<{ error?: { message?: string } }>({
+    connector: "youtube",
+    baseUrl: "https://www.googleapis.com",
+    path: "/upload/youtube/v3/videos",
+    method: "POST",
+    query: { uploadType: "resumable", part: "snippet,status" },
+    auth: { style: "bearer", token: params.accessToken },
+    headers: { "X-Upload-Content-Type": "video/*" },
+    body: {
+      snippet: {
+        title: params.content.substring(0, 100),
+        description,
+        tags: params.hashtags || [],
+        categoryId: "22", // People & Blogs
       },
-      body: JSON.stringify({
-        snippet: {
-          title: params.content.substring(0, 100),
-          description,
-          tags: params.hashtags || [],
-          categoryId: "22", // People & Blogs
-        },
-        status: {
-          privacyStatus: "public",
-          selfDeclaredMadeForKids: false,
-        },
-      }),
-    }
-  )
+      status: {
+        privacyStatus: "public",
+        selfDeclaredMadeForKids: false,
+      },
+    },
+  })
 
   if (!initResponse.ok) {
-    const error = await initResponse.json()
-    throw new Error(error.error?.message || "YouTube API error")
+    throw new Error(initResponse.error || "YouTube API error")
   }
 
-  const uploadUrl = initResponse.headers.get("Location")
+  const uploadUrl = initResponse.headers["location"]
   if (!uploadUrl) throw new Error("YouTube did not return an upload URL")
 
-  // Stream video bytes to the resumable upload URL
-  const videoResponse = await fetch(params.mediaUrls![0])
-  if (!videoResponse.ok) throw new Error("Could not fetch video for YouTube upload")
-  const videoBuffer = await videoResponse.arrayBuffer()
+  // Fetch the source video bytes through the gateway (absolute-url download).
+  const videoResponse = await callConnector<Buffer>({
+    connector: "asset-download", baseUrl: "", path: "", url: params.mediaUrls![0],
+    method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+  })
+  if (!videoResponse.ok || !videoResponse.data) throw new Error("Could not fetch video for YouTube upload")
+  const videoBuffer = videoResponse.data
 
-  const uploadResponse = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "video/*",
-      "Content-Length": String(videoBuffer.byteLength),
-    },
-    body: videoBuffer,
+  // PUT the bytes to the vendor-provided resumable URL (absolute-url override).
+  const uploadResponse = await callConnector<{ id?: string }>({
+    connector: "youtube", baseUrl: "", path: "", url: uploadUrl, method: "PUT",
+    auth: { style: "none" },
+    headers: { "Content-Type": "video/*", "Content-Length": String(videoBuffer.byteLength) },
+    body: videoBuffer, bodyType: "binary",
+    timeoutMs: 120_000,
   })
 
   if (!uploadResponse.ok) {
-    const err = await uploadResponse.json().catch(() => ({}))
-    throw new Error(err.error?.message || "YouTube upload failed")
+    throw new Error(uploadResponse.error || "YouTube upload failed")
   }
 
-  const uploadData = await uploadResponse.json()
-  return { success: true, externalPostId: uploadData.id, platform: "youtube" }
+  return { success: true, externalPostId: uploadResponse.data?.id, platform: "youtube" }
 }
 
 async function publishToPinterest(params: PublishParams): Promise<PublishResult> {

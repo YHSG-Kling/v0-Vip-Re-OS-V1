@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -58,43 +58,27 @@ export async function uploadBusinessCard(params: {
   const raw_image_url = pub.publicUrl
 
   // 2) Call Claude Vision — JSON extraction only
-  const response = await callConnector<{ content?: Array<{ text?: string }> }>({
-    connector: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    path: "/v1/messages",
-    method: "POST",
-    auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
-    headers: { "anthropic-version": "2023-06-01" },
-    body: {
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: params.mimeType,
-                data: params.imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text.",
-            },
-          ],
-        },
-      ],
-    },
+  // Claude Vision OCR via the Vercel AI Gateway (image passed as a data URL).
+  const response = await gatewayChat({
+    model: "anthropic/claude-sonnet-4-20250514",
+    maxTokens: 300,
+    temperature: 0,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:${params.mimeType};base64,${params.imageBase64}` } },
+          { type: "text", text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text." },
+        ],
+      },
+    ],
   })
-
-  const aiData = response.data ?? {}
 
   let extracted: Record<string, string> = {}
   try {
-    extracted = JSON.parse(aiData.content?.[0]?.text ?? "{}") as Record<string, string>
+    const text = response.content ?? "{}"
+    const match = text.match(/\{[\s\S]*\}/)
+    extracted = JSON.parse(match ? match[0] : "{}") as Record<string, string>
   } catch {
     extracted = {}
   }

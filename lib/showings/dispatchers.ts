@@ -347,7 +347,7 @@ export async function dispatchViaEmail(
     })
     if (res.ok) {
       return {
-        providerRef: null, // SendGrid returns the id in the x-message-id header, not surfaced by the gateway
+        providerRef: res.headers["x-message-id"] ?? null,
         draft,
         sent:        true,
         via:         "sendgrid",

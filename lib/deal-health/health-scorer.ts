@@ -38,7 +38,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
-import { callConnector }       from "@/lib/agentic-os/connector-gateway"
+import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -970,26 +970,18 @@ ${issuesSummary || "No major issues identified."}
 Write a concise, actionable summary for the agent/broker. Focus on what needs attention.`
 
   try {
-    const response = await callConnector<{ content?: Array<{ text?: string }> }>({
-      connector: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
-      headers: { "anthropic-version": "2023-06-01" },
-      body: {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 200,
-        messages: [{ role: "user", content: prompt }],
-      },
+    const response = await gatewayChat({
+      model: "anthropic/claude-sonnet-4-20250514",
+      maxTokens: 200,
+      temperature: 0.3,
+      messages: [{ role: "user", content: prompt }],
     })
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.error ?? response.status}`)
+      throw new Error(`AI gateway error: ${response.error}`)
     }
 
-    const text = response.data?.content?.[0]?.text ?? ""
-    return text.trim()
+    return (response.content ?? "").trim()
   } catch {
     // Fallback narrative
     const topIssue = issueCategories[0]

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -256,35 +257,23 @@ async function generateScriptFromKeywords(keywords: string[], category?: string,
   Format: Return only the script text, no additional formatting.`
 
   try {
-    const response = await callConnector<{ choices?: Array<{ message?: { content?: string } }> }>({
-      connector: "xai",
-      baseUrl: "https://api.x.ai",
-      path: "/v1/chat/completions",
-      method: "POST",
-      auth: { style: "bearer", token: process.env.XAI_API_KEY ?? "" },
-      body: {
-        model: "grok-beta",
-        messages: [
-          {
-            role: "system",
-            content: "You are a professional podcast script writer for real estate agents.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.7,
-      },
+    const response = await gatewayChat({
+      model: "xai/grok-beta",
+      temperature: 0.7,
+      maxTokens: 2048,
+      messages: [
+        { role: "system", content: "You are a professional podcast script writer for real estate agents." },
+        { role: "user", content: prompt },
+      ],
     })
 
     if (!response.ok) {
-      throw new Error(`Script API request failed: ${response.error ?? `HTTP ${response.status}`}`)
+      throw new Error(`Script API request failed: ${response.error}`)
     }
-    if (!response.data?.choices?.[0]?.message?.content) {
+    if (!response.content) {
       throw new Error("Invalid API response: missing content")
     }
-    return response.data.choices[0].message.content
+    return response.content
   } catch (error) {
     console.error("[v0] Error generating script:", error)
     throw new Error("Failed to generate script from keywords")

@@ -410,6 +410,36 @@ async function testVendorConnectors() {
   const stErr = await callConnector({ connector: "showingtime", baseUrl: "https://api.showingtime.com", path: "/v2/appointments", method: "POST", auth: { style: "bearer", token: "ST_KEY" }, body: {} })
   check("ShowingTime non-200 → not ok (caller falls back to manual draft)", !stErr.ok && stErr.status === 403)
 
+  // Gateway: response headers are exposed (SendGrid x-message-id / resumable Location live in headers).
+  globalThis.fetch = (async () => ({
+    ok: true, status: 202,
+    headers: { forEach: (cb: any) => { cb("msg_abc", "X-Message-Id"); cb("https://up.example/loc", "Location") }, get: () => null },
+    json: async () => ({}),
+  })) as unknown as typeof fetch
+  const hdrRes = await callConnector({ connector: "sendgrid", baseUrl: "https://api.sendgrid.com", path: "/v3/mail/send", method: "POST", auth: { style: "bearer", token: "K" }, body: {} })
+  check("gateway exposes response headers (lowercased)", hdrRes.headers["x-message-id"] === "msg_abc" && hdrRes.headers["location"] === "https://up.example/loc")
+
+  // Gateway: absolute-url override bypasses baseUrl/path (asset downloads + resumable upload URLs).
+  let overrideUrl = ""
+  globalThis.fetch = (async (url: any) => {
+    overrideUrl = String(url)
+    return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("BYTES").buffer }
+  }) as unknown as typeof fetch
+  const ovRes = await callConnector<Buffer>({ connector: "asset-download", baseUrl: "", path: "", url: "https://cdn.example/signed/img.png?sig=abc", method: "GET", auth: { style: "none" }, responseType: "arraybuffer" })
+  check("gateway url override hits the exact absolute URL", overrideUrl === "https://cdn.example/signed/img.png?sig=abc")
+  check("gateway url override returns bytes", ovRes.ok && Buffer.isBuffer(ovRes.data) && ovRes.data!.toString() === "BYTES")
+
+  // Gateway: binary body passes the Buffer through unmodified + keeps caller Content-Type.
+  let binReq: { body: any; ct: string } | null = null
+  globalThis.fetch = (async (_url: any, init: any) => {
+    binReq = { body: init?.body, ct: init?.headers?.["Content-Type"] ?? "" }
+    return { ok: true, status: 200, json: async () => ({ id: "v1" }) }
+  }) as unknown as typeof fetch
+  const buf = Buffer.from("VIDEOBYTES")
+  const binRes = await callConnector<{ id?: string }>({ connector: "youtube", baseUrl: "", path: "", url: "https://up.example/loc", method: "PUT", auth: { style: "none" }, headers: { "Content-Type": "video/*" }, body: buf, bodyType: "binary" })
+  check("gateway binary body passes the Buffer through (not JSON-stringified)", !!binReq && Buffer.isBuffer((binReq as any).body) && (binReq as any).body.toString() === "VIDEOBYTES")
+  check("gateway binary keeps caller Content-Type (not application/json)", !!binReq && (binReq as any).ct === "video/*" && binRes.ok)
+
   globalThis.fetch = realFetch
 }
 

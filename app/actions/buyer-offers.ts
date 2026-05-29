@@ -3,7 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
@@ -283,20 +283,13 @@ Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": nu
 
   let parsed: any
   try {
-    const aiRes = await callConnector<{ content?: Array<{ text?: string }> }>({
-      connector: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      auth: { style: "header", name: "x-api-key", value: process.env.ANTHROPIC_API_KEY ?? "" },
-      headers: { "anthropic-version": "2023-06-01" },
-      body: {
-        model:      "claude-opus-4-5",
-        max_tokens: 1024,
-        messages:   [{ role: "user", content: prompt }],
-      },
+    const aiRes = await gatewayChat({
+      model: "anthropic/claude-opus-4-5",
+      maxTokens: 1024,
+      temperature: 0.2,
+      messages: [{ role: "user", content: prompt }],
     })
-    const text = aiRes.data?.content?.[0]?.text ?? ""
+    const text = aiRes.content ?? ""
     const match = text.match(/\{[\s\S]*\}/)
     parsed = match ? JSON.parse(match[0]) : null
   } catch {

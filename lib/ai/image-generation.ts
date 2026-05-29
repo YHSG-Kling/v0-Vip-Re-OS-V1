@@ -255,17 +255,16 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
       return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
     }
 
-    // Download DALL-E image bytes (returns a signed 1-hour URL)
-    try {
-      const dl = await fetch(dalleResp.url)
-      if (!dl.ok) {
-        return { success: false, errorCode: "unknown", error: `Image download failed: ${dl.status}` }
-      }
-      imageBytes = Buffer.from(await dl.arrayBuffer())
-      revisedPrompt = dalleResp.revisedPrompt
-    } catch (err: any) {
-      return { success: false, errorCode: "unknown", error: err?.message ?? "Download failed" }
+    // Download DALL-E image bytes (signed 1-hour URL) through the gateway (absolute-url override).
+    const dl = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: dalleResp.url,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 30_000,
+    })
+    if (!dl.ok || !dl.data) {
+      return { success: false, errorCode: "unknown", error: `Image download failed: ${dl.status}` }
     }
+    imageBytes = dl.data
+    revisedPrompt = dalleResp.revisedPrompt
   }
 
   // imageBytes is now populated (either from gateway or DALL-E fallback)
@@ -326,10 +325,13 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
 // ---------------------------------------------------------------------------
 
 async function compositeLogoOntoImage(imageBytes: Buffer, logoUrl: string): Promise<Buffer> {
-  // Fetch the logo
-  const logoRes = await fetch(logoUrl)
-  if (!logoRes.ok) return imageBytes
-  const logoBytes = Buffer.from(await logoRes.arrayBuffer())
+  // Fetch the logo through the gateway (absolute-url download)
+  const logoRes = await callConnector<Buffer>({
+    connector: "asset-download", baseUrl: "", path: "", url: logoUrl,
+    method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 20_000,
+  })
+  if (!logoRes.ok || !logoRes.data) return imageBytes
+  const logoBytes = logoRes.data
 
   // Get the base image metadata to know its dimensions
   const baseMeta = await sharp(imageBytes).metadata()

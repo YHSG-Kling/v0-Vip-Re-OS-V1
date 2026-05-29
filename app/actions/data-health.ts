@@ -196,7 +196,7 @@ async function validateContact(contact: { email?: string; phone?: string; first_
     }
   }
 
-  // Run deep validation via lib/contact-validation (ZeroBounce + Twilio Lookups via provider)
+  // Run deep validation via lib/contact-validation (PeopleData + Twilio Lookups via provider)
   const result = await libValidateContact({ email: contact.email, phone: contact.phone })
 
   if (contact.email && !result.email_valid) {
