@@ -86,11 +86,11 @@ export async function compositeVideoAttribution(opts: {
     const outputPath = path.join(workDir, "out.mp4")
 
     // ── 1. Download the input video ─────────────────────────────────────────
-    const videoRes = await fetch(opts.inputVideoUrl)
-    if (!videoRes.ok) {
+    const videoRes = await downloadVideoBytes(opts.inputVideoUrl)
+    if (!videoRes.ok || !videoRes.bytes) {
       return await passthrough(opts.inputVideoUrl, `Input fetch failed: ${videoRes.status}`)
     }
-    await writeFile(inputPath, Buffer.from(await videoRes.arrayBuffer()))
+    await writeFile(inputPath, videoRes.bytes)
 
     // ── 2. Probe input dimensions so the band is sized correctly ───────────
     const dims = await probeDimensions(inputPath)
@@ -172,14 +172,23 @@ export async function compositeVideoAttribution(opts: {
 // Internals
 // ────────────────────────────────────────────────────────────────────────────
 
+/** Download video/asset bytes through the connector-gateway (absolute-url override). */
+async function downloadVideoBytes(url: string): Promise<{ ok: boolean; status: number | null; bytes: Buffer | null }> {
+  const res = await callConnector<Buffer>({
+    connector: "asset-download", baseUrl: "", path: "", url, method: "GET",
+    auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 120_000,
+  })
+  return { ok: res.ok && !!res.data, status: res.status, bytes: res.data }
+}
+
 async function passthrough(inputUrl: string, reason: string): Promise<CompositeVideoAttributionResult> {
   try {
-    const res = await fetch(inputUrl)
-    if (!res.ok) {
+    const res = await downloadVideoBytes(inputUrl)
+    if (!res.ok || !res.bytes) {
       throw new Error(`Input fetch failed: ${res.status}`)
     }
     return {
-      outputBuffer:   Buffer.from(await res.arrayBuffer()),
+      outputBuffer:   res.bytes,
       overlayApplied: false,
       skippedReason:  reason,
     }
@@ -335,16 +344,16 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Com
     const downloads: Promise<void>[] = []
     if (opts.introVideoUrl && introPath) {
       downloads.push((async () => {
-        const r = await fetch(opts.introVideoUrl!)
-        if (!r.ok) throw new Error(`intro fetch ${r.status}`)
-        await writeFile(introPath, Buffer.from(await r.arrayBuffer()))
+        const r = await downloadVideoBytes(opts.introVideoUrl!)
+        if (!r.ok || !r.bytes) throw new Error(`intro fetch ${r.status}`)
+        await writeFile(introPath, r.bytes)
       })())
     }
     if (opts.outroVideoUrl && outroPath) {
       downloads.push((async () => {
-        const r = await fetch(opts.outroVideoUrl!)
-        if (!r.ok) throw new Error(`outro fetch ${r.status}`)
-        await writeFile(outroPath, Buffer.from(await r.arrayBuffer()))
+        const r = await downloadVideoBytes(opts.outroVideoUrl!)
+        if (!r.ok || !r.bytes) throw new Error(`outro fetch ${r.status}`)
+        await writeFile(outroPath, r.bytes)
       })())
     }
     await Promise.all(downloads)
@@ -467,20 +476,20 @@ export async function compositeExplainerVideo(opts: {
 
     // 1. Download both videos in parallel
     const [bgRes, headRes] = await Promise.all([
-      fetch(opts.backgroundVideoUrl),
-      fetch(opts.talkingHeadVideoUrl),
+      downloadVideoBytes(opts.backgroundVideoUrl),
+      downloadVideoBytes(opts.talkingHeadVideoUrl),
     ])
-    if (!bgRes.ok) {
+    if (!bgRes.ok || !bgRes.bytes) {
       return await passthrough(opts.backgroundVideoUrl, `Background fetch failed: ${bgRes.status}`)
     }
-    if (!headRes.ok) {
+    if (!headRes.ok || !headRes.bytes) {
       // Background-only fallback — still apply standard branding so the agent
       // gets something usable. Run the regular compositor on just the bg.
       return await compositeVideoAttribution({ inputVideoUrl: opts.backgroundVideoUrl, brand: opts.brand })
     }
     await Promise.all([
-      writeFile(bgPath, Buffer.from(await bgRes.arrayBuffer())),
-      writeFile(headPath, Buffer.from(await headRes.arrayBuffer())),
+      writeFile(bgPath, bgRes.bytes),
+      writeFile(headPath, headRes.bytes),
     ])
 
     // 2. Probe background dimensions so band + PIP scale correctly

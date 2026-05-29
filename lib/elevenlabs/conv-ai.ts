@@ -25,6 +25,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const ELEVENLABS_API_BASE = "https://api.elevenlabs.io"
 
@@ -98,21 +99,16 @@ export async function ensureAssistantAgent(
     },
   }
 
-  const res = await fetch(`${ELEVENLABS_API_BASE}/v1/convai/agents/create`, {
-    method: "POST",
-    headers: {
-      "xi-api-key": apiKey,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
+  const res = await callConnector<{ agent_id?: string }>({
+    connector: "elevenlabs", baseUrl: ELEVENLABS_API_BASE, path: "/v1/convai/agents/create", method: "POST",
+    auth: { style: "header", name: "xi-api-key", value: apiKey }, body,
   })
 
-  const data = await res.json().catch(() => ({}))
+  const data = res.data ?? {}
   if (!res.ok || !data?.agent_id) {
     return {
       ok: false,
-      error: data?.detail?.message ?? data?.message ?? `ElevenLabs agent create failed (${res.status})`,
+      error: res.error ?? `ElevenLabs agent create failed (${res.status})`,
     }
   }
 
@@ -198,21 +194,16 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
     },
   }
 
-  const res = await fetch(`${ELEVENLABS_API_BASE}/v1/convai/agents/create`, {
-    method: "POST",
-    headers: {
-      "xi-api-key": apiKey,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
+  const res = await callConnector<{ agent_id?: string }>({
+    connector: "elevenlabs", baseUrl: ELEVENLABS_API_BASE, path: "/v1/convai/agents/create", method: "POST",
+    auth: { style: "header", name: "xi-api-key", value: apiKey }, body,
   })
 
-  const data = await res.json().catch(() => ({}))
+  const data = res.data ?? {}
   if (!res.ok || !data?.agent_id) {
     return {
       ok: false,
-      error: data?.detail?.message ?? data?.message ?? `ElevenLabs scenario agent create failed (${res.status})`,
+      error: res.error ?? `ElevenLabs scenario agent create failed (${res.status})`,
     }
   }
 
@@ -249,17 +240,16 @@ export async function issueAssistantSession(
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) return { ok: false, error: "ELEVENLABS_API_KEY not configured" }
 
-  const url = new URL(`${ELEVENLABS_API_BASE}/v1/convai/conversation/get_signed_url`)
-  url.searchParams.set("agent_id", params.convAiAgentId)
-
-  const res = await fetch(url.toString(), {
-    headers: { "xi-api-key": apiKey, Accept: "application/json" },
+  const res = await callConnector<{ signed_url?: string }>({
+    connector: "elevenlabs", baseUrl: ELEVENLABS_API_BASE, path: "/v1/convai/conversation/get_signed_url", method: "GET",
+    query: { agent_id: params.convAiAgentId },
+    auth: { style: "header", name: "xi-api-key", value: apiKey },
   })
-  const data = await res.json().catch(() => ({}))
+  const data = res.data ?? {}
   if (!res.ok || !data?.signed_url) {
     return {
       ok: false,
-      error: data?.detail?.message ?? `ElevenLabs signed-url failed (${res.status})`,
+      error: res.error ?? `ElevenLabs signed-url failed (${res.status})`,
     }
   }
   return { ok: true, signedUrl: data.signed_url as string }

@@ -171,6 +171,10 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
   try {
+    // DOCUMENTED EXCEPTION to single-egress: STREAMING response — the raw fetch Response is returned
+    // so audio is piped to the client with low latency (no full buffer). The connector-gateway
+    // buffers responses and can't express streaming; the buffered TTS path in this file uses
+    // callConnector, only this low-latency stream stays a direct fetch.
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
       {

@@ -338,9 +338,12 @@ export async function generateVideo(
     // so the video URL stays valid for downstream {{step_N.video_url}} references
     // weeks or months later.
     try {
-      const dl = await fetch(videoUrl)
-      if (dl.ok) {
-        const bytes = Buffer.from(await dl.arrayBuffer())
+      const dl = await callConnector<Buffer>({
+        connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
+        method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+      })
+      if (dl.ok && dl.data) {
+        const bytes = dl.data
         const blob = await put(`workflow-video/${talkId}.mp4`, bytes, {
           access: "public",
           contentType: "video/mp4",
