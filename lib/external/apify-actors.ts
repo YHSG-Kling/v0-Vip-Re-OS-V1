@@ -8,6 +8,8 @@
 // alive so dead ones are skipped (no wasted failed-run cost). When no Apify actor
 // works, the caller falls back to ZenRows where the data type allows.
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin"
 
 /**
@@ -74,12 +76,10 @@ export async function runApifyTask(
 export async function checkActorExists(actorId: string): Promise<boolean> {
   const token = process.env.APIFY_API_TOKEN
   if (!token) return false
-  try {
-    const res = await fetch(`https://api.apify.com/v2/acts/${actorId.replace("/", "~")}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    return res.ok
-  } catch {
-    return false
-  }
+  const res = await callConnector({
+    connector: "apify", baseUrl: "https://api.apify.com",
+    path: `/v2/acts/${actorId.replace("/", "~")}`, method: "GET",
+    auth: { style: "bearer", token },
+  })
+  return res.ok
 }

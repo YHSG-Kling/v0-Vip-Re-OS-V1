@@ -19,6 +19,7 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export const scheduleShowingAdapter: ChannelAdapter = {
   channel: "schedule_showing",
@@ -63,27 +64,28 @@ export const scheduleShowingAdapter: ChannelAdapter = {
       const integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key
 
       if (integrationApiKey) {
-        try {
-          const stRes = await fetch("https://api.showingtime.com/v1/showings", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${integrationApiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              listingId: inHousePropertyId,
-              requestedDateTime: requestedDate,
-              duration: step.showing_duration_minutes,
-              agentNotes: step.showing_notes,
-            }),
-          })
-          if (stRes.ok) {
-            const data = await stRes.json()
-            return {
-              status: "sent",
-              providerKey: "showingtime",
-              messageId: data?.id,
-              output: { showing_id: data?.id, property_address: property.address, scheduled_at: requestedDate },
-            }
+        const stRes = await callConnector<{ id?: string }>({
+          connector: "showingtime",
+          baseUrl: "https://api.showingtime.com",
+          path: "/v1/showings",
+          method: "POST",
+          auth: { style: "bearer", token: integrationApiKey },
+          body: {
+            listingId: inHousePropertyId,
+            requestedDateTime: requestedDate,
+            duration: step.showing_duration_minutes,
+            agentNotes: step.showing_notes,
+          },
+        })
+        if (stRes.ok) {
+          const data = stRes.data ?? {}
+          return {
+            status: "sent",
+            providerKey: "showingtime",
+            messageId: data?.id,
+            output: { showing_id: data?.id, property_address: property.address, scheduled_at: requestedDate },
           }
-        } catch { /* fall through to manual */ }
+        }
       }
 
       const { data: showing, error } = await supabase.from("showings").insert({

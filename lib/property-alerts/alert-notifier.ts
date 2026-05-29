@@ -3,6 +3,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import type { AlertProperty } from "./alert-matcher"
 
 export interface DeliverResult {
@@ -97,14 +98,14 @@ export async function deliverAlertResults(
         const fromPhone = (twilioCred.config as any)?.from_phone ?? ""
         const body = `${n} ${n === 1 ? "property matches" : "properties match"} your search! View now: ${portalUrl}`
 
-        const formData = new URLSearchParams({ To: contact.phone, From: fromPhone, Body: body })
-        await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioCred.account_id}/Messages.json`, {
+        await callConnector({
+          connector: "twilio",
+          baseUrl: "https://api.twilio.com",
+          path: `/2010-04-01/Accounts/${twilioCred.account_id}/Messages.json`,
           method: "POST",
-          headers: {
-            Authorization: "Basic " + Buffer.from(`${twilioCred.account_id}:${twilioCred.api_key}`).toString("base64"),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: formData.toString(),
+          auth: { style: "basic", username: twilioCred.account_id, password: twilioCred.api_key },
+          bodyType: "form",
+          body: { To: contact.phone, From: fromPhone, Body: body },
         })
 
         channelsUsed.push("sms")

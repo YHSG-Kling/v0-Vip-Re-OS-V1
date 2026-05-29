@@ -6,6 +6,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // Service check configuration
 const SERVICE_CHECKS: Record<
@@ -49,53 +50,33 @@ const SERVICE_CHECKS: Record<
     type: "api",
     checkFn: async () => {
       const start = Date.now()
-      try {
-        // Check Anthropic status page
-        const response = await fetch("https://status.anthropic.com/api/v2/status.json", {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-        })
-        const responseTimeMs = Date.now() - start
-        if (!response.ok) {
-          return {
-            status: "degraded",
-            responseTimeMs,
-            httpStatusCode: response.status,
-          }
-        }
-        const data = await response.json()
-        const status = data.status?.indicator === "none" ? "healthy" : "degraded"
-        return { status, responseTimeMs, httpStatusCode: response.status }
-      } catch (err) {
-        return {
-          status: "unknown",
-          responseTimeMs: Date.now() - start,
-          errorMessage: err instanceof Error ? err.message : "Timeout or network error",
-        }
+      // Check Anthropic status page
+      const response = await callConnector<{ status?: { indicator?: string } }>({
+        connector: "anthropic-status", baseUrl: "https://status.anthropic.com", path: "/api/v2/status.json",
+        method: "GET", auth: { style: "none" }, timeoutMs: 5000,
+      })
+      const responseTimeMs = Date.now() - start
+      if (!response.ok) {
+        return { status: "degraded", responseTimeMs, httpStatusCode: response.status ?? 0, errorMessage: response.error ?? undefined }
       }
+      const status = response.data?.status?.indicator === "none" ? "healthy" : "degraded"
+      return { status, responseTimeMs, httpStatusCode: response.status ?? 0 }
     },
   },
   sendgrid: {
     type: "api",
     checkFn: async () => {
       const start = Date.now()
-      try {
-        const response = await fetch("https://status.sendgrid.com/api/v2/status.json", {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-        })
-        const responseTimeMs = Date.now() - start
-        return {
-          status: response.ok ? "healthy" : "degraded",
-          responseTimeMs,
-          httpStatusCode: response.status,
-        }
-      } catch (err) {
-        return {
-          status: "unknown",
-          responseTimeMs: Date.now() - start,
-          errorMessage: err instanceof Error ? err.message : "Timeout",
-        }
+      const response = await callConnector({
+        connector: "sendgrid-status", baseUrl: "https://status.sendgrid.com", path: "/api/v2/status.json",
+        method: "GET", auth: { style: "none" }, timeoutMs: 5000,
+      })
+      const responseTimeMs = Date.now() - start
+      return {
+        status: response.ok ? "healthy" : "degraded",
+        responseTimeMs,
+        httpStatusCode: response.status ?? 0,
+        ...(response.ok ? {} : { errorMessage: response.error ?? undefined }),
       }
     },
   },
@@ -103,23 +84,16 @@ const SERVICE_CHECKS: Record<
     type: "api",
     checkFn: async () => {
       const start = Date.now()
-      try {
-        const response = await fetch("https://status.twilio.com/api/v2/status.json", {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-        })
-        const responseTimeMs = Date.now() - start
-        return {
-          status: response.ok ? "healthy" : "degraded",
-          responseTimeMs,
-          httpStatusCode: response.status,
-        }
-      } catch (err) {
-        return {
-          status: "unknown",
-          responseTimeMs: Date.now() - start,
-          errorMessage: err instanceof Error ? err.message : "Timeout",
-        }
+      const response = await callConnector({
+        connector: "twilio-status", baseUrl: "https://status.twilio.com", path: "/api/v2/status.json",
+        method: "GET", auth: { style: "none" }, timeoutMs: 5000,
+      })
+      const responseTimeMs = Date.now() - start
+      return {
+        status: response.ok ? "healthy" : "degraded",
+        responseTimeMs,
+        httpStatusCode: response.status ?? 0,
+        ...(response.ok ? {} : { errorMessage: response.error ?? undefined }),
       }
     },
   },
@@ -131,26 +105,16 @@ const SERVICE_CHECKS: Record<
       if (!stripeKey) {
         return { status: "unknown" as const, responseTimeMs: 0, errorMessage: "No API key configured" }
       }
-      try {
-        const response = await fetch("https://api.stripe.com/v1/balance", {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${stripeKey}`,
-          },
-          signal: AbortSignal.timeout(5000),
-        })
-        const responseTimeMs = Date.now() - start
-        return {
-          status: response.ok ? "healthy" : "degraded",
-          responseTimeMs,
-          httpStatusCode: response.status,
-        }
-      } catch (err) {
-        return {
-          status: "down",
-          responseTimeMs: Date.now() - start,
-          errorMessage: err instanceof Error ? err.message : "Network error",
-        }
+      const response = await callConnector({
+        connector: "stripe", baseUrl: "https://api.stripe.com", path: "/v1/balance",
+        method: "GET", auth: { style: "bearer", token: stripeKey }, timeoutMs: 5000,
+      })
+      const responseTimeMs = Date.now() - start
+      return {
+        status: response.ok ? "healthy" : (response.status ? "degraded" : "down"),
+        responseTimeMs,
+        httpStatusCode: response.status ?? 0,
+        ...(response.ok ? {} : { errorMessage: response.error ?? undefined }),
       }
     },
   },

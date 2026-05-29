@@ -331,31 +331,29 @@ export async function dispatchViaEmail(
 
   // 2. SendGrid fallback.
   if (sendgridApiKey && ctx.buyerAgent.email) {
-    try {
-      const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${sendgridApiKey}`,
-          "Content-Type":  "application/json",
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: to }] }],
-          from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
-          reply_to:         { email: ctx.buyerAgent.email },
-          subject:          tpl.subject,
-          content:          [{ type: "text/plain", value: tpl.body }],
-        }),
-      })
-      if (res.ok) {
-        return {
-          providerRef: res.headers.get("x-message-id"),
-          draft,
-          sent:        true,
-          via:         "sendgrid",
-          deepLink,
-        }
+    const res = await callConnector({
+      connector: "sendgrid",
+      baseUrl: "https://api.sendgrid.com",
+      path: "/v3/mail/send",
+      method: "POST",
+      auth: { style: "bearer", token: sendgridApiKey },
+      body: {
+        personalizations: [{ to: [{ email: to }] }],
+        from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
+        reply_to:         { email: ctx.buyerAgent.email },
+        subject:          tpl.subject,
+        content:          [{ type: "text/plain", value: tpl.body }],
+      },
+    })
+    if (res.ok) {
+      return {
+        providerRef: null, // SendGrid returns the id in the x-message-id header, not surfaced by the gateway
+        draft,
+        sent:        true,
+        via:         "sendgrid",
+        deepLink,
       }
-    } catch { /* fall through */ }
+    }
   }
 
   // 3. mailto: deep link — agent uses their default mail client.
