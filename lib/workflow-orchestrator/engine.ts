@@ -10,6 +10,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getChainByKey } from "./chains"
+import { findReusableRun, type ExistingRun } from "./run-dedupe"
 import type {
   WorkflowChain,
   WorkflowStep,
@@ -34,6 +35,8 @@ interface RunResult {
   runId?: string
   status?: WorkflowRunStatus
   error?: string
+  /** True when an existing run was reused instead of starting a duplicate (idempotency). */
+  deduped?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,26 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
   }
 
   const svc = createServiceClient()
+
+  // Idempotency: don't start a duplicate run when the same lifecycle event reaches the engine
+  // more than once (retry, or a direct call + the kernel reactor firing for one occurrence). The
+  // flagship chains render videos + enroll drips — double-running is expensive and visible.
+  {
+    let q = svc
+      .from("workflow_runs")
+      .select("id, status, trigger_event_id")
+      .eq("chain_key", chain.key)
+      .eq("brokerage_id", input.brokerageId)
+      .eq("trigger_event", input.triggerEvent ?? chain.triggerEvent)
+    if (input.contactId) q = q.eq("contact_id", input.contactId)
+    else if (input.listingId) q = q.eq("listing_id", input.listingId)
+    else if (input.transactionId) q = q.eq("transaction_id", input.transactionId)
+    const { data: priorRuns } = await q.order("started_at", { ascending: false }).limit(20)
+    const reuse = findReusableRun((priorRuns ?? []) as ExistingRun[], input.triggerEventId ?? null)
+    if (reuse) {
+      return { success: true, runId: reuse.id, status: reuse.status as WorkflowRunStatus, deduped: true }
+    }
+  }
 
   const { data: run, error } = await svc
     .from("workflow_runs")

@@ -88,6 +88,7 @@ import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForS
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
 import { isPlatformStaff } from "../lib/auth/resolve-user-role"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
+import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
 
 let passed = 0
 let failed = 0
@@ -700,6 +701,16 @@ async function testVendorGateway() {
   check("reactor: cooldown expired outside window", isCooldownActive("2025-12-20T00:00:00Z", 7, now) === false)
   check("reactor: no prior touchpoint → never in cooldown", isCooldownActive(null, 7, now) === false)
   check("reactor: cooldown_days<=0 → never throttle (re-enroll allowed)", isCooldownActive("2026-01-09T23:59:00Z", 0, now) === false)
+
+  // ── Workflow chain-run idempotency (protects flagship CMA/video/drip chains) ──
+  const runs: ExistingRun[] = [
+    { id: "r1", status: "done",    trigger_event_id: "evt-A" },
+    { id: "r2", status: "running", trigger_event_id: "evt-B" },
+  ]
+  check("dedupe: same source event reuses its run (exact idempotency, even if done)", findReusableRun(runs, "evt-A")?.id === "r1")
+  check("dedupe: an active run blocks a concurrent duplicate", findReusableRun(runs, "evt-C")?.id === "r2")
+  check("dedupe: a brand-new occurrence with no active run starts fresh (null)", findReusableRun([{ id: "r3", status: "done", trigger_event_id: "evt-X" }], "evt-NEW") === null)
+  check("dedupe: no triggerEventId + no active run → fresh", findReusableRun([{ id: "r4", status: "failed", trigger_event_id: null }], null) === null)
 
   // Expansive-domain coverage (marketing / social / reporting / education / portal / etc.).
   const appDomains = new Set(appManifest.map((a) => a.category))
