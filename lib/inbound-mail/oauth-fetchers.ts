@@ -41,6 +41,7 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import type { ParsedInboundEmail, InboundAttachment } from "./providers"
 import type { ResolvedInboundProvider } from "./resolve-user-provider"
 
@@ -53,19 +54,18 @@ async function refreshGmailToken(credential: ResolvedInboundProvider): Promise<s
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   if (!clientId || !clientSecret) return null
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
+  const res = await callConnector<{ access_token?: string }>({
+    connector: "google-oauth", baseUrl: "https://oauth2.googleapis.com", path: "/token", method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
       client_id:     clientId,
       client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type:    "refresh_token",
-    }),
+    },
   })
   if (!res.ok) return null
-  const data = await res.json()
-  return data.access_token ?? null
+  return res.data?.access_token ?? null
 }
 
 async function refreshOutlookToken(credential: ResolvedInboundProvider): Promise<string | null> {
@@ -76,20 +76,20 @@ async function refreshOutlookToken(credential: ResolvedInboundProvider): Promise
   const tenantId     = process.env.MICROSOFT_TENANT_ID ?? "common"
   if (!clientId || !clientSecret) return null
 
-  const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
+  const res = await callConnector<{ access_token?: string }>({
+    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+    path: `/${tenantId}/oauth2/v2.0/token`, method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
       client_id:     clientId,
       client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type:    "refresh_token",
       scope:         "https://graph.microsoft.com/Mail.Read offline_access",
-    }),
+    },
   })
   if (!res.ok) return null
-  const data = await res.json()
-  return data.access_token ?? null
+  return res.data?.access_token ?? null
 }
 
 // ─── Gmail fetcher ──────────────────────────────────────────────────────────
@@ -105,20 +105,21 @@ export async function fetchGmailMessagesSinceHistory(params: {
   credential: ResolvedInboundProvider
   newHistoryId: string
 }): Promise<ParsedInboundEmail[]> {
-  let token = params.credential.access_token
-  if (!token) token = await refreshGmailToken(params.credential)
-  if (!token) return []
+  let maybeToken = params.credential.access_token
+  if (!maybeToken) maybeToken = await refreshGmailToken(params.credential)
+  if (!maybeToken) return []
+  const token: string = maybeToken
 
   const lastHistoryId = (params.credential.config as any)?.history_id ?? null
-  const historyParam  = lastHistoryId ? `&startHistoryId=${lastHistoryId}` : ""
 
   // 1) List history since the last seen id
-  const historyRes = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/history?historyTypes=messageAdded${historyParam}`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  )
+  const historyRes = await callConnector<{ history?: any[] }>({
+    connector: "gmail", baseUrl: "https://gmail.googleapis.com", path: "/gmail/v1/users/me/history", method: "GET",
+    query: { historyTypes: "messageAdded", ...(lastHistoryId ? { startHistoryId: String(lastHistoryId) } : {}) },
+    auth: { style: "bearer", token },
+  })
   if (!historyRes.ok) return []
-  const history = await historyRes.json()
+  const history = historyRes.data ?? {}
   const messageIds: string[] = []
   for (const h of history.history ?? []) {
     for (const m of (h.messagesAdded ?? [])) {
@@ -129,12 +130,12 @@ export async function fetchGmailMessagesSinceHistory(params: {
 
   const emails: ParsedInboundEmail[] = []
   for (const id of messageIds) {
-    const msgRes = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    )
+    const msgRes = await callConnector<any>({
+      connector: "gmail", baseUrl: "https://gmail.googleapis.com", path: `/gmail/v1/users/me/messages/${id}`, method: "GET",
+      query: { format: "full" }, auth: { style: "bearer", token },
+    })
     if (!msgRes.ok) continue
-    const msg = await msgRes.json()
+    const msg = msgRes.data ?? {}
     const headers = new Map<string, string>(
       (msg.payload?.headers ?? []).map((h: any) => [String(h.name).toLowerCase(), String(h.value)]),
     )
@@ -147,12 +148,13 @@ export async function fetchGmailMessagesSinceHistory(params: {
     async function walk(part: any) {
       if (!part) return
       if (part.filename && part.body?.attachmentId) {
-        const attRes = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/attachments/${part.body.attachmentId}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        )
+        const attRes = await callConnector<{ data?: string }>({
+          connector: "gmail", baseUrl: "https://gmail.googleapis.com",
+          path: `/gmail/v1/users/me/messages/${id}/attachments/${part.body.attachmentId}`, method: "GET",
+          auth: { style: "bearer", token },
+        })
         if (attRes.ok) {
-          const a = await attRes.json()
+          const a = attRes.data ?? {}
           attachments.push({
             fileName:   part.filename,
             mime:       part.mimeType ?? "application/octet-stream",
@@ -187,12 +189,12 @@ export async function fetchOutlookMessage(params: {
   if (!token) token = await refreshOutlookToken(params.credential)
   if (!token) return null
 
-  const res = await fetch(
-    `https://graph.microsoft.com/v1.0/${params.resourceUrl}?$expand=attachments`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  )
+  const res = await callConnector<any>({
+    connector: "outlook", baseUrl: "https://graph.microsoft.com", path: `/v1.0/${params.resourceUrl}`, method: "GET",
+    query: { "$expand": "attachments" }, auth: { style: "bearer", token },
+  })
   if (!res.ok) return null
-  const msg = await res.json()
+  const msg = res.data ?? {}
 
   const fromEmail = (msg.from?.emailAddress?.address ?? "").toString().toLowerCase().trim()
   const toEmail   = (msg.toRecipients?.[0]?.emailAddress?.address ?? "").toString().toLowerCase().trim()

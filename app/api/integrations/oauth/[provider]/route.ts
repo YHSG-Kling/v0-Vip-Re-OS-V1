@@ -14,6 +14,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -198,36 +199,36 @@ export async function GET(
       // Build redirect URI (must match what was used in auth request)
       const redirectUri = `${baseUrl}/api/integrations/oauth/${provider}`
 
-      // Exchange code for tokens
-      const tokenParams = new URLSearchParams({
-        grant_type: "authorization_code",
-        code: code!,
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        client_secret: clientSecret,
-      })
-
-      const tokenResponse = await fetch(config.tokenUrl, {
+      // Exchange code for tokens (through the connector-gateway). config.tokenUrl is a full URL —
+      // split into origin + pathname so the gateway hits the exact endpoint (no trailing-slash drift).
+      const tokenUrl = new URL(config.tokenUrl)
+      const tokenResponse = await callConnector<{ expires_in?: number; error_description?: string }>({
+        connector: `${provider}-oauth`,
+        baseUrl: tokenUrl.origin,
+        path: tokenUrl.pathname,
         method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
+        auth: { style: "none" },
+        bodyType: "form",
+        body: {
+          grant_type: "authorization_code",
+          code: code!,
+          redirect_uri: redirectUri,
+          client_id: clientId,
+          client_secret: clientSecret,
         },
-        body: tokenParams.toString(),
       })
 
       if (!tokenResponse.ok) {
-        const errorData = await tokenResponse.json().catch(() => ({}))
-        console.error("[OAuth] Token exchange failed:", errorData)
+        console.error("[OAuth] Token exchange failed:", tokenResponse.error)
         return redirectWithResult(
-          baseUrl, 
-          false, 
-          provider, 
-          errorData.error_description || "Failed to exchange code for tokens"
+          baseUrl,
+          false,
+          provider,
+          tokenResponse.error || "Failed to exchange code for tokens"
         )
       }
 
-      const tokens = await tokenResponse.json()
+      const tokens = tokenResponse.data as any
 
       // Calculate token expiry
       const expiresAt = tokens.expires_in
@@ -247,11 +248,17 @@ export async function GET(
       if (oauthProvider === "google" || oauthProvider === "microsoft") {
         try {
           if (oauthProvider === "google") {
-            const ui = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: { Authorization: `Bearer ${tokens.access_token}` } })
-            if (ui.ok) connectedEmail = (await ui.json())?.email ?? null
+            const ui = await callConnector<{ email?: string }>({
+              connector: "google-userinfo", baseUrl: "https://openidconnect.googleapis.com", path: "/v1/userinfo",
+              method: "GET", auth: { style: "bearer", token: tokens.access_token },
+            })
+            if (ui.ok) connectedEmail = ui.data?.email ?? null
           } else {
-            const ui = await fetch("https://graph.microsoft.com/v1.0/me", { headers: { Authorization: `Bearer ${tokens.access_token}` } })
-            if (ui.ok) { const me = await ui.json(); connectedEmail = me?.mail ?? me?.userPrincipalName ?? null }
+            const ui = await callConnector<{ mail?: string; userPrincipalName?: string }>({
+              connector: "microsoft-graph", baseUrl: "https://graph.microsoft.com", path: "/v1.0/me",
+              method: "GET", auth: { style: "bearer", token: tokens.access_token },
+            })
+            if (ui.ok) connectedEmail = ui.data?.mail ?? ui.data?.userPrincipalName ?? null
           }
         } catch {}
       }

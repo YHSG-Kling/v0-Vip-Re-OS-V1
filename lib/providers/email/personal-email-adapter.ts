@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -208,23 +209,18 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   if (!clientId || !clientSecret) return null
 
-  try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return { accessToken: data.access_token, expiresInSec: data.expires_in ?? 3600 }
-  } catch {
-    return null
-  }
+  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+    connector: "google-oauth", baseUrl: "https://oauth2.googleapis.com", path: "/token", method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    },
+  })
+  if (!res.ok || !res.data?.access_token) return null
+  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
@@ -232,27 +228,20 @@ async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: st
   const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
   if (!clientId || !clientSecret) return null
 
-  try {
-    const res = await fetch(
-      "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: refreshToken,
-          client_id: clientId,
-          client_secret: clientSecret,
-          scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
-        }),
-      }
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    return { accessToken: data.access_token, expiresInSec: data.expires_in ?? 3600 }
-  } catch {
-    return null
-  }
+  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+    path: "/common/oauth2/v2.0/token", method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
+    },
+  })
+  if (!res.ok || !res.data?.access_token) return null
+  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
 // ─── Gmail send (RFC 5322 + base64url) ───────────────────────────────────────
@@ -281,37 +270,28 @@ async function sendViaGmail(args: {
   // base64url encode for Gmail API
   const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
 
-  try {
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        raw: encoded,
-        ...(args.replyToMessageId ? { threadId: args.replyToMessageId } : {}),
-      }),
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => "")
-      return {
-        success: false,
-        provider: "gmail",
-        reason: "send_failed",
-        error: `Gmail (${res.status}): ${body}`,
-      }
-    }
-    const data = await res.json()
+  const res = await callConnector<{ id?: string; threadId?: string }>({
+    connector: "gmail", baseUrl: "https://gmail.googleapis.com", path: "/gmail/v1/users/me/messages/send", method: "POST",
+    auth: { style: "bearer", token: args.accessToken },
+    body: {
+      raw: encoded,
+      ...(args.replyToMessageId ? { threadId: args.replyToMessageId } : {}),
+    },
+  })
+  if (!res.ok) {
     return {
-      success: true,
+      success: false,
       provider: "gmail",
-      messageId: data.id,
-      threadId: data.threadId,
-      fromAddress: args.fromAddress ?? undefined,
+      reason: "send_failed",
+      error: `Gmail (${res.status}): ${res.error ?? ""}`,
     }
-  } catch (err: any) {
-    return { success: false, provider: "gmail", reason: "send_failed", error: err?.message ?? "Network error" }
+  }
+  return {
+    success: true,
+    provider: "gmail",
+    messageId: res.data?.id,
+    threadId: res.data?.threadId,
+    fromAddress: args.fromAddress ?? undefined,
   }
 }
 
@@ -336,54 +316,40 @@ async function sendViaOutlook(args: {
     bccRecipients: (args.bcc ?? []).map((a) => ({ emailAddress: { address: a } })),
   }
 
-  try {
-    // For replies, use Graph's reply endpoint to keep threading
-    if (args.replyToMessageId) {
-      const res = await fetch(
-        `https://graph.microsoft.com/v1.0/me/messages/${args.replyToMessageId}/reply`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${args.accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ message, comment: "" }),
-        }
-      )
-      if (!res.ok) {
-        const body = await res.text().catch(() => "")
-        return {
-          success: false,
-          provider: "outlook",
-          reason: "send_failed",
-          error: `Outlook reply (${res.status}): ${body}`,
-        }
-      }
-      return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
-    }
-
-    // Regular send
-    const res = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ message, saveToSentItems: true }),
+  // For replies, use Graph's reply endpoint to keep threading
+  if (args.replyToMessageId) {
+    const res = await callConnector({
+      connector: "outlook", baseUrl: "https://graph.microsoft.com",
+      path: `/v1.0/me/messages/${args.replyToMessageId}/reply`, method: "POST",
+      auth: { style: "bearer", token: args.accessToken },
+      body: { message, comment: "" },
     })
     if (!res.ok) {
-      const body = await res.text().catch(() => "")
       return {
         success: false,
         provider: "outlook",
         reason: "send_failed",
-        error: `Outlook (${res.status}): ${body}`,
+        error: `Outlook reply (${res.status}): ${res.error ?? ""}`,
       }
     }
     return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
-  } catch (err: any) {
-    return { success: false, provider: "outlook", reason: "send_failed", error: err?.message ?? "Network error" }
   }
+
+  // Regular send
+  const res = await callConnector({
+    connector: "outlook", baseUrl: "https://graph.microsoft.com", path: "/v1.0/me/sendMail", method: "POST",
+    auth: { style: "bearer", token: args.accessToken },
+    body: { message, saveToSentItems: true },
+  })
+  if (!res.ok) {
+    return {
+      success: false,
+      provider: "outlook",
+      reason: "send_failed",
+      error: `Outlook (${res.status}): ${res.error ?? ""}`,
+    }
+  }
+  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
 }
 
 // ─── RFC 5322 message builder (used by Gmail) ────────────────────────────────
