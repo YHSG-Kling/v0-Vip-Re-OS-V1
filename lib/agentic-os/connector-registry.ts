@@ -82,9 +82,10 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     githubUrl: "https://github.com/batchdataco",
     // BatchData publishes an MCP server (also a Vercel AI SDK demo) — agentic callers can use the
     // MCP for richer tool surfaces than the raw REST API. Recorded so the healer can suggest
-    // routing through MCP when REST endpoints drift.
+    // routing through MCP when REST endpoints drift. Implementation in lib/external/batchdata-mcp.ts;
+    // configuration via the BATCHDATA_MCP_URL env var (with optional BATCHDATA_MCP_AUTH bearer).
     mcpServer: { githubUrl: "https://github.com/batchdataco/batchdata-mcp-server" },
-    tags:      ["property", "motivated-seller", "off-market", "skip-trace"],
+    tags:      ["property", "motivated-seller", "off-market", "skip-trace", "has-mcp"],
   },
   // ── Web scrapers + AI search ───────────────────────────────────────────
   zenrows: {

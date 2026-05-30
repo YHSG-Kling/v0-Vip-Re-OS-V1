@@ -48,6 +48,8 @@ ok(!!getConnectorSpec("rentcast")?.openapiSpec?.endsWith("rentcast_api_openapi_s
    "registry: rentcast openapiSpec URL recorded")
 ok(!!getConnectorSpec("batchdata")?.mcpServer?.githubUrl?.includes("batchdata-mcp-server"),
    "registry: batchdata MCP server recorded")
+ok(!!getConnectorSpec("batchdata")?.tags?.includes("has-mcp"),
+   "registry: batchdata tagged has-mcp (lib/external/batchdata-mcp adapter wired)")
 
 // Category lookups (drive healer doc-search priorities)
 ok(listConnectorsByCategory("ai").length >= 3,                   "registry: ≥3 ai connectors (anthropic, google_ai, exa, …)")

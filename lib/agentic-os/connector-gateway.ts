@@ -19,8 +19,10 @@ export type GatewayAuth =
 export interface GatewayRequest {
   /** Connector id, for logging/drift attribution. */
   connector: string
-  baseUrl: string
-  path: string
+  /** Base URL — required UNLESS `url` is set (the override). */
+  baseUrl?: string
+  /** Path — required UNLESS `url` is set. */
+  path?: string
   /** Absolute URL override. When set, baseUrl/path are ignored and this exact URL is used —
    *  for dynamic targets a connector spec can't express: signed asset-download URLs and the
    *  resumable-upload URLs vendors hand back in a response header. Query/auth/headers still apply. */
@@ -60,9 +62,12 @@ export interface GatewayResponse<T = any> {
 
 /** Pure: build the request URL + headers for an auth style. Exported for tests. */
 export function buildAuthedRequest(req: GatewayRequest): { url: string; headers: Record<string, string> } {
+  if (!req.url && (!req.baseUrl || req.path === undefined)) {
+    throw new Error("GatewayRequest requires either `url` OR both `baseUrl` and `path`")
+  }
   const url = req.url
     ? new URL(req.url)
-    : new URL(req.path.replace(/^\//, ""), req.baseUrl.endsWith("/") ? req.baseUrl : `${req.baseUrl}/`)
+    : new URL((req.path as string).replace(/^\//, ""), (req.baseUrl as string).endsWith("/") ? req.baseUrl as string : `${req.baseUrl}/`)
   for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v)
 
   const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) }
