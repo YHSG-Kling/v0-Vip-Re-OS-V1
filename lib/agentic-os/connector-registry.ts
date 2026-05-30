@@ -188,6 +188,16 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     githubUrl: "https://github.com/google",
     tags:      ["llm", "gemini"],
   },
+  // ── Public city / county open data (Socrata) — permits, code violations, probate filings ──
+  socrata: {
+    connector: "socrata",
+    category:  "scraper",
+    baseUrl:   "https://data.austintexas.gov",  // example host; real host is per-call
+    auth:      "header",
+    envKey:    "SOCRATA_APP_TOKEN",
+    docsUrl:   "https://dev.socrata.com/",
+    tags:      ["public-records", "permits", "code-violations", "probate", "open-data"],
+  },
 })
 
 export function getConnectorSpec(name: string): ConnectorSpec | null {
