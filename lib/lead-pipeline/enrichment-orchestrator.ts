@@ -134,6 +134,51 @@ export async function processEnrichmentQueue(
         const mailingVerified: boolean = typeof mvRaw === 'boolean' ? mvRaw : hasMailingData
         const emailFlagVerified: boolean = (enriched as any).emailVerified === true
 
+        // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full
+        // PDL payload is queryable without re-calling the API. Only includes fields actually
+        // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
+        const profile: Record<string, any> = {
+          provider: 'peopledata',
+          captured_at: new Date().toISOString(),
+          confidence: enriched.enrichmentConfidence,
+          full_name: enriched.fullName,
+          middle_name: enriched.middleName,
+          emails: enriched.emails,
+          phones: enriched.phones,
+          mobile_phone: enriched.mobilePhone,
+          work_phone: enriched.workPhone,
+          age: enriched.age,
+          age_range: enriched.ageRange,
+          gender: enriched.gender,
+          marital_status: enriched.maritalStatus,
+          children_count: enriched.childrenCount,
+          household_size: enriched.householdSize,
+          employer: enriched.currentEmployer,
+          job_title: enriched.currentTitle,
+          industry: enriched.currentIndustry,
+          years_of_experience: enriched.yearsOfExperience,
+          education: enriched.education,
+          household_income: enriched.householdIncome,
+          net_worth: enriched.netWorth,
+          home_owner_status: enriched.homeOwnerStatus,
+          home_value: enriched.homeValue,
+          credit_score_range: enriched.creditScoreRange,
+          linkedin_url: enriched.linkedinUrl,
+          linkedin_username: enriched.linkedinUsername,
+          facebook_url: enriched.facebookUrl,
+          twitter_url: enriched.twitterUrl,
+          github_url: enriched.githubUrl,
+          skills: enriched.skills,
+          certifications: enriched.certifications,
+          life_events: (enriched as any).life_events ?? (enriched as any).lifeEvents,
+        }
+        // Strip undefined / null / empty arrays so the JSONB blob stays compact.
+        for (const k of Object.keys(profile)) {
+          const v = profile[k]
+          if (v === undefined || v === null) delete profile[k]
+          else if (Array.isArray(v) && v.length === 0) delete profile[k]
+        }
+
         // Step 6a: Update entity table
         if (entityType === 'lead') {
           await supabase
@@ -146,6 +191,7 @@ export async function processEnrichmentQueue(
               enrichment_status: 'complete',
               enrichment_provider: 'peopledata',
               enrichment_confidence: enriched.enrichmentConfidence,
+              enrichment_profile: profile,
               // Verification flags drive the canonical lead-eligibility gate + AI-ISA channel
               // resolver. Write them whenever enrichment ran (false is meaningful — it explains
               // why the gate is still blocking).
@@ -198,6 +244,7 @@ export async function processEnrichmentQueue(
               last_enriched_at: new Date().toISOString(),
               enrichment_confidence: enriched.enrichmentConfidence,
               email_verified: emailFlagVerified,
+              enrichment_profile: profile,
             })
             .eq('id', entityId)
         }

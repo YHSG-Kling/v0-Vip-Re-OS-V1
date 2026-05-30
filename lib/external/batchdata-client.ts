@@ -49,6 +49,45 @@ export interface BatchDataRecord {
   baths?: number
   sqft?: number
   estimatedValue?: number
+  // ── Rich seller-profile signal (max-info capture) ──────────────────────────
+  /** All BatchData quickList tags returned for the property (cash-buyer, absentee-owner,
+   *  high-equity, preforeclosure, vacant, etc.) — full motivation taxonomy in one array. */
+  quickLists?: string[]
+  /** Valuation breakdown: estimated value, equity dollars + %, low/high range. */
+  valuation?: {
+    estimatedValue?:  number
+    estimatedEquity?: number
+    equityPercent?:   number
+    lowValue?:        number
+    highValue?:       number
+    confidenceScore?: number
+  }
+  /** Mortgage / lien profile — loan balance, lender, lien count, last-payment, foreclosure stage. */
+  mortgage?: {
+    openLoanBalance?:   number
+    estimatedRemainingBalance?: number
+    lenderName?:        string
+    loanCount?:         number
+    foreclosureStatus?: string
+    lastPaymentDate?:   string
+  }
+  /** Most-recent sale facts so AI ISA / offer scripts know cost basis + tenure. */
+  lastSale?: {
+    date?:   string
+    price?:  number
+    type?:   string
+    deed?:   string
+  }
+  /** Years the current owner has held the property — drives downsizer / tired-landlord scoring. */
+  ownershipLengthYears?: number
+  /** Mailing address differs from property address → likely absentee/investor. */
+  mailingAddressVacant?: boolean
+  /** Property vacancy facts. */
+  vacancy?: {
+    isVacant?:        boolean
+    vacancyDate?:     string
+    vacancyType?:     string
+  }
   // The full motivated-seller spectrum BatchData covers — downsizers (high
   // equity), divorce, foreclosure / pre-foreclosure, tax lien, expired listings,
   // investor/absentee owners, vacant, and tired landlords.
@@ -98,30 +137,80 @@ const QUICKLIST_SLUG: Record<string, string> = {
 
 /** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
 export function normalizeBatchDataProperty(p: Record<string, any>, requestedType: string): BatchDataRecord {
-  const addr = p.address ?? {}
-  const owner = p.owner ?? {}
-  const building = p.building ?? {}
+  const addr      = p.address ?? {}
+  const owner     = p.owner ?? {}
+  const building  = p.building ?? {}
   const valuation = p.valuation ?? {}
-  const fullName = typeof owner.fullName === 'string' ? owner.fullName.trim() : ''
+  const mortgage  = p.mortgage  ?? p.openMortgageInfo  ?? {}
+  const lastSale  = p.lastSale  ?? p.sale              ?? p.transferInfo ?? {}
+  const vacancy   = p.vacancy   ?? {}
+  const fullName  = typeof owner.fullName === 'string' ? owner.fullName.trim() : ''
   const ownerFirst = owner.firstName ?? (fullName ? fullName.split(/\s+/)[0] : '')
-  const ownerLast = owner.lastName ?? (fullName ? fullName.split(/\s+/).slice(1).join(' ') : '')
+  const ownerLast  = owner.lastName  ?? (fullName ? fullName.split(/\s+/).slice(1).join(' ') : '')
+  const quickListsRaw =
+    Array.isArray(p.quickLists)      ? p.quickLists
+    : Array.isArray(p.quick_lists)   ? p.quick_lists
+    : Array.isArray(p.tags)          ? p.tags
+    : []
+  const quickLists = quickListsRaw.filter((x: any) => typeof x === 'string')
+
+  // Compact helper: drop undefined keys so sub-objects stay compact in the raw_data JSONB.
+  const compact = <T extends Record<string, unknown>>(o: T): T | undefined => {
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(o)) if (o[k] !== undefined && o[k] !== null) out[k] = o[k]
+    return Object.keys(out).length ? (out as T) : undefined
+  }
+
   return {
     firstName: ownerFirst || '',
-    lastName: ownerLast || '',
-    phone: owner.phone ?? null,
-    email: owner.email ?? null,
-    address: owner.mailingAddress?.street ?? addr.street ?? '',
-    city: owner.mailingAddress?.city ?? addr.city ?? '',
-    state: owner.mailingAddress?.state ?? addr.state ?? '',
-    zip: owner.mailingAddress?.zip ?? addr.zip ?? '',
+    lastName:  ownerLast  || '',
+    phone:     owner.phone ?? null,
+    email:     owner.email ?? null,
+    address:   owner.mailingAddress?.street ?? addr.street ?? '',
+    city:      owner.mailingAddress?.city   ?? addr.city   ?? '',
+    state:     owner.mailingAddress?.state  ?? addr.state  ?? '',
+    zip:       owner.mailingAddress?.zip    ?? addr.zip    ?? '',
     propertyAddress: addr.street ?? undefined,
-    propertyCity: addr.city ?? undefined,
-    propertyState: addr.state ?? undefined,
-    propertyZip: addr.zip ?? undefined,
-    beds: building.bedroomCount ?? building.beds ?? undefined,
-    baths: building.bathroomCount ?? building.baths ?? undefined,
-    sqft: building.livingAreaSquareFeet ?? building.sqft ?? undefined,
+    propertyCity:    addr.city   ?? undefined,
+    propertyState:   addr.state  ?? undefined,
+    propertyZip:     addr.zip    ?? undefined,
+    beds:  building.bedroomCount       ?? building.beds  ?? undefined,
+    baths: building.bathroomCount      ?? building.baths ?? undefined,
+    sqft:  building.livingAreaSquareFeet ?? building.sqft ?? undefined,
     estimatedValue: valuation.estimatedValue ?? p.estimatedValue ?? undefined,
+    // Rich seller-profile signal (preserved for downstream scoring, AI-ISA scripts, dashboards)
+    quickLists: quickLists.length ? quickLists : undefined,
+    valuation: compact({
+      estimatedValue:  valuation.estimatedValue,
+      estimatedEquity: valuation.estimatedEquity     ?? valuation.equityCurrentEstimated,
+      equityPercent:   valuation.equityPercent       ?? valuation.equityCurrentEstimatedPercent,
+      lowValue:        valuation.lowValue            ?? valuation.priceRangeMin,
+      highValue:       valuation.highValue           ?? valuation.priceRangeMax,
+      confidenceScore: valuation.confidenceScore     ?? valuation.confidence,
+    }),
+    mortgage: compact({
+      openLoanBalance:          mortgage.openLoanBalance          ?? mortgage.estimatedLoanBalance,
+      estimatedRemainingBalance: mortgage.estimatedRemainingBalance,
+      lenderName:               mortgage.lenderName               ?? mortgage.lender,
+      loanCount:                mortgage.loanCount                ?? mortgage.numberOfLoans,
+      foreclosureStatus:        mortgage.foreclosureStatus        ?? p.foreclosureStatus,
+      lastPaymentDate:          mortgage.lastPaymentDate,
+    }),
+    lastSale: compact({
+      date:  lastSale.date   ?? lastSale.recordingDate ?? lastSale.saleDate,
+      price: lastSale.price  ?? lastSale.salePrice,
+      type:  lastSale.type   ?? lastSale.transferType,
+      deed:  lastSale.deed   ?? lastSale.documentType,
+    }),
+    ownershipLengthYears: typeof p.ownershipLengthYears === 'number' ? p.ownershipLengthYears
+                          : typeof owner.ownershipLengthYears === 'number' ? owner.ownershipLengthYears
+                          : undefined,
+    mailingAddressVacant: typeof p.mailingAddressVacant === 'boolean' ? p.mailingAddressVacant : undefined,
+    vacancy: compact({
+      isVacant:    vacancy.isVacant    ?? p.isVacant,
+      vacancyDate: vacancy.vacancyDate ?? p.vacancyDate,
+      vacancyType: vacancy.vacancyType,
+    }),
     motivationType: (requestedType as BatchDataRecord['motivationType']) ?? 'distressed',
     motivationConfidence: 0.7,
   }
