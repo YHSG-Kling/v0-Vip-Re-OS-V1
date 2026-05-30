@@ -337,6 +337,26 @@ export async function captureContact(
     contactId,
   })
 
+  // Warm-capture portal invite. These sources are self-provided / consented (web_form / qr_scan /
+  // business_card / widget / open_house / home_value_form / showing_request — NOT in
+  // LEAD_CONVERSION_SOURCES, which are invited via handleLeadAssigned). Resolve the assigned agent's
+  // users.id to attribute the invite; the core compliance-gates the OTP email on
+  // email_opt_out / email_unsubscribed. Best-effort — never block contact creation.
+  try {
+    const { data: agentRow } = await supabase
+      .from('agents').select('user_id').eq('id', createAssignment.agentId).maybeSingle()
+    if (agentRow?.user_id) {
+      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
+      await createSystemPortalInvite({
+        contactId,
+        agentUserId: agentRow.user_id,
+        sendMagicLink: true,
+      })
+    }
+  } catch (err) {
+    console.error('[captureContact] portal invite failed (non-fatal):', err)
+  }
+
   return { contactId, action: 'created' }
 }
 

@@ -29,25 +29,41 @@ export async function createContactFromLead(
       last_name: data.lead.last_name,
       email: data.lead.email,
       phone: data.lead.phone,
-      
+
       // Attribution
       source: data.lead.source || 'lead_promotion',
-      
+
       // Relationship context
       agent_id: data.agentId,
       brokerage_id: data.brokerageId,
-      
+
       // Contact type and persona (if available)
       contact_type: data.lead.lead_type || 'prospect',
       contact_persona: data.lead.contact_persona,
-      
+
       // Intent indicators (if available)
       timeline: data.lead.timeline,
       intent_score: data.lead.intent_score,
-      
+
+      // Consent provenance — carry over what was captured during the lead phase. Faithful (no
+      // fabricated consent) — converted contacts inherit exactly the consent state on the lead, so
+      // downstream phone/SMS gates evaluate against real captured consent (TCPA-safe).
+      tcpa_consent:        data.lead.tcpa_consent ?? null,
+      tcpa_consent_date:   data.lead.tcpa_consent_at ?? null,
+      tcpa_consent_ip:     data.lead.tcpa_consent_ip ?? null,
+      tcpa_consent_source: data.lead.tcpa_consent_source ?? null,
+      tcpa_consent_text:   data.lead.tcpa_consent_text ?? null,
+
+      // Suppression flags also carry forward so the contact never "loses" an opt-out at conversion.
+      email_opt_out:        data.lead.email_opt_out        ?? false,
+      sms_opt_out:          data.lead.sms_opt_out          ?? false,
+      phone_opt_out:        data.lead.phone_opt_out        ?? false,
+      direct_mail_opt_out:  data.lead.direct_mail_opt_out  ?? false,
+      opted_out_at:         data.lead.opted_out_at         ?? null,
+
       // Status
       status: 'active',
-      
+
       // Metadata
       notes: `Promoted from lead ${data.leadId}`,
       created_at: new Date().toISOString(),

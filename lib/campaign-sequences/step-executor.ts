@@ -113,6 +113,20 @@ export async function executeSequenceStep(
     .single()
   const userId = seqRow?.created_by ?? brokerageId
 
+  // ── Lead-only channel restriction (TCPA / business rule) ──────────────────
+  // An enrollment without a contactId targets an unconsented LEAD. Per the canonical business
+  // process, AI ISA may only reach an unconsented lead via email or direct mail — SMS / phone /
+  // voice are blocked until the lead is converted to a contact (which carries its own captured
+  // TCPA consent). Closes the latent bypass where the compliance + TCPA gates below short-circuit
+  // when contactId is null.
+  if (!contactId && step.channel !== "email" && step.channel !== "direct_mail") {
+    await logAndSkip(supabase, {
+      enrollmentId, enrollment, step, contactId: null,
+      reason: `lead-only enrollment: channel '${step.channel}' restricted to email/direct_mail`,
+    })
+    return await advanceEnrollment(supabase, enrollment, step, "skipped")
+  }
+
   // ── Step 4: Compliance gate ────────────────────────────────────────────────
   if (contactId) {
     const gateResult = await checkSequenceAuthority(
