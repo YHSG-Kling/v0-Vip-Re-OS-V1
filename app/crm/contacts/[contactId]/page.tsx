@@ -4,6 +4,7 @@ import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
+import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 
 /**
  * CONSOLIDATED agent-facing contact dashboard — the SINGLE entry point for every contact type:
@@ -33,6 +34,19 @@ export default async function ContactDetailPage({ params }: PageProps) {
   // Auth check
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
+
+  // Defense-in-depth on the consolidated read path. RLS on the contacts table already gates
+  // cross-brokerage reads, but routing the access decision through the canonical helper means a
+  // future refactor that swaps to createServiceClient (RLS bypass) can't silently expose every
+  // contact in the DB. Same gate the write-side quick-action server actions run.
+  const gate = await assertCanActOnContact(contactId)
+  if (!gate.ok) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <p className="text-sm text-muted-foreground">{gate.error}</p>
+      </div>
+    )
+  }
 
   // Load minimal data for initial render + decide which view to mount
   const [contactResult, profileResult, interestsResult, enabledGates] = await Promise.all([
