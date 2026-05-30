@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 
 export interface KBResult {
   id: string
@@ -145,16 +146,16 @@ export async function embedAndStore(topicId: string): Promise<void> {
     throw new Error(`Failed to store embedding: ${updateError.message}`)
   }
 
-  // Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: topic.brokerage_id,
-    entity_type: 'kb_article',
-    entity_id: topicId,
-    event_type: KernelEvent.KB_ARTICLE_EMBEDDED,
+  // Emit through the canonical emitter — INSERT + reactor fan-out in one call.
+  await emitKernelEvent({
+    event:       KernelEvent.KB_ARTICLE_EMBEDDED,
+    brokerageId: topic.brokerage_id,
+    entityType:  'kb_article',
+    entityId:    topicId,
     metadata: {
-      title: topic.title,
+      title:           topic.title,
       embedding_model: 'text-embedding-3-small',
-      timestamp: new Date().toISOString(),
+      timestamp:       new Date().toISOString(),
     },
   })
 }

@@ -3,6 +3,7 @@ import { generateObject } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 const CalibrationSchema = z.object({
   system_prompt_additions: z.string(),
@@ -136,12 +137,14 @@ export async function calibrateSystemPrompts(
     }
   }
 
-  // Emit kernel event
+  // Emit through the canonical emitter — INSERT + reactor fan-out in one call.
   if (calibrations.length > 0) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.PROMPT_CALIBRATION_UPDATED,
-      payload: {
+    await emitKernelEvent({
+      event:       KernelEvent.PROMPT_CALIBRATION_UPDATED,
+      brokerageId,
+      entityType:  "prompt_calibration",
+      entityId:    brokerageId,
+      metadata: {
         systems_calibrated: calibrations.map((c) => c.sourceSystem),
         total_calibrations: calibrations.length,
       },

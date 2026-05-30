@@ -16,6 +16,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { emitKernelEvent }     from "@/lib/kernel/emit"
 
 const RELIST_WINDOW_DAYS = 365  // a year — most "pulled and back" cycles fall inside this
 
@@ -95,14 +96,17 @@ export async function detectRelistedListings(opts?: { limit?: number }): Promise
     matches.push({ propertyAddress: k, expiredAt, relistedAt, daysBetween, expiredRawId: e.id as string, relistedRawId: a.id as string })
   }
 
-  // Emit one LISTING_RELISTED lifecycle_event per match — downstream reactor handles fan-out.
+  // Emit one LISTING_RELISTED kernel event per match — emitKernelEvent does BOTH the
+  // lifecycle_events insert AND the reactor fan-out (notifications + sequences + portal). The event
+  // is platform-level (brokerage_id=null on raw_scraped_leads); the reactor resolves the owning
+  // brokerage from the linked raw when it runs downstream.
   let emitted = 0
   for (const m of matches) {
-    await svc.from("lifecycle_events").insert({
-      brokerage_id: null,  // platform-level signal; reactor resolves brokerage from the linked raw
-      entity_type:  "raw_scraped_leads",
-      entity_id:    m.relistedRawId,
-      event_type:   "listing_relisted",
+    const r = await emitKernelEvent({
+      event:       "listing_relisted",
+      brokerageId: null,
+      entityType:  "raw_scraped_leads",
+      entityId:    m.relistedRawId,
       metadata: {
         property_address: m.propertyAddress,
         expired_at:       m.expiredAt,
@@ -110,7 +114,10 @@ export async function detectRelistedListings(opts?: { limit?: number }): Promise
         days_between:     m.daysBetween,
         expired_raw_id:   m.expiredRawId,
       },
-    }).then(() => emitted++, () => null)
+      dedupeKey:       `${m.relistedRawId}:${m.expiredRawId}`,
+      dedupeWindowSec: 86400, // a day — re-running the detector shouldn't re-fire same match
+    })
+    if (r.inserted) emitted++
   }
 
   return { matches, emitted, error: null }

@@ -27,6 +27,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateTextRouted } from "@/lib/ai/models"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
@@ -483,35 +484,34 @@ export async function calculateListingHealth(params: {
     }
   }
 
-  // Fire lifecycle events for fan-out
-  try {
-    await supabase.from("lifecycle_events").insert({
-      event_type:   KernelEvent.LISTING_HEALTH_SCORE_UPDATED,
-      entity_type:  "listing",
-      entity_id:    listingId,
-      brokerage_id: listing.brokerage_id ?? null,
+  // Fire kernel events through the canonical emitter (insert + reactor fan-out in one call).
+  // Bare lifecycle_events inserts silently dropped notifications/sequences/portal — emit() fixes that.
+  await emitKernelEvent({
+    event:       KernelEvent.LISTING_HEALTH_SCORE_UPDATED,
+    brokerageId: listing.brokerage_id ?? null,
+    entityType:  "listing",
+    entityId:    listingId,
+    listingId,
+    metadata: {
+      overall_score: overallScore,
+      risk_level:    riskLevel,
+      score_delta:   scoreDelta,
+      flags:         flagsList,
+    },
+  })
+  if (riskLevel === "critical" || riskLevel === "at_risk") {
+    await emitKernelEvent({
+      event:       KernelEvent.LISTING_AT_RISK_DETECTED,
+      brokerageId: listing.brokerage_id ?? null,
+      entityType:  "listing",
+      entityId:    listingId,
+      listingId,
       metadata: {
         overall_score: overallScore,
         risk_level:    riskLevel,
-        score_delta:   scoreDelta,
         flags:         flagsList,
       },
     })
-    if (riskLevel === "critical" || riskLevel === "at_risk") {
-      await supabase.from("lifecycle_events").insert({
-        event_type:   KernelEvent.LISTING_AT_RISK_DETECTED,
-        entity_type:  "listing",
-        entity_id:    listingId,
-        brokerage_id: listing.brokerage_id ?? null,
-        metadata: {
-          overall_score: overallScore,
-          risk_level:    riskLevel,
-          flags:         flagsList,
-        },
-      })
-    }
-  } catch {
-    // lifecycle_events is non-blocking
   }
 
   return {

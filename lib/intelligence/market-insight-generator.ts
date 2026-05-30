@@ -9,6 +9,7 @@ import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { getRentcastMarketStats } from '@/lib/property/rentcast'
 
 // Minimal shape for the free OSINT (ZenRows/Zillow) market-stats fallback.
@@ -275,13 +276,14 @@ export async function refreshMarketData(
     console.error('[MarketTrends] Upsert error:', mtError.message)
   }
 
-  // Emit kernel event
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.MARKET_DATA_REFRESHED,
-    entity_type: 'market_data',
-    entity_id: marketArea,
-    event_data: { source_tier: source, market_area: marketArea },
+  // Emit through the canonical kernel emitter — INSERT + reactor fan-out (notifications + sequences
+  // + portal) in one call. Bare lifecycle_events INSERTs silently skipped all three downstream.
+  await emitKernelEvent({
+    event:       KernelEvent.MARKET_DATA_REFRESHED,
+    brokerageId,
+    entityType:  'market_data',
+    entityId:    marketArea,
+    metadata:    { source_tier: source, market_area: marketArea },
   })
 
   return { source, success: true }
@@ -445,14 +447,14 @@ Avg CMA Value: $${cmaReports.length > 0 ? Math.round(cmaReports.reduce((s, r) =>
     throw new Error('Failed to save market insight')
   }
 
-  // STEP 6: Emit kernel event
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: req.brokerageId,
-    agent_id: req.agentId || null,
-    event_type: KernelEvent.MARKET_INSIGHT_GENERATED,
-    entity_type: 'market_insights',
-    entity_id: inserted.id,
-    event_data: { market_area: req.marketArea, headline: insight.headline },
+  // STEP 6: Emit through the canonical kernel emitter — INSERT + reactor fan-out.
+  await emitKernelEvent({
+    event:       KernelEvent.MARKET_INSIGHT_GENERATED,
+    brokerageId: req.brokerageId,
+    entityType:  'market_insights',
+    entityId:    inserted.id,
+    agentUserId: req.agentId || undefined,
+    metadata:    { market_area: req.marketArea, headline: insight.headline },
   })
 
   return { insightId: inserted.id, cached: false }

@@ -38,6 +38,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -899,13 +900,17 @@ export async function calculateDealHealth(params: {
   await supabase.from("deal_health_components").insert(componentRows)
 
   // ─── Emit kernel event if risk level changed ──────────────────────────────
+  // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff
+  // notifications + marketing-trigger enrollment + canonical campaign_sequences enrollment +
+  // client-portal cards). Bare lifecycle_events inserts silently dropped all four channels.
   if (tierChanged) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id:  brokerageId,
-      entity_type:   "transaction",
-      entity_id:     transactionId,
-      event_type:    KernelEvent.DEAL_HEALTH_CHANGED,
-      metadata:      {
+    await emitKernelEvent({
+      event:        KernelEvent.DEAL_HEALTH_CHANGED,
+      brokerageId,
+      entityType:   "transaction",
+      entityId:     transactionId,
+      transactionId,
+      metadata: {
         previous_risk_level: previousRiskLevel,
         new_risk_level:      riskLevel,
         overall_score:       overallScore,

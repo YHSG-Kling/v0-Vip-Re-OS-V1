@@ -5,6 +5,7 @@ import { calculateFuzzyMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import {
   calculateSourceScore,
   getSourceSemantics,
@@ -425,16 +426,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     new_enrichment_confidence: enriched.enrichmentConfidence,
   }, supabase)
 
-  // Emit the RAW_RECORD_PROMOTED kernel event (non-blocking). This was previously
-  // only emitted by the kernel's unused promoteQualifiedRawToLead (now removed);
-  // emitting it here completes the intended raw->lead audit signal on the live path.
-  void supabase.from('lifecycle_events').insert({
-    entity_type:  'raw_scraped_lead',
-    entity_id:    rawRecordId,
-    event_type:   KernelEvent.RAW_RECORD_PROMOTED,
-    brokerage_id: effectiveBrokerageId,
-    metadata:     { lead_id: newLead.id, source: rec.source },
-  }).then(() => {}, () => {})
+  // Emit RAW_RECORD_PROMOTED through the canonical kernel emitter (does INSERT + reactor fan-out
+  // in one call: notifications + sequences + portal). Non-blocking: emit() is never-throws and
+  // the audit signal here must not break the lead-creation primary write.
+  void emitKernelEvent({
+    event:       KernelEvent.RAW_RECORD_PROMOTED,
+    brokerageId: effectiveBrokerageId,
+    entityType:  'raw_scraped_lead',
+    entityId:    rawRecordId,
+    metadata:    { lead_id: newLead.id, source: rec.source },
+  })
 
   return {
     success: true,
