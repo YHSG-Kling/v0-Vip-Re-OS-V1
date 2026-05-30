@@ -16,6 +16,7 @@
  */
 import { checkEmailSyntax, checkEmailMx } from "../lib/external/email-verifier"
 import { socrataQuery } from "../lib/external/socrata-client"
+import { getMarketDatasets, listSupportedMarkets, MARKETS } from "../lib/external/socrata-market-registry"
 import { getConnectorSpec } from "../lib/agentic-os/connector-registry"
 
 let pass = 0, fail = 0
@@ -60,6 +61,25 @@ ok(sb.ok === false,                                                 "socrata: ba
 ok(!!getConnectorSpec("socrata"),                                   "registry: socrata connector added")
 ok(getConnectorSpec("socrata")?.category === "scraper",             "registry: socrata category=scraper")
 ok(!!getConnectorSpec("socrata")?.tags?.includes("permits"),        "registry: socrata tagged 'permits'")
+
+// ── Per-market Socrata datasets — application is NATIONAL, not NYC-only ────
+const markets = listSupportedMarkets()
+ok(markets.length >= 10,                                            "market-registry: ≥10 US metro areas registered")
+const states = new Set(markets.map(m => m.state))
+ok(states.size >= 8,                                                "market-registry: covers ≥8 distinct states (national coverage)")
+ok(getMarketDatasets({ state: "TX", city: "Austin" }).length >= 1,  "market-registry: Austin TX has datasets")
+ok(getMarketDatasets({ state: "tx", city: "AUSTIN" }).length >= 1,  "market-registry: lookup is case-insensitive")
+ok(getMarketDatasets({ state: "WA", city: "Seattle" }).some(d => d.kind === "permits"), "market-registry: Seattle has a permits dataset")
+ok(getMarketDatasets({ state: "FL", city: "Miami"   }).some(d => d.kind === "permits"), "market-registry: Miami has a permits dataset")
+ok(getMarketDatasets({ state: "XX", city: "Nowhere" }).length === 0, "market-registry: unknown market returns empty (fallback)")
+ok(getMarketDatasets({ state: null, city: null }).length === 0,     "market-registry: null inputs safe")
+// Every spec has a real host + dataset id (data quality)
+for (const m of Object.values(MARKETS)) {
+  for (const d of m.datasets) {
+    ok(/^[a-z0-9.-]+$/i.test(d.host) && d.host.includes("."), `market-registry: ${m.city} dataset host shape ok`)
+    ok(/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(d.datasetId),         `market-registry: ${m.city} dataset id is Socrata 4x4`)
+  }
+}
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
