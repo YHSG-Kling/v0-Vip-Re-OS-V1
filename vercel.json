@@ -39,7 +39,7 @@
     },
     {
       "path": "/api/cron/connector-auto-applier",
-      "schedule": "0 */1 * * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/api/cron/actor-health",
