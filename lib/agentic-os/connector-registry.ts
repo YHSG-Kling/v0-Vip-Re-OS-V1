@@ -30,6 +30,10 @@ export interface ConnectorSpec {
   docsUrl:    string
   /** Official GitHub repo (when published) — preferred over docs for typed examples. */
   githubUrl?: string
+  /** Official npm SDK package name (when published). Set per the vendor GitHub audit so future
+   *  tooling can see which vendors have typed clients to consider adopting. ABSENCE means there is
+   *  no published TS/Node SDK and we should keep our fetch-via-gateway client. */
+  npmSdk?:    string
   /** Free-form tags for downstream filtering / scoring (`buyer-intent`, `seller-intent`, `mls`, …). */
   tags?:      string[]
 }
@@ -44,6 +48,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "PEOPLEDATA_API_KEY",
     docsUrl:   "https://docs.peopledatalabs.com/",
     githubUrl: "https://github.com/peopledatalabs/peopledatalabs-js",
+    npmSdk:    "peopledatalabs",
     tags:      ["person-enrich", "email-validate", "skip-trace"],
   },
   // ── Real-estate listings (MLS-grade default) ───────────────────────────
@@ -76,9 +81,10 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     auth:      "query",
     envKey:    "ZENROWS_API_KEY",
     docsUrl:   "https://docs.zenrows.com/",
-    // ZenRows does NOT extract MLS listings (use RentCast). It is used for buyer-intent profile
-    // pages on forums / social / personal sites that surface property-alert criteria.
-    tags:      ["buyer-intent", "social", "forum", "no-mls"],
+    // ZenRows is for BOTH buyer-intent profile pages (saved-search / property-alert) AND
+    // seller-intent pages (FSBO posts, motivated-seller forums) on forums / social / personal
+    // sites — NOT MLS listings (RentCast is the canonical MLS source for actual listing data).
+    tags:      ["buyer-intent", "seller-intent", "social", "forum", "no-mls"],
   },
   apify: {
     connector: "apify",
@@ -88,6 +94,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "APIFY_API_TOKEN",
     docsUrl:   "https://docs.apify.com/",
     githubUrl: "https://github.com/apify",
+    npmSdk:    "apify-client",  // HIGH-ROI swap when we touch this area — typed actors/runs/datasets
     tags:      ["scraper", "actor", "social", "search"],
   },
   exa: {
@@ -98,6 +105,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "EXA_API_KEY",
     docsUrl:   "https://docs.exa.ai/",
     githubUrl: "https://github.com/exa-labs",
+    npmSdk:    "exa-js",
     tags:      ["neural-search", "buyer-intent", "natural-language"],
   },
   tavily: {
@@ -118,6 +126,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "LOB_API_KEY",
     docsUrl:   "https://docs.lob.com/",
     githubUrl: "https://github.com/lob",
+    npmSdk:    "@lob/lob-typescript-sdk",  // ADOPT when direct-mail ships (money-moving + many models)
     tags:      ["direct-mail", "postcard", "letter", "address-verify"],
   },
   // ── AI media (video / voice) ───────────────────────────────────────────
@@ -139,6 +148,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "ELEVENLABS_API_KEY",
     docsUrl:   "https://elevenlabs.io/docs",
     githubUrl: "https://github.com/elevenlabs",
+    npmSdk:    "elevenlabs",  // HIGH-ROI when TTS lands — streaming + typed voices
     tags:      ["tts", "voice-clone"],
   },
   // ── Anthropic / OpenAI / Google AI are routed via the AI gateway; listed here for healer ─

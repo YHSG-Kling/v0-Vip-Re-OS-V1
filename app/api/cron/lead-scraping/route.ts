@@ -195,12 +195,16 @@ export async function GET(request: Request) {
               started_at: new Date().toISOString(),
             })
 
-            // ZenRows is for BUYER-INTENT PROFILE PAGES on forums / personal sites / blogs that
-            // surface property-alert criteria — NOT MLS listings (RentCast is the canonical MLS
-            // source). Zillow / Realtor / Redfin do not expose buyer-search profiles to scrape; the
-            // default list below remains for back-compat but those sites should be removed from
-            // brokerage `propertyParams.target_sites` configs in favor of buyer-intent sources
-            // (Reddit communities, BiggerPockets, Craigslist "wanted: home" posts, agent blogs).
+            // ZenRows is for BOTH buyer-intent profile pages (saved-search / property-alert) AND
+            // seller-intent pages (FSBO posts, motivated-seller forums) on forums / social /
+            // personal sites — NOT MLS listings (RentCast is the canonical MLS source for listing
+            // data). Zillow / Realtor / Redfin do not expose either as scrapable profile pages; the
+            // default list below remains for back-compat but those sites should be replaced in
+            // brokerage `propertyParams.target_sites` configs with intent-rich sources (Reddit
+            // communities, BiggerPockets, Craigslist "wanted: home" + "FSBO" posts, agent blogs,
+            // local-classifieds / neighborhood forums). The page-level ZenRows normalizer now
+            // scores buyer + seller + investor + agent + generic intent so the same page can yield
+            // a buyer record OR a seller record depending on which scored highest.
             for (const site of propertyParams.target_sites || ["zillow", "realtor", "redfin"]) {
               const searchUrl = buildPropertySearchUrl(site, market, propertyParams)
               const scraped = await zenrows.scrape(searchUrl, { js_render: true, premium_proxy: true })

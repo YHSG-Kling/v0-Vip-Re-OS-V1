@@ -17,6 +17,11 @@ import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 
+// Per-brokerage probes + per-provider AI healer call (Exa search + Anthropic) can take 60–120s
+// in aggregate. Without an explicit maxDuration the Vercel default (10–15s) would kill the route
+// mid-Anthropic-call and the connector_health_log batch insert at the end would never run.
+export const maxDuration = 300
+
 const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_drift"])
 
 export async function GET(req: Request) {
@@ -133,10 +138,94 @@ export async function GET(req: Request) {
     if (!insErr) rowsWritten += chunk.length
   }
 
+  // ── AI HEALER TRIGGER ──────────────────────────────────────────────────────
+  // For every provider that produced an actionable failure THIS run (auth_failed / shape_drift),
+  // ask the AI healer for a proposed fix. Deduped: skip providers that already have a `pending`
+  // proposal in the last 24h so we don't spam the proposals table or burn LLM tokens. Capped at
+  // HEAL_MAX_PER_RUN proposals per cron tick. Only runs in probe mode — posture-only is too cheap
+  // a signal to burn an LLM call on.
+  const HEAL_MAX_PER_RUN = 5
+  let healingProposed = 0
+  let healingSkippedExisting = 0
+  if (probeLive) {
+    const actionable = rows.filter(r => r.status === 'auth_failed' || r.status === 'shape_drift')
+    const byProvider = new Map<string, typeof actionable>()
+    for (const r of actionable) {
+      const k = String(r.provider)
+      const arr = byProvider.get(k) ?? []
+      arr.push(r)
+      byProvider.set(k, arr)
+    }
+    // Deterministic, fair coverage: oldest-last-healed providers go first so a starvation set of
+    // >HEAL_MAX_PER_RUN concurrent failures rotates across runs instead of always healing the
+    // same alphabetical prefix.
+    const providers = Array.from(byProvider.keys())
+    const { data: lastHealed } = await svc
+      .from('connector_healing_proposals')
+      .select('connector, detected_at')
+      .in('connector', providers)
+      .order('detected_at', { ascending: false })
+    const lastByProv = new Map<string, string>()
+    for (const r of lastHealed ?? []) {
+      const k = (r as any).connector as string
+      if (!lastByProv.has(k)) lastByProv.set(k, (r as any).detected_at as string)
+    }
+    providers.sort((a, b) => (lastByProv.get(a) ?? '').localeCompare(lastByProv.get(b) ?? ''))
+
+    const since24h = new Date(now.getTime() - 24 * 3600 * 1000).toISOString()
+    for (const provider of providers) {
+      if (healingProposed >= HEAL_MAX_PER_RUN) break
+      const failures = byProvider.get(provider)!
+      // Dedup: ANY non-final-applied proposal in the last 24h (pending / rejected / superseded)
+      // covers this signal. Includes rejected so a "false positive" admin reject is honored
+      // until the next 24h window; admins can still re-trigger by clearing the row.
+      const { data: existing } = await svc
+        .from('connector_healing_proposals')
+        .select('id, status')
+        .eq('connector', provider)
+        .in('status', ['pending', 'rejected', 'superseded'])
+        .gte('detected_at', since24h)
+        .limit(1)
+        .maybeSingle()
+      if (existing) { healingSkippedExisting++; continue }
+      try {
+        const { proposeConnectorHealing } = await import('@/lib/agentic-os/connector-healer')
+        await proposeConnectorHealing({
+          connector: provider,
+          failures: failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
+            // For shape_drift the actual diff lives in detail.drift; without forwarding it the
+            // healer's LLM has no payload to reason on and produces generic guesses.
+            const driftDetail = (r.detail as any)?.drift
+            const errorText =
+              (r.error as string | null)
+              ?? (r.status === 'shape_drift' && driftDetail ? `shape_drift: ${JSON.stringify(driftDetail).slice(0, 500)}` : null)
+              ?? (r.status as string)
+            return {
+              status: (r.http_status as number | null) ?? null,
+              path:   null,
+              error:  errorText,
+              at:     (r.checked_at as string) ?? now.toISOString(),
+            }
+          }),
+        })
+        healingProposed++
+      } catch (err) {
+        // Healer is best-effort — never break the cron on a healing failure.
+        console.error('[connector-health] healer trigger failed for', provider, err)
+      }
+    }
+  }
+
   return NextResponse.json({
     success: true,
     timestamp: now.toISOString(),
     mode: probeLive ? "posture+probe" : "posture",
-    results: { brokeragesScanned: scanned, healthRowsWritten: rowsWritten, attentionItems: attention },
+    results: {
+      brokeragesScanned: scanned,
+      healthRowsWritten: rowsWritten,
+      attentionItems:    attention,
+      healingProposed,
+      healingSkippedExisting,
+    },
   })
 }

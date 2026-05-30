@@ -26,10 +26,22 @@ ok(!!getConnectorSpec("lob")?.githubUrl?.includes("lob"),            "registry: 
 ok(!!getConnectorSpec("d_id")?.githubUrl?.includes("de-id"),         "registry: d-id has github")
 ok(!!getConnectorSpec("elevenlabs")?.githubUrl?.includes("elevenlabs"), "registry: elevenlabs has github")
 
-// ZenRows business-process correction (user-clarified)
-ok(!!getConnectorSpec("zenrows")?.tags?.includes("buyer-intent"), "registry: zenrows tagged buyer-intent")
-ok(!!getConnectorSpec("zenrows")?.tags?.includes("no-mls"),       "registry: zenrows tagged no-mls (RentCast owns MLS)")
-ok(getConnectorSpec("zenrows")?.category === "scraper",           "registry: zenrows category=scraper")
+// ZenRows business-process correction (user-clarified): BOTH buyer-intent AND seller-intent,
+// NEVER mls listings (RentCast owns that).
+ok(!!getConnectorSpec("zenrows")?.tags?.includes("buyer-intent"),  "registry: zenrows tagged buyer-intent")
+ok(!!getConnectorSpec("zenrows")?.tags?.includes("seller-intent"), "registry: zenrows tagged seller-intent (FSBO/motivated-seller forums)")
+ok(!!getConnectorSpec("zenrows")?.tags?.includes("no-mls"),        "registry: zenrows tagged no-mls (RentCast owns MLS)")
+ok(getConnectorSpec("zenrows")?.category === "scraper",            "registry: zenrows category=scraper")
+
+// SDK metadata from the vendor audit — drives future "adopt typed SDK?" decisions
+ok(getConnectorSpec("apify")?.npmSdk     === "apify-client",         "registry: apify npmSdk recorded (high-ROI adopt)")
+ok(getConnectorSpec("elevenlabs")?.npmSdk === "elevenlabs",          "registry: elevenlabs npmSdk recorded (high-ROI when TTS lands)")
+ok(!!getConnectorSpec("lob")?.npmSdk?.includes("lob-typescript-sdk"), "registry: lob npmSdk recorded (adopt when direct-mail ships)")
+ok(getConnectorSpec("exa")?.npmSdk        === "exa-js",              "registry: exa npmSdk recorded (low-ROI swap, normalizer adds value)")
+ok(getConnectorSpec("peopledata")?.npmSdk === "peopledatalabs",      "registry: peopledata npmSdk recorded (evaluate later)")
+ok(getConnectorSpec("rentcast")?.npmSdk    === undefined,            "registry: rentcast has NO npmSdk (REST is canonical)")
+ok(getConnectorSpec("batchdata")?.npmSdk   === undefined,            "registry: batchdata has NO npmSdk (REST is canonical)")
+ok(getConnectorSpec("d_id")?.npmSdk        === undefined,            "registry: d_id has NO npmSdk for core video (REST keep)")
 
 // Category lookups (drive healer doc-search priorities)
 ok(listConnectorsByCategory("ai").length >= 3,                   "registry: ≥3 ai connectors (anthropic, google_ai, exa, …)")
