@@ -319,30 +319,42 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     }
   }
 
-  // ── STEP 4B: Promotion identity gate ────────────────────────────────────────
-  // Business contract: promote to an unconsented lead only with at least a FULL
-  // NAME (first + last) AND email after enrichment. A confirmed mailing address is
-  // optional (captured when present, never required).
-  const promoFirst = (enriched.first_name ?? firstName ?? '').trim()
-  const promoLast  = (enriched.last_name  ?? lastName  ?? '').trim()
-  if (!enriched.email || !promoFirst || !promoLast) {
+  // ── STEP 4B: Promotion identity gate (CANONICAL — shared with lead-promoter) ─
+  // Business rule: promote to an unconsented lead only when full name + (email OR phone) +
+  // mailing_address_verified all hold. Single source of truth in canonical-lead-eligibility so the
+  // two historical paths can never drift apart.
+  const { evaluateCanonicalLeadEligibility } =
+    await import("@/lib/lead-pipeline/canonical-lead-eligibility")
+  const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
+                        ?? (rawRecord.raw_data as any)?.mailing_address_verified
+                        ?? false
+  const promoEligibility = evaluateCanonicalLeadEligibility({
+    first_name:               enriched.first_name ?? firstName,
+    last_name:                enriched.last_name  ?? lastName,
+    email:                    enriched.email,
+    phone:                    enriched.phone ?? phone,
+    mailing_address_verified: (enriched as any).mailing_address_verified ?? rawAddrVerified,
+  })
+  if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'promotion_identity_gate',
       match_score:               0,
-      match_details:             {},
+      match_details:             { failing: promoEligibility.failing },
       action_taken:              'skipped',
-      skip_reason:               'Requires full name + email after enrichment to promote for AI ISA',
+      skip_reason:               promoEligibility.reason,
       new_enrichment_confidence: enriched.enrichmentConfidence,
     }, supabase)
     return {
       success: false,
       action: 'skipped',
-      reason: 'Insufficient identity (need full name + email) — record remains raw without promotion',
+      reason: `${promoEligibility.reason} — record remains raw without promotion`,
       stage: 'promotion_identity_gate',
     }
   }
+  const promoFirst = (enriched.first_name ?? firstName ?? '').trim()
+  const promoLast  = (enriched.last_name  ?? lastName  ?? '').trim()
 
   // ── STEP 5: Promote to leads with Kernel OS ownership fields ────────────────
   const { data: newLead, error: createError } = await supabase
@@ -373,6 +385,15 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       lifecycle_state:       'unconsented',
       ai_isa_owner:          true,
       minimum_viable_for_isa: !!(enriched.email),
+      // Canonical eligibility just passed, so the address is verified on this row. email_verified
+      // propagates whatever the enrichment determined (PeopleData / verification step); when false
+      // the ISA email channel is blocked until a verification step lifts it.
+      mailing_address_verified: true,
+      // Propagate the actual address (not just the flag) so the AI-ISA direct_mail channel has
+      // something to send to — the resolver requires `lead.mailing_address && verified`.
+      mailing_address:       (enriched as any).mailing_address       ?? (rec.raw_data as any)?.mailing_address       ?? null,
+      mailing_address_source:(enriched as any).mailing_address_source?? (rec.raw_data as any)?.mailing_address_source?? null,
+      email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
     })
     .select()

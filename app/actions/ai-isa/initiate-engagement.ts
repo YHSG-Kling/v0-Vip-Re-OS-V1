@@ -182,21 +182,36 @@ export async function initiateAIISAEngagement(
         }
         return ch
       }
-      // Lead only (unconsented): ONLY email or verified direct_mail
+      // Lead only (unconsented): ONLY email (when verified) or verified direct_mail. Per the
+      // canonical rule, an unconsented lead may only be reached by EMAIL when the email is verified.
+      // When neither channel is permitted, return the explicit sentinel 'no_outreach' so the caller
+      // can short-circuit BEFORE dispatchToChannel ever sends — avoiding CAN-SPAM / canonical-rule
+      // violations on an unverified address.
       const requested = (lead.preferred_channel ?? 'email') as string
-      if (!LEAD_ALLOWED_CHANNELS.has(requested)) return 'email'
-      if (requested === 'direct_mail') {
-        const hasVerifiedAddr = !!(
-          lead.mailing_address && lead.mailing_address_verified === true
-        )
-        return hasVerifiedAddr ? 'direct_mail' : 'email'
+      const hasVerifiedAddr = !!(lead.mailing_address && lead.mailing_address_verified === true)
+      const emailUsable = !!(lead.email && lead.email_verified === true)
+      const pick = (): string => {
+        if (!LEAD_ALLOWED_CHANNELS.has(requested)) return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
+        if (requested === 'direct_mail')           return hasVerifiedAddr ? 'direct_mail' : (emailUsable ? 'email' : 'no_outreach')
+        return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
       }
-      return 'email'
+      return pick()
     }
 
     const resolvedChannel = resolveKernelOutreachChannel(lead, contactRow)
     // forceChannel='email' overrides the resolved channel (operator-initiated send)
     const preferredChannel = opts?.forceChannel ?? resolvedChannel
+
+    // Honor the resolver's explicit no-permitted-channel sentinel — unconsented lead with no
+    // verified email AND no verified mailing address: skip outreach entirely. Without this, the
+    // dispatcher would have sent to an unverified email address, violating the canonical rule.
+    if (preferredChannel === 'no_outreach') {
+      return {
+        success: false,
+        error: 'No permitted outreach channel: email is not verified and mailing address is not verified.',
+        skipped_reason: 'no_outreach',
+      } as any
+    }
 
     return await dispatchToChannel(
       preferredChannel,
