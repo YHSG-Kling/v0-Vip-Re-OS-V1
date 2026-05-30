@@ -1,21 +1,17 @@
-import { redirect }            from "next/navigation"
-import { createClient }         from "@/lib/supabase/server"
-import { BuyerOverviewClient }  from "./buyer-overview-client"
-import { getBuyerEnabledGates } from "@/app/actions/buyer-lifecycle-core"
-import { ContactQuickActions }  from "@/components/contact/ContactQuickActions"
+import { redirect }                from "next/navigation"
+import { createClient }             from "@/lib/supabase/server"
+import { BuyerOverviewClient }      from "./buyer-overview-client"
+import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
+import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
+import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 
 /**
- * Agent-facing CRM contact dashboard. Unified entry point for buyers, sellers,
- * and lifetime contacts — all of whom are rows in the contacts table.
- *
- * View selection by contact lifecycle:
+ * CONSOLIDATED agent-facing contact dashboard — the SINGLE entry point for every contact type:
  *   - buyer_stage set         → BuyerOverviewClient (offers / search / tours / alerts)
- *   - seller stage / listing  → fallback to /crm?contact= (full CRM workspace owns
- *                               the seller flow today; buyer-side is the rebuilt path)
- *   - no stage / lifetime     → /crm?contact= fallback
- *
- * Heavy data is loaded lazily from the client via SWR/server-actions to avoid
- * cascading server calls on every page render.
+ *   - no buyer_stage          → SellerLifetimeOverview (identity / listings / transactions /
+ *                                activities) + a deep-link to the full /crm workspace for any
+ *                                seller-side advanced tools that aren't surfaced here yet
+ * Quick-action panel (Run investigation / Verify email / Verify address) renders for ALL types.
  */
 interface PageProps {
   params: Promise<{ contactId: string }>
@@ -23,6 +19,15 @@ interface PageProps {
 
 export default async function ContactDetailPage({ params }: PageProps) {
   const { contactId } = await params
+  // Defensive: contactId flows into PostgREST .or() filters downstream — a non-UUID would either
+  // fragment the OR or get rejected for a uuid-typed column with a misleading error. Reject early.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(contactId)) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <p className="text-sm text-muted-foreground">Invalid contact id</p>
+      </div>
+    )
+  }
   const supabase = await createClient()
 
   // Auth check
@@ -47,13 +52,6 @@ export default async function ContactDetailPage({ params }: PageProps) {
     )
   }
 
-  // Buyer-stage contacts get the buyer overview workspace. All other contacts
-  // (sellers, lifetime, prospects) route to the CRM workspace which owns the
-  // full record view + cross-stage tools.
-  if (!contact.buyer_stage) {
-    redirect(`/crm?contact=${contactId}`)
-  }
-
   const brokerageId  = contact.brokerage_id ?? ""
   const agentProfile = profileResult.data
   const agentName    = `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim() || "Agent"
@@ -70,25 +68,35 @@ export default async function ContactDetailPage({ params }: PageProps) {
           addressVerified={contact.mailing_address_verified ?? null}
         />
       </div>
-      <BuyerOverviewClient
-        buyerId={contactId}
-        contact={contact}
-        journey={null}
-        profile={null}
-        partners={[]}
-        drafts={[]}
-        propertyInterests={interestsResult.data ?? null}
-        brokerageId={brokerageId}
-        agentUserId={user.id}
-        agentName={agentName}
-        collaborativeSearches={[]}
-        activeSearch={null}
-        consensus={null}
-        tours={[]}
-        nextTour={null}
-        dualAgencyListings={[]}
-        enabledGates={enabledGates}
-      />
+
+      {contact.buyer_stage ? (
+        <BuyerOverviewClient
+          buyerId={contactId}
+          contact={contact}
+          journey={null}
+          profile={null}
+          partners={[]}
+          drafts={[]}
+          propertyInterests={interestsResult.data ?? null}
+          brokerageId={brokerageId}
+          agentUserId={user.id}
+          agentName={agentName}
+          collaborativeSearches={[]}
+          activeSearch={null}
+          consensus={null}
+          tours={[]}
+          nextTour={null}
+          dualAgencyListings={[]}
+          enabledGates={enabledGates}
+        />
+      ) : (
+        /* Seller / lifetime / prospect — consolidated detail surface on this same route */
+        <SellerLifetimeOverview
+          contactId={contactId}
+          contact={contact}
+          brokerageId={brokerageId}
+        />
+      )}
     </div>
   )
 }
