@@ -212,3 +212,69 @@ export async function skipTraceWithPeopleData(params: {
     cost: 0.25,
   }
 }
+
+/**
+ * PeopleData Labs Email Validation API (separate endpoint from person/enrich). Validates the
+ * deliverability + risk classification of a single email, giving the canonical lead-gate +
+ * AI-ISA channel resolver an authoritative `email_verified` signal instead of inferring from
+ * enrichment likelihood.
+ *
+ * Docs: https://docs.peopledatalabs.com/docs/email-validation-api
+ */
+export interface EmailValidationResult {
+  /** True only when status is 'valid' AND not a role/disposable address. */
+  isVerified:        boolean
+  /** PDL's classification: 'valid' | 'risky' | 'invalid' | 'unknown'. */
+  status:            string | null
+  /** Sub-category (e.g. 'mailbox_does_not_exist', 'role_account', 'catch_all'). */
+  reason?:           string | null
+  /** True when the address is a role account (info@, support@, …) — usable but not personal. */
+  isRoleAccount?:    boolean
+  /** True when the domain is a known disposable provider (mailinator, etc.). */
+  isDisposable?:     boolean
+  /** True when the email box is "catch-all" — deliverable but not unique to a person. */
+  isCatchAll?:       boolean
+  /** Raw response for audit / future schema changes. */
+  raw:               unknown
+}
+
+export async function validateEmailViaPeopleData(email: string): Promise<{
+  data: EmailValidationResult | null
+  cost: number
+}> {
+  if (!email || !email.includes("@")) {
+    return { data: null, cost: 0 }
+  }
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<any>({
+    connector: "peopledata",
+    baseUrl:   PEOPLEDATA_API_URL,
+    path:      "email/validate",
+    method:    "GET",
+    query:     { email },
+    auth:      { style: "header", name: "X-Api-Key", value: PEOPLEDATA_API_KEY },
+  })
+
+  if (!res.ok || !res.data) {
+    return { data: null, cost: 0.01 }
+  }
+  const d = res.data
+  const status = typeof d.status === "string" ? d.status.toLowerCase() : null
+  const role = d.is_role_account === true || d.is_role === true
+  const disposable = d.is_disposable === true || d.disposable === true
+  const catchAll = d.is_catch_all === true || d.catch_all === true
+  const isVerified = status === "valid" && !role && !disposable
+
+  return {
+    data: {
+      isVerified,
+      status,
+      reason: d.reason ?? d.error ?? null,
+      isRoleAccount: role,
+      isDisposable:  disposable,
+      isCatchAll:    catchAll,
+      raw:           d,
+    },
+    cost: 0.01,
+  }
+}
