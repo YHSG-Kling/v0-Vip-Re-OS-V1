@@ -60,6 +60,18 @@ export interface PeopleDataEnrichment {
   githubUrl?: string
   enrichmentConfidence: number
   dataQualityScore: number
+  /** True when PDL confirmed an email on the matched person profile AND the match likelihood is
+   *  high enough that we treat the email as verified for AI-ISA email channel gating. The actual
+   *  bytewise validation (deliverable / hard-bounce / role) is PDL's separate email-validation
+   *  endpoint — this flag is "verified-as-real-person-email" not "verified-as-deliverable". */
+  emailVerified: boolean
+  /** True when PDL returned a structured mailing address (street + city + state) so the AI-ISA
+   *  direct_mail channel has somewhere to send and `mailing_address_verified` can be flipped on
+   *  the lead row. */
+  mailingAddressVerified: boolean
+  /** Full structured street address (PDL street_addresses[0] when present, else built from
+   *  location_* parts). Surface to UI / direct mail. */
+  streetAddress?: string
   // Extended AI-enrichment fields (optional)
   demographics?: { age?: number; ageRange?: string; gender?: string; maritalStatus?: string; childrenCount?: number; householdSize?: number; education?: string; incomeLevel?: string }
   employment?: { employer?: string; title?: string; industry?: string; yearsOfExperience?: number; linkedinUrl?: string }
@@ -120,12 +132,37 @@ export async function skipTraceWithPeopleData(params: {
 
   const person = data.data
 
+  // Derive verification flags up-front so callers (canonical lead-eligibility gate, AI-ISA channel
+  // resolver) have what they need. PDL returns `likelihood` 1-10 — treat ≥7 as a strong identity
+  // match. Email is "verified-as-real-person-email" when a matching/personal email surfaces on the
+  // matched profile; mailing address is verified when PDL returns a structured street address with
+  // city + state (street_addresses[0] preferred, location_* fallback).
+  const likelihood = typeof person.likelihood === 'number' ? person.likelihood : 0
+  const pdlEmailList: any[] = Array.isArray(person.emails) ? person.emails : []
+  const pdlPersonalEmails = pdlEmailList
+    .map(e => typeof e === 'string' ? { address: e, type: undefined } : e)
+    .filter(e => e?.address)
+  const emailVerified = likelihood >= 7 && pdlPersonalEmails.length > 0
+  const pdlAddresses: any[] = Array.isArray(person.street_addresses) ? person.street_addresses : []
+  const primaryStreet = pdlAddresses[0]
+  const streetAddress =
+    primaryStreet?.street_address
+    ?? primaryStreet?.address_line_1
+    ?? person.location_street_address
+    ?? person.location_address
+    ?? undefined
+  const hasStructuredAddress =
+    !!streetAddress &&
+    !!(person.location_city  ?? primaryStreet?.locality)  &&
+    !!(person.location_state ?? primaryStreet?.region)
+  const mailingAddressVerified = likelihood >= 6 && hasStructuredAddress
+
   const enrichment: PeopleDataEnrichment = {
     fullName: person.full_name || params.name || '',
     firstName: person.first_name || '',
     lastName: person.last_name || '',
     middleName: person.middle_name,
-    emails: person.emails || [],
+    emails: pdlPersonalEmails.map(e => e.address),
     phones: person.phone_numbers || [],
     mobilePhone: person.mobile_phone,
     workPhone: person.work_phone,
@@ -165,6 +202,9 @@ export async function skipTraceWithPeopleData(params: {
     githubUrl: person.github_url,
     enrichmentConfidence: person.likelihood / 10,
     dataQualityScore: person.data_quality_score || 75,
+    emailVerified,
+    mailingAddressVerified,
+    streetAddress,
   }
 
   return {

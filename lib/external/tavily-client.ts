@@ -12,11 +12,16 @@ export interface TavilyResult {
   url: string | null
   content: string | null
   score: number | null
+  /** Full page text when include_raw_content is set — preserves signal Tavily's snippet drops. */
+  rawContent?: string | null
+  publishedDate?: string | null
 }
 
 export interface TavilyResponse {
   answer: string | null
   results: TavilyResult[]
+  /** Image URLs returned when include_images is set — useful for downstream UI / listing context. */
+  images: string[]
   cost: number
 }
 
@@ -32,11 +37,11 @@ export async function tavilySearch(params: {
   days?: number
 }): Promise<TavilyResponse> {
   const apiKey = process.env.TAVILY_API_KEY
-  if (!apiKey) return { answer: null, results: [], cost: 0 }
+  if (!apiKey) return { answer: null, results: [], images: [], cost: 0 }
 
   // Single egress: route through the connector-gateway (one way in/out). Never throws.
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ answer?: string; results?: any[] }>({
+  const res = await callConnector<{ answer?: string; results?: any[]; images?: any[] }>({
     connector: "tavily",
     baseUrl: TAVILY_BASE,
     path: "search",
@@ -47,14 +52,22 @@ export async function tavilySearch(params: {
       max_results: params.maxResults ?? 20,
       search_depth: params.searchDepth ?? "basic",
       include_answer: params.includeAnswer ?? true,
+      // Max-info scrape: pull the full raw page content + images so downstream extraction has
+      // the most signal possible (snippet alone drops 80%+ of the page).
+      include_raw_content: true,
+      include_images: true,
       ...(params.days ? { days: params.days } : {}),
     },
   })
-  if (!res.ok || !res.data) return { answer: null, results: [], cost: 0 }
+  if (!res.ok || !res.data) return { answer: null, results: [], images: [], cost: 0 }
   const rows: any[] = res.data.results ?? []
+  const images: string[] = Array.isArray(res.data.images)
+    ? res.data.images.map((i: any) => typeof i === "string" ? i : i?.url).filter(Boolean)
+    : []
   return {
     answer: typeof res.data.answer === "string" ? res.data.answer : null,
     results: rows.map((r) => normalizeTavilyRow(r)),
+    images,
     // Tavily basic ≈ 1 credit; advanced ≈ 2. Approximate $ for cost tracking.
     cost: params.searchDepth === "advanced" ? 0.01 : 0.005,
   }
@@ -67,5 +80,7 @@ export function normalizeTavilyRow(r: Record<string, any>): TavilyResult {
     url: r.url ?? null,
     content: r.content ?? r.snippet ?? null,
     score: typeof r.score === "number" ? r.score : null,
+    rawContent: typeof r.raw_content === "string" ? r.raw_content : null,
+    publishedDate: typeof r.published_date === "string" ? r.published_date : null,
   }
 }

@@ -35,7 +35,7 @@
     },
     {
       "path": "/api/cron/lead-scraping",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 5 * * *"
     },
     {
       "path": "/api/cron/actor-health",
@@ -43,7 +43,7 @@
     },
     {
       "path": "/api/cron/contact-enrichment",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/poll-heygen-videos",

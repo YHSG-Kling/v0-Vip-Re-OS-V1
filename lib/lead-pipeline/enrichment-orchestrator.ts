@@ -123,8 +123,16 @@ export async function processEnrichmentQueue(
         const primaryPhone = enriched.phones?.[0] ?? null
         const secondaryPhone = enriched.phones?.[1] ?? null
 
-        // Mailing address from enrichment provider
-        const hasMailingData = !!(enriched.address || enriched.city || enriched.state)
+        // Mailing address from enrichment provider — prefer the structured streetAddress (PDL
+        // street_addresses[0]) and fall back to the legacy single-string `address`.
+        const mailingStreet = (enriched as any).streetAddress ?? enriched.address ?? null
+        const hasMailingData = !!(mailingStreet || enriched.city || enriched.state)
+        // PDL now reports verification flags directly (peopledata-client derives them from the
+        // person likelihood + presence of structured email/address). Fall back to hasMailingData
+        // for back-compat with mocks/tests.
+        const mvRaw = (enriched as any).mailingAddressVerified
+        const mailingVerified: boolean = typeof mvRaw === 'boolean' ? mvRaw : hasMailingData
+        const emailFlagVerified: boolean = (enriched as any).emailVerified === true
 
         // Step 6a: Update entity table
         if (entityType === 'lead') {
@@ -138,19 +146,48 @@ export async function processEnrichmentQueue(
               enrichment_status: 'complete',
               enrichment_provider: 'peopledata',
               enrichment_confidence: enriched.enrichmentConfidence,
+              // Verification flags drive the canonical lead-eligibility gate + AI-ISA channel
+              // resolver. Write them whenever enrichment ran (false is meaningful — it explains
+              // why the gate is still blocking).
+              email_verified: emailFlagVerified,
               // Write mailing fields when provider returns address data
               ...(hasMailingData && {
-                mailing_address: enriched.address ?? null,
+                mailing_address: mailingStreet,
                 mailing_city: enriched.city ?? null,
                 mailing_state: enriched.state ?? null,
                 mailing_zip: enriched.zipCode ?? null,
-                mailing_address_verified: true,
+                mailing_address_verified: mailingVerified,
                 mailing_address_source: 'enrichment',
               }),
               // Mark eligible for ISA if email is now available
               ...(primaryEmail && { minimum_viable_for_isa: true }),
             })
             .eq('id', entityId)
+
+          // Back-fill raw_scraped_leads so a record that previously failed the canonical eligibility
+          // gate can re-pass on the next sweep. Without this, a stranded raw_scraped_leads row would
+          // never recover even after PDL surfaced the missing email/address.
+          try {
+            const { data: leadRow } = await supabase
+              .from('leads').select('raw_record_id').eq('id', entityId).maybeSingle()
+            const rawId = leadRow?.raw_record_id
+            if (rawId) {
+              await supabase.from('raw_scraped_leads').update({
+                email_verified:           emailFlagVerified,
+                ...(hasMailingData && {
+                  mailing_address:          mailingStreet,
+                  mailing_city:             enriched.city ?? null,
+                  mailing_state:            enriched.state ?? null,
+                  mailing_zip:              enriched.zipCode ?? null,
+                  mailing_address_verified: mailingVerified,
+                }),
+                processed_at:             new Date().toISOString(),
+                updated_at:               new Date().toISOString(),
+              }).eq('id', rawId)
+            }
+          } catch (e) {
+            console.warn('[enrichment-orchestrator] raw_scraped_leads back-fill skipped:', e)
+          }
         } else {
           await supabase
             .from('contacts')
@@ -160,6 +197,7 @@ export async function processEnrichmentQueue(
               ...(secondaryPhone && { phone_secondary: secondaryPhone }),
               last_enriched_at: new Date().toISOString(),
               enrichment_confidence: enriched.enrichmentConfidence,
+              email_verified: emailFlagVerified,
             })
             .eq('id', entityId)
         }

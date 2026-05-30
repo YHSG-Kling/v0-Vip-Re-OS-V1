@@ -463,15 +463,28 @@ async function enrichWithPeopleData(fields: {
   }).catch(() => ({ data: null }))
 
   const data = enrichmentResult.data
-  let base: BaseEnrichment & { phone_secondary?: string | null; peopleDataResult?: unknown } = data
+  let base: BaseEnrichment & {
+    phone_secondary?: string | null
+    peopleDataResult?: unknown
+    email_verified?: boolean
+    mailing_address?: string | null
+    mailing_address_verified?: boolean
+    mailing_address_source?: string | null
+  } = data
     ? {
-        first_name:           data.firstName   || fields.first_name,
-        last_name:            data.lastName    || fields.last_name,
-        email:                data.emails?.[0] || fields.email,
-        phone:                data.phones?.[0] || fields.phone,
-        phone_secondary:      data.phones?.[1] || null,
-        enrichmentConfidence: data.enrichmentConfidence ?? 0.5,
-        peopleDataResult:     data,
+        first_name:               data.firstName   || fields.first_name,
+        last_name:                data.lastName    || fields.last_name,
+        email:                    data.emails?.[0] || fields.email,
+        phone:                    data.phones?.[0] || fields.phone,
+        phone_secondary:          data.phones?.[1] || null,
+        enrichmentConfidence:     data.enrichmentConfidence ?? 0.5,
+        // Surface PDL verification + structured mailing so the canonical eligibility gate +
+        // AI-ISA channel resolver downstream actually have signal (previously these were dropped).
+        email_verified:           (data as any).emailVerified === true,
+        mailing_address:          (data as any).streetAddress ?? data.address ?? null,
+        mailing_address_verified: (data as any).mailingAddressVerified === true,
+        mailing_address_source:   (data as any).mailingAddressVerified ? 'enrichment' : null,
+        peopleDataResult:         data,
       }
     : {
         first_name: fields.first_name,

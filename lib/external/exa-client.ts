@@ -15,6 +15,15 @@ export interface ExaResult {
   text: string | null
   author: string | null
   publishedDate: string | null
+  /** Top relevance highlights — sentences Exa picked as most matching the query. */
+  highlights?: string[] | null
+  /** Model-generated summary of the page (when Exa returns one). */
+  summary?: string | null
+  /** Exa relevance score 0..1. */
+  score?: number | null
+  /** Favicon + image URL when Exa returns them — useful for downstream UI. */
+  image?: string | null
+  favicon?: string | null
 }
 
 /**
@@ -46,7 +55,9 @@ export async function exaSearch(params: {
       numResults: params.numResults ?? 25,
       ...(params.startPublishedDate ? { startPublishedDate: params.startPublishedDate } : {}),
       ...(params.includeDomains ? { includeDomains: params.includeDomains } : {}),
-      contents: { text: { maxCharacters: 1000 } },
+      // Max-info scrape: request the full text (no maxCharacters cap), top highlights, and the
+      // model-generated summary so downstream extraction has the most context to work with.
+      contents: { text: true, highlights: { numSentences: 5 }, summary: true },
     },
   })
   if (!res.ok || !res.data) return { results: [], cost: 0 }
@@ -66,5 +77,10 @@ export function normalizeExaRow(r: Record<string, any>): ExaResult {
     text: r.text ?? (typeof r.contents?.text === "string" ? r.contents.text : null),
     author: r.author ?? null,
     publishedDate: r.publishedDate ?? null,
+    highlights: Array.isArray(r.highlights) ? r.highlights : null,
+    summary: typeof r.summary === "string" ? r.summary : null,
+    score: typeof r.score === "number" ? r.score : null,
+    image: r.image ?? null,
+    favicon: r.favicon ?? null,
   }
 }

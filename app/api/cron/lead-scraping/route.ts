@@ -681,6 +681,44 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── DAILY RE-ENRICH SWEEP — give failed-gate raw records another chance ───
+    // Canonical business rule: when a raw record fails the lead-creation gate
+    // (insufficient identity / contact / mailing-address-verification), enrichment should KEEP
+    // trying — the info may become available later (PDL surfaces a new email, mailing address
+    // verifies, etc.). We reset stranded rows to 'pending' so the promotion loop above re-runs
+    // the full territory → identity → dedup → enrichment → eligibility flow on the next daily
+    // cron tick. Capped at 100 rows/run and 10 attempts/row so a permanently-unenrichable record
+    // never burns the budget forever.
+    const STRANDED_STATUSES = [
+      'insufficient_identity_for_promotion',
+      'insufficient_identity',
+      'insufficient_contact_data',
+    ]
+    const { data: stranded } = await supabase
+      .from('raw_scraped_leads')
+      .select('id, promotion_attempts')
+      .in('processing_status', STRANDED_STATUSES)
+      .lt('promotion_attempts', 10)
+      .order('updated_at', { ascending: true })
+      .limit(100)
+    for (const r of stranded ?? []) {
+      await supabase
+        .from('raw_scraped_leads')
+        .update({
+          processing_status:         'pending',
+          promotion_attempts:        (r.promotion_attempts ?? 0) + 1,
+          last_promotion_attempt_at: new Date().toISOString(),
+          updated_at:                new Date().toISOString(),
+        })
+        .eq('id', r.id)
+      try {
+        const promo = await processRawRecord(r.id)
+        if (promo.action === 'created') results.leads_promoted++
+      } catch (err) {
+        results.errors.push(`Re-enrich error for ${r.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     // ── RECRUIT PROMOTION PASS — promote pending raw recruiting prospects ─────
     // Mirrors the lead promotion pass: brokerage_id is NULL on platform-sourced
     // raw_recruit_prospects; processRawRecruit resolves the owning brokerage from
