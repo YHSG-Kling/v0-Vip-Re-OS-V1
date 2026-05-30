@@ -20,7 +20,8 @@ import {
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
-import { supabaseService } from "@/services/supabaseService"
+import { supabaseService as _supabaseService } from "@/services/supabaseService"
+const supabaseService = _supabaseService as any
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 // =====================================================
@@ -243,10 +244,17 @@ export async function getContactHistory(contactId: string) {
 export async function getCommunicationStats(params?: { agentId?: string; startDate?: string; endDate?: string }) {
   try {
     const supabase = await createClient()
-    
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    const { data: u } = await supabase
+      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+    // Always scope to caller's brokerage; agentId narrows within it.
     let query = supabase
       .from("messages")
       .select("*")
+      .eq("brokerage_id", u.brokerage_id)
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.startDate) query = query.gte("sent_at", params.startDate)
@@ -346,8 +354,17 @@ export async function publishSocialPost(params: {
   platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
   mediaUrls?: string[]
   scheduledTime?: string
-  agentId?: string
+  agentId?: string  // ignored — derived from session
 }) {
+  // Auth gate — previously open. Any caller could publish content to the
+  // brokerage's connected GHL social accounts under our credentials.
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   // Create post via GHL Social Planner
   const result = await createGHLSocialPost({
     content: params.content,
@@ -503,14 +520,24 @@ export async function sendNotificationToAgent(
     return { success: false, error: "User not found" }
   }
 
-  // In production, this would:
-  // 1. Send push notification via Firebase/OneSignal
-  // 2. Send SMS if priority is high
-  // 3. Send email if urgent
-  // 4. Create in-app notification
+  // Write in-app notification to notifications table
+  const { data: notifRecord, error: notifError } = await supabaseService.client
+    .from("notifications")
+    .insert({
+      user_id: userId,
+      type: "agent_notification",
+      title: notification.title,
+      body: notification.message,
+      priority: notification.priority || "medium",
+      is_read: false,
+      channel: "in_app",
+    })
+    .select("id")
+    .single()
 
-  // For now, log the notification
-  console.log(`[v0] Notification to ${user.email}:`, notification)
+  if (notifError) {
+    console.error("[v0] Failed to write notification:", notifError.message)
+  }
 
   // Log to activity table
   await supabaseService.logActivity({
@@ -527,7 +554,6 @@ export async function sendNotificationToAgent(
 
   return {
     success: true,
-    notificationId: `notif_${Date.now()}`,
-    mock: true,
+    notificationId: notifRecord?.id ?? `notif_${Date.now()}`,
   }
 }

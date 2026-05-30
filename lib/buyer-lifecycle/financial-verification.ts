@@ -154,10 +154,10 @@ export async function emitFinancialVerificationEvent(params: {
   const eventType = eventTypeMap[verificationType]
   
   const { error } = await supabase.from("activities").insert({
-    type: eventType,
+    activity_type: eventType,
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       ...metadata,
       expires_at: expiresAt?.toISOString(),

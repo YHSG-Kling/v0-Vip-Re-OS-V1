@@ -1,4 +1,4 @@
-// lib/contacts/ownership-model.ts
+// lib/crm/contacts/ownership-model.ts
 // Single source of truth for how contacts, properties, and offers relate.
 // Import getOfferContext everywhere cross-side logic is needed — never inline it.
 
@@ -39,7 +39,7 @@ export function getOfferContext(
 // ── CANONICAL RULES ──────────────────────────────────────────────────────────
 //
 // contact.contact_type = 'buyer'
-//   → dashboard at /dashboard/buyers/[id]
+//   → dashboard at /crm/contacts/[contactId]
 //   → interested in properties (IDX search + brokerage listings)
 //   → saved_properties.listing_id is only non-null when property is a brokerage listing
 //

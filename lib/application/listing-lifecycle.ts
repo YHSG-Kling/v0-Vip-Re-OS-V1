@@ -61,13 +61,13 @@ export async function markListingSignedService(
 ) {
   const supabase = await createClient()
 
-  const { data, error } = await supabase
+  const { data, error} = await supabase
     .from("listings")
     .update({
-      stage: "signed",
-      listing_agreement_signed_date: params.listing_agreement_signed_date,
+      lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
+      // listing_agreement_signed_date doesn't exist in schema
       go_live_date: params.go_live_date,
-      commission_rate: params.commission_rate,
+      // commission_rate doesn't exist in listings table
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -96,10 +96,10 @@ export async function markListingLiveService(
   const { data, error } = await supabase
     .from("listings")
     .update({
-      stage: "live",
+      lifecycle_stage: "MLS_ACTIVE",
       mls_number: params.mls_number,
       mls_link: params.mls_link,
-      live_date: new Date().toISOString(),
+      listing_date: new Date().toISOString().split("T")[0], // live_date doesn't exist, use listing_date
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -149,8 +149,8 @@ export async function updateListingStageService(params: {
   const { data, error } = await supabase
     .from("listings")
     .update({
-      stage: params.stage,
-      notes: params.notes,
+      lifecycle_stage: params.stage,
+      // notes column doesn't exist on listings table
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -180,19 +180,21 @@ export async function advanceListingStageService(
     return { success: false, error: "Listing not found" }
   }
 
-  if (listing.current_stage) {
+  if (listing.lifecycle_stage) {
     await supabase
       .from("listing_stage_history")
       .update({
         exited_at: new Date().toISOString(),
         duration_days: Math.floor(
-          (new Date().getTime() - new Date(listing.entered_at || new Date()).getTime()) / (1000 * 60 * 60 * 24),
+          (new Date().getTime() - new Date(listing.stage_entered_at || new Date()).getTime()) / (1000 * 60 * 60 * 24),
         ),
       })
       .eq("listing_id", listingId)
       .is("exited_at", null)
   }
 
+  // listing_stage_history is a separate table — its own entered_at/exited_at
+  // columns are NOT the listings.* columns being deprecated; keep these.
   await supabase.from("listing_stage_history").insert({
     listing_id: listingId,
     stage_name: toStage,
@@ -204,8 +206,9 @@ export async function advanceListingStageService(
   await supabase
     .from("listings")
     .update({
-      current_stage: toStage,
-      updated_at: new Date().toISOString(),
+      lifecycle_stage:   toStage,
+      stage_entered_at:  new Date().toISOString(),
+      updated_at:        new Date().toISOString(),
     })
     .eq("id", listingId)
 
@@ -371,7 +374,7 @@ async function enrollLifetimeCustomer(contactId: string) {
   const supabase = await createClient()
   await supabase
     .from("contacts")
-    .update({ status: "past_client", lifetime_customer: true })
+    .update({ status: "lifetime_customer", lifetime_customer: true })
     .eq("id", contactId)
 
   const touchpoints = [
@@ -382,7 +385,7 @@ async function enrollLifetimeCustomer(contactId: string) {
   ]
 
   for (const touchpoint of touchpoints) {
-    await supabase.from("past_client_touchpoints").insert({
+    await supabase.from("lifetime_customer_touchpoints").insert({
       contact_id: contactId,
       touchpoint_type: touchpoint.type,
       scheduled_date: new Date(Date.now() + touchpoint.days * 24 * 60 * 60 * 1000).toISOString(),
@@ -450,7 +453,7 @@ async function postListingToSocial(listingId: string) {
   const supabase = await createClient()
   const { data: listing } = await supabase
     .from("listings")
-    .select("*, agent_id, address, price, bedrooms, bathrooms, square_footage, photos")
+    .select("*, agent_id, address, list_price, bedrooms, bathrooms, sqft")
     .eq("id", listingId)
     .single()
 
@@ -470,8 +473,8 @@ async function postListingToSocial(listingId: string) {
       listing_id: listingId,
       platform: account.platform,
       post_type: "new_listing",
-      content: `Just Listed! ${listing.address} - $${listing.price?.toLocaleString() || "Call for price"} | ${listing.bedrooms || 0} BD | ${listing.bathrooms || 0} BA | ${listing.square_footage?.toLocaleString() || "N/A"} sqft`,
-      media_urls: listing.photos || [],
+      content: `Just Listed! ${listing.address} - $${listing.list_price?.toLocaleString() || "Call for price"} | ${listing.bedrooms || 0} BD | ${listing.bathrooms || 0} BA | ${listing.sqft?.toLocaleString() || "N/A"} sqft`,
+      media_urls: [], // photos are in separate listing_media table
       status: "scheduled",
       scheduled_for: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
     })

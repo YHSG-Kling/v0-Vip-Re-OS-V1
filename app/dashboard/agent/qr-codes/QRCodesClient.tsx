@@ -79,13 +79,12 @@ export default function QRCodesClient({ qrCodes: initialCodes, agentUserId, brok
   }
 
   function handleDownload(slug: string) {
-    import('qrcode').then((QRCode) => {
-      QRCode.toDataURL(getQRUrl(slug), { width: 400, margin: 2 }, (_err: Error | null | undefined, url: string) => {
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `qr-${slug}.png`
-        a.click()
-      })
+    import('qrcode').then(async (QRCode) => {
+      const url = await QRCode.toDataURL(getQRUrl(slug), { width: 400, margin: 2 })
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `qr-${slug}.png`
+      a.click()
     })
   }
 

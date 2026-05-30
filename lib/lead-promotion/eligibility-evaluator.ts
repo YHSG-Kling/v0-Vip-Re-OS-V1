@@ -87,17 +87,21 @@ export async function evaluatePromotionEligibility(
     }
   }
 
-  // 4. Verify required identity fields exist in raw_data
+  // 4. Canonical identity gate — shared helper used by BOTH lead-creation paths so they can never
+  //    drift apart. Requires full name + (email OR phone) + mailing_address_verified.
+  const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawData = rawRecord.raw_data || {}
-  const hasRequiredFields = 
-    rawData.first_name && 
-    rawData.last_name && 
-    (rawData.email || rawData.phone)
-
-  if (!hasRequiredFields) {
+  const eligibility = evaluateCanonicalLeadEligibility({
+    first_name:               rawData.first_name,
+    last_name:                rawData.last_name,
+    email:                    rawData.email,
+    phone:                    rawData.phone,
+    mailing_address_verified: rawRecord.mailing_address_verified ?? rawData.mailing_address_verified ?? false,
+  })
+  if (!eligibility.eligible) {
     return {
       eligible: false,
-      reason: 'Missing required identity fields (first_name, last_name, email or phone)',
+      reason:   eligibility.reason,
       rawRecord,
       dedupLog,
     }

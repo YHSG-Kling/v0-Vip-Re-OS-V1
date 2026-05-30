@@ -249,14 +249,26 @@ export function MarketingTierClient({
                     <Badge variant="outline">{formatPriceRange(currentTier.min_price, currentTier.max_price)}</Badge>
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     <div className="flex items-center gap-2 text-amber-600">
-                      <AlertCircle className="h-5 w-5" />
+                      <AlertCircle className="h-5 w-5 shrink-0" />
                       <span className="font-medium">No Matching Tier</span>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      No tier matches the listing price of {formatCurrency(listing.list_price)}.
-                      Contact your broker to configure tiers.
+                      A <strong>marketing tier</strong> is a platform-level spend configuration that
+                      automatically assigns a marketing budget and required assets to a listing based on
+                      its price range. For example, a "Standard Tier" might cover $200K–$500K listings
+                      with a $2,500 budget split across social media, direct mail, and email.
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      This listing ({formatCurrency(listing.list_price)}) doesn&apos;t match any tier
+                      because {allTiers.length === 0
+                        ? "no marketing tiers have been configured for this brokerage yet"
+                        : "no existing tier covers this price range"}.
+                    </p>
+                    <p className="text-xs text-muted-foreground bg-muted/50 border rounded p-2">
+                      Marketing tiers are configured at the platform level by your superadmin.
+                      Contact your superadmin to add or update tiers for this brokerage.
                     </p>
                   </div>
                 )}

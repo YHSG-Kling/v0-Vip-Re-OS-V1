@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Briefcase, DollarSign, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
+import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
+import { generateUserTypeBrief } from '@/lib/intelligence/user-type-briefs'
 import {
   ExternalPartnerCommandStrip,
   ExternalActiveFilesPanel,
@@ -40,8 +42,22 @@ export default async function VendorDashboardPage() {
   const completed = bookings.filter((b: any) => b.status === 'completed')
   const pending = bookings.filter((b: any) => b.status === 'pending')
 
+  // Today's AI brief — open jobs, due-soon deliverables, overdue
+  const { data: vendorRow } = await supabase
+    .from('vendors')
+    .select('brokerage_id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  const vendorBrief = await generateUserTypeBrief({
+    userType: 'vendor',
+    userId: user.id,
+    brokerageId: vendorRow?.brokerage_id ?? null,
+  })
+
   return (
     <div className="p-6 space-y-6">
+      <TodaysFocusCard brief={vendorBrief} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Vendor Dashboard</h1>
@@ -148,7 +164,12 @@ export default async function VendorDashboardPage() {
         />
       </div>
 
-      <ExternalBillingEarningsPanel partnerType="vendor" partnerId={vendorId} />
+      <ExternalBillingEarningsPanel
+        partnerType="vendor"
+        partnerId={vendorId}
+        earnings={[]}
+        totals={{ pending: 0, paid: 0, mtd: 0, ytd: 0 }}
+      />
     </div>
   )
 }

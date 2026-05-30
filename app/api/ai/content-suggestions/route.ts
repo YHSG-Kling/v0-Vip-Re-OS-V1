@@ -1,18 +1,36 @@
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 export async function POST(request: Request) {
+  // Auth guard — agentId always from session, never from body
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
+  const { brokerageId, agentId } = { brokerageId: auth.brokerageId, agentId: auth.agentId }
+
   try {
-    const { agentId, contactId, leadId } = await request.json()
+    // contactId / leadId identify which entity to generate suggestions for;
+    // they do NOT override the caller's identity.
+    const { contactId, leadId } = await request.json()
 
-    const supabase = await createClient()
-
-    // Get contact or lead information
     let contact = null
     if (contactId) {
-      const { data } = await supabase.from("contacts").select("*").eq("id", contactId).maybeSingle()
+      const { data } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", contactId)
+        .eq("brokerage_id", brokerageId)  // brokerage isolation
+        .maybeSingle()
       contact = data
     } else if (leadId) {
-      const { data } = await supabase.from("leads").select("*").eq("id", leadId).maybeSingle()
+      const { data } = await supabase
+        .from("leads")
+        .select("*")
+        .eq("id", leadId)
+        .eq("brokerage_id", brokerageId)  // brokerage isolation
+        .maybeSingle()
       contact = data
     }
 
@@ -20,9 +38,7 @@ export async function POST(request: Request) {
       return Response.json({ success: false, error: "Contact not found" }, { status: 404 })
     }
 
-    // Generate persona-aware content suggestions
     const suggestions = generateContentSuggestions(contact)
-
     return Response.json({ success: true, suggestions })
   } catch (error: any) {
     console.error("Content suggestions error:", error)
@@ -36,7 +52,6 @@ function generateContentSuggestions(contact: any) {
   const buyerType = contact.buyer_type || "general"
   const priceRange = contact.price_range || ""
 
-  // Journey stage-based suggestions
   if (stage === "awareness" || stage === "new") {
     suggestions.push({
       type: "email",
@@ -46,7 +61,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "2-3 min",
       template: "welcome_email",
     })
-
     suggestions.push({
       type: "social_post",
       platform: "instagram",
@@ -66,7 +80,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "10 min",
       template: "property_recommendations",
     })
-
     suggestions.push({
       type: "video",
       title: "Neighborhood Tour Video",
@@ -74,7 +87,6 @@ function generateContentSuggestions(contact: any) {
       priority: "medium",
       estimatedTime: "15 min",
     })
-
     suggestions.push({
       type: "blog_post",
       title: "Buyer's Guide Blog Post",
@@ -93,7 +105,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "5 min",
       template: "new_listing_alert",
     })
-
     suggestions.push({
       type: "social_post",
       platform: "instagram",
@@ -102,7 +113,6 @@ function generateContentSuggestions(contact: any) {
       priority: "high",
       estimatedTime: "5 min",
     })
-
     suggestions.push({
       type: "video",
       title: "Property Walkthrough Video",
@@ -121,7 +131,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "5 min",
       template: "transaction_update",
     })
-
     suggestions.push({
       type: "email",
       title: "Inspection Preparation Guide",
@@ -131,7 +140,7 @@ function generateContentSuggestions(contact: any) {
     })
   }
 
-  if (stage === "closed" || stage === "past_client") {
+  if (stage === "closed" || stage === LIFETIME_CUSTOMER_TYPE) {
     suggestions.push({
       type: "email",
       title: "Congratulations & Follow-up",
@@ -140,7 +149,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "5 min",
       template: "closing_congratulations",
     })
-
     suggestions.push({
       type: "social_post",
       platform: "facebook",
@@ -149,7 +157,6 @@ function generateContentSuggestions(contact: any) {
       priority: "medium",
       estimatedTime: "5 min",
     })
-
     suggestions.push({
       type: "email",
       title: "Home Anniversary Check-in",
@@ -160,7 +167,6 @@ function generateContentSuggestions(contact: any) {
     })
   }
 
-  // Buyer type-specific suggestions
   if (buyerType === "military" || buyerType === "veteran") {
     suggestions.push({
       type: "blog_post",
@@ -180,7 +186,6 @@ function generateContentSuggestions(contact: any) {
       estimatedTime: "5 min",
       template: "first_time_buyer_checklist",
     })
-
     suggestions.push({
       type: "video",
       title: "Home Buying Process Explained",
@@ -208,7 +213,6 @@ function generateContentSuggestions(contact: any) {
       priority: "medium",
       estimatedTime: "25 min",
     })
-
     suggestions.push({
       type: "email",
       title: "Investment Opportunity Alert",
@@ -218,7 +222,6 @@ function generateContentSuggestions(contact: any) {
     })
   }
 
-  // Sort by priority
-  const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 }
+  const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
   return suggestions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority])
 }

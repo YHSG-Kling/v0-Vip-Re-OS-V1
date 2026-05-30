@@ -83,7 +83,7 @@ export function CampaignsTab({
   // Load agent ID from session for submitToPrintFulfillment
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(({ data: { user } }: { data: { user: any } }) => {
       if (user) setAgentId(user.id)
     })
   }, [])
@@ -201,7 +201,7 @@ export function CampaignsTab({
         brokerageId: campaign.brokerage_id,
       })
       if (result.success && result.fulfillment) {
-        const { fulfillment } = result
+        const fulfillment = result.fulfillment as any
         toast.success(
           `Submitted to print — Order #${fulfillment.orderId} · ${fulfillment.quantity} pieces · Est. delivery ${new Date(fulfillment.estimatedDelivery).toLocaleDateString()}`
         )

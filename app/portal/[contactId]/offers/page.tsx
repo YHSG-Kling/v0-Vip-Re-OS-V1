@@ -7,7 +7,7 @@ import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
 import { NetSheetCalculator } from "@/components/portal/NetSheetCalculator"
-import { analyzeMultipleOffers } from "@/app/actions/offer-management"
+import { analyzeMultipleOffers } from "@/app/actions/seller-offers"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
@@ -102,7 +102,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   const supabase = await createClient()
 
   // Check portal view
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalView = await determinePortalView(supabase, { contactId })
 
   // Get contact
   const { data: contact, error: contactError } = await supabase
@@ -116,10 +116,10 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   }
 
   // BUYER VIEW: Show offers the buyer has submitted (using canonical offer_price)
-  if (portalView === "buyer") {
+  if (portalView.view === "buyer") {
     const { data: buyerOffers } = await supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, property_address, list_price)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, list_price)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
 
@@ -153,7 +153,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                     Congratulations! Your offer was accepted!
                   </h3>
                   <p className="text-green-700">
-                    {acceptedOffer.listing?.address || acceptedOffer.listing?.property_address || "Property"} - {formatCurrency(acceptedOffer.offer_price)}
+                    {((acceptedOffer.listing as any)?.address || (acceptedOffer.listing as any)?.property_address) || "Property"} - {formatCurrency(acceptedOffer.offer_price)}
                   </p>
                   <Button className="bg-green-600 hover:bg-green-700" asChild>
                     <Link href={`/portal/${contactId}/journey`}>
@@ -471,7 +471,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   // Multiple offers view
   let analysis: any = { success: false }
   try {
-    analysis = await analyzeMultipleOffers({ listingId: listing.id })
+    analysis = await analyzeMultipleOffers(listing.id, "")
   } catch (e) {
     // Continue without AI analysis
   }

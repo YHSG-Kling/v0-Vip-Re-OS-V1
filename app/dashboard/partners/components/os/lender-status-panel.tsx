@@ -44,11 +44,11 @@ export function LenderStatusPanel({ brokerageId }: LenderStatusPanelProps) {
         .order("updated_at", { ascending: false })
         .limit(20)
 
-      const pendingPreApprovals = loanApps?.filter(a => a.status === "pending" || a.status === "pre_approval").length || 0
-      const activeLoans = loanApps?.filter(a => a.status === "active" || a.status === "processing").length || 0
+      const pendingPreApprovals = loanApps?.filter((a: any) => a.status === "pending" || a.status === "pre_approval").length || 0
+      const activeLoans = loanApps?.filter((a: any) => a.status === "active" || a.status === "processing").length || 0
 
       // Recent updates
-      const recentUpdates = (loanApps || []).slice(0, 5).map(app => ({
+      const recentUpdates = (loanApps || []).slice(0, 5).map((app: any) => ({
         id: app.id,
         lenderName: (app.vendors as any)?.name || "Unknown Lender",
         status: app.status,

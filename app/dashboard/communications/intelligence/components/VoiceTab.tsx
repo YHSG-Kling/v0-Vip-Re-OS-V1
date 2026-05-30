@@ -135,7 +135,7 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                 cx="50%"
                 cy="50%"
                 outerRadius={80}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
                 labelLine={false}
               >
                 {pieData.map((_, i) => (
@@ -143,7 +143,7 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                 ))}
               </Pie>
               <Tooltip
-                formatter={(v: number) => [v, "Calls"]}
+                formatter={((v: number) => [v, "Calls"]) as any}
                 contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid hsl(var(--border))" }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />

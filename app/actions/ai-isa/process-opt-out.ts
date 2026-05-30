@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export interface OptOutParams {
   entityType: "contact" | "lead"
@@ -14,6 +15,23 @@ export interface OptOutParams {
   brokerageId: string
 }
 
+/**
+ * processOptOut — TCPA-critical suppression writer.
+ *
+ * AUTH (dual-mode):
+ *   1. UI / session caller (source: "agent" | "admin" | "portal" | "voice")
+ *      — must have a session whose brokerage matches the entity.
+ *   2. Inbound webhook caller (source: "inbound_sms" | "inbound_email") —
+ *      arrives through app/api/providers/inbound/route.ts which has already
+ *      verified the provider signature (Twilio HMAC / SendGrid / Postmark /
+ *      Mailgun) via lib/providers/inbound-router.normalizeInbound. We trust
+ *      that path but still re-verify the entity row's brokerage_id matches
+ *      what the caller supplied so a forged param cannot suppress contacts
+ *      in a different tenant.
+ *
+ * In BOTH modes, the effective brokerageId is taken from the verified
+ * entity row — never the raw caller param — before any writes.
+ */
 export async function processOptOut(params: OptOutParams): Promise<{
   success: boolean
   channelsSuppressed: string[]
@@ -21,7 +39,50 @@ export async function processOptOut(params: OptOutParams): Promise<{
   error?: string
 }> {
   const supabase = createServiceClient()
-  const { entityType, entityId, channel, source, rawMessage, brokerageId } = params
+  const { entityType, entityId, channel, source, rawMessage } = params
+
+  // ── AUTH GATE ──────────────────────────────────────────────────────────
+  const WEBHOOK_SOURCES = new Set(["inbound_sms", "inbound_email"])
+  const isWebhookSource = WEBHOOK_SOURCES.has(source)
+
+  let effectiveBrokerageId: string
+
+  if (isWebhookSource) {
+    // Caller is the provider-inbound route post sig verify. We still re-
+    // resolve the brokerage from the entity row so a forged brokerageId
+    // param cannot redirect this write to another tenant.
+    const table = entityType === "contact" ? "contacts" : "leads"
+    const { data: entityRow } = await supabase
+      .from(table)
+      .select("brokerage_id")
+      .eq("id", entityId)
+      .maybeSingle()
+    if (!entityRow?.brokerage_id) {
+      return { success: false, channelsSuppressed: [], globalDNC: false, error: "Entity not found" }
+    }
+    effectiveBrokerageId = entityRow.brokerage_id
+  } else {
+    // Session-auth path (agent/admin/portal/voice).
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, channelsSuppressed: [], globalDNC: false, error: "Unauthorized" }
+    }
+    // Verify the entity belongs to the caller's brokerage. NEVER trust
+    // the caller-supplied brokerageId.
+    const table = entityType === "contact" ? "contacts" : "leads"
+    const { data: entityRow } = await supabase
+      .from(table)
+      .select("brokerage_id")
+      .eq("id", entityId)
+      .maybeSingle()
+    if (!entityRow || entityRow.brokerage_id !== ctx.brokerageId) {
+      return { success: false, channelsSuppressed: [], globalDNC: false, error: "Forbidden" }
+    }
+    effectiveBrokerageId = ctx.brokerageId
+  }
+
+  // From here on, use effectiveBrokerageId — never params.brokerageId.
+  const brokerageId = effectiveBrokerageId
 
   const channelsSuppressed: string[] = []
   let globalDNC = false
@@ -83,7 +144,11 @@ export async function processOptOut(params: OptOutParams): Promise<{
   }
 
   const table = entityType === "contact" ? "contacts" : "leads"
-  const { error: updateError } = await supabase.from(table).update(updates).eq("id", entityId)
+  const { error: updateError } = await supabase
+    .from(table)
+    .update(updates)
+    .eq("id", entityId)
+    .eq("brokerage_id", brokerageId)
 
   if (updateError) {
     console.error("[processOptOut] DB update failed:", updateError)

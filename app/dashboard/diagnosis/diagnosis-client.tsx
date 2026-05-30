@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -69,26 +70,26 @@ export function DiagnosisClient({ agentId, brokerageId, userId }: DiagnosisClien
     try {
       setLoadingStep("Scanning lead pipeline...")
       const [valueDashboard, topConversionCandidates] = await Promise.all([
-        loadValueDrivenDashboard({ agentId, brokerageId }).catch(() => null),
-        getTopConversionCandidates({ agentId, limit: 10 }).catch(() => []),
+        loadValueDrivenDashboard(agentId).catch(() => null),
+        getTopConversionCandidates(10).catch(() => []),
       ])
 
       setLoadingStep("Analyzing relationships...")
       const [hiddenOpportunities, sphereMining, trustCapital] = await Promise.all([
-        findHiddenOpportunities({ agentId }).catch(() => []),
-        mineSphereOfInfluence({ agentId }).catch(() => null),
-        calculateTrustCapital({ agentId, brokerageId }).catch(() => null),
+        findHiddenOpportunities(agentId).catch(() => []),
+        mineSphereOfInfluence(agentId).catch(() => null),
+        calculateTrustCapital(agentId).catch(() => null),
       ])
 
       setLoadingStep("Checking operations...")
       const [coachingInsights, workflowStats] = await Promise.all([
-        getAgentCoachingInsights({ agentId }).catch(() => null),
+        getAgentCoachingInsights(agentId).catch(() => null),
         getWorkflowStats().catch(() => null),
       ])
 
       setDiagnosisData({
         valueDashboard,
-        hiddenOpportunities: hiddenOpportunities || [],
+        hiddenOpportunities: (hiddenOpportunities as any[]) || [],
         sphereMining,
         coachingInsights,
         topConversionCandidates: topConversionCandidates || [],
@@ -121,31 +122,13 @@ Business Diagnosis Data:
       const result = await generateSmartResponse({
         agentId,
         contactId: userId,
-        messageContext: context,
-        systemPrompt: `You are a real estate business strategist analyzing an agent's complete business health.
-Based on this business diagnosis data, create a specific 30-day correction plan.
-
-Format your response as:
-
-**TOP 3 PROBLEMS**
-1. [Problem with specific numbers]
-2. [Problem with specific numbers]
-3. [Problem with specific numbers]
-
-**30-DAY CORRECTION PLAN**
-Week 1: [Specific actions]
-Week 2: [Specific actions]
-Week 3: [Specific actions]
-Week 4: [Specific actions]
-
-**THIS WEEK'S #1 ACTION**
-[Single most important action to take immediately]
-
-Be direct, specific, and prioritized. Use the actual numbers from the data.`,
+        brokerageId,
+        incomingMessage: context,
+        channel: "chat",
       })
 
-      if (result.success && result.response) {
-        setAiSummary(result.response)
+      if (result.success && (result as any).draft) {
+        setAiSummary((result as any).draft)
       }
     } catch (error) {
       console.error("Error generating correction plan:", error)
@@ -282,7 +265,7 @@ Be direct, specific, and prioritized. Use the actual numbers from the data.`,
                           </p>
                         </div>
                       </div>
-                      <Link href={`/crm?contactId=${candidate.contact_id || candidate.id}`}>
+                      <Link href={`/crm?contact=${candidate.contact_id || candidate.id}`}>
                         <Button variant="outline" size="sm" className="gap-1">
                           Open Contact
                           <ArrowRight className="h-3 w-3" />
@@ -354,7 +337,7 @@ Be direct, specific, and prioritized. Use the actual numbers from the data.`,
                               className={
                                 opp.type === "sphere"
                                   ? "bg-blue-100 text-blue-700 border-blue-200"
-                                  : opp.type === "past_client"
+                                  : opp.type === LIFETIME_CUSTOMER_TYPE
                                     ? "bg-purple-100 text-purple-700 border-purple-200"
                                     : opp.type === "referral"
                                       ? "bg-amber-100 text-amber-700 border-amber-200"
@@ -378,9 +361,9 @@ Be direct, specific, and prioritized. Use the actual numbers from the data.`,
                           href={
                             opp.type === "referral"
                               ? "/referrals"
-                              : opp.type === "past_client"
-                                ? "/past-clients"
-                                : `/crm?contactId=${opp.contact_id || opp.id}`
+                              : opp.type === LIFETIME_CUSTOMER_TYPE
+                                ? "/lifetime-customers"
+                                : `/crm?contact=${opp.contact_id || opp.id}`
                           }
                         >
                           <Button size="sm" className="gap-1">
@@ -457,7 +440,7 @@ Be direct, specific, and prioritized. Use the actual numbers from the data.`,
                                 Last contact: {contact.last_contact || "Unknown"} • {contact.churn_signal || "No recent engagement"}
                               </p>
                             </div>
-                            <Link href={`/crm?contactId=${contact.id}`}>
+                            <Link href={`/crm?contact=${contact.id}`}>
                               <Button variant="outline" size="sm" className="text-red-700 border-red-200">
                                 Re-engage
                               </Button>

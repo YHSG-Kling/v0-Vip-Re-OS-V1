@@ -1,12 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
+import ReactMarkdown from "react-markdown"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
-import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, FlaskConical, CheckCircle2, AlertCircle } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, CheckCircle2, AlertCircle, Send } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
   previewSearchIntent,
@@ -18,11 +21,38 @@ import {
   analyzePropertyForBuyer,
   notifyNewMatches,
 } from "@/app/actions/ai-property-matching"
+import { searchAndPushToBuyer } from "@/app/actions/ai-buyer-search-push"
 import { requestShowing } from "@/app/actions/smart-insights"
+import { updateContact } from "@/app/actions/contacts"
+import { toast } from "sonner"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { draftSmartEmail } from "@/app/actions/ai-insights"
+import { sendEmail } from "@/app/actions/communications"
+import { PropertyAlertsPanel } from "./property-alerts-panel"
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+const BUYER_STAGES = [
+  { value: "new", label: "New Lead" },
+  { value: "nurturing", label: "Nurturing" },
+  { value: "active", label: "Active Buyer" },
+  { value: "qualified", label: "Qualified" },
+  { value: "under_contract", label: "Under Contract" },
+  { value: "closed", label: "Closed" },
+  { value: "lost", label: "Lost" },
+]
 
 interface BuyerMatchPanelProps {
   contactId: string
   agentId: string
+  brokerageId?: string
   isBuyerContact: boolean
   buyerStage?: string | null
   contactName: string
@@ -31,37 +61,49 @@ interface BuyerMatchPanelProps {
 interface PropertyMatch {
   listing_id: string
   address?: string
-  price?: number
+  price?: number | null
   match_score?: number
-  bedrooms?: number
-  bathrooms?: number
+  bedrooms?: number | null
+  bathrooms?: number | null
+  [key: string]: any
 }
 
 export function BuyerMatchPanel({
   contactId,
   agentId,
+  brokerageId,
   isBuyerContact,
   buyerStage,
   contactName,
 }: BuyerMatchPanelProps) {
+  const [stage, setStage] = useState(buyerStage ?? "")
+  // Generation counter to handle rapid stage changes — only apply result from latest request
+  const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState("")
+  const [emailLoading, setEmailLoading] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<any>(null)
   const [matches, setMatches] = useState<PropertyMatch[]>([])
-  const [selectedMatch, setSelectedMatch] = useState<string | null>(null)
-  const [explanation, setExplanation] = useState<string | null>(null)
   const [showingForm, setShowingForm] = useState<string | null>(null)
   const [showingDate, setShowingDate] = useState("")
   const [showingNotes, setShowingNotes] = useState("")
   const [loading, setLoading] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [explainLoading, setExplainLoading] = useState<string | null>(null)
   const [showingLoading, setShowingLoading] = useState(false)
-  // Deep analysis per property
-  const [deepAnalysisLoading, setDeepAnalysisLoading] = useState<string | null>(null)
-  const [deepAnalysisResults, setDeepAnalysisResults] = useState<Record<string, any>>({})
   // Notify new matches
   const [notifyLoading, setNotifyLoading] = useState(false)
   const [notifyResult, setNotifyResult] = useState<{ notified: number } | null>(null)
+  // Send search results to buyer portal
+  const [pushLoading, setPushLoading] = useState(false)
+  const [pushResult, setPushResult] = useState<{ matchCount: number } | null>(null)
+  // Analysis Sheet
+  const [analysisSheetMatch, setAnalysisSheetMatch] = useState<PropertyMatch | null>(null)
+  const [analysisSheetLoading, setAnalysisSheetLoading] = useState(false)
+  const [analysisSheetData, setAnalysisSheetData] = useState<{ explanation: string | null; deep: any | null }>(
+    { explanation: null, deep: null }
+  )
 
   // Only render for buyer contacts
   if (!isBuyerContact) {
@@ -73,8 +115,8 @@ export function BuyerMatchPanel({
     setPreviewLoading(true)
     try {
       const result = await previewSearchIntent({ contactId, naturalLanguageQuery: query })
-      if (result.success) {
-        setPreviewIntent(result.intent)
+      if (result.success && 'preview' in result) {
+        setPreviewIntent(result.preview)
       }
     } catch (err) {
       console.error("Preview intent failed:", err)
@@ -92,8 +134,16 @@ export function BuyerMatchPanel({
         contactId,
         naturalLanguageQuery: query,
       })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'results' in result && result.results) {
+        setMatches(result.results.map((r: any) => ({
+          listing_id: r.listing_id,
+          address: [r.city, r.state].filter(Boolean).join(", ") || r.listing_id,
+          price: r.price,
+          match_score: r.internal_match_score,
+          bedrooms: r.bedrooms,
+          bathrooms: r.bathrooms,
+          ...r,
+        })))
       }
     } catch (err) {
       console.error("Search failed:", err)
@@ -107,8 +157,16 @@ export function BuyerMatchPanel({
     setMatches([])
     try {
       const result = await generatePropertyMatches({ contactId, agentId, maxResults: 10 })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'matches' in result && result.matches) {
+        setMatches((result.matches as any[]).map((m: any) => ({
+          listing_id: m.propertyId ?? m.listing_id ?? m.id ?? "",
+          address: m.address,
+          price: m.price,
+          match_score: m.matchScore ?? m.match_score,
+          bedrooms: m.bedrooms,
+          bathrooms: m.bathrooms,
+          ...m,
+        })))
       }
     } catch (err) {
       console.error("Generate matches failed:", err)
@@ -117,24 +175,9 @@ export function BuyerMatchPanel({
     }
   }
 
-  const handleExplainMatch = async (listingId: string) => {
-    setExplainLoading(listingId)
-    setSelectedMatch(listingId)
-    try {
-      const result = await explainPropertyMatchForBuyer({ contactId, listingId })
-      if (result.success) {
-        setExplanation(result.explanation || "This property matches based on your criteria.")
-      }
-    } catch (err) {
-      console.error("Explain match failed:", err)
-    } finally {
-      setExplainLoading(null)
-    }
-  }
-
   const handleFeedback = async (listingId: string, feedback: "liked" | "disliked") => {
     try {
-      await learnFromBuyerFeedback({ contactId, listingId, feedback })
+      await learnFromBuyerFeedback({ contactId, propertyId: listingId, feedback, agentId })
       // Update UI to show feedback was recorded
       setMatches((prev) =>
         prev.map((m) =>
@@ -155,7 +198,7 @@ export function BuyerMatchPanel({
         match.listing_id,
         match.address || "Property",
         { price: match.price, bedrooms: match.bedrooms },
-        [showingDate],
+        [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
         showingNotes
       )
       setShowingForm(null)
@@ -168,17 +211,26 @@ export function BuyerMatchPanel({
     }
   }
 
-  const handleDeepAnalysis = async (listingId: string) => {
-    setDeepAnalysisLoading(listingId)
+  const handleOpenAnalysisSheet = async (match: PropertyMatch) => {
+    setAnalysisSheetMatch(match)
+    setAnalysisSheetData({ explanation: null, deep: null })
+    setAnalysisSheetLoading(true)
     try {
-      const result = await analyzePropertyForBuyer({ contactId, propertyId: listingId, agentId })
-      if (result.success) {
-        setDeepAnalysisResults((prev) => ({ ...prev, [listingId]: result }))
-      }
+      const [explainRes, deepRes] = await Promise.all([
+        explainPropertyMatchForBuyer({ contactId, listingId: match.listing_id }),
+        analyzePropertyForBuyer({ contactId, propertyId: match.listing_id, agentId }),
+      ])
+      const expl = (explainRes as any).explanation
+      const explanationText =
+        typeof expl === "string" ? expl
+        : expl && typeof expl === "object" ? (expl.narrative ?? expl.headline ?? null)
+        : null
+      const deepData = deepRes.success ? deepRes : null
+      setAnalysisSheetData({ explanation: explanationText, deep: deepData })
     } catch (err) {
-      console.error("Deep analysis failed:", err)
+      console.error("Analysis sheet fetch failed:", err)
     } finally {
-      setDeepAnalysisLoading(null)
+      setAnalysisSheetLoading(false)
     }
   }
 
@@ -188,12 +240,32 @@ export function BuyerMatchPanel({
     try {
       const result = await notifyNewMatches({ contactId, agentId, threshold: 85 })
       if (result.success) {
-        setNotifyResult({ notified: result.notifiedCount ?? result.count ?? 0 })
+        setNotifyResult({ notified: (result as any).notifiedCount ?? (result as any).matchCount ?? (result as any).count ?? 0 })
       }
     } catch (err) {
       console.error("Notify matches failed:", err)
     } finally {
       setNotifyLoading(false)
+    }
+  }
+
+  const handlePushToBuyer = async () => {
+    if (!query.trim()) return
+    setPushLoading(true)
+    setPushResult(null)
+    try {
+      const result = await searchAndPushToBuyer({
+        contactId,
+        searchQuery: query,
+      })
+      if (result.success) {
+        setPushResult({ matchCount: result.matchCount })
+        toast.success(`${result.matchCount} propert${result.matchCount !== 1 ? "ies" : "y"} pushed to ${contactName}'s portal.`)
+      }
+    } catch {
+      toast.error("Push failed. Try again.")
+    } finally {
+      setPushLoading(false)
     }
   }
 
@@ -209,10 +281,37 @@ export function BuyerMatchPanel({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Home className="h-4 w-4 text-blue-600" />
-          Find Homes for {firstName}
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Home className="h-4 w-4 text-blue-600" />
+            Find Homes for {firstName}
+          </CardTitle>
+          <Select
+            value={stage}
+            onValueChange={async (val) => {
+              const prev = stage
+              setStage(val)
+              const gen = ++stageGenRef.current
+              const result = await updateContact(contactId, { buyer_stage: val })
+              if (stageGenRef.current !== gen) return // superseded by a later request
+              if (!result.success) {
+                setStage(prev)
+                toast.error("Failed to update stage")
+              } else {
+                toast.success("Buyer stage updated")
+              }
+            }}
+          >
+            <SelectTrigger className="h-7 text-xs w-36">
+              <SelectValue placeholder="Set stage" />
+            </SelectTrigger>
+            <SelectContent>
+              {BUYER_STAGES.map((s) => (
+                <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </CardHeader>
       <CardContent>
         {/* Search input */}
@@ -280,18 +379,54 @@ export function BuyerMatchPanel({
               )}
               Use Saved Criteria
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePushToBuyer}
+              disabled={pushLoading || !query.trim()}
+              title="Run this search and push results to the buyer's portal"
+            >
+              {pushLoading ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : pushResult ? (
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+              ) : (
+                <Send className="h-4 w-4 mr-1" />
+              )}
+              {pushResult
+                ? `Sent (${pushResult.matchCount})`
+                : "Send to Buyer"}
+            </Button>
           </div>
 
           {/* Preview intent display */}
           {previewIntent && (
             <div className="p-3 bg-blue-50 rounded-lg text-sm">
               <p className="font-medium text-blue-800 mb-1">AI Understanding:</p>
-              <p className="text-blue-700">
-                Looking for: {previewIntent.bedrooms}+ bed
-                {previewIntent.price && `, max $${previewIntent.price.toLocaleString()}`}
-                {previewIntent.areas?.length > 0 && `, in ${previewIntent.areas.join(", ")}`}
-                {previewIntent.keywords?.length > 0 && `, ${previewIntent.keywords.join(", ")}`}
-              </p>
+              {previewIntent.bedrooms == null &&
+               previewIntent.bathrooms == null &&
+               previewIntent.price == null &&
+               !(previewIntent.areas?.length > 0) &&
+               !(previewIntent.keywords?.length > 0) ? (
+                <p className="text-blue-700">Type a description above to preview AI property matching</p>
+              ) : (
+                <p className="text-blue-700">
+                  Looking for:{" "}
+                  {previewIntent.bedrooms != null && (
+                    <span>{previewIntent.bedrooms}+ bed</span>
+                  )}
+                  {previewIntent.bathrooms != null && (
+                    <span>{previewIntent.bedrooms != null ? ", " : ""}{previewIntent.bathrooms}+ bath</span>
+                  )}
+                  {previewIntent.price != null && `${previewIntent.bedrooms != null || previewIntent.bathrooms != null ? ", " : ""}max $${previewIntent.price.toLocaleString()}`}
+                  {previewIntent.areas?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null ? ", " : ""}in ${previewIntent.areas.join(", ")}`
+                  )}
+                  {previewIntent.keywords?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null || (previewIntent.areas?.length > 0) ? ", " : ""}${previewIntent.keywords.join(", ")}`
+                  )}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -324,14 +459,9 @@ export function BuyerMatchPanel({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleExplainMatch(match.listing_id)}
-                    disabled={explainLoading === match.listing_id}
+                    onClick={() => handleOpenAnalysisSheet(match)}
                   >
-                    {explainLoading === match.listing_id ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3 w-3 mr-1" />
-                    )}
+                    <Sparkles className="h-3 w-3 mr-1" />
                     Why This Fits
                   </Button>
                   <Button
@@ -353,19 +483,6 @@ export function BuyerMatchPanel({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleDeepAnalysis(match.listing_id)}
-                    disabled={deepAnalysisLoading === match.listing_id}
-                  >
-                    {deepAnalysisLoading === match.listing_id ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <FlaskConical className="h-3 w-3 mr-1" />
-                    )}
-                    Deep Analysis
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
                     onClick={() => setShowingForm(match.listing_id)}
                   >
                     <Calendar className="h-3 w-3 mr-1" />
@@ -373,42 +490,6 @@ export function BuyerMatchPanel({
                   </Button>
                 </div>
 
-                {/* Deep analysis result */}
-                {deepAnalysisResults[match.listing_id] && (
-                  <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded-md space-y-1.5">
-                    <p className="text-xs font-semibold text-indigo-800 flex items-center gap-1">
-                      <FlaskConical className="h-3 w-3" /> Deep Analysis
-                    </p>
-                    {deepAnalysisResults[match.listing_id].fit_summary && (
-                      <p className="text-xs text-indigo-900">{deepAnalysisResults[match.listing_id].fit_summary}</p>
-                    )}
-                    {deepAnalysisResults[match.listing_id].strengths?.length > 0 && (
-                      <ul className="space-y-0.5">
-                        {deepAnalysisResults[match.listing_id].strengths.slice(0, 3).map((s: string, i: number) => (
-                          <li key={i} className="flex items-start gap-1 text-xs text-emerald-700">
-                            <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0" />{s}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {deepAnalysisResults[match.listing_id].concerns?.length > 0 && (
-                      <ul className="space-y-0.5">
-                        {deepAnalysisResults[match.listing_id].concerns.slice(0, 2).map((c: string, i: number) => (
-                          <li key={i} className="flex items-start gap-1 text-xs text-amber-700">
-                            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />{c}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
-                {/* Explanation panel */}
-                {selectedMatch === match.listing_id && explanation && (
-                  <div className="mt-3 p-2 bg-white rounded border text-sm">
-                    {explanation}
-                  </div>
-                )}
 
                 {/* Showing form */}
                 {showingForm === match.listing_id && (
@@ -452,13 +533,229 @@ export function BuyerMatchPanel({
           </div>
         )}
 
+        {/* Send match email button */}
+        {matches.length > 0 && (
+          <div className="pt-2">
+            <Button
+              size="sm"
+              variant="default"
+              className="w-full gap-1.5"
+              disabled={emailLoading}
+              onClick={async () => {
+                setEmailLoading(true)
+                try {
+                  const matchSummary = matches.slice(0, 5).map(m =>
+                    `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
+                  ).join("\n")
+                  const draft = await draftSmartEmail(
+                    contactId,
+                    `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
+                  )
+                  setEmailDraft(draft)
+                  setEmailDialogOpen(true)
+                } catch {
+                  toast.error("Could not generate email draft")
+                } finally {
+                  setEmailLoading(false)
+                }
+              }}
+            >
+              {emailLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
+              Email {firstName} about {matches.length} Match{matches.length !== 1 ? "es" : ""}
+            </Button>
+          </div>
+        )}
+
+        {/* Email draft dialog */}
+        <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>AI-Drafted Email to {firstName}</DialogTitle>
+            </DialogHeader>
+            <Textarea
+              value={emailDraft}
+              onChange={(e) => setEmailDraft(e.target.value)}
+              rows={10}
+              className="text-sm"
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEmailDialogOpen(false)}>Cancel</Button>
+              <Button
+                disabled={sendingEmail}
+                onClick={async () => {
+                  setSendingEmail(true)
+                  try {
+                    const result = await sendEmail({
+                      contactId,
+                      subject: `Properties Matched for You, ${firstName}`,
+                      html: `<pre style="font-family:sans-serif;white-space:pre-wrap">${escapeHtml(emailDraft)}</pre>`,
+                      text: emailDraft,
+                      channelPurpose: "conversation",
+                    })
+                    if (result.success) {
+                      toast.success("Email sent")
+                      setEmailDialogOpen(false)
+                    } else {
+                      toast.error((result as any).error ?? "Send failed")
+                    }
+                  } finally {
+                    setSendingEmail(false)
+                  }
+                }}
+              >
+                {sendingEmail ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+                Send Email
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Empty state */}
         {matches.length === 0 && !loading && (
           <p className="text-sm text-muted-foreground text-center py-4">
             No saved criteria yet. Describe what {firstName} is looking for above.
           </p>
         )}
+
+        {/* Property Alerts collapsible */}
+        {brokerageId && (
+          <PropertyAlertsPanel
+            contactId={contactId}
+            brokerageId={brokerageId}
+            agentId={agentId}
+          />
+        )}
       </CardContent>
+
+      {/* Analysis Sheet */}
+      <Sheet open={!!analysisSheetMatch} onOpenChange={(v) => { if (!v) setAnalysisSheetMatch(null) }}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="pb-4 border-b">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-4 w-4 text-blue-600" />
+              {analysisSheetMatch?.address || "Property"} — Match Analysis
+            </SheetTitle>
+            {analysisSheetMatch?.price && (
+              <p className="text-sm text-muted-foreground">
+                ${analysisSheetMatch.price.toLocaleString()}
+                {analysisSheetMatch.match_score != null && (
+                  <span className="ml-2 font-medium text-foreground">{analysisSheetMatch.match_score}% match</span>
+                )}
+              </p>
+            )}
+          </SheetHeader>
+
+          {analysisSheetLoading && (
+            <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground justify-center">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Analyzing this property for {firstName}…
+            </div>
+          )}
+
+          {!analysisSheetLoading && (
+            <div className="space-y-5 pt-4">
+              {/* Why This Fits narrative */}
+              {analysisSheetData.explanation && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why This Fits</p>
+                  <div className="text-sm text-foreground [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5">
+                    <ReactMarkdown>{analysisSheetData.explanation}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
+              {/* Pros */}
+              {analysisSheetData.deep?.strengths?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Strengths</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.strengths.map((s: string, i: number) => (
+                      <li key={i} className="flex items-start gap-2 text-sm">
+                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-500" />
+                        <span className="[&_p]:inline"><ReactMarkdown>{s}</ReactMarkdown></span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Cons */}
+              {analysisSheetData.deep?.concerns?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Potential Concerns</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.concerns.map((c: string, i: number) => (
+                      <li key={i} className="flex items-start gap-2 text-sm">
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+                        <span className="[&_p]:inline"><ReactMarkdown>{c}</ReactMarkdown></span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Questions to ask */}
+              {analysisSheetData.deep?.questions?.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Questions to Ask</p>
+                  <ul className="space-y-1">
+                    {analysisSheetData.deep.questions.map((q: string, i: number) => (
+                      <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                        <span className="font-medium text-foreground shrink-0">{i + 1}.</span>
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Negotiation tips */}
+              {analysisSheetData.deep?.negotiation_tips && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Negotiation Tips</p>
+                  <div className="text-sm text-foreground [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5">
+                    <ReactMarkdown>
+                      {typeof analysisSheetData.deep.negotiation_tips === "string"
+                        ? analysisSheetData.deep.negotiation_tips
+                        : Array.isArray(analysisSheetData.deep.negotiation_tips)
+                        ? analysisSheetData.deep.negotiation_tips.join("\n")
+                        : ""}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
+              {/* Fit summary fallback */}
+              {analysisSheetData.deep?.fit_summary && !analysisSheetData.explanation && (
+                <div className="p-3 bg-muted/50 rounded-md text-sm">
+                  {analysisSheetData.deep.fit_summary}
+                </div>
+              )}
+
+              {/* No data fallback */}
+              {!analysisSheetData.explanation && !analysisSheetData.deep && (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No analysis data available for this property.
+                </p>
+              )}
+
+              {/* Request Showing CTA */}
+              <div className="pt-2 border-t">
+                <Button
+                  className="w-full gap-2"
+                  onClick={() => {
+                    setAnalysisSheetMatch(null)
+                    if (analysisSheetMatch) setShowingForm(analysisSheetMatch.listing_id)
+                  }}
+                >
+                  <Calendar className="h-4 w-4" />
+                  Request a Showing
+                </Button>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </Card>
   )
 }

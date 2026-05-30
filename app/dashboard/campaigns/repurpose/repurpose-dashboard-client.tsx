@@ -66,14 +66,19 @@ import {
   Sparkles,
   Copy,
   History,
+  Wand2,
+  Link2,
 } from "lucide-react"
 import {
   executePipeline,
   createRepurposePipeline,
+  togglePipelineActive,
+  deletePipeline,
 } from "@/lib/repurpose/actions"
 import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 import { toast } from "sonner"
+import { SnippetWizardPanel } from "./components/snippet-wizard-panel"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -141,6 +146,7 @@ const SOURCE_TYPE_CONFIG: Record<SourceType, { label: string; icon: React.ReactN
   social_post: { label: "Social Post", icon: <Instagram className="h-4 w-4" />, color: "bg-pink-100 text-pink-700" },
   script: { label: "Script", icon: <ScrollText className="h-4 w-4" />, color: "bg-amber-100 text-amber-700" },
   newsletter: { label: "Newsletter", icon: <FileText className="h-4 w-4" />, color: "bg-cyan-100 text-cyan-700" },
+  video_url: { label: "Video URL", icon: <Link2 className="h-4 w-4" />, color: "bg-orange-100 text-orange-700" },
 }
 
 const OUTPUT_FORMAT_UI: Record<OutputFormat, { label: string; icon: React.ReactNode; color: string }> = {
@@ -155,10 +161,13 @@ const OUTPUT_FORMAT_UI: Record<OutputFormat, { label: string; icon: React.ReactN
   email_snippet: { label: "Email", icon: <FileText className="h-4 w-4" />, color: "bg-emerald-100 text-emerald-700" },
   blog_excerpt: { label: "Blog Excerpt", icon: <FileText className="h-4 w-4" />, color: "bg-indigo-100 text-indigo-700" },
   quote_graphic: { label: "Quote Card", icon: <Copy className="h-4 w-4" />, color: "bg-violet-100 text-violet-700" },
+  google_business_post: { label: "Google Business", icon: <Link2 className="h-4 w-4" />, color: "bg-emerald-100 text-emerald-700" },
 }
 
 const STATUS_CONFIG: Record<string, { icon: React.ReactNode; color: string }> = {
   pending: { icon: <Clock className="h-3 w-3" />, color: "bg-yellow-100 text-yellow-700" },
+  pending_review: { icon: <Clock className="h-3 w-3" />, color: "bg-yellow-100 text-yellow-700" },
+  draft: { icon: <Clock className="h-3 w-3" />, color: "bg-gray-100 text-gray-700" },
   approved: { icon: <CheckCircle className="h-3 w-3" />, color: "bg-green-100 text-green-700" },
   rejected: { icon: <AlertCircle className="h-3 w-3" />, color: "bg-red-100 text-red-700" },
   created: { icon: <CheckCircle className="h-3 w-3" />, color: "bg-blue-100 text-blue-700" },
@@ -181,7 +190,7 @@ export function RepurposeDashboardClient({
   const [history, setHistory] = useState(initialHistory)
   
   // UI State
-  const [activeTab, setActiveTab] = useState<"pipelines" | "execute" | "history">("execute")
+  const [activeTab, setActiveTab] = useState<"pipelines" | "execute" | "history" | "wizard">("execute")
   const [isLoading, setIsLoading] = useState(false)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   
@@ -189,6 +198,7 @@ export function RepurposeDashboardClient({
   const [newPipeline, setNewPipeline] = useState({
     pipelineName: "",
     sourceType: "video_project" as SourceType,
+    sourceId: "" as string,
     outputFormats: [] as OutputFormat[],
     autoApprove: false,
   })
@@ -225,7 +235,7 @@ export function RepurposeDashboardClient({
     const result = await createRepurposePipeline({
       pipelineName: newPipeline.pipelineName,
       sourceType: newPipeline.sourceType,
-      sourceId: newPipeline.sourceId || "",
+      sourceId: (newPipeline as any).sourceId || "",
       outputFormats: newPipeline.outputFormats,
       brokerageId: brokerageId,
       agentUserId: userId,
@@ -237,6 +247,7 @@ export function RepurposeDashboardClient({
       setNewPipeline({
         pipelineName: "",
         sourceType: "video_project",
+        sourceId: "",
         outputFormats: [],
         autoApprove: false,
       })
@@ -399,6 +410,10 @@ export function RepurposeDashboardClient({
           <TabsTrigger value="history">
             <History className="h-4 w-4 mr-2" />
             History ({history.length})
+          </TabsTrigger>
+          <TabsTrigger value="wizard">
+            <Wand2 className="h-4 w-4 mr-2" />
+            Snippet Wizard
           </TabsTrigger>
         </TabsList>
 
@@ -775,6 +790,13 @@ export function RepurposeDashboardClient({
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        {/* SNIPPET WIZARD TAB                                                  */}
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        <TabsContent value="wizard">
+          <SnippetWizardPanel brokerageId={brokerageId} userId={userId} />
         </TabsContent>
       </Tabs>
 

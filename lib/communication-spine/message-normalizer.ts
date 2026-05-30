@@ -8,7 +8,15 @@
  * a consistent format for storage.
  */
 
-export type MessageChannel = 'email' | 'sms' | 'voice_transcript' | 'social_dm_facebook' | 'social_dm_instagram' | 'social_dm_linkedin'
+export type MessageChannel =
+  | 'email'
+  | 'sms'
+  | 'voice_transcript'
+  | 'social_dm_facebook'
+  | 'social_dm_instagram'
+  | 'social_dm_linkedin'
+  | 'social_dm_twitter'
+  | 'social_dm_whatsapp'
 export type MessageDirection = 'inbound' | 'outbound'
 
 export interface RawInboundMessage {

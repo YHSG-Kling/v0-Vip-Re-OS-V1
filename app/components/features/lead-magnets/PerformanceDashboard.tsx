@@ -1,8 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getMagnetPerformanceAction } from "@/app/actions/lead-magnets"
-import type { GetMagnetPerformanceOutput } from "@/lib/kernel/lead-magnets"
+import { getMagnetPerformanceAction } from "@/app/actions/lead-magnets-actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,7 +13,14 @@ interface Props {
   magnetName?: string
 }
 
-type Performance = NonNullable<GetMagnetPerformanceOutput["performance"]>
+type Performance = {
+  totalViews: number
+  totalSubmissions: number
+  totalQrScans: number
+  conversionRate: number
+  submissionsByDay: Array<{ date: string; count: number }>
+  topSources: Array<{ source: string; count: number }>
+}
 
 function StatCard({
   icon: Icon,
@@ -55,9 +61,22 @@ export function PerformanceDashboard({ magnetId, brokerageId, magnetName }: Prop
   async function load() {
     setLoading(true)
     setError(null)
-    const result = await getMagnetPerformanceAction({ magnetId, brokerageId })
-    if (result.success && result.performance) {
-      setPerformance(result.performance)
+    const result = await getMagnetPerformanceAction(magnetId)
+    if (result.success) {
+      const subs = result.submissions ?? []
+      const byDay: Record<string, number> = {}
+      for (const sub of subs) {
+        const date = (sub as any).created_at?.substring(0, 10) ?? ""
+        if (date) byDay[date] = (byDay[date] ?? 0) + 1
+      }
+      setPerformance({
+        totalViews: subs.length,
+        totalSubmissions: subs.length,
+        totalQrScans: 0,
+        conversionRate: subs.length > 0 ? 1 : 0,
+        submissionsByDay: Object.entries(byDay).map(([date, count]) => ({ date, count })),
+        topSources: [],
+      })
     } else {
       setError(result.error ?? "Failed to load performance")
     }

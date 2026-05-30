@@ -30,20 +30,21 @@ export async function getListingCoaching(
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, user_type, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .single()
 
   if (!userRow?.brokerage_id) return { success: false, error: "No brokerage" }
 
-  // Load listing — respect agent scope
+  // Load listing — respect agent scope. Default to the restrictive ("agent")
+  // path when user_type is absent so a null role can never widen visibility.
   let listingQuery = supabase
     .from("listings")
     .select("id, lifecycle_stage, contact_id, brokerage_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
-  if (userRow.role === "agent") {
+  if ((userRow.user_type ?? "agent") === "agent") {
     listingQuery = listingQuery.eq("assigned_agent_id", user.id)
   }
 
@@ -97,6 +98,14 @@ export async function refreshSellerCoaching(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
 
+  // Resolve caller's brokerage so we can verify listing ownership
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   // Load listing stage + contact to get invalidation key
   const { data: listing } = await supabase
     .from("listings")
@@ -105,6 +114,9 @@ export async function refreshSellerCoaching(
     .single()
 
   if (!listing) return { success: false, error: "Listing not found" }
+  if (listing.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
 
   let persona: SellerPersona = null
   if (listing.contact_id) {
@@ -140,15 +152,37 @@ interface DismissResult {
  */
 export async function dismissCoachingCard(
   listingId: string,
-  agentUserId: string
+  _agentUserId?: string  // ignored — derived from session
 ): Promise<DismissResult> {
-  // Use service client to bypass RLS on activities insert
+  // Auth gate — was previously trusting caller-supplied agentUserId
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   const supabase = createServiceClient()
+
+  // Verify listing belongs to caller's brokerage before logging activity
+  const { data: listingRow } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listingRow) return { success: false, error: "Listing not found" }
+  if (listingRow.brokerage_id !== callerRow.brokerage_id) {
+    return { success: false, error: "Forbidden" }
+  }
 
   const { error } = await supabase.from("activities").insert({
     entity_type:   "listing",
     entity_id:     listingId,
-    user_id:       agentUserId,
+    brokerage_id:  callerRow.brokerage_id,
+    agent_user_id: user.id,  // session-derived, not caller-supplied
     activity_type: "coaching.dismissed",
     status:        "completed",
     metadata:      { source: "seller_coaching_card" },

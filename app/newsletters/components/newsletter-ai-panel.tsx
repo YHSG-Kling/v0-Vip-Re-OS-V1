@@ -20,6 +20,20 @@ import {
   aiAnalyzeNewsletterPerformance,
 } from "@/app/actions/ai-newsletter"
 
+function sanitizeNewsletterHtml(html: string): string {
+  if (typeof window === "undefined") return ""
+  const doc = new DOMParser().parseFromString(html, "text/html")
+  doc.querySelectorAll("script, iframe, object, embed, form").forEach(el => el.remove())
+  doc.querySelectorAll("*").forEach(el => {
+    Array.from(el.attributes).forEach(attr => {
+      if (attr.name.startsWith("on") || attr.value.toLowerCase().includes("javascript:")) {
+        el.removeAttribute(attr.name)
+      }
+    })
+  })
+  return doc.body.innerHTML
+}
+
 interface NewsletterAIPanelProps {
   agentId: string
   brokerageId: string
@@ -28,7 +42,7 @@ interface NewsletterAIPanelProps {
 export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelProps) {
   // Subject lines
   const [slTopic, setSlTopic] = useState("")
-  const [slAudience, setSlAudience] = useState<"all" | "buyers" | "sellers" | "investors" | "past_clients">("all")
+  const [slAudience, setSlAudience] = useState<"all" | "buyers" | "sellers" | "investors" | "lifetime_customers">("all")
   const [slTone, setSlTone] = useState<"professional" | "friendly" | "urgent" | "curious">("friendly")
   const [slLoading, setSlLoading] = useState(false)
   const [subjectLines, setSubjectLines] = useState<string[]>([])
@@ -58,8 +72,13 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
         tone: slTone,
         includeEmoji: false,
       })
-      if (res.success && res.subjectLines?.length) {
-        setSubjectLines(res.subjectLines)
+      if (res.success && res.subjectLines) {
+        const sl = res.subjectLines as any
+        const lines: string[] = [
+          sl.primary?.subject,
+          ...(sl.variants?.map((v: any) => v.subject) ?? []),
+        ].filter(Boolean)
+        setSubjectLines(lines)
       }
     } catch (err) {
       console.error(err)
@@ -151,7 +170,7 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                   <SelectItem value="buyers">Buyers</SelectItem>
                   <SelectItem value="sellers">Sellers</SelectItem>
                   <SelectItem value="investors">Investors</SelectItem>
-                  <SelectItem value="past_clients">Past clients</SelectItem>
+                  <SelectItem value="lifetime_customers">Lifetime Customers</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -244,7 +263,7 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
             {cwLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
             Write Newsletter Content
           </Button>
-          {cwResult && (
+          {cwResult ? (
             <div className="space-y-2 pt-1">
               {cwResult.subject && (
                 <div className="flex items-center gap-2">
@@ -253,9 +272,14 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                 </div>
               )}
               <div className="relative rounded-md border bg-muted/30 p-3 max-h-64 overflow-y-auto">
-                <pre className="text-xs text-foreground whitespace-pre-wrap font-sans">
-                  {cwResult.content ?? cwResult.body ?? JSON.stringify(cwResult, null, 2)}
-                </pre>
+                {cwResult.content || cwResult.body ? (
+                  <div
+                    className="text-xs text-foreground prose prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: sanitizeNewsletterHtml(cwResult.content ?? cwResult.body ?? "") }}
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground italic">No content generated.</p>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -266,6 +290,10 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                 </Button>
               </div>
             </div>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-2">
+              Click &ldquo;Write Newsletter Content&rdquo; to generate your newsletter
+            </p>
           )}
         </CardContent>
       </Card>

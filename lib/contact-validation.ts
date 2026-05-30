@@ -1,12 +1,13 @@
 // Email and Phone Validation Client
-// Uses ZeroBounce for email, Twilio Lookup for phone validation (via lib/providers/messaging)
+// Email identity-resolution via PeopleData (PDL); phone via Twilio Lookup (lib/providers/messaging).
 import { lookupPhone as twilioLookupPhone } from "@/lib/providers/messaging"
+import { skipTraceWithPeopleData } from "@/lib/external/peopledata-client"
 
 export class ContactValidationClient {
-  private zeroBounceKey: string
+  private peopleDataKey: string
 
   constructor() {
-    this.zeroBounceKey = process.env.ZEROBOUNCE_API_KEY || ""
+    this.peopleDataKey = process.env.PEOPLEDATA_API_KEY || ""
   }
 
   async validateEmail(email: string): Promise<{
@@ -25,30 +26,21 @@ export class ContactValidationClient {
       return { valid: false, status: "invalid_format", disposable: false, toxic: false, catch_all: false }
     }
 
-    // If ZeroBounce API key is configured, do deep validation
-    if (this.zeroBounceKey) {
+    // Identity resolution via PeopleData (PDL). A PDL match confirms the address belongs to a real
+    // person ("verified"); no match isn't proof of invalidity, so a well-formed address stays valid
+    // as "format_valid". PDL doesn't expose disposable/toxic/catch-all signals — left false.
+    if (this.peopleDataKey) {
       try {
-        const response = await fetch(
-          `https://api.zerobounce.net/v2/validate?api_key=${this.zeroBounceKey}&email=${encodeURIComponent(email)}`,
-        )
-
-        if (response.ok) {
-          const result = await response.json()
-          return {
-            valid: result.status === "valid",
-            status: result.status,
-            disposable: result.sub_status === "disposable",
-            toxic: result.sub_status === "toxic",
-            catch_all: result.sub_status === "catch_all",
-            suggested_correction: result.did_you_mean || undefined,
-          }
+        const { data } = await skipTraceWithPeopleData({ email })
+        if (data && data.emails?.some((e) => e.toLowerCase() === email.toLowerCase())) {
+          return { valid: true, status: "verified", disposable: false, toxic: false, catch_all: false }
         }
-      } catch (error) {
-        console.error("[ContactValidation] ZeroBounce error:", error)
+      } catch {
+        // PDL unavailable — fall through to format-level validation.
       }
     }
 
-    // Fallback: basic validation passed
+    // Format passed (no identity match or PDL not configured).
     return { valid: true, status: "format_valid", disposable: false, toxic: false, catch_all: false }
   }
 

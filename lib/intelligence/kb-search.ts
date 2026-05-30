@@ -44,7 +44,7 @@ export async function searchKB(
     // Step 2: Vector similarity search
     // Using raw SQL for pgvector cosine distance operator
     const { data: vectorResults, error: vectorError } = await supabase.rpc(
-      'search_kb_by_embedding',
+      'match_help_topics',
       {
         query_embedding: queryEmbedding,
         p_brokerage_id: brokerageId,
@@ -63,7 +63,7 @@ export async function searchKB(
         id: r.id,
         title: r.title,
         content: r.content,
-        topic_category: r.topic_category,
+        topic_category: r.category,
         similarity: r.similarity,
         tags: r.tags,
       }))

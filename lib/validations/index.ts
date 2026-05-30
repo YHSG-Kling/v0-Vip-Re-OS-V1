@@ -259,3 +259,6 @@ export function validateUUIDArray(uuids: string[] | null | undefined): { valid: 
     errors,
   }
 }
+
+// Alias for backward compatibility
+export const validateTransactionData = validateTransaction

@@ -1,30 +1,55 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
+const ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
+
 // ─── AI FORECAST ─────────────────────────────────────────────────────────────
 
 export async function generateAIForecast(params: {
-  agentId: string
-  brokerageId: string
+  agentId?: string // ignored — derived from session
+  brokerageId?: string // ignored — derived from session
   ytdGCI: number
   ytdTransactionCount: number
   pipelineValue: number
   monthsElapsed: number
 }) {
+  // AUTH GATE — was burning paid AI tokens on whatever agentId the caller
+  // supplied, exposing per-agent financial signals.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+
+  // Force agentId to caller's own agent unless they're an admin of the
+  // same brokerage as the target agent.
+  let targetAgentId: string | null = params.agentId ?? ctx.agentId ?? null
+  if (!targetAgentId) return { success: false, error: "No agent context" }
+
+  if (targetAgentId !== ctx.agentId) {
+    const { data: targetAgent } = await svc
+      .from("agents").select("brokerage_id").eq("id", targetAgentId).maybeSingle()
+    if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+    if (!ADMIN_ROLES.has(ctx.userType)) {
+      return { success: false, error: "Forbidden: admin only" }
+    }
+  }
 
   try {
     // Fetch last 3 years of earnings for trend analysis
     const { data: history } = await supabase
       .from("earnings_history")
       .select("paid_date, gross_commission, agent_net")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", targetAgentId)
       .order("paid_date", { ascending: false })
       .limit(36)
 
@@ -81,12 +106,39 @@ Keep it professional, specific, and data-driven. Use dollar amounts.`,
 
 export async function generatePLReport(params: {
   agentId?: string
-  brokerageId: string
+  brokerageId?: string // ignored — derived from session
   isBrokerage?: boolean
 }) {
+  // AUTH GATE — exposed P&L data for any agent/brokerage to any caller.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+  const effectiveBrokerageId = ctx.brokerageId
+
+  // Brokerage-level P&L → admin only
+  if (params.isBrokerage) {
+    if (!ADMIN_ROLES.has(ctx.userType)) {
+      return { success: false, error: "Forbidden: admin only" }
+    }
+  } else if (params.agentId) {
+    // Per-agent P&L → must be the same agent OR an admin in the same brokerage
+    if (params.agentId !== ctx.agentId) {
+      if (!ADMIN_ROLES.has(ctx.userType)) {
+        return { success: false, error: "Forbidden" }
+      }
+      const { data: targetAgent } = await svc
+        .from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+      if (!targetAgent || targetAgent.brokerage_id !== effectiveBrokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+  } else {
+    return { success: false, error: "agentId or isBrokerage required" }
+  }
 
   const currentYear = new Date().getFullYear()
 
@@ -101,7 +153,7 @@ export async function generatePLReport(params: {
       const { data: ytd } = await supabase
         .from("brokerage_earnings")
         .select("gross_commission_income, brokerage_net, agent_splits_paid")
-        .eq("brokerage_id", params.brokerageId)
+        .eq("brokerage_id", effectiveBrokerageId)
         .eq("period_type", "ytd")
         .order("computed_at", { ascending: false })
         .limit(1)
@@ -110,7 +162,7 @@ export async function generatePLReport(params: {
       const { data: pl } = await supabase
         .from("brokerage_p_l")
         .select("net_profit, profit_margin_pct, operating_expenses, tech_expenses, marketing_expenses")
-        .eq("brokerage_id", params.brokerageId)
+        .eq("brokerage_id", effectiveBrokerageId)
         .order("computed_at", { ascending: false })
         .limit(1)
         .maybeSingle()
@@ -192,9 +244,27 @@ Use professional language. Be direct and actionable.`,
 // ─── EXPORT COMMISSION HISTORY AS CSV ────────────────────────────────────────
 
 export async function exportCommissionsCSV(agentId: string) {
+  // AUTH GATE — was exporting any agent's commission history to any caller.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+
+  // Caller may export their own commissions, or an admin/broker can export
+  // for any agent within their brokerage.
+  if (agentId !== ctx.agentId) {
+    if (!ADMIN_ROLES.has(ctx.userType)) {
+      return { success: false, error: "Forbidden" }
+    }
+    const { data: targetAgent } = await svc
+      .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+  }
 
   const currentYear = new Date().getFullYear()
 
@@ -206,7 +276,7 @@ export async function exportCommissionsCSV(agentId: string) {
         "id, close_date, gross_commission, agent_split_percent, agent_commission, brokerage_commission, side, status, transaction_id"
       )
       .eq("agent_id", agentId)
-      .eq("brokerage_id", (await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle().then(r => r.data?.brokerage_id ?? ""))!)
+      .eq("brokerage_id", ctx.brokerageId)
       .gte("close_date", `${currentYear}-01-01`)
       .order("close_date", { ascending: false })
 
@@ -300,13 +370,27 @@ export async function deleteExpense(expenseId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
 
-  const { error } = await supabase
+  // business_expenses.agent_id references agents.id (not auth.users.id).
+  // Resolve the caller's agent.id before scoping the delete, otherwise the
+  // .eq filter silently matches nothing and the delete is a no-op.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (!agentRow?.id) return { success: false, error: "No agent profile" }
+
+  const { data: deleted, error } = await supabase
     .from("business_expenses")
     .delete()
     .eq("id", expenseId)
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentRow.id)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!deleted || deleted.length === 0) {
+    return { success: false, error: "Expense not found or not yours to delete" }
+  }
 
   revalidatePath("/dashboard/financials/expenses")
   revalidatePath("/dashboard/financials/agent")

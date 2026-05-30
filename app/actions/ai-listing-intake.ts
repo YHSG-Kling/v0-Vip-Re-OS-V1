@@ -1,12 +1,16 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { createServiceClient } from "@/lib/supabase/service"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { guardContent } from "@/lib/content-guardian"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
 
 // ============================================
@@ -72,16 +76,23 @@ interface ListingIntakeData {
 // ============================================
 // 1. AI PROPERTY DATA ENRICHMENT
 // ============================================
-export async function aiEnrichPropertyData(address: string, agentId: string) {
+export async function aiEnrichPropertyData(address: string, _agentId?: string) {
   try {
-    if (!isValidUUID(agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference. Was previously open: any
+    // caller could spoof an agentId and trigger AI calls.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const agentId = ctx.agentId ?? ctx.userId
 
     const supabase = await createClient()
 
-    // Call external data enrichment APIs (tax records, MLS history, etc.)
-    // This would integrate with BatchData, CoreLogic, or similar
+    // AI estimate — used for listing-appointment prep when there's no real
+    // listing yet (agent is preparing materials for a seller visit). The
+    // real MLS pull happens at go-live time (currently manual entry by
+    // admin/agent; auto-pull lives in lib/property/enrichment-chain.ts and
+    // is used by listing-presentation-builder, not by this action).
     const enrichmentPrompt = `You are a real estate data analyst. Based on this address, estimate property details.
 Address: ${address}
 
@@ -229,16 +240,23 @@ List only the form names, one per line. If none, respond with "NONE".`,
 // 3. AI LISTING DESCRIPTION GENERATOR
 // ============================================
 export async function aiGenerateListingDescription(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   propertyData: any
   style: "luxury" | "family" | "investor" | "first_time_buyer"
   highlights?: string[]
   neighborhood?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference. Previously accepted a
+    // caller-supplied agentId and "fell back" to looking it up in the DB
+    // when the session user didn't match, which let any caller drive
+    // generation under any other agent's brokerage + brand-voice context.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId ?? ctx.userId
 
     const supabase = await createClient()
 
@@ -246,7 +264,7 @@ export async function aiGenerateListingDescription(params: {
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", agentId)
       .maybeSingle()
 
     const { object: descriptions } = await generateObject({
@@ -278,16 +296,36 @@ IMPORTANT RULES:
 - All content must be original`,
     })
 
+    // Run compliance + BrandVoice guard on MLS description (the regulated channel)
+    const guardResult = await guardContent({
+      content:     descriptions.mlsDescription,
+      agentId,
+      brokerageId,
+      contentType: "listing_description",
+    }).catch((err) => {
+      console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
+      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+    })
+
     // Save generated content
     await supabase.from("listing_marketing_content").insert({
-      agent_id: params.agentId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       content_type: "ai_descriptions",
       content: descriptions,
       target_audience: params.style,
       status: "draft",
     })
 
-    return { success: true, descriptions }
+    return {
+      success: true,
+      descriptions,
+      guardResult: {
+        flagged:    guardResult.flagged,
+        violations: guardResult.violations,
+        notes:      guardResult.notes,
+      },
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Description error:", error)
     return handleError(error, "aiGenerateListingDescription")
@@ -298,15 +336,17 @@ IMPORTANT RULES:
 // 4. AI PRICING RECOMMENDATION
 // ============================================
 export async function aiSuggestListPrice(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   propertyData: any
   comparables?: any[]
   marketConditions?: "hot" | "balanced" | "cooling"
   motivation?: "quick_sale" | "maximize_price" | "balanced"
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const { object: pricing } = await generateObject({
@@ -358,12 +398,19 @@ Provide:
 // 5. AI COMPLIANCE CHECKER
 // ============================================
 export async function aiCheckListingCompliance(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   description: string
   photos?: string[]
   state: string
 }) {
   try {
+    // Auth gate — was previously fully open (no auth check at all).
+    // Burns paid OpenAI inference.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const { object: compliance } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: z.object({
@@ -414,7 +461,7 @@ Be thorough - missing compliance can result in fines or license issues.`,
 // 6. DOTLOOP INTEGRATION - CREATE OR PULL LOOP
 // ============================================
 export async function createOrPullDotloop(params: {
-  agentId: string
+  agentId?: string  // ignored — derived from session
   listingId?: string
   propertyAddress: string
   sellerId: string
@@ -422,26 +469,44 @@ export async function createOrPullDotloop(params: {
   existingLoopId?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // CRITICAL auth gate — was previously taking caller-supplied agentId,
+    // resolving it to a brokerage, then using THAT brokerage's stored
+    // Dotloop OAuth credentials to call the Dotloop API. Any caller could
+    // create/pull loops on any other brokerage's Dotloop account.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+    const supabase = await createClient()
 
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      // Return mock for development
-      console.log("[AI Listing Intake] Dotloop not configured, using mock")
-      return {
-        success: true,
-        loopId: `mock-loop-${Date.now()}`,
-        loopUrl: `https://dotloop.com/loop/mock-${Date.now()}`,
-        documents: [],
-        mock: true,
+    // Verify the listing (if linking) belongs to caller's brokerage
+    if (params.listingId && isValidUUID(params.listingId)) {
+      const { data: listingRow } = await supabase
+        .from("listings").select("brokerage_id").eq("id", params.listingId).maybeSingle()
+      if (!listingRow || listingRow.brokerage_id !== brokerageId) {
+        return { success: false, error: "Forbidden: listing not in your brokerage" }
       }
     }
 
-    const supabase = await createClient()
+    const serviceClient = createServiceClient()
+    const { data: dotloopCred } = await serviceClient
+      .from("platform_credentials")
+      .select("access_token, account_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("platform", "dotloop")
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!dotloopCred?.access_token || !dotloopCred?.account_id) {
+      return {
+        success: false,
+        error: "Dotloop is not configured for your brokerage. Go to Settings > Integrations.",
+        notConfigured: true,
+      }
+    }
+    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // If existing loop, pull data from it
     if (params.existingLoopId) {
@@ -502,9 +567,12 @@ export async function createOrPullDotloop(params: {
     const result = await response.json()
     const loopId = result.data?.loop_id
 
-    // Update listing with loop ID
+    // Update listing with loop ID — ownership verified above
     if (params.listingId) {
-      await supabase.from("listings").update({ dotloop_loop_id: loopId }).eq("id", params.listingId)
+      await supabase.from("listings")
+        .update({ dotloop_loop_id: loopId })
+        .eq("id", params.listingId)
+        .eq("brokerage_id", brokerageId)
     }
 
     return {
@@ -522,34 +590,33 @@ export async function createOrPullDotloop(params: {
 // ============================================
 // 7. AI DOCUMENT STATUS CHECKER
 // ============================================
-export async function aiCheckDocumentStatus(params: { loopId: string; agentId: string }) {
+export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: string }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Same Dotloop credential-leak fix as createOrPullDotloop — derive
+    // brokerage from session, never trust caller-supplied agentId.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
+    const brokerageId = ctx.brokerageId
 
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
-
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      // Mock response for development
+    const serviceClient2 = createServiceClient()
+    const { data: dotloopCred2 } = await serviceClient2
+      .from("platform_credentials")
+      .select("access_token, account_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("platform", "dotloop")
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!dotloopCred2?.access_token || !dotloopCred2?.account_id) {
       return {
-        success: true,
-        documents: [
-          { name: "Listing Agreement", status: "signed", signedDate: new Date().toISOString() },
-          { name: "Seller Disclosure", status: "pending_signature", sentDate: new Date().toISOString() },
-          { name: "Lead Paint Disclosure", status: "not_started" },
-        ],
-        summary: {
-          total: 3,
-          signed: 1,
-          pending: 1,
-          notStarted: 1,
-        },
-        aiRecommendation: "Send reminder for Seller Disclosure - pending 2 days",
-        mock: true,
+        success: false,
+        error: "Dotloop is not configured for your brokerage. Go to Settings > Integrations.",
+        notConfigured: true,
       }
     }
+    const DOTLOOP_API_KEY = dotloopCred2.access_token
+    const DOTLOOP_PROFILE_ID = dotloopCred2.account_id
 
     // Fetch documents from Dotloop
     const response = await fetch(
@@ -610,19 +677,36 @@ Provide a 1-2 sentence recommendation for the agent.`,
 // ============================================
 export async function createListing(params: ListingIntakeData) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Resolve identity from session — never trust caller-supplied agentId/brokerageId
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
     }
 
     const supabase = await createClient()
+
+    // If the request supplies a sellerId, verify it belongs to the caller's brokerage
+    const sellerId = params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null
+    if (sellerId) {
+      const { data: sellerContact } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", sellerId)
+        .maybeSingle()
+      if (sellerContact && sellerContact.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+
+    const ownerAgentId = ctx.agentId ?? ctx.userId
 
     // Create the listing — use live schema column names only
     const { data: listing, error } = await supabase
       .from("listings")
       .insert({
-        agent_id:          params.agentId,
-        brokerage_id:      params.brokerageId,
-        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
+        agent_id:          ownerAgentId,
+        brokerage_id:      ctx.brokerageId,
+        seller_contact_id: sellerId,
         address:           params.propertyAddress,
         city:              params.city,
         state:             params.state,
@@ -632,8 +716,10 @@ export async function createListing(params: ListingIntakeData) {
         bedrooms:          params.propertyDetails?.beds,
         bathrooms:         params.propertyDetails?.baths,
         sqft:              params.propertyDetails?.sqft,
+        // "draft" persists the partial listing row before the agreement is
+        // complete (added to the status CHECK). Becomes coming_soon when the
+        // listing agreement is signed.
         status:            "draft",
-        current_stage:     "LEAD",
         lifecycle_stage:   "LEAD",
       })
       .select()
@@ -641,36 +727,56 @@ export async function createListing(params: ListingIntakeData) {
 
     if (error || !listing) throw error ?? new Error("Failed to create listing")
 
-    // Create transaction record — seller_contact_id is the FK in transactions
-    const { data: transaction } = await supabase
+    // Create transaction record — stamped from session identity.
+    // Live schema: column is deal_type (buyer|seller|dual) and status is a fixed
+    // CHECK set; the previous transaction_type/"pre_listing" values silently
+    // failed the constraint, so no transaction row was ever created.
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
-        agent_id:          params.agentId,
-        brokerage_id:      params.brokerageId,
-        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
+        agent_id:          ownerAgentId,
+        brokerage_id:      ctx.brokerageId,
+        // contact_id is the primary in-house client; on a seller-side deal that
+        // is the seller. seller_contact_id is the same person in its role slot.
+        contact_id:        sellerId,
+        seller_contact_id: sellerId,
         listing_id:        listing.id,
-        transaction_type:  "seller_side",
-        status:            "pre_listing",
+        deal_type:         "seller",
+        status:            "qualifying",
+        deal_name:         params.propertyAddress, // NOT NULL on transactions
         property_address:  params.propertyAddress,
       })
       .select()
       .maybeSingle()
 
-    // Create Dotloop loop
-    const dotloopResult = await createOrPullDotloop({
-      agentId: params.agentId,
-      listingId: listing.id,
-      propertyAddress: params.propertyAddress,
-      sellerId: params.sellerId,
-      transactionType: "listing",
-    })
+    if (txError) {
+      console.error("[AI Listing Intake] Transaction insert failed:", txError)
+    }
 
-    // Update listing with loop ID
-    if (dotloopResult.success && dotloopResult.loopId) {
-      await supabase
-        .from("listings")
-        .update({ dotloop_loop_id: dotloopResult.loopId })
-        .eq("id", listing.id)
+    // Provider container at intake is provider-specific. We do NOT assume dotloop:
+    // only create a Dotloop loop when the brokerage's resolved provider is dotloop.
+    // Other providers create their container later at send-for-signature time.
+    let dotloopResult: Awaited<ReturnType<typeof createOrPullDotloop>> | null = null
+    const resolvedProvider = await resolveTransactionProvider({
+      agentUserId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (resolvedProvider?.provider === "dotloop") {
+      dotloopResult = await createOrPullDotloop({
+        agentId: ownerAgentId,
+        listingId: listing.id,
+        propertyAddress: params.propertyAddress,
+        sellerId: sellerId ?? "",
+        transactionType: "listing",
+      })
+
+      // Update listing with loop ID
+      if (dotloopResult.success && dotloopResult.loopId) {
+        await supabase
+          .from("listings")
+          .update({ dotloop_loop_id: dotloopResult.loopId })
+          .eq("id", listing.id)
+      }
     }
 
     revalidatePath("/dashboard/listings")
@@ -692,10 +798,23 @@ export async function createListing(params: ListingIntakeData) {
 // ============================================
 // 9. AI PHOTO ORDERING OPTIMIZER
 // ============================================
-export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId: string }) {
+export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId?: string }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    // Auth gate — AI calls cost real $$$, fail fast on unauth
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    // Verify the listing belongs to the caller's brokerage
+    const supabase = await createClient()
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
     }
 
     const { object: optimization } = await generateObject({
@@ -741,8 +860,16 @@ export async function runCompleteListingIntake(params: {
   hasPool?: boolean
 }) {
   try {
+    const agentCtx = await getAgentContext()
+    if (!agentCtx.isAuthenticated || !agentCtx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = agentCtx.brokerageId
+    // Identity is session-derived; ignore caller-supplied agentId
+    const effectiveAgentId = agentCtx.agentId ?? agentCtx.userId
+
     // Step 1: Enrich property data
-    const enrichResult = await aiEnrichPropertyData(params.address, params.agentId)
+    const enrichResult = await aiEnrichPropertyData(params.address, effectiveAgentId)
     if (!enrichResult.success) return enrichResult
 
     // Step 2: Get required forms
@@ -758,27 +885,28 @@ export async function runCompleteListingIntake(params: {
 
     // Step 3: Generate listing description
     const descResult = await aiGenerateListingDescription({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       propertyData: enrichResult.data,
       style: "family",
     })
 
     // Step 4: Get pricing recommendation
     const pricingResult = await aiSuggestListPrice({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       propertyData: enrichResult.data,
     })
 
     // Step 5: Check compliance
     const complianceResult = await aiCheckListingCompliance({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
       description: descResult.success ? descResult.descriptions?.mlsDescription || "" : "",
       state: params.state,
     })
 
     // Step 6: Create the listing
     const listingResult = await createListing({
-      agentId: params.agentId,
+      agentId: effectiveAgentId,
+      brokerageId,
       propertyAddress: params.address,
       city: params.city,
       state: params.state,
@@ -804,5 +932,239 @@ export async function runCompleteListingIntake(params: {
   } catch (error) {
     console.error("[AI Listing Intake] Complete workflow error:", error)
     return handleError(error, "runCompleteListingIntake")
+  }
+}
+
+// ============================================
+// WORKFLOW OS — generate listing agreement draft
+// ============================================
+/**
+ * Generates an AI-drafted listing agreement for a seller contact.
+ * Called by the draft_document workflow adapter when document_type = "listing_agreement".
+ */
+/**
+ * Stage a LISTING AGREEMENT PACKET for the agent to complete in FormWizard.
+ *
+ * Same pattern as generateOfferDraft — a workflow can't fully fill a listing
+ * agreement (it needs seller's legal name, listing price strategy, commission,
+ * dates, marketing terms). This action prepares the packet:
+ *   - Required forms for the property state
+ *   - AI-prefilled known fields (seller, property, agent)
+ *   - Flagged unknown fields the agent must finalize
+ *   - status = needs_agent_input
+ *   - Notification linking to the listing FormWizard
+ *
+ * Not marketing content — no brand-voice / them-first checks apply.
+ */
+export async function generateListingAgreement(params: {
+  brokerageId: string
+  contactId?: string | null
+  agentUserId?: string | null
+  /** 2-letter US state code from the PROPERTY ADDRESS — required. */
+  state: string
+  documentId?: string | null
+  propertyAddress?: string
+  listingId?: string | null
+}): Promise<{ success: boolean; documentId?: string; error?: string }> {
+  try {
+    const supabase = await createClient()
+
+    const { getStateForms } = await import("@/lib/state-forms/registry")
+    const forms = getStateForms(params.state, "listing")
+    const state = params.state.trim().toUpperCase()
+
+    // Prefill known fields
+    let sellerName: string | null = null
+    let sellerEmail: string | null = null
+    if (params.contactId) {
+      const { data: c } = await supabase
+        .from("contacts").select("first_name, last_name, email")
+        .eq("id", params.contactId).maybeSingle()
+      if (c) {
+        sellerName  = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || null
+        sellerEmail = c.email ?? null
+      }
+    }
+
+    let propertyAddress = params.propertyAddress ?? null
+    let listPrice: number | null = null
+    if (params.listingId) {
+      const { data: l } = await supabase
+        .from("listings").select("address, list_price").eq("id", params.listingId).maybeSingle()
+      if (l) {
+        propertyAddress = l.address ?? propertyAddress
+        listPrice = l.list_price ?? null
+      }
+    }
+
+    let agentName: string | null = null
+    let brokerageName: string | null = null
+    if (params.agentUserId) {
+      const { data: u } = await supabase
+        .from("users").select("first_name, last_name").eq("id", params.agentUserId).maybeSingle()
+      if (u) agentName = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || null
+    }
+    const { data: brokerage } = await supabase
+      .from("brokerages").select("name").eq("id", params.brokerageId).maybeSingle()
+    if (brokerage) brokerageName = brokerage.name ?? null
+
+    const packet = {
+      packet_type: "listing_agreement",
+      state,
+      created_at: new Date().toISOString(),
+      forms: {
+        required: forms.required,
+        addenda:  forms.addenda,
+        brokerage_representation: forms.brokerageRepresentation,
+      },
+      prefilled: {
+        seller_legal_name: sellerName,
+        seller_email:      sellerEmail,
+        property_address:  propertyAddress,
+        suggested_list_price: listPrice,
+        agent_name:        agentName,
+        brokerage_name:    brokerageName,
+      },
+      needs_agent_input: [
+        { field: "seller_legal_name_verified", reason: "Must match deed / driver's license", suggested: sellerName },
+        { field: "list_price",                  reason: "Strategy decision with seller (CMA-driven)" },
+        { field: "commission_structure",        reason: "Listing-side commission + offered to buyer agent" },
+        { field: "listing_term_days",           reason: "Typical 90 / 180 days" },
+        { field: "marketing_obligations",       reason: "Photography, video, MLS, open house plan" },
+        { field: "seller_responsibilities",     reason: "Disclosures, repairs, showing access" },
+        { field: "go_live_date",                reason: "MLS active date" },
+      ],
+      formwizard_url: params.listingId
+        ? `/dashboard/listings/${params.listingId}/edit`
+        : "/dashboard/listings/new",
+    }
+
+    if (params.documentId) {
+      await supabase
+        .from("documents")
+        .update({
+          content: JSON.stringify(packet, null, 2),
+          status: "needs_agent_input",
+          metadata: {
+            state,
+            packet_type: "listing_agreement",
+            required_forms: forms.required,
+            available_addenda: forms.addenda,
+            brokerage_representation_form: forms.brokerageRepresentation,
+            prefilled: packet.prefilled,
+            unknown_fields: packet.needs_agent_input.map(f => f.field),
+            formwizard_url: packet.formwizard_url,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", params.documentId)
+    }
+
+    // Notify the agent — the packet awaits their review/finalization
+    if (params.agentUserId) {
+      void Promise.resolve(supabase.from("notifications").insert({
+        user_id: params.agentUserId,
+        brokerage_id: params.brokerageId,
+        type: "listing_agreement_packet_ready",
+        title: `Listing agreement packet ready for ${sellerName ?? "seller"}`,
+        body: `Required ${state} forms staged with prefilled fields. Open the listing FormWizard to set price, commission, and term before sending for signature.`,
+        priority: "high",
+        entity_type: "document",
+        entity_id: params.documentId ?? null,
+        channel: "in_app",
+      })).catch(() => {})
+    }
+
+    return { success: true, documentId: params.documentId ?? undefined }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
+  }
+}
+
+// ============================================
+// WORKFLOW OS — generate listing landing page
+// ============================================
+/**
+ * Creates or updates a listing micro-site / landing page.
+ * Called by the listing_landing_page workflow adapter.
+ */
+export async function generateListingLandingPage(params: {
+  brokerageId: string
+  agentUserId: string
+  templateId?: string
+  slug?: string
+  contactId?: string | null
+  listingId?: string | null
+}): Promise<{
+  success: boolean
+  pageId?: string
+  pageUrl?: string
+  slug?: string
+  error?: string
+}> {
+  try {
+    const supabase = await createClient()
+
+    const pageSlug = params.slug ?? `listing-${Math.random().toString(36).slice(2, 9)}`
+
+    // Fetch listing data if linked
+    let listingData: Record<string, unknown> = {}
+    if (params.listingId) {
+      const { data: listing } = await supabase
+        .from("listings")
+        .select("address, city, state, price, bedrooms, bathrooms, sqft, description, photos")
+        .eq("id", params.listingId)
+        .maybeSingle()
+      if (listing) listingData = listing as Record<string, unknown>
+    }
+
+    // Generate AI description for the landing page
+    const prompt = `Write a compelling property landing page headline and description.
+Property: ${JSON.stringify(listingData)}.
+Output a JSON object with: headline (string, max 80 chars), subheadline (string, max 120 chars), body (string, max 300 chars).
+Them-first: focus on what the buyer gains, not agent promotion.`
+
+    let pageContent: Record<string, string> = {
+      headline: `Beautiful Home — ${listingData.address ?? "Available Now"}`,
+      subheadline: "Contact us to schedule a showing",
+      body: "",
+    }
+
+    try {
+      const { generateTextRouted } = await import("@/lib/ai/models")
+      const { text } = await generateTextRouted({
+        feature: "listing_landing_page",
+        messages: [{ role: "user", content: prompt }],
+      })
+      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim())
+      if (parsed?.headline) pageContent = parsed
+    } catch { /* use defaults */ }
+
+    const { data: page, error } = await supabase
+      .from("listing_landing_pages")
+      .upsert({
+        brokerage_id: params.brokerageId,
+        contact_id: params.contactId ?? null,
+        template_id: params.templateId ?? null,
+        listing_id: params.listingId ?? null,
+        slug: pageSlug,
+        content: pageContent,
+        status: "published",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "slug" })
+      .select("id")
+      .maybeSingle()
+
+    if (error) throw error
+
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.platform.com"
+    const pageUrl = `${baseUrl}/p/${pageSlug}`
+
+    return { success: true, pageId: page?.id, pageUrl, slug: pageSlug }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
   }
 }

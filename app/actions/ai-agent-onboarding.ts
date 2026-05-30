@@ -1,8 +1,40 @@
 "use server"
 
+/**
+ * @deprecated MONOLITHIC ONBOARDING FILE (919 lines, 9 functions).
+ * Modular replacements live in `app/actions/onboarding/*`.
+ *
+ * MIGRATION MAP — each function moves to its target module:
+ *
+ *   startAgentOnboarding       → app/actions/onboarding/progress.ts
+ *   getOnboardingStatus        → merge with progress.ts:getAgentProgress
+ *                                AND agent-onboarding-actions.ts:fetchMyOnboardingDashboard
+ *                                (likely keep one canonical reader)
+ *   completeAISessionStep      → merge with agent-onboarding-actions.ts:completeMyOnboardingStep
+ *   matchMentor                → NEW app/actions/onboarding/mentorship.ts
+ *   verifyAgentLicense         → app/actions/onboarding/license.ts
+ *                                (overlaps with submitLicenseDetails — pick canonical)
+ *   generateWelcomeMessage     → app/actions/onboarding/assistant.ts
+ *   askOnboardingBuddy         → app/actions/onboarding/assistant.ts
+ *   submitQuizAttempt          → app/actions/onboarding/onboarding-quiz-actions.ts
+ *   certifyAgent               → app/actions/onboarding/progress.ts
+ *                                (overlaps with claimCertification — pick canonical)
+ *   getOnboardingAnalytics     → NEW app/actions/onboarding/analytics.ts
+ *                                OR fold into onboarding-steps-admin-actions.ts
+ *
+ * Until the migration ships:
+ *   - This file remains active. Existing callers continue to work.
+ *   - Do NOT add new functions here. Add them to the target module instead.
+ *   - The single direct caller is `app/dashboard/onboarding/mentorship/
+ *     mentorship-client.tsx` (matchMentor) — to be updated when that
+ *     function moves to mentorship.ts.
+ *   - app/actions/index.ts re-exports from this file; that re-export will
+ *     be redirected to the modular files as each function migrates.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -182,18 +214,27 @@ Provide actionable recommendations.`,
       { name: "Transaction Training", description: "Complete transaction workflow training", category: "training", required: true, order: 12, estimatedMinutes: 120, aiAssisted: true },
     ]
 
+    const { data: stepBrok } = await supabase.from("agents").select("brokerage_id").eq("id", agent.id).maybeSingle()
     for (const step of defaultSteps) {
       await supabase.from("agent_onboarding_steps").insert({
+        brokerage_id: stepBrok?.brokerage_id,
+        agent_id: agent.id,
         session_id: session.id,
-        ...step,
+        step_title: step.name,
+        step_description: `[${step.category}] ${step.description}`,
+        step_type: "task",
+        step_order: step.order,
+        ai_generated: step.aiAssisted,
+        status: "pending",
       })
     }
 
-    // Update recruit status if applicable
+    // Update recruit status if applicable (recruits.status CHECK is lowercase;
+    // there is no joined_at column — the provisioned fields capture the date).
     if (params.recruitId) {
       await supabase
         .from("recruits")
-        .update({ status: "Joined", joined_at: new Date().toISOString() })
+        .update({ status: "joined", updated_at: new Date().toISOString() })
         .eq("id", params.recruitId)
     }
 
@@ -487,11 +528,15 @@ Return the mentor ID that best matches.`,
     if (updateError) throw updateError
 
     // Create mentor relationship
+    const { data: mentorBrok } = await supabase.from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
     await supabase.from("agent_mentor_relationships").insert({
-      mentee_id: agentId,
-      mentor_id: matchResult.bestMentorId,
+      brokerage_id: mentorBrok?.brokerage_id,
+      mentee_agent_id: agentId,
+      mentor_agent_id: matchResult.bestMentorId,
       status: "active",
-      suggested_topics: matchResult.suggestedMeetingTopics,
+      notes: typeof matchResult.suggestedMeetingTopics === "string"
+        ? matchResult.suggestedMeetingTopics
+        : JSON.stringify(matchResult.suggestedMeetingTopics ?? null),
     })
 
     revalidatePath("/admin/agent-roster")
@@ -689,7 +734,9 @@ Provide a helpful, encouraging answer in 2-3 paragraphs. Include actionable next
     })
 
     // Log the conversation
+    const { data: chatBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
     await supabase.from("onboarding_ai_chats").insert({
+      brokerage_id: chatBrok?.brokerage_id,
       agent_id: params.agentId,
       question: params.question,
       ai_response: answer,
@@ -755,7 +802,9 @@ export async function submitQuizAttempt(params: {
     const attemptNumber = (prevAttempts?.[0]?.attempt_number || 0) + 1
 
     // Save attempt
+    const { data: quizBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
     await supabase.from("agent_quiz_attempts").insert({
+      brokerage_id: quizBrok?.brokerage_id,
       agent_id: params.agentId,
       quiz_id: params.quizId,
       score,

@@ -7,12 +7,13 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
-import { Send, Copy, ExternalLink, Search, MessageCircle, ArrowRight } from "lucide-react"
+import { Send, Copy, ExternalLink, Search, MessageCircle, ArrowRight, Sparkles } from "lucide-react"
 import Link from "next/link"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { toast } from "sonner"
+import { InlineAiReplyCoach } from "@/app/components/ai-copilot"
 
 interface Message {
   id: string
@@ -105,22 +106,17 @@ export function OfficeChatClient({
           : `You are speaking with ${selectedContactName}. Context: This is a relationship-focused conversation. Provide personalized, authentic responses.`
 
       const response = await generateSmartResponse({
-        userMessage: input,
-        systemPrompt,
-        brandVoice: brandVoice
-          ? {
-              tone: brandVoice.tone,
-              style: brandVoice.style,
-              keywords: brandVoice.keywords,
-              avoid_words: brandVoice.avoid_words,
-            }
-          : undefined,
+        incomingMessage: input,
+        contactId: selectedContactId ?? userId,
+        agentId,
+        brokerageId,
+        channel: "chat",
       })
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response,
+        content: response.success ? response.draft ?? "" : (response as any).error ?? "Unable to generate response",
         timestamp: new Date(),
       }
 
@@ -211,6 +207,16 @@ export function OfficeChatClient({
               ))}
             </CardContent>
           </Card>
+
+          {/* Reply Coach — visible in relationship mode when a contact is selected */}
+          {mode === "relationship" && selectedContactName && (
+            <InlineAiReplyCoach
+              conversationId={`office-chat-${selectedContactName.toLowerCase().replace(/\s+/g, "-")}`}
+              agentId={agentId}
+              contactName={selectedContactName}
+              onAcceptDraft={(draft) => setInput(draft)}
+            />
+          )}
 
           {/* Quick Navigation */}
           {mode === "office" && (

@@ -38,7 +38,7 @@ export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
   const { data: post, error } = await supabase
     .from("blog_posts")
     .select(
-      "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at"
+      "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at, call_to_action, category"
     )
     .eq("id", postId)
     .eq("brokerage_id", userData.brokerage_id)

@@ -78,7 +78,7 @@ export async function POST(req: Request) {
       notes: note ?? null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({ success: true, recruitId, toStatus })
   } catch (err: any) {

@@ -2,7 +2,7 @@
 
 import useSWR from "swr"
 import { useAuth } from "@/lib/auth/client"
-import { getContactById } from "@/app/actions/contact-details"
+import { getContactDetails } from "@/app/actions/contact-details"
 import { getTransactions } from "@/app/actions/transactions"
 import { getShowings } from "@/app/actions/showings"
 import { getEducationResources, getRecommendedProperties, getJourneyMilestones, getContactAgent } from "@/app/actions/ai-client-portal"
@@ -65,8 +65,8 @@ export function useContactDashboard(personaType?: string) {
     contactId ? `contact-${contactId}` : null,
     async () => {
       if (!contactId) return null
-      const result = await getContactById(contactId)
-      return result.success ? result.contact : null
+      const result = await getContactDetails(contactId)
+      return (result as any).success ? (result as any).contact : null
     }
   )
 
@@ -85,8 +85,8 @@ export function useContactDashboard(personaType?: string) {
     contactId ? `contact-transactions-${contactId}` : null,
     async () => {
       if (!contactId) return []
-      const result = await getTransactions({ contactId })
-      return result.success ? result.transactions : []
+      const result = await getTransactions({ contactId } as any)
+      return (result as any).success ? (result as any).transactions : []
     }
   )
 
@@ -95,8 +95,8 @@ export function useContactDashboard(personaType?: string) {
     contactId ? `contact-showings-${contactId}` : null,
     async () => {
       if (!contactId) return []
-      const result = await getShowings({ contactId })
-      return result.success ? result.showings : []
+      const result = await getShowings(contactId)
+      return Array.isArray(result) ? result : ((result as any).success ? (result as any).showings : [])
     }
   )
 
@@ -132,16 +132,17 @@ export function useContactDashboard(personaType?: string) {
   )
 
   // Map agent info
-  const agentInfo: AgentInfo | null = agentData ? {
-    id: agentData.id,
-    name: agentData.full_name || "Your Agent",
-    phone: agentData.phone || "",
-    email: agentData.email || "",
-    photo: agentData.photo_url || "/placeholder.svg",
-    specializations: agentData.specializations || [],
-    yearsExperience: agentData.years_experience || 0,
-    avgDaysToSell: agentData.avg_days_to_sell || 0,
-    transactionsClosed: agentData.transactions_closed || 0,
+  const agentRecord = Array.isArray(agentData) ? agentData[0] : agentData
+  const agentInfo: AgentInfo | null = agentRecord ? {
+    id: (agentRecord as any).id,
+    name: (agentRecord as any).full_name || "Your Agent",
+    phone: (agentRecord as any).phone || "",
+    email: (agentRecord as any).email || "",
+    photo: (agentRecord as any).photo_url || "/placeholder.svg",
+    specializations: (agentRecord as any).specializations || [],
+    yearsExperience: (agentRecord as any).years_experience || 0,
+    avgDaysToSell: (agentRecord as any).avg_days_to_sell || 0,
+    transactionsClosed: (agentRecord as any).transactions_closed || 0,
   } : null
 
   // Map property info from active transaction/listing

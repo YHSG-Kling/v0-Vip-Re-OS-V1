@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, TrendingUp, Eye, Clock, DollarSign, BarChart3 } from "lucide-react"
 import Link from "next/link"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 export const dynamic = "force-dynamic"
 
@@ -22,18 +23,22 @@ export default async function ListingsAnalyticsPage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  // Get listing analytics data
+  // Get listing analytics data. DOM is computed from go_live_date — the
+  // `days_on_market` column does not exist on listings.
   const { data: listings } = await service
     .from("listings")
-    .select("id, status, list_price, days_on_market, views_count, created_at")
+    .select("id, status, list_price, go_live_date, views_count, created_at")
     .eq("brokerage_id", profile.brokerage_id)
     .order("created_at", { ascending: false })
     .limit(50)
 
   const activeListings = listings?.filter(l => l.status === "active") || []
   const totalViews = listings?.reduce((sum, l) => sum + (l.views_count || 0), 0) || 0
-  const avgDaysOnMarket = activeListings.length > 0 
-    ? Math.round(activeListings.reduce((sum, l) => sum + (l.days_on_market || 0), 0) / activeListings.length)
+  const activeDoms = activeListings
+    .map(l => computeDaysOnMarket(l.go_live_date))
+    .filter((d): d is number => typeof d === "number" && d >= 0)
+  const avgDaysOnMarket = activeDoms.length > 0
+    ? Math.round(activeDoms.reduce((sum, d) => sum + d, 0) / activeDoms.length)
     : 0
   const totalVolume = activeListings.reduce((sum, l) => sum + (l.list_price || 0), 0)
 
@@ -138,7 +143,7 @@ export default async function ListingsAnalyticsPage() {
                         <p className="text-xs text-muted-foreground">Views</p>
                       </div>
                       <div className="text-right">
-                        <p className="font-medium">{listing.days_on_market || 0}</p>
+                        <p className="font-medium">{computeDaysOnMarket(listing.go_live_date) ?? 0}</p>
                         <p className="text-xs text-muted-foreground">Days</p>
                       </div>
                       <div className="text-right">

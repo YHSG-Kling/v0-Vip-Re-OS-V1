@@ -29,7 +29,7 @@ export async function emitAuditEvent(request: EmitAuditEventRequest): Promise<{ 
     // Build activity record
     const activity: any = {
       brokerage_id,
-      user_id,
+      agent_user_id: user_id,
       activity_type: event_type,
       status: event_type === 'voice.command.executed' ? 'completed' : 'failed',
       metadata: {

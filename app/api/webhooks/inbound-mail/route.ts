@@ -1,0 +1,218 @@
+/**
+ * Inbound email webhook — provider-aware AND per-user-aware.
+ *
+ * Two classes of provider handled in one endpoint:
+ *
+ *   TRANSACTIONAL (HMAC-signed payload):
+ *     postmark / sendgrid / mailgun / resend
+ *   PER-USER OAUTH (push notification → API fetch):
+ *     gmail / outlook
+ *
+ * Per-user resolution: the provider settings come from the USER, not the
+ * brokerage. Independent-contractor agents + team leads use Gmail / Outlook
+ * (their own); brokerage staff use the transactional provider on the
+ * brokerage's domain. lib/inbound-mail/resolve-user-provider.ts walks the
+ * cascade (user → team → brokerage) to find the right credential row.
+ */
+
+import { type NextRequest, NextResponse } from "next/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import {
+  detectInboundProvider, parseInbound, parseFetchInstruction, verifyInbound,
+  type ParsedInboundEmail,
+} from "@/lib/inbound-mail/providers"
+import { resolveUserByInboundIdentifier } from "@/lib/inbound-mail/resolve-user-provider"
+import { fetchGmailMessagesSinceHistory, fetchOutlookMessage } from "@/lib/inbound-mail/oauth-fetchers"
+
+export async function POST(request: NextRequest) {
+  const rawBody = await request.text()
+
+  // Outlook subscription-validation handshake: Microsoft Graph sends a single
+  // POST with ?validationToken=<random> when creating a subscription. We
+  // must echo it back as text/plain to complete the handshake.
+  const url = new URL(request.url)
+  const validationToken = url.searchParams.get("validationToken")
+  if (validationToken) {
+    return new Response(validationToken, {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    })
+  }
+
+  // 1) Detect provider — works for both classes
+  const provider = detectInboundProvider(request.headers, rawBody)
+  if (!provider) {
+    return NextResponse.json({ error: "No recognized inbound-email provider in this request" }, { status: 401 })
+  }
+
+  // 2) Verify the request (HMAC for transactional, JWT-or-clientState for OAuth)
+  if (!verifyInbound(provider, rawBody, request.headers)) {
+    return NextResponse.json({ error: `Invalid ${provider} signature` }, { status: 401 })
+  }
+
+  // 3) Get parsed emails. Two paths:
+  //    TRANSACTIONAL: parseInbound returns the full email payload directly.
+  //    OAUTH (gmail/outlook): parseFetchInstruction returns the IDs we need
+  //      to fetch the actual messages via the user's stored OAuth tokens.
+  let emails: ParsedInboundEmail[] = []
+  let resolvedCredential = null as Awaited<ReturnType<typeof resolveUserByInboundIdentifier>>
+
+  if (provider === "gmail" || provider === "outlook") {
+    const instruction = parseFetchInstruction(provider, rawBody)
+    if (!instruction) {
+      return NextResponse.json({ error: `Could not parse ${provider} notification` }, { status: 400 })
+    }
+    // Identify the user — Gmail by inboxEmail, Outlook by clientState
+    resolvedCredential = await resolveUserByInboundIdentifier({
+      platform:           provider,
+      inboxEmail:         instruction.inboxEmail,
+      outlookClientState: instruction.outlookClientState,
+    })
+    if (!resolvedCredential) {
+      return NextResponse.json({ error: `No user inbox registered for this ${provider} notification` }, { status: 404 })
+    }
+    if (provider === "gmail" && instruction.historyId) {
+      emails = await fetchGmailMessagesSinceHistory({
+        credential:   resolvedCredential,
+        newHistoryId: instruction.historyId,
+      })
+      // Persist the new history_id so the next push starts from here
+      const supabase = createServiceClient()
+      await supabase
+        .from("platform_credentials")
+        .update({ config: { ...resolvedCredential.config, history_id: instruction.historyId } })
+        .eq("id", resolvedCredential.credential_id)
+    } else if (provider === "outlook" && instruction.outlookResource) {
+      const one = await fetchOutlookMessage({
+        credential:  resolvedCredential,
+        resourceUrl: instruction.outlookResource,
+      })
+      if (one) emails = [one]
+    }
+  } else {
+    // TRANSACTIONAL provider — body is the email itself
+    const parsed = parseInbound(provider, rawBody)
+    if (!parsed) {
+      return NextResponse.json({ error: `Could not parse ${provider} body` }, { status: 400 })
+    }
+    emails = [parsed]
+    // For transactional, resolve user/brokerage by recipient address
+    resolvedCredential = await resolveUserByInboundIdentifier({
+      platform:  provider,
+      toAddress: parsed.toEmail,
+    })
+  }
+
+  if (emails.length === 0) {
+    return NextResponse.json({ ok: true, provider, action: "no_new_messages" })
+  }
+
+  // 4) For each email: identify the contact (by FROM or TO) within the
+  //    resolved brokerage, then upload each attachment through the universal
+  //    helper (scanner fires automatically).
+  const supabase = createServiceClient()
+  const { uploadDocument } = await import("@/lib/documents/upload-document")
+  const results: Array<{ email_from: string; uploads: number }> = []
+
+  for (const email of emails) {
+    if (email.attachments.length === 0) {
+      results.push({ email_from: email.fromEmail, uploads: 0 })
+      continue
+    }
+
+    // Determine brokerage scope. For OAuth: from resolvedCredential.brokerage_id.
+    // For transactional: from the matched credential OR via contact lookup.
+    let brokerageId = resolvedCredential?.brokerage_id ?? null
+    let contactId: string | null = null
+
+    if (email.fromEmail) {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("id, brokerage_id")
+        .eq("email", email.fromEmail)
+        .maybeSingle()
+      if (c) {
+        contactId = c.id as string
+        if (!brokerageId) brokerageId = c.brokerage_id as string
+      }
+    }
+    if (!contactId && email.toEmail && brokerageId) {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("email", email.toEmail)
+        .maybeSingle()
+      if (c) contactId = c.id as string
+    }
+    if (!contactId || !brokerageId) {
+      results.push({ email_from: email.fromEmail, uploads: 0 })
+      continue
+    }
+
+    // Pre-link to the contact's most-recent open offer when no ref:offer in subject
+    let offerId: string | null = null
+    const subjMatch = email.subject.match(/ref:offer:([0-9a-f-]{36})/i)
+    if (subjMatch) {
+      offerId = subjMatch[1]
+    } else {
+      const { data: openOffer } = await supabase
+        .from("offers")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("contact_id", contactId)
+        .in("status", ["submitted","accepted","countered"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      offerId = (openOffer?.id as string | null) ?? null
+    }
+
+    let uploaded = 0
+    for (const att of email.attachments) {
+      if (!att.contentB64) continue
+      const buf  = Buffer.from(att.contentB64, "base64")
+      const safe = att.fileName.replace(/[^a-zA-Z0-9._-]/g, "_")
+      const path = `${brokerageId}/${contactId}/${Date.now()}_${safe}`
+      const { data: up, error: upErr } = await supabase.storage
+        .from("documents")
+        .upload(path, buf, { contentType: att.mime, upsert: false })
+      let storageUrl: string | null = null
+      if (!upErr && up) {
+        const { data: pub } = supabase.storage.from("documents").getPublicUrl(up.path)
+        storageUrl = pub.publicUrl ?? null
+      }
+      if (!storageUrl) continue
+
+      const r = await uploadDocument({
+        brokerageId,
+        storageUrl,
+        fileName:     att.fileName,
+        documentType: "uploaded_document",
+        contactId,
+        offerId,
+        metadata: {
+          source:      "inbound_email",
+          provider,
+          from_email:  email.fromEmail,
+          to_email:    email.toEmail,
+          subject:     email.subject,
+          mime:        att.mime,
+          credential_scope: resolvedCredential?.scope ?? null,
+          user_id:     resolvedCredential?.agent_user_id ?? null,
+        },
+      })
+      if (r.success) uploaded++
+    }
+    results.push({ email_from: email.fromEmail, uploads: uploaded })
+  }
+
+  return NextResponse.json({
+    ok:                true,
+    provider,
+    user_scoped:       provider === "gmail" || provider === "outlook",
+    credential_scope:  resolvedCredential?.scope ?? null,
+    emails_processed:  emails.length,
+    results,
+  })
+}

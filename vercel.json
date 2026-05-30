@@ -1,13 +1,24 @@
 {
   "buildCommand": "pnpm install --no-frozen-lockfile && next build",
   "installCommand": "pnpm install --no-frozen-lockfile",
+  "functions": {
+    "app/api/cron/poll-did-videos/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
+    }
+  },
   "crons": [
+    {
+      "path": "/api/cron/connector-health",
+      "schedule": "0 */12 * * *"
+    },
     {
       "path": "/api/cron/dotloop-sync",
       "schedule": "0 */6 * * *"
     },
     {
-      "path": "/api/cron/past-client-touchpoints",
+      "path": "/api/cron/lifetime-customer-touchpoints",
       "schedule": "0 9 * * *"
     },
     {
@@ -19,16 +30,36 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/cron/campaign-sequence-steps",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/lead-scraping",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/connector-auto-applier",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/actor-health",
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/contact-enrichment",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/poll-heygen-videos",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-did-videos",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-did-avatars",
+      "schedule": "*/3 * * * *"
     },
     {
       "path": "/api/cron/onboarding-reminders",
@@ -45,6 +76,30 @@
     {
       "path": "/api/cron/ghost-detection",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/long-term-nurture",
+      "schedule": "0 11 * * 1"
+    },
+    {
+      "path": "/api/cron/predictive-listing-scoring",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/predictive-listing-execute",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/refresh-market-rates",
+      "schedule": "30 6 * * *"
+    },
+    {
+      "path": "/api/cron/wealth-opportunity-scan",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/sphere-resonance",
+      "schedule": "30 7 * * *"
     },
     {
       "path": "/api/cron/territory-metrics",
@@ -157,6 +212,30 @@
     {
       "path": "/api/cron/stale-contact-monitor",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/annual-home-value-reports",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/quarterly-home-value-reports",
+      "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/cron/closing-orchestration",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/showing-prep",
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/gbp-auto-posts",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/weekly-income-digest",
+      "schedule": "0 13 * * 1"
     }
   ]
 }

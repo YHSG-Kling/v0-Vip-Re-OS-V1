@@ -11,16 +11,21 @@ import {
   Mail,
   MessageSquare,
   ArrowRight,
-  Sparkles
+  Sparkles,
+  Scissors,
 } from "lucide-react"
 import Link from "next/link"
 
 interface ContentAsset {
   id: string
-  type: "blog" | "video" | "email" | "social" | "listing"
+  type: "blog" | "video" | "email" | "social" | "listing" | "snippet"
   title: string
   createdAt: string
   repurposeOptions: string[]
+  /** For snippet type: the target platform (e.g., "Instagram Reels") */
+  platform?: string
+  /** For snippet type: caption preview text */
+  caption?: string
 }
 
 interface RepurposeQueuePanelProps {
@@ -34,6 +39,7 @@ const typeIcons = {
   email: Mail,
   social: MessageSquare,
   listing: Image,
+  snippet: Scissors,
 }
 
 const repurposeTargets = {
@@ -42,6 +48,7 @@ const repurposeTargets = {
   email: ["Blog Post", "Social Thread", "Landing Page"],
   social: ["Blog Post", "Email Content", "Video Script"],
   listing: ["Social Posts", "Email Campaign", "Video Tour", "Print Flyer"],
+  snippet: ["Schedule to Omnipresence", "Generate Caption Variants"],
 }
 
 export function RepurposeQueuePanel({ assets, onRepurpose }: RepurposeQueuePanelProps) {
@@ -85,7 +92,19 @@ export function RepurposeQueuePanel({ assets, onRepurpose }: RepurposeQueuePanel
                       </div>
                       <div>
                         <p className="font-medium text-sm">{asset.title}</p>
-                        <p className="text-xs text-muted-foreground capitalize">{asset.type}</p>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <p className="text-xs text-muted-foreground capitalize">{asset.type}</p>
+                          {asset.type === "snippet" && asset.platform && (
+                            <Badge variant="secondary" className="text-[10px] py-0 h-4">
+                              {asset.platform}
+                            </Badge>
+                          )}
+                        </div>
+                        {asset.type === "snippet" && asset.caption && (
+                          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1 max-w-[200px] italic">
+                            "{asset.caption}"
+                          </p>
+                        )}
                       </div>
                     </div>
                     <Badge variant="outline" className="text-xs">

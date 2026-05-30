@@ -19,6 +19,8 @@ import {
   type ContentGenerationOutput,
 } from "@/lib/content-generation"
 import { v4 as uuidv4 } from "uuid"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ============================================
 // SYSTEM 4.1 – CONTENT GENERATION ENGINE
@@ -42,10 +44,47 @@ export interface BatchContentGenerationResult {
 }
 
 /**
+ * Resolve the caller's effective agent_id from session.
+ * - If session has an agentId, use it (and verify brokerage).
+ * - Otherwise, fall back to the session's userId scoped to brokerageId.
+ * Returns { agentId } on success or { error } on failure.
+ *
+ * SECURITY: Never trusts a caller-supplied agent_id. AI inference + writes
+ * are always attributed to the authenticated session.
+ */
+async function resolveAuthorizedAgentId(): Promise<
+  | { ok: true; agentId: string; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Prefer agents.id when we have one.
+  if (ctx.agentId) {
+    // Verify the agent row actually belongs to this brokerage.
+    const svc = createServiceClient()
+    const { data: agentRow } = await svc
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("id", ctx.agentId)
+      .maybeSingle()
+    if (!agentRow || agentRow.brokerage_id !== ctx.brokerageId) {
+      return { ok: false, error: "Forbidden" }
+    }
+    return { ok: true, agentId: ctx.agentId, brokerageId: ctx.brokerageId, userId: ctx.userId }
+  }
+
+  // No agent row (broker/admin/etc.) — use userId as the activity owner.
+  return { ok: true, agentId: ctx.userId, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
+/**
  * Generate TEXT content (email, newsletter, SMS, blog, social, ads, listings)
  */
 export async function generateText(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   content_type: ContentGenerationParams["content_type"]
   channel_intent?: ContentGenerationParams["channel_intent"]
   listing_id?: string
@@ -58,10 +97,9 @@ export async function generateText(params: {
   source_urls?: string[]
 }): Promise<ContentGenerationResult> {
   try {
-    // Validate agent_id
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     // Gather context from database
     const context = await gatherContext({
@@ -94,7 +132,7 @@ export async function generateText(params: {
 
     // Log to activities table (ONLY database write)
     await logContentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       content_output: content,
       entity_id: content_id,
       entity_type: "content",
@@ -114,7 +152,7 @@ export async function generateText(params: {
  * Generate AUDIO script (podcast, short-form audio)
  */
 export async function generateAudio(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   content_type: "podcast_script" | "audio_script"
   duration_minutes?: number
   listing_id?: string
@@ -124,9 +162,9 @@ export async function generateAudio(params: {
   target_audience?: string
 }): Promise<ContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -151,7 +189,7 @@ export async function generateAudio(params: {
     const content_id = uuidv4()
 
     await logContentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       content_output: content,
       entity_id: content_id,
     })
@@ -170,7 +208,7 @@ export async function generateAudio(params: {
  * Generate VIDEO script (long-form, short-form, social video)
  */
 export async function generateVideo(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   content_type: "video_script"
   channel_intent?: "youtube" | "tiktok" | "instagram" | "facebook"
   video_length_seconds?: number
@@ -181,9 +219,9 @@ export async function generateVideo(params: {
   target_audience?: string
 }): Promise<ContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -209,7 +247,7 @@ export async function generateVideo(params: {
     const content_id = uuidv4()
 
     await logContentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       content_output: content,
       entity_id: content_id,
     })
@@ -228,7 +266,7 @@ export async function generateVideo(params: {
  * Generate IMAGE prompt (for external image generation)
  */
 export async function generateImage(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   channel_intent?: string
   listing_id?: string
   contact_id?: string
@@ -236,9 +274,9 @@ export async function generateImage(params: {
   tone?: string
 }): Promise<ContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -261,7 +299,7 @@ export async function generateImage(params: {
     const content_id = uuidv4()
 
     await logContentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       content_output: content,
       entity_id: content_id,
     })
@@ -280,7 +318,7 @@ export async function generateImage(params: {
  * Generate OMNIPRESENT content (one idea → many formats)
  */
 export async function generateOmnipresent(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   core_idea: string
   target_audience?: string
   listing_id?: string
@@ -288,9 +326,9 @@ export async function generateOmnipresent(params: {
   formats: Array<"podcast" | "video" | "newsletter" | "social_post" | "blog">
 }): Promise<BatchContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const contents = await generateOmnipresentContent({
       core_idea: params.core_idea,
@@ -301,7 +339,7 @@ export async function generateOmnipresent(params: {
     })
 
     await logOmnipresentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       core_idea: params.core_idea,
       formats_generated: contents,
     })
@@ -321,7 +359,7 @@ export async function generateOmnipresent(params: {
  * Generate content VARIATIONS (for A/B testing)
  */
 export async function generateVariations(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   content_type: ContentGenerationParams["content_type"]
   channel_intent?: ContentGenerationParams["channel_intent"]
   listing_id?: string
@@ -331,9 +369,9 @@ export async function generateVariations(params: {
   variation_count?: number
 }): Promise<BatchContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -360,7 +398,7 @@ export async function generateVariations(params: {
     for (const content of variations) {
       const content_id = uuidv4()
       await logContentGeneration({
-        agent_id: params.agent_id,
+        agent_id: agentId,
         content_output: content,
         entity_id: content_id,
       })
@@ -381,7 +419,7 @@ export async function generateVariations(params: {
  * Get content generation history
  */
 export async function getGenerationHistory(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   limit?: number
   content_type?: string
 }): Promise<{
@@ -390,12 +428,11 @@ export async function getGenerationHistory(params: {
   error?: string
 }> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const history = await getContentGenerationHistory({
-      agent_id: params.agent_id,
+      agent_id: auth.agentId,
       limit: params.limit,
       content_type: params.content_type,
     })
@@ -413,7 +450,7 @@ export async function getGenerationHistory(params: {
  * Get content generation stats
  */
 export async function getGenerationStats(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   date_range?: { start: string; end: string }
 }): Promise<{
   success: boolean
@@ -426,12 +463,11 @@ export async function getGenerationStats(params: {
   error?: string
 }> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const stats = await getContentGenerationStats({
-      agent_id: params.agent_id,
+      agent_id: auth.agentId,
       date_range: params.date_range,
     })
 
@@ -448,15 +484,15 @@ export async function getGenerationStats(params: {
  * Generate listing description from external URL (for repurposing)
  */
 export async function generateFromURL(params: {
-  agent_id: string
+  agent_id?: string // ignored — derived from session
   source_url: string
   content_type: ContentGenerationParams["content_type"]
   custom_instructions?: string
 }): Promise<ContentGenerationResult> {
   try {
-    if (!isValidUUID(params.agent_id)) {
-      throw new ValidationError("Invalid agent ID")
-    }
+    const auth = await resolveAuthorizedAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const agentId = auth.agentId
 
     const content = await generateTextContent({
       content_type: params.content_type,
@@ -467,7 +503,7 @@ export async function generateFromURL(params: {
     const content_id = uuidv4()
 
     await logContentGeneration({
-      agent_id: params.agent_id,
+      agent_id: agentId,
       content_output: content,
       entity_id: content_id,
     })
@@ -481,3 +517,7 @@ export async function generateFromURL(params: {
     return handleError(error, "generateFromURL")
   }
 }
+
+// Silence unused-import warning for isValidUUID (kept for future validation hooks)
+void isValidUUID
+void ValidationError

@@ -44,16 +44,17 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
   // Fetch property alerts
   const { data: propertyAlerts } = await supabase
     .from("property_alerts")
-    .select("id, search_criteria, frequency, is_active, created_at")
+    .select("id, alert_name, frequency, is_active, created_at, min_price, max_price, bedrooms_min, bathrooms_min, cities")
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
-  // Fetch property interests
+  // Saved + dismissed listings — `saved_properties` is the canonical table
+  // (NOT `property_interests`, which holds search criteria, not properties).
   const { data: propertyInterests } = await supabase
-    .from("property_interests")
-    .select("id, property_address, interest_level, notes, created_at")
+    .from("saved_properties")
+    .select("id, listing_id, property_address, list_price, bedrooms, bathrooms, primary_photo_url, dismissed, dismissed_reason, notes, saved_at")
     .eq("contact_id", contactId)
-    .order("created_at", { ascending: false })
+    .order("saved_at", { ascending: false })
 
   // Fetch coming soon listings from the brokerage — these are agent-managed listings
   // not yet on the MLS, surfaced to buyers as an exclusive preview
@@ -68,7 +69,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     : { data: [] }
 
   // Determine portal view via kernel gate — buyer vs seller vs lifetime
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalView = await determinePortalView(supabase, { contactId })
 
   // BUYER PATH: Surface the buyer's own smart searches (property_alerts) and
   // inferred preferences (property_preferences). Buyers own their searches —
@@ -119,7 +120,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     listing_date: string | null
   } | null = null
 
-  if (portalView === "buyer") {
+  if (portalView.view === "buyer") {
     // Fetch all active smart searches (property_alerts) for this buyer
     const { data: alerts } = await supabase
       .from("property_alerts")
@@ -146,7 +147,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     buyerInferredPrefs = prefs ?? null
   }
 
-  if (portalView === "seller" || contact.contact_type === "seller") {
+  if (portalView.view === "seller" || contact.contact_type === "seller") {
     // Resolve brokerage-represented listing for this seller
     const { data: listing } = await supabase
       .from("listings")
@@ -164,7 +165,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
 
   // Load AI-recommended properties for buyers only — uses buyer preferences
   // and budget from contacts table to surface matched active listings.
-  const recommendedResult = portalView === "buyer"
+  const recommendedResult = portalView.view === "buyer"
     ? await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
     : { success: false, properties: [] }
   const recommendedProperties = recommendedResult.properties ?? []
@@ -188,7 +189,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       contactId={contactId}
       comingSoonListings={comingSoonAlertResults || []}
       recommendedProperties={recommendedProperties}
-      portalView={portalView}
+      portalView={portalView.view}
       buyerSmartSearches={buyerSmartSearches}
       buyerInferredPrefs={buyerInferredPrefs}
       sellerListing={sellerListing}

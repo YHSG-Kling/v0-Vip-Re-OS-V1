@@ -50,7 +50,7 @@ const PURPOSE_OPTIONS: PurposeOption[] = [
   {
     id: "homeowner_update",
     label: "Homeowner Update",
-    description: "Nurture past clients with market info",
+    description: "Nurture lifetime customers with market info",
     icon: Heart,
     requiresContext: "homeowner",
   },

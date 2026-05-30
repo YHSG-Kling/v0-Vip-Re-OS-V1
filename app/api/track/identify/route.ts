@@ -114,12 +114,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const entityType = contactId ? 'contact' : 'lead'
 
     await processKernelEvent({
-      brokerageId: brokerageId,
-      entitentityType,
-      entityType: contactId ? 'contact' : 'lead'
-      event:    KernelEvent.WEBSITE_VISITOR_IDENTIFIED,
-      contextJson:  JSON.stringify({ sessionId, email: email ?? null, phone: phone ?? null }),
-      triggeredBy:  'system',
+      brokerageId,
+      entityType: contactId ? 'contact' : 'lead',
+      entityId: contactId ?? leadId ?? '',
+      event: KernelEvent.WEBSITE_VISITOR_IDENTIFIED,
     })
   } catch {
     // Non-fatal: identification is already recorded

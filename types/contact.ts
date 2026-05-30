@@ -47,6 +47,7 @@ export type ContactSource = "website" | "referral" | "cold_call" | "social" | "o
 export interface Contact {
   id: string
   agent_id: string
+  brokerage_id?: string | null
   first_name: string
   last_name: string
   email: string

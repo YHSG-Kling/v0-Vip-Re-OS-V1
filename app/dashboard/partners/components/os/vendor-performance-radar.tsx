@@ -48,13 +48,13 @@ export function VendorPerformanceRadar({ brokerageId }: VendorPerformanceRadarPr
 
       // Calculate metrics
       const totalVendors = vendors.length
-      const avgRating = vendors.reduce((sum, v) => sum + (v.rating || 0), 0) / totalVendors
-      const topPerformers = vendors.filter(v => (v.rating || 0) >= 4).length
-      const underPerformers = vendors.filter(v => (v.rating || 0) < 3).length
+      const avgRating = vendors.reduce((sum: number, v: any) => sum + (v.rating || 0), 0) / totalVendors
+      const topPerformers = vendors.filter((v: any) => (v.rating || 0) >= 4).length
+      const underPerformers = vendors.filter((v: any) => (v.rating || 0) < 3).length
 
       // Group by category
       const categoryMap = new Map<string, { count: number; totalRating: number }>()
-      vendors.forEach(v => {
+      vendors.forEach((v: any) => {
         const cat = v.category || "Other"
         const existing = categoryMap.get(cat) || { count: 0, totalRating: 0 }
         categoryMap.set(cat, {

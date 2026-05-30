@@ -120,7 +120,7 @@ export default function ApprovedContentLibrary() {
                 <SelectItem value="cold_lead">Cold Lead</SelectItem>
                 <SelectItem value="warm_lead">Warm Lead</SelectItem>
                 <SelectItem value="active_client">Active Client</SelectItem>
-                <SelectItem value="past_client">Past Client</SelectItem>
+                <SelectItem value="lifetime_customer">Lifetime Customer</SelectItem>
               </SelectContent>
             </Select>
           </div>

@@ -1,25 +1,33 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabase } from "@/services/supabase"
-import { getAgentContext } from "@/lib/identity"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest) {
-  try {
-    const { agentId, brokerageId } = await getAgentContext()
+  // Auth guard — agentId and brokerageId always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
 
-    // Get all contacts for agent
-    const { data: contacts, error } = await supabase
+  try {
+    // Agents see only their own contacts; brokers/admins see all in the brokerage
+    let query = supabase
       .from("contacts")
       .select("*")
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", auth.brokerageId)
       .is("deleted_at", null)
+
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
+    }
+
+    const { data: contacts, error } = await query
 
     if (error) {
       console.error("[Analytics] Error:", error)
       return NextResponse.json({ success: false, error: error.message }, { status: 500 })
     }
 
-    // Calculate analytics
     const analytics = {
       total: contacts?.length || 0,
       with_login: contacts?.filter((c) => c.has_login).length || 0,
@@ -30,15 +38,17 @@ export async function GET(request: NextRequest) {
       conversion_rate: 0,
     }
 
-    // Count by type, persona, status, timeline
     contacts?.forEach((contact) => {
-      analytics.by_type[contact.contact_type] = (analytics.by_type[contact.contact_type] || 0) + 1
-      analytics.by_persona[contact.contact_persona] = (analytics.by_persona[contact.contact_persona] || 0) + 1
-      analytics.by_status[contact.status] = (analytics.by_status[contact.status] || 0) + 1
-      analytics.by_timeline[contact.timeline] = (analytics.by_timeline[contact.timeline] || 0) + 1
+      if (contact.contact_type)
+        analytics.by_type[contact.contact_type] = (analytics.by_type[contact.contact_type] || 0) + 1
+      if (contact.contact_persona)
+        analytics.by_persona[contact.contact_persona] = (analytics.by_persona[contact.contact_persona] || 0) + 1
+      if (contact.status)
+        analytics.by_status[contact.status] = (analytics.by_status[contact.status] || 0) + 1
+      if (contact.timeline)
+        analytics.by_timeline[contact.timeline] = (analytics.by_timeline[contact.timeline] || 0) + 1
     })
 
-    // Calculate conversion rate (qualified+ / total)
     const qualifiedStatuses = [
       "qualified",
       "appointment_booked",
@@ -53,10 +63,7 @@ export async function GET(request: NextRequest) {
     const qualifiedCount = contacts?.filter((c) => qualifiedStatuses.includes(c.status)).length || 0
     analytics.conversion_rate = analytics.total > 0 ? (qualifiedCount / analytics.total) * 100 : 0
 
-    return NextResponse.json({
-      success: true,
-      analytics,
-    })
+    return NextResponse.json({ success: true, analytics })
   } catch (error: any) {
     console.error("[Analytics] Error:", error)
     return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 })

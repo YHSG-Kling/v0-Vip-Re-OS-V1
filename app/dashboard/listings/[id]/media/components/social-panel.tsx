@@ -15,6 +15,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { createSocialPost, approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
+import { shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import {
   PlusIcon,
   Share2Icon,
@@ -23,7 +25,10 @@ import {
   ShieldCheckIcon,
   ShieldAlertIcon,
   CalendarIcon,
+  Sparkles,
+  Send,
 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import { toast } from "@/hooks/use-toast"
 import { format } from "date-fns"
 
@@ -55,6 +60,8 @@ interface SocialAccount {
 interface SocialPanelProps {
   listingId: string
   brokerageId: string
+  agentId: string
+  sellerContactId?: string | null
   posts: SocialPost[]
   accounts: SocialAccount[]
   canApprove: boolean
@@ -77,9 +84,24 @@ const APPROVAL_BADGE: Record<string, string> = {
   rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 }
 
-export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
+/** Map postType → human-readable brief for AI generation */
+function buildBrief(platform: string, postType: string): string {
+  const typeMap: Record<string, string> = {
+    listing_announcement:    "Announce this listing to potential buyers",
+    open_house_announcement: "Invite followers to an upcoming open house",
+    just_listed:             "Celebrate a brand-new listing hitting the market",
+    price_reduction:         "Share an exciting price improvement on this property",
+    just_sold:               "Celebrate a successful sale and thank everyone involved",
+    custom:                  "Write a compelling post about this property",
+  }
+  return typeMap[postType] ?? "Write a compelling real estate post"
+}
+
+export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [createOpen, setCreateOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [pushToSellerPortal, setPushToSellerPortal] = useState(false)
   const [form, setForm] = useState({
     platform:        "instagram",
     postType:        "listing_announcement",
@@ -108,12 +130,56 @@ export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprov
         toast({ title: "Error creating post", description: result.error, variant: "destructive" })
         return
       }
+      if (pushToSellerPortal && sellerContactId) {
+        await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+      }
       const updated = await import("@/app/actions/listing-media").then(m => m.getSocialPosts(listingId))
       onPostsChange(updated.data ?? [])
       setCreateOpen(false)
+      setPushToSellerPortal(false)
       setForm({ platform: "instagram", postType: "listing_announcement", content: "", hashtags: "", mediaUrls: "", scheduledFor: "", socialAccountId: "" })
-      toast({ title: "Post created", description: "Brand compliance check queued." })
+      toast({
+        title: "Post created",
+        description: pushToSellerPortal && sellerContactId
+          ? "Brand compliance check queued. Seller has been notified via portal."
+          : "Brand compliance check queued.",
+      })
     })
+  }
+
+  const handleGenerateContent = async () => {
+    setGenerating(true)
+    try {
+      const result = await generateSocialPostContent({
+        brief:       buildBrief(form.platform, form.postType),
+        platform:    form.platform,
+        contentType: form.postType,
+        listingId,
+        brokerageId,
+        agentId,
+      })
+
+      if (!result.success || !result.data) {
+        toast({
+          title: "Generation failed",
+          description: result.error ?? "Failed to generate content",
+          variant: "destructive",
+        })
+        return
+      }
+
+      setForm(f => ({
+        ...f,
+        content:  result.data!.content,
+        hashtags: result.data!.hashtags?.join(", ") ?? f.hashtags,
+      }))
+
+      toast({ title: "Content generated", description: "Review and edit before posting." })
+    } catch (err: any) {
+      toast({ title: "Generation error", description: err?.message ?? "Unknown error", variant: "destructive" })
+    } finally {
+      setGenerating(false)
+    }
   }
 
   const handleApprove = (id: string) => {
@@ -298,9 +364,20 @@ export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprov
                 id="content"
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                placeholder="Write your post..."
+                placeholder="Write your post or use AI to generate one..."
                 rows={4}
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateContent}
+                disabled={generating || isPending}
+                className="gap-2 self-start"
+              >
+                <Sparkles className="h-4 w-4" />
+                {generating ? "Generating..." : "Generate with AI"}
+              </Button>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -333,6 +410,16 @@ export function SocialPanel({ listingId, brokerageId, posts, accounts, canApprov
               />
             </div>
           </div>
+          {sellerContactId && (
+            <div className="flex items-center gap-3 px-1 py-2 border rounded-lg bg-muted/20">
+              <Send className="h-4 w-4 text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">Push to Seller Portal</p>
+                <p className="text-xs text-muted-foreground">Notify seller so they can share on their channels</p>
+              </div>
+              <Switch checked={pushToSellerPortal} onCheckedChange={setPushToSellerPortal} />
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button

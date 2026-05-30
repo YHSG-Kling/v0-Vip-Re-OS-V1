@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import {
+NextResponse } from "next/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { WorkflowOrchestrator } from "@/lib/orchestrator"
 import {
   createCronRunContextAction,
@@ -7,13 +8,12 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "workflow-retries",
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Verify schema exists before running — tables may not be created in production yet
     const { error: schemaCheck } = await supabase

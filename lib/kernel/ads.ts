@@ -18,12 +18,10 @@
 //   9. Provider account connection required before campaign launch
 //   10. All ad content subject to real estate compliance gates
 
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import type { ActorContext } from "@/lib/kernel/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -56,12 +54,34 @@ export interface TargetingConfig {
 }
 
 export interface SourceRule {
-  type: "website_visitors" | "contact_list" | "engagement"
+  type:
+    | "website_visitors"
+    | "contact_list"
+    | "engagement"
+    // ── Real-estate prebuilt source rules ─────────────────────────────────
+    | "lifetime_customers"        // contacts with contact_type='lifetime_customer'
+    | "qualified_leads"           // leads with lead_stage='qualified'
+    | "active_buyers"             // contacts with contact_type='buyer' + active in last N days
+    | "active_sellers"            // contacts with contact_type='seller' + listing in pre-listing/active
+    | "consultations_completed"   // contacts who attended a consultation
+    | "open_house_attendees"      // attendees from open_house_attendees table
+    | "high_engagement_contacts"  // engagement_score >= threshold
+    | "investor_contacts"         // contact_type='investor'
+    | "in_pipeline"               // contacts with active_transaction
+    | "lookalike_seed"            // a base audience for FB to lookalike from
+    | "exclusion_active_pipeline" // ALL active contacts (use as exclusion to prevent re-targeting customers)
   filters: {
     days_lookback?: number
     contact_tags?: string[]
     engagement_type?: string
     url_pattern?: string
+    // Prebuilt-rule filters
+    min_engagement_score?: number
+    min_purchase_age_months?: number  // for lifetime customers — minimum tenure
+    zip_codes?: string[]              // narrow by service area
+    seed_audience_id?: string         // for lookalike_seed
+    seed_country?: string             // for lookalike (default 'US')
+    seed_lookalike_size_pct?: number  // 1-10 (FB's lookalike size scale)
   }
 }
 
@@ -188,11 +208,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
   }
 
   // Feature access check
-  const accessCheck = await canAccessFeature({
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    featureKey: "ads_campaigns",
-  })
+  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature not available" }
   }
@@ -293,11 +309,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
   }
 
   // Feature access check
-  const accessCheck = await canAccessFeature({
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    featureKey: "ads_campaigns",
-  })
+  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature not available" }
   }
@@ -339,11 +351,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
     if (error) throw error
 
     // Increment feature usage
-    await incrementFeatureUsage({
-      brokerageId: ctx.brokerageId,
-      userId: ctx.userId,
-      featureKey: "ads_campaigns",
-    })
+    await incrementFeatureUsage(ctx.userId, "ads_campaigns")
 
     return { success: true, campaignId: campaign!.id, campaign }
   } catch (err) {
@@ -712,7 +720,7 @@ export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<
 // Returns: creative
 
 export async function approveAdCreative(input: {
-  ctx: KernelContext
+  ctx: ActorContext
   creativeVariationId: string
 }): Promise<KernelAdsResult> {
   const { ctx, creativeVariationId } = input
@@ -745,7 +753,7 @@ export async function approveAdCreative(input: {
       actorContext: {
         userId: ctx.userId,
         brokerageId: ctx.brokerageId,
-        role: ctx.userType === "admin" ? "admin" : "agent",
+        role: ctx.role,
       },
       journeyType: "seller",
       persona: "other",
@@ -783,7 +791,7 @@ export async function approveAdCreative(input: {
       throw error
     }
 
-    return { success: true, creative: updatedCreative }
+    return { success: true, creatives: updatedCreative }
   } catch (err) {
     return {
       success: false,

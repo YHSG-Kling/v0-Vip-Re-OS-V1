@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateAssignmentEligibility } from "@/lib/lead-assignment"
 import { promoteLeadToContactService as promoteLeadToContact } from "@/lib/contact-promotion"
@@ -10,22 +11,58 @@ export interface AssignmentResult {
   assignedAgentId?: string
 }
 
+// Brokers, admins, and superadmins can assign leads. Agents cannot reassign
+// leads to other agents — that's a privilege check the audit caught earlier.
+const ASSIGN_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin", "team_lead", "team_leader"]
+
 /**
  * Assigns an agent to a qualified lead
  * - Validates eligibility first
  * - Updates leads table
  * - Logs assignment to activities
  * - Captures errors to automation_errors
+ *
+ * Previously: trusted caller-supplied brokerageId/agentId/assignedBy. Any
+ * signed-in user could reassign any lead to any agent in any brokerage.
+ * Now: brokerageId is resolved from the session, caller must have
+ * broker/admin role, and lead+agent must both belong to caller's brokerage.
  */
 export async function assignAgentToLead(
   leadId: string,
   agentId: string,
-  brokerageId: string,
-  assignedBy: string = "system"
+  _brokerageId?: string,  // ignored — derived from session
+  _assignedBy?: string    // ignored — derived from session
 ): Promise<AssignmentResult> {
+  // Auth gate
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, message: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, message: "Unauthorized" }
+  if (!ASSIGN_ROLES.includes(callerRow.user_type ?? "")) {
+    return { success: false, message: "Only brokers and admins can assign leads" }
+  }
+  const brokerageId = callerRow.brokerage_id
+  const assignedBy = user.id
+
   const supabase = createServiceClient()
 
   try {
+    // Verify the lead belongs to caller's brokerage before doing anything
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("brokerage_id")
+      .eq("id", leadId)
+      .maybeSingle()
+    if (!leadRow) return { success: false, message: "Lead not found" }
+    if (leadRow.brokerage_id !== brokerageId) {
+      return { success: false, message: "Forbidden" }
+    }
+
     // Step 1: Validate eligibility
     const eligibility = await evaluateAssignmentEligibility(leadId, brokerageId)
 
@@ -58,7 +95,7 @@ export async function assignAgentToLead(
       }
     }
 
-    // Step 3: Assign agent to lead
+    // Step 3: Assign agent to lead — scoped to caller's brokerage
     const { error: updateError } = await supabase
       .from("leads")
       .update({
@@ -66,6 +103,7 @@ export async function assignAgentToLead(
         updated_at: new Date().toISOString()
       })
       .eq("id", leadId)
+      .eq("brokerage_id", brokerageId)
 
     if (updateError) {
       throw new Error(`Failed to assign agent: ${updateError.message}`)

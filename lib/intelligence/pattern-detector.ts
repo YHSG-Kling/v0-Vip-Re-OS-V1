@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { KernelEvent } from "@/lib/kernel/events"
+import { computeDaysOnMarketOrZero } from "@/lib/listings/compute-dom"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface BehavioralPattern {
@@ -392,11 +393,12 @@ async function fetchEntitySignals(
       lastSignalDate: logs[0]?.created_at || null,
     }
   } else {
-    // Listing (seller) signals
+    // Listing (seller) signals. DOM is computed from go_live_date; the
+    // `days_on_market` column does not exist on listings.
     const [listingResult, showingsResult, offersResult] = await Promise.all([
       supabase
         .from("listings")
-        .select("days_on_market, status, listing_price, lifecycle_stage, created_at")
+        .select("go_live_date, status, listing_price, lifecycle_stage, created_at")
         .eq("id", entityId)
         .single(),
 
@@ -416,11 +418,9 @@ async function fetchEntitySignals(
     const showings = showingsResult.data || []
     const offers = offersResult.data || []
 
-    // Calculate days on market if not stored
-    const dom = listing?.days_on_market || 
-      (listing?.created_at 
-        ? Math.floor((now.getTime() - new Date(listing.created_at).getTime()) / (1000 * 60 * 60 * 24))
-        : 0)
+    // DOM strictly from go_live_date (the public-active date). Pre-MLS
+    // window between listing.created_at and go_live_date doesn't count.
+    const dom = computeDaysOnMarketOrZero(listing?.go_live_date)
 
     return {
       daysOnMarket: dom,
@@ -519,7 +519,7 @@ async function evaluatePattern(
       }
       if (
         daysSinceShowing !== null &&
-        daysSinceShowing >= (rules.days_no_showing || 14)
+        (daysSinceShowing ?? 0) >= (rules.days_no_showing || 14)
       ) {
         matchCount++
         triggerSignals.days_since_showing = daysSinceShowing
@@ -609,7 +609,7 @@ Entity type: ${entityType}
 Entity signals: ${JSON.stringify(signals, null, 2)}
 
 Does this pattern match? Evaluate and return JSON.`,
-      maxTokens: 200,
+      maxOutputTokens: 200,
     })
 
     // Parse AI response

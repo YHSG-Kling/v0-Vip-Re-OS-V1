@@ -1,4 +1,4 @@
-import { getSupabaseServerClient } from "../supabaseServer"
+import { createClient } from "@/lib/supabase/server"
 
 export interface ServiceDeliveryMetrics {
   onTimeMilestones: number
@@ -23,7 +23,7 @@ export async function getServiceDeliveryMetrics(
   brokerageId: string,
   timeRange = "30d",
 ): Promise<ServiceDeliveryMetrics> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await createClient()
 
   // Calculate date range
   const now = new Date()
@@ -47,9 +47,9 @@ export async function getServiceDeliveryMetrics(
     .gte("created_at", startDate.toISOString())
 
   const onTime =
-    milestones?.filter((m) => m.completed_at && new Date(m.completed_at) <= new Date(m.due_date)).length || 0
+    milestones?.filter((m: any) => m.completed_at && new Date(m.completed_at) <= new Date(m.due_date)).length || 0
 
-  const overdue = milestones?.filter((m) => !m.completed_at && new Date(m.due_date) < now).length || 0
+  const overdue = milestones?.filter((m: any) => !m.completed_at && new Date(m.due_date) < now).length || 0
 
   // Query closed transactions for avg days
   const { data: closedTransactions } = await supabase
@@ -60,7 +60,7 @@ export async function getServiceDeliveryMetrics(
     .gte("updated_at", startDate.toISOString())
 
   const avgDays = closedTransactions?.length
-    ? closedTransactions.reduce((sum, t) => {
+    ? closedTransactions.reduce((sum: number, t: any) => {
         const days = Math.floor(
           (new Date(t.updated_at).getTime() - new Date(t.created_at).getTime()) / (1000 * 60 * 60 * 24),
         )
@@ -82,7 +82,7 @@ export async function getServiceDeliveryMetrics(
 }
 
 export async function getTransactionRisks(brokerageId: string): Promise<TransactionRisk[]> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await createClient()
 
   // Get active transactions with overdue milestones
   const { data: transactions } = await supabase
@@ -100,29 +100,29 @@ export async function getTransactionRisks(brokerageId: string): Promise<Transact
   if (!transactions || transactions.length === 0) return []
 
   // Fetch contacts separately
-  const contactIds = transactions.map(t => t.contact_id).filter(Boolean)
-  let contactMap = new Map()
+  const contactIds = transactions.map((t: any) => t.contact_id).filter(Boolean)
+  let contactMap = new Map<string, any>()
   if (contactIds.length > 0) {
     const { data: contacts } = await supabase
       .from("contacts")
       .select("id, first_name, last_name")
       .in("id", contactIds)
-    contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
+    contactMap = new Map(contacts?.map((c: any) => [c.id, c]) || [])
   }
 
   // Fetch milestones for all transactions
-  const transactionIds = transactions.map(t => t.id)
+  const transactionIds = transactions.map((t: any) => t.id)
   const { data: milestones } = await supabase
     .from("transaction_milestones")
     .select("id, transaction_id, status, due_date, completed_at")
     .in("transaction_id", transactionIds)
 
-  const milestonesMap = new Map()
-  ;(milestones || []).forEach(m => {
+  const milestonesMap = new Map<string, any[]>()
+  ;(milestones || []).forEach((m: any) => {
     if (!milestonesMap.has(m.transaction_id)) {
       milestonesMap.set(m.transaction_id, [])
     }
-    milestonesMap.get(m.transaction_id).push(m)
+    milestonesMap.get(m.transaction_id)!.push(m)
   })
 
   const now = new Date()

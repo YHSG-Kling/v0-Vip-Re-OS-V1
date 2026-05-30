@@ -75,7 +75,7 @@ export function generateMatchExplanation(
   }
 
   // Location bullet
-  if (intent.cities && listing.city && intent.cities.some(c => c.toLowerCase() === listing.city.toLowerCase())) {
+  if (intent.cities && listing.city && intent.cities.some(c => c.toLowerCase() === (listing.city ?? "").toLowerCase())) {
     if (persona.persona === 'relocation') {
       bullets.push(`Located in ${listing.city} where you're relocating`)
     } else if (persona.persona === 'first_time_buyer') {

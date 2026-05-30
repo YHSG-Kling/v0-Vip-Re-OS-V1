@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { permissionsService, type Permission, type UserAccessContext } from "../services/permissionsService"
+import type { UserSubType } from "../services/permissionsService"
 
 export function usePermissions() {
   const { user, role } = useAuth()
@@ -11,7 +12,7 @@ export function usePermissions() {
     () => ({
       userId: user?.id || "",
       role,
-      subType: user?.subType,
+      subType: user?.subType as UserSubType | undefined,
       agentId: user?.agentId || (role === "agent" ? user?.id : undefined),
       contactId: user?.contactId || (role === "contact" ? user?.id : undefined),
       vendorId: user?.vendorId || (role === "vendor" ? user?.id : undefined),
@@ -29,13 +30,13 @@ export function usePermissions() {
       context,
 
       // Check single permission
-      can: (permission: Permission) => permissionsService.hasPermission(role, permission),
+      can: (permission: Permission) => permissionsService.hasPermission(role, permission as any),
 
       // Check any of permissions
-      canAny: (permissions: Permission[]) => permissionsService.hasAnyPermission(role, permissions),
+      canAny: (permissions: Permission[]) => permissionsService.hasAnyPermission(role, permissions as any[]),
 
       // Check all permissions
-      canAll: (permissions: Permission[]) => permissionsService.hasAllPermissions(role, permissions),
+      canAll: (permissions: Permission[]) => permissionsService.hasAllPermissions(role, permissions as any[]),
 
       // Check navigation access
       canAccessView: (view: string) => permissionsService.canAccessView(role, view),

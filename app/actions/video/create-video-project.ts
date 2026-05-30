@@ -123,8 +123,12 @@ Return only the script text.`
   const withVoice = await applyBrandVoice({
     content: raw.text,
     brokerageId: params.brokerageId,
-    agentId: params.agentId,
-  }).catch(() => raw.text)
+    actorUserId: params.agentId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "social",
+  }).then((r) => r.content, () => raw.text)
 
   // Compliance check
   const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
@@ -134,17 +138,15 @@ Return only the script text.`
       role: "agent",
       brokerageId: params.brokerageId,
     },
-    journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail"
+    journeyType: "buyer",
+    persona: "first_time",
+    messageType: "social",
     content: scriptContent,
     contact: {
       id: "broadcast",
       first_name: "Broadcast",
       last_name: "Audience",
-      contact_type: "buyer"| "seller",
+      contact_type: "buyer",
       tcpa_consent: true,
       isa_reengage_allowed: false,
       dnc_status: false,
@@ -214,6 +216,16 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
 
   const supabase = await createClient()
 
+  // Migration 1052: provider resolved (D-ID default; agent + brokerage
+  // overrides). Hard-coded 'heygen' before — wrong; @d-id/client-sdk is
+  // the primary in package.json and agent_voice_profiles defaults to 'did'.
+  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
+  const provider = await resolveVideoProvider(supabase, {
+    brokerageId: params.brokerageId,
+    agentUserId: params.agentId,
+  })
+  const providerCols = initialProviderColumns(provider)
+
   const { data: project, error } = await supabase
     .from("ai_video_projects")
     .insert({
@@ -234,9 +246,9 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       captions_enabled: params.captionsEnabled,
       listing_id: params.listingId ?? null,
       status: "draft",
-      heygen_status: null,
       retry_count: 0,
-      video_provider: "heygen",
+      video_provider: provider,
+      ...providerCols,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })

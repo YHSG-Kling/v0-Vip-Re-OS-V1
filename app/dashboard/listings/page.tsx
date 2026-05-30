@@ -4,14 +4,15 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { MarketIntelligencePanel } from "./components/market-intelligence-panel"
-import { CmaHistorySheet } from "./components/cma-history-sheet"
-import { ListingCreateSheet } from "./components/listing-create-sheet"
-import { 
-  Plus, 
-  Home, 
-  DollarSign, 
-  Clock, 
+import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
+import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
+import { ListingsNewButton } from "@/app/dashboard/listings/listings-new-button"
+import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
+import { MassCMAButton } from "@/app/components/dashboard/listings/mass-cma-button"
+import {
+  Home,
+  DollarSign,
+  Clock,
   TrendingUp,
   Eye,
   Share2,
@@ -19,6 +20,7 @@ import {
   MapPin,
   Sparkles,
   ArrowRight,
+  Plus,
 } from "lucide-react"
 
 export const dynamic = "force-dynamic"
@@ -33,14 +35,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
   coming_soon: { label: "Coming Soon", color: "text-purple-700", bgColor: "bg-purple-100" },
 }
 
-export default async function ListingsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ action?: string }>
-}) {
-  const resolvedSearchParams = await searchParams
-  const showCreateSheet = resolvedSearchParams?.action === "new"
-
+export default async function ListingsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -48,15 +43,15 @@ export default async function ListingsPage({
     redirect("/login")
   }
 
-  // Look up the agent record to get the agent UUID (listings.agent_id = agents.id, not users.id)
-  const { data: agentRecord } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Load agent record + user profile
+  const [{ data: agentRecord }, { data: userProfile }] = await Promise.all([
+    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
+    supabase.from("users").select("first_name, last_name, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
 
   // Build query — if no agent record found, fall back to user.id for brokers/admins
   const agentId = agentRecord?.id ?? user.id
+  const brokerageId = userProfile?.brokerage_id ?? ""
 
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
@@ -103,31 +98,27 @@ export default async function ListingsPage({
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/listings/new">
-          <Button size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
-            <Plus className="h-4 w-4" />
-            New Listing
-          </Button>
-        </Link>
+        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} />
         <Link href="/dashboard/listings/analytics">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />
-            <span className="hidden sm:inline">Analytics</span>
+            Analytics
           </Button>
         </Link>
         <Link href="/dashboard/listings/marketing">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Share2 className="h-4 w-4" />
-            <span className="hidden sm:inline">Marketing Hub</span>
+            Marketing Hub
           </Button>
         </Link>
         <div className="flex-1 hidden sm:block" />
         <Link href="/dashboard/listings/ai-pricing">
           <Button variant="ghost" size="sm" className="gap-2 text-primary min-h-[44px] sm:min-h-0">
             <Sparkles className="h-4 w-4" />
-            <span className="hidden sm:inline">AI Price Analysis</span>
+            AI Price Analysis
           </Button>
         </Link>
+        {agentRecord?.id && <MassCMAButton />}
       </div>
 
       <div className="px-4 sm:px-6 space-y-6">
@@ -289,10 +280,14 @@ export default async function ListingsPage({
                           </div>
                           <ArrowRight className="h-4 w-4 text-muted-foreground" />
                         </Link>
-                        <div className="flex items-center pr-3">
+                        <div className="flex items-center gap-1 pr-3">
+                          <ListingStatusSelect
+                            listingId={listing.id}
+                            currentStatus={listing.status}
+                          />
                           <CmaHistorySheet
                             listingId={listing.id}
-                            agentId={user.id}
+                            agentId={agentId}
                             listingAddress={listing.address}
                           />
                         </div>
@@ -304,7 +299,7 @@ export default async function ListingsPage({
               <div className="p-8 text-center">
                 <Home className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
                 <p className="text-muted-foreground mb-4">No listings found. Create your first listing to get started.</p>
-<Link href="/dashboard/listings?action=new">
+                <Link href="/dashboard/listings?action=new">
                   <Button>
                     <Plus className="h-4 w-4 mr-2" />
                     Create Listing
@@ -323,14 +318,12 @@ export default async function ListingsPage({
             <MarketIntelligencePanel
               city={refListing.city}
               state={refListing.state}
-              agentId={user.id}
+              agentId={agentId}
             />
           )
         })()}
       </div>
 
-      {/* Listing create sheet — opened by ?action=new */}
-      <ListingCreateSheet open={showCreateSheet} />
     </div>
   )
 }

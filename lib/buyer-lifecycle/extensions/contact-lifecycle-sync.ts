@@ -75,10 +75,10 @@ export async function emitContactLifecycleSync(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "contact.lifecycle.sync",
+      activity_type: "contact.lifecycle.sync",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         buyer_state: buyerState,
         contact_stage: contactStage,
@@ -112,10 +112,10 @@ export async function emitBuyerEngagementSignal(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.engagement.signal",
+    activity_type: "buyer.engagement.signal",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       trigger: "financial_verification_complete",
       verification_type: verificationType,
@@ -146,10 +146,10 @@ export async function emitBuyerUnderContractSignal(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.under_contract.signal",
+    activity_type: "buyer.under_contract.signal",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       listing_id: listingId,
       offer_id: offerId,
@@ -178,10 +178,10 @@ export async function emitBuyerLifetimeSignal(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.lifetime.signal",
+    activity_type: "buyer.lifetime.signal",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       transaction_id: transactionId,
       contact_stage: "lifetime_customer",

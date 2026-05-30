@@ -70,7 +70,7 @@ function GhostRow({ ghost, brokerageId, onDone }: RowProps) {
       <div className="flex items-start justify-between gap-2">
         <div>
           <a
-            href={`/contacts/${ghost.contact_id}`}
+            href={`/crm/contacts/${ghost.contact_id}`}
             className="text-sm font-medium text-foreground hover:underline"
           >
             {name}

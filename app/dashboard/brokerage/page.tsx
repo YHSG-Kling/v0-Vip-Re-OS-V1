@@ -22,7 +22,10 @@ import {
   ArrowRight,
   BarChart3,
 } from "lucide-react"
-import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { BrokerageAgentList } from "@/components/brokerage/agent-list"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
 import {
@@ -164,7 +167,12 @@ export default async function BrokerageDashboard({
       .limit(20),
   ])
 
-  const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard
+  const agents = (dashboard as any).agents ?? []
+  const activeTransactionsRaw = (dashboard as any).activeTransactions ?? []
+  const activeTransactions: number = Array.isArray(activeTransactionsRaw) ? activeTransactionsRaw.length : (Number(activeTransactionsRaw) || 0)
+  const complianceRate: number = (dashboard as any).complianceRate ?? 0
+  const totalGCI: number = (dashboard as any).totalGCI ?? 0
+  const pendingCommissions: number = (dashboard as any).pendingCommissions ?? 0
 
   const pendingDistributions = pendingDistributionsResult.data ?? []
   const totalPendingBrokerageCommission = pendingDistributions.reduce(
@@ -178,8 +186,8 @@ export default async function BrokerageDashboard({
   }).reduce((sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0), 0)
 
   // Process fatigue data
-  const fatigueBuyers = (fatigueResult.success ? fatigueResult.buyers : []) || []
-  const fatigueAlerts = (fatigueAlertsResult.success ? fatigueAlertsResult.alerts : []) || []
+  const fatigueBuyers = (fatigueResult.success ? (fatigueResult as any).buyers : []) || []
+  const fatigueAlerts = (fatigueAlertsResult.success ? (fatigueAlertsResult as any).alerts : []) || []
   const fatigueSummary = {
     critical: fatigueBuyers.filter((b: any) => b.fatigue_score >= 80).length,
     warning: fatigueBuyers.filter((b: any) => b.fatigue_score >= 60 && b.fatigue_score < 80).length,
@@ -419,6 +427,14 @@ export default async function BrokerageDashboard({
       : 0,
   }
 
+  // Generate today's AI brief for the broker — synthesizes critical deals,
+  // license expirations, compliance flags, unassigned leads into 3 priorities
+  const brokerBrief = await generateUserTypeBrief({
+    userType: "broker",
+    userId: user.id,
+    brokerageId,
+  })
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -434,6 +450,12 @@ export default async function BrokerageDashboard({
           </Badge>
         )}
       </div>
+
+      {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
+      <BudgetWarningBanner />
+
+      {/* Today's Focus — AI Brief synthesizing what matters today */}
+      <TodaysFocusCard brief={brokerBrief} />
 
       {/* Command Strip */}
       <BrokerCommandStrip
@@ -643,7 +665,7 @@ export default async function BrokerageDashboard({
             trend="up"
             trendPercent={12}
           />
-          <BrokerProviderPressurePanel providers={providerStatus} />
+          <BrokerProviderPressurePanel providers={providerStatus as any} />
         </div>
 
         {/* Middle Column: Deals & Fatigue */}
@@ -672,7 +694,7 @@ export default async function BrokerageDashboard({
           />
           <BrokerRecruitingActionBar
             brokerageId={brokerageId}
-            breakEvenAnalysis={breakEvenAnalysis}
+            breakEvenAnalysis={breakEvenAnalysis as any}
             costBreakdown={costBreakdown}
           />
           <BrokerActionStack actions={brokerActions} />
@@ -706,15 +728,15 @@ export default async function BrokerageDashboard({
         </TabsList>
 
         <TabsContent value="agents">
-          <BrokerageAgentList agents={agents || []} brokerageId={brokerageId} />
+          <BrokerageAgentList agents={agents || []} />
         </TabsContent>
 
         <TabsContent value="revenue">
-          <BrokerageRevenueChart forecast={forecast} totalGCI={totalGCI || 0} pendingCommissions={pendingCommissions || 0} />
+          <BrokerageRevenueChart totalRevenue={totalGCI || 0} />
         </TabsContent>
 
         <TabsContent value="compliance">
-          <BrokerageComplianceOverview brokerageId={brokerageId} complianceRate={complianceRate || 0} />
+          <BrokerageComplianceOverview />
         </TabsContent>
       </Tabs>
     </div>

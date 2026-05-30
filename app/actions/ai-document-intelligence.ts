@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
@@ -247,7 +247,7 @@ Common required disclosures include:
       compliance_score: object.complianceScore,
       ai_recommendations: object.recommendations,
       updated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "transaction_id,checklist_type" })
 
     return { success: true, disclosureCheck: object }
   } catch (error) {

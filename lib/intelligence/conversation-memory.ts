@@ -224,7 +224,7 @@ export async function updateConversationMemory(
     schema: insightSchema,
     system: `You are an expert conversation analyst. Extract structured insights from the following conversation between an agent and a contact. Focus on identifying key information that would help the agent in future interactions. Be concise but thorough. Return valid JSON only.`,
     prompt: `Analyze this conversation and extract insights:\n\n${formattedMessages}`,
-    maxTokens: 500,
+    maxOutputTokens: 500,
   })
 
   // Estimate token count for context window tracking

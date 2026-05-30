@@ -126,7 +126,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
         listingCommissionRate: Number(listingRate),
         buyerCommissionRate: Number(buyerRate),
         closingCosts: Number(closingCosts) || undefined,
-        mortgagePayoff: Number(mortgagePayoff) || undefined,
+        mortgageBalance: Number(mortgagePayoff) || undefined,
         mortgagePayoffAmount: Number(mortgagePayoff) || undefined,
         propertyTaxes: Number(propertyTaxes) || undefined,
         hoaFees: Number(hoaFees) || undefined,

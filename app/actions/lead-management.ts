@@ -6,7 +6,6 @@ import {
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
-  serviceConvertLeadToContact,
   serviceRejectLead,
   serviceImportLeads,
 } from "@/lib/application/lead-application-service"
@@ -45,7 +44,8 @@ export async function getLeadsAdmin(params?: {
     }
 
     const { agentId, brokerageId } = await getAgentContext()
-    const result = await serviceGetLeads(agentId, brokerageId, params)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
+    const result = await serviceGetLeads((agentId ?? null) as any, brokerageId, params as any)
     return { success: true, ...result }
   } catch (error) {
     return { success: false, error: String(error), leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
@@ -56,7 +56,8 @@ export async function getLead(id: string) {
   try {
     if (!id) return { success: false, error: "ID is required", lead: null }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceGetLead(agentId, brokerageId, id)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", lead: null }
+    const lead = await serviceGetLead((agentId ?? null) as any, brokerageId, id)
     return { success: true, lead }
   } catch (error) {
     return { success: false, error: String(error), lead: null }
@@ -67,19 +68,9 @@ export async function enrichLead(leadId: string) {
   try {
     if (!leadId) return { success: false, error: "Lead ID is required" }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceEnrichLead(agentId, brokerageId, leadId)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const lead = await serviceEnrichLead((agentId ?? null) as any, brokerageId, leadId)
     return { success: true, lead }
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
-}
-
-export async function convertLeadToContact(leadId: string) {
-  try {
-    if (!leadId) return { success: false, error: "Lead ID is required" }
-    const { agentId, brokerageId } = await getAgentContext()
-    const contact = await serviceConvertLeadToContact(agentId, brokerageId, leadId)
-    return { success: true, contact }
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -89,20 +80,22 @@ export async function rejectLead(leadId: string, reason?: string) {
   try {
     if (!leadId) return { success: false, error: "Lead ID is required" }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceRejectLead(agentId, brokerageId, leadId, reason)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const lead = await serviceRejectLead((agentId ?? null) as any, brokerageId, leadId, reason)
     return { success: true, lead }
   } catch (error) {
     return { success: false, error: String(error) }
   }
 }
 
-export async function importLeads(leads: Partial<Lead>[]) {
+export async function importLeads(leads: Array<Partial<Lead> & { owner_agent_id?: string | null }>) {
   try {
-    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0 }
+    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0, deduped: 0, unassigned: 0 }
     const { agentId, brokerageId } = await getAgentContext()
-    const imported = await serviceImportLeads(agentId, brokerageId, leads)
-    return { success: true, imported }
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0, deduped: 0, unassigned: 0 }
+    const result = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
+    return { success: true, imported: result.imported, deduped: result.deduped, unassigned: result.unassigned }
   } catch (error) {
-    return { success: false, error: String(error), imported: 0 }
+    return { success: false, error: String(error), imported: 0, deduped: 0, unassigned: 0 }
   }
 }

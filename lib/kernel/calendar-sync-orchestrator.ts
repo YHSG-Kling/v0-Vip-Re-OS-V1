@@ -1,9 +1,10 @@
 // TypeScript strict — no any, no default export
-// Must not import Google/Outlook SDKs
-// Must not contain provider-specific logic — only calls via resolveCalendarProvider
+// Routes through the consolidated per-agent calendar provider (lib/providers/calendar),
+// which uses the agent's connected Google/Microsoft OAuth token. The old registry/stub
+// path (providers/calendar/registry.ts + google.ts) has been removed.
 
 import { createClient } from "@/lib/supabase/server"
-import { resolveCalendarProvider } from "@/lib/providers/calendar/registry"
+import { createCalendarEvent, updateCalendarEvent } from "@/lib/providers/calendar"
 import type { CalendarProviderName } from "@/lib/providers/calendar/types"
 
 export async function syncCalendarEventToProvider(params: {
@@ -12,7 +13,7 @@ export async function syncCalendarEventToProvider(params: {
   provider: CalendarProviderName
   calendarEventId: string
 }): Promise<void> {
-  const { brokerageId, userId, provider, calendarEventId } = params
+  const { userId, calendarEventId } = params
   const supabase = await createClient()
 
   // ── Step 1: Load calendar_events row by id ──────────────────────────────
@@ -34,26 +35,35 @@ export async function syncCalendarEventToProvider(params: {
     )
   }
 
-  // ── Step 2: Build provider input ────────────────────────────────────────
+  // ── Step 2: Build the calendar event ────────────────────────────────────
   const metadata = (row.metadata ?? {}) as Record<string, unknown>
+  const existingExternalId = typeof metadata.externalId === "string" ? metadata.externalId : undefined
 
-  const providerInput = {
-    externalId: typeof metadata.externalId === "string" ? metadata.externalId : undefined,
+  const event = {
     title: typeof metadata.title === "string" ? metadata.title : (row.event_type as string),
     description: typeof metadata.description === "string" ? metadata.description : undefined,
-    startAtUtcISO: row.start_at as string,
-    endAtUtcISO: row.end_at ? (row.end_at as string) : undefined,
-    timezoneName: row.timezone_name as string,
-    metadata,
+    startTime: row.start_at as string,
+    endTime: (row.end_at ? (row.end_at as string) : (row.start_at as string)),
   }
 
-  // ── Step 3: Call provider.upsertEvent ────────────────────────────────────
-  const calendarProvider = resolveCalendarProvider(provider)
-  const { externalId } = await calendarProvider.upsertEvent({
-    brokerageId,
-    userId,
-    event: providerInput,
-  })
+  // ── Step 3: Create/update on the agent's connected calendar ──────────────
+  // The agent's connected Google/Microsoft account (resolved by agentUserId) determines
+  // the real provider; when none is connected the provider returns a mock id (no crash).
+  const actor = { agentUserId: userId }
+  let externalId: string
+  if (existingExternalId) {
+    const updated = await updateCalendarEvent(existingExternalId, event, actor)
+    if (!updated.success) {
+      throw new Error(`[CalendarSyncOrchestrator] updateCalendarEvent failed: ${updated.error ?? "unknown"}`)
+    }
+    externalId = existingExternalId
+  } else {
+    const created = await createCalendarEvent(event, actor)
+    if (!created.success || !created.eventId) {
+      throw new Error(`[CalendarSyncOrchestrator] createCalendarEvent failed: ${created.error ?? "no eventId"}`)
+    }
+    externalId = created.eventId
+  }
 
   // ── Step 4: Merge externalId back into calendar_events.metadata ─────────
   // Preserve all existing metadata fields, only add/update externalId

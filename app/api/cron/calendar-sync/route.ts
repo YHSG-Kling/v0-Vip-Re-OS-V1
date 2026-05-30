@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import {
+NextRequest, NextResponse } from "next/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { pullCalendarEventsFromProvider } from "@/lib/kernel"
 import {
   createCronRunContextAction,
@@ -7,14 +8,14 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "calendar-sync",
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     const { data: accounts, error } = await supabase
       .from("calendar_provider_accounts")
@@ -77,7 +78,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error("[calendar-sync] cron error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       { error: "Cron job failed", details: error instanceof Error ? error.message : "Unknown", context_id: contextId },
       { status: 500 }

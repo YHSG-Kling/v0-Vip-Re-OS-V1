@@ -1,7 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabase } from "@/services/supabase"
+import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { id } = await params
     const { data, error } = await supabase
@@ -14,18 +19,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error("[v0] Error fetching prospect context:", error)
+    console.error("[prospects] Error fetching prospect context:", error)
     return NextResponse.json({ error: "Failed to fetch prospect context" }, { status: 500 })
   }
 }
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
     const { id } = await params
     const body = await request.json()
     const { emotion, situation, pain_point, timeline, life_context, what_helps } = body
 
-    // Upsert prospect context
     const { data, error } = await supabase
       .from("prospect_context")
       .upsert(
@@ -39,9 +47,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           what_helps,
           updated_at: new Date().toISOString(),
         },
-        {
-          onConflict: "prospect_id",
-        },
+        { onConflict: "prospect_id" },
       )
       .select()
       .single()
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error("[v0] Error saving prospect context:", error)
+    console.error("[prospects] Error saving prospect context:", error)
     return NextResponse.json({ error: "Failed to save prospect context" }, { status: 500 })
   }
 }

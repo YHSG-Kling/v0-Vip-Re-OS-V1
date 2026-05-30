@@ -1,5 +1,16 @@
 export const CURRENT_ENGINE_VERSION = 1
 
+export interface CommissionStructureResolved {
+  transactionFeeType: 'flat' | 'percent'
+  transactionFeeValue: number
+  deskFeeType: 'flat' | 'percent'
+  deskFeeValue: number
+  technologyFeeType: 'flat' | 'percent'
+  technologyFeeValue: number
+  eoFeeType: 'flat' | 'percent'
+  eoFeeValue: number
+}
+
 export interface CalculateCommissionParams {
   transactionId: string
   brokerageId: string

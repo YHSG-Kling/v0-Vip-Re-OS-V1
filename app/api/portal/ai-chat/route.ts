@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { streamText, convertToModelMessages } from 'ai'
-import { openai } from '@ai-sdk/openai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
 
@@ -58,18 +58,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 })
     }
 
-    // Accept if: contact's own email, or agent/admin of the brokerage
+    // Accept if any of:
+    //   1. The contact's own email (client self-service)
+    //   2. The assigned agent (agents table — agents.user_id = auth user.id AND agents.id = contact.agent_id)
+    //   3. Admin/broker of same brokerage (users table)
     const isOwnContact = user.email?.toLowerCase() === contact.email?.toLowerCase()
     let hasAccess = isOwnContact
 
+    if (!hasAccess && contact.agent_id) {
+      // Rule 2: assigned agent via agents table (kernel identity pattern)
+      const { data: ag } = await supabase
+        .from('agents')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('id', contact.agent_id)
+        .maybeSingle()
+      if (ag) hasAccess = true
+    }
+
     if (!hasAccess) {
+      // Rule 3: brokerage admin/broker
       const { data: ur } = await supabase
         .from('users')
         .select('user_type, brokerage_id')
         .eq('id', user.id)
         .maybeSingle()
-      if (ur?.brokerage_id === contact.brokerage_id &&
-        ['admin', 'broker', 'superadmin', 'agent'].includes(ur.user_type ?? '')) {
+      if (
+        ur?.brokerage_id === contact.brokerage_id &&
+        ['admin', 'broker', 'superadmin', 'agent'].includes(ur?.user_type ?? '')
+      ) {
         hasAccess = true
       }
     }
@@ -126,14 +143,14 @@ export async function POST(request: Request) {
       .limit(1)
       .maybeSingle()
 
-    let visibleMilestones: { title: string; status: string; milestone_date: string | null; description: string | null }[] = []
+    let visibleMilestones: { title: string; status: string; target_date: string | null; description: string | null }[] = []
     if (activeTransaction?.id) {
       const { data: milestones } = await supabase
         .from('transaction_milestones')
-        .select('title, status, milestone_date, description')
+        .select('title, status, target_date, description')
         .eq('transaction_id', activeTransaction.id)
         .eq('is_client_visible', true)        // GATE: never expose hidden milestones
-        .order('milestone_date', { ascending: true })
+        .order('target_date', { ascending: true })
 
       visibleMilestones = milestones ?? []
     }
@@ -235,7 +252,7 @@ export async function POST(request: Request) {
         'VISIBLE MILESTONES (these are the only milestones you know about):',
         visibleMilestones.length
           ? visibleMilestones.map(m =>
-              `  - ${m.title}: ${m.status}${m.milestone_date ? ' (' + m.milestone_date + ')' : ''}${m.description ? ' — ' + m.description : ''}`
+              `  - ${m.title}: ${m.status}${m.target_date ? ' (' + m.target_date + ')' : ''}${m.description ? ' — ' + m.description : ''}`
             ).join('\n')
           : '  No milestones available yet.',
       ].filter(Boolean).join('\n') : 'No active transaction found.',
@@ -277,10 +294,10 @@ export async function POST(request: Request) {
               entity_type: 'contact',
               entity_id:   contactId,
               priority:    'high',
-            }).catch(() => {})
+            }).then(() => {}, () => {})
           }
         })
-        .catch(() => {})
+        .then(() => {}, () => {})
     }
 
     // ── Persist incoming user message ──────────────────────────────────────────
@@ -290,12 +307,12 @@ export async function POST(request: Request) {
         role:       'user',
         content:    latestText,
         metadata:   { source: 'portal', contact_id: contactId },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     // ── Stream response ────────────────────────────────────────────────────────
     const result = streamText({
-      model:    openai('gpt-4o-mini'),
+      model:    resolveModel('openai/gpt-4o-mini'),
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
       onFinish: async ({ text }) => {
@@ -306,7 +323,7 @@ export async function POST(request: Request) {
             role:       'assistant',
             content:    text,
             metadata:   { source: 'portal', contact_id: contactId },
-          }).catch(() => {})
+          }).then(() => {}, () => {})
         }
       },
     })

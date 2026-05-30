@@ -53,21 +53,21 @@ function resolveNextStep(context: NextStepContext): NextStepResult {
         if (stage === "BUYER_TOURING") {
           return {
             label: "Plan Tours",
-            href: id ? `/dashboard/buyers/${id}/tours` : "/dashboard/buyers",
+            href: id ? `/crm/contacts/${id}/tours` : "/crm?contact_type=buyer",
             explanation: "Schedule property tours for this buyer",
           }
         }
         if (stage === "BUYER_OFFER_ELIGIBLE") {
           return {
             label: "Start Offer",
-            href: id ? `/dashboard/buyers/${id}/offers/new` : "/dashboard/buyers",
+            href: id ? `/crm/contacts/${id}/offers/new` : "/crm?contact_type=buyer",
             explanation: "Buyer is ready to make an offer",
           }
         }
       }
       return {
         label: "View Contact",
-        href: id ? `/crm?contactId=${id}` : "/crm",
+        href: id ? `/crm?contact=${id}` : "/crm",
         explanation: "Continue working with this contact",
       }
 

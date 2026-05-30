@@ -72,7 +72,7 @@ export function AgentLifetimeCustomersPanel({
         {isEmpty ? (
           <div className="text-center py-6">
             <Heart className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
-            <Link href="/past-clients" className="text-sm text-primary hover:underline">
+            <Link href="/lifetime-customers" className="text-sm text-primary hover:underline">
               Open Relationship Intelligence →
             </Link>
           </div>
@@ -115,12 +115,15 @@ export function AgentLifetimeCustomersPanel({
                 {lifeChanges.slice(0, 2).map((change) => (
                   <div key={change.id} className="flex items-center justify-between">
                     <LifeSignalBadge
-                      changeType={change.change_type}
-                      detectedAt={change.detected_at}
-                      contactName={change.contacts ? `${change.contacts.first_name} ${change.contacts.last_name}` : undefined}
+                      signal={{
+                        id: change.id,
+                        change_type: change.change_type,
+                        detected_at: change.detected_at,
+                        contacts: change.contacts,
+                      }}
                     />
                     {change.contacts && (
-                      <Link href={`/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">
+                      <Link href={`/crm/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">
                         Open Record
                       </Link>
                     )}
@@ -130,7 +133,7 @@ export function AgentLifetimeCustomersPanel({
             )}
 
             <div className="pt-2">
-              <Link href="/past-clients" className="text-sm text-primary hover:underline">
+              <Link href="/lifetime-customers" className="text-sm text-primary hover:underline">
                 View All Lifetime Customers →
               </Link>
             </div>

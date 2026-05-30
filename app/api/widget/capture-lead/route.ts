@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
         brokerage_id: session.brokerage_id,
         title: 'Widget lead capture',
         description: notes,
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     return NextResponse.json({ success: true, contact_id: contactId, action })

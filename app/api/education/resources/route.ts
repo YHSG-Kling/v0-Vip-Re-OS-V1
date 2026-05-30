@@ -15,10 +15,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Post-1042: educational_moments collapsed into learning_modules
     const { data: resources } = await supabase
-      .from("educational_moments")
-      .select("*")
+      .from("learning_modules")
+      .select("id, title, summary, body, channels, estimated_minutes, view_count, is_ai_generated, status, published_at, created_at")
       .eq("brokerage_id", brokerageId)
+      .eq("status", "published")
+      .order("created_at", { ascending: false })
 
     return NextResponse.json({ resources })
   } catch (error) {
@@ -28,9 +31,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
-  const { data: user } = await supabase.auth.getUser()
+  const { data: authData } = await supabase.auth.getUser()
 
-  if (!user) {
+  if (!authData?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
@@ -42,7 +45,7 @@ export async function POST(request: NextRequest) {
       contentType: body.contentType,
       content: body.content,
       estimatedMinutes: body.estimatedMinutes,
-      createdBy: user.id,
+      createdBy: authData.user.id,
       brokerageId: body.brokerageId,
     })
 

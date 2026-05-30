@@ -59,16 +59,14 @@ export async function getBuyerJourneyStatus(
     const supabase = createServiceClient()
     
     // 1. Get current state (inferred from activities)
-    const currentStateResult = await getCurrentState(contactId)
+    const currentState = await getCurrentState(contactId)
     
-    if (!currentStateResult.success || !currentStateResult.currentState) {
+    if (!currentState) {
       return {
         success: false,
         error: 'Unable to determine buyer state'
       }
     }
-    
-    const currentState = currentStateResult.currentState
     
     // 2. Check financial verification
     const financialVerification = await checkFinancialVerification({ contactId })
@@ -178,7 +176,7 @@ export async function getBuyerJourneyStatus(
       let completedAt: Date | undefined
       if (milestoneEvents) {
         const event = milestoneEvents.find(e => {
-          const metadata = e.type === 'buyer.lifecycle.transitioned' && e.metadata
+          const metadata = e.type === 'buyer.lifecycle.transitioned' && (e as any).metadata
           return metadata && typeof metadata === 'object' && 'to_state' in metadata && metadata.to_state === state
         })
         if (event) {
@@ -320,10 +318,10 @@ export async function logBuyerExecutionEvent(params: {
   
   // Agent task (correct location, no changes) — type: dynamic buyer lifecycle event
   const { error } = await supabase.from('activities').insert({
-    type: eventType,
+    activity_type: eventType,
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       ...metadata,
       source,

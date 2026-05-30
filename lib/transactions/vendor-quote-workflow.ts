@@ -60,7 +60,7 @@ export async function requestQuoteApproval(params: {
     update_type: "action_required",
     title: "Quote Approval Needed",
     message: `Please review and approve the ${params.quoteType} quote from ${params.vendorName}.`,
-    is_client_visible: true,
+    is_visible_to_client: true,
     created_at: new Date().toISOString()
   })
   
@@ -93,7 +93,6 @@ export async function approveQuote(params: {
     brokerage_id: params.brokerageId,
     member_type: params.quoteType === "inspector" ? "inspector" : "insurance_provider",
     name: params.vendorName,
-    added_at: new Date().toISOString()
   })
   
   // Complete milestone
@@ -143,7 +142,7 @@ export async function approveQuote(params: {
     update_type: "milestone_completed",
     title: "Quote Approved",
     message: `${params.vendorName} has been approved. Scheduling will be coordinated next.`,
-    is_client_visible: true,
+    is_visible_to_client: true,
     created_at: new Date().toISOString()
   })
   

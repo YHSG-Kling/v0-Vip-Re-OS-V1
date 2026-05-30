@@ -250,7 +250,7 @@ export async function generateInsights(
     }
 
     // Step 2: Build Claude API prompt
-    const provider = await resolveProvider(brokerageId, "text")
+    const provider = await resolveProvider({ providerType: "ai", actorContext: { userId: "", brokerageId } })
 
     const adsForPrompt = (recentAds || []).map((ad) => ({
       platform: ad.source_platform,
@@ -296,10 +296,10 @@ Be specific to real estate marketing. Identify patterns like:
 - Lead generation tactics`
 
     const { text } = await generateText({
-      model: provider.model,
+      model: provider.providerKey,
       system: systemPrompt,
       prompt: userPrompt,
-      maxTokens: 2000,
+      maxOutputTokens: 2000,
     })
 
     // Parse the JSON response
@@ -420,17 +420,13 @@ Be specific to real estate marketing. Identify patterns like:
           console.error("Failed to insert trend alert:", alertError)
         }
 
-        // Fire kernel event for high/critical severity
-        if (severity === "high" || severity === "critical") {
+        // Fire kernel event for high severity
+        if (severity === "high") {
           await processKernelEvent({
-            eventType: KernelEvent.COMPETITOR_CONTENT_ALERTED,
+            event: KernelEvent.COMPETITOR_CONTENT_ALERTED,
             brokerageId,
-            payload: {
-              alert_id: alertData?.id,
-              alert_type: insight.insightType,
-              alert_message: insight.insightSummary,
-              severity,
-            },
+            entityType: "ad_insight",
+            entityId: alertData?.id ?? "unknown",
           })
         }
       }

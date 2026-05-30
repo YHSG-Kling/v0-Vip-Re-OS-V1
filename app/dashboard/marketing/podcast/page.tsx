@@ -9,17 +9,23 @@ export const metadata = {
   description: "AI-powered podcast creation and distribution for real estate agents",
 }
 
+export const dynamic = "force-dynamic"
+
 export default async function PodcastPage() {
   // Resolve agent context + load initial data server-side
   let agentId = ""
   let brokerageId = ""
+  let userType = "agent"
   let initialEpisodes: any[] = []
   let totalPlays = 0
 
+  let hasVoiceClone = false
+
   try {
     const ctx = await getAgentContext()
-    agentId = ctx.agentId
-    brokerageId = ctx.brokerageId
+    agentId = ctx?.agentId ?? ""
+    brokerageId = ctx?.brokerageId ?? ""
+    userType = ctx?.userType ?? "agent"
 
     const [episodesResult, supabase] = await Promise.all([
       getPodcastEpisodes(),
@@ -40,8 +46,18 @@ export default async function PodcastPage() {
         .eq("event_type", "play")
       totalPlays = count ?? 0
     }
-  } catch {
-    // Not authenticated or no context — PodcastDashboard will handle gracefully
+
+    // Check if agent has an ElevenLabs voice clone configured
+    if (agentId) {
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("elevenlabs_voice_id")
+        .eq("id", agentId)
+        .maybeSingle()
+      hasVoiceClone = !!userRow?.elevenlabs_voice_id
+    }
+  } catch (error) {
+    console.error("[Podcast] Failed to load initial data:", error)
   }
 
   return (
@@ -52,6 +68,8 @@ export default async function PodcastPage() {
           brokerageId={brokerageId}
           initialEpisodes={initialEpisodes}
           totalPlays={totalPlays}
+          userType={userType}
+          hasVoiceClone={hasVoiceClone}
         />
       </Suspense>
     </div>

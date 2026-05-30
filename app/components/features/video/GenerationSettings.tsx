@@ -9,7 +9,7 @@ import { updateVideoGenerationSettingsAction } from "@/app/actions/video"
 
 export function GenerationSettings({ projectId }: { projectId: string }) {
   const [voiceProfile, setVoiceProfile] = useState("default")
-  const [avatarStyle, setAvatarStyle] = useState("professional")
+  const [avatarStyle, setAvatarStyle] = useState<"professional" | "casual" | "luxury">("professional")
   const [subtitles, setSubtitles] = useState(true)
   const [watermark, setWatermark] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -50,7 +50,7 @@ export function GenerationSettings({ projectId }: { projectId: string }) {
 
         <div>
           <label className="text-sm font-medium mb-2 block">Avatar Style</label>
-          <Select value={avatarStyle} onValueChange={setAvatarStyle}>
+          <Select value={avatarStyle} onValueChange={(v) => setAvatarStyle(v as "professional" | "casual" | "luxury")}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -64,7 +64,7 @@ export function GenerationSettings({ projectId }: { projectId: string }) {
 
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <Checkbox id="subtitles" checked={subtitles} onCheckedChange={setSubtitles} />
+            <Checkbox id="subtitles" checked={subtitles} onCheckedChange={(checked) => setSubtitles(Boolean(checked))} />
             <label htmlFor="subtitles" className="text-sm font-medium cursor-pointer">
               Include Subtitles
             </label>

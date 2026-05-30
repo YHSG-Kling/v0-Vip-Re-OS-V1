@@ -9,11 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
 
 const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
-  { value: "FSBO",           label: "FSBO" },
-  { value: "BUYER_MATCH",    label: "Buyer Match" },
-  { value: "DIVORCE",        label: "Divorce" },
-  { value: "FORECLOSURE",    label: "Foreclosure" },
-  { value: "GHOST_RECOVERY", label: "Ghost Recovery" },
+  { value: "fsbo",           label: "FSBO" },
+  { value: "buyer_match",    label: "Buyer Match" },
+  { value: "divorce",        label: "Divorce" },
+  { value: "foreclosure",    label: "Foreclosure" },
+  { value: "ghost_recovery", label: "Ghost Recovery" },
+  { value: "social_intent",  label: "Social Intent" },
+  { value: "search_intent",  label: "Search Intent" },
 ]
 
 interface Props {
@@ -29,7 +31,7 @@ export function CreateCampaignModal({
   open, onClose, brokerageId, videoEnabled, directMailEnabled, onCreated,
 }: Props) {
   const [name, setName]             = useState("")
-  const [type, setType]             = useState<CampaignType>("FSBO")
+  const [type, setType]             = useState<CampaignType>("fsbo")
   const [channels, setChannels]     = useState<string[]>(["email"])
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState<string | null>(null)

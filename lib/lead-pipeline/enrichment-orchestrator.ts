@@ -66,13 +66,24 @@ export async function processEnrichmentQueue(
   for (const entry of entries as QueueEntry[]) {
     result.processed++
 
+    // Guard: a row must reference a lead or a contact to be enrichable here.
+    // Raw-record rows (both null) are enriched inline by the pipeline, not via
+    // this queue — fail them with a clear reason instead of looping retries.
+    if (!entry.lead_id && !entry.contact_id) {
+      await supabase
+        .from('lead_enrichment_queue')
+        .update({ status: 'failed', error_message: 'No lead_id or contact_id to enrich' })
+        .eq('id', entry.id)
+      continue
+    }
+
     // Step 1: Mark processing
     await supabase
       .from('lead_enrichment_queue')
       .update({ status: 'processing' })
       .eq('id', entry.id)
 
-    // Step 2: Determine entity type — constraint guarantees exactly one is set
+    // Step 2: Determine entity type
     const entityType: EntityType = entry.lead_id ? 'lead' : 'contact'
     const entityId = (entry.lead_id ?? entry.contact_id) as string
 
@@ -112,8 +123,61 @@ export async function processEnrichmentQueue(
         const primaryPhone = enriched.phones?.[0] ?? null
         const secondaryPhone = enriched.phones?.[1] ?? null
 
-        // Mailing address from enrichment provider
-        const hasMailingData = !!(enriched.address || enriched.city || enriched.state)
+        // Mailing address from enrichment provider — prefer the structured streetAddress (PDL
+        // street_addresses[0]) and fall back to the legacy single-string `address`.
+        const mailingStreet = (enriched as any).streetAddress ?? enriched.address ?? null
+        const hasMailingData = !!(mailingStreet || enriched.city || enriched.state)
+        // PDL now reports verification flags directly (peopledata-client derives them from the
+        // person likelihood + presence of structured email/address). Fall back to hasMailingData
+        // for back-compat with mocks/tests.
+        const mvRaw = (enriched as any).mailingAddressVerified
+        const mailingVerified: boolean = typeof mvRaw === 'boolean' ? mvRaw : hasMailingData
+        const emailFlagVerified: boolean = (enriched as any).emailVerified === true
+
+        // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full
+        // PDL payload is queryable without re-calling the API. Only includes fields actually
+        // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
+        const profile: Record<string, any> = {
+          provider: 'peopledata',
+          captured_at: new Date().toISOString(),
+          confidence: enriched.enrichmentConfidence,
+          full_name: enriched.fullName,
+          middle_name: enriched.middleName,
+          emails: enriched.emails,
+          phones: enriched.phones,
+          mobile_phone: enriched.mobilePhone,
+          work_phone: enriched.workPhone,
+          age: enriched.age,
+          age_range: enriched.ageRange,
+          gender: enriched.gender,
+          marital_status: enriched.maritalStatus,
+          children_count: enriched.childrenCount,
+          household_size: enriched.householdSize,
+          employer: enriched.currentEmployer,
+          job_title: enriched.currentTitle,
+          industry: enriched.currentIndustry,
+          years_of_experience: enriched.yearsOfExperience,
+          education: enriched.education,
+          household_income: enriched.householdIncome,
+          net_worth: enriched.netWorth,
+          home_owner_status: enriched.homeOwnerStatus,
+          home_value: enriched.homeValue,
+          credit_score_range: enriched.creditScoreRange,
+          linkedin_url: enriched.linkedinUrl,
+          linkedin_username: enriched.linkedinUsername,
+          facebook_url: enriched.facebookUrl,
+          twitter_url: enriched.twitterUrl,
+          github_url: enriched.githubUrl,
+          skills: enriched.skills,
+          certifications: enriched.certifications,
+          life_events: (enriched as any).life_events ?? (enriched as any).lifeEvents,
+        }
+        // Strip undefined / null / empty arrays so the JSONB blob stays compact.
+        for (const k of Object.keys(profile)) {
+          const v = profile[k]
+          if (v === undefined || v === null) delete profile[k]
+          else if (Array.isArray(v) && v.length === 0) delete profile[k]
+        }
 
         // Step 6a: Update entity table
         if (entityType === 'lead') {
@@ -127,19 +191,49 @@ export async function processEnrichmentQueue(
               enrichment_status: 'complete',
               enrichment_provider: 'peopledata',
               enrichment_confidence: enriched.enrichmentConfidence,
+              enrichment_profile: profile,
+              // Verification flags drive the canonical lead-eligibility gate + AI-ISA channel
+              // resolver. Write them whenever enrichment ran (false is meaningful — it explains
+              // why the gate is still blocking).
+              email_verified: emailFlagVerified,
               // Write mailing fields when provider returns address data
               ...(hasMailingData && {
-                mailing_address: enriched.address ?? null,
+                mailing_address: mailingStreet,
                 mailing_city: enriched.city ?? null,
                 mailing_state: enriched.state ?? null,
                 mailing_zip: enriched.zipCode ?? null,
-                mailing_address_verified: true,
+                mailing_address_verified: mailingVerified,
                 mailing_address_source: 'enrichment',
               }),
               // Mark eligible for ISA if email is now available
               ...(primaryEmail && { minimum_viable_for_isa: true }),
             })
             .eq('id', entityId)
+
+          // Back-fill raw_scraped_leads so a record that previously failed the canonical eligibility
+          // gate can re-pass on the next sweep. Without this, a stranded raw_scraped_leads row would
+          // never recover even after PDL surfaced the missing email/address.
+          try {
+            const { data: leadRow } = await supabase
+              .from('leads').select('raw_record_id').eq('id', entityId).maybeSingle()
+            const rawId = leadRow?.raw_record_id
+            if (rawId) {
+              await supabase.from('raw_scraped_leads').update({
+                email_verified:           emailFlagVerified,
+                ...(hasMailingData && {
+                  mailing_address:          mailingStreet,
+                  mailing_city:             enriched.city ?? null,
+                  mailing_state:            enriched.state ?? null,
+                  mailing_zip:              enriched.zipCode ?? null,
+                  mailing_address_verified: mailingVerified,
+                }),
+                processed_at:             new Date().toISOString(),
+                updated_at:               new Date().toISOString(),
+              }).eq('id', rawId)
+            }
+          } catch (e) {
+            console.warn('[enrichment-orchestrator] raw_scraped_leads back-fill skipped:', e)
+          }
         } else {
           await supabase
             .from('contacts')
@@ -149,6 +243,8 @@ export async function processEnrichmentQueue(
               ...(secondaryPhone && { phone_secondary: secondaryPhone }),
               last_enriched_at: new Date().toISOString(),
               enrichment_confidence: enriched.enrichmentConfidence,
+              email_verified: emailFlagVerified,
+              enrichment_profile: profile,
             })
             .eq('id', entityId)
         }
@@ -166,13 +262,11 @@ export async function processEnrichmentQueue(
 
         // Step 6c: Track vendor usage
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost },
         })
 
         // Step 6d: Lead-specific post-enrichment
@@ -201,7 +295,7 @@ export async function processEnrichmentQueue(
           })
 
           await processKernelEvent({
-            eventType: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
+            event: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
             entityType: 'contact',
             entityId,
             brokerageId,
@@ -222,7 +316,7 @@ export async function processEnrichmentQueue(
               contact_id: entityId,
               brokerage_id: brokerageId,
               score: scoreResult.finalScore,
-              score_factors: scoreResult.factors as unknown as Record<string, unknown>,
+              factors: scoreResult.factors as unknown as Record<string, unknown>,
               scored_at: new Date().toISOString(),
             })
 
@@ -256,13 +350,11 @@ export async function processEnrichmentQueue(
           .eq('id', entry.id)
 
         await trackVendorUsageService({
-          vendorName: 'PeopleData',
-          usageType: 'skip_trace',
-          unitsUsed: 1,
-          costPerUnit: cost,
-          totalCost: cost,
+          vendor: 'PeopleData',
+          systemSource: 'skip_trace',
+          unitCount: 1,
           brokerageId,
-          requestMetadata: { entityType, entityId, queueEntryId: entry.id, result: 'no_match' },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match' },
         })
 
         result.failed++

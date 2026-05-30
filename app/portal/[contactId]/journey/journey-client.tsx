@@ -71,8 +71,8 @@ export default function JourneyClient({
   // Check if milestone is delayed
   const isDelayed = (milestone: TransactionMilestone) => {
     if (milestone.status === "completed") return false
-    if (!milestone.milestone_date) return false
-    const dueDate = new Date(milestone.milestone_date)
+    if (!milestone.target_date) return false
+    const dueDate = new Date(milestone.target_date)
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     return dueDate < today
@@ -107,8 +107,8 @@ export default function JourneyClient({
     if (index === currentMilestoneIndex) {
       return "In Progress"
     }
-    if (milestone.milestone_date) {
-      return `Expected ${formatDate(milestone.milestone_date)}`
+    if (milestone.target_date) {
+      return `Expected ${formatDate(milestone.target_date)}`
     }
     return "Upcoming"
   }

@@ -101,7 +101,6 @@ function normalizeContact(contact?: EvaluateKernelOutboundParams["contact"]): Ke
     contact_type: contact?.contact_type ?? "buyer",
     persona: normalizePersona(contact?.persona),
     buyer_stage: contact?.buyer_stage,
-    seller_stage: contact?.seller_stage,
     lifecycle_state: contact?.lifecycle_state,
     status: contact?.status,
     tcpa_consent: contact?.tcpa_consent ?? true,

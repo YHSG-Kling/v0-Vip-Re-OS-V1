@@ -293,9 +293,9 @@ export default function BehavioralInsights() {
       setSocialIntel(social)
 
       // Calculate stats
-      const zillowCount = external.filter((e) => e.source === "zillow").length
-      const realtorCount = external.filter((e) => e.source === "realtor").length
-      const highIntent = social.filter((s) => s.ai_intent_score >= 70).length
+      const zillowCount = external.filter((e: any) => e.source === "zillow").length
+      const realtorCount = external.filter((e: any) => e.source === "realtor").length
+      const highIntent = social.filter((s: any) => s.ai_intent_score >= 70).length
 
       setStats({
         zillowScrapes: zillowCount,

@@ -61,12 +61,22 @@ export interface User {
   name: string
   role: UserRole
   avatar?: string
+  email?: string
+  // Real fields from Supabase auth + users + agents tables:
+  user_type?: string
+  subType?: string          // contact_persona or agent sub-classification
+  agentId?: string          // from agents.id where user_id = user.id
+  contactId?: string        // for portal users: contacts.id
+  vendorId?: string         // for vendor portal users: vendors.id
+  teamId?: string           // from users.team_id
+  teamIds?: string[]        // all teams this user belongs to
+  brokerageId?: string      // from users.brokerage_id or role_assignments.brokerage_id
+  managedAgentIds?: string[] // for team leads: agent IDs they manage
   playbookId?: string
   lastLogin?: string
   ownsProperty?: boolean
   searchCriteria?: any
   stats?: any
-  email?: string
 }
 
 // --- AI TOOLS SUITE ---

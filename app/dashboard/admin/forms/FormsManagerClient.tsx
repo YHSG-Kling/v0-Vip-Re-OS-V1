@@ -105,9 +105,9 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
   }
 
   function updateField(index: number, patch: Partial<FormField>) {
-    setDraft(prev => {
-      const fields = [...prev.fields]
-      fields[index] = { ...fields[index], ...patch }
+    setDraft((prev: any) => {
+      const fields = [...(prev.fields ?? [])] as FormField[]
+      fields[index] = { ...(fields[index] as any), ...patch } as FormField
       return { ...prev, fields }
     })
   }

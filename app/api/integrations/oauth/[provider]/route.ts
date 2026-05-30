@@ -13,10 +13,12 @@ import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
+import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero"
+type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "linkedin"
 
 interface OAuthConfig {
   clientIdEnv: string
@@ -35,9 +37,16 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
     authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
+    // Calendar + Gmail send/read for agent personal mailbox integration.
+    // openid/email/profile let us identify the connecting account address.
     scopes: [
+      "openid",
+      "email",
+      "profile",
       "https://www.googleapis.com/auth/calendar",
       "https://www.googleapis.com/auth/calendar.events",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.readonly",
     ],
     additionalParams: {
       access_type: "offline",
@@ -51,8 +60,10 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     scopes: [
       "offline_access",
-      "Calendars.ReadWrite",
       "User.Read",
+      "Calendars.ReadWrite",
+      "Mail.Send",
+      "Mail.ReadWrite",
     ],
   },
   docusign: {
@@ -75,6 +86,14 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     authUrl: "https://login.xero.com/identity/connect/authorize",
     tokenUrl: "https://identity.xero.com/connect/token",
     scopes: ["offline_access", "accounting.transactions", "accounting.contacts"],
+  },
+  linkedin: {
+    clientIdEnv: "LINKEDIN_CLIENT_ID",
+    clientSecretEnv: "LINKEDIN_CLIENT_SECRET",
+    authUrl: "https://www.linkedin.com/oauth/v2/authorization",
+    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
+    // w_member_social: publish posts; r_basicprofile + r_emailaddress: identity
+    scopes: ["r_basicprofile", "r_emailaddress", "w_member_social"],
   },
 }
 
@@ -180,71 +199,144 @@ export async function GET(
       // Build redirect URI (must match what was used in auth request)
       const redirectUri = `${baseUrl}/api/integrations/oauth/${provider}`
 
-      // Exchange code for tokens
-      const tokenParams = new URLSearchParams({
-        grant_type: "authorization_code",
-        code: code!,
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        client_secret: clientSecret,
-      })
-
-      const tokenResponse = await fetch(config.tokenUrl, {
+      // Exchange code for tokens (through the connector-gateway). config.tokenUrl is a full URL —
+      // split into origin + pathname so the gateway hits the exact endpoint (no trailing-slash drift).
+      const tokenUrl = new URL(config.tokenUrl)
+      const tokenResponse = await callConnector<{ expires_in?: number; error_description?: string }>({
+        connector: `${provider}-oauth`,
+        baseUrl: tokenUrl.origin,
+        path: tokenUrl.pathname,
         method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
+        auth: { style: "none" },
+        bodyType: "form",
+        body: {
+          grant_type: "authorization_code",
+          code: code!,
+          redirect_uri: redirectUri,
+          client_id: clientId,
+          client_secret: clientSecret,
         },
-        body: tokenParams.toString(),
       })
 
       if (!tokenResponse.ok) {
-        const errorData = await tokenResponse.json().catch(() => ({}))
-        console.error("[OAuth] Token exchange failed:", errorData)
+        console.error("[OAuth] Token exchange failed:", tokenResponse.error)
         return redirectWithResult(
-          baseUrl, 
-          false, 
-          provider, 
-          errorData.error_description || "Failed to exchange code for tokens"
+          baseUrl,
+          false,
+          provider,
+          tokenResponse.error || "Failed to exchange code for tokens"
         )
       }
 
-      const tokens = await tokenResponse.json()
+      const tokens = tokenResponse.data as any
 
       // Calculate token expiry
       const expiresAt = tokens.expires_in
         ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
         : null
 
-      // Store tokens in platform_credentials
-      const { error: credError } = await supabase
+      // CANONICAL platform id every resolver reads: google→gmail, microsoft→outlook (the route
+      // param `provider` is google_calendar/outlook_calendar); QuickBooks/others keep their id.
+      const storedPlatform =
+        oauthProvider === "google" ? "gmail"
+        : oauthProvider === "microsoft" ? "outlook"
+        : provider
+
+      // For Google/Microsoft, resolve the connected mailbox address up front so it is stored on the
+      // owner-scoped row (used as the From address) AND mirrored to the agent row below.
+      let connectedEmail: string | null = null
+      if (oauthProvider === "google" || oauthProvider === "microsoft") {
+        try {
+          if (oauthProvider === "google") {
+            const ui = await callConnector<{ email?: string }>({
+              connector: "google-userinfo", baseUrl: "https://openidconnect.googleapis.com", path: "/v1/userinfo",
+              method: "GET", auth: { style: "bearer", token: tokens.access_token },
+            })
+            if (ui.ok) connectedEmail = ui.data?.email ?? null
+          } else {
+            const ui = await callConnector<{ mail?: string; userPrincipalName?: string }>({
+              connector: "microsoft-graph", baseUrl: "https://graph.microsoft.com", path: "/v1.0/me",
+              method: "GET", auth: { style: "bearer", token: tokens.access_token },
+            })
+            if (ui.ok) connectedEmail = ui.data?.mail ?? ui.data?.userPrincipalName ?? null
+          }
+        } catch {}
+      }
+
+      // Store tokens OWNER-SCOPED in platform_credentials (owner_type/owner_id from the state the
+      // initiate resolved from the connecting user's role) so a vendor/contact/agent connects their
+      // OWN mailbox and it resolves via the owner cascade. Canonical token columns are what every
+      // resolver reads; account_id carries the QBO realmId; config keeps the same fields for compat.
+      const ownerType = (stateData as any).ownerType ?? "brokerage"
+      const ownerId = (stateData as any).ownerId ?? stateData.brokerageId
+      const credRow = {
+        brokerage_id: stateData.brokerageId,
+        owner_type: ownerType,
+        owner_id: ownerId,
+        agent_user_id: ownerType === "agent" ? stateData.userId : null,
+        platform: storedPlatform,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
+        config: {
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_type: tokens.token_type,
+          scope: tokens.scope,
+          ...(connectedEmail ? { email: connectedEmail } : {}),
+          ...(tokens.realmId && { realm_id: tokens.realmId }),
+          ...(tokens.x_refresh_token_expires_in && { refresh_token_expires_in: tokens.x_refresh_token_expires_in }),
+        },
+        token_expires_at: expiresAt,
+        is_active: true,
+        test_status: "pass", // OAuth success = connection verified
+        last_tested_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      // Owner-keyed update-or-insert (the unique key is (owner_type, owner_id, platform)).
+      const { data: existingCred } = await supabase
         .from("platform_credentials")
-        .upsert({
-          brokerage_id: stateData.brokerageId,
-          platform: provider,
-          config: {
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            token_type: tokens.token_type,
-            scope: tokens.scope,
-            // Provider-specific fields
-            ...(tokens.realmId && { realm_id: tokens.realmId }),
-            ...(tokens.x_refresh_token_expires_in && { 
-              refresh_token_expires_in: tokens.x_refresh_token_expires_in 
-            }),
-          },
-          token_expires_at: expiresAt,
-          is_active: true,
-          test_status: "pass", // OAuth success = connection verified
-          last_tested_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "brokerage_id,platform",
-        })
+        .select("id")
+        .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", storedPlatform)
+        .maybeSingle()
+      const { error: credError } = existingCred
+        ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+        : await supabase.from("platform_credentials").insert(credRow)
 
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)
         return redirectWithResult(baseUrl, false, provider, "Failed to store credentials")
+      }
+
+      // For an AGENT connecting Google/Microsoft, ALSO mirror to agent_api_credentials so the
+      // personal-email adapter's agent path sends from their mailbox. ONLY for owner_type 'agent'
+      // — a vendor/contact/team/brokerage owner must NOT get a personal agent mailbox row.
+      if ((oauthProvider === "google" || oauthProvider === "microsoft") && ownerType === "agent") {
+        try {
+          const { data: agentRow } = await supabase.from("agents").select("id").eq("user_id", stateData.userId).maybeSingle()
+          if (agentRow?.id) {
+            await supabase
+              .from("agent_api_credentials")
+              .upsert(
+                {
+                  agent_id: agentRow.id,
+                  brokerage_id: stateData.brokerageId,
+                  service_name: storedPlatform,
+                  service_type: "personal_email",
+                  access_token: tokens.access_token,
+                  refresh_token: tokens.refresh_token,
+                  token_expires_at: expiresAt,
+                  config: { email: connectedEmail, scope: tokens.scope },
+                  is_active: true,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "agent_id,service_name" }
+              )
+          }
+        } catch (agentCredErr) {
+          console.error("[OAuth] Failed to mirror agent-scoped credential:", agentCredErr)
+          // Non-fatal — owner-scoped token is still saved
+        }
       }
 
       // Update brokerage_integrations
@@ -292,22 +384,50 @@ export async function GET(
       return redirectWithResult(baseUrl, false, provider, `OAuth not configured for ${metadata.displayName}`)
     }
 
-    // Get user's brokerage_id
+    // Resolve the connecting actor's OWNER scope so the callback stores tokens owner-scoped
+    // (agent/team/brokerage/staff/vendor/contact) — not always brokerage. This is what lets a
+    // vendor/contact connect their OWN email/calendar and have it resolve via the owner cascade.
     const { data: userData } = await supabase
       .from("users")
-      .select("brokerage_id")
+      .select("brokerage_id, user_type, team_id")
       .eq("id", user.id)
-      .single()
+      .maybeSingle()
 
-    if (!userData?.brokerage_id) {
-      return redirectWithResult(baseUrl, false, provider, "User not associated with a brokerage")
+    const { scope } = connectionScopeForUserType((userData?.user_type as string) ?? "")
+    let ownerType: string = scope
+    let ownerId: string | null = null
+    let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
+
+    if (scope === "vendor") {
+      const { data: v } = await supabase.from("vendors").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+      ownerId = (v?.id as string | null) ?? null
+      brokerageId = brokerageId ?? ((v?.brokerage_id as string | null) ?? null)
+    } else if (scope === "contact") {
+      const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
+      ownerId = (c?.id as string | null) ?? null
+      brokerageId = brokerageId ?? ((c?.brokerage_id as string | null) ?? null)
+    } else if (scope === "team") {
+      ownerId = (userData?.team_id as string | null) ?? null
+    } else if (scope === "brokerage" || scope === "platform") {
+      ownerId = brokerageId
+    } else {
+      ownerId = user.id // agent / staff → personal (owner_type 'agent')
     }
 
-    // Generate state for CSRF protection
+    if (!brokerageId) {
+      return redirectWithResult(baseUrl, false, provider, "User not associated with a brokerage")
+    }
+    if (!ownerId) {
+      return redirectWithResult(baseUrl, false, provider, "Could not resolve your account for this connection")
+    }
+
+    // Generate state for CSRF protection (carries the resolved owner scope through the callback).
     const newState = Buffer.from(JSON.stringify({
       provider,
-      brokerageId: userData.brokerage_id,
+      brokerageId,
       userId: user.id,
+      ownerType,
+      ownerId,
       nonce: crypto.randomUUID(),
     })).toString("base64url")
 

@@ -347,23 +347,152 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
                 </CardContent>
               </Card>
             </div>
-            <Card className="border-2">
-              <CardContent className="pt-16 pb-16">
-                <div className="text-center">
-                  <div className="bg-muted rounded-full p-6 w-fit mx-auto mb-4">
-                    <BarChart3 className="h-12 w-12 text-muted-foreground" />
+            {/* Real analytics derived from posts already in state */}
+            {(() => {
+              const published  = posts.filter(p => p.status === "published" || p.status === "sent")
+              const scheduled  = posts.filter(p => p.status === "scheduled" || p.status === "pending")
+              const failed     = posts.filter(p => p.status === "failed" || p.status === "error")
+
+              const platformCounts: Record<string, number> = {}
+              posts.forEach(p => {
+                const platforms: string[] = Array.isArray(p.platforms) ? p.platforms : (p.platform ? [p.platform] : [])
+                platforms.forEach((pl: string) => { platformCounts[pl] = (platformCounts[pl] || 0) + 1 })
+              })
+              const platformEntries = Object.entries(platformCounts).sort((a, b) => b[1] - a[1])
+
+              const contentTypes: Record<string, number> = {}
+              posts.forEach(p => {
+                const type = p.content_type || p.type || "post"
+                contentTypes[type] = (contentTypes[type] || 0) + 1
+              })
+
+              // Posts by day of week
+              const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+              const byDay: number[] = [0,0,0,0,0,0,0]
+              posts.forEach(p => {
+                const d = p.scheduled_for || p.created_at
+                if (d) byDay[new Date(d).getDay()]++
+              })
+              const maxDay = Math.max(...byDay, 1)
+
+              return (
+                <div className="space-y-6">
+                  {/* Summary row */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <Card>
+                      <CardContent className="pt-5 pb-5">
+                        <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Total Posts</p>
+                        <p className="text-3xl font-bold">{posts.length}</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-5 pb-5">
+                        <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Published</p>
+                        <p className="text-3xl font-bold text-green-600">{published.length}</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-5 pb-5">
+                        <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Scheduled</p>
+                        <p className="text-3xl font-bold text-blue-600">{scheduled.length}</p>
+                      </CardContent>
+                    </Card>
                   </div>
-                  <h3 className="text-xl font-semibold mb-2">Detailed Analytics Coming Soon</h3>
-                  <p className="text-muted-foreground max-w-md mx-auto leading-relaxed">
-                    Track engagement metrics, reach, and performance across all platforms
-                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Platform breakdown */}
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium">Posts by Platform</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {platformEntries.length === 0 ? (
+                          <p className="text-sm text-muted-foreground py-4 text-center">No posts yet</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {platformEntries.map(([platform, count]) => (
+                              <div key={platform} className="flex items-center gap-3">
+                                <div className="w-24 shrink-0 text-sm capitalize">{platform}</div>
+                                <div className="flex-1 bg-muted rounded-full h-2.5">
+                                  <div
+                                    className="bg-primary h-2.5 rounded-full transition-all"
+                                    style={{ width: `${(count / posts.length) * 100}%` }}
+                                  />
+                                </div>
+                                <span className="text-sm font-medium w-6 text-right">{count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Posts by day of week */}
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium">Posting Activity by Day</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex items-end gap-2 h-24">
+                          {byDay.map((count, i) => (
+                            <div key={i} className="flex flex-col items-center gap-1 flex-1">
+                              <div className="w-full flex items-end justify-center" style={{ height: "72px" }}>
+                                <div
+                                  className="w-full bg-primary/80 rounded-t transition-all"
+                                  style={{ height: `${(count / maxDay) * 72}px`, minHeight: count > 0 ? "4px" : "0" }}
+                                />
+                              </div>
+                              <span className="text-[10px] text-muted-foreground">{dayLabels[i]}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Content type breakdown */}
+                  {Object.keys(contentTypes).length > 0 && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium">Content Types</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(contentTypes).map(([type, count]) => (
+                            <div key={type} className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-lg">
+                              <span className="text-sm capitalize">{type.replace(/_/g, " ")}</span>
+                              <span className="text-xs font-bold text-primary">{count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {failed.length > 0 && (
+                    <Card className="border-destructive/40">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-destructive">Failed Posts ({failed.length})</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-2">
+                          {failed.map(p => (
+                            <div key={p.id} className="flex items-center justify-between text-sm p-2 bg-destructive/5 rounded">
+                              <span className="truncate flex-1">{p.content?.slice(0,60) ?? "No content"}...</span>
+                              <Badge variant="destructive" className="ml-2 shrink-0">Failed</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
                 </div>
-              </CardContent>
-            </Card>
+              )
+            })()}
           </div>
         </TabsContent>
 
-        {/* Tab 4: Publishing Calendar */}
+        {/* Tab 4: Publishing Calendar — real 5-week grid built from posts in state */}
         <TabsContent value="calendar">
           <Card className="border-2">
             <CardHeader className="bg-muted/30">
@@ -371,18 +500,96 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
                 <Calendar className="h-5 w-5 text-primary" />
                 Publishing Calendar
               </CardTitle>
-              <CardDescription>Visualize your posting schedule across all platforms</CardDescription>
+              <CardDescription>Your content schedule for the next 5 weeks</CardDescription>
             </CardHeader>
-            <CardContent className="pt-16 pb-16">
-              <div className="text-center">
-                <div className="bg-muted rounded-full p-6 w-fit mx-auto mb-4">
-                  <Calendar className="h-12 w-12 text-muted-foreground" />
-                </div>
-                <h3 className="text-xl font-semibold mb-2">Calendar View Coming Soon</h3>
-                <p className="text-muted-foreground max-w-md mx-auto leading-relaxed">
-                  View and manage your content schedule with drag-and-drop calendar interface
-                </p>
-              </div>
+            <CardContent className="pt-6">
+              {(() => {
+                const today = new Date()
+                today.setHours(0,0,0,0)
+                // Build 35-day grid starting from the nearest Sunday before today
+                const startOfGrid = new Date(today)
+                startOfGrid.setDate(today.getDate() - today.getDay())
+
+                // Index posts by their date string YYYY-MM-DD
+                const postsByDate: Record<string, any[]> = {}
+                posts.forEach(p => {
+                  const raw = p.scheduled_for || p.created_at
+                  if (!raw) return
+                  const key = new Date(raw).toISOString().split("T")[0]
+                  postsByDate[key] = postsByDate[key] ? [...postsByDate[key], p] : [p]
+                })
+
+                const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+                const cells: Date[] = []
+                for (let i = 0; i < 35; i++) {
+                  const d = new Date(startOfGrid)
+                  d.setDate(startOfGrid.getDate() + i)
+                  cells.push(d)
+                }
+
+                const platformColors: Record<string, string> = {
+                  facebook:  "bg-blue-500",
+                  instagram: "bg-pink-500",
+                  linkedin:  "bg-sky-600",
+                  twitter:   "bg-sky-400",
+                  tiktok:    "bg-black",
+                }
+
+                return (
+                  <div>
+                    {/* Day headers */}
+                    <div className="grid grid-cols-7 mb-1">
+                      {dayLabels.map(d => (
+                        <div key={d} className="text-center text-xs font-medium text-muted-foreground py-1">{d}</div>
+                      ))}
+                    </div>
+                    {/* Calendar cells */}
+                    <div className="grid grid-cols-7 gap-1">
+                      {cells.map((day, i) => {
+                        const key = day.toISOString().split("T")[0]
+                        const dayPosts = postsByDate[key] || []
+                        const isToday = day.getTime() === today.getTime()
+                        const isPast  = day < today
+
+                        return (
+                          <div
+                            key={i}
+                            className={`min-h-[72px] rounded-lg border p-1.5 flex flex-col gap-1 transition-colors
+                              ${isToday ? "border-primary bg-primary/5" : "border-border"}
+                              ${isPast  ? "opacity-60" : ""}
+                            `}
+                          >
+                            <span className={`text-xs font-medium ${isToday ? "text-primary" : "text-muted-foreground"}`}>
+                              {day.getDate()}
+                            </span>
+                            {dayPosts.slice(0, 3).map((p, j) => {
+                              const platform = Array.isArray(p.platforms) ? p.platforms[0] : (p.platform || "other")
+                              const colorClass = platformColors[platform] || "bg-primary"
+                              return (
+                                <div
+                                  key={j}
+                                  title={p.content?.slice(0, 80) ?? "Post"}
+                                  className={`${colorClass} text-white rounded px-1 py-0.5 text-[9px] truncate`}
+                                >
+                                  {platform}
+                                </div>
+                              )
+                            })}
+                            {dayPosts.length > 3 && (
+                              <span className="text-[9px] text-muted-foreground">+{dayPosts.length - 3}</span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {posts.length === 0 && (
+                      <p className="text-center text-sm text-muted-foreground mt-6">
+                        No scheduled posts yet. Create posts to see them appear on the calendar.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
             </CardContent>
           </Card>
         </TabsContent>

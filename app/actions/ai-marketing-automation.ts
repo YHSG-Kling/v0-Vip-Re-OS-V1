@@ -12,7 +12,7 @@ import { handleError } from "@/lib/errors"
 
 export interface NewsletterGenerationParams {
   agentId: string
-  audienceSegment: "buyers" | "sellers" | "investors" | "past_clients" | "sphere" | "all"
+  audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
   topic?: string
   tone?: "professional" | "friendly" | "educational" | "urgent"
   includeMarketData?: boolean
@@ -58,9 +58,9 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
       params.includeMarketData
         ? supabase
-            .from("market_snapshots")
-            .select("*")
-            .order("created_at", { ascending: false })
+            .from("market_data")
+            .select("median_sale_price, avg_days_on_market, active_listings, price_per_sqft, recorded_date")
+            .order("recorded_date", { ascending: false })
             .limit(1)
             .maybeSingle()
         : Promise.resolve({ data: null }),
@@ -83,7 +83,7 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       buyers: "Focus on buying opportunities, market timing, financing tips, and new listings",
       sellers: "Focus on selling strategies, home value insights, staging tips, and market conditions",
       investors: "Focus on ROI analysis, market trends, cap rates, and investment opportunities",
-      past_clients: "Focus on home maintenance, refinancing opportunities, and referral programs",
+      lifetime_customers: "Focus on home maintenance, refinancing opportunities, and referral programs",
       sphere: "Focus on community events, market updates, and staying connected",
       all: "Balance content for buyers, sellers, and homeowners with broad appeal",
     }
@@ -101,10 +101,10 @@ TOPIC: ${params.topic || "Monthly Real Estate Update"}
 TONE: ${params.tone || "friendly"}
 
 ${marketData ? `MARKET DATA:
-- Median Price: $${marketData.median_price?.toLocaleString() || "N/A"}
-- Days on Market: ${marketData.avg_dom || "N/A"}
-- Inventory: ${marketData.active_inventory || "N/A"} homes
-- YoY Change: ${marketData.yoy_change || "N/A"}%` : ""}
+- Median Price: $${marketData.median_sale_price?.toLocaleString() || "N/A"}
+- Days on Market: ${marketData.avg_days_on_market || "N/A"}
+- Active Inventory: ${marketData.active_listings || "N/A"} homes
+- Price Per Sqft: $${marketData.price_per_sqft || "N/A"}` : ""}
 
 ${featuredListings.length > 0 ? `FEATURED LISTINGS:
 ${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
@@ -146,7 +146,7 @@ Return JSON:
 
     // Save to database
     const { data: saved, error: saveError } = await supabase
-      .from("newsletter_campaigns")
+      .from("newsletters")
       .insert({
         agent_id: params.agentId,
         subject: newsletter.subject,

@@ -1,18 +1,19 @@
-import { type NextRequest, NextResponse } from "next/server"
+import {
+type NextRequest, NextResponse } from "next/server"
 import { syncDotloopDocuments } from "@/app/actions/dotloop-integration"
-import { supabaseService } from "@/services/supabaseService"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
   recordCronStartAction,
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "dotloop-sync",
@@ -28,18 +29,21 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const supabase = createServiceClient()
 
-    const transactions = await supabaseService.query(`
-      SELECT id, dotloop_loop_id, buyer_id, seller_id
-      FROM transactions
-      WHERE status IN ('under_contract', 'pending', 'contingent')
-      AND dotloop_sync_enabled = true
-      AND dotloop_loop_id IS NOT NULL
-    `)
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("id, dotloop_loop_id, buyer_id, seller_id")
+      .in("status", ["under_contract", "pending", "contingent"])
+      .eq("dotloop_sync_enabled", true)
+      .not("dotloop_loop_id", "is", null)
 
+    if (txError) throw txError
+
+    const txList = transactions ?? []
     let syncedCount = 0
 
-    for (const txn of transactions) {
+    for (const txn of txList) {
       const result = await syncDotloopDocuments({
         loopId: txn.dotloop_loop_id,
         contactId: txn.buyer_id || txn.seller_id,
@@ -53,14 +57,14 @@ export async function GET(request: NextRequest) {
 
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: transactions.length,
+      records_processed: txList.length,
       output_count: syncedCount,
-      metadata: { transactionsChecked: transactions.length, syncedCount },
+      metadata: { transactionsChecked: txList.length, syncedCount },
     })
 
     return NextResponse.json({
       success: true,
-      transactionsChecked: transactions.length,
+      transactionsChecked: txList.length,
       syncedCount,
     })
   } catch (error: any) {

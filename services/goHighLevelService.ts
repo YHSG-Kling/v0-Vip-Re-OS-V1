@@ -34,23 +34,25 @@ async function ghlFetch(endpoint: string, options: RequestInit = {}) {
     return { success: false, error: "Go High Level not configured", mock: true }
   }
 
-  const response = await fetch(`${GHL_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-      Version: GHL_API_VERSION,
-      ...options.headers,
-    },
+  // Route through the single connector-gateway (one way in/out). Behavior preserved:
+  // returns parsed data on success, throws on a non-2xx response.
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const method = (options.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE") ?? "GET"
+  const body = options.body ? JSON.parse(options.body as string) : undefined
+  const res = await callConnector({
+    connector: "gohighlevel",
+    baseUrl: GHL_BASE_URL,
+    path: endpoint,
+    method,
+    body,
+    headers: { Version: GHL_API_VERSION, ...(options.headers as Record<string, string> | undefined) },
+    auth: { style: "bearer", token: config.apiKey },
   })
 
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data.message || data.error || "GHL API error")
+  if (!res.ok) {
+    throw new Error(res.error || "GHL API error")
   }
-
-  return data
+  return res.data
 }
 
 // =====================================================

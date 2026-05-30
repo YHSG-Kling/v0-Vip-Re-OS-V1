@@ -162,12 +162,12 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   } catch (e) { /* Table may not exist */ }
 
   // Calculate days since first contact
-  const daysSinceFirstContact = lead.created_at
-    ? Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  const daysSinceFirstContact = (lead as any).created_at
+    ? Math.floor((Date.now() - new Date((lead as any).created_at).getTime()) / (1000 * 60 * 60 * 24))
     : 0
 
   // Count email opens from behavioral data
-  const emailOpens = behavioralData.filter((b) => b.event_type === "email_open").length
+  const emailOpens = behavioralData.filter((b: any) => b.event_type === "email_open").length
 
   // Build the AI prompt
   const prompt = `You are an advanced real estate AI that predicts lead conversion probability.
@@ -257,8 +257,8 @@ Respond with JSON only:
         entity_type: "lead",
         entity_id: leadId,
         prediction_value: prediction,
-        confidence_score: prediction.confidence,
-        prediction_factors: extractFactors(lead, leadIntelligence, engagementScores, propertyInteractions),
+        confidence_score: (prediction as any).confidence,
+        prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores, propertyInteractions) as any,
         model_version: "v1.0",
       })
     } catch (e) {
@@ -335,7 +335,7 @@ function extractFactors(
 
 function calculateOptimalContactTime(behavioralData: unknown[]): string {
   // Analyze past engagement patterns
-  const hourCounts: Record<number, number> = {}
+  const hourCounts: Record<number, number> = {};
 
   (behavioralData || []).forEach((e: unknown) => {
     const record = e as Record<string, unknown> | null
@@ -786,7 +786,7 @@ Respond with JSON:
         entity_type: "transaction",
         entity_id: transactionId,
         prediction_value: prediction,
-        confidence_score: prediction.confidence || 0.5,
+        confidence_score: (prediction as any).confidence || 0.5,
         model_version: "v1.0",
       })
       .select()
@@ -797,8 +797,8 @@ Respond with JSON:
     }
 
     // Create AI insights for critical risks
-    if (prediction.riskFactors?.some((r: any) => r.severity === "high")) {
-      const criticalRisks = prediction.riskFactors.filter((r: any) => r.severity === "high")
+    if ((prediction as any).riskFactors?.some((r: any) => r.severity === "high")) {
+      const criticalRisks = (prediction as any).riskFactors.filter((r: any) => r.severity === "high")
 
       for (const risk of criticalRisks) {
         await supabase.from("ai_insights").insert({
@@ -1532,8 +1532,21 @@ Response JSON structure:
 }
 
 // Mass generate CMAs for all property owners
-export async function massGenerateCMAs(agentId: string) {
+// The agentId parameter is intentionally ignored; identity is always resolved
+// from the server-side session to prevent client-side impersonation.
+export async function massGenerateCMAs(_ignoredAgentId?: string) {
   const supabase = await createClient()
+
+  // Resolve identity server-side — never trust the client-supplied agentId
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) throw new Error("Unauthorized")
+  if (!ctx.agentId) throw new Error("Agent profile not found")
+
+  const agentId = ctx.agentId
 
   // Get agent's brokerage for commission structure
   const { data: agent } = await supabase
@@ -1542,7 +1555,7 @@ export async function massGenerateCMAs(agentId: string) {
     .eq("id", agentId)
     .single()
 
-  const brokerageId = agent?.profiles?.brokerage_id
+  const brokerageId = agent?.profiles?.brokerage_id ?? ctx.brokerageId
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }
@@ -1658,7 +1671,7 @@ export async function predictWinningOffer(data: {
   const idxClient = new IDXBrokerClient()
 
   // Get property intelligence
-  const property = await idxClient.getPropertyDetails(data.propertyMlsId)
+  const property = await (idxClient.getProperties as any)({ ids: [data.propertyMlsId] }).then((r: any) => r?.[0])
 
   const { data: insights } = await supabase
     .from("property_smart_insights")
@@ -2119,59 +2132,51 @@ Find TOP 10 arbitrage opportunities:
 export async function detectClientChurn(leadId: string) {
   const supabase = await createClient()
 
+  // Fetch lead without embedded joins — lead_behavioral_data, chat_sessions,
+  // communications, and showings are not FK-registered on leads/contacts in PostgREST.
   const { data: lead, error } = await supabase
     .from("leads")
-    .select(
-      `
-      *,
-      lead_behavioral_data(*),
-      chat_sessions(*),
-      communications(*),
-      showings(*)
-    `,
-    )
+    .select("*")
     .eq("id", leadId)
     .maybeSingle()
 
+  let resolvedLead: Record<string, any> | null = lead ?? null
   if (error || !lead) {
     // Try contacts table as fallback
     const { data: contact } = await supabase
       .from("contacts")
-      .select(
-        `
-        *,
-        communications(*),
-        showings(*)
-      `,
-      )
+      .select("*")
       .eq("id", leadId)
       .maybeSingle()
 
     if (!contact) {
       throw new Error("Lead not found")
     }
+    resolvedLead = contact
   }
 
-  const daysInPipeline = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  if (!resolvedLead) throw new Error("Lead not found")
+
+  const daysInPipeline = Math.floor((Date.now() - new Date(resolvedLead.created_at).getTime()) / (1000 * 60 * 60 * 24))
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
 
-  const recentCommunications = (lead.communications || []).filter(
+  const recentCommunications = (resolvedLead.communications || []).filter(
     (c: any) => new Date(c.created_at).getTime() > thirtyDaysAgo,
   )
-  const recentBehavior = (lead.lead_behavioral_data || []).filter(
+  const recentBehavior = (resolvedLead.lead_behavioral_data || []).filter(
     (b: any) => new Date(b.occurred_at).getTime() > thirtyDaysAgo && b.event_type === "property_view",
   )
 
   const prompt = `You are an AI churn detection expert. Analyze client engagement:
 
-Lead: ${lead.first_name} ${lead.last_name}
+Lead: ${resolvedLead.first_name} ${resolvedLead.last_name}
 Days in Pipeline: ${daysInPipeline}
 
 Recent Activity (30 days):
 - Communications: ${recentCommunications.length}
 - Property Views: ${recentBehavior.length}
-- Last Contact: ${lead.last_contact_date || "Never"}
-- Showings: ${lead.showings?.length || 0}
+- Last Contact: ${resolvedLead.last_contact_date || "Never"}
+- Showings: ${resolvedLead.showings?.length || 0}
 
 Detect churn risk and provide save strategy:
 
@@ -2215,7 +2220,7 @@ Detect churn risk and provide save strategy:
         entity_type: "lead",
         entity_id: leadId,
         insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${lead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+        insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
         actionable_steps: result.saveStrategy?.immediate || [],
         priority: "critical",
         estimated_impact: {
@@ -2248,11 +2253,11 @@ export async function optimizeShowingRoute(data: {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  const properties = await Promise.all(data.propertyIds.map((id) => idxClient.getProperties(params))
+  const properties = (await Promise.all(data.propertyIds.map((id) => idxClient.searchProperties(id)))).flat()
 
   const prompt = `You are an AI showing coordinator. Optimize this showing route:
 
-Start Location: ${data.startLocation}idxClient.getProperties(params)
+Start Location: ${data.startLocation}
 Date: ${data.preferredDate}
 Properties to Show (${properties.length}):
 ${properties
@@ -2354,7 +2359,7 @@ Agent Service Areas: ${serviceAreas.join(", ")}
 Contacts in Database: ${agent.leads?.length || 0}
 
 Find opportunities:
-1. Past clients ready to move again (5-7 years, equity built)
+1. Lifetime customers ready to move again (5-7 years, equity built)
 2. Sphere of influence (neighbors of recent sales)
 3. Motivated sellers (life events, financial signals)
 4. Rental to ownership (renters ready to buy)
@@ -2363,7 +2368,7 @@ Find opportunities:
 {
   "opportunities": [
     {
-      "type": "past_client_ready",
+      "type": "lifetime_customer_ready",
       "leadId": "...",
       "leadName": "John Smith",
       "reason": "Bought 6 years ago, home value up 35%, kids growing",
@@ -2435,7 +2440,7 @@ export async function mineSphereOfInfluence(agentId: string) {
 
   const prompt = `You are an AI sphere of influence miner. Find referral opportunities:
 
-Past Clients: ${pastClients?.length || 0}
+Lifetime Customers: ${pastClients?.length || 0}
 
 Analyze for:
 1. Neighbors (same street referrals)

@@ -505,11 +505,48 @@ interface InternalAIAssistantProps {
   role: string
   wakeWord?: string     // from users.assistant_wake_name — e.g. "hey nova"
   userId?: string
+  /**
+   * Optional page context — when set, the copilot knows what entity the
+   * agent is currently viewing and injects it into the system prompt so
+   * questions resolve naturally ("draft a follow-up for them" / "find
+   * buyers for this listing" / "what's their last touchpoint?").
+   *
+   * Pass any subset; extra fields are forwarded to the assistant tool calls.
+   * Nothing breaks when omitted — existing call sites keep working.
+   */
+  pageContext?: {
+    contactId?:     string
+    listingId?:     string
+    transactionId?: string
+    offerId?:       string
+    /** Free-form label for non-entity pages, e.g. "calendar" / "marketing" */
+    pageLabel?:     string
+  }
 }
 
-export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssistantProps) {
+export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: InternalAIAssistantProps) {
   const [open, setOpen] = useState(false)
   const [minimized, setMinimized] = useState(false)
+
+  // Allow FloatingChatFAB / ⌘K verbs / any descendant to open the panel
+  // by dispatching `vip:toggle-ai-assistant` on the window. Avoids forcing
+  // a controlled `open` prop through every layout caller.
+  useEffect(() => {
+    const onToggle = () => {
+      setOpen(prev => !prev)
+      setMinimized(false)
+    }
+    const onOpen = () => {
+      setOpen(true)
+      setMinimized(false)
+    }
+    window.addEventListener("vip:toggle-ai-assistant", onToggle)
+    window.addEventListener("vip:open-ai-assistant", onOpen)
+    return () => {
+      window.removeEventListener("vip:toggle-ai-assistant", onToggle)
+      window.removeEventListener("vip:open-ai-assistant", onOpen)
+    }
+  }, [])
   const [input, setInput] = useState("")
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<NoteDraft[]>([])
@@ -545,10 +582,20 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
 
   const [sessionIdForTransport, setSessionIdForTransport] = useState<string | null>(null)
+  // Stable ref so the fetch wrapper never captures a stale setSessionId
+  const setSessionIdRef = useRef(setSessionId)
+  useEffect(() => { setSessionIdRef.current = setSessionId }, [setSessionId])
+
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/internal/ai-chat",
       headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+      fetch: async (url, options) => {
+        const response = await fetch(url, options as RequestInit)
+        const newId = response.headers.get("x-session-id")
+        if (newId) setSessionIdRef.current(newId)
+        return response
+      },
     }),
   })
 
@@ -559,22 +606,54 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Keep transport headers in sync with sessionId
   useEffect(() => { setSessionIdForTransport(sessionId) }, [sessionId])
 
-  // Speak text via SpeechSynthesis
+  // Speak text — prefer agent's cloned voice via ElevenLabs, fall back to
+  // browser SpeechSynthesis if the cloned voice isn't available or fails.
+  // The audio element is created lazily so we don't pollute SSR.
+  const cloneAudioRef = useRef<HTMLAudioElement | null>(null)
   const speakText = useCallback((text: string) => {
-    if (typeof window === "undefined") return
-    const synth = window.speechSynthesis
-    if (!synth) return
-    synthRef.current = synth
-    synth.cancel() // stop any current speech
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1.05
-    utterance.pitch = 1.0
-    utterance.volume = 1.0
-    // Prefer a natural-sounding voice
-    const voices = synth.getVoices()
-    const preferred = voices.find((v) => /samantha|google us|zira|natural/i.test(v.name))
-    if (preferred) utterance.voice = preferred
-    synth.speak(utterance)
+    if (typeof window === "undefined" || !text.trim()) return
+
+    // Cancel any in-flight speech (browser or audio element)
+    try { window.speechSynthesis?.cancel() } catch {}
+    if (cloneAudioRef.current) {
+      cloneAudioRef.current.pause()
+      cloneAudioRef.current = null
+    }
+
+    // Browser-TTS fallback closure
+    const speakViaBrowser = () => {
+      const synth = window.speechSynthesis
+      if (!synth) return
+      synthRef.current = synth
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 1.05
+      utterance.pitch = 1.0
+      utterance.volume = 1.0
+      const voices = synth.getVoices()
+      const preferred = voices.find((v) => /samantha|google us|zira|natural/i.test(v.name))
+      if (preferred) utterance.voice = preferred
+      synth.speak(utterance)
+    }
+
+    // Try ElevenLabs first — fire and forget; on any failure, fall back
+    fetch("/api/internal/voice-tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.slice(0, 2000) }),
+    })
+      .then(async (res) => {
+        if (!res.ok || !res.body) {
+          speakViaBrowser()
+          return
+        }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        cloneAudioRef.current = audio
+        audio.onended = () => URL.revokeObjectURL(url)
+        audio.play().catch(() => speakViaBrowser())
+      })
+      .catch(() => speakViaBrowser())
   }, [])
 
   // Process a voice command transcript
@@ -616,8 +695,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Start single-command voice capture
   const startVoiceCapture = useCallback(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) { alert("Voice recognition not supported in this browser."); return }
 
     if (recognitionRef.current) {
@@ -647,8 +726,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Background wake-word detection — runs whenever component is mounted
   useEffect(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) return
 
     let active = true
@@ -662,8 +741,13 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
       wakeRecognitionRef.current = wr
       setWakeListening(true)
 
+      // Guard: onresult and onerror each schedule a restart; onend must NOT also
+      // schedule one, or we get exponential growth of SpeechRecognition instances.
+      let restartScheduled = false
+
       wr.onresult = (e: SpeechRecognitionEvent) => {
         const heard = Array.from(e.results).map((r) => r[0].transcript).join(" ").toLowerCase()
+        restartScheduled = true
         if (heard.includes(resolvedWakeWord)) {
           // Wake word detected — start command capture immediately
           setTimeout(() => { if (active) startVoiceCapture() }, 300)
@@ -672,10 +756,16 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
           setTimeout(() => { if (active) startWakeDetection() }, 500)
         }
       }
-      wr.onerror = () => { setTimeout(() => { if (active) startWakeDetection() }, 1500) }
+      wr.onerror = () => {
+        restartScheduled = true
+        setTimeout(() => { if (active) startWakeDetection() }, 1500)
+      }
       wr.onend = () => {
         setWakeListening(false)
-        setTimeout(() => { if (active) startWakeDetection() }, 500)
+        // Only restart from onend when onresult/onerror hasn't already scheduled one
+        if (!restartScheduled) {
+          setTimeout(() => { if (active) startWakeDetection() }, 500)
+        }
       }
 
       try { wr.start() } catch { /* already running */ }
@@ -1041,9 +1131,9 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
                   const isUser = msg.role === "user"
 
                   // Tool invocation parts from this message
-                  const toolParts = (msg.parts ?? []).filter(
+                  const toolParts = ((msg.parts ?? []).filter(
                     (p: { type: string }) => p.type === "tool-invocation"
-                  ) as Array<{
+                  ) as unknown) as Array<{
                     type: "tool-invocation"
                     toolInvocation: {
                       toolCallId: string
@@ -1097,8 +1187,50 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
                           send_portal_message: "Message Sent",
                           update_contact_status: "Contact Updated",
                           log_activity: "Activity Logged",
+                          lookup_contact: "Contact Search",
+                          get_today_schedule: "Today's Schedule",
+                          draft_ai_reply: "Reply Drafted",
+                          advance_listing_stage: "Listing Stage Advanced",
+                          advance_transaction_stage: "Transaction Stage Advanced",
+                          stage_listing_packet: "Listing Wizard Staged",
+                          stage_offer_packet: "Offer Wizard Staged",
+                          stage_newsletter_draft: "Newsletter Drafted",
+                          stage_email_campaign: "Email Campaign Drafted",
+                          stage_open_house: "Open House Scheduled",
+                          stage_blog_draft: "Blog Drafted",
+                          stage_podcast_episode: "Podcast Episode Drafted",
+                          stage_video_project: "Video Project Drafted",
+                          stage_direct_mail_campaign: "Direct Mail Drafted",
+                          stage_ad_campaign: "Ad Campaign Drafted",
                         }
                         const label = TOOL_LABELS[inv.toolName] ?? inv.toolName.replace(/_/g, " ")
+
+                        // Stage_* tools return an open_url — surface it as a
+                        // clickable Open button so the agent goes straight to
+                        // the staged draft instead of hunting in a list.
+                        const openUrl =
+                          succeeded && output && typeof (output as { open_url?: unknown; openUrl?: unknown }).open_url === "string"
+                            ? ((output as { open_url: string }).open_url)
+                            : succeeded && output && typeof (output as { openUrl?: unknown }).openUrl === "string"
+                              ? ((output as { openUrl: string }).openUrl)
+                              : null
+
+                        // Multi-turn intake — relay follow-up questions back to agent
+                        const followUpQuestions =
+                          output && Array.isArray((output as { questions?: unknown }).questions)
+                            ? ((output as { questions: Array<{ field?: string; question?: string }> }).questions)
+                            : null
+
+                        const summary =
+                          (output as { summary?: string; spoken_summary?: string; spokenResponse?: string; note?: string } | undefined)
+                            ?.summary ??
+                          (output as { spoken_summary?: string } | undefined)?.spoken_summary ??
+                          (output as { spokenResponse?: string } | undefined)?.spokenResponse ??
+                          (output as { note?: string } | undefined)?.note ??
+                          (output as { title?: string } | undefined)?.title ??
+                          (output as { name?: string } | undefined)?.name ??
+                          (output as { preview?: string } | undefined)?.preview ??
+                          "Done"
 
                         return (
                           <div
@@ -1122,16 +1254,43 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
                             ) : (
                               <AlertTriangle style={{ width: "14px", height: "14px", flexShrink: 0 }} />
                             )}
-                            <div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontWeight: 600, marginBottom: "2px" }}>
                                 {isPending ? `Running: ${label}...` : succeeded ? label : `Failed: ${label}`}
                               </div>
                               {!isPending && output && (
                                 <div style={{ opacity: 0.8 }}>
-                                  {succeeded
-                                    ? (output.title as string ?? output.name as string ?? output.preview as string ?? "Done")
-                                    : (output.error as string ?? "Something went wrong")}
+                                  {succeeded ? summary : (output.error as string ?? "Something went wrong")}
                                 </div>
+                              )}
+                              {followUpQuestions && followUpQuestions.length > 0 && (
+                                <ul style={{ marginTop: "6px", paddingLeft: "16px", opacity: 0.85 }}>
+                                  {followUpQuestions.slice(0, 3).map((q, i) => (
+                                    <li key={i} style={{ marginBottom: "2px" }}>
+                                      {q.question ?? q.field ?? ""}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              {openUrl && (
+                                <a
+                                  href={openUrl}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    marginTop: "6px",
+                                    padding: "4px 9px",
+                                    borderRadius: "6px",
+                                    background: "#166534",
+                                    color: "#f0fdf4",
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    textDecoration: "none",
+                                  }}
+                                >
+                                  Open →
+                                </a>
                               )}
                             </div>
                           </div>

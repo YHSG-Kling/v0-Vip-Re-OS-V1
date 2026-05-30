@@ -95,7 +95,7 @@ const FIRST_TIME_BUYER_STAGES = [
   },
 ]
 
-export default function FirstTimeBuyerJourneyPage({ params }: { params: { contactId: string } }) {
+export default function FirstTimeBuyerJourneyPage({ params }: { params: Promise<{ contactId: string }> }) {
   const [currentStage, setCurrentStage] = useState(1)
   const progress = (currentStage / FIRST_TIME_BUYER_STAGES.length) * 100
 

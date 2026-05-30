@@ -1,12 +1,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { Camera, QrCode, Home, TrendingUp, Eye, Zap, ArrowRight } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Camera, QrCode, Home, TrendingUp, Eye, Zap, ArrowRight, Users, DollarSign, BarChart3 } from "lucide-react"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AcquisitionQuickCapture } from "./acquisition-quick-capture"
 import { AcquisitionOpenHouseCard } from "./acquisition-open-house-card"
+import { getRecruitingROISummary, getRecruitROIByRecruit } from "@/app/actions/recruiting-roi"
 
 export const metadata = { title: "Lead Acquisition", description: "All your inbound capture tools in one place" }
 
@@ -107,6 +108,14 @@ export default async function AcquisitionPage() {
 
   const topQr = qrCodes[0] ?? null
 
+  // Recruiting ROI — only for admin/broker
+  const [recruitROISummary, recruitROIByRecruit] = isAdminOrBroker && brokerageId
+    ? await Promise.all([
+        getRecruitingROISummary(brokerageId).catch(() => null),
+        getRecruitROIByRecruit(brokerageId).catch(() => []),
+      ])
+    : [null, []]
+
   return (
     <main className="max-w-6xl mx-auto p-6 space-y-8 font-sans">
       {/* Header */}
@@ -182,7 +191,7 @@ export default async function AcquisitionPage() {
                         </span>
                         {scan.contact_id && (
                           <Link
-                            href={`/contacts/${scan.contact_id}`}
+                            href={`/crm/contacts/${scan.contact_id}`}
                             className="text-xs text-primary underline underline-offset-2"
                           >
                             View
@@ -256,7 +265,7 @@ export default async function AcquisitionPage() {
 
         {/* Card 3 — Open House (client component for inline quick-create) */}
         <AcquisitionOpenHouseCard
-          openHouseLeads={openHouseLeads}
+          openHouseLeads={openHouseLeads as any}
           openHouseCount={openHouseCount}
           agentId={agentId}
           activeListings={activeListings}
@@ -331,6 +340,78 @@ export default async function AcquisitionPage() {
           </Card>
         )}
       </div>
+
+      {/* Recruiting ROI — admin/broker only */}
+      {isAdminOrBroker && recruitROISummary && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-foreground" />
+            <h2 className="text-lg font-semibold">Recruiting ROI</h2>
+          </div>
+
+          {/* KPI Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: "Total Invested",      value: `$${recruitROISummary.totalInvested.toLocaleString()}`,  icon: DollarSign, color: "text-red-600" },
+              { label: "Total Generated",     value: `$${recruitROISummary.totalGenerated.toLocaleString()}`, icon: TrendingUp, color: "text-green-600" },
+              { label: "Avg ROI",             value: `${recruitROISummary.avgROI.toFixed(1)}%`,               icon: BarChart3,  color: "text-blue-600" },
+              { label: "Profitable Recruits", value: `${recruitROISummary.profitableRecruits}/${recruitROISummary.activeRecruits}`, icon: Users, color: "text-purple-600" },
+            ].map(({ label, value, icon: Icon, color }) => (
+              <div key={label} className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
+                <Icon className={`h-4 w-4 shrink-0 ${color}`} />
+                <div>
+                  <p className={`text-xl font-bold leading-none ${color}`}>{value}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Per-recruit table */}
+          {(recruitROIByRecruit as any[]).length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Per-Recruit ROI</CardTitle>
+                <CardDescription>Sorted by highest ROI</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="border-b">
+                      <tr>
+                        <th className="text-left py-2 px-2 font-medium">Agent</th>
+                        <th className="text-right py-2 px-2 font-medium">Recruiting Cost</th>
+                        <th className="text-right py-2 px-2 font-medium">Revenue Generated</th>
+                        <th className="text-right py-2 px-2 font-medium">ROI</th>
+                        <th className="text-right py-2 px-2 font-medium">Break-even Month</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {(recruitROIByRecruit as any[]).map((r: any) => (
+                        <tr key={r.id} className="hover:bg-muted/50">
+                          <td className="py-2 px-2 font-medium">
+                            {r.agents ? `${r.agents.first_name ?? ""} ${r.agents.last_name ?? ""}`.trim() : "Unknown"}
+                          </td>
+                          <td className="py-2 px-2 text-right text-red-600">${(r.total_recruiting_cost ?? 0).toLocaleString()}</td>
+                          <td className="py-2 px-2 text-right text-green-600">${(r.lifetime_brokerage_net ?? 0).toLocaleString()}</td>
+                          <td className="py-2 px-2 text-right">
+                            <Badge variant={(r.roi_pct ?? 0) > 0 ? "default" : "secondary"} className="text-xs">
+                              {(r.roi_pct ?? 0).toFixed(1)}%
+                            </Badge>
+                          </td>
+                          <td className="py-2 px-2 text-right text-muted-foreground">
+                            {r.breakeven_month ? `Mo. ${r.breakeven_month}` : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* Quick Capture Form */}
       <AcquisitionQuickCapture />

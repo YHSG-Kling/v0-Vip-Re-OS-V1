@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { handleAuthCallback } from '@/app/actions/auth'
 import { createServiceClient } from '@/lib/supabase/service'
+import { acceptUserInvitationOnFirstLogin } from '@/lib/onboarding/state-machine'
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
@@ -36,6 +37,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(
       new URL(`/login?message=${message}`, request.url)
     )
+  }
+
+  // ── Invitation acceptance hook ────────────────────────────────────────────
+  // If this user has a pending user_invitations row (created by inviteUser),
+  // mark it accepted now and advance the brokerage onboarding state machine.
+  // Idempotent — no-ops on subsequent logins.
+  try {
+    const service = createServiceClient()
+    const { data: { user } } = await service.auth.admin.getUserById(result.userId ?? '')
+    if (user?.email) {
+      const { data: profile } = await service
+        .from('users')
+        .select('brokerage_id')
+        .eq('id', user.id)
+        .maybeSingle()
+      await acceptUserInvitationOnFirstLogin({
+        userId:      user.id,
+        email:       user.email,
+        brokerageId: profile?.brokerage_id ?? null,
+      })
+    }
+  } catch {
+    // Non-fatal — onboarding state machine is advisory.
   }
 
   // ── First-login onboarding redirect ────────────────────────────────────────

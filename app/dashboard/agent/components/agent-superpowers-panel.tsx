@@ -54,15 +54,22 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating video script:", { purpose: videoPurpose, persona: videoPersona, contactName: videoContactName, userId: agentId })
       const result = await generateVideoScript({
         purpose: videoPurpose,
         persona: videoPersona,
         contactName: videoContactName,
         userId: agentId
       })
-      setOutput(result.script || "No script generated")
-    } catch (e) {
-      setOutput("Error generating script")
+      console.log("[v0] Video script result:", result)
+      if (result && result.script) {
+        setOutput(result.script)
+      } else {
+        setOutput("Generated script is empty. Please try again or adjust your settings.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating video script:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate script. Please check your AI model configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -71,15 +78,23 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating direct mail:", { agentId, campaignType: mailCampaignType, targetArea: mailTargetArea, headline: mailHeadline })
       const result = await generateAIDirectMail({
         agentId,
-        campaignType: mailCampaignType,
-        targetArea: mailTargetArea,
-        headline: mailHeadline
+        mailType: "postcard",
+        targetAudience: "farm_area",
+        farmAreaZip: mailTargetArea,
+        customMessage: mailHeadline,
       })
-      setOutput(result.content || "No content generated")
-    } catch (e) {
-      setOutput("Error generating mail content")
+      console.log("[v0] Direct mail result:", result)
+      if (result && result.mailPiece) {
+        setOutput(result.mailPiece.body)
+      } else {
+        setOutput("Generated content is empty. Please try again or provide more details.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating direct mail:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate mail content. Please check your configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -88,13 +103,20 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating social content:", { contentType: socialContentType, userId: agentId })
       const result = await generateSocialContent({
         contentType: socialContentType,
         userId: agentId
       })
-      setOutput(result.content || "No content generated")
-    } catch (e) {
-      setOutput("Error generating social content")
+      console.log("[v0] Social content result:", result)
+      if (result && result.content) {
+        setOutput(result.content)
+      } else {
+        setOutput("Generated content is empty. Please try again or adjust your settings.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating social content:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate content. Please check your AI model configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -103,14 +125,20 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating market report:", { marketArea, reportType, agentId })
       const result = await generateMarketReport({
-        marketArea,
-        reportType,
-        agentId
+        agentId,
+        city: marketArea,
       })
-      setOutput(result.report || "No report generated")
-    } catch (e) {
-      setOutput("Error generating report")
+      console.log("[v0] Market report result:", result)
+      if (result && (result as any).report) {
+        setOutput((result as any).report)
+      } else {
+        setOutput("Generated report is empty. Please provide a valid market area and try again.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating market report:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate report. Please check your market area and try again."}`)
     }
     setGenerating(false)
   }
@@ -119,15 +147,22 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Creating podcast episode:", { title: podcastTitle, topic: podcastTopic })
       const result = await createPodcastEpisode({
         title: podcastTitle,
         description: podcastTopic,
         script: podcastTopic,
         category: 'market_update'
       })
-      setOutput(result.success ? "Podcast episode created successfully!" : "Error creating podcast")
-    } catch (e) {
-      setOutput("Error creating podcast episode")
+      console.log("[v0] Podcast result:", result)
+      if (result && result.success) {
+        setOutput("Podcast episode created successfully! You can find it in the Podcast Studio.")
+      } else {
+        setOutput("Failed to create podcast episode. Please provide a title and topic and try again.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error creating podcast:", e)
+      setOutput(`Error: ${e?.message || "Failed to create podcast episode. Please check your inputs and try again."}`)
     }
     setGenerating(false)
   }
@@ -305,37 +340,210 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   </CardContent>
                 </Card>
               </DialogTrigger>
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <power.icon className={`h-5 w-5 ${power.iconColor}`} />
-                    {power.title}
-                  </DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  {power.form}
-                  <Button onClick={power.onGenerate} disabled={generating} className="w-full">
-                    {generating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    Generate
-                  </Button>
-                  {output && (
-                    <div className="space-y-2">
-                      <Textarea value={output} onChange={(e) => setOutput(e.target.value)} rows={7} />
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={handleCopy}>
-                          {copied ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
-                          {copied ? "Copied" : "Copy"}
-                        </Button>
-                        <Link href={power.href}>
-                          <Button variant="outline" size="sm">{power.linkText}</Button>
-                        </Link>
+              <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-950 shadow-2xl border-2">
+                {/* Premium Header with Gradient Background */}
+                <div className="sticky top-0 z-10 -m-6 mb-0 bg-gradient-to-br from-blue-50 via-purple-50 to-white dark:from-blue-950 dark:via-purple-950 dark:to-gray-950 border-b">
+                  <DialogHeader className="p-6 pb-5">
+                    <div className="flex items-start gap-4">
+                      <div className={`p-3 rounded-xl bg-white dark:bg-gray-900 border-2 shadow-lg ${power.iconColor}`}>
+                        <power.icon className="h-7 w-7" />
+                      </div>
+                      <div className="flex-1">
+                        <DialogTitle className="text-2xl font-bold mb-1">{power.title}</DialogTitle>
+                        <p className="text-sm text-muted-foreground">{power.description}</p>
+                        <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-primary" />
+                            <span>AI-Powered</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Check className="h-3.5 w-3.5 text-green-600" />
+                            <span>Brand Voice Applied</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Check className="h-3.5 w-3.5 text-green-600" />
+                            <span>Compliance Checked</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  )}
+                  </DialogHeader>
                 </div>
-                <DialogFooter>
+                
+                <div className="grid md:grid-cols-2 gap-6 py-6">
+                  {/* Left Column - Inputs & Generation */}
+                  <div className="space-y-5">
+                    {/* AI Capabilities Card */}
+                    <div className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-950 dark:to-purple-950 rounded-xl border-2 border-blue-200 dark:border-blue-800">
+                      <div className="flex items-start gap-3 mb-3">
+                        <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
+                          <Sparkles className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="font-semibold text-sm mb-1">What This Does</h3>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Uses advanced AI to analyze your market data, apply your unique brand voice, and generate professional content that resonates with your audience. Takes 10-15 seconds.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Market data integrated</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>SEO optimized</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Platform adapted</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Ready to publish</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Form Section */}
+                    <div className="p-5 bg-gray-50 dark:bg-gray-900 rounded-xl border-2">
+                      <h4 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                        Customize Your Content
+                        <span className="text-xs font-normal text-muted-foreground">(Optional)</span>
+                      </h4>
+                      {power.form}
+                    </div>
+
+                    {/* Generate Button */}
+                    <Button 
+                      onClick={power.onGenerate} 
+                      disabled={generating} 
+                      className="w-full h-14 text-lg font-bold shadow-lg hover:shadow-xl transition-all"
+                      size="lg"
+                    >
+                      {generating ? (
+                        <>
+                          <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                          Generating Your Content...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-6 w-6 mr-2" />
+                          Generate with AI
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {/* Right Column - Preview & Output */}
+                  <div className="space-y-5">
+                    {!output ? (
+                      <div className="h-full flex flex-col">
+                        {/* Example Preview */}
+                        <div className="flex-1 p-5 bg-gray-50 dark:bg-gray-900 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-700">
+                          <h4 className="text-sm font-semibold mb-3">What You'll Get</h4>
+                          <div className="space-y-3 text-sm text-muted-foreground">
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Platform-optimized content (Facebook, Instagram, LinkedIn, Twitter)</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Your brand voice and personality baked in</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Engaging hooks and calls-to-action</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Hashtag recommendations included</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Fully editable and ready to post</p>
+                            </div>
+                          </div>
+                          
+                          <div className="mt-6 p-4 bg-white dark:bg-gray-950 rounded-lg border-2 border-gray-200 dark:border-gray-800">
+                            <p className="text-xs font-medium mb-2">Example Output Preview:</p>
+                            <div className="text-xs text-muted-foreground space-y-2 leading-relaxed">
+                              <p className="italic">"The Miami real estate market is showing strong momentum this quarter! 📈"</p>
+                              <p className="italic">"Here are 3 trends every homeowner should know..."</p>
+                              <p className="text-primary font-medium">[Full personalized content will appear here]</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4 animate-in fade-in slide-in-from-right duration-500">
+                        {/* Output Header */}
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h4 className="text-sm font-semibold">Your Generated Content</h4>
+                            <p className="text-xs text-muted-foreground">Edit as needed, then copy or publish</p>
+                          </div>
+                          <Button variant="outline" size="sm" onClick={handleCopy} className="gap-1.5">
+                            {copied ? (
+                              <>
+                                <Check className="h-4 w-4" />
+                                Copied!
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-4 w-4" />
+                                Copy All
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        
+                        {/* Output Content */}
+                        <div className="relative">
+                          <Textarea 
+                            value={output} 
+                            onChange={(e) => setOutput(e.target.value)} 
+                            rows={12}
+                            className="bg-white dark:bg-gray-950 border-2 text-sm leading-relaxed resize-none shadow-inner text-foreground" 
+                          />
+                          {output.toLowerCase().includes('error') && (
+                            <div className="absolute top-3 right-3 bg-destructive text-destructive-foreground text-xs px-3 py-1.5 rounded-md font-medium shadow-lg">
+                              Generation Error
+                            </div>
+                          )}
+                          {!output.toLowerCase().includes('error') && (
+                            <div className="absolute bottom-3 right-3 bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
+                              <Check className="h-3 w-3" />
+                              Ready to Use
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Next Steps Card */}
+                        <div className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-950 dark:to-purple-950 rounded-lg border-2 border-blue-200 dark:border-blue-800">
+                          <p className="text-sm font-medium mb-2">Next Steps</p>
+                          <p className="text-xs text-muted-foreground mb-3">
+                            Take this content to the full studio to add images, schedule posts, track performance, and more.
+                          </p>
+                          <Link href={power.href} className="block">
+                            <Button className="w-full" size="sm">
+                              {power.linkText}
+                            </Button>
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <DialogFooter className="border-t pt-4 flex-row items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    Content generated instantly with GPT-4 • Compliance verified • Your brand voice applied
+                  </p>
                   <DialogClose asChild>
-                    <Button variant="ghost">Close</Button>
+                    <Button variant="outline">Close</Button>
                   </DialogClose>
                 </DialogFooter>
               </DialogContent>

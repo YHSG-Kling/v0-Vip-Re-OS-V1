@@ -4,18 +4,27 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { determinePortalView } from "@/lib/kernel/portal"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // ─── SELLER CONTEXT TYPES ─────────────────────────────────────────────────────
 
 export interface ListingData {
   id: string
-  contact_id: string
+  seller_contact_id: string
   address: string | null
-  property_address: string | null
+  /** Not a real listings column — kept optional for consumers that fall back
+   *  to it. Always absent from hydrated rows; `address` is canonical. */
+  property_address?: string | null
+  city: string | null
+  state: string | null
   list_price: number | null
   status: string | null
   listing_status: string | null
   listing_date: string | null
+  go_live_date: string | null
+  /** Computed DOM (days on market) — derived from go_live_date when this
+   *  row is hydrated. Materialized here so consumers can read it directly
+   *  without re-computing. NULL when go_live_date is unset. */
   dom: number | null
   bedrooms: number | null
   bathrooms: number | null
@@ -148,15 +157,20 @@ export async function resolveSellerContext(
 
   const contactName = contact?.first_name || contact?.name || "there"
 
-  // Get active or most recent listing for this seller
+  // Get active or most recent listing for this seller. The `dom` column
+  // does NOT exist in the live schema — we select `go_live_date` and
+  // compute DOM via the canonical helper.
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, contact_id, address, property_address, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
-    .eq("contact_id", contactId)
+    .select("id, seller_contact_id, address, city, state, list_price, status, listing_status, listing_date, go_live_date, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
-  const listing: ListingData | null = listings?.[0] ?? null
+  const rawListing = listings?.[0] ?? null
+  const listing: ListingData | null = rawListing
+    ? { ...rawListing, dom: computeDaysOnMarket(rawListing.go_live_date) }
+    : null
 
   // Get listing metrics if listing exists
   let metrics: ListingMetrics | null = null
@@ -195,13 +209,14 @@ export async function resolveSellerContext(
 }
 
 /**
- * Calculates days on market from listing date.
+ * Calculates days on market from listings.go_live_date.
+ *
+ * Delegates to the canonical `lib/listings/compute-dom.ts`. Parameter
+ * name preserved as `listingDate` for caller back-compat — but the value
+ * MUST be `go_live_date`, NOT the listing agreement signature date.
  */
 export function calculateDOM(listingDate: string | null): number {
-  if (!listingDate) return 0
-  const start = new Date(listingDate)
-  const today = new Date()
-  return Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+  return computeDaysOnMarket(listingDate) ?? 0
 }
 
 /**
@@ -325,9 +340,9 @@ export async function getOfferSummary(
 }> {
   const { data: offers } = await supabase
     .from("offers")
-    .select("id, listing_id, contact_id, offer_amount, status, offer_date, expiration_date, buyer:contacts(id, first_name, last_name)")
+    .select("id, listing_id, contact_id, offer_amount:offer_price, status, offer_date, expiration_date, buyer:contacts(id, first_name, last_name)")
     .eq("listing_id", listingId)
-    .order("offer_amount", { ascending: false })
+    .order("offer_price", { ascending: false })
 
   if (!offers || offers.length === 0) {
     return { total: 0, highest: null, accepted: null, pending: 0 }

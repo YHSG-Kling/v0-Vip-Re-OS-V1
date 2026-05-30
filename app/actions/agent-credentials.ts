@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export type ServiceName = "idx_broker" | "ghl" | "meta" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
 export type ServiceType = "listing_provider" | "crm_sync" | "social_media"
@@ -10,6 +11,7 @@ export type ServiceType = "listing_provider" | "crm_sync" | "social_media"
 interface AgentCredential {
   id: string
   agent_id: string
+  brokerage_id: string
   service_name: ServiceName
   service_type: ServiceType
   api_key?: string
@@ -171,11 +173,9 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
     switch (serviceName) {
       case "idx_broker":
         // Test IDX Broker API
-        const idxResponse = await fetch(`https://api.idxbroker.com/clients/featured`, {
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            accesskey: credential.api_key || "",
-          },
+        const idxResponse = await callConnector({
+          connector: "idxbroker", baseUrl: "https://api.idxbroker.com", path: "/clients/featured", method: "GET",
+          auth: { style: "header", name: "accesskey", value: credential.api_key || "" },
         })
         isValid = idxResponse.ok
         if (!isValid) errorMessage = "IDX Broker API key invalid"
@@ -183,11 +183,9 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
 
       case "ghl":
         // Test GHL API
-        const ghlResponse = await fetch(`https://rest.gohighlevel.com/v1/contacts/`, {
-          headers: {
-            Authorization: `Bearer ${credential.api_key}`,
-            Version: "2021-07-28",
-          },
+        const ghlResponse = await callConnector({
+          connector: "ghl", baseUrl: "https://rest.gohighlevel.com", path: "/v1/crm/contacts/", method: "GET",
+          auth: { style: "bearer", token: credential.api_key || "" }, headers: { Version: "2021-07-28" },
         })
         isValid = ghlResponse.ok
         if (!isValid) errorMessage = "GHL API key invalid"
@@ -195,7 +193,10 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
 
       case "meta":
         // Test Meta Graph API
-        const metaResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${credential.access_token}`)
+        const metaResponse = await callConnector({
+          connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me", method: "GET",
+          auth: { style: "query", name: "access_token", value: credential.access_token || "" },
+        })
         isValid = metaResponse.ok
         if (!isValid) errorMessage = "Meta access token invalid or expired"
         break
@@ -213,7 +214,10 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
     errorMessage = err.message
   }
 
-  // Update verification status
+  // Update verification status — defense in depth: although credential.id
+  // came from getServiceCredential (which is session-scoped), also scope
+  // the UPDATE by brokerage_id so even an injected credential.id can't
+  // mutate another tenant's row.
   const { error } = await supabase
     .from("agent_api_credentials")
     .update({
@@ -222,6 +226,7 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
       error_message: isValid ? null : errorMessage,
     })
     .eq("id", credential.id)
+    .eq("brokerage_id", credential.brokerage_id)
 
   if (error) throw error
 

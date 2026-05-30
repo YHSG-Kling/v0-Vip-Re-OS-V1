@@ -36,6 +36,7 @@ import {
 } from '@/lib/ai-isa-contact'
 import { ingestMessageService as ingestMessage } from '@/lib/communication-spine'
 import { trackVendorUsageService as trackVendorUsage } from '@/lib/vendor-governance'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 export interface RespondToContactParams {
   contactId: string
@@ -62,18 +63,37 @@ export async function respondToContact(
   try {
     console.log(`[v0] [AI ISA CONTACT] Processing contact ${params.contactId}`)
 
-    // STEP 1: Fetch contact details
-    const { data: contact, error: contactError } = await supabase
+    // ── AUTH GATE ────────────────────────────────────────────────────────
+    // Callers: UI/session-authed server actions OR trusted internal callers
+    // (cron, kernel responders). System callers require CRON_SECRET to be
+    // configured so an unconfigured deploy can't be probed openly.
+    const ctx = await getAgentContext()
+    const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
+    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    if (!hasSession && !isTrustedInternal) {
+      return { success: false, error: 'Unauthorized' }
+    }
+
+    // STEP 1: Fetch contact details — scope by caller brokerage when session-authed
+    let contactQuery = supabase
       .from('contacts')
       .select('id, first_name, brokerage_id, agent_id, contact_persona, intent_score')
       .eq('id', params.contactId)
-      .single()
+    if (hasSession && ctx.brokerageId) {
+      contactQuery = contactQuery.eq('brokerage_id', ctx.brokerageId)
+    }
+    const { data: contact, error: contactError } = await contactQuery.single()
 
     if (contactError || !contact) {
       return {
         success: false,
         error: 'Contact not found',
       }
+    }
+
+    // Defense in depth: even when service-client is used, verify scope.
+    if (hasSession && ctx.brokerageId && contact.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: 'Forbidden' }
     }
 
     // STEP 2: Fetch conversation history

@@ -61,7 +61,7 @@ export function AcquisitionQuickCapture() {
         status: "active",
       } as any)
       if (result.success && result.contact) {
-        setCreatedContactId(result.contact.id)
+        setCreatedContactId(result.contact.id as string | null)
         toast({ title: "Contact added", description: `${firstName} ${lastName}`.trim() })
       } else {
         toast({
@@ -104,7 +104,7 @@ export function AcquisitionQuickCapture() {
             <div className="flex flex-col items-center gap-3 py-4 text-center">
               <p className="text-sm font-medium text-foreground">Contact added successfully.</p>
               <div className="flex gap-3 flex-wrap justify-center">
-                <Link href={`/contacts/${createdContactId}`}>
+                <Link href={`/crm/contacts/${createdContactId}`}>
                   <Button size="sm" variant="default">View Contact Record</Button>
                 </Link>
                 <Button size="sm" variant="outline" onClick={reset}>

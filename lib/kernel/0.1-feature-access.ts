@@ -100,7 +100,7 @@ export async function canAccessFeature(
   const supabase = await createClient()
 
   // ── 1. Load feature flag ───────────────────────────────────────────────────
-  const { data: flag, error: flagError } = await supabase
+  const { data: flagRaw, error: flagError } = await supabase
     .from("feature_flags")
     .select(
       "feature_key, enabled, superadmin_only, solo_agent_access, team_access, " +
@@ -111,6 +111,7 @@ export async function canAccessFeature(
     .maybeSingle()
 
   if (flagError) throw new Error(`[FeatureAccess] Failed to load feature_flag: ${flagError.message}`)
+  const flag = flagRaw as FeatureFlagRow | null
 
   if (!flag) {
     return { allowed: false, reason: "Feature does not exist" }
@@ -194,7 +195,7 @@ export async function canAccessFeature(
 
   // ── 6. Tier access check ───────────────────────────────────────────────────
   const accessCol = TIER_ACCESS_COLUMN[resolvedTier]
-  const tierHasAccess = flag[accessCol] as boolean
+  const tierHasAccess = (flag as unknown as Record<string, unknown>)[accessCol] as boolean
 
   if (!tierHasAccess) {
     return {
@@ -205,7 +206,7 @@ export async function canAccessFeature(
 
   // ── 7. Usage limit check ──────────────────────────────────────────────────
   const limitCol = TIER_LIMIT_COLUMN[resolvedTier]
-  const limit = flag[limitCol] as number | null
+  const limit = (flag as unknown as Record<string, unknown>)[limitCol] as number | null
 
   if (limit !== null) {
     // Current billing period: start of this calendar month

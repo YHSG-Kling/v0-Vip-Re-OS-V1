@@ -2,13 +2,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
-import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
-import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
-import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
+import { CoordinatorTransactionList } from "@/components/coordinator/transaction-list"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
+import { DeadlineTracking } from "@/components/coordinator/deadline-tracking"
+import { MilestoneQueue } from "@/components/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
 import {
   CoordinatorCommandStrip,
@@ -20,9 +23,11 @@ import {
   TaskQueuePanel,
   ClosingPrepPanel,
 } from "./components/os"
-import { AlertCircle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
+import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
+import { predictDeadlineRisks } from "@/app/actions/multi-persona"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -116,6 +121,11 @@ export default async function CoordinatorDashboard({
         health_score,
         agent_id,
         contact_id,
+        deal_type,
+        buyer_contact_id,
+        seller_contact_id,
+        buyer_agent_id,
+        seller_agent_id,
         created_at
       )
     `
@@ -172,13 +182,13 @@ export default async function CoordinatorDashboard({
         .select("*, transactions(property_address)")
         .in("transaction_id", transactionIds)
         .in("status", ["pending", "in_progress"])
-        .order("milestone_date")
+        .order("target_date")
     : { data: [] }
 
   // Calculate overdue milestones
   const overdueMilestones = incompleteMilestones?.filter((m) => {
-    if (!m.milestone_date) return false
-    return new Date(m.milestone_date) < new Date()
+    if (!m.target_date) return false
+    return new Date(m.target_date) < new Date()
   })
 
   // Enrich transactions with health scores
@@ -203,6 +213,34 @@ export default async function CoordinatorDashboard({
 
   const brokerageId = userData?.brokerage_id
 
+  // Deadline risk prediction — scoped to the same transaction IDs the dashboard
+  // already fetched via transaction_assignments (not transactions.coordinator_id)
+  const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId, transactionIds)
+
+  // Pre-compute per-transaction risk details for display
+  const atRiskDetails = atRiskTransactions.map((t: any) => {
+    const daysToClosing = t.close_date
+      ? Math.floor((new Date(t.close_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      : null
+    const milestones: any[] = t.transaction_milestones || []
+    const completedCount = milestones.filter((m: any) => m.status === "completed").length
+    const completionPct =
+      milestones.length > 0 ? Math.round((completedCount / milestones.length) * 100) : 0
+    return {
+      id: t.id,
+      property_address: t.property_address ?? "Unknown address",
+      daysToClosing,
+      completionPct,
+    }
+  })
+
+  // Today's AI brief — closings, at-risk deals, missing docs, interventions
+  const tcBrief = await generateUserTypeBrief({
+    userType: "TC",
+    userId: user.id,
+    brokerageId: brokerageId ?? null,
+  })
+
   return (
     <div className="min-h-screen bg-background p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -226,14 +264,63 @@ export default async function CoordinatorDashboard({
         </div>
       </div>
 
+      {/* Today's Focus — AI Brief */}
+      <TodaysFocusCard brief={tcBrief} />
+
+      {/* Sprint 7 — Learning router for TC: tc_workload_spike,
+          tc_closing_backlog, staff_onboarding. Hides when no module qualifies. */}
+      <LearnThisWeekCard actorKind="staff" actorId={user.id} />
+
+      {/* Deadline Risk Alert Banner */}
+      {atRiskCount > 0 && (
+        <div className="space-y-3">
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              {atRiskCount} transaction{atRiskCount !== 1 ? "s" : ""} at risk: closing within 10
+              days with under 70% milestones complete.
+            </AlertDescription>
+          </Alert>
+
+          {/* At-risk transaction list */}
+          <div className="rounded-md border border-red-200 bg-red-50/50 divide-y divide-red-100">
+            {atRiskDetails.map((t) => (
+              <div key={t.id} className="flex items-center justify-between px-4 py-3 gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm truncate">{t.property_address}</p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs text-red-700 font-medium">
+                      {t.daysToClosing !== null
+                        ? t.daysToClosing <= 0
+                          ? "Closing today or overdue"
+                          : `${t.daysToClosing} day${t.daysToClosing !== 1 ? "s" : ""} to closing`
+                        : "No close date"}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {t.completionPct}% milestones complete
+                    </span>
+                  </div>
+                </div>
+                <Link
+                  href={`/dashboard/transactions/${t.id}`}
+                  className="shrink-0 text-xs font-medium text-red-700 hover:text-red-900 underline underline-offset-2"
+                >
+                  View
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* OS Command Strip */}
       <div>
-        <CoordinatorCommandStrip coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+        <CoordinatorCommandStrip brokerageId={brokerageId || ""} />
       </div>
 
       {/* OS Intelligence Grid - First Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <DealPipelineRadar coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+        <DealPipelineRadar brokerageId={brokerageId || ""} />
         <DeadlineIntelligencePanel brokerageId={brokerageId || ""} />
         <DocumentTrackingPanel brokerageId={brokerageId || ""} />
       </div>
@@ -257,6 +344,7 @@ export default async function CoordinatorDashboard({
             id: t.id,
             property_address: t.property_address ?? "",
             stage: t.stage,
+            deal_type: t.deal_type,
           }))}
           agentId={user.id}
           brokerageId={brokerageId || ""}

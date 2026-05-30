@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const IDX_API_BASE = process.env.IDXBROKER_API_URL || "https://api.idxbroker.com"
 const IDX_API_KEY = process.env.IDXBROKER_API_KEY
@@ -33,24 +34,17 @@ export async function searchProperties(filters: PropertyFilters) {
       }
     }
 
-    const response = await fetch(`${IDX_API_BASE}/search`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${IDX_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...filters,
-        limit: 50,
-      }),
+    const response = await callConnector<{ results?: any[] }>({
+      connector: "idxbroker", baseUrl: IDX_API_BASE, path: "/search", method: "POST",
+      auth: { style: "bearer", token: IDX_API_KEY! },
+      body: { ...filters, limit: 50 },
     })
 
     if (!response.ok) {
-      throw new Error(`IDX API error: ${response.statusText}`)
+      throw new Error(`IDX API error: ${response.error ?? response.status}`)
     }
 
-    const data = await response.json()
-    return { success: true, properties: data.results || [] }
+    return { success: true, properties: response.data?.results || [] }
   } catch (error: any) {
     console.error("IDX Search error:", error)
     return { success: false, error: error.message, properties: [] }
@@ -135,10 +129,10 @@ Output ONLY valid JSON with this exact structure:
 
     await supabase.from("property_search_log").insert({
       contact_id: data.contactId,
-      natural_query: data.naturalLanguageQuery,
+      query_text: data.naturalLanguageQuery,
       extracted_filters: filters,
-      results_count: searchResult.properties?.length || 0,
-      intent: filters.intent || "browsing",
+      result_count: searchResult.properties?.length || 0,
+      metadata: { intent: filters.intent || "browsing" },
     })
 
     return {
@@ -146,7 +140,7 @@ Output ONLY valid JSON with this exact structure:
       properties: searchResult.properties,
       filters: filters,
       interpretation: `I found ${searchResult.properties?.length || 0} properties matching: ${data.naturalLanguageQuery}`,
-      isMockData: searchResult.isMockData,
+      isMockData: (searchResult as any)?.isMockData,
     }
   } catch (error: any) {
     console.error("Smart Search error:", error)
@@ -154,46 +148,89 @@ Output ONLY valid JSON with this exact structure:
   }
 }
 
-// Save property to favorites
+// Save property to favorites — supports brokerage listings AND external
+// (Rentcast / IDX / MLS-lookup) properties. Source is recorded so downstream
+// surfaces (alerts, tour planner) can route correctly.
 export async function saveProperty(data: {
   contactId: string
-  mlsNumber: string
-  propertyData: any
+  mlsNumber?: string
+  /** When the property is an in-house brokerage listing, pass its UUID. */
+  listingId?: string
+  /** Where this property came from. Defaults to 'idx' since this action
+   *  lives in idx-search; pass 'rentcast' / 'mls' / 'manual' as appropriate. */
+  source?: 'brokerage_listing' | 'rentcast' | 'idx' | 'mls' | 'manual'
+  /** Provider-side ID (Rentcast property id, IDX listing id, etc.) */
+  externalPropertyId?: string
+  propertyData: {
+    address?: string
+    price?: number
+    bedrooms?: number
+    bathrooms?: number
+    sqft?: number
+    propertyType?: string
+    primaryPhotoUrl?: string
+    url?: string
+    city?: string
+    state?: string
+    brokerageId?: string
+  }
 }) {
   try {
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    // Dedup — same contact already saved this property?
+    const dedupQuery = supabase
       .from("saved_properties")
       .select("id")
       .eq("contact_id", data.contactId)
-      .eq("mls_number", data.mlsNumber)
-      .single()
+    const { data: existing } = data.listingId
+      ? await dedupQuery.eq("listing_id", data.listingId).maybeSingle()
+      : data.mlsNumber
+        ? await dedupQuery.eq("mls_number", data.mlsNumber).maybeSingle()
+        : { data: null }
 
     if (existing) {
       return { success: true, message: "Property already saved", alreadySaved: true }
     }
 
-    await supabase.from("saved_properties").insert({
-      contact_id: data.contactId,
-      mls_number: data.mlsNumber,
-      property_address: data.propertyData.address,
-      list_price: data.propertyData.price,
-      beds: data.propertyData.beds,
-      baths: data.propertyData.baths,
-      sqft: data.propertyData.sqft,
-      property_type: data.propertyData.propertyType,
-      listing_photos: data.propertyData.photos,
-      listing_url: data.propertyData.url,
+    const resolvedSource =
+      data.source ?? (data.listingId ? "brokerage_listing" : "idx")
+
+    // Resolve user_id (text column, NOT NULL on the table). For portal saves
+    // the contact may not have a linked auth user — use contact_id as a
+    // stable fallback identifier so the row can be inserted.
+    const { data: contactRow } = await supabase
+      .from("contacts")
+      .select("user_id, brokerage_id")
+      .eq("id", data.contactId)
+      .maybeSingle()
+    const userIdValue = contactRow?.user_id ?? data.contactId
+
+    const { error: insertErr } = await supabase.from("saved_properties").insert({
+      contact_id:           data.contactId,
+      user_id:              userIdValue,
+      brokerage_id:         contactRow?.brokerage_id ?? data.propertyData.brokerageId ?? null,
+      listing_id:           data.listingId ?? null,
+      mls_number:           data.mlsNumber ?? null,
+      external_property_id: data.externalPropertyId ?? null,
+      source:               resolvedSource,
+      property_address:     data.propertyData.address ?? null,
+      list_price:           data.propertyData.price ?? null,
+      bedrooms:             data.propertyData.bedrooms ?? null,
+      bathrooms:            data.propertyData.bathrooms ?? null,
+      sqft:                 data.propertyData.sqft ?? null,
+      property_type:        data.propertyData.propertyType ?? null,
+      primary_photo_url:    data.propertyData.primaryPhotoUrl ?? null,
+      listing_url:          data.propertyData.url ?? null,
+      city:                 data.propertyData.city ?? null,
+      state:                data.propertyData.state ?? null,
+      saved_at:             new Date().toISOString(),
+      dismissed:            false,
     })
 
-    await supabase.from("lifecycle_events").insert({
-      event_type: "property_saved",
-      brokerage_id: data.propertyData.brokerageId,
-      user_id: data.contactId,
-      payload: { mls_number: data.mlsNumber },
-      source: "ui",
-    })
+    if (insertErr) {
+      return { success: false, error: insertErr.message }
+    }
 
     revalidatePath("/properties/saved")
     return { success: true, message: "Property saved successfully" }

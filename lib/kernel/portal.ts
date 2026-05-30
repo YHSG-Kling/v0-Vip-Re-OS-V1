@@ -124,11 +124,12 @@ export async function determinePortalView(
       }
     }
 
-    // Check for active listing
+    // Check for an active listing where THIS contact is the seller (not merely
+    // any listing owned by their agent — that misrouted buyers to the seller view).
     const { data: listings } = await supabase
       .from("listings")
       .select("id, status")
-      .eq("agent_id", contact.agent_id)
+      .eq("seller_contact_id", contactId)
       .in("status", ["active", "pending", "coming_soon"])
 
     if (listings && listings.length > 0) {
@@ -270,13 +271,11 @@ export async function logPortalAccess(
 
     // Emit kernel event
     await processKernelEvent({
-      eventType: KernelEvent.PORTAL_ACCESSED,
+      event: KernelEvent.PORTAL_ACCESSED,
       entityType: "contact",
       entityId: contactId,
-      agentId: agentId ?? null,
-      brokerageId: null,
-      metadata: { moduleKey, action },
-    }).catch(() => {}) // Non-blocking
+      brokerageId: '',
+    })
   } catch (error) {
     // Fail silently — portal_access_logs table may not exist yet
     console.warn("[Portal] Unable to log portal access:", error)

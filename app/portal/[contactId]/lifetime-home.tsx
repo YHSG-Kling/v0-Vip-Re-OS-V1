@@ -6,7 +6,16 @@ import { CongratsCard } from "@/app/components/portal/lifetime/CongratsCard"
 import { MyHomeCard } from "@/app/components/portal/lifetime/MyHomeCard"
 import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstimateCard"
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
+import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
+import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
+import { createClient } from "@/lib/supabase/server"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
+import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import {
   Bell,
   BookOpen,
@@ -21,8 +30,26 @@ interface LifetimeHomeProps {
   contactId: string
 }
 
+// Lifetime customers receive ongoing transparency_updates on home value
+// changes, anniversaries, market events. Loaded here so the feed surfaces
+// at the top of the page.
+async function loadRecentUpdates(contactId: string) {
+  const supabase = await createClient()
+  const { data } = await supabase
+    .from("transparency_updates")
+    .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+    .eq("contact_id", contactId)
+    .eq("is_visible_to_client", true)
+    .order("created_at", { ascending: false })
+    .limit(20)
+  return data ?? []
+}
+
 export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
-  const context = await getLifetimeContext(contactId)
+  const [context, recentUpdates] = await Promise.all([
+    getLifetimeContext(contactId),
+    loadRecentUpdates(contactId),
+  ])
 
   if (!context) {
     return (
@@ -36,9 +63,32 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     )
   }
 
-  const { contact, transaction, homeValueEstimate, touchpoints, preferredVendors } = context
+  const { contact, agent, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
   const firstName = contact.first_name || contact.name?.split(" ")[0] || "Homeowner"
-  const agentName = (contact.agents as any)?.name
+  // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
+  // Previous code read (contact as any).agents?.name which doesn't exist on the
+  // contact row — agentName was always undefined.
+  const agentName = agent?.full_name ?? null
+
+  // Deal team — common-area visibility (who was/is part of this client's journey).
+  const lifetimeSupabase = await createClient()
+  let dealTeamMembers: any[] = []
+  let primaryAgent: any = null
+  if (transaction?.id) {
+    const { data: dt } = await lifetimeSupabase
+      .from("deal_team_members")
+      .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
+      .eq("transaction_id", transaction.id)
+    dealTeamMembers = dt ?? []
+  }
+  if (contact.agent_id) {
+    const { data: pa } = await lifetimeSupabase
+      .from("agents")
+      .select("id, first_name, last_name, phone, email, profile_photo_url")
+      .eq("id", contact.agent_id)
+      .maybeSingle()
+    primaryAgent = pa
+  }
 
   // Get last market update touchpoint
   const lastMarketUpdate = touchpoints.find(
@@ -48,6 +98,11 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
+      {/* Milestone-gated education for post-close contacts. Lifetime
+          customers see wealth + home-care lessons (set_refi_alerts,
+          home_value_tracking, annual_market_update, etc.). Hides on empty. */}
+      <MilestoneEducationPanel contactId={contactId} />
+
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -63,6 +118,27 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           </div>
         )}
       </div>
+
+      {/* 0a. WHAT'S NEW — kernel fan-out feeds (anniversary, equity changes,
+            agent market updates). Hidden when nothing client-visible. */}
+      <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
+
+      {/* 0a-bis. Live event stream — every actionable kernel event the
+                  customer is allowed to see, translated to friendly copy. */}
+      <PortalLiveFeed contactId={contactId} limit={15} />
+
+      {/* 0b. Lifetime milestone line — gives the homeowner the same "where am
+            I" signal that buyer/seller portals have. Driven by close-date
+            deltas (settling-in / anniversary / multi-year). Surfaces a
+            refinance lane when an opportunity is flagged on the equity card. */}
+      {transaction?.close_date && (
+        <LifetimeMilestoneLine
+          contactId={contactId}
+          closeDate={transaction.close_date}
+          currentEstimate={homeValueEstimate?.estimated_value_mid}
+          purchasePrice={transaction?.sale_price ?? null}
+        />
+      )}
 
       {/* 1. Congrats Card (dismissible) */}
       {transaction && (
@@ -85,7 +161,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
             closeDate={transaction.close_date}
             closePrice={transaction.sale_price}
             currentEstimate={homeValueEstimate?.estimated_value_mid}
-            agentName={agentName}
+            agentName={agentName ?? undefined}
           />
         )}
 
@@ -99,7 +175,21 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           generatedAt={homeValueEstimate?.generated_at}
         />
 
-        {/* 4. Market Updates Preview */}
+        {/* 4. Neighborhood Activity */}
+        <NeighborhoodActivityCard
+          listings={neighborhoodListings}
+          propertyAddress={transaction?.property_address}
+        />
+
+        {/* 5. Refinance Opportunity */}
+        {transaction?.sale_price && transaction.sale_price > 0 && (
+          <RefinanceIndicatorCard
+            purchasePrice={transaction.sale_price}
+            closeDate={transaction.close_date}
+          />
+        )}
+
+        {/* 6. Market Updates Preview */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
@@ -137,6 +227,11 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
         {/* 5. Referral Ask Card */}
         <ReferralAskCard contactId={contactId} />
+
+        {/* 5b. Homeowner Toolkit — persona-filtered vendor marketplace
+                preview. Surfaces top curated forever-stage vendors with
+                team scoping + audience filtering. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="lifetime" />
 
         {/* 6. Preferred Vendors (compact) */}
         <Card>
@@ -218,6 +313,15 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Deal Team — who was part of your home journey */}
+      {(primaryAgent || dealTeamMembers.length > 0) && (
+        <DealTeamCard
+          primaryAgent={primaryAgent}
+          teamMembers={dealTeamMembers as any}
+          variant="full"
+        />
+      )}
 
       {/* Re-engagement: thinking of moving */}
       <Card className="border-blue-200 bg-blue-50">

@@ -1,34 +1,30 @@
+"use server"
+
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
-
-// ─── TITLE MILESTONES (visible to title portal) ──────────────────────────────
-export const TITLE_VISIBLE_MILESTONES = [
-  "title_search_ordered",
-  "title_commitment_issued",
-  "closing_scheduled",
-  "closed",
-  "funding_confirmed",
-] as const
-
-// ─── TITLE ESCROW STATUS OPTIONS ─────────────────────────────────────────────
-export const TITLE_STATUS_OPTIONS = [
-  { value: "title_search", label: "Title Search in Progress" },
-  { value: "commitment_issued", label: "Commitment Issued" },
-  { value: "closing_ready", label: "Closing Ready" },
-  { value: "closed", label: "Closed" },
-] as const
-
-export type TitleStatus = typeof TITLE_STATUS_OPTIONS[number]["value"]
+import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
+import { TITLE_VISIBLE_MILESTONES, TITLE_STATUS_OPTIONS, type TitleStatus } from "@/lib/title-portal/constants"
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
 export async function getTitleDashboard(titleUserId: string) {
+  // Auth gate — requireTitleActor verifies the session user is mapped to
+  // the claimed title_company_user row. Without this, any caller could
+  // enumerate any title company's full deal pipeline (purchase prices,
+  // close dates, buyer + agent contact info, earnest money status).
+  let actor
+  try {
+    actor = await requireTitleActor(titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Get title user profile
   const { data: titleUser } = await supabase
     .from("title_company_users")
     .select("id, user_id, company_name, email, phone")
-    .eq("id", titleUserId)
+    .eq("id", actor.titleUserId)
     .single()
 
   if (!titleUser) {
@@ -67,9 +63,10 @@ export async function getTitleDashboard(titleUserId: string) {
 
   // Calculate dashboard stats
   const records = titleEscrowRecords || []
-  const activeCount = records.filter((r) =>
-    !["closed", "cancelled"].includes(r.transactions?.status || "")
-  ).length
+  const activeCount = records.filter((r) => {
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    return !["closed", "cancelled"].includes(tx?.status || "")
+  }).length
   const pendingEarnestMoney = records.filter((r) => r.earnest_money_status === "pending").length
   const titleIssuesCount = records.filter((r) => (r.title_issues?.length || 0) > 0).length
   const readyToClose = records.filter(
@@ -80,7 +77,8 @@ export async function getTitleDashboard(titleUserId: string) {
   const today = new Date()
   const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000)
   const closingThisWeek = records.filter((r) => {
-    const closeDate = r.transactions?.close_date || r.transactions?.closing_date
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    const closeDate = tx?.close_date || tx?.closing_date
     if (!closeDate) return false
     const date = new Date(closeDate)
     return date >= today && date <= weekFromNow
@@ -101,13 +99,22 @@ export async function getTitleDashboard(titleUserId: string) {
 
 // ─── GET TITLE TRANSACTION DETAIL ────────────────────────────────────────────
 export async function getTitleTransactionDetail(transactionId: string, titleUserId: string) {
+  // Auth gate — requireTitleActor verifies the session user is mapped
+  // to this title_company_user row.
+  let actor
+  try {
+    actor = await requireTitleActor(titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Verify title user
   const { data: titleUser } = await supabase
     .from("title_company_users")
     .select("id, email, company_name")
-    .eq("id", titleUserId)
+    .eq("id", actor.titleUserId)
     .single()
 
   if (!titleUser) {
@@ -153,10 +160,10 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
   // Fetch milestones (filtered to title-visible ones)
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+    .select("id, milestone_name, milestone_type, target_date, completed_date, status")
     .eq("transaction_id", transactionId)
     .in("milestone_name", [...TITLE_VISIBLE_MILESTONES])
-    .order("milestone_date", { ascending: true, nullsFirst: false })
+    .order("target_date", { ascending: true, nullsFirst: false })
 
   // Fetch documents uploaded by title
   const { data: documents } = await supabase
@@ -205,19 +212,31 @@ export async function uploadTitleDocument(data: {
   fileName: string
   fileUrl: string
 }) {
+  // Auth gate — wire_instructions especially are CRITICAL (wire fraud
+  // vector). Previously any caller could upload a wire-instructions
+  // document to any transaction in any tenant.
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) throw new Error("Not authenticated")
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
+  // Verify this transaction is assigned to the actor's title company
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select("transaction_id, brokerage_id, transactions(brokerage_id)")
+    .eq("transaction_id", data.transactionId)
+    .eq("title_company_email", actor.email)
+    .maybeSingle()
+  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
+  const txBrokerageId = (titleEscrow.transactions as any)?.brokerage_id ?? actor.brokerageId
+  if (txBrokerageId !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
+  }
 
   // Insert document with warning metadata for wire instructions
   const metadata = data.documentType === "wire_instructions"
@@ -228,10 +247,11 @@ export async function uploadTitleDocument(data: {
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
+      brokerage_id: actor.brokerageId,
       document_type: data.documentType,
       file_name: data.fileName,
       file_url: data.fileUrl,
-      uploaded_by: user.id,
+      uploaded_by: actor.userId,
       uploaded_by_type: "title",
       metadata,
     })
@@ -251,17 +271,18 @@ export async function updateTitleStatus(data: {
   transactionId: string
   titleUserId: string
   newStatus: TitleStatus
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+  const titleUserEmail = actor.email
+
   const supabase = await createClient()
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
+  if (!titleUserEmail) return { success: false, error: "Title user has no email on file" }
 
   // Update title escrow status
   const { error } = await supabase
@@ -271,42 +292,61 @@ export async function updateTitleStatus(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
-    .eq("title_company_email", titleUser.email)
+    .eq("title_company_email", titleUserEmail)
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
 
-  // Emit kernel event for milestone sync - get brokerage from transaction
-  const { data: txn } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: txn?.brokerage_id,
-    event_type: KernelEvent.JOURNEY_STAGE_UPDATED,
-    entity_type: "transaction",
-    entity_id: data.transactionId,
-    metadata: {
-      updated_by: titleUser.email,
-      updated_by_type: "title",
-      new_status: data.newStatus,
-    },
-    created_at: new Date().toISOString(),
-  })
+  const brokerageId = actor.brokerageId
+  const eventName =
+    data.newStatus === "closing_ready"
+      ? KernelEvent.CLOSING_SCHEDULED
+      : KernelEvent.JOURNEY_STAGE_UPDATED
 
-  // If status is closing_ready or closed, update relevant milestone
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       eventName,
+      brokerageId,
+      entityId:    data.transactionId,
+      actorUserId: actor.userId,
+      metadata: {
+        actor_role:      "title",
+        updated_by:      titleUserEmail,
+        updated_by_type: "title",
+        new_status:      data.newStatus,
+        update_type:     "title_status",
+      },
+    })
+  } catch (err) {
+    console.error("[updateTitleStatus] fan-out failed (non-blocking)", err)
+  }
+
+  // If status is closing_ready or closed, mark the corresponding milestone
+  // complete via the canonical helper so its fan-out + deadline mirror fires.
   if (data.newStatus === "closing_ready") {
-    await supabase.from("transaction_milestones").upsert({
-      transaction_id: data.transactionId,
-      milestone_name: "closing_scheduled",
-      milestone_type: "title",
-      status: "completed",
-      completed_date: new Date().toISOString(),
-    }, { onConflict: "transaction_id,milestone_name" })
+    try {
+      const { completeMilestone } = await import("@/lib/transactions/milestone-service")
+      await completeMilestone({
+        transactionId: data.transactionId,
+        brokerageId,
+        milestoneName: "closing_scheduled",
+        completedBy:   actor.userId,
+      })
+    } catch (err) {
+      console.error("[updateTitleStatus] closing_scheduled milestone failed", err)
+    }
   } else if (data.newStatus === "closed") {
-    await supabase.from("transaction_milestones").upsert({
-      transaction_id: data.transactionId,
-      milestone_name: "closed",
-      milestone_type: "title",
-      status: "completed",
-      completed_date: new Date().toISOString(),
-    }, { onConflict: "transaction_id,milestone_name" })
+    try {
+      const { completeMilestone } = await import("@/lib/transactions/milestone-service")
+      await completeMilestone({
+        transactionId: data.transactionId,
+        brokerageId,
+        milestoneName: "closed",
+        completedBy:   actor.userId,
+      })
+    } catch (err) {
+      console.error("[updateTitleStatus] closed milestone failed", err)
+    }
   }
 
   // Revalidate inside function to avoid module-level server dependency
@@ -322,17 +362,16 @@ export async function updateClosingPrepItem(data: {
   itemKey: string
   status: "pending" | "in_progress" | "completed"
   notes?: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
   const supabase = await createClient()
-
-  // Verify title user access
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email")
-    .eq("id", data.titleUserId)
-    .single()
-
-  if (!titleUser) throw new Error("Title user not found")
 
   // Get current closing prep
   const { data: currentPrep } = await supabase
@@ -346,7 +385,7 @@ export async function updateClosingPrepItem(data: {
   checklist[data.itemKey] = {
     status: data.status,
     updated_at: new Date().toISOString(),
-    updated_by: titleUser.email,
+    updated_by: actor.email,
     notes: data.notes,
   }
 
@@ -360,9 +399,32 @@ export async function updateClosingPrepItem(data: {
       updated_at: new Date().toISOString(),
     }, { onConflict: "transaction_id" })
 
-  if (error) throw error
+  if (error) return { success: false, error: error.message }
 
-  // Revalidate inside function to avoid module-level server dependency
+  // Fan-out when an item moves to completed so the agent + buyer + seller +
+  // lender portals see the closing-prep progress in real time.
+  if (data.status === "completed") {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      await emitTransactionEvent({
+        event:       KernelEvent.MILESTONE_COMPLETED,
+        brokerageId: actor.brokerageId,
+        entityId:    data.transactionId,
+        actorUserId: actor.userId,
+        metadata: {
+          actor_role:      "title",
+          milestone_name:  `closing_prep_${data.itemKey}`,
+          item_key:        data.itemKey,
+          updated_by:      actor.email,
+          notes:           data.notes ?? null,
+          update_type:     "closing_prep_item",
+        },
+      })
+    } catch (err) {
+      console.error("[updateClosingPrepItem] fan-out failed (non-blocking)", err)
+    }
+  }
+
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
@@ -374,36 +436,47 @@ export async function sendTitleMessageToAgent(data: {
   titleUserId: string
   message: string
 }) {
+  // Auth gate
+  let actor
+  try {
+    actor = await requireTitleActor(data.titleUserId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) throw err
+    throw err
+  }
+
   const supabase = await createClient()
 
-  // Verify title user access
+  // Verify title company is assigned to this transaction AND the
+  // transaction is in the actor's brokerage scope.
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select("transaction_id, transactions(brokerage_id, property_address, agent_id)")
+    .eq("transaction_id", data.transactionId)
+    .eq("title_company_email", actor.email)
+    .maybeSingle()
+  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
+  const tx = titleEscrow.transactions as any
+  if (!tx || tx.brokerage_id !== actor.brokerageId) {
+    throw new Error("Forbidden: transaction not in your brokerage scope")
+  }
+
   const { data: titleUser } = await supabase
     .from("title_company_users")
-    .select("id, email, company_name")
-    .eq("id", data.titleUserId)
+    .select("company_name")
+    .eq("id", actor.titleUserId)
     .single()
 
-  if (!titleUser) throw new Error("Title user not found")
-
-  // Get transaction agent
-  const { data: transaction } = await supabase
-    .from("transactions")
-    .select("id, property_address, agent_id")
-    .eq("id", data.transactionId)
-    .single()
-
-  if (!transaction) throw new Error("Transaction not found")
-
-  // Insert message
   const { error } = await supabase.from("client_portal_messages").insert({
-    contact_id: transaction.agent_id,
+    brokerage_id: actor.brokerageId,
+    contact_id: tx.agent_id,
     direction: "outbound",
     channel: "portal",
-    body: `[TITLE/ESCROW] ${titleUser.company_name || "Title Company"} re: ${transaction.property_address || "Transaction"}:\n\n${data.message}`,
+    body: `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`,
     metadata: {
       type: "title_message",
-      title_user_id: data.titleUserId,
-      title_email: titleUser.email,
+      title_user_id: actor.titleUserId,
+      title_email: actor.email,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
@@ -411,7 +484,6 @@ export async function sendTitleMessageToAgent(data: {
 
   if (error) throw error
 
-  // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }

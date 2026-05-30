@@ -15,6 +15,11 @@
 //   - Error messages are truncated to 2000 chars for DB safety
 //   - Records processed are tracked for audit trail
 //   - Status enum: 'running', 'success', 'failure', 'partial'
+//
+// Migration 1053: createCronRunContext() now immediately inserts into
+// cron_execution_logs with cron_name + cron_path so the health dashboard
+// can identify any cron without touching individual cron files.
+// recordCronStart() becomes an UPDATE (not insert) on the same row.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
@@ -67,12 +72,29 @@ export async function createCronRunContext(
       params: input.params,
     }
 
-    return {
-      success: true,
-      data: context,
+    // Persist immediately so cron_name is stored in cron_execution_logs
+    // from the very first moment. recordCronStart() then updates status to 'running'.
+    const supabase = createServiceClient()
+    const { error: insertError } = await supabase
+      .from("cron_execution_logs")
+      .insert({
+        id:          context_id,
+        context_id,
+        cron_name:   input.cron_name,
+        cron_path:   input.cron_path,
+        status:      "started",
+        started_at,
+        metadata:    input.params ? { params: input.params } : {},
+      })
+
+    if (insertError) {
+      // Log but don't fail — the cron should continue even if logging breaks
+      console.error("[cron-kernel] createCronRunContext insert error:", insertError.message)
     }
+
+    return { success: true, data: context }
   } catch (error) {
-    console.error("[v0] createCronRunContext error:", error)
+    console.error("[cron-kernel] createCronRunContext error:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -93,34 +115,37 @@ export async function recordCronStart(
   try {
     const supabase = createServiceClient()
 
-    // Retrieve context from in-memory context map (if available)
-    // For now, we'll just insert a log entry with the context_id
-    const { error } = await supabase
+    // Update the row created in createCronRunContext to 'running'.
+    // Falls back to insert if the row doesn't exist (e.g. insert failed above).
+    const { error: updateError } = await supabase
       .from("cron_execution_logs")
-      .insert([
-        {
-          id: uuidv4(),
-          context_id: input.context_id,
-          status: "running",
-          started_at: new Date().toISOString(),
-          metadata: {
-            input_count: input.input_count,
-          },
-        },
-      ])
+      .update({
+        status:   "running",
+        metadata: input.input_count != null ? { input_count: input.input_count } : {},
+      })
+      .eq("context_id", input.context_id)
+      .eq("status", "started")
 
-    if (error) {
-      console.error("[v0] recordCronStart DB error:", error)
-      // Don't throw — logging failure should not crash cron
-      return {
-        success: false,
-        error: error.message,
+    if (updateError) {
+      // Row may not exist if createCronRunContext insert failed — insert now
+      const { error: insertError } = await supabase
+        .from("cron_execution_logs")
+        .insert({
+          id:         input.context_id,
+          context_id: input.context_id,
+          status:     "running",
+          started_at: new Date().toISOString(),
+          metadata:   { input_count: input.input_count },
+        })
+      if (insertError) {
+        console.error("[cron-kernel] recordCronStart fallback insert error:", insertError.message)
+        return { success: false, error: insertError.message }
       }
     }
 
     return { success: true }
   } catch (error) {
-    console.error("[v0] recordCronStart error:", error)
+    console.error("[cron-kernel] recordCronStart error:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -142,27 +167,23 @@ export async function recordCronProgress(
   try {
     const supabase = createServiceClient()
 
-    // Update the running log entry with progress
     const { error } = await supabase
       .from("cron_execution_logs")
       .update({
         records_processed: input.records_processed,
-        metadata: input.metadata_delta,
+        metadata:          input.metadata_delta,
       })
       .eq("context_id", input.context_id)
       .eq("status", "running")
 
     if (error) {
-      console.error("[v0] recordCronProgress DB error:", error)
-      return {
-        success: false,
-        error: error.message,
-      }
+      console.error("[cron-kernel] recordCronProgress error:", error.message)
+      return { success: false, error: error.message }
     }
 
     return { success: true }
   } catch (error) {
-    console.error("[v0] recordCronProgress error:", error)
+    console.error("[cron-kernel] recordCronProgress error:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -191,31 +212,25 @@ export async function recordCronSuccess(
     const supabase = createServiceClient()
     const completed_at = new Date().toISOString()
 
-    // Retrieve the start log entry to calculate duration
     const { data: logEntry, error: readError } = await supabase
       .from("cron_execution_logs")
       .select("*")
       .eq("context_id", input.context_id)
-      .eq("status", "running")
-      .single()
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (readError || !logEntry) {
-      console.error("[v0] recordCronSuccess read error:", readError)
-      return {
-        success: false,
-        error: "Could not find running cron log entry",
-      }
+      console.error("[cron-kernel] recordCronSuccess read error:", readError?.message)
+      return { success: false, error: "Could not find cron log entry" }
     }
 
-    const started_at = new Date(logEntry.started_at).getTime()
-    const completed_at_ms = new Date(completed_at).getTime()
-    const duration_ms = completed_at_ms - started_at
+    const duration_ms = new Date(completed_at).getTime() - new Date(logEntry.started_at).getTime()
 
-    // Update log entry with success state
     const { error: updateError } = await supabase
       .from("cron_execution_logs")
       .update({
-        status: "success",
+        status:            "success",
         completed_at,
         duration_ms,
         records_processed: input.records_processed ?? logEntry.records_processed,
@@ -226,38 +241,41 @@ export async function recordCronSuccess(
         },
       })
       .eq("context_id", input.context_id)
-      .eq("status", "running")
 
     if (updateError) {
-      console.error("[v0] recordCronSuccess update error:", updateError)
-      return {
-        success: false,
-        error: updateError.message,
-      }
+      console.error("[cron-kernel] recordCronSuccess update error:", updateError.message)
+      return { success: false, error: updateError.message }
     }
 
-    // Emit KernelEvent for success
+    // Upsert cron_health_snapshot so health dashboard sees the latest run
+    if (logEntry.cron_name) {
+      await supabase
+        .from("cron_health_snapshot")
+        .upsert({
+          cron_name:              logEntry.cron_name,
+          cron_path:              logEntry.cron_path ?? null,
+          last_run_at:            completed_at,
+          last_status:            "success",
+          last_duration_ms:       duration_ms,
+          last_records_processed: input.records_processed ?? logEntry.records_processed ?? 0,
+          last_error_message:     null,
+          updated_at:             completed_at,
+        }, { onConflict: "cron_name" })
+        .then(() => {}) // fire-and-forget; don't fail the cron
+    }
+
     try {
       await processKernelEvent({
-        event: KernelEvent.CRON_COMPLETED_SUCCESS,
+        event:      KernelEvent.CRON_COMPLETED_SUCCESS,
         brokerageId: logEntry.brokerage_id || "system",
         entityType: "cron",
-        entityId: input.context_id,
+        entityId:   input.context_id,
       })
-    } catch (eventError) {
-      console.error("[v0] Failed to emit CRON_COMPLETED_SUCCESS event:", eventError)
-      // Continue — event failure should not crash logging
-    }
+    } catch { /* event failure must not crash logging */ }
 
-    return {
-      success: true,
-      data: {
-        completed_at,
-        duration_ms,
-      },
-    }
+    return { success: true, data: { completed_at, duration_ms } }
   } catch (error) {
-    console.error("[v0] recordCronSuccess error:", error)
+    console.error("[cron-kernel] recordCronSuccess error:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -270,8 +288,8 @@ export async function recordCronSuccess(
 export interface RecordCronFailureInput {
   context_id: string
   error: Error | string
-  stage?: string  // which stage of cron failed
-  context_snapshot?: Record<string, any> // debug context at failure
+  stage?: string
+  context_snapshot?: Record<string, any>
 }
 
 export interface RecordCronFailureOutput {
@@ -286,79 +304,74 @@ export async function recordCronFailure(
     const supabase = createServiceClient()
     const completed_at = new Date().toISOString()
 
-    // Retrieve the start log entry to calculate duration
     const { data: logEntry, error: readError } = await supabase
       .from("cron_execution_logs")
       .select("*")
       .eq("context_id", input.context_id)
-      .single()
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (readError || !logEntry) {
-      console.error("[v0] recordCronFailure read error:", readError)
-      return {
-        success: false,
-        error: "Could not find cron log entry",
-      }
+      console.error("[cron-kernel] recordCronFailure read error:", readError?.message)
+      return { success: false, error: "Could not find cron log entry" }
     }
 
-    const started_at = new Date(logEntry.started_at).getTime()
-    const completed_at_ms = new Date(completed_at).getTime()
-    const duration_ms = completed_at_ms - started_at
-
-    // Format error message (truncate to 2000 chars for DB safety)
-    const errorMessage = input.error instanceof Error ? input.error.message : String(input.error)
+    const duration_ms   = new Date(completed_at).getTime() - new Date(logEntry.started_at).getTime()
+    const errorMessage  = input.error instanceof Error ? input.error.message : String(input.error)
     const truncatedError = errorMessage.slice(0, 2000)
-
-    // Capture error stack if available
     const stack = input.error instanceof Error ? input.error.stack : undefined
 
-    // Update log entry with failure state
     const { error: updateError } = await supabase
       .from("cron_execution_logs")
       .update({
-        status: "failure",
+        status:        "failure",
         completed_at,
         duration_ms,
         error_message: truncatedError,
         metadata: {
           ...logEntry.metadata,
-          stage: input.stage,
+          stage:            input.stage,
           context_snapshot: input.context_snapshot,
-          error_stack: stack?.slice(0, 1000), // truncate stack to 1000 chars
+          error_stack:      stack?.slice(0, 1000),
         },
       })
       .eq("context_id", input.context_id)
 
     if (updateError) {
-      console.error("[v0] recordCronFailure update error:", updateError)
-      return {
-        success: false,
-        error: updateError.message,
-      }
+      console.error("[cron-kernel] recordCronFailure update error:", updateError.message)
+      return { success: false, error: updateError.message }
     }
 
-    // Emit KernelEvent for failure
+    // Upsert cron_health_snapshot with failure state
+    if (logEntry.cron_name) {
+      await supabase
+        .from("cron_health_snapshot")
+        .upsert({
+          cron_name:              logEntry.cron_name,
+          cron_path:              logEntry.cron_path ?? null,
+          last_run_at:            completed_at,
+          last_status:            "failure",
+          last_duration_ms:       duration_ms,
+          last_records_processed: logEntry.records_processed ?? 0,
+          last_error_message:     truncatedError,
+          updated_at:             completed_at,
+        }, { onConflict: "cron_name" })
+        .then(() => {})
+    }
+
     try {
       await processKernelEvent({
-        event: KernelEvent.CRON_FAILED,
+        event:       KernelEvent.CRON_FAILED,
         brokerageId: logEntry.brokerage_id || "system",
-        entityType: "cron",
-        entityId: input.context_id,
+        entityType:  "cron",
+        entityId:    input.context_id,
       })
-    } catch (eventError) {
-      console.error("[v0] Failed to emit CRON_FAILED event:", eventError)
-      // Continue — event failure should not crash logging
-    }
+    } catch { /* event failure must not crash logging */ }
 
-    return {
-      success: true,
-      data: {
-        completed_at,
-        duration_ms,
-      },
-    }
+    return { success: true, data: { completed_at, duration_ms } }
   } catch (error) {
-    console.error("[v0] recordCronFailure error:", error)
+    console.error("[cron-kernel] recordCronFailure error:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",

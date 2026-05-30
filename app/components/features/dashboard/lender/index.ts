@@ -1,2 +1,2 @@
-export { default as LoanList } from './loan-list.tsx'
-export { default as LoanPipeline } from './loan-pipeline.tsx'
+export { LenderLoanList as LoanList } from './loan-list.tsx'
+export { LoanPipeline } from './loan-pipeline.tsx'

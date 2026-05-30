@@ -149,7 +149,7 @@ export default function SubmitContentForm({ userId, agentId, onSuccess }: Submit
             <SelectItem value="cold_lead">Cold Lead (Email/Print Only)</SelectItem>
             <SelectItem value="warm_lead">Warm Lead</SelectItem>
             <SelectItem value="active_client">Active Client</SelectItem>
-            <SelectItem value="past_client">Past Client</SelectItem>
+            <SelectItem value="lifetime_customer">Lifetime Customer</SelectItem>
           </SelectContent>
         </Select>
 

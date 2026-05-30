@@ -12,6 +12,7 @@ import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import type { VoiceTrainingStatus, VoiceProfile, VoiceTrainingJob, SampleManifest, UploadedSample } from "./video-voice.types"
+import { VOICE_CLONE_SAMPLE_PHRASES } from "./video-voice.constants"
 
 // ============================================
 // VOICE PROFILE CRUD
@@ -145,7 +146,7 @@ export async function updateVoiceProfileSamples(
   const supabase = await createClient()
 
   // Count recorded samples
-  const recordedCount = sampleManifest.phrases.filter(p => p.status === "recorded" || p.status === "validated").length
+  const recordedCount = (sampleManifest.phrases ?? []).filter(p => p.status === "recorded" || p.status === "validated").length
 
   // Update the profile
   const { data: profile, error } = await supabase
@@ -287,7 +288,7 @@ export async function startVoiceCloneTraining(
   const supabase = await createClient()
 
   // Validate we have enough samples
-  const recordedCount = sampleManifest.phrases.filter(p => p.status === "recorded" || p.status === "validated").length
+  const recordedCount = (sampleManifest.phrases ?? []).filter(p => p.status === "recorded" || p.status === "validated").length
   if (recordedCount < VOICE_CLONE_SAMPLE_PHRASES.length) {
     throw new Error(`Not enough samples. Required: ${VOICE_CLONE_SAMPLE_PHRASES.length}, Recorded: ${recordedCount}`)
   }

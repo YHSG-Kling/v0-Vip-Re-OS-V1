@@ -164,7 +164,7 @@ export async function calculateBuyerFatigue(
       brokerageId,
       entityType:  "buyer_lifecycle",
       entityId:    contactId,
-      fromState:   null,
+      fromState:   "",
       toState:     contact.buyer_stage ?? "BUYER_SEARCHING",
       actorUserId: agentUserId,
       actorRole:   "system",

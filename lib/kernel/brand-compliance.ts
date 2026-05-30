@@ -185,7 +185,6 @@ export async function checkBrandCompliance(
     brokerageId,
     entityType: contentType,
     entityId:   contentId,
-    metadata:   { passed, violations },
   })
 
   // ── Step 7: UPDATE content record ─────────────────────────────────────────
@@ -258,7 +257,7 @@ async function checkVideo(ctx: {
 
   const { data: video } = await supabase
     .from("ai_video_projects")
-    .select("heygen_avatar_id, heygen_voice_id, status")
+    .select("heygen_avatar_id, heygen_voice_id, status, usage_intent, has_verbal_disclosure, has_visual_brand_overlay, script_content")
     .eq("id", contentId)
     .maybeSingle()
 
@@ -267,17 +266,56 @@ async function checkVideo(ctx: {
     return
   }
 
-  // Verify brokerage avatar is used — only checked when brokerage has a configured avatar
+  const usageIntent: string = video.usage_intent ?? "public_marketing"
+  const hasBeenRendered = video.status && video.status !== "draft" && video.status !== "pending"
+
+  if (usageIntent === "mls") {
+    // MLS rules forbid agent / brokerage branding in listing media submitted
+    // to the MLS feed. Enforce the inverse compliance — no verbal disclosure
+    // AND no visual overlay should be present.
+    if (video.has_verbal_disclosure) {
+      violations.push(
+        "MLS-bound video must NOT include a brokerage verbal disclosure (MLS rules)"
+      )
+    }
+    if (video.has_visual_brand_overlay) {
+      violations.push(
+        "MLS-bound video must NOT include a brokerage visual brand overlay (MLS rules)"
+      )
+    }
+    return
+  }
+
+  // Public-marketing path: brokerage avatar / voice are checked when the
+  // brokerage has them configured.
   if (brokerageAvatarId && video.heygen_avatar_id !== brokerageAvatarId) {
     violations.push(
       `Video uses avatar '${video.heygen_avatar_id ?? "none"}' — expected brokerage avatar '${brokerageAvatarId}'`
     )
   }
 
-  // Verify brokerage voice is used — only checked when brokerage has a configured voice
   if (brokerageVoiceId && video.heygen_voice_id !== brokerageVoiceId) {
     violations.push(
       `Video uses voice '${video.heygen_voice_id ?? "none"}' — expected brokerage voice '${brokerageVoiceId}'`
+    )
+  }
+
+  // Verbal disclosure — set by /api/did/generate-video after the script
+  // gains the "Brought to you by [Brokerage]..." line.
+  if (hasBeenRendered && !video.has_verbal_disclosure) {
+    violations.push(
+      "Public-marketing video missing brokerage verbal disclosure — required by real-estate advertising law"
+    )
+  }
+
+  // Visual overlay — set by the D-ID poll cron after ffmpeg burns in the
+  // logo + attribution band. Silent video clips and visual-only ads need
+  // this even if the script never runs, because the verbal disclosure
+  // alone doesn't satisfy advertising law for muted playback (e.g. social
+  // feed autoplay).
+  if (hasBeenRendered && !video.has_visual_brand_overlay) {
+    violations.push(
+      "Public-marketing video missing brokerage visual brand overlay — required for muted playback compliance"
     )
   }
 }
@@ -292,12 +330,13 @@ async function checkDocument(ctx: {
 
   // client_documents table exists — attempt a read but
   // treat a missing table gracefully; only the lifecycle_event and result matter
-  const { data: doc } = await supabase
+  const result = await supabase
     .from("client_documents")
     .select("content, document_type")
     .eq("id", contentId)
     .maybeSingle()
-    .catch(() => ({ data: null, error: null }))
+  
+  const doc = result.data
 
   if (!doc) {
     // No documents table or record not found — emit as passed with a note
@@ -325,15 +364,36 @@ async function checkListingMedia(ctx: {
 
   const { data: media } = await supabase
     .from("listing_media")
-    .select("id, media_type, status")
+    .select("id, media_type, has_logo_overlay, has_brokerage_attribution, has_eho_mark, is_primary")
     .eq("id", contentId)
     .maybeSingle()
 
   if (!media) {
     violations.push("listing_media record not found")
+    return
   }
-  // Listing media brand rules are currently limited to record existence;
-  // deeper pixel-level inspection is delegated to the media vendor pipeline.
+
+  // Real-estate advertising law: every public-facing piece of marketing
+  // needs brokerage attribution and the Equal Housing Opportunity mark.
+  // For listing photos, attribution is typically carried by the listing
+  // landing page itself, BUT photos that go out as standalone marketing
+  // (social shares, postcards, ads) must carry it on the image.
+  //
+  // The hero photo (is_primary=true) is what fans out to the marketing
+  // pipeline, so we enforce strict attribution on that one. Other photos
+  // are flagged as warnings rather than violations so the agent isn't
+  // blocked from uploading raw listing photos.
+  const isHero = media.is_primary === true
+  const requireAttribution = isHero || media.media_type === "video"
+
+  if (requireAttribution) {
+    if (!media.has_brokerage_attribution) {
+      violations.push("Listing media missing brokerage attribution (name + license #)")
+    }
+    if (!media.has_eho_mark) {
+      violations.push("Listing media missing Equal Housing Opportunity mark")
+    }
+  }
 }
 
 // ─── Record updater ───────────────────────────────────────────────────────────

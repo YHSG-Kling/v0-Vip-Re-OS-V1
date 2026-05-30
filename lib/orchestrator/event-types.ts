@@ -7,4 +7,5 @@
  * This file is kept for backward compatibility with any existing importers.
  * Prefer importing directly from "@/lib/events/types".
  */
-export { EventInput, Event, OrchestratorEvent, EVENT_TYPES } from "@/lib/events"
+export type { EventInput, Event, OrchestratorEvent } from "@/lib/events"
+export { EVENT_TYPES } from "@/lib/events"

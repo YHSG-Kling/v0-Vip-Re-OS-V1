@@ -179,7 +179,7 @@ export function OperationsClient({ role, firstName }: Props) {
                 <EmptyState message="No showings scheduled today." />
               ) : (
                 <div className="divide-y divide-border">
-                  {data!.todayShowings.map((s) => (
+                  {(data?.todayShowings ?? []).map((s) => (
                     <div key={s.id} className="flex items-center justify-between px-4 py-3 gap-3">
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-foreground truncate">
@@ -221,7 +221,7 @@ export function OperationsClient({ role, firstName }: Props) {
                 <EmptyState message="No pending AI handoffs." />
               ) : (
                 <div className="divide-y divide-border">
-                  {data!.pendingHandoffs.map((h) => (
+                  {(data?.pendingHandoffs ?? []).map((h) => (
                     <div key={h.id} className="flex items-center justify-between px-4 py-3 gap-3">
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-foreground truncate">
@@ -229,7 +229,7 @@ export function OperationsClient({ role, firstName }: Props) {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {h.entity_type} ·{" "}
-                          {formatDistanceToNow(new Date(h.created_at), { addSuffix: true })}
+                          {h.created_at ? formatDistanceToNow(new Date(h.created_at), { addSuffix: true }) : ""}
                         </p>
                       </div>
                       <Link href="/dashboard/communications/handoffs">
@@ -255,7 +255,7 @@ export function OperationsClient({ role, firstName }: Props) {
                 <EmptyState message="No drafts waiting for review." />
               ) : (
                 <div className="divide-y divide-border">
-                  {data!.pendingDrafts.map((d) => (
+                  {(data?.pendingDrafts ?? []).map((d) => (
                     <div key={d.id} className="flex items-center justify-between px-4 py-3 gap-3">
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-foreground truncate">
@@ -263,7 +263,7 @@ export function OperationsClient({ role, firstName }: Props) {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {d.channel ?? "email"} ·{" "}
-                          {formatDistanceToNow(new Date(d.created_at), { addSuffix: true })}
+                          {d.created_at ? formatDistanceToNow(new Date(d.created_at), { addSuffix: true }) : ""}
                         </p>
                       </div>
                       <Link href="/dashboard/communications/outreach">

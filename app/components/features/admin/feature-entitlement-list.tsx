@@ -34,9 +34,7 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
   const fetchFeatures = async () => {
     try {
       setLoading(true)
-      const response = await fetch(`/api/admin/billing/dashboard?brokerageId=${brokerageId}`, {
-        headers: { "x-user-type": "superadmin" },
-      })
+      const response = await fetch(`/api/admin/billing/dashboard?brokerageId=${brokerageId}`)
 
       if (!response.ok) throw new Error("Failed to fetch features")
 
@@ -60,10 +58,7 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
         `/api/admin/billing/entitlements/${brokerageId}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-user-type": "superadmin",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             featureKey,
             overrideType: "enable_trial",

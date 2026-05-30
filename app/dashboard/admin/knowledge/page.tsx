@@ -17,13 +17,7 @@ async function KnowledgeData() {
   ])
 
   return (
-    <KnowledgeManagementClient
-      initialArticles={articlesResult.articles}
-      initialTopics={topicsResult.topics}
-      totalArticles={articlesResult.total}
-      totalTopics={topicsResult.total}
-      queueStatus={queueStatus}
-    />
+    <KnowledgeManagementClient />
   )
 }
 

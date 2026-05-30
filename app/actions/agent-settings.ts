@@ -3,20 +3,20 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 
-export async function getAgentSettings(userId: string) {
+// Both exports previously trusted a caller-supplied userId, so any
+// signed-in caller could read another user's HeyGen avatar/voice IDs
+// (PII-ish — links a real person to their AI clone) and silently
+// mutate another user's wake-name / avatar / voice settings.
+// Resolve from session and ignore caller param.
+
+export async function getAgentSettings(_userId?: string) {
   try {
-    console.log("[v0] getAgentSettings called for userId:", userId)
-
-    if (!isValidUUID(userId)) {
-      console.log("[v0] Invalid userId format, returning null settings")
-      return {
-        avatarId: null,
-        voiceId: null,
-        message: "Invalid user ID format",
-      }
-    }
-
     const supabase = await createClient()
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+    if (!authUser) {
+      return { avatarId: null, voiceId: null, message: "Not authenticated" }
+    }
+    const userId = authUser.id
 
     const { data: user, error } = await supabase
       .from("users")
@@ -59,17 +59,16 @@ export async function getAgentSettings(userId: string) {
   }
 }
 
-export async function updateAgentSettings(userId: string, settings: {
+export async function updateAgentSettings(_userId: string, settings: {
   avatarId?: string
   voiceId?: string
   assistantWakeName?: string
 }) {
   try {
-    if (!isValidUUID(userId)) {
-      return { success: false, error: "Invalid user ID format" }
-    }
-
     const supabase = await createClient()
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+    if (!authUser) return { success: false, error: "Not authenticated" }
+    const userId = authUser.id
 
     const updates: Record<string, string> = {}
     if (settings.avatarId) updates.heygen_avatar_id = settings.avatarId

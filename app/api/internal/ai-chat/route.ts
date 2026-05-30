@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -242,18 +242,38 @@ function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?
 Role: ${role} | Tone: ${tone} | Formality: ${formality}
 Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
-You can take real actions on behalf of staff when asked. Available tools:
-- create_task: Create and assign a task
-- schedule_follow_up: Schedule a follow-up activity with a contact
-- send_portal_message: Send a message to a client through the portal
-- update_contact_status: Update a contact's CRM status
-- log_activity: Log a completed call, meeting, or interaction
+TOOLS — use these when staff explicitly asks you to take an action:
+  Read tools (information lookup):
+  - lookup_contact: Search for contacts by name, email, or phone
+  - get_today_schedule: Return today's showings and scheduled activities
 
-When staff asks you to DO something (not just explain), use the appropriate tool. Confirm back with the result. Only call a tool when the instruction is clear — ask for clarification if you need a contact name or date.
+  Write tools (mutating actions — call only when staff explicitly requests):
+  - create_task: Create and assign a task
+  - schedule_follow_up: Schedule a follow-up activity with a contact
+  - send_portal_message: Send a message to a client through the portal
+  - update_contact_status: Update a contact's CRM status
+  - log_activity: Log a completed call, meeting, or interaction
+  - draft_ai_reply: Generate a brand-voice reply DRAFT for review (does NOT auto-send)
+  - advance_listing_stage: Move a listing forward in its lifecycle when prerequisites are met
+  - advance_transaction_stage: Move a transaction forward through inspection / appraisal / financing / closing
+  - stage_listing_packet: Runs the canonical voice → listing intake pipeline (multi-turn extract → fill → generate). Pass the agent's full transcript as voice_input. If intake is incomplete the tool returns follow-up questions for the next turn. When complete it returns open_url to the FormWizard.
+  - stage_offer_packet: Same canonical pipeline for offers. Pass full transcript; supports multi-turn.
+  - stage_newsletter_draft: Canonical createNewsletterCampaign (feature gate + brand voice intact)
+  - stage_email_campaign: Canonical createEmailCampaign
+  - stage_open_house: Schedule an open house on a listing (date + start_time + end_time)
+  - stage_blog_draft: Canonical saveBlogPost
+  - stage_podcast_episode: Canonical createPodcastEpisode (provider resolution + feature gate)
+  - stage_video_project: Canonical createVideoProject
+  - stage_direct_mail_campaign: Canonical createDirectMailCampaign (QR tracking + feature gate)
+  - stage_ad_campaign: Canonical createAdCampaign from lib/ads (Facebook / Instagram / Google / LinkedIn / TikTok). Returns open_url to ads dashboard where agent generates AI creative + launches.
+
+For all stage_* tools: when the result has open_url, speak it back so the agent knows where to navigate. If a stage_listing_packet or stage_offer_packet result has needs_more_info=true, relay the questions to the agent and call the same tool again on the next turn with the same session_id.
+
+Only call a write tool when the instruction is clear and explicit. If you're missing a key parameter (contact name, listing id, date, target stage), ask one clarifying question first.
 
 CAPABILITIES:
+- Use tools above when staff explicitly asks ("create a task for...", "draft a reply to...", "advance the listing to active")
 - Answer questions and summarize entities from the context below
-- Draft messages/emails for review (always label as DRAFT — never auto-send or auto-update records)
 - Explain processes, real estate terms, and platform features
 - Suggest next actions based on context data and upcoming dates
 - Flag urgency from dates and statuses
@@ -261,11 +281,12 @@ CAPABILITIES:
 - Auto-suggest note drafts after high-signal exchanges (see NOTE_AUTO_DRAFT below)
 
 RESTRICTIONS — never do any of these:
-- Take actions (send emails, update records, approve documents)
-- Access data outside the role-scoped context below
-- Give legal, financial, or tax advice
-- Reference other users' private data not in context
-- Save notes silently — always surface as a draft for human approval
+- Never take an action unless explicitly instructed — wait for the staff member to ask
+- Never auto-send a message — always use draft_ai_reply so the agent can review and send
+- Never access data outside the role-scoped context below
+- Never give legal, financial, or tax advice
+- Never reference other users' private data not in context
+- Never save notes silently — always surface as a draft for human approval
 
 NOTE_AUTO_DRAFT:
 After responding to a genuinely high-signal exchange — such as a call outcome being discussed, a decision or agreement reached, an important fact shared (timeline, budget, motivation), or a follow-up promised — you MAY append the following marker ONCE at the very end of your response (after your main answer text).
@@ -369,22 +390,24 @@ export async function POST(req: NextRequest) {
 
   const systemPrompt = buildSystemPrompt(role, ctx, identity)
 
-  // Persist session for this role if not yet created (fire-and-forget)
+  // Persist session for this role if not yet created
   const sessionId = req.headers.get("x-internal-session-id")
+  let newSessionId: string | null = null
   if (!sessionId) {
-    service.from("chat_sessions").insert({
-      contact_id: null,
-      brokerage_id: brokerageId,
-      agent_id: user.id,
-      source: "internal",
-      session_type: `internal_${role}`,
-      status: "active",
-      metadata: { role, user_id: user.id },
-    }).then(({ data }) => {
-      if (data) {
-        // Return session ID via header on first message handled by client
-      }
-    }).catch(() => {})
+    const { data: newSession } = await service
+      .from("chat_sessions")
+      .insert({
+        contact_id: null,
+        brokerage_id: brokerageId,
+        agent_id: user.id,
+        source: "internal",
+        session_type: `internal_${role}`,
+        status: "active",
+        metadata: { role, user_id: user.id },
+      })
+      .select("id")
+      .single()
+    newSessionId = newSession?.id ?? null
   }
 
   // Persist the last user message
@@ -401,7 +424,7 @@ export async function POST(req: NextRequest) {
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
   }
 
@@ -561,10 +584,529 @@ export async function POST(req: NextRequest) {
         return { success: true, activity_id: data.id, title: data.title }
       },
     }),
+
+    lookup_contact: tool({
+      description: "Search for contacts by name, email, or phone. Returns up to 5 matches scoped to the current brokerage.",
+      inputSchema: z.object({
+        query: z.string().describe("Free-text search — name (full or partial), email, or phone digits"),
+      }),
+      execute: async ({ query }) => {
+        const q = query.trim()
+        if (q.length < 2) return { matches: [] }
+
+        const phoneDigits = q.replace(/\D/g, "")
+        const isPhone = phoneDigits.length >= 7
+
+        let builder = service
+          .from("contacts")
+          .select("id, first_name, last_name, email, phone, contact_type, contact_persona, last_contact_at")
+          .eq("brokerage_id", brokerageId)
+          .limit(5)
+
+        if (isPhone) {
+          builder = builder.ilike("phone", `%${phoneDigits.slice(-7)}%`)
+        } else if (q.includes("@")) {
+          builder = builder.ilike("email", `%${q}%`)
+        } else {
+          builder = builder.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%`)
+        }
+
+        const { data } = await builder
+        return {
+          matches: (data ?? []).map((c) => ({
+            contact_id: c.id,
+            name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "(no name)",
+            email: c.email,
+            phone: c.phone,
+            type: c.contact_type,
+            persona: c.contact_persona,
+            last_contact: c.last_contact_at,
+          })),
+        }
+      },
+    }),
+
+    get_today_schedule: tool({
+      description: "Return today's showings and scheduled activities for the current agent.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const startOfDay = new Date()
+        startOfDay.setHours(0, 0, 0, 0)
+        const endOfDay = new Date(startOfDay)
+        endOfDay.setHours(23, 59, 59, 999)
+        const startIso = startOfDay.toISOString()
+        const endIso = endOfDay.toISOString()
+
+        const [showings, activities] = await Promise.all([
+          service
+            .from("showings")
+            .select("id, scheduled_at, listing_id, contact_id, notes, status")
+            .eq("agent_id", user.id)
+            .gte("scheduled_at", startIso)
+            .lt("scheduled_at", endIso)
+            .order("scheduled_at", { ascending: true }),
+          service
+            .from("activities")
+            .select("id, scheduled_at, activity_type, title, contact_id, transaction_id")
+            .eq("agent_id", user.id)
+            .eq("status", "scheduled")
+            .gte("scheduled_at", startIso)
+            .lt("scheduled_at", endIso)
+            .order("scheduled_at", { ascending: true }),
+        ])
+
+        const appointments = [
+          ...((showings.data ?? []).map((s) => ({
+            time: s.scheduled_at,
+            type: "showing" as const,
+            title: s.notes ?? "Showing",
+            status: s.status,
+            listing_id: s.listing_id,
+            contact_id: s.contact_id,
+          }))),
+          ...((activities.data ?? []).map((a) => ({
+            time: a.scheduled_at,
+            type: a.activity_type ?? "activity",
+            title: a.title,
+            contact_id: a.contact_id,
+            transaction_id: a.transaction_id,
+          }))),
+        ].sort((a, b) => (a.time && b.time ? (a.time < b.time ? -1 : 1) : 0))
+
+        return { count: appointments.length, appointments }
+      },
+    }),
+
+    draft_ai_reply: tool({
+      description:
+        "Generate a brand-voice reply DRAFT for a contact. Looks up the contact's most recent inbound message and produces a draft for agent review. Does NOT auto-send.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the contact"),
+      }),
+      execute: async ({ contact_id }) => {
+        // Verify contact in brokerage
+        const { data: contact } = await service
+          .from("contacts")
+          .select("id, first_name, last_name")
+          .eq("id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!contact) return { success: false, error: "Contact not found in your brokerage" }
+
+        // Find most recent conversation for this contact
+        const { data: convo } = await service
+          .from("conversations")
+          .select("id, type")
+          .eq("contact_id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .order("last_message_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (!convo) {
+          return {
+            success: false,
+            error:
+              "No conversation yet with this contact — start one in the inbox first, then ask me to draft a reply.",
+          }
+        }
+
+        const rawChannel = (convo.type ?? "").toLowerCase()
+        const draftChannel: "email" | "sms" | "in_app" =
+          rawChannel === "email" ? "email" : rawChannel === "sms" ? "sms" : "in_app"
+
+        const { data: lastInbound } = await service
+          .from("messages")
+          .select("id, body")
+          .eq("conversation_id", convo.id)
+          .eq("direction", "inbound")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
+        const result = await generateAIReplyDraft({
+          brokerageId,
+          agentUserId: user.id,
+          conversationId: convo.id,
+          contactId: contact_id,
+          inboundMessageId: lastInbound?.id ?? null,
+          inboundBody: lastInbound?.body ?? "",
+          channel: draftChannel,
+        })
+
+        if (!result.success || !result.draftBody) {
+          return { success: false, error: result.error ?? "Draft generation failed" }
+        }
+        return {
+          success: true,
+          draft_id: result.draftId,
+          channel: draftChannel,
+          conversation_id: convo.id,
+          contact_name: `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim(),
+          draft_body: result.draftBody,
+          subject: result.draftSubject ?? null,
+          tone: result.suggestedTone ?? null,
+          note: "Draft saved for review. Open the inbox and tap Send when ready.",
+        }
+      },
+    }),
+
+    advance_listing_stage: tool({
+      description:
+        "Advance a listing to the next stage in its lifecycle (e.g. coming_soon → active, active → under_contract). Validates prerequisites via the listing-lifecycle kernel.",
+      inputSchema: z.object({
+        listing_id: z.string().describe("UUID of the listing"),
+        target_stage: z.string().describe("The lifecycle stage key to advance to (e.g. 'mls_active', 'under_contract')"),
+        notes: z.string().nullable().describe("Optional notes about the advance"),
+      }),
+      execute: async ({ listing_id, target_stage, notes }) => {
+        // Verify listing belongs to brokerage
+        const { data: listing } = await service
+          .from("listings")
+          .select("id, agent_id, address, lifecycle_stage")
+          .eq("id", listing_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!listing) return { success: false, error: "Listing not found in your brokerage" }
+
+        try {
+          const { advanceListingStage } = await import("@/app/actions/listing-lifecycle")
+          const result = await advanceListingStage(
+            listing_id,
+            target_stage,
+            listing.agent_id ?? user.id,
+            notes ?? undefined,
+          )
+          return {
+            success: true,
+            listing_id,
+            from_stage: listing.lifecycle_stage,
+            to_stage: target_stage,
+            address: listing.address,
+            result,
+          }
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : "Stage advance failed",
+          }
+        }
+      },
+    }),
+
+    advance_transaction_stage: tool({
+      description:
+        "Advance a transaction to the next stage (inspection → appraisal → financing → closing_prep → closed). Runs the transaction orchestrator which validates blockers before moving.",
+      inputSchema: z.object({
+        transaction_id: z.string().describe("UUID of the transaction"),
+        target_stage: z
+          .enum([
+            "under_contract",
+            "inspection",
+            "appraisal",
+            "financing",
+            "closing_prep",
+            "closed",
+            "cancelled",
+          ])
+          .describe("The stage to advance to"),
+        reason: z.string().nullable().describe("Optional reason for the stage change"),
+      }),
+      execute: async ({ transaction_id, target_stage, reason }) => {
+        // Verify transaction belongs to brokerage
+        const { data: txn } = await service
+          .from("transactions")
+          .select("id, stage, status, deal_name, property_address")
+          .eq("id", transaction_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (!txn) return { success: false, error: "Transaction not found in your brokerage" }
+
+        try {
+          const { advanceTransactionStage } = await import("@/app/actions/transaction-stage-machine")
+          const result = await advanceTransactionStage({
+            transactionId: transaction_id,
+            brokerageId,
+            targetStage: target_stage as never,
+            reason: reason ?? undefined,
+          })
+          if (!result.success) {
+            return {
+              success: false,
+              error: result.error ?? "Stage advance blocked",
+              blockers: result.blockers ?? [],
+            }
+          }
+          return {
+            success: true,
+            transaction_id,
+            deal_name: txn.deal_name,
+            address: txn.property_address,
+            from_stage: txn.stage,
+            to_stage: result.newStage,
+          }
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : "Stage advance failed",
+          }
+        }
+      },
+    }),
+
+    stage_listing_packet: tool({
+      description:
+        "Stage a NEW listing-agreement packet from what the agent just said or typed. Runs the canonical voice → listing intake pipeline (multi-turn extract → fill → generate). On first call the AI passes the whole transcript; if intake is incomplete the tool returns follow-up questions for the agent to answer in the next turn. When complete it returns open_url to the FormWizard. Use when the agent says 'create a listing', 'start a new listing at...', or 'list a property at...'.",
+      inputSchema: z.object({
+        voice_input: z.string().describe("The full transcript / typed text the agent gave — pass it through unchanged. The canonical extractor parses address, price, seller, terms, marketing obligations with per-field confidence."),
+        session_id: z.string().nullable().describe("Continue a prior intake session (multi-turn)"),
+        contact_id: z.string().nullable().describe("Linked seller contact UUID if known"),
+      }),
+      execute: async ({ voice_input, session_id, contact_id }) => {
+        const { stageListingFromVoice } = await import("@/app/actions/wizard-staging")
+        const result = await stageListingFromVoice({
+          voiceInput: voice_input,
+          sessionId: session_id ?? undefined,
+          contactId: contact_id ?? undefined,
+        })
+        return result
+      },
+    }),
+
+    stage_offer_packet: tool({
+      description:
+        "Stage a NEW offer packet from what the agent just said. Runs the canonical voice → offer intake pipeline (multi-turn extract → fill → generate). Use when the agent says 'write an offer for [contact] on [property] at [price]'. If intake is incomplete the tool returns follow-up questions; when complete it returns open_url to the FormWizard.",
+      inputSchema: z.object({
+        voice_input: z.string().describe("The full transcript / typed text — pass through unchanged."),
+        session_id: z.string().nullable().describe("Continue a prior intake session"),
+        contact_id: z.string().nullable().describe("Buyer contact UUID — find via lookup_contact first if needed"),
+      }),
+      execute: async ({ voice_input, session_id, contact_id }) => {
+        const { stageOfferFromVoice } = await import("@/app/actions/wizard-staging")
+        const result = await stageOfferFromVoice({
+          voiceInput: voice_input,
+          sessionId: session_id ?? undefined,
+          contactId: contact_id ?? undefined,
+        })
+        return result
+      },
+    }),
+
+    stage_newsletter_draft: tool({
+      description:
+        "Stage a NEW newsletter draft via the canonical createNewsletterCampaign pipeline (feature gate + brand voice intact). Use when the agent says 'create a newsletter', 'send a newsletter about X'. Returns open_url to the newsletter editor.",
+      inputSchema: z.object({
+        title: z.string().describe("Newsletter campaign name (e.g. 'October Market Update')"),
+        subject_line: z.string().nullable().describe("Email subject line — defaults to title"),
+        topic: z.string().nullable().describe("What the newsletter should be about — used to seed the intro section"),
+        audience: z.string().nullable().describe("all | buyers | sellers | lifetime_customers | sphere"),
+      }),
+      execute: async ({ title, subject_line, topic, audience }) => {
+        const { stageNewsletterDraft } = await import("@/lib/wizard-staging/content-staging")
+        return stageNewsletterDraft(
+          { brokerageId, userId: user.id },
+          {
+            title,
+            subjectLine: subject_line ?? undefined,
+            topic: topic ?? undefined,
+            audience: audience ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_email_campaign: tool({
+      description:
+        "Stage a NEW email campaign draft via canonical createEmailCampaign (kernel feature gate + compliance pipeline). Use when the agent says 'send an email blast', 'create an email campaign about X'. Returns open_url.",
+      inputSchema: z.object({
+        campaign_name: z.string().describe("Internal campaign name"),
+        subject_line: z.string().nullable().describe("Email subject line"),
+        content: z.string().nullable().describe("Initial body copy if dictated"),
+        send_date: z.string().nullable().describe("Scheduled send date/time ISO string"),
+      }),
+      execute: async ({ campaign_name, subject_line, content, send_date }) => {
+        const { stageEmailCampaign } = await import("@/lib/wizard-staging/content-staging")
+        return stageEmailCampaign(
+          { brokerageId, userId: user.id },
+          {
+            campaignName: campaign_name,
+            subjectLine: subject_line ?? undefined,
+            content: content ?? undefined,
+            sendDate: send_date ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_open_house: tool({
+      description:
+        "Schedule an open house on a specific listing. Use when the agent says 'schedule an open house for [listing] on [date]'. Requires listing_id, date, start_time, end_time. Look up the listing via get_active_listings first if you don't have the listing_id.",
+      inputSchema: z.object({
+        listing_id: z.string().describe("UUID of the listing"),
+        date: z.string().describe("YYYY-MM-DD"),
+        start_time: z.string().describe("HH:MM (24-hour)"),
+        end_time: z.string().describe("HH:MM (24-hour)"),
+        max_attendees: z.number().nullable().describe("Cap on attendees"),
+        notes: z.string().nullable().describe("Agent-internal notes"),
+        public_description: z.string().nullable().describe("Public-facing description for invites"),
+      }),
+      execute: async ({ listing_id, date, start_time, end_time, max_attendees, notes, public_description }) => {
+        const { stageOpenHouse } = await import("@/lib/wizard-staging/content-staging")
+        return stageOpenHouse(
+          { brokerageId, userId: user.id },
+          {
+            listingId: listing_id,
+            date,
+            startTime: start_time,
+            endTime: end_time,
+            maxAttendees: max_attendees ?? undefined,
+            notes: notes ?? undefined,
+            publicDescription: public_description ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_blog_draft: tool({
+      description:
+        "Stage a NEW blog post draft via canonical saveBlogPost (feature gate + brand voice). Use when the agent says 'write a blog post about X'. Returns open_url to the blog editor.",
+      inputSchema: z.object({
+        title: z.string().describe("Blog post title"),
+        topic: z.string().nullable().describe("What the post should cover — seeded into the body"),
+        category: z.string().nullable().describe("market_insights | buyer_guides | seller_guides | local_lifestyle | community"),
+      }),
+      execute: async ({ title, topic, category }) => {
+        const { stageBlogDraft } = await import("@/lib/wizard-staging/content-staging")
+        return stageBlogDraft(
+          { brokerageId, userId: user.id },
+          { title, topic: topic ?? undefined, category: category ?? undefined },
+        )
+      },
+    }),
+
+    stage_podcast_episode: tool({
+      description:
+        "Stage a NEW podcast episode via canonical createPodcastEpisode (feature gate + provider resolution). Use when the agent says 'start a podcast on X'. Returns open_url to the podcast studio.",
+      inputSchema: z.object({
+        title: z.string().describe("Episode title"),
+        description: z.string().nullable().describe("Show notes / episode description"),
+        script: z.string().nullable().describe("Initial script if dictated"),
+        category: z.string().nullable().describe("market_update | how_to | interview | story | educational"),
+        keywords: z.array(z.string()).nullable().describe("Keywords for SEO + categorization"),
+      }),
+      execute: async ({ title, description, script, category, keywords }) => {
+        const { stagePodcastEpisode } = await import("@/lib/wizard-staging/content-staging")
+        return stagePodcastEpisode(
+          { brokerageId, userId: user.id },
+          {
+            title,
+            description: description ?? undefined,
+            script: script ?? undefined,
+            category: category ?? undefined,
+            keywords: keywords ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_video_project: tool({
+      description:
+        "Stage a NEW video project via canonical createVideoProject. Use when the agent says 'create a video about X'. Returns open_url to the video studio.",
+      inputSchema: z.object({
+        title: z.string().describe("Video title"),
+        script: z.string().nullable().describe("Initial script if dictated"),
+        video_type: z.string().nullable().describe("listing_walkthrough | market_update | testimonial | educational"),
+        format: z.enum(["vertical", "horizontal", "square"]).nullable().describe("Aspect ratio"),
+        duration_seconds: z.number().nullable().describe("Target duration"),
+        listing_id: z.string().nullable().describe("Linked listing UUID for walkthroughs"),
+      }),
+      execute: async ({ title, script, video_type, format, duration_seconds, listing_id }) => {
+        const { stageVideoProject } = await import("@/lib/wizard-staging/content-staging")
+        return stageVideoProject(
+          { brokerageId, userId: user.id },
+          {
+            title,
+            script: script ?? undefined,
+            videoType: video_type ?? undefined,
+            format: format ?? undefined,
+            durationSeconds: duration_seconds ?? undefined,
+            listingId: listing_id ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_direct_mail_campaign: tool({
+      description:
+        "Stage a NEW direct mail campaign via canonical createDirectMailCampaign (feature gate + QR tracking). Use when the agent says 'send postcards to past clients', 'mail thank-you notes'. Returns open_url.",
+      inputSchema: z.object({
+        campaign_name: z.string().describe("Internal name"),
+        target_audience: z.string().describe("Who to send to — past_clients, sphere, farm_zip_xxxx, etc."),
+        piece_type: z
+          .enum(["postcard_4x6", "postcard_6x9", "postcard_6x11", "letter", "handwritten", "thank_you_note"])
+          .nullable()
+          .describe("Mail piece type"),
+        budget: z.number().nullable().describe("Budget in dollars (determines quantity)"),
+        send_date: z.string().nullable().describe("Mailing date (YYYY-MM-DD)"),
+        copy_text: z.string().nullable().describe("Initial copy if dictated"),
+      }),
+      execute: async ({ campaign_name, target_audience, piece_type, budget, send_date, copy_text }) => {
+        const { stageDirectMailCampaign } = await import("@/lib/wizard-staging/content-staging")
+        return stageDirectMailCampaign(
+          { brokerageId, userId: user.id },
+          {
+            campaignName: campaign_name,
+            targetAudience: target_audience,
+            pieceType: piece_type ?? undefined,
+            budget: budget ?? undefined,
+            sendDate: send_date ?? undefined,
+            copyText: copy_text ?? undefined,
+          },
+        )
+      },
+    }),
+
+    stage_ad_campaign: tool({
+      description:
+        "Stage a NEW ad campaign via canonical createAdCampaign from lib/ads (feature gate + lifecycle event). Use when the agent says 'launch a Facebook ad for [listing]', 'run a lead-gen ad on Google'. Returns open_url to the ads dashboard where the agent generates AI creative variations and launches.",
+      inputSchema: z.object({
+        campaign_name: z.string().describe("Internal campaign name"),
+        platform: z.enum(["facebook", "instagram", "google", "linkedin", "tiktok"]).describe("Ad platform"),
+        objective: z.enum(["awareness", "traffic", "leads", "conversions"]).describe("Campaign objective"),
+        daily_budget: z.number().nullable().describe("Daily budget in dollars"),
+        lifetime_budget: z.number().nullable().describe("Lifetime budget cap"),
+        start_date: z.string().nullable().describe("Start date YYYY-MM-DD"),
+        end_date: z.string().nullable().describe("End date YYYY-MM-DD"),
+        city: z.string().nullable().describe("Target city"),
+        state: z.string().nullable().describe("Target state"),
+        age_min: z.number().nullable().describe("Minimum target age"),
+        age_max: z.number().nullable().describe("Maximum target age"),
+      }),
+      execute: async ({ campaign_name, platform, objective, daily_budget, lifetime_budget, start_date, end_date, city, state, age_min, age_max }) => {
+        const { stageAdCampaign } = await import("@/lib/wizard-staging/content-staging")
+        return stageAdCampaign(
+          { brokerageId, userId: user.id },
+          {
+            campaignName: campaign_name,
+            platform,
+            objective,
+            dailyBudget: daily_budget ?? undefined,
+            lifetimeBudget: lifetime_budget ?? undefined,
+            startDate: start_date ?? undefined,
+            endDate: end_date ?? undefined,
+            city: city ?? undefined,
+            state: state ?? undefined,
+            ageMin: age_min ?? undefined,
+            ageMax: age_max ?? undefined,
+          },
+        )
+      },
+    }),
   }
 
   const result = streamText({
-    model: openai("gpt-4o-mini"),
+      model: resolveModel("openai/gpt-4o-mini"),
     system: systemPrompt,
     messages: await convertToModelMessages(messages),
     maxOutputTokens: 1024,
@@ -577,9 +1119,14 @@ export async function POST(req: NextRequest) {
         role: "assistant",
         content: text,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     },
   })
 
-  return result.toUIMessageStreamResponse()
+  const streamResponse = result.toUIMessageStreamResponse()
+  const resolvedSessionId = sessionId ?? newSessionId
+  if (resolvedSessionId && !sessionId) {
+    streamResponse.headers.set("x-session-id", resolvedSessionId)
+  }
+  return streamResponse
 }

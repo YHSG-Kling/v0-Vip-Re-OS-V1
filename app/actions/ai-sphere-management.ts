@@ -1,16 +1,17 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 /**
  * AI Sphere of Influence Management System
- * Handles past client relationships, engagement scoring, and automated touchpoints
+ * Handles lifetime customer relationships, engagement scoring, and automated touchpoints
  */
 
 // ============================================================================
@@ -34,7 +35,7 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
         transactions(id, status, close_date)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", ["past_client", "sphere", "referral_partner"])
+      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: [] }
@@ -153,7 +154,7 @@ export async function aiGenerateTouchpoint(params: {
         }).optional(),
         personalizedDetails: z.array(z.string()),
       }),
-      prompt: `Generate a personalized ${params.touchpointType} touchpoint for this past client:
+      prompt: `Generate a personalized ${params.touchpointType} touchpoint for this lifetime customer:
 
 Contact: ${contact.first_name} ${contact.last_name}
 Relationship: ${contact.contact_type}
@@ -173,16 +174,17 @@ Generate:
 5. 3-5 personalized details to reference`,
     })
 
-    // Save the touchpoint
+    // Save the touchpoint — use schema-correct columns only.
+    // scheduled_touchpoints uses message_template (text) not content (jsonb).
     const { data: savedTouchpoint } = await supabase
       .from("scheduled_touchpoints")
       .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        touchpoint_type: params.touchpointType,
-        content: touchpoint,
-        status: "pending",
-        ai_generated: true,
+        agent_id:         params.agentId,
+        contact_id:       params.contactId,
+        touchpoint_type:  params.touchpointType,
+        message_template: JSON.stringify(touchpoint),
+        status:           "pending",
+        ai_generated:     true,
       })
       .select()
       .single()
@@ -209,21 +211,23 @@ export async function aiOptimizeReferralAsk(params: {
   const supabase = await createClient()
 
   try {
+    // Load contact — load referrals separately to avoid FK name guessing
     const { data: contact } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        transactions(close_date, sale_price),
-        referrals:referrals!referrer_contact_id(id, status)
-      `)
+      .select("*, transactions(close_date, sale_price)")
       .eq("id", params.contactId)
       .single()
+
+    const { data: referrals } = await supabase
+      .from("referrals")
+      .select("id, status")
+      .eq("referred_contact_id", params.contactId)
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
 
-    const pastReferrals = contact.referrals?.length || 0
+    const pastReferrals = referrals?.length || 0
     const transactionValue = contact.transactions?.[0]?.sale_price || 0
 
     const { object: referralStrategy } = await generateObject({
@@ -388,7 +392,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
         referrals:referrals!referrer_contact_id(id)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", ["past_client", "sphere", "referral_partner"])
+      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { segments: [] } }
@@ -483,7 +487,7 @@ Date: ${params.eventDetails.date}
 Location: ${params.eventDetails.location}
 Description: ${params.eventDetails.description || ""}
 Host: ${agent?.first_name} ${agent?.last_name}
-Target audience: ${params.targetSegment || "All past clients and sphere"}
+Target audience: ${params.targetSegment || "All lifetime customers and sphere"}
 
 Generate:
 1. Email invitation with compelling subject line

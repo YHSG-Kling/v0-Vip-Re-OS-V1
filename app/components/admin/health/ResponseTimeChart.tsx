@@ -156,10 +156,16 @@ export function ResponseTimeChart({ criticalServices }: ResponseTimeChartProps) 
               tick={{ fontSize: 12 }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(value) => `${value}ms`}
+              tickFormatter={(value: number | undefined) => {
+                const v = value ?? 0
+                return `${v}ms`
+              }}
             />
             <Tooltip
-              formatter={(value: number) => [`${value}ms`, ""]}
+              formatter={(value: number | undefined) => {
+                const v = value ?? 0
+                return [`${v}ms`, ""]
+              }}
               contentStyle={{
                 backgroundColor: "hsl(var(--background))",
                 border: "1px solid hsl(var(--border))",

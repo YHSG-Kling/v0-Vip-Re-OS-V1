@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import {
+NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { runGhostReengagement } from '@/lib/ai-isa/ghost-reengagement'
 import {
@@ -7,15 +8,15 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: 'ghost-detection',
@@ -91,7 +92,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, results }, { status: 200 })
   } catch (err) {
     console.error('[cron/ghost-detection] Fatal error:', err)
-    await recordCronFailureAction({ context_id: contextId, error: err, stage: 'main-processing' })
+    await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: 'main-processing' })
     return NextResponse.json(
       { success: false, error: err instanceof Error ? err.message : String(err), context_id: contextId },
       { status: 500 },

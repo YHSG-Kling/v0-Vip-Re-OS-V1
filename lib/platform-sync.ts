@@ -4,6 +4,8 @@
  * Handles syncing listings to various real estate platforms
  */
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 type PlatformConfig = {
   apiKey?: string
   apiEndpoint: string
@@ -68,27 +70,23 @@ export async function syncToPlatform(
     // Format listing data for platform
     const listingPayload = formatListingForPlatform(normalizedPlatform, listing)
 
-    // Make API call to platform
-    const response = await fetch(config.apiEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(listingPayload),
+    // Make API call to platform through the connector-gateway
+    const ep = new URL(config.apiEndpoint)
+    const response = await callConnector<any>({
+      connector: `syndication-${normalizedPlatform}`, baseUrl: ep.origin, path: ep.pathname, method: "POST",
+      auth: { style: "bearer", token: config.apiKey! }, body: listingPayload,
     })
 
     if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`[v0] ${platformName} API error:`, errorText)
+      console.error(`[v0] ${platformName} API error:`, response.error)
       return { success: false, error: `API error: ${response.status}` }
     }
 
-    const result = await response.json()
-    
-    return { 
-      success: true, 
-      listingUrl: result.listing_url || result.url || `https://${normalizedPlatform}.com/listing/${result.id}` 
+    const result = response.data ?? {}
+
+    return {
+      success: true,
+      listingUrl: result.listing_url || result.url || `https://${normalizedPlatform}.com/listing/${result.id}`
     }
   } catch (error) {
     console.error(`[v0] Error syncing to ${platformName}:`, error)
@@ -160,11 +158,10 @@ export async function removePlatformListing(
     // Extract listing ID from URL
     const listingId = listingUrl.split("/").pop()
 
-    const response = await fetch(`${config.apiEndpoint}/${listingId}`, {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-      },
+    const ep = new URL(config.apiEndpoint)
+    const response = await callConnector({
+      connector: `syndication-${normalizedPlatform}`, baseUrl: ep.origin, path: `${ep.pathname}/${listingId}`, method: "DELETE",
+      auth: { style: "bearer", token: config.apiKey! },
     })
 
     return { success: response.ok }
@@ -190,13 +187,10 @@ export async function updatePlatformListing(
   try {
     const listingId = listingUrl.split("/").pop()
 
-    const response = await fetch(`${config.apiEndpoint}/${listingId}`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(updates),
+    const ep = new URL(config.apiEndpoint)
+    const response = await callConnector({
+      connector: `syndication-${normalizedPlatform}`, baseUrl: ep.origin, path: `${ep.pathname}/${listingId}`, method: "PATCH",
+      auth: { style: "bearer", token: config.apiKey! }, body: updates,
     })
 
     return { success: response.ok }

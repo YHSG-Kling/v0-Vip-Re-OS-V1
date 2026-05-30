@@ -5,7 +5,6 @@ import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { revalidatePath } from 'next/cache'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import { createVideoProject } from '@/lib/services/video-generation.service'
 
 // ============================================
 // MAIN: GENERATE LISTING VIDEO
@@ -420,7 +419,7 @@ export async function trackVideoView(projectId: string) {
 
   await supabase.rpc('increment', {
     table_name: 'ai_video_projects',
-    id_value: projectId,
+    row_id: projectId,
     column_name: 'view_count',
   })
 }

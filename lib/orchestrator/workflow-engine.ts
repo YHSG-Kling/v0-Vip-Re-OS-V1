@@ -21,6 +21,7 @@ async function advanceListingStage(listingId: string, stage: string): Promise<{ 
 // Lightweight task & contact helpers — direct Supabase writes, no app/actions dependency
 async function createTask(params: {
   title: string
+  brokerageId: string
   description?: string
   dueDate?: string
   assignedTo?: string
@@ -29,16 +30,18 @@ async function createTask(params: {
   priority?: string
 }) {
   const supabase = await createClient()
+  // tasks.brokerage_id and tasks.assigned_to_agent_id are both NOT NULL.
+  // Live column is assigned_to_agent_id (not assigned_to).
   const { data } = await supabase.from("tasks").insert({
+    brokerage_id: params.brokerageId,
     title: params.title,
     description: params.description,
     due_date: params.dueDate,
-    assigned_to: params.assignedTo,
+    assigned_to_agent_id: params.assignedTo,
     contact_id: params.contactId,
     listing_id: params.listingId,
     priority: params.priority || "medium",
     status: "pending",
-    created_at: new Date().toISOString(),
   }).select().single()
   return { success: true, task: data }
 }
@@ -136,7 +139,7 @@ export class WorkflowOrchestrator {
     }
   }
 
-  private async executeStep(executionId: string, step: WorkflowStep, context: any) {
+  private async executeStep(executionId: string, step: WorkflowStep, context: any): Promise<unknown> {
     const supabase = await this.getSupabase()
 
     // Log step start
@@ -216,21 +219,28 @@ export class WorkflowOrchestrator {
     switch (action) {
       case "send_email":
         return await sendEmail({
+          to: context.contactEmail ?? context.email ?? "",
+          subject: params.subject ?? "",
+          html: params.body ?? params.html ?? "",
           contactId: context.contactId,
-          subject: params.subject,
-          body: params.body,
-          templateId: params.template,
         })
 
       case "send_sms":
         return await sendSMS({
+          to: context.contactPhone ?? context.phone ?? "",
+          message: params.message ?? "",
           contactId: context.contactId,
-          message: params.message,
-          templateId: params.template,
         })
 
       case "create_task":
+        if (!context.brokerageId) {
+          return { success: false, error: "create_task: workflow context missing brokerageId" }
+        }
+        if (!context.agentId) {
+          return { success: false, error: "create_task: workflow context missing agentId (tasks.assigned_to_agent_id is NOT NULL)" }
+        }
         return await createTask({
+          brokerageId: context.brokerageId,
           title: params.title,
           description: params.description,
           dueDate: params.dueDate || this.addDays(new Date(), params.due_days || 1),
@@ -242,9 +252,9 @@ export class WorkflowOrchestrator {
 
       case "generate_video":
         return await generateVideoScript({
-          contactId: context.contactId,
-          videoType: params.type,
-          context: params.context || {},
+          content_type: "video_script",
+          contact_id: context.contactId,
+          custom_prompt: params.context ?? "",
         })
 
       case "update_contact":

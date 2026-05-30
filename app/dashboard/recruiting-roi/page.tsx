@@ -48,18 +48,18 @@ export default async function RecruitingROIPage() {
     yearlyAnalytics,
   ] = await Promise.all([
     getRecruitingROISummary(profile.brokerage_id),
-    getRecruitROIByRecruit(profile.brokerage_id, 100),
+    getRecruitROIByRecruit(profile.brokerage_id),
     getRecruitingCostBreakdown(profile.brokerage_id),
     getBreakEvenAnalysis(profile.brokerage_id),
-    getRecruitingAnalyticsByYear(profile.brokerage_id),
+    getRecruitingAnalyticsByYear(profile.brokerage_id, "").catch(() => []),
   ])
 
-  const totalInvested = roiSummary?.total_recruiting_cost || 0
-  const totalGenerated = roiSummary?.lifetime_brokerage_net || 0
-  const avgROI = roiSummary?.avg_roi_pct || 0
-  const avgBreakEven = breakEvenAnalysis?.avg_breakeven_months || 0
-  const activeRecruits = recruitROIs?.filter(r => r.agents?.status === "active").length || 0
-  const profitableRecruits = recruitROIs?.filter(r => (r.roi_pct || 0) > 0).length || 0
+  const totalInvested = roiSummary?.totalInvested || 0
+  const totalGenerated = roiSummary?.totalGenerated || 0
+  const avgROI = roiSummary?.avgROI || 0
+  const avgBreakEven = breakEvenAnalysis?.avgBreakEvenMonth || 0
+  const activeRecruits = roiSummary?.activeRecruits || 0
+  const profitableRecruits = roiSummary?.profitableRecruits || 0
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -201,7 +201,7 @@ export default async function RecruitingROIPage() {
 
         {/* Tab 3: By Recruit */}
         <TabsContent value="cohorts" className="space-y-4">
-          <RecruitROITable data={recruitROIs} brokerageId={profile.brokerage_id} />
+          <RecruitROITable data={recruitROIs || []} />
         </TabsContent>
 
         {/* Tab 4: Cost Management */}
@@ -215,16 +215,15 @@ export default async function RecruitingROIPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
-                    {costBreakdown?.map((item: any) => (
-                      <div key={item.cost_type} className="flex justify-between items-center p-3 border rounded-lg">
+                    {costBreakdown && Object.entries(costBreakdown).map(([costType, amount]) => (
+                      <div key={costType} className="flex justify-between items-center p-3 border rounded-lg">
                         <div>
-                          <p className="font-medium capitalize">{item.cost_type.replace("_", " ")}</p>
-                          <p className="text-xs text-muted-foreground">{item.count} entries</p>
+                          <p className="font-medium capitalize">{costType.replace("_", " ")}</p>
                         </div>
                         <div className="text-right">
-                          <p className="font-semibold">${(item.total / 100).toLocaleString()}</p>
+                          <p className="font-semibold">${((amount as number) / 100).toLocaleString()}</p>
                           <p className="text-xs text-muted-foreground">
-                            {((item.total / totalInvested) * 100).toFixed(0)}% of total
+                            {totalInvested > 0 ? (((amount as number) / totalInvested) * 100).toFixed(0) : 0}% of total
                           </p>
                         </div>
                       </div>

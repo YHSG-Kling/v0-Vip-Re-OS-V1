@@ -483,7 +483,7 @@ function LeadRow({
                 size="sm"
                 variant="ghost"
                 className="h-7 text-xs text-blue-600 hover:text-blue-800"
-                onClick={() => router.push(`/crm?contactId=${contactId}`)}
+                onClick={() => router.push(`/crm?contact=${contactId}`)}
               >
                 View Contact
               </Button>

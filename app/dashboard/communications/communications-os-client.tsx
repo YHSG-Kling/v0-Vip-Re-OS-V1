@@ -313,7 +313,7 @@ export function CommunicationsOSClient({
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
           {/* Response Pressure Panel */}
           <ResponsePressurePanel
-            items={pressureItems}
+            items={pressureItems as any}
             onReply={handleReply}
             onGenerateResponse={handleGenerateResponse}
             onMarkRead={handleMarkRead}
@@ -346,7 +346,7 @@ export function CommunicationsOSClient({
               contactName={selectedConversation.contactName}
               conversationId={selectedConversation.conversationId}
               channel={getSendableChannel(selectedConversation.channel)}
-              templates={templates}
+              templates={templates as any}
               onSendMessage={handleSendMessage}
               onAddToSequence={handleAddToSequence}
               onScheduleFollowUp={handleScheduleFollowUp}
@@ -359,8 +359,9 @@ export function CommunicationsOSClient({
               sessionId={selectedConversation.conversationId}
               contactId={selectedConversation.contactId}
               agentId={agentId}
+              brokerageId={brokerageId}
               incomingMessage={replyCoachMessage || selectedConversation.preview}
-              channel={getSendableChannel(selectedConversation.channel)}
+              channel={getSendableChannel(selectedConversation.channel) as any}
               contactName={selectedConversation.contactName}
               onApplyResponse={handleApplyResponse}
               onSendResponse={async (response) => {

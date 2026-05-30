@@ -1,11 +1,14 @@
 'use server'
 
+import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import {
   evaluatePromotionEligibility,
   promoteRawRecordToLead,
   triggerInitialScoring,
 } from '@/lib/lead-promotion'
+
+const PROMOTE_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"]
 
 interface PromotionResponse {
   success: boolean
@@ -31,11 +34,45 @@ interface PromotionResponse {
  */
 export async function promoteLead(
   rawRecordId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session
 ): Promise<PromotionResponse> {
+  // Auth gate — promotion writes a leads row + triggers downstream scoring +
+  // platform distribution. Previously trusted caller-supplied brokerageId,
+  // so any signed-in user could promote raw records into other brokerages.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) {
+    return { success: false, message: "Unauthorized", stage: "auth" }
+  }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return { success: false, message: "Unauthorized", stage: "auth" }
+  }
+  if (!PROMOTE_ROLES.includes(callerRow.user_type ?? "")) {
+    return { success: false, message: "Only brokers and admins can promote leads", stage: "auth" }
+  }
+  const brokerageId = callerRow.brokerage_id
+
   const supabase = createServiceClient()
 
   try {
+    // Verify the raw record belongs to caller's brokerage
+    const { data: rawRow } = await supabase
+      .from("raw_scraped_leads")
+      .select("brokerage_id")
+      .eq("id", rawRecordId)
+      .maybeSingle()
+    if (!rawRow) {
+      return { success: false, message: "Raw record not found", stage: "auth" }
+    }
+    if (rawRow.brokerage_id !== brokerageId) {
+      return { success: false, message: "Forbidden", stage: "auth" }
+    }
+
     // Step 1: Evaluate eligibility (consumes existing dedup + enrichment outputs)
     const eligibility = await evaluatePromotionEligibility(rawRecordId)
 
@@ -116,6 +153,30 @@ export async function promoteLead(
       triggerInitialScoring(promotion.leadId).catch((err) => {
         console.error(`[v0] Scoring trigger failed for ${promotion.leadId}:`, err)
       })
+    }
+
+    // Step 5: Engine 1 — Platform Distribution
+    // Only fires for platform-origin leads. Brokerage-scraped leads stay with
+    // their owning brokerage and skip distribution. Awaits to ensure the lead
+    // has a brokerage_id before any downstream ISA work attempts to read it.
+    if (promotion.leadId) {
+      try {
+        const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
+        const distResult = await distributePlatformLead({ leadId: promotion.leadId })
+        if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
+          await supabase.from('activities').insert({
+            brokerage_id: brokerageId,
+            activity_type: 'lead_distribution_failed',
+            title: 'Platform lead distribution failed',
+            description: distResult.reason,
+            notes: JSON.stringify({ lead_id: promotion.leadId, reason: distResult.reason }),
+            status: 'completed',
+            created_at: new Date().toISOString(),
+          })
+        }
+      } catch (err: any) {
+        console.error(`[v0] Distribution engine failed for ${promotion.leadId}:`, err)
+      }
     }
 
     return {

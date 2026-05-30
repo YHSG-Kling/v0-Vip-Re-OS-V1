@@ -45,7 +45,7 @@ export async function createTransactionMilestoneCalendarEvents(params: {
 
   // primary_timezone may be present as an untyped additional field on settings
   const timezone: string =
-    (settings as Record<string, unknown>)['primary_timezone'] as string | undefined
+    ((settings as unknown) as Record<string, unknown>)['primary_timezone'] as string | undefined
     ?? 'UTC'
 
   // Build milestone array — only include dates that were provided

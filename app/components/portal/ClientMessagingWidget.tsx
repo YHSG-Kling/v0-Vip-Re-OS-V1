@@ -33,6 +33,20 @@ const isValidUUID = (str: string): boolean => {
   return uuidRegex.test(str)
 }
 
+// client_portal_messages stores direction/body; map to the widget's view model.
+function mapRow(m: any, agentName: string): Message {
+  const fromClient = m.direction === "client_to_agent"
+  return {
+    id: m.id,
+    sender_type: fromClient ? "client" : "agent",
+    sender_name: fromClient ? "You" : agentName,
+    message_content: m.body,
+    message_type: "text",
+    created_at: m.created_at,
+    read_at: m.read_at ?? null,
+  }
+}
+
 const getDemoMessages = (agentName: string): Message[] => [
   {
     id: "demo-1",
@@ -109,8 +123,8 @@ export function ClientMessagingWidget({
           table: "client_portal_messages",
           filter: `contact_id=eq.${contactId}`,
         },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message])
+        (payload: any) => {
+          setMessages((prev) => [...prev, mapRow(payload.new, agentName)])
         },
       )
       .subscribe()
@@ -138,11 +152,11 @@ export function ClientMessagingWidget({
         .order("created_at", { ascending: true })
 
       if (error) throw error
-      setMessages(data || [])
+      setMessages((data || []).map((m: any) => mapRow(m, agentName)))
 
-      // Mark unread messages as read
+      // Mark unread agent→client messages as read
       if (data && data.length > 0) {
-        const unreadIds = data.filter((m) => m.sender_type !== "client" && !m.read_at).map((m) => m.id)
+        const unreadIds = data.filter((m: any) => m.direction === "agent_to_client" && !m.read_at).map((m: any) => m.id)
 
         if (unreadIds.length > 0) {
           await supabase
@@ -194,12 +208,20 @@ export function ClientMessagingWidget({
     setSending(true)
     try {
       const supabase = createClient()
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("brokerage_id, agent_id")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (!contact?.brokerage_id || !contact?.agent_id) {
+        throw new Error("Unable to send message — contact not found")
+      }
       const { error } = await supabase.from("client_portal_messages").insert({
         contact_id: contactId,
-        sender_type: "client",
-        sender_name: "You",
-        message_content: newMessage.trim(),
-        message_type: "text",
+        brokerage_id: contact.brokerage_id,
+        agent_id: contact.agent_id,
+        direction: "client_to_agent",
+        body: newMessage.trim(),
       })
 
       if (error) throw error

@@ -59,7 +59,7 @@ export default async function PlatformOwnerOSPage() {
       adminStats={adminStats}
       systemHealth={systemHealth}
       billingMetrics={billingMetrics}
-      auditTrail={auditTrail}
+      auditTrail={(auditTrail as any)?.entries ?? []}
       brokerages={brokerages || []}
       integrations={integrations || []}
       automationErrors={automationErrorsData?.errors || []}

@@ -51,9 +51,21 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     throw new Error('Send time must be in the future')
   }
 
-  // Get recipient count (placeholder - replace with actual segment logic)
-  // This would normally query contacts based on segment filters
-  const recipientCount = 100 // TODO: Calculate based on segment
+  // Count contacts matching the recipient segment filters
+  let countQuery = supabase
+    .from("contacts")
+    .select("id", { count: "exact", head: true })
+    .eq("brokerage_id", userData.brokerage_id)
+
+  if (input.recipientSegment.ZIP) {
+    countQuery = countQuery.eq("zip", input.recipientSegment.ZIP)
+  }
+  if (input.recipientSegment.role) {
+    countQuery = countQuery.eq("contact_type", input.recipientSegment.role)
+  }
+
+  const { count } = await countQuery
+  const recipientCount = count ?? 0
 
   // Create scheduled send record
   const { data: scheduled, error } = await supabase

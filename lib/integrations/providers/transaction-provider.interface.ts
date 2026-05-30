@@ -128,10 +128,49 @@ export interface UploadDocumentResponse {
   error?: string
 }
 
+// ─── Provider form library ──────────────────────────────────────────────────
+// Each provider hosts a library of pre-built forms (state association forms,
+// brokerage-published forms, NAR forms, etc.). The FormWizard picks BOTH from
+// the brokerage's uploaded storage AND from the configured provider's library.
+
+export interface ListFormsRequest {
+  /** Optional state filter — return only forms tagged for this state. */
+  stateCode?: string
+  /** Optional category filter — "offer" | "listing" | "addendum" | "disclosure" | "agency" */
+  category?: string
+  /** Provider-specific search query (form name contains). */
+  query?: string
+  /** Pagination — page size. Providers may cap this. Default 100. */
+  pageSize?: number
+}
+
+export interface ProviderForm {
+  /** Provider-internal form id (used at attach time). */
+  formId:   string
+  /** Human-readable name. */
+  name:     string
+  /** Issuing association (TAR, CAR, FAR, NAR, brokerage, ...) when known. */
+  issuer?:  string
+  /** Two-letter state code when the form is state-specific. */
+  stateCode?: string
+  /** Coarse-grained type. */
+  category?: "offer" | "listing" | "addendum" | "disclosure" | "agency" | "other"
+  /** Provider's own version label, useful for audit. */
+  version?: string
+  /** Optional URL the agent can preview before selecting. */
+  previewUrl?: string
+}
+
+export interface ListFormsResponse {
+  success: boolean
+  forms?:  ProviderForm[]
+  error?:  string
+}
+
 /**
  * Transaction Provider Interface
- * 
- * All providers must implement these 7 methods
+ *
+ * All providers must implement these 8 methods
  */
 export interface ITransactionProvider {
   /**
@@ -173,4 +212,11 @@ export interface ITransactionProvider {
    * Sync documents from provider to internal storage
    */
   syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse>
+
+  /**
+   * List forms available from the provider's library. The FormWizard merges
+   * these with the brokerage's uploaded storage forms so the agent can pick
+   * from either source.
+   */
+  listForms(request: ListFormsRequest): Promise<ListFormsResponse>
 }

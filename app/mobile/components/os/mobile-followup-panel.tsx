@@ -55,7 +55,7 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
 
   const handleCompleteTask = (taskId: string) => {
     startTransition(async () => {
-      const result = await completeActivity(taskId, noteContent || undefined)
+      const result = await completeActivity(taskId)
       if (result.success) {
         toast.success("Follow-up completed")
         setNoteContent("")

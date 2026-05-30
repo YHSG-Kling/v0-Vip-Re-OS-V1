@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Plus, Mail, Users, Truck, MessageSquare } from "lucide-react"
@@ -92,6 +93,22 @@ export function MailDashboard({ brokerageId }: MailDashboardProps) {
   const [activeTab, setActiveTab] = useState("campaigns")
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null)
 
+  // Wire `?campaign=<uuid>` from voice/Copilot stage_direct_mail_campaign tool.
+  // The Open → button on the chat result card lands the agent here with the
+  // staged campaign's id; we auto-select it and switch to the campaigns tab.
+  const searchParams = useSearchParams()
+  const campaignFromUrl = searchParams?.get("campaign") ?? null
+
+  useEffect(() => {
+    if (
+      campaignFromUrl &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(campaignFromUrl)
+    ) {
+      setSelectedCampaignId(campaignFromUrl)
+      setActiveTab("campaigns")
+    }
+  }, [campaignFromUrl])
+
   useEffect(() => {
     if (brokerageId) {
       loadCampaigns()
@@ -112,7 +129,8 @@ export function MailDashboard({ brokerageId }: MailDashboardProps) {
       const result = await getMailCampaigns(brokerageId)
       if (result.success && result.campaigns) {
         setCampaigns(result.campaigns)
-        if (result.campaigns.length > 0 && !selectedCampaignId) {
+        // Don't auto-select first campaign if URL specified one
+        if (result.campaigns.length > 0 && !selectedCampaignId && !campaignFromUrl) {
           setSelectedCampaignId(result.campaigns[0].id)
         }
       }

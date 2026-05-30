@@ -1,43 +1,44 @@
-import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 import { getAgentContext } from "@/lib/identity"
+import { aggregatePendingApprovals } from "@/lib/kernel/approval-queue-aggregator"
 
+/**
+ * Daily approval queue — unified across content channels.
+ *
+ * Previously this only queried approval_items (which nothing inserts into
+ * across the codebase, so the queue was empty). Refactored to aggregate
+ * from each canonical content table that already has a 'pending' approval
+ * column, so the staged content visible to the agent in /approvals matches
+ * what the canonical creators (createNewsletterCampaign, createEmailCampaign,
+ * generateAdCreative, etc.) actually produce.
+ *
+ * Sources (live schema verified):
+ *   - newsletter_campaigns.approval_status='pending'
+ *   - email_campaigns.approval_status='pending'
+ *   - ad_creative_variations.approval_status='draft' (pre-launch review)
+ *   - video_snippets.approval_status='pending'
+ *   - blog_posts.publish_status='draft'
+ *   - approval_items.status='pending' (legacy table — still surfaced)
+ *
+ * Each item carries a prefixed id (nl:/em:/acv:/vsn:/bp:) so the
+ * approve/reject routes know which source table to cascade to.
+ */
 export async function GET() {
   try {
-    const { agentId, brokerageId } = await getAgentContext()
-    const supabase = await createClient()
+    const { agentId, brokerageId, userType } = await getAgentContext()
 
-    // If user has no brokerage association, return empty results
     if (!brokerageId) {
       return NextResponse.json({ items: [], total: 0 })
     }
 
-    // Build query - filter by agent_id if user is an agent, otherwise show brokerage-wide for admins/brokers
-    let query = supabase
-      .from("approval_items")
-      .select("*", { count: "exact" })
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "pending")
-      .order("submitted_at", { ascending: false })
+    // Brokers / admins see brokerage-wide; agents see their own only.
+    const agentScopeId = userType === "agent" && agentId ? agentId : null
 
-    // If user is an agent, only show their approvals
-    if (agentId) {
-      query = query.eq("agent_id", agentId)
-    }
+    const items = await aggregatePendingApprovals(brokerageId, agentScopeId)
 
-    const { data, error, count } = await query
-
-    if (error) {
-      console.error("[v0] Error fetching pending approvals:", error)
-      return NextResponse.json({ error: "Failed to fetch pending approvals" }, { status: 500 })
-    }
-
-    return NextResponse.json({
-      items: data || [],
-      total: count || 0,
-    })
+    return NextResponse.json({ items, total: items.length })
   } catch (error) {
-    console.error("[v0] Unexpected error in pending approvals:", error)
+    console.error("[Approvals Pending] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

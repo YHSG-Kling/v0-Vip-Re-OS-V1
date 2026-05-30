@@ -42,16 +42,16 @@ export default async function PayoutsPage() {
     redirect('/dashboard')
   }
 
-  const queueData = commissionQueueResult.data
+  const queueData = commissionQueueResult.data as any
 
   // Extract data from kernel result
-  const commissionsData = queueData.commissions
-  const agentNameMap = queueData.agentNameMap
-  const totalAgentPayouts = queueData.totalAgentPayouts
-  const totalBrokerageNet = queueData.totalBrokerageNet
-  const pendingPayouts = queueData.pendingPayouts
-  const paidPayouts = queueData.paidPayouts
-  const agentCount = queueData.agentCount
+  const commissionsData = queueData?.commissions ?? (Array.isArray(commissionQueueResult.data) ? commissionQueueResult.data : [])
+  const agentNameMap: Record<string, string> = queueData?.agentNameMap ?? {}
+  const totalAgentPayouts: number = queueData?.totalAgentPayouts ?? 0
+  const totalBrokerageNet: number = queueData?.totalBrokerageNet ?? 0
+  const pendingPayouts: any[] = queueData?.pendingPayouts ?? (commissionsData as any[]).filter((c: any) => c.status !== 'paid')
+  const paidPayouts: any[] = queueData?.paidPayouts ?? (commissionsData as any[]).filter((c: any) => c.status === 'paid')
+  const agentCount: number = queueData?.agentCount ?? 0
 
   function agentName(c: any) {
     return agentNameMap[c.agent_id] || `Agent ${(c.agent_id ?? '').slice(0, 8)}`
@@ -143,8 +143,15 @@ export default async function PayoutsPage() {
 
       {/* Payout Readiness Panel */}
       <PayoutReadinessPanel
-        brokerageId={profile.brokerage_id}
-        agentCount={agentCount}
+        files={[]}
+        summary={{
+          ready: 0,
+          blocked: 0,
+          pendingReview: pendingPayouts.length,
+          processing: 0,
+          totalReady: totalAgentPayouts,
+          totalBlocked: 0,
+        }}
       />
 
       {/* Commission Records */}

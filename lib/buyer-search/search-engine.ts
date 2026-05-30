@@ -36,6 +36,12 @@ export interface BuyerSearchResult {
   features: string[] | null
   internal_match_score: number
   internal_confidence: 'low' | 'medium' | 'high'
+  /** Where this listing came from. 'platform' = our DB; 'rentcast'/'idx' = external feed (display-only) */
+  source?: 'platform' | 'rentcast' | 'idx'
+  /** External feed identifier when source !== 'platform' (no UUID; do not use as FK) */
+  external_id?: string
+  /** Display photo URL for external listings (may expire — re-fetch on access) */
+  photo_url?: string
 }
 
 export interface BuyerSearchParams {
@@ -75,7 +81,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // 2. Fetch contact + conversation context
     const { data: contact } = await supabase
       .from('contacts')
-      .select('id, first_name, last_name, notes, created_at')
+      .select('id, brokerage_id, first_name, last_name, notes, created_at')
       .eq('id', contactId)
       .single()
 
@@ -127,13 +133,63 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     if (filters.states?.length)  q = q.in('state', filters.states)
     if (filters.propertyTypes?.length) q = q.in('property_type', filters.propertyTypes)
 
-    const { data: listings, error: listingsError } = await q
+    const { data: platformListings, error: listingsError } = await q
       .order('created_at', { ascending: false })
       .limit(200)
 
     if (listingsError) return { success: false, error: 'Failed to fetch listings' }
 
-    if (!listings || listings.length === 0) {
+    // 4b. Augment with external listings (Rentcast / IDX) when configured.
+    // External listings are display-only and tagged so the UI can route the
+    // explain-match modal differently. They scored alongside platform listings.
+    const externalListings: any[] = []
+    let externalSource: 'rentcast' | 'idx' | 'none' = 'none'
+    try {
+      const { searchExternalListings } = await import('@/lib/property/external-listings-search')
+      const ext = await searchExternalListings({
+        brokerageId: contact.brokerage_id ?? '',
+        city: filters.cities?.[0],
+        state: filters.states?.[0],
+        bedroomsMin: filters.bedrooms?.min,
+        bedroomsMax: filters.bedrooms?.max,
+        bathroomsMin: filters.bathrooms?.min,
+        priceMin: filters.priceRange?.min,
+        priceMax: filters.priceRange?.max,
+        propertyType: filters.propertyTypes?.[0],
+        limit: 50,
+      })
+      if (ext.source !== 'none' && ext.listings.length > 0) {
+        externalSource = ext.source
+        for (const e of ext.listings) {
+          externalListings.push({
+            // synthetic id — never used as a UUID FK
+            id: `ext_${e.source}_${e.externalId}`,
+            price: e.price,
+            bedrooms: e.bedrooms,
+            bathrooms: e.bathrooms,
+            square_feet: e.squareFeet,
+            property_type: e.propertyType,
+            city: e.city,
+            state: e.state,
+            zip: e.zip,
+            features: [],
+            status: 'active',
+            created_at: new Date().toISOString(),
+            __external: true,
+            __source: e.source,
+            __external_id: e.externalId,
+            __photo_url: e.photoUrl,
+            __address: e.address,
+          })
+        }
+      }
+    } catch {
+      // External augmentation is best-effort; never fail the search
+    }
+
+    const listings = [...(platformListings ?? []), ...externalListings]
+
+    if (listings.length === 0) {
       return {
         success: true,
         results: [],
@@ -172,6 +228,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // 6. Generate buyer-friendly explanations
     const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
       const exp = generateMatchExplanation(listing, enrichedIntent, persona, matchScore)
+      const isExternal = (listing as any).__external === true
       return {
         listing_id: listing.id,
         headline: exp.headline,
@@ -187,17 +244,24 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         features: listing.features,
         internal_match_score: matchScore,
         internal_confidence: confidence,
+        source: isExternal ? ((listing as any).__source as 'rentcast' | 'idx') : 'platform',
+        external_id: isExternal ? (listing as any).__external_id : undefined,
+        photo_url: isExternal ? (listing as any).__photo_url : undefined,
       }
     })
 
-    // 7. Log signals
+    // 7. Log signals — only for platform listings (external listings have
+    // synthetic IDs that aren't UUIDs and don't FK back to listings table)
     if (logSignals && results.length > 0) {
-      await logBatchBuyerSearchMatches(
-        contactId,
-        results.map(r => ({ listingId: r.listing_id, matchScore: r.internal_match_score, confidenceLevel: r.internal_confidence })),
-        enrichedIntent,
-        persona
-      )
+      const platformResults = results.filter(r => r.source === 'platform' || !r.source)
+      if (platformResults.length > 0) {
+        await logBatchBuyerSearchMatches(
+          contactId,
+          platformResults.map(r => ({ listingId: r.listing_id, matchScore: r.internal_match_score, confidenceLevel: r.internal_confidence })),
+          enrichedIntent,
+          persona
+        )
+      }
       await appendBuyerSearchPreferences(contactId, enrichedIntent, persona)
     }
 

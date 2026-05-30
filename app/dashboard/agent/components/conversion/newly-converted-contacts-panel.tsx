@@ -222,7 +222,7 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <Link
-                    href={`/contacts/${contact.contact_id}`}
+                    href={`/crm/contacts/${contact.contact_id}`}
                     className="font-medium text-sm hover:underline truncate"
                   >
                     {contact.first_name} {contact.last_name}
@@ -281,7 +281,7 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
                   <Star className="h-3 w-3 inline mr-1 text-amber-500" />
                   Next: {contact.next_action}
                 </span>
-                <Link href={`/contacts/${contact.contact_id}`}>
+                <Link href={`/crm/contacts/${contact.contact_id}`}>
                   <Button size="sm" variant="ghost" className="h-6 text-xs">
                     View Details
                     <ArrowRight className="h-3 w-3 ml-1" />

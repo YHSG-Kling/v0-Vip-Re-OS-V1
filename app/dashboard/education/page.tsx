@@ -6,7 +6,7 @@ import { redirect } from "next/navigation"
 
 export default async function EducationPage() {
   const supabase = await createClient()
-  const { data: user } = await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
     redirect("/login")
@@ -15,7 +15,7 @@ export default async function EducationPage() {
   const { data: profile } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
-    .eq("id", user.id)
+    .eq("id", user?.id ?? "")
     .maybeSingle()
 
   if (!profile?.brokerage_id || profile.user_type !== "admin") {

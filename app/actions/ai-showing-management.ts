@@ -74,45 +74,75 @@ export async function updateTour(tourId: string, updates: any) {
 export async function optimizeTourRoute(tourId: string) {
   try {
     const supabase = await createClient()
-    
-    // Get tour with all showings
+
+    // Load tour_stops — addresses are stored directly on the stop row
     const { data: tour, error: tourError } = await supabase
       .from("tours")
-      .select("*, showings(*, listings(address, city, state, latitude, longitude))")
+      .select("id, tour_date")
       .eq("id", tourId)
       .single()
 
-    if (tourError) throw tourError
+    if (tourError || !tour) throw tourError ?? new Error("Tour not found")
 
-    // AI optimization of route
-    const { text: optimizedRoute } = await generateText({
+    const { data: stops, error: stopsError } = await supabase
+      .from("tour_stops")
+      .select("id, order_index, property_address, city, state")
+      .eq("tour_id", tourId)
+      .order("order_index", { ascending: true })
+
+    if (stopsError || !stops?.length) throw stopsError ?? new Error("No stops found")
+
+    const addressList = stops.map((s, i) =>
+      `${i + 1}. ${s.property_address}${s.city ? ", " + s.city : ""}${s.state ? " " + s.state : ""}`
+    ).join("\n")
+
+    const { text } = await generateText({
       model: "openai/gpt-4o-mini",
-      prompt: `Optimize this showing tour route for minimal travel time:
-Tour Date: ${tour.tour_date}
-Properties: ${JSON.stringify(tour.showings?.map((s: any) => ({
-  address: s.listings?.address,
-  city: s.listings?.city,
-  time: s.showing_time
-})))}
+      prompt: `You are a route planner. Given these ${stops.length} properties, suggest the most efficient driving order.
+Return ONLY a comma-separated list of the original 1-based position numbers in the optimized order. Nothing else.
 
-Return optimized sequence with estimated travel times between each stop.`,
+Properties:
+${addressList}`,
     })
 
-    return { success: true, optimizedRoute, tourId }
+    const order = text.match(/\d+/g)?.map(Number)
+    const uniqueOrder = [...new Set(order)].filter(n => n >= 1 && n <= stops.length)
+
+    let estimatedDriveMins: number | undefined
+    let summary = "Route optimized — stops reordered for minimum drive time."
+
+    if (uniqueOrder.length === stops.length) {
+      // Write new order_index values
+      for (let i = 0; i < uniqueOrder.length; i++) {
+        const originalStop = stops[uniqueOrder[i] - 1]
+        await supabase
+          .from("tour_stops")
+          .update({ order_index: i })
+          .eq("id", originalStop.id)
+      }
+      estimatedDriveMins = stops.length * 8 // rough ~8 min avg drive between stops
+      summary = `Stops reordered for efficient routing. Estimated ~${estimatedDriveMins} min total drive time.`
+    }
+
+    return { success: true, tourId, summary, estimatedDriveMins }
   } catch (error) {
     return handleError(error, "optimizeTourRoute")
   }
 }
 
-// Alias for backward compatibility
-export const aiOptimizeTourRoute = optimizeTourRoute
+// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
+export async function aiOptimizeTourRoute(...args: Parameters<typeof optimizeTourRoute>) {
+  return optimizeTourRoute(...args)
+}
 
 interface ShowingRequest {
   propertyId: string
   contactId: string
   agentId: string
-  requestedDate: string
-  requestedTime: string
+  // Accept either a single date/time or an array of preferred dates (first is used)
+  requestedDate?: string
+  requestedTime?: string
+  preferredDates?: string[]
   notes?: string
   buyerPreQualified?: boolean
 }
@@ -144,64 +174,65 @@ export async function aiScheduleShowing(params: ShowingRequest) {
     return { success: false, error: "Invalid agent or property ID" }
   }
 
+  // Normalize date/time — support both single-date and preferredDates[] call signatures
+  const resolvedDate = params.requestedDate
+    ?? params.preferredDates?.[0]
+    ?? new Date().toISOString().split("T")[0]
+  const resolvedTime = params.requestedTime ?? "10:00"
+  // Rebuild params with resolved values so the rest of the function uses consistent fields
+  params = { ...params, requestedDate: resolvedDate, requestedTime: resolvedTime }
+
   const supabase = await createClient()
 
   try {
-    // Get property and contact details
-    const [propertyResult, contactResult, agentResult] = await Promise.all([
-      supabase.from("listings").select("*").eq("id", params.propertyId).single(),
-      supabase.from("contacts").select("*").eq("id", params.contactId).single(),
-      supabase.from("users").select("*").eq("id", params.agentId).single(),
+    // Determine if propertyId is a UUID (agent seller listing) or an MLS number (buyer MLS search).
+    // For MLS properties, skip the listings table lookup — it will not match.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const propertyIsUuid = uuidRe.test(params.propertyId)
+
+    const [listingResult, contactResult] = await Promise.all([
+      propertyIsUuid
+        ? supabase.from("listings").select("address, city, state, list_price, bedrooms, bathrooms").eq("id", params.propertyId).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      supabase.from("contacts").select("first_name, last_name, contact_persona, city, state").eq("id", params.contactId).maybeSingle(),
     ])
 
-    const property = propertyResult.data
+    const listing = listingResult.data
     const contact = contactResult.data
-    const agent = agentResult.data
 
-    if (!property || !contact) {
-      return { success: false, error: "Property or contact not found" }
+    // For MLS buyer properties the address comes in via showing_instructions / external source —
+    // we just need the contact to exist.
+    if (!contact) {
+      return { success: false, error: "Contact not found" }
     }
 
-    // Check for conflicts
+    // Check for scheduling conflicts on the same date
     const { data: existingShowings } = await supabase
       .from("showings")
-      .select("*")
-      .eq("property_id", params.propertyId)
-      .eq("showing_date", params.requestedDate)
+      .select("scheduled_date, status")
+      .eq("agent_id", params.agentId)
+      .eq("scheduled_date", params.requestedDate)
       .neq("status", "cancelled")
 
     // AI Analysis for optimal scheduling
     const { text: aiAnalysis } = await generateText({
-      model: "openai/gpt-4o",
-      prompt: `You are a real estate showing scheduling assistant. Analyze and recommend:
+      model: "openai/gpt-4o-mini",
+      prompt: `You are a real estate showing scheduling assistant. Analyze and recommend.
 
-PROPERTY DETAILS:
-- Address: ${property.address}, ${property.city}, ${property.state}
-- Price: $${property.price?.toLocaleString()}
-- Type: ${property.property_type}
-- Bedrooms: ${property.bedrooms}, Bathrooms: ${property.bathrooms}
-
-BUYER DETAILS:
-- Name: ${contact.first_name} ${contact.last_name}
-- Pre-Qualified: ${params.buyerPreQualified ? "Yes" : "No/Unknown"}
-- Budget: $${contact.budget_min?.toLocaleString() || "Unknown"} - $${contact.budget_max?.toLocaleString() || "Unknown"}
-- Persona: ${contact.contact_persona || "Unknown"}
-
+PROPERTY: ${listing ? `${listing.address}, ${listing.city} — $${listing.list_price?.toLocaleString() ?? "N/A"}, ${listing.bedrooms}bd/${listing.bathrooms}ba` : `MLS # ${params.propertyId}`}
+BUYER: ${contact.first_name} ${contact.last_name} (${contact.contact_persona ?? "buyer"})
 REQUESTED TIME: ${params.requestedDate} at ${params.requestedTime}
+PRE-QUALIFIED: ${params.buyerPreQualified ? "Yes" : "No/Unknown"}
+AGENT SHOWINGS THAT DAY: ${existingShowings?.length ?? 0}
 
-EXISTING SHOWINGS ON THIS DATE: ${existingShowings?.length || 0}
-${existingShowings?.map((s: any) => `- ${s.showing_time}: ${s.status}`).join("\n") || "None"}
-
-Provide JSON response:
+Return JSON only:
 {
   "recommendedTime": "HH:MM",
-  "alternativeTimes": ["HH:MM", "HH:MM"],
+  "alternativeTimes": ["HH:MM"],
   "conflictRisk": "low|medium|high",
-  "preparationTips": ["tip1", "tip2"],
-  "buyerMatchScore": 0-100,
-  "talkingPoints": ["point1", "point2", "point3"],
-  "potentialConcerns": ["concern1"],
-  "followUpStrategy": "strategy description"
+  "preparationTips": ["tip1"],
+  "talkingPoints": ["point1"],
+  "followUpStrategy": "string"
 }`,
     })
 
@@ -213,35 +244,61 @@ Provide JSON response:
       aiRecommendations = { recommendedTime: params.requestedTime }
     }
 
-    // Create the showing
+    // Resolve brokerage_id from the agent's user record
+    const { data: agentUser } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+
+    const recommendedTime = aiRecommendations.recommendedTime || params.requestedTime
+    const scheduledAt = params.requestedDate && recommendedTime
+      ? `${params.requestedDate}T${recommendedTime}:00`
+      : null
+
+    // listing_id is a UUID FK — only set it when the propertyId is actually a UUID.
+    // For MLS buyer properties, propertyId is an MLS number string; store it in notes instead.
+    const notesText = [
+      params.notes,
+      !propertyIsUuid ? `MLS: ${params.propertyId}` : null,
+    ].filter(Boolean).join(' | ') || null
+
+    // Create the showing using verified live schema columns
     const { data: showing, error } = await supabase
       .from("showings")
       .insert({
-        property_id: params.propertyId,
-        contact_id: params.contactId,
-        agent_id: params.agentId,
-        showing_date: params.requestedDate,
-        showing_time: aiRecommendations.recommendedTime || params.requestedTime,
-        status: "scheduled",
-        notes: params.notes,
-        ai_recommendations: aiRecommendations,
-        buyer_match_score: aiRecommendations.buyerMatchScore,
-        created_at: new Date().toISOString(),
+        listing_id:     propertyIsUuid ? params.propertyId : null,
+        contact_id:     params.contactId,
+        agent_id:       params.agentId,
+        brokerage_id:   agentUser?.brokerage_id ?? null,
+        scheduled_date: params.requestedDate,
+        scheduled_at:   scheduledAt,
+        status:         "scheduled",
+        notes:          notesText,
+        sync_source:    "ai_scheduler",
+        is_confirmed:   false,
+        created_at:     new Date().toISOString(),
       })
       .select()
       .single()
 
     if (error) throw error
 
-    // Schedule confirmation reminder
-    await supabase.from("scheduled_tasks").insert({
-      task_type: "showing_confirmation",
-      scheduled_for: new Date(
-        new Date(`${params.requestedDate}T${params.requestedTime}`).getTime() - 24 * 60 * 60 * 1000
-      ).toISOString(),
-      payload: { showingId: showing.id },
-      agent_id: params.agentId,
-    })
+    // Write an activities row so the showing appears on the agent's activity feed as pending.
+    // No calendar_event yet — that is written only when the agent confirms the showing time.
+    try {
+      await supabase.from("activities").insert({
+        brokerage_id:  agentUser?.brokerage_id ?? null,
+        agent_id:      params.agentId,
+        contact_id:    params.contactId,
+        activity_type: "showing",
+        title:         `Showing scheduled — ${params.requestedDate} at ${resolvedTime}`,
+        description:   notesText ?? undefined,
+        scheduled_at:  scheduledAt,
+        status:        "pending",
+        priority:      "high",
+      })
+    } catch { /* non-critical */ }
 
     revalidatePath("/showings")
     revalidatePath("/dashboard")

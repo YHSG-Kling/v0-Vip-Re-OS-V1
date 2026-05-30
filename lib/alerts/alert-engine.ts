@@ -177,7 +177,7 @@ export async function runAlertEngine(brokerageId: string): Promise<AlertEngineRe
         channels_used:      [],
         idx_api_called:     false,
         error_message:      err?.message ?? "unknown",
-      }).catch(() => {})
+      })
     }
   }
 

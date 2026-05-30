@@ -104,7 +104,7 @@ export default function HealthTab({ chartData, insights }: HealthTabProps) {
               <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
               <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
               <Tooltip
-                formatter={(value: number, name: string) => [`${value}%`, name]}
+                formatter={((value: number, name: string) => [`${value}%`, name]) as any}
                 contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid hsl(var(--border))" }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />

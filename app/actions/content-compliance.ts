@@ -14,6 +14,26 @@ import {
   getComplianceEvaluationHistory,
   getComplianceStats,
 } from "@/lib/compliance-rules"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+/**
+ * Resolves session-derived agent identifier for compliance logging/queries.
+ * Returns null if unauthenticated. NEVER trusts caller-supplied agent_id.
+ */
+async function getSessionAgentId(): Promise<
+  | { ok: true; agentId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  return {
+    ok: true,
+    agentId: ctx.agentId ?? ctx.userId,
+    brokerageId: ctx.brokerageId,
+  }
+}
 
 // ============================================
 // SYSTEM 4.2 – COMPLIANCE RULES ENGINE
@@ -28,11 +48,14 @@ export async function evaluateCompliance(
   input: ComplianceContentInput,
   options?: {
     log_to_activities?: boolean
-    agent_id?: string
+    agent_id?: string // ignored — derived from session
     content_id?: string
   }
 ): Promise<{ success: boolean; verdict?: ComplianceVerdict; error?: string }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     // Validate input
     if (!input.raw_content || input.raw_content.trim().length === 0) {
       return {
@@ -56,13 +79,6 @@ export async function evaluateCompliance(
       }
     }
 
-    if (options?.agent_id && !isValidUUID(options.agent_id)) {
-      return {
-        success: false,
-        error: "Invalid agent_id format",
-      }
-    }
-
     // Validate context UUIDs
     if (input.context?.listing_id && !isValidUUID(input.context.listing_id)) {
       return {
@@ -81,10 +97,10 @@ export async function evaluateCompliance(
     // Evaluate compliance
     const verdict = await evaluateContentCompliance(input)
 
-    // Optionally log to activities
+    // Optionally log to activities — attribute to authenticated agent (NOT caller)
     if (options?.log_to_activities) {
       await logComplianceEvaluation({
-        agent_id: options.agent_id,
+        agent_id: auth.agentId,
         content_id: options.content_id,
         content_type: input.content_type,
         channel_intent: input.channel_intent,
@@ -114,6 +130,9 @@ export async function evaluateCategory(
   category: "regulatory" | "brokerage" | "brand" | "ai_safety"
 ): Promise<{ success: boolean; violations?: any[]; error?: string }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!input.raw_content || input.raw_content.trim().length === 0) {
       return {
         success: false,
@@ -143,6 +162,9 @@ export async function quickCheck(
   input: ComplianceContentInput
 ): Promise<{ success: boolean; has_critical_issues?: boolean; critical_violations?: any[]; error?: string }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!input.raw_content || input.raw_content.trim().length === 0) {
       return {
         success: false,
@@ -173,7 +195,7 @@ export async function batchEvaluate(
   inputs: ComplianceContentInput[],
   options?: {
     log_to_activities?: boolean
-    agent_id?: string
+    agent_id?: string // ignored — derived from session
   }
 ): Promise<{
   success: boolean
@@ -181,6 +203,9 @@ export async function batchEvaluate(
   error?: string
 }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!inputs || inputs.length === 0) {
       return {
         success: false,
@@ -207,10 +232,10 @@ export async function batchEvaluate(
 
     const results = await batchEvaluateCompliance(inputs)
 
-    // Optionally log all to activities
+    // Optionally log all to activities — attribute to authenticated agent (NOT caller)
     if (options?.log_to_activities) {
       const evaluations = results.map((result) => ({
-        agent_id: options.agent_id,
+        agent_id: auth.agentId,
         content_type: result.input.content_type,
         channel_intent: result.input.channel_intent,
         verdict: result.verdict,
@@ -240,6 +265,9 @@ export async function getComplianceReport(
   input: ComplianceContentInput
 ): Promise<{ success: boolean; report?: string; verdict?: ComplianceVerdict; error?: string }> {
   try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!input.raw_content || input.raw_content.trim().length === 0) {
       return {
         success: false,
@@ -268,20 +296,18 @@ export async function getComplianceReport(
  * Get compliance evaluation history
  */
 export async function getEvaluationHistory(params: {
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   limit?: number
   status_filter?: "pass" | "fail" | "review_required"
 }): Promise<{ success: boolean; history?: any[]; error?: string }> {
   try {
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return {
-        success: false,
-        error: "Invalid agent_id format",
-      }
-    }
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    const history = await getComplianceEvaluationHistory(params)
+    const history = await getComplianceEvaluationHistory({
+      ...params,
+      agent_id: auth.agentId,
+    })
 
     return {
       success: true,
@@ -300,19 +326,17 @@ export async function getEvaluationHistory(params: {
  * Get compliance statistics
  */
 export async function getComplianceStatistics(params: {
-  agent_id?: string
+  agent_id?: string // ignored — derived from session
   date_range?: { start: string; end: string }
 }): Promise<{ success: boolean; stats?: any; error?: string }> {
   try {
-    // Validate agent_id if provided
-    if (params.agent_id && !isValidUUID(params.agent_id)) {
-      return {
-        success: false,
-        error: "Invalid agent_id format",
-      }
-    }
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    const stats = await getComplianceStats(params)
+    const stats = await getComplianceStats({
+      ...params,
+      agent_id: auth.agentId,
+    })
 
     return {
       success: true,

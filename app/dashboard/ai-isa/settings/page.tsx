@@ -29,7 +29,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AlertCircle, CheckCircle2, Bot, Shield, Clock, Phone, Mail, MessageSquare, Home, Users, TrendingDown } from 'lucide-react'
-import { getAIISASettings, saveAIISASettings, getAIISAStats, type AIISASettings } from '@/app/actions/ai-isa-settings'
+import { getAIISASettings, saveAIISASettings, getAIISAStats } from '@/app/actions/ai-isa-settings'
+import type { AIISASettings } from '@/lib/ai-isa/settings-types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { createClient } from '@/lib/supabase/client'
 
@@ -75,12 +76,12 @@ export default function AIISASettingsPage() {
 
       const { data: profile } = await supabase
         .from('users')
-        .select('brokerage_id, role')
+        .select('brokerage_id, user_type')
         .eq('id', user.id)
         .maybeSingle()
 
       const bid  = profile?.brokerage_id ?? null
-      const r    = profile?.role ?? null
+      const r    = profile?.user_type ?? null
       setBrokerageId(bid)
       setRole(r)
 

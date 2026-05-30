@@ -42,25 +42,48 @@ export const AGENT_REGISTRY = {
   },
 } as const
 
-export type AgentType = keyof typeof AGENT_REGISTRY | 'human' | 'none'
+// All capability strings across all agents in the registry
+export type AgentCapability =
+  | 'lead_qualification'
+  | 'outreach_scheduling'
+  | 'isa_followup'
+  | 'initial_appointment'
+  | 'milestone_tracking'
+  | 'task_generation'
+  | 'deadline_alerts'
+  | 'transaction_review'
+  | 'weekly_report'
+  | 'stage_playbook'
+  | 'objection_coaching'
+  | 'deal_strategy'
+  | 'listing_announcement'
+  | 'social_post'
+  | 'email_drip'
+  | 'video_script'
+
+// Expand AgentType to include short aliases used in coordination dashboard
+export type AgentType = keyof typeof AGENT_REGISTRY | 'human' | 'none' | 'isa' | 'tc' | 'coach' | 'coordinator'
 
 export function getAgentConfig(agentType: AgentType) {
-  if (agentType === 'human' || agentType === 'none') {
-    return null
-  }
-  return AGENT_REGISTRY[agentType]
+  if (agentType === 'human' || agentType === 'none') return null
+  if (agentType === 'isa') return AGENT_REGISTRY.isa_agent
+  if (agentType === 'tc' || agentType === 'coordinator') return AGENT_REGISTRY.tc_agent
+  if (agentType === 'coach') return AGENT_REGISTRY.coaching_agent
+  const key = agentType as keyof typeof AGENT_REGISTRY
+  return AGENT_REGISTRY[key] ?? null
 }
 
 export function getAgentColor(agentType: AgentType): string {
   if (agentType === 'human') return 'red'
   if (agentType === 'none') return 'gray'
-  return AGENT_REGISTRY[agentType]?.color || 'gray'
+  const config = getAgentConfig(agentType)
+  return config?.color || 'gray'
 }
 
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
-  return AGENT_REGISTRY[agentType]?.name || agentType
+  return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
 }
 
 export const VALID_AGENT_TYPES = ['isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'human'] as const

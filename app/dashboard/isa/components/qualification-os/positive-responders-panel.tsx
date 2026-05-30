@@ -149,7 +149,7 @@ export function PositiveRespondersPanel({
                           </Button>
                         </Link>
                       )}
-                      <Link href={`/contacts/${responder.contactId}`}>
+                      <Link href={`/crm/contacts/${responder.contactId}`}>
                         <Button variant="ghost" size="sm" className="h-7 text-xs">
                           View
                           <ArrowRight className="h-3 w-3 ml-1" />

@@ -17,6 +17,8 @@ import { useToast } from "@/hooks/use-toast"
 import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette, Inbox, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+type Tab = "branding" | "questions" | "hours" | "embed" | "requests"
+
 // ── Next-action logic ─────────────────────────────────────────────────────────
 // Uses only real columns that exist on valuation_requests post-migration:
 //   qualification_data, contact_id, cma_sent, appointment_scheduled
@@ -797,7 +799,7 @@ export function HomeValuePageBuilderClient({
                                 {c ? `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.email : ""}
                               </p>
                             </div>
-                            <Link href={`/crm?contactId=${req.contact_id}`}>
+                            <Link href={`/crm?contact=${req.contact_id}`}>
                               <Button size="sm" variant="outline">
                                 View in CRM
                               </Button>

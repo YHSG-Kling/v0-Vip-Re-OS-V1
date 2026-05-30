@@ -34,17 +34,31 @@ export async function sendDocumentForSignature(params: {
   docType: string
   docLabel: string | null
   signers: Array<{ name: string; email: string; role: string }>
-  userId: string
-  brokerageId: string
+  userId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
 }): Promise<{ success: boolean; signatureId?: string; error?: string; blockedReason?: string }> {
-  const { transactionId, documentId, docType, docLabel, signers, userId, brokerageId } = params
+  const { transactionId, documentId, docType, docLabel, signers } = params
 
-  if (!isValidUUID(transactionId) || !isValidUUID(brokerageId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(transactionId)) {
+    return { success: false, error: "Invalid transaction ID" }
   }
   if (!signers.length) {
     return { success: false, error: "At least one signer is required" }
   }
+
+  // Auth gate — previously trusted caller-supplied userId + brokerageId,
+  // letting any signed-in user send legal documents under any brokerage.
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const userId = authUser.id
+  const brokerageId = callerRow.brokerage_id
 
   const supabase = createServiceClient()
 
@@ -122,7 +136,7 @@ export async function sendDocumentForSignature(params: {
       signer_count:    signers.length,
     },
   })
-  .catch(() => {}) // fire-and-forget: silent fail on audit log errors
+  .then(() => {}, () => {}) // fire-and-forget: silent fail on audit log errors
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, signatureId: sig.id }
@@ -132,21 +146,41 @@ export async function sendDocumentForSignature(params: {
 
 export async function resendDocumentForSignature(params: {
   signatureId: string
-  userId: string
-  brokerageId: string
+  userId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
   transactionId: string
 }): Promise<{ success: boolean; error?: string }> {
-  const { signatureId, userId, brokerageId, transactionId } = params
+  const { signatureId, transactionId } = params
 
   if (!isValidUUID(signatureId)) return { success: false, error: "Invalid signature ID" }
 
+  // Auth gate — previously trusted caller-supplied userId/brokerageId
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
   const supabase = createServiceClient()
+
+  // Verify signature row belongs to caller's brokerage before mutating
+  const { data: sig } = await supabase
+    .from("contract_signatures")
+    .select("brokerage_id")
+    .eq("id", signatureId)
+    .maybeSingle()
+  if (!sig) return { success: false, error: "Signature not found" }
+  if (sig.brokerage_id !== callerRow.brokerage_id) return { success: false, error: "Forbidden" }
 
   await supabase
     .from("contract_signatures")
     .update({ sent_at: new Date().toISOString(), esign_status: "sent", updated_at: new Date().toISOString() })
     .eq("id", signatureId)
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", callerRow.brokerage_id)
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true }
@@ -156,16 +190,26 @@ export async function resendDocumentForSignature(params: {
 
 export async function getTransactionSignatureStatuses(
   transactionId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session
 ): Promise<DocumentSignatureStatus[]> {
   if (!isValidUUID(transactionId)) return []
 
-  // contract_signatures is brokerage-scoped; filter by brokerage for safety
+  // Auth gate — previously accepted any brokerageId, leaking other brokerages' sigs
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return []
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return []
+
   const supabase = createServiceClient()
   const { data } = await supabase
     .from("contract_signatures")
     .select("id, contract_type, provider_name, provider_envelope_id, esign_status, sent_at, agent_signed_at, fully_signed_at, document_url, created_at")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", callerRow.brokerage_id)
     .order("created_at", { ascending: false })
 
   // contract_signatures has no transaction_id FK — we filter by those inserted
@@ -179,9 +223,20 @@ export async function getTransactionSignatureStatuses(
 
 export async function getUnsignedDocumentBlockers(
   transactionId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session
 ): Promise<Array<{ docId: string; docLabel: string; docType: string; signatureId: string | null; esignStatus: string | null }>> {
   if (!isValidUUID(transactionId)) return []
+
+  const authClient = await createClient()
+  const { data: { user: authUser } } = await authClient.auth.getUser()
+  if (!authUser) return []
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUser.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return []
+  const brokerageId = callerRow.brokerage_id
 
   const supabase = createServiceClient()
 
@@ -208,7 +263,7 @@ export async function getUnsignedDocumentBlockers(
   const sigByType = (sigs ?? []).reduce((acc, s) => {
     if (!acc[s.contract_type]) acc[s.contract_type] = s
     return acc
-  }, {} as Record<string, typeof sigs[0]>)
+  }, {} as Record<string, NonNullable<typeof sigs>[0]>)
 
   return signable
     .filter(d => {

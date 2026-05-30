@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { MailDashboard } from "./mail-dashboard"
 
 export const dynamic = "force-dynamic"
@@ -11,18 +11,11 @@ export const metadata = {
 }
 
 export default async function DirectMailPage() {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  const brokerageId = profile?.brokerage_id ?? ""
+  const brokerageId = ctx.brokerageId
 
   return (
     <div className="flex flex-col h-full">

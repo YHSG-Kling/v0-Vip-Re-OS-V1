@@ -335,7 +335,7 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                           {new Date(c.created_at).toLocaleDateString()}
                         </TableCell>
                         <TableCell>
-                          <Link href={`/dashboard/contacts/${c.id}`}>
+                          <Link href={`/crm/contacts/${c.id}`}>
                             <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">View</Button>
                           </Link>
                         </TableCell>

@@ -40,14 +40,17 @@ import type { BuyerPropertyInterestLevel, BuyerPropertyInterest } from "@/lib/ke
 
 interface SmartSearchWidgetProps {
   contactId: string
-  /** Optional pre-loaded property preferences from parent server component */
+  /** Optional pre-loaded property preferences from parent server component.
+   *  Schema is `property_preferences` with inferred_* columns. */
   preferences?: {
-    min_price?: number | null
-    max_price?: number | null
-    min_beds?: number | null
-    min_baths?: number | null
-    zip_codes?: string[] | null
-    property_types?: string[] | null
+    inferred_min_price?: number | null
+    inferred_max_price?: number | null
+    inferred_beds_min?: number | null
+    inferred_baths_min?: number | null
+    inferred_zip_codes?: string[] | null
+    inferred_property_types?: string[] | null
+    inferred_must_have_features?: string[] | null
+    inferred_deal_breakers?: string[] | null
   } | null
   className?: string
 }

@@ -247,8 +247,8 @@ export function DealTeamCard({
     } else {
       // External contact
       name = member.external_name || "Team Member"
-      phone = member.external_phone
-      email = member.external_email
+      phone = member.external_phone ?? null
+      email = member.external_email ?? null
     }
 
     displayMembers.push({

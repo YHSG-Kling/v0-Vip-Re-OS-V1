@@ -29,7 +29,7 @@
  *   - inspection state → transaction_inspections.status
  *   - lender state → transaction_lenders.clear_to_close_date, lender assignment fields
  *   - title state → transaction_title_escrow.title_company_name, escrow_number, title dates
- *   - milestones → transaction_milestones.milestone_name, milestone_date, status
+ *   - milestones → transaction_milestones.milestone_name, target_date, status
  *   - deadlines → transaction_deadlines.deadline_type, deadline_date, status
  *   - documents → transaction_documents
  *   - compliance → transaction_compliance_log, compliance_checklists
@@ -38,6 +38,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -378,10 +379,10 @@ async function scoreMilestones(
   const issues: string[] = []
   let score = 100
 
-  // Source: transaction_milestones - milestone_name, milestone_date, status, completed_at
+  // Source: transaction_milestones - milestone_name, target_date, status, completed_at
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_date, status, completed_at, completed_by, notes")
+    .select("id, milestone_name, target_date, status, completed_at, completed_by, notes")
     .eq("transaction_id", transactionId)
 
   if (!milestones || milestones.length === 0) {
@@ -395,9 +396,9 @@ async function scoreMilestones(
     for (const m of milestones) {
       if (!m.completed_at && m.status !== "completed") {
         totalIncomplete++
-        if (m.milestone_date && new Date(m.milestone_date) < now) {
+        if (m.target_date && new Date(m.target_date) < now) {
           overdueCount++
-          issues.push(`Milestone "${m.milestone_name}" overdue since ${m.milestone_date}`)
+          issues.push(`Milestone "${m.milestone_name}" overdue since ${m.target_date}`)
         }
       }
     }
@@ -766,7 +767,7 @@ export async function calculateDealHealth(params: {
     scoreInspection(supabase, transactionId),        // → transaction_inspections.status
     scoreLender(supabase, transactionId),            // → transaction_lenders.clear_to_close_date, lender fields
     scoreTitle(supabase, transactionId),             // → transaction_title_escrow.title_company_name, escrow_number, dates
-    scoreMilestones(supabase, transactionId),        // → transaction_milestones.milestone_name, milestone_date, status
+    scoreMilestones(supabase, transactionId),        // → transaction_milestones.milestone_name, target_date, status
     scoreDeadlines(supabase, transactionId),         // → transaction_deadlines.deadline_type, deadline_date, status
     scoreCompliance(supabase, transactionId, brokerageId), // → transaction_compliance_log, compliance_checklists
     scoreCommunication(supabase, transactionId),     // → activities
@@ -951,8 +952,8 @@ async function generateDealHealthNarrative(params: {
   let contextNote = ""
   if (previousRiskLevel && previousRiskLevel !== riskLevel) {
     contextNote = `Risk level changed from ${previousRiskLevel.toUpperCase()} to ${riskLevel.toUpperCase()}.`
-  } else if (previousOverallScore !== null && (previousOverallScore - overallScore) >= 10) {
-    contextNote = `Score dropped ${previousOverallScore - overallScore} points from ${previousOverallScore} to ${overallScore}.`
+  } else if (previousOverallScore != null && ((previousOverallScore ?? 0) - overallScore) >= 10) {
+    contextNote = `Score dropped ${(previousOverallScore ?? 0) - overallScore} points from ${previousOverallScore ?? 0} to ${overallScore}.`
   } else {
     contextNote = "This is the first health score for this deal."
   }
@@ -969,27 +970,18 @@ ${issuesSummary || "No major issues identified."}
 Write a concise, actionable summary for the agent/broker. Focus on what needs attention.`
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 200,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const response = await gatewayChat({
+      model: "anthropic/claude-sonnet-4-20250514",
+      maxTokens: 200,
+      temperature: 0.3,
+      messages: [{ role: "user", content: prompt }],
     })
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status}`)
+      throw new Error(`AI gateway error: ${response.error}`)
     }
 
-    const data = await response.json()
-    const text = data.content?.[0]?.text ?? ""
-    return text.trim()
+    return (response.content ?? "").trim()
   } catch {
     // Fallback narrative
     const topIssue = issueCategories[0]
@@ -1002,4 +994,4 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { CATEGORY_WEIGHTS, type RiskLevel, type DealHealthOutput }
+export { CATEGORY_WEIGHTS }

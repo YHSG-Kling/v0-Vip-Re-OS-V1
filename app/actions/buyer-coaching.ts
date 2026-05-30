@@ -10,6 +10,7 @@
 
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface BuyerCoachingResult {
@@ -32,19 +33,35 @@ export interface BuyerCoachingResult {
 
 export async function getBuyerCoaching(params: {
   contactId:  string
-  brokerageId: string
+  brokerageId?: string  // ignored — derived from session
 }): Promise<BuyerCoachingResult> {
+  // Auth gate — paid AI fallback runs on cache miss, PII (contact_persona,
+  // buyer_stage) returned. Was unauthenticated.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const brokerageId = callerRow.brokerage_id
+
   const supabase = createServiceClient()
 
-  // 1. Load contact.buyer_stage + contact_persona
+  // 1. Load contact.buyer_stage + contact_persona — must belong to caller's brokerage
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("buyer_stage, contact_persona")
+    .select("buyer_stage, contact_persona, brokerage_id")
     .eq("id", params.contactId)
     .single()
 
   if (contactError || !contact) {
     return { success: false, error: contactError?.message ?? "Contact not found" }
+  }
+  if (contact.brokerage_id !== brokerageId) {
+    return { success: false, error: "Forbidden" }
   }
 
   const stage   = contact.buyer_stage   ?? "prospect"
@@ -55,7 +72,7 @@ export async function getBuyerCoaching(params: {
     .from("buyer_stage_coaching")
     .select("*")
     .eq("buyer_stage", stage)
-    .or(`brokerage_id.eq.${params.brokerageId},brokerage_id.is.null`)
+    .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null")
     .eq("is_active", true)
     .order("brokerage_id",  { ascending: false, nullsFirst: false })

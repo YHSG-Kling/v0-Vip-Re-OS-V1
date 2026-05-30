@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { generateQRCodeAction } from "@/app/actions/lead-magnets"
+import { generateQRCodeAction } from "@/app/actions/lead-magnets-actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -56,10 +56,7 @@ export function QRCodeGenerator({
     startTransition(async () => {
       const result = await generateQRCodeAction({
         magnetId,
-        brokerageId,
-        agentId,
-        label,
-        targetUrl,
+        url: targetUrl,
       })
 
       if (!result.success) {
@@ -68,10 +65,10 @@ export function QRCodeGenerator({
       }
 
       setQrResult({
-        qrCodeId: result.qrCodeId!,
-        qrImageUrl: result.qrImageUrl,
-        targetUrl: result.targetUrl,
-        slug: result.slug,
+        qrCodeId: result.qrCode?.id ?? "",
+        qrImageUrl: result.qrCode?.qr_image_url ?? undefined,
+        targetUrl,
+        slug: magnetSlug,
       })
     })
   }

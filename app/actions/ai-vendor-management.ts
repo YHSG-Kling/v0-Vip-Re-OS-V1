@@ -38,7 +38,7 @@ export async function transitionBookingStatus(params: {
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"

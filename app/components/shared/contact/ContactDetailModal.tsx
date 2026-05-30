@@ -20,7 +20,7 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
   const [localContact, setLocalContact] = useState<Contact>(contact)
 
   const handleEdit = () => {
-    router.push(`/crm?contactId=${contact.id}`)
+    router.push(`/crm?contact=${contact.id}`)
     onClose()
   }
 
@@ -28,7 +28,6 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
     try {
       const result = await updateContact(contact.id, {
         status: "qualified",
-        updated_at: new Date().toISOString(),
       })
       if (result?.success !== false) {
         setLocalContact((prev) => ({ ...prev, status: "qualified" }))
@@ -71,7 +70,7 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
       const { error } = await supabase.from("activities").insert({
         entity_type: "contact",
         entity_id: contact.id,
-        user_id: user?.id ?? agentId,
+        agent_user_id: user?.id ?? agentId,
         activity_type: "note",
         status: "completed",
         metadata: { note: note.trim(), source: "contact_detail_modal" },

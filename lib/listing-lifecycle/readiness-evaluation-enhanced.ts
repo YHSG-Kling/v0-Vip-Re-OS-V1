@@ -16,7 +16,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getLatestEvent, queryEventsByEntityAndType } from "./event-storage"
 import { INTEGRATION_EVENT_TYPES } from "./integration-deduplication"
-import type { ReadinessCheckType, ReadinessCheckResult } from "./readiness-checker"
+import type { ReadinessCheckType } from "./lifecycle-definitions"
+import type { ReadinessCheckResult } from "./readiness-checker"
 
 /**
  * Evaluate media readiness from integration events

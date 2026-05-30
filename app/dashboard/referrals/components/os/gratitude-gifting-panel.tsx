@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { toast } from "sonner"
 import { aiRecommendGift, aiGenerateThankYouNote } from "@/app/actions/ai-client-gifting"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
@@ -60,11 +61,19 @@ export function GratitudeGiftingPanel({
       const result = await aiRecommendGift({
         agentId,
         contactId,
-        occasion,
+        occasion: occasion as any,
         budget: { min, max },
       })
-      if (result.success && result.recommendation) {
-        setGiftRec(result.recommendation)
+      // Server action returns result.data.topRecommendation
+      const rec = (result as any).data?.topRecommendation
+      if (result.success && rec) {
+        setGiftRec({
+          item: rec.name ?? rec.item ?? "",
+          rationale: rec.whyThisGift ?? rec.description ?? rec.rationale ?? "",
+          link: rec.vendor ?? rec.link ?? undefined,
+        })
+      } else {
+        toast.error((result as any).error ?? "Gift recommendation failed — check AI Gateway configuration")
       }
     })
   }
@@ -77,11 +86,15 @@ export function GratitudeGiftingPanel({
         occasion,
         handwritten: true,
       })
-      if (result.success && result.note) {
-        setThankYouNote(result.note)
-        // Check compliance
-        const compliance = await checkThemFirstCompliance(result.note)
-        setComplianceOk(compliance.isCompliant)
+      // Server action returns result.data.note
+      const noteText = (result as any).data?.note ?? (result as any).note
+      if (result.success && noteText) {
+        setThankYouNote(noteText)
+        // Check compliance — analyzeThemFirstLanguage returns { score, feedback }
+        const compliance = await checkThemFirstCompliance(noteText)
+        setComplianceOk((compliance as any).score >= 50)
+      } else {
+        toast.error((result as any).error ?? "Thank you note generation failed — check AI Gateway configuration")
       }
     })
   }

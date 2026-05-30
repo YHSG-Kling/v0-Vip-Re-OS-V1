@@ -141,7 +141,7 @@ export default async function AIISAOperationsConsolePage() {
         call_analyses( sentiment, intent_primary, urgency_score, suggested_next_action )
       `)
       .in('contact_id', contactIds)
-      .eq('call_type', 'isa_ai')
+      .eq('call_type', 'ai_isa_call')
       .order('started_at', { ascending: false })
       .limit(100)
 
@@ -190,7 +190,7 @@ export default async function AIISAOperationsConsolePage() {
           call_analyses ( sentiment, objections, next_steps, intent_primary, intent_secondary, urgency_score, suggested_next_action )
         `)
         .eq('brokerage_id', brokerageId)
-        .eq('call_type', 'isa_ai')
+        .eq('call_type', 'ai_isa_call')
         .order('started_at', { ascending: false })
         .limit(50)
       if (isAgentOnly && agentRow?.id) {
@@ -667,7 +667,7 @@ export default async function AIISAOperationsConsolePage() {
 
         {/* Conversation Intelligence Tab */}
         <TabsContent value="intelligence" className="mt-4">
-          <ConversationIntelligencePanel conversations={conversationIntelligence} />
+          <ConversationIntelligencePanel conversations={conversationIntelligence as any} />
         </TabsContent>
 
         {/* Positive Responders Tab */}
@@ -677,7 +677,7 @@ export default async function AIISAOperationsConsolePage() {
 
         {/* Ghost Recovery Tab */}
         <TabsContent value="ghosts" className="mt-4">
-          <GhostRecoveryPanel ghosts={ghosts} brokerageId={brokerageId} />
+          <GhostRecoveryPanel ghosts={ghosts as any} brokerageId={brokerageId} />
         </TabsContent>
 
         {/* Hard Stops Tab */}

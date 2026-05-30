@@ -26,7 +26,7 @@ export interface JourneyStage {
   name: string
   description: string
   tasks: { id: string; title: string; description?: string; required?: boolean }[]
-  resources: { title: string; type: "pdf" | "video" | "tool" | "guide" | "checklist"; url?: string }[]
+  resources: { title: string; type: "pdf" | "video" | "tool" | "guide" | "checklist" | "calculator"; url?: string }[]
   tips?: string[]
   estimatedDays?: number
 }

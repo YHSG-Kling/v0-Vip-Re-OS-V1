@@ -27,12 +27,12 @@ export function PublishReadinessCard({
   return (
     <Card className={isReady ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <FileCheck className="h-4 w-4 text-indigo-600" />
+        <CardTitle className="text-sm flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-2 min-w-0 truncate">
+            <FileCheck className="h-4 w-4 text-indigo-600 shrink-0" />
             Publish Readiness
           </span>
-          <Badge variant={isReady ? "default" : "secondary"} className="text-xs">
+          <Badge variant={isReady ? "default" : "secondary"} className="text-xs shrink-0">
             {isReady ? "Ready" : `${requiredFields.length - completedFields} Missing`}
           </Badge>
         </CardTitle>

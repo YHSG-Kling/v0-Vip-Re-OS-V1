@@ -26,43 +26,57 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
-const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls"] as const
+const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
 
+// eSign + transaction options are derived from the unified provider catalog
+// (single source of truth) so the UI offers exactly the IMPLEMENTED providers
+// and never the unimplemented ones (which crash the factory). Adding a provider
+// class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       ["dotloop", "docusign", "skyslope", "none"],
-  transaction: ["skyslope", "dotloop", "brokermint", "none"],
+  esign:       [...getEsignProviders(), "none"],
+  transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["rets", "spark", "bridge"],
+  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
+  accounting:  ["quickbooks", "xero"],
+  crm:         ["gohighlevel", "none"],
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
-  dotloop:    "Dotloop",
-  docusign:   "DocuSign",
-  skyslope:   "SkySlope",
-  brokermint: "Brokermint",
-  twilio:     "Twilio",
-  bandwidth:  "Bandwidth",
-  vonage:     "Vonage",
-  sendgrid:   "SendGrid",
-  mailgun:    "Mailgun",
-  resend:     "Resend",
-  google:     "Google",
-  outlook:    "Outlook / Microsoft",
-  rets:       "RETS",
-  spark:      "Spark API",
-  bridge:     "Bridge Interactive",
-  none:       "None (Disabled)",
+  dotloop:      "Dotloop",
+  docusign:     "DocuSign",
+  skyslope:     "SkySlope",
+  authentisign: "Authentisign",
+  brokermint:   "Brokermint",
+  twilio:       "Twilio",
+  bandwidth:    "Bandwidth",
+  vonage:       "Vonage",
+  sendgrid:     "SendGrid",
+  mailgun:      "Mailgun",
+  resend:       "Resend",
+  google:       "Google",
+  outlook:      "Outlook / Microsoft",
+  rets:         "RETS",
+  spark:        "Spark API",
+  bridge:       "Bridge Interactive",
+  idx_broker:   "IDX Broker",
+  rentcast:     "Rentcast (no IDX needed)",
+  quickbooks:   "QuickBooks",
+  xero:         "Xero",
+  gohighlevel:  "GoHighLevel",
+  none:         "None (Disabled)",
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
+  authentisign: "AS",
   brokermint: "BM",
   twilio:     "TW",
   sendgrid:   "SG",

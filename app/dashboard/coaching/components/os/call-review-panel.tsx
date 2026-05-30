@@ -37,8 +37,10 @@ interface CallSummary {
 }
 
 interface CallReviewPanelProps {
-  insights: CallCoachingInsight[]
-  summary: CallSummary | null
+  insights?: CallCoachingInsight[]
+  summary?: CallSummary | null
+  agentId?: string
+  brokerageId?: string
 }
 
 const insightTypeConfig = {
@@ -48,7 +50,7 @@ const insightTypeConfig = {
   recommendation: { icon: TrendingUp, color: "text-blue-500", bg: "bg-blue-50 border-blue-200" },
 }
 
-export function CallReviewPanel({ insights, summary }: CallReviewPanelProps) {
+export function CallReviewPanel({ insights = [], summary = null }: CallReviewPanelProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -113,7 +115,7 @@ export function CallReviewPanel({ insights, summary }: CallReviewPanelProps) {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <Link
-                            href={`/contacts/${insight.contact_id}`}
+                            href={`/crm/contacts/${insight.contact_id}`}
                             className="text-sm font-medium hover:underline"
                           >
                             {insight.contact_name}

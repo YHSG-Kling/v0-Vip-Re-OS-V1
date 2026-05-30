@@ -43,33 +43,31 @@ export default function MotivatedSellersMap() {
     try {
       const supabase = createClient()
 
-      // This table joins to property_intelligence for property details
+      // Query motivated_seller_signals table instead
       const { data: sellerData, error } = await supabase
-        .from("motivated_seller_scores")
+        .from("motivated_seller_signals")
         .select(`
           id,
-          batchdata_motivation_score,
-          readiness_to_sell_score,
-          predicted_timeframe,
-          motivation_factors,
-          life_event_signals,
-          property_condition_signals,
-          financial_pressure_indicators,
-          property_intelligence (
+          lead_id,
+          signal_type,
+          signal_details,
+          signal_strength,
+          detected_via,
+          detected_at,
+          contacts (
             id,
-            property_address,
-            owner_name,
-            owner_phone,
-            owner_email,
-            current_value_estimate,
-            equity_amount
+            first_name,
+            last_name,
+            email,
+            phone,
+            agent_id
           )
         `)
-        .order("readiness_to_sell_score", { ascending: false })
+        .order("detected_at", { ascending: false })
         .limit(50)
 
       if (error) {
-        console.error("[v0] Error from motivated_seller_scores:", error)
+        console.error("[v0] Error from motivated_seller_signals:", error)
         const { data: signalsData, error: signalsError } = await supabase
           .from("motivated_seller_signals")
           .select(`
@@ -126,29 +124,31 @@ export default function MotivatedSellersMap() {
         return
       }
 
-      // Transform scores data
+      // Transform signals data
       const transformedSellers: MotivatedSellerLead[] = (sellerData || []).map((item: any) => {
-        const ownerName = item.property_intelligence?.owner_name || "Unknown Owner"
-        const nameParts = ownerName.split(" ")
+        const details = item.signal_details || {}
         return {
           id: item.id,
-          contact_id: null, // property_intelligence doesn't link to contacts directly
-          first_name: nameParts[0] || "Unknown",
-          last_name: nameParts.slice(1).join(" ") || "Owner",
-          email: item.property_intelligence?.owner_email || "",
-          phone: item.property_intelligence?.owner_phone || "",
-          property_address: item.property_intelligence?.property_address || "Address Unknown",
-          motivation_score: item.readiness_to_sell_score || item.batchdata_motivation_score || 0,
-          predicted_timeframe: item.predicted_timeframe || "unknown",
-          motivation_factors: [
-            ...(item.motivation_factors || []),
-            ...(item.life_event_signals || []),
-            ...(item.financial_pressure_indicators || []),
-          ].filter(Boolean),
-          signal_strength:
-            item.readiness_to_sell_score >= 80 ? "urgent" : item.readiness_to_sell_score >= 60 ? "strong" : "moderate",
-          current_value_estimate: item.property_intelligence?.current_value_estimate || 0,
-          assigned_agent_id: undefined,
+          contact_id: item.lead_id,
+          first_name: item.contacts?.first_name || "Unknown",
+          last_name: item.contacts?.last_name || "Seller",
+          email: item.contacts?.email || "",
+          phone: item.contacts?.phone || "",
+          property_address: details.property_address || "Address Unknown",
+          motivation_score:
+            details.score ||
+            (item.signal_strength === "urgent"
+              ? 90
+              : item.signal_strength === "strong"
+                ? 75
+                : item.signal_strength === "moderate"
+                  ? 50
+                  : 30),
+          predicted_timeframe: details.timeframe || item.signal_strength === "urgent" ? "immediate" : "3-6_months",
+          motivation_factors: [item.signal_type, ...(details.motivation_factors || [])],
+          signal_strength: item.signal_strength || "moderate",
+          current_value_estimate: details.estimated_value || 0,
+          assigned_agent_id: item.contacts?.agent_id,
         }
       })
 

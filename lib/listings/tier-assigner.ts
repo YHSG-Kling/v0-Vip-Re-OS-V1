@@ -186,14 +186,6 @@ export async function assignTierToListing(
       brokerageId,
       entityType: "listing",
       entityId: listingId,
-      metadata: {
-        tierId: tier.id,
-        tierName: tier.tier_name,
-        listPrice,
-        totalBudget,
-      },
-    }).catch((err) => {
-      console.error("[Tier Assigner] Event processing failed (non-blocking):", err)
     })
 
     return {
