@@ -19,8 +19,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 export interface ShowingSentimentSummary {
@@ -48,14 +47,15 @@ const ThemeExtractionSchema = z.object({
 })
 
 async function extractThemes(feedbackTexts: string[]) {
-  // Routed through Vercel AI Gateway — single egress, metered.
+  // Routed via generateObjectRouted: gateway + AI_TASK_ROUTING + fallback model + fair-use + cost
+  // accounting. Falls back to keyword bucketing when the gateway key is missing.
   if (!process.env.AI_GATEWAY_API_KEY || feedbackTexts.length === 0) {
     return null
   }
   try {
-    const { object } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: ThemeExtractionSchema,
+    const { object } = await generateObjectRouted({
+      feature: "sentiment_analysis",
+      schema:  ThemeExtractionSchema,
       system:
         "You analyze buyer-side showing feedback for a single home and extract the most-mentioned positives and objections. " +
         "Themes must be short noun phrases (3-5 words). Combine near-duplicate feedback into a single theme. " +

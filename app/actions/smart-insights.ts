@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 
 // ==================== SMART INSIGHTS GENERATION ====================
 
@@ -154,8 +154,9 @@ async function generateSchoolInsights(
   const ratingHint = preferences?.minRating ? `Only include schools rated ${preferences.minRating}+.` : ""
 
   try {
-    // Routed through Vercel AI Gateway — single egress, single key rotation.
-    const result = await gatewayChat({
+    // Routed through Vercel AI Gateway — single egress, single key rotation. Use gatewayChatJSON
+    // so fenced output (real artifact of the gateway's Anthropic translation) doesn't break parse.
+    const result = await gatewayChatJSON<Record<string, any>>({
       model:     "anthropic/claude-opus-4-20250514",
       maxTokens: 600,
       messages: [
@@ -175,8 +176,8 @@ Return this exact JSON structure:
 }` },
       ],
     })
-    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
-    const parsed = JSON.parse(result.content.trim())
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON from AI")
+    const parsed = result.data
 
     // Apply preference filters on top of AI result
     let schools = parsed.nearbySchools || []
@@ -278,9 +279,9 @@ async function generateNeighborhoodInsights(propertyData: Record<string, any>): 
   }
 
   // Ask AI for everything else — safety, amenities, demographics, market trends.
-  // Routed through Vercel AI Gateway.
+  // Routed through Vercel AI Gateway via gatewayChatJSON (fence-safe parse).
   try {
-    const result = await gatewayChat({
+    const result = await gatewayChatJSON<Record<string, any>>({
       model:     "anthropic/claude-opus-4-20250514",
       maxTokens: 700,
       messages: [
@@ -327,8 +328,8 @@ Return this exact JSON structure:
 }` },
       ],
     })
-    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
-    const parsed = JSON.parse(result.content.trim())
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON from AI")
+    const parsed = result.data
 
     // Override walkability with real scores if available
     if (hasRealScores) {

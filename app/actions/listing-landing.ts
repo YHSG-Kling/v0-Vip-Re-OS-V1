@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
-import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 
 // ============================================================================
 // Types
@@ -214,7 +214,9 @@ export async function getNeighborhoodData(listingId: string): Promise<Neighborho
 
   try {
     // Routed through Vercel AI Gateway — single egress, metered, key-rotation safe.
-    const result = await gatewayChat({
+    // Use gatewayChatJSON so a ```json-fenced response (a real artifact of the gateway's OpenAI→
+    // Anthropic translation, even with "ONLY valid JSON" instructions) doesn't break the parse.
+    const result = await gatewayChatJSON<Record<string, any>>({
       model:     "anthropic/claude-opus-4-20250514",
       maxTokens: 600,
       messages: [
@@ -234,9 +236,8 @@ Return this exact JSON structure:
 }` },
       ],
     })
-    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
-
-    const parsed = JSON.parse(result.content.trim())
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON from AI")
+    const parsed = result.data
 
     // Cache the AI result so subsequent loads are instant
     await supabase.from("neighborhood_reports").upsert(

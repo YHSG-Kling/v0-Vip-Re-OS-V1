@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { createPortalInviteForContact } from "./portal-invites"
 
 // ============================================================================
@@ -601,7 +601,7 @@ Return ONLY valid JSON with this exact structure:
 Provide exactly 3 comparable sales. Be conservative with estimates. The narrative should be professional and informative.`
 
   try {
-    const result = await gatewayChat({
+    const result = await gatewayChatJSON<AIValuationResponse>({
       model:     "anthropic/claude-sonnet-4-20250514",
       maxTokens: 2000,
       messages: [
@@ -609,12 +609,8 @@ Provide exactly 3 comparable sales. Be conservative with estimates. The narrativ
         { role: "user",   content: prompt },
       ],
     })
-    if (!result.ok || !result.content) throw new Error(result.error ?? "No text response from AI")
-
-    const jsonMatch = result.content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error("No JSON found in response")
-
-    return JSON.parse(jsonMatch[0]) as AIValuationResponse
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON valuation from AI")
+    return result.data
   } catch (error) {
     console.error("Error generating AI valuation:", error)
     // Return fallback estimate based on typical price per sqft

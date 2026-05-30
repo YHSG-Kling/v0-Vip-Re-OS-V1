@@ -56,3 +56,39 @@ export async function gatewayChat(params: {
   if (!res.ok) return { ok: false, content: null, error: res.error ?? `HTTP ${res.status}` }
   return { ok: true, content: res.data?.choices?.[0]?.message?.content ?? null, error: null }
 }
+
+export interface GatewayChatJSONResult<T> {
+  ok:      boolean
+  data:    T | null
+  /** The raw response text from the model — included on parse failure so the caller can log it. */
+  raw:     string | null
+  error:   string | null
+}
+
+/**
+ * Variant of gatewayChat that expects a JSON object in the response. Robust to common gateway →
+ * Anthropic translation artifacts (preamble text, ```json fences, surrounding prose) — extracts the
+ * first {...} block and parses it. Five callers (home-value, listing-landing, smart-insights ×2,
+ * performance-predictor) used to copy this 4-line pattern by hand and two of them drifted to a
+ * bare `JSON.parse(content.trim())` that throws on a single fenced response — this helper kills
+ * the variant.
+ *
+ * Returns `{ok:false, error}` on every failure mode (no key, gateway 5xx, empty content, JSON
+ * parse failure) so callers can branch on `ok` instead of try/catching different error shapes.
+ */
+export async function gatewayChatJSON<T = unknown>(params: {
+  model: string
+  messages: GatewayChatMessage[]
+  maxTokens?: number
+  temperature?: number
+}): Promise<GatewayChatJSONResult<T>> {
+  const r = await gatewayChat(params)
+  if (!r.ok || !r.content) return { ok: false, data: null, raw: r.content, error: r.error ?? "No content from gateway" }
+  const match = r.content.match(/\{[\s\S]*\}/)
+  if (!match)                return { ok: false, data: null, raw: r.content, error: "No JSON object found in gateway response" }
+  try {
+    return { ok: true, data: JSON.parse(match[0]) as T, raw: r.content, error: null }
+  } catch (e) {
+    return { ok: false, data: null, raw: r.content, error: `JSON parse failed: ${(e as Error).message}` }
+  }
+}

@@ -13,8 +13,7 @@
  */
 
 import "server-only"
-import { generateObject } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 const ParsedNoteSchema = z.object({
@@ -41,13 +40,15 @@ export async function parseVoiceNote(transcript: string, opts?: {
     return { noteBody: "", tasks: [], sentiment: "neutral", nextStep: null }
   }
 
-  // Routed through Vercel AI Gateway — single egress, metered, key-rotation safe.
-  // Falls back to the deterministic rule extractor when the gateway key is missing.
+  // Routed through generateObjectRouted: single egress (gateway), AI_TASK_ROUTING governs the
+  // model, automatic fallback model, fair-use accounting, cost-tracking — all the things raw
+  // `generateObject` + `resolveModel` skipped. Falls back to the deterministic rule extractor when
+  // the gateway key is missing or the routed call throws.
   if (process.env.AI_GATEWAY_API_KEY) {
     try {
-      const { object } = await generateObject({
-        model: resolveModel("openai/gpt-4o-mini"),
-        schema: ParsedNoteSchema,
+      const { object } = await generateObjectRouted({
+        feature: "lead_data_extraction",
+        schema:  ParsedNoteSchema,
         system:
           "You convert a real-estate agent's spoken note about a contact into a structured CRM update. " +
           "The noteBody is a third-person summary of what was discussed/observed (NOT the raw transcript). " +

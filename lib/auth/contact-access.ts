@@ -53,15 +53,21 @@ export async function assertCanActOnContact(contactId: string): Promise<ContactA
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
 
+  // Parallel — the contact lookup and the caller-profile lookup are independent (both keyed off
+  // already-resolved ids). Doing them in parallel saves one round-trip on every gated request,
+  // and this gate now fires on every CRM contact page render plus every quick-action click.
   const svc = createServiceClient()
-  const { data: contact } = await svc.from("contacts")
-    .select("id, brokerage_id, agent_id, email, mailing_address, mailing_city, mailing_state, mailing_zip")
-    .eq("id", contactId).maybeSingle()
-  if (!contact) return { ok: false, error: "Contact not found" }
-  const c = contact as ContactAccessRow
+  const [contactRes, profileRes] = await Promise.all([
+    svc.from("contacts")
+      .select("id, brokerage_id, agent_id, email, mailing_address, mailing_city, mailing_state, mailing_zip")
+      .eq("id", contactId).maybeSingle(),
+    svc.from("users")
+      .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
 
-  const { data: profile } = await svc.from("users")
-    .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
+  if (!contactRes.data) return { ok: false, error: "Contact not found" }
+  const c = contactRes.data as ContactAccessRow
+  const profile = profileRes.data
 
   // Platform admin / staff always allowed
   if (profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)) {
