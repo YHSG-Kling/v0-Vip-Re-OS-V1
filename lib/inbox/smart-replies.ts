@@ -12,8 +12,8 @@
  */
 
 import "server-only"
-import { openai } from "@ai-sdk/openai"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 
 const SmartReplySchema = z.object({
@@ -56,11 +56,12 @@ const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => 
 }
 
 export async function generateSmartReplies(input: BuildContextInput): Promise<SmartReply[]> {
-  if (!process.env.OPENAI_API_KEY) return FALLBACK_REPLIES(input)
+  // Routed through Vercel AI Gateway. Falls back to canned replies when the gateway key is missing.
+  if (!process.env.AI_GATEWAY_API_KEY) return FALLBACK_REPLIES(input)
 
   try {
     const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: SmartReplySchema,
       system:
         "You are a real estate agent's reply assistant. Produce three short replies to the inbound message. " +

@@ -2,9 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
-
-const anthropic = new Anthropic()
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ============================================================================
 // Types
@@ -215,13 +213,12 @@ export async function getNeighborhoodData(listingId: string): Promise<Neighborho
   if (!listing) return null
 
   try {
-    const msg = await anthropic.messages.create({
-      model: "claude-opus-4-20250514",
-      max_tokens: 600,
+    // Routed through Vercel AI Gateway — single egress, metered, key-rotation safe.
+    const result = await gatewayChat({
+      model:     "anthropic/claude-opus-4-20250514",
+      maxTokens: 600,
       messages: [
-        {
-          role: "user",
-          content: `You are a real estate data assistant. Based on the property location below, provide a realistic neighborhood summary. Return ONLY valid JSON — no markdown, no explanation.
+        { role: "user", content: `You are a real estate data assistant. Based on the property location below, provide a realistic neighborhood summary. Return ONLY valid JSON — no markdown, no explanation.
 
 Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
 
@@ -234,13 +231,12 @@ Return this exact JSON structure:
   "crime_index": number (1-10, lower is safer),
   "ai_summary": string (2-3 sentences about the neighborhood for a buyer),
   "data_source": "AI-estimated"
-}`,
-        },
+}` },
       ],
     })
+    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
 
-    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
-    const parsed = JSON.parse(raw)
+    const parsed = JSON.parse(result.content.trim())
 
     // Cache the AI result so subsequent loads are instant
     await supabase.from("neighborhood_reports").upsert(

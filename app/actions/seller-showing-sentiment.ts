@@ -19,8 +19,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { openai } from "@ai-sdk/openai"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 
 export interface ShowingSentimentSummary {
@@ -48,12 +48,13 @@ const ThemeExtractionSchema = z.object({
 })
 
 async function extractThemes(feedbackTexts: string[]) {
-  if (!process.env.OPENAI_API_KEY || feedbackTexts.length === 0) {
+  // Routed through Vercel AI Gateway — single egress, metered.
+  if (!process.env.AI_GATEWAY_API_KEY || feedbackTexts.length === 0) {
     return null
   }
   try {
     const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: ThemeExtractionSchema,
       system:
         "You analyze buyer-side showing feedback for a single home and extract the most-mentioned positives and objections. " +

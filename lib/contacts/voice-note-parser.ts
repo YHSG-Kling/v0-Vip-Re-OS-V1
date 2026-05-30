@@ -13,8 +13,8 @@
  */
 
 import "server-only"
-import { openai } from "@ai-sdk/openai"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 
 const ParsedNoteSchema = z.object({
@@ -41,10 +41,12 @@ export async function parseVoiceNote(transcript: string, opts?: {
     return { noteBody: "", tasks: [], sentiment: "neutral", nextStep: null }
   }
 
-  if (process.env.OPENAI_API_KEY) {
+  // Routed through Vercel AI Gateway — single egress, metered, key-rotation safe.
+  // Falls back to the deterministic rule extractor when the gateway key is missing.
+  if (process.env.AI_GATEWAY_API_KEY) {
     try {
       const { object } = await generateObject({
-        model: openai("gpt-4o-mini"),
+        model: resolveModel("openai/gpt-4o-mini"),
         schema: ParsedNoteSchema,
         system:
           "You convert a real-estate agent's spoken note about a contact into a structured CRM update. " +

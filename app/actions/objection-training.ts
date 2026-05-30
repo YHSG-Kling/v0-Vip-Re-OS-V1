@@ -15,7 +15,7 @@
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { getScenarioByKey, OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 
@@ -314,7 +314,7 @@ Stay in character as the prospect. Don't break role in the prospectReply. Don't 
 
   try {
     const result = await generateText({
-      model: anthropic(MODEL),
+      model: resolveModel(`anthropic/${MODEL}` as Parameters<typeof resolveModel>[0]),
       system: systemPrompt,
       prompt: userPrompt,
       maxOutputTokens: 600,
@@ -365,7 +365,7 @@ Return ONLY a JSON object with:
 
   try {
     const result = await generateText({
-      model: anthropic(MODEL),
+      model: resolveModel(`anthropic/${MODEL}` as Parameters<typeof resolveModel>[0]),
       prompt,
       maxOutputTokens: 600,
       temperature: 0.3,

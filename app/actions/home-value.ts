@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { createPortalInviteForContact } from "./portal-invites"
 
 // ============================================================================
@@ -568,8 +568,9 @@ async function generateAIValuation(propertyData: {
   yearBuilt: number
   condition: string
 }): Promise<AIValuationResponse> {
-  const anthropic = new Anthropic()
-
+  // Routed through the Vercel AI Gateway (single egress, single key rotation, healer-observable).
+  // Direct @anthropic-ai/sdk calls bypassed the gateway entirely — no cost metering, no rate-limit
+  // pool, no automatic model-deprecation healing.
   const prompt = `Property: ${propertyData.propertyAddress}, ${propertyData.city}, ${propertyData.state} ${propertyData.zipCode}
 Beds: ${propertyData.bedrooms}, Baths: ${propertyData.bathrooms}, Sq Ft: ${propertyData.squareFeet}
 Year Built: ${propertyData.yearBuilt}, Condition: ${propertyData.condition}
@@ -600,31 +601,20 @@ Return ONLY valid JSON with this exact structure:
 Provide exactly 3 comparable sales. Be conservative with estimates. The narrative should be professional and informative.`
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2000,
+    const result = await gatewayChat({
+      model:     "anthropic/claude-sonnet-4-20250514",
+      maxTokens: 2000,
       messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
+        { role: "system", content: "You are a real estate market analyst. Generate conservative property valuation estimates. Respond with ONLY valid JSON, no markdown formatting." },
+        { role: "user",   content: prompt },
       ],
-      system: "You are a real estate market analyst. Generate conservative property valuation estimates. Respond with ONLY valid JSON, no markdown formatting.",
     })
+    if (!result.ok || !result.content) throw new Error(result.error ?? "No text response from AI")
 
-    const textContent = response.content.find((c) => c.type === "text")
-    if (!textContent || textContent.type !== "text") {
-      throw new Error("No text response from AI")
-    }
+    const jsonMatch = result.content.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error("No JSON found in response")
 
-    // Parse JSON from response
-    const jsonMatch = textContent.text.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error("No JSON found in response")
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as AIValuationResponse
-    return parsed
+    return JSON.parse(jsonMatch[0]) as AIValuationResponse
   } catch (error) {
     console.error("Error generating AI valuation:", error)
     // Return fallback estimate based on typical price per sqft

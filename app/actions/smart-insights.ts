@@ -1,9 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import Anthropic from "@anthropic-ai/sdk"
-
-const anthropic = new Anthropic()
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ==================== SMART INSIGHTS GENERATION ====================
 
@@ -156,13 +154,12 @@ async function generateSchoolInsights(
   const ratingHint = preferences?.minRating ? `Only include schools rated ${preferences.minRating}+.` : ""
 
   try {
-    const msg = await anthropic.messages.create({
-      model: "claude-opus-4-20250514",
-      max_tokens: 600,
+    // Routed through Vercel AI Gateway — single egress, single key rotation.
+    const result = await gatewayChat({
+      model:     "anthropic/claude-opus-4-20250514",
+      maxTokens: 600,
       messages: [
-        {
-          role: "user",
-          content: `You are a real estate data assistant. Based on the property location below, provide realistic school data for that area. Return ONLY valid JSON — no markdown, no explanation.
+        { role: "user", content: `You are a real estate data assistant. Based on the property location below, provide realistic school data for that area. Return ONLY valid JSON — no markdown, no explanation.
 
 Property: ${address}, ${city}, ${state} ${zip}
 ${filterHint} ${ratingHint}
@@ -175,13 +172,11 @@ Return this exact JSON structure:
   "summary": { "avgRating": number, "withinWalkingDistance": number },
   "districtInfo": { "name": string, "overallRating": number, "studentTeacherRatio": string },
   "dataSource": "AI-estimated"
-}`,
-        },
+}` },
       ],
     })
-
-    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
-    const parsed = JSON.parse(raw)
+    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
+    const parsed = JSON.parse(result.content.trim())
 
     // Apply preference filters on top of AI result
     let schools = parsed.nearbySchools || []
@@ -282,15 +277,14 @@ async function generateNeighborhoodInsights(propertyData: Record<string, any>): 
     description: null as string | null,
   }
 
-  // Ask AI for everything else — safety, amenities, demographics, market trends
+  // Ask AI for everything else — safety, amenities, demographics, market trends.
+  // Routed through Vercel AI Gateway.
   try {
-    const msg = await anthropic.messages.create({
-      model: "claude-opus-4-20250514",
-      max_tokens: 700,
+    const result = await gatewayChat({
+      model:     "anthropic/claude-opus-4-20250514",
+      maxTokens: 700,
       messages: [
-        {
-          role: "user",
-          content: `You are a real estate data assistant. Based on this property location, provide realistic neighborhood data. Return ONLY valid JSON — no markdown, no explanation.
+        { role: "user", content: `You are a real estate data assistant. Based on this property location, provide realistic neighborhood data. Return ONLY valid JSON — no markdown, no explanation.
 
 Property: ${address}, ${city}, ${state} ${zip}
 ${hasRealScores ? `Known scores — Walk: ${propertyData.walk_score ?? "?"}, Bike: ${propertyData.bike_score ?? "?"}, Transit: ${propertyData.transit_score ?? "?"}` : ""}
@@ -330,13 +324,11 @@ Return this exact JSON structure:
     "inventoryLevel": "low"|"moderate"|"high"
   },
   "dataSource": "AI-estimated"
-}`,
-        },
+}` },
       ],
     })
-
-    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
-    const parsed = JSON.parse(raw)
+    if (!result.ok || !result.content) throw new Error(result.error ?? "No response from AI")
+    const parsed = JSON.parse(result.content.trim())
 
     // Override walkability with real scores if available
     if (hasRealScores) {

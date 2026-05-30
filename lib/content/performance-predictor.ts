@@ -6,7 +6,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { processKernelEvent, KernelEvent } from "@/lib/kernel"
-import Anthropic from "@anthropic-ai/sdk"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -88,8 +88,6 @@ export async function predictContentPerformance(
     let rationale = "Unable to analyze text."
     
     try {
-      const anthropic = new Anthropic()
-      
       const prompt = `Analyze this marketing content for a real estate professional and score it on four dimensions (0-25 each):
 
 CONTENT:
@@ -106,32 +104,32 @@ Score each dimension:
 Return ONLY valid JSON in this exact format, no other text:
 {"hook": <number>, "clarity": <number>, "cta": <number>, "local": <number>, "rationale": "<brief explanation of strengths and weaknesses>"}`
 
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        messages: [{ role: "user", content: prompt }],
+      // Routed through Vercel AI Gateway — single egress, metered, healer-observable.
+      const result = await gatewayChat({
+        model:     "anthropic/claude-sonnet-4-20250514",
+        maxTokens: 500,
+        messages:  [{ role: "user", content: prompt }],
       })
-
-      const textContent = response.content[0]
-      if (textContent.type === "text") {
+      if (result.ok && result.content) {
         try {
-          // Parse the JSON response
-          const jsonMatch = textContent.text.match(/\{[\s\S]*\}/)
+          const jsonMatch = result.content.match(/\{[\s\S]*\}/)
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0])
-            const hook = Math.min(25, Math.max(0, Number(parsed.hook) || 0))
+            const hook    = Math.min(25, Math.max(0, Number(parsed.hook)    || 0))
             const clarity = Math.min(25, Math.max(0, Number(parsed.clarity) || 0))
-            const cta = Math.min(25, Math.max(0, Number(parsed.cta) || 0))
-            const local = Math.min(25, Math.max(0, Number(parsed.local) || 0))
+            const cta     = Math.min(25, Math.max(0, Number(parsed.cta)     || 0))
+            const local   = Math.min(25, Math.max(0, Number(parsed.local)   || 0))
             textScore = hook + clarity + cta + local
             rationale = parsed.rationale || "Analysis complete."
           }
         } catch (parseError) {
-          console.error("[ContentPredictor] Failed to parse Claude response:", parseError)
+          console.error("[ContentPredictor] Failed to parse gateway response:", parseError)
         }
+      } else if (result.error) {
+        console.error("[ContentPredictor] Gateway error:", result.error)
       }
     } catch (claudeError) {
-      console.error("[ContentPredictor] Claude API error:", claudeError)
+      console.error("[ContentPredictor] AI gateway error:", claudeError)
       // Fall back to default text score
     }
 

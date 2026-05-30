@@ -15,7 +15,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -327,7 +327,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
 
   try {
     const result = await generateText({
-      model: anthropic(AI_MODEL),
+      model: resolveModel(`anthropic/${AI_MODEL}` as Parameters<typeof resolveModel>[0]),
       system: systemPrompt,
       prompt: userPrompt,
       maxOutputTokens: MAX_TOKENS,
