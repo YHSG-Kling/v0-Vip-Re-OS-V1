@@ -63,8 +63,11 @@ export async function verifyAddressViaLob(address: LobAddressInput): Promise<{ d
     auth:      { style: "basic", username: key, password: "" },
   })
 
+  // Transient failure (timeout, 5xx, network) — return data:null so callers DON'T overwrite a
+  // previously-verified address with a synthetic `verified:false`. A real Lob 'undeliverable'
+  // response (res.ok=true with deliverability=undeliverable) IS authoritative and DOES write false.
   if (!res.ok || !res.data) {
-    return { data: { verified: false, deliverability: null, standardized: {}, raw: res.error, error: res.error ?? "Lob unreachable" }, cost }
+    return { data: null, cost }
   }
 
   const d = res.data

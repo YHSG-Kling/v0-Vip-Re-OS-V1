@@ -44,19 +44,27 @@ export async function rollupIntentPhrases(opts?: {
     .limit(20_000)
   if (error) return { stats: [], error: error.message }
 
-  // Need contact-conversion: which lead_ids were promoted to contacts. One small query.
-  const leadIds = Array.from(new Set((rows ?? []).map(r => r.lead_id as string | null).filter(Boolean))) as string[]
-  let contactByLeadId = new Map<string, boolean>()
-  if (leadIds.length > 0) {
+  // Which of those lead_ids became a contact? contact-creator stamps `notes` with
+  // "Promoted from lead <leadId>". Building a single PostgREST `.or()` over up to 20k UUIDs would
+  // blow the URL length AND interpolating raw ids into the `.or()` grammar is unsafe. Instead:
+  // pull every contact whose `source` is one of the lead-conversion buckets within the same
+  // window, parse the embedded lead-uuid out of `notes` locally, and intersect with the leadIds
+  // set we already have in memory.
+  const leadIds = new Set<string>(
+    (rows ?? []).map(r => r.lead_id as string | null).filter((x): x is string => !!x),
+  )
+  const contactByLeadId = new Map<string, boolean>()
+  if (leadIds.size > 0) {
     const { data: contacts } = await svc
       .from("contacts")
-      .select("id, source, notes")
-      .or(leadIds.map(id => `notes.ilike.%${id}%`).join(","))
-      .limit(5000)
+      .select("id, source, notes, created_at")
+      .in("source", ["lead_promotion", "lead_import", "lead_conversion", "crm_import"])
+      .gte("created_at", sinceIso)
+      .limit(20_000)
+    const NOTES_LEAD_RE = /Promoted from lead ([0-9a-f-]{32,36})/i
     for (const c of contacts ?? []) {
-      // contact-creator stamps `notes` with "Promoted from lead <leadId>" so this match is the
-      // existing convention — keeps us off a JSONB join.
-      for (const id of leadIds) if ((c.notes as string | null)?.includes(id)) contactByLeadId.set(id, true)
+      const m = NOTES_LEAD_RE.exec(((c as any).notes as string | null) ?? "")
+      if (m && leadIds.has(m[1])) contactByLeadId.set(m[1], true)
     }
   }
 

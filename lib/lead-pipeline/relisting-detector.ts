@@ -61,9 +61,18 @@ export async function detectRelistedListings(opts?: { limit?: number }): Promise
     return { matches: [], emitted: 0, error: null }
   }
 
-  // Normalize address: lower + strip punctuation + collapse whitespace.
-  const norm = (s: unknown): string =>
-    typeof s !== "string" ? "" : s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim()
+  // Normalize address: lower + strip punctuation + collapse whitespace. Then require a real
+  // street-ish shape — at least one digit AND at least three word tokens — so "Austin", "123",
+  // or a bare city string can't false-match across unrelated properties (which would otherwise
+  // fan a spurious LISTING_RELISTED notification + sequence enrollment).
+  const norm = (s: unknown): string => {
+    if (typeof s !== "string") return ""
+    const cleaned = s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim()
+    const hasDigit = /\d/.test(cleaned)
+    const tokens   = cleaned.split(/\s+/).filter(Boolean)
+    if (!hasDigit || tokens.length < 3) return ""  // too-loose match — refuse to compare on it
+    return cleaned
+  }
   const addrOf = (rd: any): string =>
     norm(rd?.propertyAddress ?? rd?.property_address ?? rd?.address ?? rd?.normalized_preview?.propertyAddress)
 

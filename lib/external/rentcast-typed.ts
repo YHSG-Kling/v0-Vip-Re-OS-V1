@@ -77,6 +77,11 @@ export async function callRentcastGet<P extends RentcastGetPath>(
   query: RentcastGetQuery<P>,
   apiKey: string,
 ): Promise<{ ok: boolean; status: number | null; data: RentcastGetResult<P> | null; error: string | null }> {
+  // Reject up front — sending `X-Api-Key: ""` to RentCast produces a 401 that wastes a request
+  // and misleads the healer into proposing an auth_change fix.
+  if (!apiKey || !apiKey.trim()) {
+    return { ok: false, status: null, data: null, error: "RentCast apiKey is required" }
+  }
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   // openapi-typescript types the query as Record<string, possibly undefined> — coerce to the
   // string-keyed map our gateway expects.

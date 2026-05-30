@@ -2,6 +2,7 @@ import { redirect }            from "next/navigation"
 import { createClient }         from "@/lib/supabase/server"
 import { BuyerOverviewClient }  from "./buyer-overview-client"
 import { getBuyerEnabledGates } from "@/app/actions/buyer-lifecycle-core"
+import { ContactQuickActions }  from "@/components/contact/ContactQuickActions"
 
 /**
  * Agent-facing CRM contact dashboard. Unified entry point for buyers, sellers,
@@ -59,6 +60,16 @@ export default async function ContactDetailPage({ params }: PageProps) {
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
+      {/* AI quick actions — server-action-gated to the contact's owning agent / brokerage / platform */}
+      <div className="p-4 pb-0">
+        <ContactQuickActions
+          contactId={contactId}
+          hasEmail={!!contact.email}
+          hasAddress={!!contact.mailing_address}
+          emailVerified={contact.email_verified ?? null}
+          addressVerified={contact.mailing_address_verified ?? null}
+        />
+      </div>
       <BuyerOverviewClient
         buyerId={contactId}
         contact={contact}

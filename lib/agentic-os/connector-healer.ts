@@ -47,8 +47,9 @@ export interface ProposalRow {
   status:            string
 }
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
-const MODEL = process.env.HEALER_MODEL ?? "claude-haiku-4-5-20251001"
+// AI-Gateway model slug — every Claude call routes through Vercel AI Gateway for unified billing
+// + healer self-observability. Override via env.
+const MODEL = process.env.HEALER_MODEL ?? "anthropic/claude-haiku-4-5-20251001"
 
 export async function proposeConnectorHealing(
   params: ProposeHealingParams,
@@ -103,19 +104,19 @@ export async function proposeConnectorHealing(
     }))
   } catch { /* doc search is best-effort */ }
 
-  // 4. Ask the LLM for a structured proposal.
-  if (!ANTHROPIC_KEY) {
+  // 4. Ask the LLM for a structured proposal via the Vercel AI Gateway.
+  if (!process.env.AI_GATEWAY_API_KEY) {
     const p = await writeRow({
       proposal_kind:    "no_evidence",
-      proposal_summary: "Missing ANTHROPIC_API_KEY — cannot generate healing proposal.",
+      proposal_summary: "Missing AI_GATEWAY_API_KEY — cannot generate healing proposal.",
       proposal_payload: {},
       docs_evidence:    docsEvidence,
       confidence:       0,
     })
-    return { proposal: p, error: "missing ANTHROPIC_API_KEY" }
+    return { proposal: p, error: "missing AI_GATEWAY_API_KEY" }
   }
 
-  const { callConnector } = await import("./connector-gateway")
+  const { gatewayChat } = await import("@/lib/ai/gateway-chat")
   const prompt =
     "You are a connector-healing assistant. A vendor connector is failing. Diagnose the cause and " +
     "propose ONE structured fix. Be concrete: cite the docs URL(s) in `docs_evidence` and return a " +
@@ -136,21 +137,13 @@ export async function proposeConnectorHealing(
     `  "confidence": 0..1\n` +
     `}`
 
-  const llm = await callConnector<any>({
-    connector: "anthropic",
-    baseUrl:   "https://api.anthropic.com/v1",
-    path:      "messages",
-    method:    "POST",
-    auth:      { style: "header", name: "x-api-key", value: ANTHROPIC_KEY },
-    headers:   { "anthropic-version": "2023-06-01" },
-    body: {
-      model: MODEL,
-      max_tokens: 1024,
-      messages: [{ role: "user", content: prompt }],
-    },
+  const llm = await gatewayChat({
+    model: MODEL,
+    maxTokens: 1024,
+    messages: [{ role: "user", content: prompt }],
   })
 
-  if (!llm.ok || !llm.data) {
+  if (!llm.ok || !llm.content) {
     const p = await writeRow({
       proposal_kind:    "no_evidence",
       proposal_summary: `LLM call failed: ${llm.error ?? "unknown"}`,
@@ -161,7 +154,7 @@ export async function proposeConnectorHealing(
     return { proposal: p, error: llm.error }
   }
 
-  const text = (llm.data.content ?? []).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim()
+  const text = llm.content.trim()
   let parsed: any
   try { parsed = JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "")) } catch {
     parsed = { proposal_kind: "no_evidence", proposal_summary: "LLM response not JSON", proposal_payload: { raw: text.slice(0, 500) }, confidence: 0 }

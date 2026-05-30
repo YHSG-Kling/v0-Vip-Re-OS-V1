@@ -31,8 +31,8 @@ export interface DealInvestigation {
   warnings:      string[]
 }
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
-const MODEL = process.env.DEAL_INVESTIGATOR_MODEL ?? "claude-haiku-4-5-20251001"
+// AI-Gateway model slug — Claude synthesis routes through Vercel AI Gateway.
+const MODEL = process.env.DEAL_INVESTIGATOR_MODEL ?? "anthropic/claude-haiku-4-5-20251001"
 
 export async function investigateDeal(params: DealInvestigationParams): Promise<DealInvestigation> {
   const result: DealInvestigation = {
@@ -111,39 +111,29 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
     }
   } catch (e) { result.warnings.push(`batchdata: ${(e as Error).message}`) }
 
-  // (4) Synthesize — one paragraph, AI-ISA-ready.
-  if (!ANTHROPIC_KEY) {
-    result.summary = "Claude not configured — sources collected; no synthesis."
+  // (4) Synthesize — one paragraph, AI-ISA-ready, via the Vercel AI Gateway.
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    result.summary = "AI Gateway not configured — sources collected; no synthesis."
     return result
   }
   try {
-    const { callConnector } = await import("./connector-gateway")
-    const llm = await callConnector<any>({
-      connector: "anthropic",
-      baseUrl:   "https://api.anthropic.com/v1",
-      path:      "messages",
-      method:    "POST",
-      auth:      { style: "header", name: "x-api-key", value: ANTHROPIC_KEY },
-      headers:   { "anthropic-version": "2023-06-01" },
-      body: {
-        model: MODEL,
-        max_tokens: 320,
-        messages: [{
-          role: "user",
-          content:
-            "Synthesize ONE paragraph (3-5 sentences) for an inside sales rep about why this lead matters right now. " +
-            "Lead with the strongest motivation signal. End with a concrete next-step suggestion. NO bullet points.\n\n" +
-            `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
-            `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
-            `PROPERTY (BatchData): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
-        }],
-      },
+    const { gatewayChat } = await import("@/lib/ai/gateway-chat")
+    const llm = await gatewayChat({
+      model: MODEL,
+      maxTokens: 320,
+      messages: [{
+        role: "user",
+        content:
+          "Synthesize ONE paragraph (3-5 sentences) for an inside sales rep about why this lead matters right now. " +
+          "Lead with the strongest motivation signal. End with a concrete next-step suggestion. NO bullet points.\n\n" +
+          `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
+          `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
+          `PROPERTY (BatchData): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
+      }],
     })
-    if (llm.ok && llm.data) {
-      const text = (llm.data.content ?? []).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim()
-      result.summary = text.slice(0, 1500)
-      const usage = llm.data.usage ?? {}
-      result.cost += (usage.input_tokens ?? 0) / 1_000_000 * 1.0 + (usage.output_tokens ?? 0) / 1_000_000 * 5.0
+    if (llm.ok && llm.content) {
+      result.summary = llm.content.trim().slice(0, 1500)
+      // Gateway dashboard is the source of truth for token cost; nothing to add to result.cost here.
     } else {
       result.warnings.push(`synthesis: ${llm.error}`)
     }
