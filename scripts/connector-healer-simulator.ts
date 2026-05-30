@@ -41,7 +41,13 @@ ok(getConnectorSpec("exa")?.npmSdk        === "exa-js",              "registry: 
 ok(getConnectorSpec("peopledata")?.npmSdk === "peopledatalabs",      "registry: peopledata npmSdk recorded (evaluate later)")
 ok(getConnectorSpec("rentcast")?.npmSdk    === undefined,            "registry: rentcast has NO npmSdk (REST is canonical)")
 ok(getConnectorSpec("batchdata")?.npmSdk   === undefined,            "registry: batchdata has NO npmSdk (REST is canonical)")
-ok(getConnectorSpec("d_id")?.npmSdk        === undefined,            "registry: d_id has NO npmSdk for core video (REST keep)")
+ok(getConnectorSpec("d_id")?.npmSdk === "@d-id/agents-sdk",          "registry: d_id npmSdk recorded (agents-sdk for live avatar)")
+
+// Provider-supplied richer references (OpenAPI / MCP) — used by the healer + future codegen
+ok(!!getConnectorSpec("rentcast")?.openapiSpec?.endsWith("rentcast_api_openapi_spec_v1.json"),
+   "registry: rentcast openapiSpec URL recorded")
+ok(!!getConnectorSpec("batchdata")?.mcpServer?.githubUrl?.includes("batchdata-mcp-server"),
+   "registry: batchdata MCP server recorded")
 
 // Category lookups (drive healer doc-search priorities)
 ok(listConnectorsByCategory("ai").length >= 3,                   "registry: ≥3 ai connectors (anthropic, google_ai, exa, …)")

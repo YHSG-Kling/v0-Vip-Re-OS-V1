@@ -38,6 +38,10 @@
       "schedule": "0 5 * * *"
     },
     {
+      "path": "/api/cron/connector-auto-applier",
+      "schedule": "0 */1 * * *"
+    },
+    {
       "path": "/api/cron/actor-health",
       "schedule": "0 6 * * *"
     },

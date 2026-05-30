@@ -34,6 +34,12 @@ export interface ConnectorSpec {
    *  tooling can see which vendors have typed clients to consider adopting. ABSENCE means there is
    *  no published TS/Node SDK and we should keep our fetch-via-gateway client. */
   npmSdk?:    string
+  /** URL to the vendor's OpenAPI / Swagger spec when published — the healer can reference this
+   *  directly for typed shapes instead of free-form doc text. */
+  openapiSpec?: string
+  /** Set when the vendor publishes a Model Context Protocol server we can call from agentic
+   *  contexts (some vendors expose richer / cheaper data through MCP than their REST API). */
+  mcpServer?: { url?: string; githubUrl?: string }
   /** Free-form tags for downstream filtering / scoring (`buyer-intent`, `seller-intent`, `mls`, …). */
   tags?:      string[]
 }
@@ -60,6 +66,9 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "RENTCAST_API_KEY",
     docsUrl:   "https://developers.rentcast.io/",
     githubUrl: "https://github.com/RentCast",
+    // OpenAPI spec — typed shapes the healer can read directly + the source for any future
+    // codegen swap (e.g. openapi-typescript) when we want compile-time guarantees.
+    openapiSpec: "https://raw.githubusercontent.com/RentCast/api-resources/main/openapi-spec/rentcast_api_openapi_spec_v1.json",
     tags:      ["mls", "listings", "sales", "rentals"],
   },
   // ── Property data / motivated-seller ───────────────────────────────────
@@ -71,6 +80,10 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "BATCHDATA_API_KEY",
     docsUrl:   "https://docs.batchdata.com/",
     githubUrl: "https://github.com/batchdataco",
+    // BatchData publishes an MCP server (also a Vercel AI SDK demo) — agentic callers can use the
+    // MCP for richer tool surfaces than the raw REST API. Recorded so the healer can suggest
+    // routing through MCP when REST endpoints drift.
+    mcpServer: { githubUrl: "https://github.com/batchdataco/batchdata-mcp-server" },
     tags:      ["property", "motivated-seller", "off-market", "skip-trace"],
   },
   // ── Web scrapers + AI search ───────────────────────────────────────────
@@ -138,6 +151,9 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "D_ID_API_KEY",
     docsUrl:   "https://docs.d-id.com/",
     githubUrl: "https://github.com/de-id",
+    // Typed agents SDK — adopt when we ship the live-avatar conversational surface (browser);
+    // the core REST video-generation API can keep the gateway client for batch renders.
+    npmSdk:    "@d-id/agents-sdk",
     tags:      ["video", "avatar", "lip-sync"],
   },
   elevenlabs: {

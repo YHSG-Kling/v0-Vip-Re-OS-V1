@@ -175,5 +175,54 @@ export async function proposeConnectorHealing(
     confidence:       typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0,
   })
 
+  // Notify superadmin + platform-staff users so the proposal queue is acted on quickly. Best-effort:
+  // never fail the healer on a notification write — the proposal itself is the source of truth, the
+  // notification is just a UI ping. Skip when proposal write itself failed (proposal===null).
+  if (proposal) {
+    try {
+      await notifyPlatformStaffOfProposal(supabase, params.connector, proposal)
+    } catch (err) {
+      console.error("[connector-healer] notify failed (non-fatal):", err)
+    }
+  }
+
   return { proposal, error: null }
+}
+
+/** Targeted bell notification to every superadmin + platform-staff user — surfaces the new
+ *  proposal in the same in-app notification feed they already watch. */
+async function notifyPlatformStaffOfProposal(
+  supabase:  ReturnType<typeof createServiceClient>,
+  connector: string,
+  proposal:  ProposalRow,
+): Promise<void> {
+  // Resolve recipients via the platform-staff set used elsewhere (resolve-user-role.ts).
+  const { PLATFORM_STAFF_ROLES } = await import("@/lib/auth/resolve-user-role")
+  // platform_role is the canonical staff field; user_type='superadmin' is the legacy gate. Match
+  // either, then dedupe ids client-side so a superadmin who also has a platform_role isn't notified
+  // twice for the same proposal.
+  const platformRoles = (PLATFORM_STAFF_ROLES as readonly string[]).join(",")
+  const { data: staff } = await supabase
+    .from("users")
+    .select("id")
+    .or(`user_type.eq.superadmin,platform_role.in.(${platformRoles})`)
+    .limit(500)
+  if (!staff || staff.length === 0) return
+  const uniqueIds = Array.from(new Set(staff.map((u: any) => u.id as string).filter(Boolean)))
+  if (uniqueIds.length === 0) return
+
+  const title = `Healing proposal: ${connector}`
+  const body  = `${proposal.proposal_kind}: ${proposal.proposal_summary}`.slice(0, 480)
+  const rows = uniqueIds.map((id) => ({
+    user_id:      id,
+    type:         "connector_healing_proposal",
+    title,
+    body,
+    entity_type:  "connector_healing_proposal",
+    entity_id:    proposal.id,
+    priority:     "high",
+    channel:      "in_app",
+    is_read:      false,
+  }))
+  await supabase.from("notifications").insert(rows)
 }
