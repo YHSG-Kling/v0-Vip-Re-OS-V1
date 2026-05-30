@@ -30,7 +30,9 @@ export interface GatewayRequest {
   body?: unknown
   /** Extra vendor-required headers (e.g. an API version header). Merged after auth. */
   headers?: Record<string, string>
-  auth: GatewayAuth
+  /** Optional — defaults to `{style:"none"}` when omitted, so public probes / health checks
+   *  don't need to spell out anonymous auth. */
+  auth?: GatewayAuth
   /** Optional response shape — when present, the response is adapted + drift is reported. */
   shape?: ConnectorShapeSpec
   /** "json" (default) parses the body as JSON; "text" returns the raw string (HTML scrapers);
@@ -69,18 +71,22 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
   }
   // binary: Content-Type is whatever the caller put in `headers` (e.g. video/*); never overridden.
 
-  switch (req.auth.style) {
+  // auth is optional — when omitted, no auth header is added (callers like public probes /
+  // self-healer pings don't need auth). Without this guard the `.style` access throws and the
+  // "never throws" contract in callConnector is violated.
+  const auth = req.auth ?? { style: "none" as const }
+  switch (auth.style) {
     case "bearer":
-      headers.Authorization = `Bearer ${req.auth.token}`
+      headers.Authorization = `Bearer ${auth.token}`
       break
     case "basic":
-      headers.Authorization = `Basic ${Buffer.from(`${req.auth.username}:${req.auth.password}`).toString("base64")}`
+      headers.Authorization = `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString("base64")}`
       break
     case "header":
-      headers[req.auth.name] = req.auth.value
+      headers[auth.name] = auth.value
       break
     case "query":
-      url.searchParams.set(req.auth.name, req.auth.value)
+      url.searchParams.set(auth.name, auth.value)
       break
     case "none":
       break
@@ -94,7 +100,17 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
  * feature code should reach an external HTTP vendor.
  */
 export async function callConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
-  const { url, headers } = buildAuthedRequest(req)
+  // buildAuthedRequest can throw on malformed baseUrl/path (new URL) — honor the "never throws"
+  // contract by surfacing the failure as a structured ok:false instead.
+  let url: string, headers: Record<string, string>
+  try {
+    ({ url, headers } = buildAuthedRequest(req))
+  } catch (err) {
+    return {
+      ok: false, status: null, data: null, headers: {}, drift: null,
+      error: `Request build failed: ${err instanceof Error ? err.message : String(err)}`,
+    } as GatewayResponse<T>
+  }
   const serializedBody = req.body === undefined
     ? undefined
     : req.bodyType === "form"

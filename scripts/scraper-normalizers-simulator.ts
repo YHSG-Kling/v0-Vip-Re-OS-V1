@@ -42,6 +42,34 @@ const ok = (cond: boolean, msg: string) => { if (cond) pass++; else { fail++; fa
   ok((n.ogImage ?? "").startsWith("https://"),                          "ZenRows: og:image extracted")
 }
 
+// ── ZenRows BUYER + property-alert signals (no longer seller-only) ─────────
+{
+  const buyerHtml = `
+    <html><head>
+      <title>I'm looking to buy a home in Austin TX</title>
+      <meta name="description" content="First-time home buyer pre-approval — searching for a home with 3 bedrooms">
+    </head><body>
+      <p>Got pre-approved for $450K. Looking for a home with 3 bedrooms in 78701.</p>
+      <p>Set up a saved search and email me when new listings come up.</p>
+    </body></html>`
+  const n = normalizeZenRowsHtml(buyerHtml)
+  ok(n.intent.winner === "buyer",                          "ZenRows-buyer: buyer intent wins")
+  ok(n.intent.persona === "first_time_buyer",              "ZenRows-buyer: first_time_buyer persona attached")
+  ok(n.intent.buyerAlertProfile === true,                  "ZenRows-buyer: property-alert profile flagged (saved search)")
+  ok(n.intent.buyer > n.intent.seller,                     "ZenRows-buyer: buyer score > seller score")
+  ok(n.fsboMarker === false,                               "ZenRows-buyer: no FSBO marker on a buyer page")
+}
+
+{
+  // FSBO page now flagged as seller-intent in the structured block too (not just fsboMarker)
+  const sellerHtml = `<html><head><title>For Sale By Owner — must sell my house</title></head><body>
+    <p>FSBO. Asking $325K. (555) 123-4567</p></body></html>`
+  const n = normalizeZenRowsHtml(sellerHtml)
+  ok(n.intent.winner === "seller",                         "ZenRows-seller: seller intent wins")
+  ok(n.intent.persona === "fsbo_seller" || n.intent.persona === "motivated_seller", "ZenRows-seller: FSBO/motivated persona")
+  ok(n.fsboMarker === true,                                "ZenRows-seller: FSBO marker still detected")
+}
+
 // ── Exa intent normalizer ──────────────────────────────────────────────────
 {
   const buyer = normalizeExaIntentRow({

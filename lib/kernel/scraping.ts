@@ -583,6 +583,9 @@ export function normalizeRawSourceRecord(
       mailingAddress:  record.mailingAddress  ?? null,
       sourceUrl:       record.sourceUrl       ?? null,
       leadIdentityKey: identityKey,
+      // Rich intent block (buyer/seller/investor/agent + persona + property-alert + addresses/prices)
+      // populated by ZenRows + Exa normalizers; null when the scraper produced no scoreable text.
+      intent:          record.intent          ?? null,
     },
     processing_status: 'pending',
     source_family:     sourceFamily,

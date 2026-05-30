@@ -26,6 +26,33 @@ export interface ZenRowsNormalized {
   pageTitle:        string | null
   metaDescription:  string | null
   ogImage:          string | null
+  // ── Structured intent (buyer + seller + investor + agent + generic) ──────
+  // ZenRows pages are NOT seller-only — buyer-side pages (saved-search alerts, "looking to buy",
+  // mortgage pre-approval, "wanted" posts, IDX search snapshots) carry just as much signal. The
+  // intent block scores each canonical bucket so the canonical lead-creation gate downstream
+  // gets a structured persona instead of raw HTML.
+  intent: {
+    buyer:    number
+    seller:   number
+    investor: number
+    agent:    number
+    generic:  number
+    /** Highest-scoring bucket. */
+    winner:   "buyer" | "seller" | "investor" | "agent" | "generic"
+    /** Specific persona suggestion when a high-specificity phrase fires. */
+    persona:
+      | "first_time_buyer" | "move_up_buyer" | "downsizer"
+      | "fsbo_seller" | "motivated_seller" | "expired_listing"
+      | "investor_flipper" | "investor_buy_hold" | "investor_1031"
+      | "agent_recruit"
+      | null
+    /** Phrases that fired — useful for downstream debugging + the LLM prompt. */
+    matched:  string[]
+    /** True when buyer-search / saved-alert markers (saved search, IDX search, set up alerts,
+     *  "I want a home with…") are present — the trigger for creating a buyer property-alert
+     *  profile on the contact. */
+    buyerAlertProfile: boolean
+  }
 }
 
 const EMAIL_RE   = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi
@@ -34,6 +61,35 @@ const PHONE_RE   = /(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g
 const ADDRESS_RE = /\b\d{1,6}\s+[A-Z][A-Za-z0-9.'-]*(?:\s+[A-Z][A-Za-z0-9.'-]*){0,4}\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Ter|Terrace|Cir|Circle|Hwy|Highway)\.?(?:\s*,?\s+[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,3})?(?:\s*,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?)?/g
 const PRICE_RE   = /\$\s?([\d,]+(?:\.\d{2})?)(?:\s?([KkMm]))?/g
 const FSBO_RE    = /\b(for\s+sale\s+by\s+owner|fsbo|sold\s+by\s+owner|sale\s+by\s+owner)\b/i
+
+// ── Intent patterns (buyer + seller + investor + agent) ─────────────────────
+type IntentBucket = ZenRowsNormalized["intent"]["winner"]
+type IntentPersona = ZenRowsNormalized["intent"]["persona"]
+interface IntentPattern { bucket: IntentBucket; weight: number; re: RegExp; persona?: IntentPersona }
+const INTENT_PATTERNS: IntentPattern[] = [
+  // Buyer signals — including property-alert / saved-search markers (the user-cited use case)
+  { bucket: "buyer", weight: 0.8, re: /\b(looking\s+to\s+buy|want\s+to\s+buy|searching\s+for\s+a\s+(?:home|house|condo)|in\s+the\s+market\s+for\s+a\s+home)\b/i },
+  { bucket: "buyer", weight: 0.7, re: /\b(pre[-\s]?approval|mortgage\s+pre[-\s]?qualif|got\s+pre[-\s]?approved)\b/i },
+  { bucket: "buyer", weight: 0.9, persona: "first_time_buyer", re: /\b(first[-\s]?time\s+(?:home)?\s*buyer|fthb)\b/i },
+  { bucket: "buyer", weight: 0.7, persona: "move_up_buyer",    re: /\b(move[-\s]?up\s+buyer|upgrading\s+(?:my|our)\s+home|need\s+a\s+bigger\s+home)\b/i },
+  { bucket: "buyer", weight: 0.8, persona: "downsizer",        re: /\b(downsiz(?:e|ing)|empty[-\s]?nester|too\s+much\s+house)\b/i },
+  // Buyer-alert / saved-search profile markers (sets buyerAlertProfile)
+  { bucket: "buyer", weight: 0.7, re: /\b(saved\s+search|search\s+alert|property\s+alert|listing\s+alert|new[-\s]?listing\s+alerts?|alert\s+me\s+when|email\s+me\s+(?:about|when)|notify\s+me\s+when|create\s+(?:a\s+)?(?:saved|property)\s+search)\b/i },
+  { bucket: "buyer", weight: 0.7, re: /\b(I(?:'m| am)?\s+looking\s+for\s+(?:a\s+|an\s+)?(?:home|house|condo|townhouse)|wanted:\s+(?:home|house)|I\s+want\s+a\s+home\s+with)\b/i },
+  // Seller signals
+  { bucket: "seller", weight: 0.8, re: /\b(thinking\s+of\s+selling|considering\s+selling|want\s+to\s+sell\s+(?:my|our)\s+(?:home|house))\b/i },
+  { bucket: "seller", weight: 0.7, re: /\b(home\s+value|what(?:'s|\s+is)\s+my\s+home\s+worth|comparative\s+market\s+analysis|cma)\b/i },
+  { bucket: "seller", weight: 0.9, persona: "fsbo_seller",      re: /\b(for\s+sale\s+by\s+owner|fsbo|sale\s+by\s+owner)\b/i },
+  { bucket: "seller", weight: 0.8, persona: "motivated_seller", re: /\b(must\s+sell|need\s+to\s+sell\s+fast|cash\s+for\s+(?:my|your)\s+house|sell\s+(?:fast|quickly)|distressed)\b/i },
+  { bucket: "seller", weight: 0.7, persona: "expired_listing",  re: /\b(expired\s+listing|listing\s+expired|relisting\s+with)\b/i },
+  // Investor signals
+  { bucket: "investor", weight: 0.8, persona: "investor_flipper",  re: /\b(fix\s+and\s+flip|flipping\s+(?:houses|homes)|wholesale\s+real\s+estate|wholesaler)\b/i },
+  { bucket: "investor", weight: 0.8, persona: "investor_buy_hold", re: /\b(buy\s+and\s+hold|rental\s+property|cash\s+flow\s+investor|cap\s+rate|brrrr)\b/i },
+  { bucket: "investor", weight: 0.9, persona: "investor_1031",     re: /\b(1031\s+exchange|like[-\s]?kind\s+exchange)\b/i },
+  // Agent recruiting
+  { bucket: "agent", weight: 0.7, persona: "agent_recruit", re: /\b(real\s+estate\s+agent|realtor|loan\s+officer|brokerage\s+is\s+hiring)\b/i },
+]
+const BUYER_ALERT_RE = /\b(saved\s+search|search\s+alert|property\s+alert|listing\s+alert|new[-\s]?listing\s+alerts?|alert\s+me\s+when|email\s+me\s+(?:about|when)|notify\s+me\s+when|create\s+(?:a\s+)?(?:saved|property)\s+search|set\s+up\s+(?:an?\s+)?alert)\b/i
 
 function uniq<T>(xs: T[]): T[] { return Array.from(new Set(xs)) }
 
@@ -106,8 +162,28 @@ export function normalizeZenRowsHtml(html: string): ZenRowsNormalized {
   const pageTitle = titleMatch ? titleMatch[1].trim() : null
   const metaDescription = extractMeta(safe, 'description', 'og:description', 'twitter:description')
   const ogImage = extractMeta(safe, 'og:image', 'twitter:image')
+
+  // Intent: score every bucket against the page text + title + meta description (more reliable
+  // than HTML body alone for buyer-search alerts whose phrasing lives in the header).
+  const intentText = [pageTitle, metaDescription, safe].filter(Boolean).join(' \n ')
+  const scores: Record<IntentBucket, number> = { buyer: 0, seller: 0, investor: 0, agent: 0, generic: 0 }
+  const matched: string[] = []
+  let persona: IntentPersona = null
+  let bestPersonaScore = 0
+  for (const p of INTENT_PATTERNS) {
+    if (!p.re.test(intentText)) continue
+    scores[p.bucket] += p.weight
+    matched.push(p.re.source)
+    if (p.persona && p.weight > bestPersonaScore) { persona = p.persona; bestPersonaScore = p.weight }
+  }
+  for (const k of Object.keys(scores) as IntentBucket[]) scores[k] = Math.max(0, Math.min(1, scores[k]))
+  let winner: IntentBucket = "generic"; let best = 0
+  for (const k of Object.keys(scores) as IntentBucket[]) if (scores[k] > best) { best = scores[k]; winner = k }
+  const buyerAlertProfile = BUYER_ALERT_RE.test(intentText)
+
   return {
     emails, phones, addresses, prices, names, fsboMarker,
     pageTitle, metaDescription, ogImage,
+    intent: { ...scores, winner, persona, matched, buyerAlertProfile },
   }
 }

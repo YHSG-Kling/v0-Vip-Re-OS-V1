@@ -213,6 +213,30 @@ export async function GET(request: Request) {
                 const siteRecords = [...sellerRecords, ...buyerRecords, ...expiredRecords]
                 sourceItemsFound += siteRecords.length
 
+                // Rich page-level normalization (buyer + seller + investor intent, FSBO marker,
+                // property-alert profile, page meta). Computed ONCE per page and attached to every
+                // record produced from it so downstream lead-gate + AI-ISA scripts see the same
+                // intent signal whether the record came from the FSBO parser or the buyer-search
+                // parser. The per-record parsers still set the canonical intentType; this adds
+                // structured persona + matched phrases without overriding.
+                const { normalizeZenRowsHtml } = await import("@/lib/external/zenrows-normalizer")
+                const zen = normalizeZenRowsHtml(scraped.html)
+                for (const r of siteRecords) {
+                  if (!r.intent) {
+                    r.intent = {
+                      winner:            zen.intent.winner,
+                      persona:           zen.intent.persona,
+                      scores:            { buyer: zen.intent.buyer, seller: zen.intent.seller, investor: zen.intent.investor, agent: zen.intent.agent, generic: zen.intent.generic },
+                      matched:           zen.intent.matched,
+                      buyerAlertProfile: zen.intent.buyerAlertProfile,
+                      propertyAddresses: zen.addresses,
+                      prices:            zen.prices,
+                    }
+                  }
+                  // Preserve the full structured normalization in rawPayload for audit + AI-ISA.
+                  ;(r.rawPayload as any).zenrowsNormalized = zen
+                }
+
                 for (const record of siteRecords) {
                   // Write raw record only — enrichment and promotion happen in pipeline-processor
                   const { inserted } = await insertRawRecord({
@@ -822,6 +846,10 @@ async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserte
         propertyAddress: params.record.propertyAddress ?? null,
         sourceUrl:       params.record.sourceUrl       ?? null,
         leadIdentityKey: identityKey,
+        // Rich intent block from the new ZenRows + Exa normalizers — buyer / seller / investor /
+        // agent + persona + property-alert profile + matched phrases + extracted addresses/prices.
+        // Read by the canonical lead-creation gate and the AI-ISA script selector downstream.
+        intent:          params.record.intent           ?? null,
       },
       processing_status:    'pending',
       scraper_execution_id: params.executionId ?? null,
