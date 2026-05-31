@@ -80,6 +80,8 @@ export default async function ContactDetailPage({ params }: PageProps) {
           hasAddress={!!contact.mailing_address}
           emailVerified={contact.email_verified ?? null}
           addressVerified={contact.mailing_address_verified ?? null}
+          contactType={contact.contact_type ?? null}
+          buyerStage={contact.buyer_stage ?? null}
         />
       </div>
 

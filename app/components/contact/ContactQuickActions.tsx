@@ -22,7 +22,8 @@ import {
   verifyContactEmailAction,
   verifyContactAddressAction,
 } from "@/app/actions/contact-quick-actions"
-import { Sparkles, Mail, MapPin, AlertCircle, CheckCircle2 } from "lucide-react"
+import { convertOutsideInquiryToRepresentedBuyer } from "@/app/actions/convert-outside-inquiry"
+import { Sparkles, Mail, MapPin, AlertCircle, CheckCircle2, UserCheck } from "lucide-react"
 
 export interface ContactQuickActionsProps {
   contactId:        string
@@ -30,6 +31,11 @@ export interface ContactQuickActionsProps {
   hasAddress:       boolean
   emailVerified?:   boolean | null
   addressVerified?: boolean | null
+  /** When provided, gates the "convert outside inquiry" button — surfaces only for
+   *  buyer-type contacts that don't yet have a buyer_stage (i.e. came in via the public
+   *  listing page or outside-agent showing form and haven't been promoted yet). */
+  contactType?:     string | null
+  buyerStage?:      string | null
 }
 
 export function ContactQuickActions(props: ContactQuickActionsProps) {
@@ -37,9 +43,17 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
   const [investigation, setInvestigation] = useState<{ summary?: string; warnings?: string[]; cost?: number; error?: string } | null>(null)
   const [emailRes,   setEmailRes]   = useState<{ verified?: boolean; reason?: string | null; tier?: number; cost?: number; error?: string } | null>(null)
   const [addressRes, setAddressRes] = useState<{ verified?: boolean; deliverability?: string | null; cost?: number; error?: string } | null>(null)
-  const [busy, setBusy] = useState<"investigate" | "email" | "address" | null>(null)
+  const [convertRes, setConvertRes] = useState<{ bbaId?: string; bbaCreated?: boolean; buyerStage?: string; error?: string } | null>(null)
+  const [busy, setBusy] = useState<"investigate" | "email" | "address" | "convert" | null>(null)
 
-  const run = (which: "investigate" | "email" | "address", deepEmail = false) => {
+  // Surface the "convert outside inquiry" button only when the contact looks like an
+  // un-promoted buyer-side inquiry: contact_type === "buyer" AND buyer_stage is null/empty.
+  // (Once converted the action sets buyer_stage = "BUYER_CONTACT_CREATED" so this disappears.)
+  const showConvert =
+    props.contactType === "buyer" &&
+    (!props.buyerStage || props.buyerStage === "")
+
+  const run = (which: "investigate" | "email" | "address" | "convert", deepEmail = false) => {
     setBusy(which)
     startTransition(async () => {
       try {
@@ -47,8 +61,13 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
           setInvestigation(await runDealInvestigatorAction({ contactId: props.contactId }))
         } else if (which === "email") {
           setEmailRes(await verifyContactEmailAction({ contactId: props.contactId, deep: deepEmail }))
-        } else {
+        } else if (which === "address") {
           setAddressRes(await verifyContactAddressAction({ contactId: props.contactId }))
+        } else {
+          const r = await convertOutsideInquiryToRepresentedBuyer({ contactId: props.contactId })
+          setConvertRes(r.success
+            ? { bbaId: r.bbaId, bbaCreated: r.bbaCreated, buyerStage: r.buyerStage }
+            : { error: r.error })
         }
       } finally { setBusy(null) }
     })
@@ -62,6 +81,28 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Convert outside inquiry → represented buyer (only renders pre-conversion) */}
+        {showConvert && (
+          <div className="space-y-2 rounded border border-amber-200 bg-amber-50/60 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-amber-900 inline-flex items-center gap-2">
+                <UserCheck className="h-3.5 w-3.5" />
+                Unconverted buyer inquiry — drafts a BBA (NAR 2024) before showings/offers
+              </span>
+              <Button size="sm" variant="default" disabled={pending} onClick={() => run("convert")}>
+                {busy === "convert" ? "Converting…" : "Convert to my buyer"}
+              </Button>
+            </div>
+            {convertRes?.bbaId && (
+              <p className="text-xs text-emerald-700 inline-flex items-center gap-1">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {convertRes.bbaCreated ? "BBA drafted" : "Existing BBA found"} — stage set to {convertRes.buyerStage}.
+              </p>
+            )}
+            {convertRes?.error && <p className="text-xs text-red-600 inline-flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" /> {convertRes.error}</p>}
+          </div>
+        )}
+
         {/* Investigator */}
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
