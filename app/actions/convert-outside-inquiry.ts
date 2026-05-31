@@ -120,24 +120,29 @@ export async function convertOutsideInquiryToRepresentedBuyer(
   // (b) If ANY existing showing_request for this contact has source='external_agent',
   //     the contact came in through that channel and is owned by the outside agent.
   // Both produce the same refusal — we facilitate the showing, we don't take the buyer.
-  if (input.showingRequestId) {
-    const { data: req } = await svc.from("showing_requests")
-      .select("id, source, buyer_agent_name, buyer_agent_email")
-      .eq("id", input.showingRequestId).maybeSingle()
-    if (req?.source === "external_agent") {
-      return {
-        success: false,
-        error: `Refused: this showing request was submitted by an outside buyer-agent (${req.buyer_agent_name ?? req.buyer_agent_email ?? "unknown"}). The outside agent represents the buyer — converting them to in-house representation would violate NAR Code of Ethics Article 16. Facilitate the showing; do not convert.`,
-      }
+  // The two lookups are independent and run in parallel so the gate adds one round-trip
+  // of latency instead of two.
+  const [passedInRes, contactRowsRes] = await Promise.all([
+    input.showingRequestId
+      ? svc.from("showing_requests")
+          .select("id, source, buyer_agent_name, buyer_agent_email")
+          .eq("id", input.showingRequestId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    svc.from("showing_requests")
+      .select("id, buyer_agent_name, buyer_agent_email")
+      .eq("contact_id", input.contactId)
+      .eq("source", "external_agent")
+      .limit(1),
+  ])
+  if (passedInRes.data?.source === "external_agent") {
+    const r = passedInRes.data as { buyer_agent_name?: string; buyer_agent_email?: string }
+    return {
+      success: false,
+      error: `Refused: this showing request was submitted by an outside buyer-agent (${r.buyer_agent_name ?? r.buyer_agent_email ?? "unknown"}). The outside agent represents the buyer — converting them to in-house representation would violate NAR Code of Ethics Article 16. Facilitate the showing; do not convert.`,
     }
   }
-  const { data: outsideAgentRows } = await svc.from("showing_requests")
-    .select("id, buyer_agent_name, buyer_agent_email")
-    .eq("contact_id", input.contactId)
-    .eq("source", "external_agent")
-    .limit(1)
-  if (outsideAgentRows && outsideAgentRows.length > 0) {
-    const row = outsideAgentRows[0] as { buyer_agent_name?: string; buyer_agent_email?: string }
+  if (contactRowsRes.data && contactRowsRes.data.length > 0) {
+    const row = contactRowsRes.data[0] as { buyer_agent_name?: string; buyer_agent_email?: string }
     return {
       success: false,
       error: `Refused: this contact has an existing outside-agent showing request (agent: ${row.buyer_agent_name ?? row.buyer_agent_email ?? "unknown"}). The buyer is represented by another agent — NAR Code of Ethics Article 16 forbids conversion.`,
@@ -158,9 +163,11 @@ export async function convertOutsideInquiryToRepresentedBuyer(
 
   // ── 3. Refetch contact (we need contact_type + buyer_stage + the representation
   //       disclosure stored on enrichment_profile, which the gate doesn't load) ──
+  // Use maybeSingle so a race (contact deleted between gate.assertCanActOnContact and
+  // here) returns a graceful error instead of throwing an unhandled exception.
   const { data: contact } = await svc.from("contacts")
     .select("id, contact_type, brokerage_id, agent_id, buyer_stage, source, enrichment_profile")
-    .eq("id", input.contactId).single()
+    .eq("id", input.contactId).maybeSingle()
   if (!contact) return { success: false, error: "Contact not found" }
   if (contact.contact_type !== "buyer") {
     return { success: false, error: `Contact is contact_type=${contact.contact_type}, not 'buyer' — refusing to convert` }

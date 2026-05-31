@@ -34,9 +34,13 @@ export async function createTransactionFromOffer(params: {
   // Get offer details.
   // NOTE: buyer_agents table does NOT exist — use offer.agent_id directly.
   //       offer.buyer_id does NOT exist — live FK is offer.contact_id.
+  // Also pull esign_provider + provider_envelope_id so we can stamp the transaction
+  // with the canonical external-provider tracking columns (m106). Without this,
+  // sync-from-provider can't pull documents for transactions whose provider isn't
+  // Dotloop (which is the only one with a dedicated legacy column).
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days")
+    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, esign_provider, provider_envelope_id")
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -88,6 +92,13 @@ export async function createTransactionFromOffer(params: {
       compliance_passed_at: params.compliancePassedAt,
       stage:                "UNDER_CONTRACT",
       status:               "under_contract",
+      // m106 — generic provider tracking inherited from the source offer's envelope so
+      // sync-from-provider can pull documents for this transaction regardless of
+      // which provider the brokerage uses. Dotloop transactions also keep their
+      // legacy dotloop_loop_id via the back-link from ai-offer-creation, but the
+      // generic columns are now the single source of truth.
+      external_provider_source:         (offer as any).esign_provider       ?? null,
+      external_provider_transaction_id: (offer as any).provider_envelope_id ?? null,
       created_at:           new Date().toISOString(),
     })
     .select()

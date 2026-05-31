@@ -16,7 +16,11 @@
  * Idempotency:
  *   The (transaction_id, provider_source, external_document_id) unique partial index
  *   added by m106 enforces at most one row per provider-document. We use upsert with
- *   onConflict=ignoreDuplicates so a re-sync no-ops on rows already present.
+ *   ignoreDuplicates=false (the default), which produces ON CONFLICT DO UPDATE — so
+ *   a re-sync REFRESHES each row's state (status flip from pending→signed, updated
+ *   storage_url after provider re-renders the PDF, signer list changes, etc.) rather
+ *   than no-opping. The unique index just guarantees we never end up with two rows
+ *   for the same external document.
  *
  * Throttle:
  *   Callers (portal pages especially) can pass `staleAfterSec` to skip the round-trip
@@ -75,13 +79,40 @@ export async function syncTransactionDocumentsFromProvider(
     }
   }
 
-  // 3. Resolve the provider source + external id. Prefers the new generic columns;
-  //    falls back to the legacy `dotloop_loop_id` when only that's populated (which is
-  //    the case for transactions created before m106 ran).
-  const providerSource = (txn.external_provider_source as string | null)
+  // 3. Resolve the provider source + external id. Resolution order:
+  //      (a) the generic m106 columns on transactions (new path)
+  //      (b) the legacy `dotloop_loop_id` (Dotloop transactions created before m106)
+  //      (c) the linked offer's esign_provider + provider_envelope_id (transactions
+  //          created from offers BEFORE this commit added inheritance — covers the
+  //          install-day-zero case for SkySlope / Brokermint / FormSimplicity)
+  // Once any path resolves both fields, we backfill the generic columns on the
+  // transactions row so the next sync skips the lookup entirely.
+  let providerSource = (txn.external_provider_source as string | null)
     ?? (txn.dotloop_loop_id ? "dotloop" : null)
-  const externalId = (txn.external_provider_transaction_id as string | null)
+  let externalId = (txn.external_provider_transaction_id as string | null)
     ?? (txn.dotloop_loop_id as string | null)
+
+  if (!providerSource || !externalId) {
+    const { data: linkedOffer } = await svc
+      .from("offers")
+      .select("esign_provider, provider_envelope_id")
+      .eq("transaction_id", input.transactionId)
+      .not("provider_envelope_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (linkedOffer?.esign_provider && linkedOffer?.provider_envelope_id) {
+      providerSource = linkedOffer.esign_provider as string
+      externalId    = linkedOffer.provider_envelope_id as string
+      // Backfill so subsequent sync calls hit the fast path.
+      await svc.from("transactions")
+        .update({
+          external_provider_source:         providerSource,
+          external_provider_transaction_id: externalId,
+        })
+        .eq("id", input.transactionId)
+    }
+  }
 
   if (!providerSource || !externalId) {
     return { ok: true, synced: 0, skipped: "no-external-id", error: null }
@@ -107,34 +138,44 @@ export async function syncTransactionDocumentsFromProvider(
     return { ok: false, synced: 0, skipped: null, error: `provider sync threw: ${(e as Error).message}` }
   }
 
-  // 5. Upsert each ProviderDocument into transaction_documents. The unique partial index
-  //    `uq_transaction_documents_provider_external_id` (m106) makes this idempotent on
-  //    (transaction_id, provider_source, external_document_id).
+  // 5. Batch-upsert all ProviderDocuments into transaction_documents in ONE round-trip.
+  //    The unique partial index `uq_transaction_documents_provider_external_id` (m106)
+  //    makes this idempotent on (transaction_id, provider_source, external_document_id).
+  //    Skips rows the provider returned without an externalDocumentId — we can't dedupe
+  //    those (the interface marks it required; the guard is defensive against provider
+  //    contract violations).
+  const now    = new Date().toISOString()
+  const rows   = docs
+    .filter(d => !!d.externalDocumentId)
+    .map(d => ({
+      transaction_id:       input.transactionId,
+      contact_id:           input.contactId,
+      provider_source:      providerSource,
+      external_document_id: d.externalDocumentId,
+      doc_type:             d.folderName?.toLowerCase().replace(/\s+/g, "_") ?? "unknown",
+      doc_label:            d.documentName,
+      status:               d.isSigned ? "signed" : "pending",
+      storage_url:          d.url ?? null,
+      uploaded_at:          d.uploadedAt ?? d.lastModified ?? now,
+      signature_status: {
+        is_signed:  d.isSigned,
+        signers:    d.signers ?? [],
+        synced_at:  now,
+      },
+    }))
   let synced = 0
-  for (const d of docs) {
-    if (!d.externalDocumentId) continue  // can't dedupe without the provider id; skip
-    const { error: upErr } = await svc
+  if (rows.length > 0) {
+    const { error: upErr, count } = await svc
       .from("transaction_documents")
-      .upsert(
-        {
-          transaction_id:       input.transactionId,
-          contact_id:           input.contactId,
-          provider_source:      providerSource,
-          external_document_id: d.externalDocumentId,
-          doc_type:             d.folderName?.toLowerCase().replace(/\s+/g, "_") ?? "unknown",
-          doc_label:            d.documentName,
-          status:               d.isSigned ? "signed" : "pending",
-          storage_url:          d.url ?? null,
-          uploaded_at:          d.uploadedAt ?? d.lastModified ?? new Date().toISOString(),
-          signature_status: {
-            is_signed:  d.isSigned,
-            signers:    d.signers ?? [],
-            synced_at:  new Date().toISOString(),
-          },
-        },
-        { onConflict: "transaction_id,provider_source,external_document_id", ignoreDuplicates: false },
-      )
-    if (!upErr) synced++
+      .upsert(rows, {
+        onConflict:       "transaction_id,provider_source,external_document_id",
+        ignoreDuplicates: false,
+        count:            "exact",
+      })
+    if (upErr) {
+      return { ok: false, synced: 0, skipped: null, error: `upsert failed: ${upErr.message}` }
+    }
+    synced = count ?? rows.length
   }
 
   // 6. Stamp last_provider_sync_at so the staleness gate above can skip the next call.
@@ -163,17 +204,17 @@ export async function syncAllForContact(params: {
     .eq("brokerage_id", params.brokerageId)
     .or(`buyer_contact_id.eq.${params.contactId},seller_contact_id.eq.${params.contactId}`)
   const ids = (rows ?? []).map(r => r.id as string)
-  const out: { transactionId: string; result: SyncFromProviderResult }[] = []
-  for (const id of ids) {
-    out.push({
+  // Parallelize — each per-transaction sync is independent (separate transaction_id),
+  // and the per-call staleness gate + provider rate limits are the natural backpressure.
+  // Sequential awaits added O(N) latency to portal page renders for contacts with
+  // multiple transactions.
+  return Promise.all(ids.map(async id => ({
+    transactionId: id,
+    result: await syncTransactionDocumentsFromProvider({
+      brokerageId:   params.brokerageId,
       transactionId: id,
-      result: await syncTransactionDocumentsFromProvider({
-        brokerageId:   params.brokerageId,
-        transactionId: id,
-        contactId:     params.contactId,
-        staleAfterSec: params.staleAfterSec,
-      }),
-    })
-  }
-  return out
+      contactId:     params.contactId,
+      staleAfterSec: params.staleAfterSec,
+    }),
+  })))
 }

@@ -5,9 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import {
-  createLoop,
   addParticipant,
-  getLoopSignatureStatus,
   syncLoopDocuments,
   uploadLoopDocument,
   getLoopActivity,
