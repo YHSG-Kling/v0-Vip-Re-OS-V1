@@ -54,6 +54,19 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
     (!props.buyerStage || props.buyerStage === "")
 
   const run = (which: "investigate" | "email" | "address" | "convert", deepEmail = false) => {
+    // Ethical-attestation gate for the conversion path. NAR Code of Ethics Article 16
+    // forbids converting a buyer who is already represented by another agent. The server
+    // action enforces this via attestUnrepresented + the external_agent source check, but
+    // we surface the question to the agent here so they consciously affirm before the call.
+    if (which === "convert") {
+      const ok = typeof window !== "undefined" && window.confirm(
+        "Have you confirmed this buyer is NOT currently represented by another real estate agent?\n\n" +
+        "Converting a represented buyer violates NAR Code of Ethics Article 16 (interference with another REALTOR's exclusive representation).\n\n" +
+        "Click OK only if you have verified the buyer is unrepresented."
+      )
+      if (!ok) return
+    }
+
     setBusy(which)
     startTransition(async () => {
       try {
@@ -64,7 +77,10 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
         } else if (which === "address") {
           setAddressRes(await verifyContactAddressAction({ contactId: props.contactId }))
         } else {
-          const r = await convertOutsideInquiryToRepresentedBuyer({ contactId: props.contactId })
+          const r = await convertOutsideInquiryToRepresentedBuyer({
+            contactId:           props.contactId,
+            attestUnrepresented: true,
+          })
           setConvertRes(r.success
             ? { bbaId: r.bbaId, bbaCreated: r.bbaCreated, buyerStage: r.buyerStage }
             : { error: r.error })

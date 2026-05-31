@@ -5,34 +5,50 @@
  *
  * The canonical "convert this unrepresented inquiry to a represented buyer" action.
  *
+ * ⚠️ NAR Code of Ethics Article 16 (interference with exclusive representation)
+ *    explicitly forbids converting a buyer who is already represented by another
+ *    agent. Two hard guards enforce this:
+ *      1. `attestUnrepresented: true` is REQUIRED — the calling agent must
+ *         explicitly attest they confirmed the buyer is not currently working
+ *         with another real estate agent. The UI surface (ContactQuickActions)
+ *         prompts the agent before passing this flag.
+ *      2. Any associated showing_request row with `source='external_agent'`
+ *         (the outside-buyer-agent path) BLOCKS the conversion. An outside
+ *         agent submitting a showing request on our listing means the buyer
+ *         is the OUTSIDE agent's client — not a candidate for in-house
+ *         representation. We facilitate the showing; we don't take the buyer.
+ *
  * WHY:
- *   The public listing page (`app/listing/[id]/page.tsx`) and the outside-agent showing form
- *   create buyer-type contacts (or contact_id=NULL showing_requests) WITHOUT a `buyer_stage`,
- *   WITHOUT a Buyer Broker Agreement (BBA), and sometimes auto-assigned to the listing's
- *   agent for default routing. Before that buyer can request showings or have an offer
- *   drafted through our pipeline, the BBA gate (`lib/buyer-broker/gate.ts`) requires an
- *   active BBA — NAR August 2024 settlement enforcement.
+ *   The public listing page and the outside-agent showing form create
+ *   buyer-type inquiries WITHOUT a `buyer_stage` and WITHOUT a Buyer Broker
+ *   Agreement (BBA). Before that buyer can request showings or have an offer
+ *   drafted through our pipeline, the BBA gate (`lib/buyer-broker/gate.ts`)
+ *   requires an active BBA — NAR August 2024 settlement enforcement.
  *
- *   Previously the conversion was a tribal-knowledge sequence the agent had to execute
- *   manually across multiple screens: reassign contact, set buyer_stage, draft a BBA from
- *   the BBA actions module, link the showing_request if it was an outside-agent submission.
- *   Easy to miss a step → buyer-portal `requestShowing` then mysteriously blocks on the gate.
+ *   Previously the conversion was a tribal-knowledge sequence the agent had
+ *   to execute manually across multiple screens with no ethical-conflict
+ *   detection. This action collapses the conversion into one server-action
+ *   call AND blocks unethical conversions at the source.
  *
- * This action collapses all of that into one server-action call:
+ * What this action does (when the guards pass):
  *   1. Auth gate via lib/auth/contact-access.ts (same gate the CRM detail page uses)
- *   2. Asserts contact_type='buyer' — refuses to convert a seller or transaction contact
- *   3. Reassigns contact.agent_id to the caller (when applicable) and sets buyer_stage to
+ *   2. Ethical guards (Article 16) — see top of file
+ *   3. Asserts contact_type='buyer' — refuses to convert a seller or transaction contact
+ *   4. Reassigns contact.agent_id to the caller (when applicable) and sets buyer_stage to
  *      the canonical initial state `BUYER_CONTACT_CREATED`
- *   4. Drafts a BBA for (buyer, caller_agent) — IDEMPOTENT (re-running returns the
- *      existing draft/pending/active BBA; the unique partial index on (buyer, agent) WHERE
- *      status='active' is the DB-level backstop)
- *   5. Links a showing_request (if one was passed in — the outside-agent path created it
- *      with contact_id=NULL and the listing agent decided to take the buyer on)
- *   6. Emits BUYER_STATE_CHANGED through the canonical kernel emitter (notifications +
- *      sequence enrollment + portal cards uniformly via the reactor)
+ *   5. Drafts a BBA for (buyer, caller_agent) — IDEMPOTENT
+ *   6. Links a showing_request if provided AND it's NOT an external_agent source
+ *   7. Emits BUYER_STATE_CHANGED through the canonical kernel emitter
  *
- * Idempotency: every step is safe to re-run. Re-calling returns the same BBA id with
- * `bbaCreated: false`, allowing the UI to show "BBA already drafted — send for signature".
+ * SELLER-PROSPECT NOTE:
+ *   The analog for a seller prospect (agent courting a homeowner who hasn't yet
+ *   signed a listing agreement) is the existing `createListing` flow in
+ *   app/actions/ai-listing-intake.ts — that action creates a listings row in
+ *   `draft` / `LEAD` lifecycle_stage with the seller_contact_id; a separate
+ *   listing_agreements row is then drafted, sent for signature, and signed
+ *   → at which point the listings row advances to LISTING_AGREEMENT_SIGNED
+ *   (see lib/esign-webhooks/finalize-packet.ts:331). No separate "convert
+ *   seller prospect" action is needed — the existing intake flow IS the path.
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { assertCanActOnContact } from "@/lib/auth/contact-access"
@@ -42,8 +58,16 @@ import { revalidatePath } from "next/cache"
 
 export interface ConvertOutsideInquiryInput {
   contactId:         string
+  /** REQUIRED ETHICAL ATTESTATION. The calling agent must confirm (via UI prompt or
+   *  in-person/phone conversation with the buyer) that the buyer is not currently
+   *  represented by another real estate agent. NAR Code of Ethics Article 16 forbids
+   *  interference with another REALTOR's exclusive representation. The server action
+   *  REJECTS the call if this is not `true`. */
+  attestUnrepresented: boolean
   /** Optional — outside-agent showing requests have contact_id=NULL until an in-house agent
-   *  takes the buyer on. Pass the id here to link it in the same atomic call. */
+   *  takes the buyer on. Pass the id here to link it in the same atomic call. NOTE:
+   *  showing_requests with source='external_agent' are NEVER linkable via this action
+   *  (the outside agent represents the buyer — see top-of-file ethical guards). */
   showingRequestId?: string
   /** BBA draft defaults — the agent edits these in the BBA review UI before sending for
    *  signature. None of these are required; sensible defaults apply. */
@@ -77,7 +101,48 @@ export async function convertOutsideInquiryToRepresentedBuyer(
   const gate = await assertCanActOnContact(input.contactId)
   if (!gate.ok) return { success: false, error: gate.error }
 
+  // ── 1a. Ethical attestation (NAR Code of Ethics Article 16) ──────────────
+  // Hard fail when the caller didn't pass the attestation. The UI surface (window.confirm
+  // in ContactQuickActions) is the human-facing checkpoint; this is the wire-level guard
+  // that ensures even a programmatic caller can't bypass the disclosure.
+  if (input.attestUnrepresented !== true) {
+    return {
+      success: false,
+      error: "Refused: caller must attest the buyer is not currently represented by another agent. NAR Code of Ethics Article 16 forbids interference with another REALTOR's exclusive representation.",
+    }
+  }
+
   const svc = createServiceClient()
+
+  // ── 1b. Block known outside-agent paths ──────────────────────────────────
+  // (a) A passed-in showing_request with source='external_agent' means an outside
+  //     buyer-agent submitted this — the outside agent owns the buyer relationship.
+  // (b) If ANY existing showing_request for this contact has source='external_agent',
+  //     the contact came in through that channel and is owned by the outside agent.
+  // Both produce the same refusal — we facilitate the showing, we don't take the buyer.
+  if (input.showingRequestId) {
+    const { data: req } = await svc.from("showing_requests")
+      .select("id, source, buyer_agent_name, buyer_agent_email")
+      .eq("id", input.showingRequestId).maybeSingle()
+    if (req?.source === "external_agent") {
+      return {
+        success: false,
+        error: `Refused: this showing request was submitted by an outside buyer-agent (${req.buyer_agent_name ?? req.buyer_agent_email ?? "unknown"}). The outside agent represents the buyer — converting them to in-house representation would violate NAR Code of Ethics Article 16. Facilitate the showing; do not convert.`,
+      }
+    }
+  }
+  const { data: outsideAgentRows } = await svc.from("showing_requests")
+    .select("id, buyer_agent_name, buyer_agent_email")
+    .eq("contact_id", input.contactId)
+    .eq("source", "external_agent")
+    .limit(1)
+  if (outsideAgentRows && outsideAgentRows.length > 0) {
+    const row = outsideAgentRows[0] as { buyer_agent_name?: string; buyer_agent_email?: string }
+    return {
+      success: false,
+      error: `Refused: this contact has an existing outside-agent showing request (agent: ${row.buyer_agent_name ?? row.buyer_agent_email ?? "unknown"}). The buyer is represented by another agent — NAR Code of Ethics Article 16 forbids conversion.`,
+    }
+  }
 
   // ── 2. Resolve caller's agents.id ────────────────────────────────────────
   // BBA.agent_id is a FK to agents.id (NOT users.id). For agent callers we resolve via
