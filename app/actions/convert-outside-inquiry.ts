@@ -156,13 +156,27 @@ export async function convertOutsideInquiryToRepresentedBuyer(
     return { success: false, error: "No agent context for conversion — caller has no agents row and contact has no assigned agent" }
   }
 
-  // ── 3. Refetch contact (we need contact_type + buyer_stage which the gate doesn't load) ──
+  // ── 3. Refetch contact (we need contact_type + buyer_stage + the representation
+  //       disclosure stored on enrichment_profile, which the gate doesn't load) ──
   const { data: contact } = await svc.from("contacts")
-    .select("id, contact_type, brokerage_id, agent_id, buyer_stage, source")
+    .select("id, contact_type, brokerage_id, agent_id, buyer_stage, source, enrichment_profile")
     .eq("id", input.contactId).single()
   if (!contact) return { success: false, error: "Contact not found" }
   if (contact.contact_type !== "buyer") {
     return { success: false, error: `Contact is contact_type=${contact.contact_type}, not 'buyer' — refusing to convert` }
+  }
+
+  // ── 3a. Self-disclosed representation block ──
+  // If the buyer told us on the public form that they're already working with another
+  // agent (or refused to say), we cannot proceed with conversion regardless of the
+  // agent's attestation. The disclosure is the buyer's authoritative statement.
+  const disclosed = (contact.enrichment_profile as { representation_disclosure?: { status?: string } } | null)
+    ?.representation_disclosure?.status
+  if (disclosed === "represented") {
+    return {
+      success: false,
+      error: "Refused: this buyer self-disclosed on the listing page that they're already working with another real estate agent. NAR Code of Ethics Article 16 forbids interference with their existing agency relationship. Facilitate the showing through their agent; do not convert.",
+    }
   }
 
   // ── 4. Stage + agent_id update ───────────────────────────────────────────

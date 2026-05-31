@@ -65,6 +65,11 @@ interface ShowingRequestInput {
   notes?: string
   sessionToken?: string
   tcpaConsent?: boolean
+  /** NAR Code of Ethics Article 16 disclosure. Captured on the public form; persisted on
+   *  the contact's `enrichment_profile.representation_disclosure` JSONB so the conversion
+   *  gate (app/actions/convert-outside-inquiry.ts) can refuse promotion when the buyer
+   *  has self-disclosed they're already working with another agent. */
+  representationStatus?: "unrepresented" | "represented" | "prefer_not_to_say"
 }
 
 // ============================================================================
@@ -448,6 +453,22 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
     const consentGiven = input.tcpaConsent === true
     const consentNow = new Date().toISOString()
 
+    // Persist the representation disclosure (NAR Article 16) on enrichment_profile so
+    // downstream gates (convert-outside-inquiry) can refuse promotion of a buyer who
+    // self-disclosed they're already represented by another agent. We DO NOT block lead
+    // creation here — the inquiry is still valuable to the listing agent for facilitation
+    // and to the seller for visibility into who's interested.
+    const repStatus = input.representationStatus ?? null
+    const enrichmentProfile = repStatus
+      ? {
+          representation_disclosure: {
+            status:     repStatus,
+            disclosed_at: consentNow,
+            source:     "listing_landing_page",
+          },
+        }
+      : null
+
     const { data: newContact, error: contactError } = await supabase
       .from("contacts")
       .insert({
@@ -459,7 +480,11 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
         source: "listing_landing_page",
         contact_type: "buyer",
         brokerage_id: listing?.brokerage_id,
-        agent_id: listing?.agent_id,
+        // Only auto-assign the listing agent when the buyer disclosed they're unrepresented.
+        // When the buyer says they have another agent, we DO NOT make the listing agent
+        // their owning agent — we'd be silently auto-poaching. Inquiry still routes for
+        // facilitation (see step 2 below); ownership stays null until handled manually.
+        agent_id: repStatus === "represented" ? null : (listing?.agent_id ?? null),
         tcpa_consent: consentGiven,
         tcpa_consent_at: consentGiven ? consentNow : null,
         tcpa_consent_date: consentGiven ? consentNow : null,
@@ -467,6 +492,7 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
         tcpa_consent_text: consentGiven
           ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
           : null,
+        ...(enrichmentProfile ? { enrichment_profile: enrichmentProfile } : {}),
       })
       .select("id")
       .single()
