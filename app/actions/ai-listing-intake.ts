@@ -10,6 +10,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
 
@@ -508,64 +509,64 @@ export async function createOrPullDotloop(params: {
     const DOTLOOP_API_KEY = dotloopCred.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
+    // All three Dotloop calls now route through callConnector — single egress, healer-observable,
+    // never-throws contract, per-brokerage credentials preserved. The three bare `fetch(...)` calls
+    // (loop retrieval, document listing, loop creation) bypassed every layer of the canonical
+    // egress pipeline.
+    const DOTLOOP_BASE = "https://api-gateway.dotloop.com/public/v2"
+
     // If existing loop, pull data from it
     if (params.existingLoopId) {
-      const response = await fetch(
-        `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}`,
-        {
-          headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-        }
-      )
+      const loopRes = await callConnector<{ data?: unknown }>({
+        connector: "dotloop",
+        baseUrl:   DOTLOOP_BASE,
+        path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}`,
+        method:    "GET",
+        auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      })
 
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
+      if (!loopRes.ok) {
+        throw new Error(`Dotloop API error: ${loopRes.error ?? `HTTP ${loopRes.status ?? "?"}`}`)
       }
 
-      const loopData = await response.json()
-
-      // Get documents
-      const docsResponse = await fetch(
-        `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}/folder`,
-        {
-          headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-        }
-      )
-
-      const docsData = await docsResponse.json()
+      // Get documents — failure here is non-fatal; the loop pull still succeeds with an empty docs list.
+      const docsRes = await callConnector<{ data?: unknown[] }>({
+        connector: "dotloop",
+        baseUrl:   DOTLOOP_BASE,
+        path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}/folder`,
+        method:    "GET",
+        auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      })
 
       return {
         success: true,
         loopId: params.existingLoopId,
-        loopData: loopData.data,
-        documents: docsData.data || [],
+        loopData: loopRes.data?.data,
+        documents: docsRes.ok ? (docsRes.data?.data ?? []) : [],
         pulled: true,
       }
     }
 
     // Create new loop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: `${params.propertyAddress} - ${params.transactionType === "listing" ? "Listing" : "Purchase"}`,
-          status: "Active",
-          transaction_type: params.transactionType === "listing" ? "Listing for Sale" : "Purchase",
-          street_address: params.propertyAddress,
-        }),
-      }
-    )
+    const response = await callConnector<{ data?: { loop_id?: string } }>({
+      connector: "dotloop",
+      baseUrl:   DOTLOOP_BASE,
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop`,
+      method:    "POST",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      body: {
+        name: `${params.propertyAddress} - ${params.transactionType === "listing" ? "Listing" : "Purchase"}`,
+        status: "Active",
+        transaction_type: params.transactionType === "listing" ? "Listing for Sale" : "Purchase",
+        street_address: params.propertyAddress,
+      },
+    })
 
     if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
+      throw new Error(`Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}`)
     }
 
-    const result = await response.json()
-    const loopId = result.data?.loop_id
+    const loopId = response.data?.data?.loop_id
 
     // Update listing with loop ID — ownership verified above
     if (params.listingId) {
@@ -618,15 +619,20 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: 
     const DOTLOOP_API_KEY = dotloopCred2.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred2.account_id
 
-    // Fetch documents from Dotloop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.loopId}/folder`,
-      {
-        headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-      }
-    )
+    // Fetch documents from Dotloop — routed through callConnector for single egress + healer
+    // observability (matches the three other Dotloop calls in this file).
+    const response = await callConnector<{ data?: Array<{ name?: string; documents?: any[] }> }>({
+      connector: "dotloop",
+      baseUrl:   "https://api-gateway.dotloop.com/public/v2",
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.loopId}/folder`,
+      method:    "GET",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+    })
+    if (!response.ok) {
+      return { success: false, error: `Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}` }
+    }
 
-    const folders = await response.json()
+    const folders = response.data ?? {}
     const documents: any[] = []
 
     for (const folder of folders.data || []) {

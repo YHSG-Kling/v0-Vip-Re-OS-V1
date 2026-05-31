@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 // generateObjectRouted replaces direct `generateText` from "ai" — keeps
 // brokerage routing + fallback + gateway wrapping for structured outputs.
 import { generateObjectRouted } from "@/lib/ai/models"
@@ -440,30 +441,30 @@ export async function createOfferDotloop(params: {
       }
     }
 
-    // Create new loop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: `${params.propertyAddress} - Buyer Offer`,
-          status: "Active",
-          deal_type: "Purchase",
-          street_address: params.propertyAddress,
-        }),
-      }
-    )
+    // Create new loop — routed through the canonical connector-gateway so this Dotloop call gets
+    // the same single-egress, healer-observable, retry-instrumented treatment as every other
+    // vendor call (single source of truth: lib/agentic-os/connector-gateway.ts). The previous bare
+    // `fetch(...)` to api-gateway.dotloop.com bypassed all of that. Uses per-brokerage credentials
+    // from platform_credentials (not env vars) so multi-tenant routing is preserved.
+    const response = await callConnector<{ data?: { loop_id?: string } }>({
+      connector: "dotloop",
+      baseUrl:   "https://api-gateway.dotloop.com/public/v2",
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop`,
+      method:    "POST",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      body: {
+        name: `${params.propertyAddress} - Buyer Offer`,
+        status: "Active",
+        deal_type: "Purchase",
+        street_address: params.propertyAddress,
+      },
+    })
 
     if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
+      throw new Error(`Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}`)
     }
 
-    const result = await response.json()
-    const loopId = result.data?.loop_id
+    const loopId = response.data?.data?.loop_id
 
     // Update transaction (ownership verified above)
     if (params.transactionId && loopId) {
