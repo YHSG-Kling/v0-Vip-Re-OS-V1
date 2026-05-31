@@ -466,10 +466,17 @@ export async function createOfferDotloop(params: {
 
     const loopId = response.data?.data?.loop_id
 
-    // Update transaction (ownership verified above)
+    // Update transaction (ownership verified above). Populates BOTH the legacy
+    // dotloop_loop_id column and the generic m106 provider-tracking columns so the
+    // provider-agnostic sync helper (lib/transactions/sync-from-provider.ts) can pull
+    // documents for this transaction.
     if (params.transactionId && loopId) {
       await supabase.from("transactions")
-        .update({ dotloop_loop_id: loopId })
+        .update({
+          dotloop_loop_id:                  loopId,
+          external_provider_source:         "dotloop",
+          external_provider_transaction_id: loopId,
+        })
         .eq("id", params.transactionId)
         .eq("brokerage_id", brokerageId)
     }
