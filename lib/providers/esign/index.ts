@@ -53,8 +53,12 @@ export interface CreateLoopResult {
 export async function createLoop(params: CreateLoopParams): Promise<CreateLoopResult> {
   const credentials = getDotloopCredentials()
 
+  // No credentials → return an honest, observable failure. The previous "return a fake
+  // mock-loop-${ts} ID" path poisoned the DB with non-existent loop IDs; downstream calls then
+  // 404'd against Dotloop with confusing errors. Callers should treat this the same as any other
+  // configuration-missing failure: surface to the user, don't persist the result.
   if (!credentials) {
-    return { success: true, loopId: `mock-loop-${Date.now()}` }
+    return { success: false, error: "Dotloop credentials not configured (DOTLOOP_API_KEY / DOTLOOP_PROFILE_ID)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -67,12 +71,12 @@ export async function createLoop(params: CreateLoopParams): Promise<CreateLoopRe
   })
 
   if (!response.ok) {
-    throw new Error(`Dotloop API error: ${response.error ?? "request failed"}`)
+    return { success: false, error: `Dotloop API error: ${response.error ?? "request failed"}` }
   }
 
   const loopId = response.data?.data?.loop_id
 
-  if (!loopId) throw new Error("No loop_id returned from Dotloop")
+  if (!loopId) return { success: false, error: "No loop_id returned from Dotloop" }
 
   return { success: true, loopId }
 }
@@ -87,7 +91,9 @@ export interface AddParticipantParams {
 export async function addParticipant(params: AddParticipantParams): Promise<{ success: boolean; error?: string }> {
   const credentials = getDotloopCredentials()
 
-  if (!credentials) return { success: true }
+  if (!credentials) {
+    return { success: false, error: "Dotloop credentials not configured" }
+  }
 
   const { apiKey, profileId } = credentials
 
@@ -98,7 +104,7 @@ export async function addParticipant(params: AddParticipantParams): Promise<{ su
   })
 
   if (!response.ok) {
-    throw new Error(`Dotloop addParticipant error: ${response.error ?? "request failed"}`)
+    return { success: false, error: `Dotloop addParticipant error: ${response.error ?? "request failed"}` }
   }
 
   return { success: true }
@@ -116,15 +122,17 @@ export interface GetLoopStatusResult {
 export async function getLoopSignatureStatus(loopId: string): Promise<GetLoopStatusResult> {
   const credentials = getDotloopCredentials()
 
+  // Previous fake "3 of 5 signed, 60%" response misled the UI into showing fictional progress
+  // when Dotloop was unconfigured. Honest zero with an error explains why the bar is empty.
   if (!credentials) {
-    return { success: true, total: 5, signed: 3, pending: 2, percentComplete: 60 }
+    return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: "Dotloop credentials not configured" }
   }
 
   const { apiKey, profileId } = credentials
 
   const response = await dotloopRequest<{ data?: any[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/folder`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop API error: ${response.error ?? "request failed"}`)
+  if (!response.ok) return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: `Dotloop API error: ${response.error ?? "request failed"}` }
 
   const folders = response.data ?? {}
   let totalDocs = 0
@@ -169,15 +177,17 @@ export interface SyncLoopDocumentsResult {
 export async function syncLoopDocuments(loopId: string): Promise<SyncLoopDocumentsResult> {
   const credentials = getDotloopCredentials()
 
+  // Previous "return [] silently" misled callers (e.g. app/actions/dotloop-integration.ts:48)
+  // into reporting "Synced 0 documents" success when Dotloop was unconfigured.
   if (!credentials) {
-    return { success: true, folders: [] }
+    return { success: false, folders: [], error: "Dotloop credentials not configured" }
   }
 
   const { apiKey, profileId } = credentials
 
   const response = await dotloopRequest<{ data?: LoopFolder[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/folder`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop syncLoopDocuments error: ${response.error ?? "request failed"}`)
+  if (!response.ok) return { success: false, folders: [], error: `Dotloop syncLoopDocuments error: ${response.error ?? "request failed"}` }
 
   return { success: true, folders: response.data?.data || [] }
 }
@@ -203,7 +213,7 @@ export async function uploadLoopDocument(
   const credentials = getDotloopCredentials()
 
   if (!credentials) {
-    return { success: true, dotloopDocumentId: `mock-doc-${Date.now()}` }
+    return { success: false, error: "Dotloop credentials not configured" }
   }
 
   const { apiKey, profileId } = credentials
@@ -216,7 +226,7 @@ export async function uploadLoopDocument(
     { name: params.documentName, file_url: params.fileUrl },
   )
 
-  if (!response.ok) throw new Error(`Dotloop uploadLoopDocument error: ${response.error ?? "request failed"}`)
+  if (!response.ok) return { success: false, error: `Dotloop uploadLoopDocument error: ${response.error ?? "request failed"}` }
 
   return { success: true, dotloopDocumentId: response.data?.data?.document_id }
 }
@@ -233,14 +243,14 @@ export async function getLoopActivity(loopId: string): Promise<GetLoopActivityRe
   const credentials = getDotloopCredentials()
 
   if (!credentials) {
-    return { success: true, activities: [] }
+    return { success: false, activities: [], error: "Dotloop credentials not configured" }
   }
 
   const { apiKey, profileId } = credentials
 
   const response = await dotloopRequest<{ data?: any[] }>(apiKey, `/profile/${profileId}/loop/${loopId}/activity`, "GET")
 
-  if (!response.ok) throw new Error(`Dotloop getLoopActivity error: ${response.error ?? "request failed"}`)
+  if (!response.ok) return { success: false, activities: [], error: `Dotloop getLoopActivity error: ${response.error ?? "request failed"}` }
 
   return { success: true, activities: response.data?.data || [] }
 }

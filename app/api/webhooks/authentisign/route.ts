@@ -15,14 +15,14 @@ import {
 //
 // Active dependencies:
 //   - AUTHENTISIGN_WEBHOOK_SECRET env var must be set, or the handler rejects with 401.
-//   - lib/integrations/providers/provider-resolver.ts must implement an
-//     AuthentisignProvider (not yet implemented) before
-//     dispatch_transaction_packet can send envelopes via Authentisign. Until
-//     then, this webhook will match zero rows — the handler is a no-op safely.
-//
-// Once both are wired, the webhook flips voice-cockpit packets +
-// legacy offers/listing_agreements via the shared finalize-packet helper —
-// same shape as the Dotloop + DocuSign + SkySlope handlers.
+//   - lib/integrations/providers/authentisign-provider.ts (registered in
+//     provider-resolver.ts) is the sending side. When a brokerage's
+//     platform_credentials row has provider=authentisign, the canonical
+//     `send for e-sign` workflow dispatches via AuthentisignProvider, which
+//     produces the signingId that lands in our `voice_cockpit_envelopes` and
+//     legacy `offers / listing_agreements` tables — this webhook then flips
+//     them through the shared finalize-packet helper, same shape as the
+//     DocuSign + Dotloop + SkySlope handlers.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function verifyAuthentisignSignature(rawBody: string, signatureHeader: string | null): boolean {

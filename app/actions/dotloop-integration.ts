@@ -45,7 +45,9 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
       }
     }
 
-    const { folders } = await syncLoopDocuments(data.loopId)
+    const sync = await syncLoopDocuments(data.loopId)
+    if (!sync.success) return { success: false, error: sync.error ?? "syncLoopDocuments failed" }
+    const folders = sync.folders
     let syncedCount = 0
 
     for (const folder of folders) {
@@ -177,14 +179,17 @@ export async function sendForDotloopSignature(data: {
       }
     }
 
-    // Add participants to the loop via provider
+    // Add participants to the loop via provider — surface a Dotloop failure to the agent rather
+    // than silently swallowing it (a missing credential used to be hidden by the addParticipant
+    // mock that returned success: true; now it returns an explicit error).
     for (const signer of data.signers) {
-      await addParticipant({
+      const r = await addParticipant({
         loopId: data.loopId,
         email: signer.email,
         name: signer.name,
         role: signer.role,
       })
+      if (!r.success) return { success: false, error: r.error ?? "addParticipant failed" }
     }
 
     // Upload document to Dotloop if not already there
@@ -264,7 +269,9 @@ export async function getDotloopDocumentStatus(loopId: string, documentId?: stri
       return { success: false, error: "Forbidden: loop not in your brokerage" }
     }
 
-    const { activities: allActivities } = await getLoopActivity(loopId)
+    const activityRes = await getLoopActivity(loopId)
+    if (!activityRes.success) return { success: false, error: activityRes.error ?? "getLoopActivity failed" }
+    const allActivities = activityRes.activities
 
     const signatureActivities = allActivities.filter(
       (a: any) => a.activity_type === "signature" || a.activity_type === "document_signed"
