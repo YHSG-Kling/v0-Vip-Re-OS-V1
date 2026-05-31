@@ -21,6 +21,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { sendViaTwilio } from "@/lib/providers/messaging/sms-adapters"
 
 /**
  * Channels:
@@ -212,36 +213,21 @@ export async function dispatchViaSms(
     return { providerRef: null, draft, sent: false, deepLink, via: null }
   }
 
-  // Twilio path — automated send. Recipient still gets it from the
-  // brokerage's Twilio number; replies route to the agent via Twilio's
-  // forwarding rules (configured per brokerage).
-  try {
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${twilio.accountSid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Basic ${Buffer.from(`${twilio.accountSid}:${twilio.authToken}`).toString("base64")}`,
-          "Content-Type":  "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          From: twilio.fromNumber,
-          To:   phone,
-          Body: body,
-        }).toString(),
-      },
-    )
-    if (!res.ok) return { providerRef: null, draft, sent: false, deepLink, via: null }
-    const data = await res.json().catch(() => null) as { sid?: string } | null
-    return {
-      providerRef: data?.sid ?? null,
-      draft,
-      sent:        !!data?.sid,
-      deepLink,    // still expose the deep-link in case agent prefers
-      via:         data?.sid ? "twilio" : null,
-    }
-  } catch {
-    return { providerRef: null, draft, sent: false, deepLink, via: null }
+  // Twilio path — automated send. Routed through the canonical sendViaTwilio adapter so the call
+  // goes through the connector-gateway (single egress, healer-observable, never-throws). The
+  // previous bare `fetch(...)` to api.twilio.com bypassed the gateway entirely — egress budgeting,
+  // healing, retry, and probe instrumentation were lost on this path.
+  const sms = await sendViaTwilio(
+    { to: phone, message: body, from: twilio.fromNumber },
+    { apiKey: twilio.accountSid, apiSecret: twilio.authToken, fromNumber: twilio.fromNumber },
+  )
+  if (!sms.success) return { providerRef: null, draft, sent: false, deepLink, via: null }
+  return {
+    providerRef: sms.messageId ?? null,
+    draft,
+    sent:        !!sms.messageId,
+    deepLink,    // still expose the deep-link in case agent prefers
+    via:         sms.messageId ? "twilio" : null,
   }
 }
 
