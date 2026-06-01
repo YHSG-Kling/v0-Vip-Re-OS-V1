@@ -165,34 +165,69 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
-  // (D) Managed-Agent spawner — three per-entity Anthropic Managed Agents run autonomously
-  // off the request path, each waking on the relevant kernel event:
-  //   - Deal Coordinator      — per transaction, on OFFER_ACCEPTED / TRANSACTION_STAGE_CHANGED
-  //   - Shopping Agent        — per buyer contact, on BUYER_FINANCIALLY_VERIFIED / BUYER_SEARCH_CONFIGURED
-  //   - Listing Concierge     — per listing, on LISTING_PUBLISHED
-  // All three post back via the Anthropic webhook (app/api/webhooks/anthropic-agent) and the
-  // shared spawn-helper handles idempotency at both the agent + session layers. Never throws
-  // — missing ANTHROPIC_API_KEY (dev/staging) skips silently.
+  // (D) Managed-Agent spawner — three per-entity Anthropic Managed Agents that run
+  // autonomously off the request path. EARLY-START semantics: per the canonical business
+  // process, the per-side agents kick the MOMENT a contact becomes buyer/seller (not
+  // post-BBA / post-publish). They run phase-aware so the pre-representation work
+  // (lender intro, qualification, listing-appointment scheduling, pre-listing CMA)
+  // happens autonomously alongside the human agent.
+  //
+  // Triggers:
+  //   - Deal Coordinator   — per transaction; on OFFER_ACCEPTED + TRANSACTION_STAGE_CHANGED
+  //   - Buyer Concierge    — per buyer contact (or 'both'); on CONTACT_CREATED + BUYER_STATE_CHANGED
+  //   - Listing Concierge  — per seller contact (or 'both'); on CONTACT_CREATED + LISTING_STAGE_CHANGED
+  //
+  // All three post back via the Anthropic webhook (app/api/webhooks/anthropic-agent) and
+  // the shared spawn-helper handles idempotency at both the agent + session layers. Never
+  // throws — missing ANTHROPIC_API_KEY (dev/staging) skips silently.
   if (params.brokerageId) {
     try {
+      // Transaction-side
       if (
         params.entityType === "transaction" &&
         (params.event === KernelEvent.OFFER_ACCEPTED || params.event === KernelEvent.TRANSACTION_STAGE_CHANGED)
       ) {
         const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
         await spawnDealCoordinatorForTransaction({ brokerageId: params.brokerageId, transactionId: params.entityId })
-      } else if (
+      }
+      // Contact-side — early-start on CONTACT_CREATED + re-spawn on stage changes (idempotent).
+      else if (
         params.entityType === "contact" &&
-        (params.event === KernelEvent.BUYER_FINANCIALLY_VERIFIED || params.event === KernelEvent.BUYER_SEARCH_CONFIGURED)
+        (params.event === KernelEvent.CONTACT_CREATED ||
+         params.event === KernelEvent.BUYER_STATE_CHANGED ||
+         params.event === KernelEvent.BUYER_FINANCIALLY_VERIFIED ||
+         params.event === KernelEvent.BUYER_SEARCH_CONFIGURED)
       ) {
-        const { spawnShoppingAgentForBuyer } = await import("@/lib/agents/shopping-agent")
-        await spawnShoppingAgentForBuyer({ brokerageId: params.brokerageId, contactId: params.entityId })
-      } else if (
+        // Resolve contact_type to route to the right concierge. CONTACT_CREATED doesn't
+        // carry contact_type in metadata; read from the row directly.
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const { data: c } = await svc
+          .from("contacts").select("contact_type").eq("id", params.entityId).maybeSingle()
+        const ct = (c?.contact_type as string | null) ?? null
+        if (ct === "buyer" || ct === "both") {
+          const { spawnShoppingAgentForBuyer } = await import("@/lib/agents/shopping-agent")
+          await spawnShoppingAgentForBuyer({ brokerageId: params.brokerageId, contactId: params.entityId })
+        }
+        if (ct === "seller" || ct === "both") {
+          const { spawnListingConciergeForSeller } = await import("@/lib/agents/listing-concierge")
+          await spawnListingConciergeForSeller({ brokerageId: params.brokerageId, contactId: params.entityId })
+        }
+      }
+      // Listing-side — re-spawn the seller-side concierge when listing stage changes (idempotent;
+      // helper resolves the seller_contact_id from the listing).
+      else if (
         params.entityType === "listing" &&
-        params.event === KernelEvent.LISTING_PUBLISHED
+        (params.event === KernelEvent.LISTING_PUBLISHED || params.event === KernelEvent.LISTING_STAGE_CHANGED)
       ) {
-        const { spawnListingConciergeForListing } = await import("@/lib/agents/listing-concierge")
-        await spawnListingConciergeForListing({ brokerageId: params.brokerageId, listingId: params.entityId })
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const { data: l } = await svc
+          .from("listings").select("seller_contact_id").eq("id", params.entityId).maybeSingle()
+        if (l?.seller_contact_id) {
+          const { spawnListingConciergeForSeller } = await import("@/lib/agents/listing-concierge")
+          await spawnListingConciergeForSeller({ brokerageId: params.brokerageId, contactId: l.seller_contact_id as string })
+        }
       }
     } catch (err) {
       console.error("[event-reactor] managed-agent spawn failed:", err)

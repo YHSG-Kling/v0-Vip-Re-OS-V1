@@ -12,8 +12,21 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate, type SpawnResult } from "./spawn-helper"
+import { resolveBrokerageContext, renderBrokerageContextForKickoff } from "./brokerage-context"
+import { resolvePersonaContext } from "./persona-context"
 
-const DEAL_COORDINATOR_SYSTEM = `You are the Deal Coordinator for a real-estate transaction at a Vip-RE-OS brokerage.
+const DEAL_COORDINATOR_SYSTEM = `You are the Deal Coordinator for a real-estate transaction. You serve under whichever
+brokerage the kickoff names — the brokerage's name, subscription tier, brand voice, and
+signature policy are passed in the kickoff context block. NEVER substitute a hardcoded
+brokerage name in your output.
+
+You COMPOSE with the existing kernel — do NOT reinvent flows the kernel already runs:
+   - Brand voice + compliance gates: lib/kernel/brand-voice.ts + lib/kernel/compliance.ts.
+   - Email signature: auto-wrapped by lib/kernel/communications/assemble-email.ts.
+   - Deal health: lib/deal-health/health-scorer.ts already runs; read its output, don't
+     re-score.
+   - Provider docs: lib/transactions/sync-from-provider.ts (m106/m107) pulls envelope
+     state from the configured transaction provider; read transaction_documents.
 
 YOUR JOB:
 1. Read the transaction state (milestones, deal-health, document status from the configured provider).
@@ -40,7 +53,6 @@ RESPONSE FORMAT:
 
 const TEMPLATE: AgentTemplate = {
   kind:    "deal_coordinator",
-  nameFor: (brokerageId) => `Deal Coordinator (${brokerageId.slice(0, 8)})`,
   model:   "claude-sonnet-4-6",
   system:  DEAL_COORDINATOR_SYSTEM,
 }
@@ -57,20 +69,55 @@ export async function spawnDealCoordinatorForTransaction(params: {
   // "doesn't exist" and "not yours" into one error, which is the correct shape.
   const { data: txn } = await svc
     .from("transactions")
-    .select("id, deal_name, property_address, stage, status, contract_date, purchase_price, external_provider_source, brokerage_id")
+    .select("id, deal_name, property_address, stage, status, contract_date, purchase_price, external_provider_source, brokerage_id, buyer_contact_id, seller_contact_id")
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
   if (!txn) return { ok: false, error: "transaction not found in this brokerage" }
 
-  const kickoff = params.kickoff ?? `Transaction ${txn.deal_name ?? txn.property_address ?? "(unnamed)"} just went under contract.
-- Stage: ${txn.stage ?? "n/a"}
-- Status: ${txn.status ?? "n/a"}
-- Contract date: ${txn.contract_date ?? "n/a"}
-- Purchase price: ${txn.purchase_price ?? "n/a"}
-- Provider: ${txn.external_provider_source ?? "none"}
+  // Resolve buyer + seller persona so the Deal Coordinator drafts both sides in their
+  // respective voices (e.g. first_time_buyer hears reassurance, luxury_seller hears
+  // sophistication). Brand voice resolution uses 'buyer' journey type — the brokerage's
+  // resolved tone applies across both sides for a transaction in flight.
+  let buyerPersonaKey  = "first_time_buyer"
+  let sellerPersonaKey = "first_time_seller"
+  if (txn.buyer_contact_id) {
+    const { data: b } = await svc.from("contacts").select("contact_persona").eq("id", txn.buyer_contact_id).maybeSingle()
+    buyerPersonaKey = (b?.contact_persona as string | null) ?? buyerPersonaKey
+  }
+  if (txn.seller_contact_id) {
+    const { data: s } = await svc.from("contacts").select("contact_persona").eq("id", txn.seller_contact_id).maybeSingle()
+    sellerPersonaKey = (s?.contact_persona as string | null) ?? sellerPersonaKey
+  }
+  const buyerPersona  = resolvePersonaContext(buyerPersonaKey, "buyer")
+  const sellerPersona = resolvePersonaContext(sellerPersonaKey, "seller")
+  const brokerage = await resolveBrokerageContext({
+    brokerageId: params.brokerageId,
+    journeyType: "buyer",   // transaction has both sides; brand voice rules tend to
+                            // overlap, and the resolver doesn't have a "both" option.
+    persona:     buyerPersonaKey,
+  })
 
-Produce your initial buyer + seller update + agent briefing per your response format.`
+  const kickoff = params.kickoff ?? [
+    renderBrokerageContextForKickoff(brokerage),
+    "",
+    "──── TRANSACTION CONTEXT ────",
+    `Deal: ${txn.deal_name ?? txn.property_address ?? "(unnamed)"}`,
+    `Stage: ${txn.stage ?? "n/a"}`,
+    `Status: ${txn.status ?? "n/a"}`,
+    `Contract date: ${txn.contract_date ?? "n/a"}`,
+    `Purchase price: ${txn.purchase_price ?? "n/a"}`,
+    `Provider: ${txn.external_provider_source ?? "none"}`,
+    "",
+    `BUYER VOICE (use for buyer_update): ${buyerPersona.aiContext}`,
+    `SELLER VOICE (use for seller_update): ${sellerPersona.aiContext}`,
+    (buyerPersona.sensitive || sellerPersona.sensitive)
+      ? "⚠️  SENSITIVE CONTEXT on one side — use extra care; never bridge details across sides."
+      : "",
+    "",
+    "Produce your initial buyer + seller update + agent briefing per your response format.",
+    "Match the brokerage compliance/voice gates. Output JSON only.",
+  ].filter(Boolean).join("\n")
 
   return spawnManagedAgentSession(TEMPLATE, {
     brokerageId:   params.brokerageId,
