@@ -25,7 +25,7 @@
  */
 import "server-only"
 
-export type AgentOutcomeKind = "buyer_concierge" | "listing_concierge" | "deal_coordinator"
+export type AgentOutcomeKind = "buyer_concierge" | "listing_concierge" | "deal_coordinator" | "sphere_of_influence"
 
 export interface OutcomeRubric {
   /** Short description for the agent (what they're working toward, in plain language). */
@@ -133,14 +133,65 @@ You PASS when all 8 hold. Iterate until they do.
   }
 }
 
+/**
+ * Sphere of Influence — per-brokerage, runs weekly over lifetime customers. Different
+ * shape from the per-entity agents: doesn't produce a single "buyer_digest" but a
+ * ranked list of re-engagement opportunities the agent should approve and send.
+ */
+function buildSphereOfInfluenceRubric(params: {
+  brokerageName: string
+  /** Sphere agent operates on the brokerage's whole lifetime book, not one person. */
+  sphereSize:    number
+}): OutcomeRubric {
+  return {
+    description:
+      `Scan ${params.brokerageName}'s ${params.sphereSize} lifetime customers (past clients) and ` +
+      `surface the top re-engagement opportunities this week. Detect refi / equity-tap / move ` +
+      `triggers (interest-rate shifts, neighborhood comp signals, life events, anniversary touchpoints) ` +
+      `from the contact_memory + property_insights data. Output a ranked list the agent reviews and sends.`,
+    rubric: `
+You are SATISFIED for this week's run when ALL of the following are true:
+
+1. opportunities[] is non-empty AND ranked by estimated lifetime value × probability of conversion.
+2. Each opportunity names ONE specific past client with a CLEAR trigger:
+   • "refi_window"   — current rates ≥ 75 bps below their loan rate AND they're past lockout
+   • "equity_tap"    — current property value − loan balance ≥ $100K AND ≥ 3 years owned
+   • "upsizer"       — kids reach school transition age + current home flagged "too small" in memory
+   • "downsizer"     — empty-nest trigger + current home flagged "too big" in memory
+   • "anniversary"   — purchase or move-in anniversary in next 30 days
+   • "referral_ask"  — high satisfaction signal + no referral asked in 90+ days
+3. Each opportunity has a draft persona-aware outreach (≤80 words) the agent can review and send.
+   The persona comes from contacts.contact_persona; match the same register the portal uses.
+4. No opportunity violates Fair Housing (no protected-class refs), Them-First (≥60% client-focused
+   pronouns), or TCPA (don't draft SMS unless the contact has sms_consent=true on file).
+5. No opportunity references a contact outside ${params.brokerageName} (cross-brokerage leak guard).
+6. recommended_skip[] lists any contacts you considered but rejected — with the reason — so the
+   agent can audit your filter logic.
+7. Response is valid JSON matching the format:
+   {
+     "opportunities":  [{ "contact_id": uuid, "trigger": string, "evidence": string,
+                          "estimated_value": number, "probability": number,
+                          "draft_outreach": string, "channel": "email|sms|call" }],
+     "recommended_skip": [{ "contact_id": uuid, "reason": string }],
+     "summary":          string,
+     "next_check_at":    ISO8601
+   }
+
+You PASS when all 7 hold. Iterate until they do or max_iterations hits.
+`.trim(),
+    maxIterations: 5,
+  }
+}
+
 export function buildOutcomeFor(
   kind: AgentOutcomeKind,
-  params: { brokerageName: string; subjectName: string },
+  params: { brokerageName: string; subjectName: string; sphereSize?: number },
 ): OutcomeRubric {
   switch (kind) {
     case "buyer_concierge":    return buildBuyerConciergeRubric({   brokerageName: params.brokerageName, buyerName:  params.subjectName })
     case "listing_concierge":  return buildListingConciergeRubric({ brokerageName: params.brokerageName, sellerName: params.subjectName })
     case "deal_coordinator":   return buildDealCoordinatorRubric({  brokerageName: params.brokerageName, dealName:   params.subjectName })
+    case "sphere_of_influence":return buildSphereOfInfluenceRubric({ brokerageName: params.brokerageName, sphereSize: params.sphereSize ?? 0 })
   }
 }
 
