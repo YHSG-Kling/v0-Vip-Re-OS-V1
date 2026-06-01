@@ -136,9 +136,69 @@ export async function POST(request: NextRequest) {
         })
         .eq("id", sessionRow.id)
 
-      // Route the agent's output through the canonical kernel emitter so downstream
-      // transparency_updates / notifications / sequences fire uniformly.
+      // ── RUNTIME COMPLIANCE GATE ─────────────────────────────────────────────
+      // The agent's system prompt names the compliance gates (Fair Housing, Them-
+      // First, TCPA) and instructs the agent to self-filter — but the prompt is
+      // advisory. THIS is the runtime enforcement: every agent message passes
+      // through lib/kernel/compliance.ts:evaluateOutbound before it can hit the
+      // canonical kernel emitter (and therefore before it can reach transparency_
+      // updates / portal cards / sequences). A blocked message logs a
+      // compliance_event and is NOT emitted. The agent can re-draft on its next
+      // idle if the agent's tooling tells it so.
+      let complianceAllowed = true
+      let complianceViolations: string[] = []
       if (text) {
+        try {
+          const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+          // Best-effort load of the contact so the gate runs the per-contact
+          // checks (DNC / TCPA / suppression) when the session entity is a contact.
+          // For transaction/listing entities, contact stays undefined and only the
+          // brokerage-level gates (Fair Housing, brand voice, Them-First) run.
+          let contact: import("@/lib/kernel/types").KernelContact | undefined
+          let personaKey: string = "first_time_buyer"
+          if (sessionRow.entity_type === "contact") {
+            const { data: c } = await svc
+              .from("contacts")
+              .select("*")
+              .eq("id", sessionRow.entity_id as string)
+              .maybeSingle()
+            if (c) {
+              contact = c as unknown as import("@/lib/kernel/types").KernelContact
+              personaKey = ((c as { contact_persona?: string | null }).contact_persona) ?? personaKey
+            }
+          }
+          const result = await evaluateOutbound({
+            // ActorContext on the kernel uses ActorRole; agent-authored messages run
+            // through the gate under the 'isa' role (closest match — automated outbound
+            // on behalf of the brokerage). The session's brokerage scopes the
+            // brokerage-level gates (brand voice, Fair Housing patterns, signature).
+            actorContext: {
+              userId:      "system",
+              role:        "isa",
+              brokerageId: sessionRow.brokerage_id as string,
+            } as import("@/lib/kernel/types").ActorContext,
+            journeyType:  sessionRow.entity_type === "listing" ? "seller" : "buyer",
+            // Persona is the KernelContact contact_persona when entity is a contact;
+            // otherwise we use a safe default that won't trigger persona-specific
+            // overrides (the brokerage-level gates still apply).
+            persona:      personaKey as import("@/lib/kernel/types").Persona,
+            messageType:  "email",  // agent drafts are review-then-send; email is the
+                                    // gate's narrative-equivalent — closest semantic match.
+            content:      text,
+            contact,
+          })
+          complianceAllowed   = result.allowed
+          complianceViolations = result.violations ?? []
+        } catch (err) {
+          console.error("[anthropic-webhook] compliance evaluate failed:", err)
+          // Fail closed — if the gate itself errored, treat the agent's draft as blocked.
+          complianceAllowed   = false
+          complianceViolations = ["compliance evaluator error — message held"]
+        }
+      }
+
+      // Route through the canonical kernel emitter ONLY when compliance allowed.
+      if (text && complianceAllowed) {
         const { emitKernelEvent } = await import("@/lib/kernel/emit")
         await emitKernelEvent({
           event:       "agent_message_received",
@@ -149,8 +209,21 @@ export async function POST(request: NextRequest) {
             anthropic_session_id: sessionId,
             agent_kind:           "deal_coordinator",
             message_preview:      text.slice(0, 400),
+            compliance_passed:    true,
           },
         })
+      } else if (text && !complianceAllowed) {
+        // Log the block. The agent's next idle can re-draft (the agent will see
+        // last_agent_message as null after this update — TODO follow-up: surface
+        // the violations back to the agent's next session.events.send so it can
+        // self-correct). Persist on the session row so admin UI can show why a
+        // draft was held.
+        await svc.from("managed_agent_sessions")
+          .update({
+            last_agent_message: `[blocked by compliance] ${complianceViolations.join("; ")}`,
+          })
+          .eq("id", sessionRow.id)
+        console.warn(`[anthropic-webhook] agent draft BLOCKED (session=${sessionId}):`, complianceViolations)
       }
       break
     }

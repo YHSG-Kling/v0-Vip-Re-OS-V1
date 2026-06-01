@@ -28,6 +28,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── INPUT / OUTPUT CONTRACTS ─────────────────────────────────────────────────
 
@@ -329,13 +330,20 @@ export async function createOrUpdateContactFromDirectIntake(
 
   const contactId = data.id as string
 
-  // ── 3. Lifecycle event ──────────────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "contact",
-    entity_id:   contactId,
-    event_type:  KernelEvent.CONTACT_CREATED,
-    brokerage_id: params.brokerage_id,
-    created_at:  now,
+  // ── 3. Emit CONTACT_CREATED through the canonical kernel emitter — INSERT into
+  //       lifecycle_events + reactor fan-out (notifications + sequences + portal cards
+  //       + per-side Managed Agent spawn) in one call. A bare lifecycle_events INSERT
+  //       silently suppressed every downstream channel — most importantly the Buyer
+  //       Concierge / Listing Concierge spawn that should kick the MOMENT a buyer/
+  //       seller-type contact is created. Catches the silent-suppression pattern audit.
+  await emitKernelEvent({
+    event:       KernelEvent.CONTACT_CREATED,
+    brokerageId: params.brokerage_id,
+    entityType:  "contact",
+    entityId:    contactId,
+    contactId,
+    agentUserId: (params as { user_id?: string }).user_id,
+    metadata:    { source: params.source ?? null },
   })
 
   // ── 4. Create first activity (intake note) ──────────────────────────────

@@ -21,14 +21,6 @@ import { createManagedAgent, createManagedSession, sendManagedSessionEvents } fr
 export type AgentKind = "deal_coordinator" | "shopping_agent" | "listing_concierge"
 export type EntityType = "transaction" | "contact" | "listing"
 
-// Subscription tier → human-readable label. Matches CanonicalPlanTier in lib/billing.
-const TIER_LABEL: Record<string, string> = {
-  solo_agent:     "Solo",
-  team:           "Team",
-  brokerage:      "Brokerage",
-  multi_location: "Multi-Location",
-}
-
 const KIND_LABEL: Record<AgentKind, string> = {
   deal_coordinator:   "Deal Coordinator",
   shopping_agent:     "Buyer Concierge",
@@ -39,19 +31,19 @@ const KIND_LABEL: Record<AgentKind, string> = {
  * Resolve the brokerage's display name + subscription tier so per-brokerage Anthropic
  * agents land with a recognizable name in the Anthropic Console — e.g.
  * "ACME Realty (Solo) — Buyer Concierge" — rather than the brokerage UUID slice.
- * Falls back to the UUID slice only when no brokerage name is set.
+ *
+ * Single source of truth: delegates to resolveBrokerageContext() in brokerage-context
+ * for both the brokerage name and tier label. Previously this file kept its own
+ * TIER_LABEL copy — code-review caught the duplication.
  */
 export async function resolveAgentDisplayName(brokerageId: string, kind: AgentKind): Promise<string> {
-  const svc = createServiceClient()
-  const { data } = await svc
-    .from("brokerages")
-    .select("name, subscription_tier, plan_tier")
-    .eq("id", brokerageId)
-    .maybeSingle()
-  const brokerName = (data?.name as string | null)?.trim() || `Brokerage ${brokerageId.slice(0, 8)}`
-  const rawTier    = ((data?.subscription_tier ?? data?.plan_tier) as string | null) ?? "solo_agent"
-  const tierLabel  = TIER_LABEL[rawTier] ?? rawTier
-  return `${brokerName} (${tierLabel}) — ${KIND_LABEL[kind]}`
+  const { resolveBrokerageContext } = await import("./brokerage-context")
+  const ctx = await resolveBrokerageContext({
+    brokerageId,
+    journeyType: "buyer",      // placeholder — only `brokerageName` + `tierLabel` are
+    persona:     "first_time_buyer", // consumed here; brand-voice resolution is a no-cost extra.
+  })
+  return `${ctx.brokerageName} (${ctx.tierLabel}) — ${KIND_LABEL[kind]}`
 }
 
 export interface AgentTemplate {

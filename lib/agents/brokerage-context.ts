@@ -114,11 +114,15 @@ export async function resolveBrokerageContext(params: {
   try {
     const { data: lender } = await svc
       .from("vendor_directory")
-      .select("name, email, phone, preferred, display_priority")
+      .select("id, name, email, phone, preferred, display_priority")
       .eq("brokerage_id", params.brokerageId)
       .eq("category", "lender")
       .eq("preferred", true)
+      // Stable, deterministic tie-break: display_priority ASC (nulls last), then id
+      // so a brokerage with multiple equally-prioritized preferred lenders sees the
+      // same lender on every spawn instead of a non-deterministic Postgres pick.
       .order("display_priority", { ascending: true, nullsFirst: false })
+      .order("id", { ascending: true })
       .limit(1)
       .maybeSingle()
     if (lender?.name) {
