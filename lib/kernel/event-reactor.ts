@@ -165,24 +165,37 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
-  // (D) Managed-Agent spawner — when a transaction goes OFFER_ACCEPTED / under contract,
-  // spawn the brokerage's Deal Coordinator Managed Agent session for the transaction. The
-  // agent runs autonomously off the request path, watching deal-health + provider docs +
-  // milestones, and posts back via the Anthropic webhook (app/api/webhooks/anthropic-agent).
-  // Never throws — a missing ANTHROPIC_API_KEY (dev/staging) skips silently.
-  if (
-    params.brokerageId &&
-    params.entityType === "transaction" &&
-    (params.event === KernelEvent.OFFER_ACCEPTED || params.event === KernelEvent.TRANSACTION_STAGE_CHANGED)
-  ) {
+  // (D) Managed-Agent spawner — three per-entity Anthropic Managed Agents run autonomously
+  // off the request path, each waking on the relevant kernel event:
+  //   - Deal Coordinator      — per transaction, on OFFER_ACCEPTED / TRANSACTION_STAGE_CHANGED
+  //   - Shopping Agent        — per buyer contact, on BUYER_FINANCIALLY_VERIFIED / BUYER_SEARCH_CONFIGURED
+  //   - Listing Concierge     — per listing, on LISTING_PUBLISHED
+  // All three post back via the Anthropic webhook (app/api/webhooks/anthropic-agent) and the
+  // shared spawn-helper handles idempotency at both the agent + session layers. Never throws
+  // — missing ANTHROPIC_API_KEY (dev/staging) skips silently.
+  if (params.brokerageId) {
     try {
-      const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
-      await spawnDealCoordinatorForTransaction({
-        brokerageId:   params.brokerageId,
-        transactionId: params.entityId,
-      })
+      if (
+        params.entityType === "transaction" &&
+        (params.event === KernelEvent.OFFER_ACCEPTED || params.event === KernelEvent.TRANSACTION_STAGE_CHANGED)
+      ) {
+        const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
+        await spawnDealCoordinatorForTransaction({ brokerageId: params.brokerageId, transactionId: params.entityId })
+      } else if (
+        params.entityType === "contact" &&
+        (params.event === KernelEvent.BUYER_FINANCIALLY_VERIFIED || params.event === KernelEvent.BUYER_SEARCH_CONFIGURED)
+      ) {
+        const { spawnShoppingAgentForBuyer } = await import("@/lib/agents/shopping-agent")
+        await spawnShoppingAgentForBuyer({ brokerageId: params.brokerageId, contactId: params.entityId })
+      } else if (
+        params.entityType === "listing" &&
+        params.event === KernelEvent.LISTING_PUBLISHED
+      ) {
+        const { spawnListingConciergeForListing } = await import("@/lib/agents/listing-concierge")
+        await spawnListingConciergeForListing({ brokerageId: params.brokerageId, listingId: params.entityId })
+      }
     } catch (err) {
-      console.error("[event-reactor] deal coordinator spawn failed:", err)
+      console.error("[event-reactor] managed-agent spawn failed:", err)
     }
   }
 
