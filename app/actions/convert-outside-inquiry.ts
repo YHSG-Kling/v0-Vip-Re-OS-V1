@@ -237,6 +237,10 @@ export async function convertOutsideInquiryToRepresentedBuyer(
         geographic_scope:       t.geographicScope      ?? null,
         expiration_date:        t.expirationDate       ?? null,
         status:                 "draft",
+        // buyer_broker_agreements.created_by is NOT NULL on the live schema — stamp the
+        // user who initiated the conversion (the agent or staff member who clicked
+        // "Convert to my buyer"). Caught by the e2e walk against live DB.
+        created_by:             gate.userId,
       })
       .select("id").single()
     if (bbaErr || !newBBA) return { success: false, error: `Failed to draft BBA: ${bbaErr?.message ?? "unknown"}` }

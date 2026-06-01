@@ -165,5 +165,26 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (D) Managed-Agent spawner — when a transaction goes OFFER_ACCEPTED / under contract,
+  // spawn the brokerage's Deal Coordinator Managed Agent session for the transaction. The
+  // agent runs autonomously off the request path, watching deal-health + provider docs +
+  // milestones, and posts back via the Anthropic webhook (app/api/webhooks/anthropic-agent).
+  // Never throws — a missing ANTHROPIC_API_KEY (dev/staging) skips silently.
+  if (
+    params.brokerageId &&
+    params.entityType === "transaction" &&
+    (params.event === KernelEvent.OFFER_ACCEPTED || params.event === KernelEvent.TRANSACTION_STAGE_CHANGED)
+  ) {
+    try {
+      const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
+      await spawnDealCoordinatorForTransaction({
+        brokerageId:   params.brokerageId,
+        transactionId: params.entityId,
+      })
+    } catch (err) {
+      console.error("[event-reactor] deal coordinator spawn failed:", err)
+    }
+  }
+
   return { ...mk, sequencesEnrolled, portalUpdated }
 }
