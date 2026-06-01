@@ -234,9 +234,37 @@ export async function POST(request: NextRequest) {
         .eq("id", sessionRow.id)
       break
 
+    case "span.outcome_evaluation_end": {
+      // Rubric-grader output from Anthropic Managed Agents' outcome-graded sessions.
+      // Persist per-iteration so the coaching engine + admin UI can show rubric
+      // progress over time (lib/agents/outcomes.ts builds the rubric on spawn).
+      // The webhook payload shape comes from `body.data.*` per Anthropic Managed
+      // Agents events spec.
+      const data = (body as { data?: Record<string, unknown> }).data ?? {}
+      const outcomeId  = (data.outcome_id ?? "") as string
+      const iteration  = Number(data.iteration ?? 0)
+      const result     = String(data.result ?? "needs_revision")
+      const explanation = (data.explanation as string | null) ?? null
+      const usage = (data.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number }
+      if (outcomeId) {
+        await svc.from("agent_outcome_evaluations").insert({
+          brokerage_id:             sessionRow.brokerage_id,
+          managed_agent_session_id: sessionRow.id,
+          anthropic_outcome_id:     outcomeId,
+          iteration,
+          result,
+          explanation,
+          input_tokens:             usage.input_tokens             ?? null,
+          output_tokens:            usage.output_tokens            ?? null,
+          cache_read_input_tokens:  usage.cache_read_input_tokens  ?? null,
+        })
+      }
+      break
+    }
+
     default:
-      // Other event types (e.g. session.thread_*, outcome_evaluation_*) are noted but
-      // not actioned in the current handler. They can be added incrementally.
+      // Other event types (e.g. session.thread_*, span.outcome_evaluation_start) are
+      // noted but not actioned in the current handler. They can be added incrementally.
       break
   }
 

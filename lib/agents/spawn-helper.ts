@@ -70,8 +70,16 @@ export interface SpawnInput {
   vaultIds?:     string[]
   /** Session title shown in Anthropic Console / our admin UI. */
   title?:        string
-  /** First user.message sent to the agent — typically the per-entity context. */
-  kickoff:       string
+  /** First user.message sent to the agent — used when no outcome is supplied. Either
+   *  `kickoff` or `outcomeEvent` must be set (outcomeEvent takes precedence). */
+  kickoff?:      string
+  /**
+   * Outcome-graded kickoff. When set, the agent starts in a rubric-graded loop
+   * (Anthropic's user.define_outcome event) and grades itself against the rubric on
+   * each iteration. See lib/agents/outcomes.ts:buildDefineOutcomeEvent.
+   * The events.send delivers this INSTEAD of a user.message.
+   */
+  outcomeEvent?: Record<string, unknown>
   /** Metadata key/value pairs persisted on the Anthropic session and our row. */
   metadata?:     Record<string, string>
 }
@@ -207,9 +215,17 @@ export async function spawnManagedAgentSession(
   //    surface the error rather than silently returning "ok"; callers can decide whether
   //    to retry. The session row stays — the webhook will still route status changes
   //    and the agent can be re-kicked manually.
+  // When outcomeEvent is set, send that INSTEAD of a user.message — Anthropic's grader
+  // starts the rubric loop on receipt. NEVER send both (the agent should not also get
+  // a separate kickoff message; the outcome's description carries the context).
+  const kickoffEvent: Record<string, unknown> = input.outcomeEvent
+    ?? { type: "user.message", content: [{ type: "text", text: input.kickoff ?? "" }] }
+  if (!input.outcomeEvent && !input.kickoff) {
+    return { ok: false, error: "spawn-helper: neither kickoff nor outcomeEvent supplied" }
+  }
   const send = await sendManagedSessionEvents({
     session_id: session.session.id,
-    events:     [{ type: "user.message", content: [{ type: "text", text: input.kickoff }] }],
+    events:     [kickoffEvent],
   })
   if (!send.ok) {
     return { ok: false, error: send.error ?? "kickoff send failed (session created but no kickoff delivered)" }

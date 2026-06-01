@@ -620,6 +620,26 @@ export async function writePortalUpdate(
       { onConflict: "contact_id,dedupe_key", ignoreDuplicates: true },
     ).then(() => null, () => null)
 
+    // 3a-bis. Embed into contact_memory so the per-buyer/seller Managed Agents AND the
+    // portal AI chat can recall what happened on this deal. Fire-and-forget, never
+    // throws — failure here must NOT block the transparency_updates write the buyer/
+    // seller relies on. Best-effort path matches the kernel's broader resilience.
+    void import("@/lib/agents/contact-memory").then(mod =>
+      mod.embedContactMemory({
+        brokerageId:  ctx.brokerageId,
+        entityType:   "contact",
+        entityId:     contactId,
+        memoryKind:   "transparency_update",
+        content:      `${title}\n\n${summary}${nextStep ? "\n\nNext: " + nextStep : ""}`,
+        sourceTable:  "transparency_updates",
+        metadata:     {
+          update_type:    ctx.event,
+          transaction_id: ctx.transactionId ?? null,
+          listing_id:     ctx.listingId ?? null,
+        },
+      }).catch(() => null),
+    ).catch(() => null)
+
     // 3b. Companion portal chat message (only when template provides one AND an agent is resolvable
     //     — client_portal_messages.agent_id is NOT NULL).
     if (chatBody && chatAgentId) {

@@ -32,6 +32,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate, type SpawnResult } from "./spawn-helper"
 import { resolvePersonaContext } from "./persona-context"
 import { resolveBrokerageContext, renderBrokerageContextForKickoff } from "./brokerage-context"
+import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
 
 const LISTING_CONCIERGE_SYSTEM = `You are the Listing Concierge for a real-estate seller. You serve under whichever
 brokerage the kickoff names — the brokerage's name, subscription tier, brand voice,
@@ -226,13 +227,19 @@ export async function spawnListingConciergeForSeller(params: {
     `phase rules above and the brokerage compliance/voice gates. Output JSON only.`,
   ].filter(Boolean).join("\n")
 
+  const rubric = buildOutcomeFor("listing_concierge", {
+    brokerageName: brokerage.brokerageName,
+    subjectName:   sellerName,
+  })
+  const outcomeEvent = buildDefineOutcomeEvent(rubric, kickoff)
+
   return spawnManagedAgentSession(TEMPLATE, {
     brokerageId:   params.brokerageId,
     entityType:    "contact",
     entityId:      params.contactId,
     environmentId: params.environmentId,
     title:         `Listing: ${sellerName} ${propertyAddress !== "(no listing yet)" ? `· ${propertyAddress}` : ""}`,
-    kickoff,
+    outcomeEvent,
     metadata: {
       seller_contact_id: params.contactId,
       persona:           persona.key,

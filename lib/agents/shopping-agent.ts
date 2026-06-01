@@ -32,6 +32,7 @@ import { spawnManagedAgentSession, type AgentTemplate, type SpawnResult } from "
 import { resolvePersonaContext } from "./persona-context"
 import { resolveBrokerageContext, renderBrokerageContextForKickoff } from "./brokerage-context"
 import { checkFinancialVerification } from "@/lib/buyer-lifecycle/financial-verification"
+import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
 
 const SHOPPING_AGENT_SYSTEM = `You are the Buyer Concierge for a real-estate buyer. You serve under whichever brokerage
 the kickoff names — the brokerage's name, subscription tier, brand voice, prohibited words,
@@ -214,13 +215,23 @@ export async function spawnShoppingAgentForBuyer(params: {
     `phase rules above and the brokerage compliance/voice gates. Output JSON only.`,
   ].filter(Boolean).join("\n")
 
+  // Outcome-graded kickoff — Anthropic's grader scores the agent against the rubric
+  // on each iteration; the agent self-revises until the rubric is satisfied or
+  // max_iterations hits. The composed kickoff (brokerage context + buyer context +
+  // persona voice) becomes the OUTCOME DESCRIPTION the grader uses.
+  const rubric = buildOutcomeFor("buyer_concierge", {
+    brokerageName: brokerage.brokerageName,
+    subjectName:   buyerName,
+  })
+  const outcomeEvent = buildDefineOutcomeEvent(rubric, kickoff)
+
   return spawnManagedAgentSession(TEMPLATE, {
     brokerageId:   params.brokerageId,
     entityType:    "contact",
     entityId:      params.contactId,
     environmentId: params.environmentId,
     title:         `Buyer: ${buyerName}`,
-    kickoff,
+    outcomeEvent,
     metadata: {
       buyer_contact_id: params.contactId,
       persona:          persona.key,

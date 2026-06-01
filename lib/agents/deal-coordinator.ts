@@ -13,6 +13,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate, type SpawnResult } from "./spawn-helper"
 import { resolveBrokerageContext, renderBrokerageContextForKickoff } from "./brokerage-context"
+import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
 import { resolvePersonaContext } from "./persona-context"
 
 const DEAL_COORDINATOR_SYSTEM = `You are the Deal Coordinator for a real-estate transaction. You serve under whichever
@@ -119,13 +120,19 @@ export async function spawnDealCoordinatorForTransaction(params: {
     "Match the brokerage compliance/voice gates. Output JSON only.",
   ].filter(Boolean).join("\n")
 
+  const rubric = buildOutcomeFor("deal_coordinator", {
+    brokerageName: brokerage.brokerageName,
+    subjectName:   txn.deal_name ?? txn.property_address ?? params.transactionId.slice(0, 8),
+  })
+  const outcomeEvent = buildDefineOutcomeEvent(rubric, kickoff)
+
   return spawnManagedAgentSession(TEMPLATE, {
     brokerageId:   params.brokerageId,
     entityType:    "transaction",
     entityId:      params.transactionId,
     environmentId: params.environmentId,
     title:         `Deal: ${txn.deal_name ?? txn.property_address ?? params.transactionId.slice(0, 8)}`,
-    kickoff,
+    outcomeEvent,
     metadata: {
       transaction_id: params.transactionId,
       provider:       (txn.external_provider_source as string | null) ?? "none",
