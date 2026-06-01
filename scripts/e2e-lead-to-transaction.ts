@@ -141,7 +141,7 @@ async function main() {
   if (!gate.allowed) fail(`BBA gate refused active BBA: ${gate.reason}`)
   log("bba gate: PASS")
 
-  // 6. Create an offer.
+  // 6. Create an offer in DRAFT — gate must REFUSE if we try to skip steps.
   const { data: offer, error: offerErr } = await svc.from("offers").insert({
     brokerage_id:     brokerageId,
     agent_id:         agentId,
@@ -155,18 +155,51 @@ async function main() {
   cleanup.push({ table: "offers", id: offer!.id })
   log(`offer: ${offer!.id}`)
 
-  // 7. Run the canonical accept → create-transaction path.
+  // 6a. Gate refusal smoke-test: the bridge MUST refuse a transaction on a draft
+  //     offer (no buyer signature, no executed contract, no compliance pass). If
+  //     this succeeds, our gate-in-the-bridge isn't working.
+  let refusalMessage: string | null = null
+  try {
+    await createTransactionFromOffer({
+      offerId:            offer!.id,
+      brokerageId,
+      contractDate:       today,
+      compliancePassedAt: new Date().toISOString(),
+      contractTerms:      { closingDate: sixMonths },
+    })
+  } catch (e) {
+    refusalMessage = (e as Error).message
+  }
+  if (!refusalMessage) fail("gate did NOT refuse a draft offer — fail-closed gate broken")
+  log(`gate refused draft offer (expected): ${refusalMessage}`)
+
+  // 6b. Stamp the source-of-truth fields the gate reads — mirrors what the
+  //     production flow does: buyer signs → seller accepts + uploads fully-signed
+  //     contract → compliance passes. The gate will then ALLOW the transaction.
+  const nowIso = new Date().toISOString()
+  await svc.from("offers").update({
+    buyer_signed_at:                   nowIso,
+    seller_signed_at:                  nowIso,
+    seller_response_type:              "accepted",
+    fully_signed_contract_received_at: nowIso,
+    compliance_passed_at:              nowIso,
+    ready_for_compliance_at:           nowIso,
+    status:                            "accepted",
+  }).eq("id", offer!.id)
+  log("offer marked: buyer+seller signed, contract on file, compliance passed")
+
+  // 7. Run the canonical create-transaction path — gate should now ALLOW.
   const txnResult = await createTransactionFromOffer({
     offerId:            offer!.id,
     brokerageId,
     contractDate:       today,
-    compliancePassedAt: new Date().toISOString(),
+    compliancePassedAt: nowIso,
     contractTerms: {
       closingDate:         sixMonths,
       inspectionDeadline:  new Date(Date.now() + 14 * 86400_000).toISOString().slice(0, 10),
     },
   })
-  if (!txnResult.success || !txnResult.transactionId) fail("createTransactionFromOffer failed")
+  if (!txnResult.success || !txnResult.transactionId) fail("createTransactionFromOffer failed AFTER gate-readiness")
   const transactionId = txnResult.transactionId
   cleanup.push({ table: "transactions", id: transactionId })
   log(`transaction: ${transactionId}`)

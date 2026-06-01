@@ -4,8 +4,75 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
 
 /**
+ * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
+ * fields on the offers row — callers can't fabricate compliance / signature state by
+ * passing them as params; the gate refuses if the OFFER itself doesn't show them.
+ *
+ * Enforces, in order:
+ *   1. Offer exists in the brokerage (and not orphaned).
+ *   2. No prior transaction (no double-create).
+ *   3. Buyer has signed (buyer_signed_at IS NOT NULL).
+ *   4. Executed contract on file — either:
+ *        (a) buyer-first original offer: seller_response_type='accepted' AND
+ *            fully_signed_contract_received_at set, OR
+ *        (b) seller-first counter: seller_signed_at AND
+ *            fully_signed_contract_received_at set
+ *   5. Compliance passed (compliance_passed_at IS NOT NULL).
+ *
+ * Same gate logic as app/actions/buyer-offer/submit-to-compliance.ts — pulled INTO the
+ * bridge so every caller (the submit action, the e-sign webhook, the seller-accept path,
+ * the kernel-level converter, and any future agentic caller) inherits identical
+ * enforcement. Fail-closed: missing fields = refusal, no exceptions for "trust me" callers.
+ */
+export interface OfferGateRow {
+  id:                                string
+  brokerage_id:                      string
+  transaction_id:                    string | null
+  buyer_signed_at:                   string | null
+  seller_signed_at:                  string | null
+  seller_response_type:              string | null
+  fully_signed_contract_received_at: string | null
+  compliance_passed_at:              string | null
+}
+
+export interface OfferGateResult {
+  allowed: boolean
+  reason?: string
+  offer?:  OfferGateRow
+}
+
+export async function assertOfferReadyForTransaction(params: {
+  offerId:     string
+  brokerageId: string
+}): Promise<OfferGateResult> {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("offers")
+    .select("id, brokerage_id, transaction_id, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, compliance_passed_at")
+    .eq("id", params.offerId)
+    .maybeSingle()
+  if (error) return { allowed: false, reason: `offer load failed: ${error.message}` }
+  if (!data) return { allowed: false, reason: "offer not found" }
+  if (data.brokerage_id !== params.brokerageId) {
+    return { allowed: false, reason: "offer brokerage mismatch" }
+  }
+  const o = data as OfferGateRow
+  if (o.transaction_id)  return { allowed: false, reason: "transaction already exists for this offer", offer: o }
+  if (!o.buyer_signed_at) return { allowed: false, reason: "buyer has not signed yet", offer: o }
+  const executedViaResponse = o.seller_response_type === "accepted" && !!o.fully_signed_contract_received_at
+  const executedViaCounter  = !!o.seller_signed_at && !!o.fully_signed_contract_received_at
+  if (!executedViaResponse && !executedViaCounter) {
+    return { allowed: false, reason: "executed contract not on file (seller_response_type or seller_signed_at + fully_signed_contract_received_at missing)", offer: o }
+  }
+  if (!o.compliance_passed_at) {
+    return { allowed: false, reason: "compliance has not passed on this offer", offer: o }
+  }
+  return { allowed: true, offer: o }
+}
+
+/**
  * Create transaction from accepted offer
- * Enforces: contract_date + compliance_passed_at gates
+ * Enforces: contract_date + compliance_passed_at + signature-completeness gates
  */
 export async function createTransactionFromOffer(params: {
   offerId: string
@@ -19,16 +86,33 @@ export async function createTransactionFromOffer(params: {
     financingDeadline?: string
     closingDate?: string
   }
+  /** Set by callers that ARE the authoritative gate (submitOfferToCompliance — which
+   *  did the brokerage-required-docs audit + packet-completeness scan + stamped
+   *  compliance_passed_at all in one atomic call). Default false: re-verify the gate
+   *  inside the bridge from the offer row's source-of-truth fields. */
+  skipOfferGate?: boolean
 }) {
   const supabase = createServiceClient()
-  
-  // Validate gates
+
+  // Validate caller-supplied params first (no compute wasted on bad calls).
   if (!params.contractDate) {
     throw new Error("[offer-bridge] contract_date required to create transaction")
   }
-  
   if (!params.compliancePassedAt) {
     throw new Error("[offer-bridge] compliance_passed_at required to create transaction")
+  }
+
+  // Canonical OFFER-side gate — read source-of-truth fields and refuse if buyer/seller
+  // signatures, executed contract, or compliance aren't on the offer. Callers can't
+  // fabricate this by passing fake params; the gate looks at the OFFER row.
+  if (!params.skipOfferGate) {
+    const gate = await assertOfferReadyForTransaction({
+      offerId:     params.offerId,
+      brokerageId: params.brokerageId,
+    })
+    if (!gate.allowed) {
+      throw new Error(`[offer-bridge] Gate refused transaction creation: ${gate.reason}`)
+    }
   }
   
   // Get offer details.
