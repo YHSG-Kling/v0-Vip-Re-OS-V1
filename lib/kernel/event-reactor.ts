@@ -273,5 +273,48 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (F) Just Listed auto-promo video — on LISTING_PUBLISHED, generate a
+  // social-format "Just Listed" avatar video (D-ID + cloned voice) and
+  // queue draft social_posts for FB / IG / LinkedIn via the downstream
+  // listing-promo-social-publish cron. Idempotent via listing_promo_videos
+  // (m124). Skips silently if the listing has no agent_id or its
+  // brokerage_id mismatch.
+  if (
+    params.brokerageId &&
+    params.event === KernelEvent.LISTING_PUBLISHED &&
+    params.entityType === "listing"
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      // listings.agent_id stores agents.id (per the live FK), but
+      // listing_promo_videos.agent_id + ai_video_projects.agent_id +
+      // agent_voice_profiles.agent_id all FK to users.id. Resolve via agents.user_id.
+      const { data: l } = await svc
+        .from("listings")
+        .select("agent_id")
+        .eq("id", params.entityId)
+        .maybeSingle()
+      const listingAgentRecordId = (l?.agent_id as string | null) ?? null
+      let agentUserId: string | null = params.agentUserId ?? null
+      if (!agentUserId && listingAgentRecordId) {
+        const { data: a } = await svc
+          .from("agents").select("user_id").eq("id", listingAgentRecordId).maybeSingle()
+        agentUserId = (a?.user_id as string | null) ?? null
+      }
+      if (agentUserId) {
+        const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+        void dispatchListingPromoVideo({
+          brokerageId: params.brokerageId,
+          listingId:   params.entityId,
+          agentUserId,
+          eventType:   "just_listed",
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] listing-promo dispatch failed:", err)
+    }
+  }
+
   return { ...mk, sequencesEnrolled, portalUpdated }
 }

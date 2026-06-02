@@ -51,7 +51,7 @@ import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import type { Persona, JourneyType, KernelContact } from "@/lib/kernel/types"
+import type { Persona, JourneyType } from "@/lib/kernel/types"
 
 type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
 
@@ -266,26 +266,21 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
 
   // 6. PRE-FLIGHT COMPLIANCE — runs BEFORE D-ID render submission.
-  //    Build the KernelContact shape the gate expects. messageType='email'
-  //    because the avatar video lands in the recipient's inbox.
-  const ct = (contact.contact_type as KernelContact["contact_type"] | null) ?? "buyer"
-  const journey: JourneyType =
-    ct === "seller" ? "seller" : ct === "both" ? "dual" : "buyer"
+  //    BROADCAST SHAPE: contact is intentionally omitted. The per-contact
+  //    gates (TCPA, Authority/ISA-reengagement) are irrelevant for
+  //    intro/anniversary videos — the intro fires when the agent is FIRST
+  //    assigned to the contact (they own the relationship outright), and
+  //    the anniversary fires for past clients (no ISA representation
+  //    question applies). Authority Rule was previously flagging these
+  //    sends spuriously when contact.status landed in RESTRICTED_STATES.
+  //    Per-channel opt-outs + TCPA still get checked at send time by
+  //    dispatchEmail / dispatchVideo, so nothing slips through there.
+  //    The four broadcast-relevant gates still run: Brand voice (brokerage
+  //    prohibited words + tone), Fair Housing (state-specific via
+  //    state_protected_classes — Florida included), Them-First, and the
+  //    brand-voice corrections layer.
+  const journey: JourneyType = contact.contact_type === "seller" ? "seller" : "buyer"
   const persona = normalizePersona(contact.contact_persona)
-  const kernelContact: KernelContact = {
-    id:                contact.id,
-    first_name:        contact.first_name ?? "",
-    last_name:         contact.last_name ?? "",
-    email:             contact.email ?? undefined,
-    phone:             contact.phone ?? undefined,
-    contact_type:      ct,
-    persona,
-    status:            contact.status ?? undefined,
-    lifecycle_state:   contact.lifecycle_state ?? undefined,
-    tcpa_consent:      contact.tcpa_consent ?? false,
-    tcpa_consent_date: contact.tcpa_consent_date ?? undefined,
-  } as KernelContact
-
   const compliance1 = await evaluateOutbound({
     actorContext: {
       brokerageId: input.brokerageId,
@@ -296,7 +291,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     persona,
     messageType:  "email",
     content:      script,
-    contact:      kernelContact,
+    // contact: undefined — broadcast-shape gating
   })
 
   if (!compliance1.allowed) {
@@ -322,7 +317,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       persona,
       messageType:  "email",
       content:      script,
-      contact:      kernelContact,
+      // contact: undefined — broadcast-shape gating, same as the initial draft
     })
 
     if (!compliance2.allowed) {
