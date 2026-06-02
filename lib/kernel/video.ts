@@ -297,7 +297,7 @@ export async function submitVideoGenerationJob(
   const supabase = await createClient()
 
   if (!input.avatarId) {
-    throw new Error("avatarId is required for HeyGen video generation. Select an avatar from the library.")
+    throw new Error("avatarId is required for video generation. Select an avatar from the library.")
   }
 
   // Fetch project to get tenant attribution for dispatch
@@ -314,11 +314,17 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
-  // Atomically claim the project slot by updating ONLY when not already in-progress.
-  // The WHERE clause ensures a concurrent second call fails rather than proceeding.
+  // Atomically claim the project slot. provider_status is the canonical column;
+  // we keep heygen_status synced for legacy readers (the poll-heygen-videos
+  // cron and the dashboard UI still consume it).
   const { data: reserved, error: preMarkError } = await supabase
     .from("ai_video_projects")
-    .update({ status: "generating", heygen_status: "submitting", updated_at: new Date().toISOString() })
+    .update({
+      status:          "generating",
+      provider_status: "submitting",
+      heygen_status:   "submitting",
+      updated_at:      new Date().toISOString(),
+    })
     .eq("id", input.projectId)
     .neq("status", "generating")
     .neq("status", "submitting")
@@ -330,45 +336,54 @@ export async function submitVideoGenerationJob(
     throw new Error("Video generation is already in progress for this project")
   }
 
-  // Call HeyGen API via dispatch
-  let heygenJobId: string
+  // Submit via the platform vendor selector — dispatchVideo picks D-ID or
+  // HeyGen per getPlatformVideoProvider(), so the kernel no longer hard-codes
+  // a vendor. Returns the provider's job id regardless of which one rendered.
+  let providerJobId: string
   try {
-    heygenJobId = await submitToHeyGen({
-      script: input.scriptText,
-      voiceProfileId: input.voiceProfileId,
-      avatarId: input.avatarId,
+    providerJobId = await submitViaPlatformVendor({
+      script:                 input.scriptText,
+      voiceProfileId:         input.voiceProfileId,
+      avatarId:               input.avatarId,
       estimatedDurationSeconds: input.estimatedDurationSeconds,
       brokerageId,
     })
   } catch (dispatchErr) {
-    // Roll back to setup status so the user can retry
     await supabase
       .from("ai_video_projects")
-      .update({ status: "setup", heygen_status: null, updated_at: new Date().toISOString() })
+      .update({
+        status:          "setup",
+        provider_status: null,
+        heygen_status:   null,
+        updated_at:      new Date().toISOString(),
+      })
       .eq("id", input.projectId)
     throw dispatchErr
   }
 
-  // Persist job ID — log clearly if this fails (job is already submitted to HeyGen)
+  // Persist on the canonical columns; keep heygen_* synced for legacy callers.
+  // The video_provider column is the source of truth for which vendor rendered.
   const { error } = await supabase
     .from("ai_video_projects")
     .update({
-      heygen_job_id: heygenJobId,
-      heygen_status: "queued",
-      status: "generating",
-      updated_at: new Date().toISOString(),
+      provider_job_id: providerJobId,
+      provider_status: "queued",
+      heygen_video_id: providerJobId,
+      heygen_status:   "queued",
+      status:          "generating",
+      updated_at:      new Date().toISOString(),
     })
     .eq("id", input.projectId)
 
   if (error) {
-    console.error(`[VideoKernel] ORPHANED HeyGen job ${heygenJobId} — DB update failed:`, error.message)
+    console.error(`[VideoKernel] ORPHANED provider job ${providerJobId} — DB update failed:`, error.message)
     throw new Error(`Failed to persist video job: ${error.message}`)
   }
 
   return {
     projectId: input.projectId,
-    jobId: heygenJobId,
-    status: "queued",
+    jobId:     providerJobId,
+    status:    "queued",
     estimatedCompletionMinutes: Math.ceil(input.estimatedDurationSeconds / 6),
   }
 }
@@ -672,7 +687,17 @@ function parseSceneBreakpoints(
   return scenes
 }
 
-async function submitToHeyGen(params: {
+/**
+ * Submit a render job via the platform vendor selector. dispatchVideo() reads
+ * getPlatformVideoProvider() and routes to D-ID (default) or HeyGen (super-
+ * admin override). Returns the provider's job id regardless of which vendor
+ * rendered — the caller persists it to provider_job_id.
+ *
+ * Previously this function was named submitToHeyGen() which falsely implied
+ * a HeyGen-only path even though it has gone through dispatchVideo since the
+ * D-ID-first refactor. Renamed for clarity.
+ */
+async function submitViaPlatformVendor(params: {
   script: string
   voiceProfileId: string
   avatarId: string
@@ -680,22 +705,22 @@ async function submitToHeyGen(params: {
   brokerageId: string
 }): Promise<string> {
   if (!params.avatarId || params.avatarId.trim().length < 1) {
-    throw new Error("avatarId is required to submit a HeyGen video job")
+    throw new Error("avatarId is required to submit a video render job")
   }
   const result = await dispatchVideo({
-    brokerageId: params.brokerageId,
-    templateId: params.avatarId,
+    brokerageId:    params.brokerageId,
+    templateId:     params.avatarId,
     recipientEmail: "system@internal",
     scriptVars: {
-      script: params.script,
+      script:           params.script,
       voice_profile_id: params.voiceProfileId,
       duration_seconds: String(params.estimatedDurationSeconds),
     },
     systemSource: "video_kernel",
   })
-  if (!result.success) throw new Error(result.error ?? "HeyGen video submission failed")
+  if (!result.success) throw new Error(result.error ?? "Video provider submission failed")
   const jobId = result.messageId
-  if (!jobId) throw new Error("HeyGen returned no video_id — cannot track job")
+  if (!jobId) throw new Error("Video provider returned no job id — cannot track job")
   return jobId
 }
 

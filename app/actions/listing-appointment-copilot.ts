@@ -9,7 +9,7 @@
  * It produces:
  *   - CMA       (cma_reports row)
  *   - Presentation (listing_presentations row)
- *   - Chapter videos (video_projects rows)
+ *   - Chapter videos (ai_video_projects rows — canonical kernel table)
  *   - Drip touchpoints scheduled (activities rows with scheduled_for)
  *
  * Today there's no single agent surface to review what was produced.
@@ -17,7 +17,7 @@
  *
  * Reuses canonical infrastructure end-to-end:
  *   - workflow_runs / workflow_run_steps (migration 1001)
- *   - cma_reports, listing_presentations, video_projects, activities
+ *   - cma_reports, listing_presentations, ai_video_projects, activities
  *   - users.user_type (kernel canonical, not .role)
  *
  * No new tables. No parallel actions.
@@ -366,7 +366,7 @@ export async function getListingAppointmentPrepDetail(params: {
   const chapterTitles = (stepOutputs.generate_chapter_videos?.chapterTitles as string[] | undefined) ?? []
   if (videoIds.length > 0) {
     const { data: vids } = await supabase
-      .from("video_projects")
+      .from("ai_video_projects")
       .select("id, status, video_url, thumbnail_url")
       .in("id", videoIds)
     const vidArr = (vids ?? []) as Array<{ id: string; status: string | null; video_url: string | null; thumbnail_url: string | null }>

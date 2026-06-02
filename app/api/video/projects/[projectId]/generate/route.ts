@@ -17,7 +17,7 @@ async function authorize(projectId: string) {
 
   const svc = createServiceClient()
   const { data: project } = await svc
-    .from("video_projects")
+    .from("ai_video_projects")
     .select("brokerage_id")
     .eq("id", projectId)
     .maybeSingle()
