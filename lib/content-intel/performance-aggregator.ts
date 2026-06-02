@@ -4,7 +4,7 @@
  * Closes the loop on the content intelligence layer.
  *
  * Every time a topic seeds a generated asset (podcast script, newsletter
- * video, marketing plan item), the producer calls logTopicUse(). The daily
+ * video, marketing plan item), the producer calls logTopicUses(). The daily
  * aggregator cron walks recent uses, looks up downstream engagement signals
  * for each asset (newsletter open/click rates, social_posts engagement,
  * podcast_episodes plays), and computes a rolling performance_score for
@@ -46,7 +46,11 @@ export async function logTopicUses(args: {
   }))
   try {
     await svc.from("content_topic_uses").insert(rows)
-  } catch { /* never fail the producer because audit hiccuped */ }
+  } catch (e) {
+    // Logged-then-swallowed: the producer doesn't fail because audit
+    // hiccuped, but the team sees the degradation in logs.
+    console.error("[performance-aggregator] logTopicUses insert failed:", (e as Error).message)
+  }
 }
 
 /**
@@ -61,6 +65,10 @@ export async function logTopicUses(args: {
  *   social_posts likes+comments+shares (log-compressed) → up to 8 points
  *   podcast play_count (when wired) → up to 6 points
  * Total capped at 30.
+ *
+ * Pre-fetches all signal data in ~5 batch queries instead of running
+ * nested per-asset round-trips inside the per-topic loop (fix from the
+ * code-review N+1 finding).
  */
 export async function aggregatePerformance(): Promise<{ topics_updated: number }> {
   const svc = createServiceClient()
@@ -74,88 +82,160 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
 
   if (!uses || uses.length === 0) return { topics_updated: 0 }
 
-  // Group by topic for one DB roundtrip per signal type.
+  // Group by topic for the scorer; also collect the union of asset IDs per
+  // type so we can pre-fetch all signal data in ~5 batch queries (instead
+  // of per-asset queries inside the per-topic loop).
   const topicToAssets = new Map<string, Array<{ asset_type: AssetType; asset_id: string | null }>>()
+  const newsletterCampaignAssetIds = new Set<string>()
+  const newsletterVideoAssetIds    = new Set<string>()
+  const socialPostAssetIds         = new Set<string>()
+  const podcastEpisodeAssetIds     = new Set<string>()
+
   for (const u of uses as Array<{ topic_id: string; asset_type: AssetType; asset_id: string | null }>) {
     const list = topicToAssets.get(u.topic_id) ?? []
     list.push({ asset_type: u.asset_type, asset_id: u.asset_id })
     topicToAssets.set(u.topic_id, list)
+    if (!u.asset_id) continue
+    if (u.asset_type === "newsletter_campaign") newsletterCampaignAssetIds.add(u.asset_id)
+    if (u.asset_type === "newsletter_video")    newsletterVideoAssetIds.add(u.asset_id)
+    if (u.asset_type === "social_post")         socialPostAssetIds.add(u.asset_id)
+    if (u.asset_type === "podcast_episode")     podcastEpisodeAssetIds.add(u.asset_id)
   }
 
+  // Batch-resolve newsletter_video ledger rows → their campaign IDs in
+  // ONE query, then merge with the direct newsletter_campaign asset IDs.
+  let videoLedgerToCampaign = new Map<string, string>()
+  if (newsletterVideoAssetIds.size > 0) {
+    try {
+      const { data: ledgers } = await svc.from("newsletter_video_renders")
+        .select("id, newsletter_campaign_id")
+        .in("id", Array.from(newsletterVideoAssetIds))
+      for (const r of (ledgers ?? []) as Array<{ id: string; newsletter_campaign_id: string | null }>) {
+        if (r.newsletter_campaign_id) videoLedgerToCampaign.set(r.id, r.newsletter_campaign_id)
+      }
+    } catch (e) {
+      console.error("[performance-aggregator] newsletter_video_renders batch lookup failed:", (e as Error).message)
+    }
+  }
+
+  // Pre-fetch newsletter_campaigns open/click rates for every campaign
+  // we'll need (both direct asset references AND those resolved through
+  // the video ledger).
+  const allCampaignIds = new Set<string>([
+    ...newsletterCampaignAssetIds,
+    ...videoLedgerToCampaign.values(),
+  ])
+  const campaignRates = new Map<string, { open_rate: number; click_rate: number }>()
+  if (allCampaignIds.size > 0) {
+    try {
+      const { data } = await svc.from("newsletter_campaigns")
+        .select("id, open_rate, click_rate")
+        .in("id", Array.from(allCampaignIds))
+      for (const r of (data ?? []) as Array<{ id: string; open_rate: number | null; click_rate: number | null }>) {
+        campaignRates.set(r.id, { open_rate: r.open_rate ?? 0, click_rate: r.click_rate ?? 0 })
+      }
+    } catch (e) {
+      console.error("[performance-aggregator] newsletter_campaigns batch lookup failed:", (e as Error).message)
+    }
+  }
+
+  // Pre-fetch social_posts engagement.
+  const socialEngagement = new Map<string, number>()
+  if (socialPostAssetIds.size > 0) {
+    try {
+      const { data } = await svc.from("social_posts")
+        .select("id, likes_count, comments_count, shares_count")
+        .in("id", Array.from(socialPostAssetIds))
+      for (const r of (data ?? []) as Array<{ id: string; likes_count?: number | null; comments_count?: number | null; shares_count?: number | null }>) {
+        socialEngagement.set(r.id, (r.likes_count ?? 0) + (r.comments_count ?? 0) + (r.shares_count ?? 0))
+      }
+    } catch (e) {
+      console.error("[performance-aggregator] social_posts batch lookup failed:", (e as Error).message)
+    }
+  }
+
+  // Pre-fetch podcast plays.
+  const podcastPlays = new Map<string, number>()
+  if (podcastEpisodeAssetIds.size > 0) {
+    try {
+      const { data } = await svc.from("podcast_episodes")
+        .select("id, play_count")
+        .in("id", Array.from(podcastEpisodeAssetIds))
+      for (const r of (data ?? []) as Array<{ id: string; play_count?: number | null }>) {
+        podcastPlays.set(r.id, r.play_count ?? 0)
+      }
+    } catch (e) {
+      console.error("[performance-aggregator] podcast_episodes batch lookup failed:", (e as Error).message)
+    }
+  }
+
+  // Now score every topic — pure-data lookups against the pre-fetched maps.
   let updated = 0
   for (const [topicId, assets] of topicToAssets) {
-    const score = await scoreTopic(svc, assets)
+    const score = scoreTopicFromMaps(assets, {
+      campaignRates,
+      videoLedgerToCampaign,
+      socialEngagement,
+      podcastPlays,
+    })
     try {
       await svc.from("content_topic_bank")
         .update({ performance_score: Math.max(0, Math.min(30, Math.round(score))) })
         .eq("id", topicId)
       updated++
-    } catch { /* per-topic write failure is not fatal */ }
+    } catch (e) {
+      console.error(`[performance-aggregator] update score failed for topic ${topicId}:`, (e as Error).message)
+    }
   }
   return { topics_updated: updated }
 }
 
-async function scoreTopic(
-  svc: ReturnType<typeof createServiceClient>,
+function scoreTopicFromMaps(
   assets: Array<{ asset_type: AssetType; asset_id: string | null }>,
-): Promise<number> {
+  maps: {
+    campaignRates:          Map<string, { open_rate: number; click_rate: number }>
+    videoLedgerToCampaign:  Map<string, string>
+    socialEngagement:       Map<string, number>
+    podcastPlays:           Map<string, number>
+  },
+): number {
   let score = 0
 
-  // ── Newsletter signals (open rate + click rate from newsletter_campaigns) ──
-  const newsletterCampaignIds = assets.filter((a) => a.asset_type === "newsletter_campaign" && a.asset_id).map((a) => a.asset_id as string)
-  const newsletterVideoCampaignIds = (await Promise.all(
-    assets.filter((a) => a.asset_type === "newsletter_video" && a.asset_id)
-      .map(async (a) => {
-        const { data } = await svc.from("newsletter_video_renders")
-          .select("newsletter_campaign_id")
-          .eq("id", a.asset_id as string)
-          .maybeSingle()
-        return (data as { newsletter_campaign_id?: string } | null)?.newsletter_campaign_id ?? null
-      })
-  )).filter((id): id is string => id !== null)
-
-  const newsletterIds = Array.from(new Set([...newsletterCampaignIds, ...newsletterVideoCampaignIds]))
-  if (newsletterIds.length > 0) {
-    const { data } = await svc.from("newsletter_campaigns")
-      .select("open_rate, click_rate")
-      .in("id", newsletterIds)
-    const rows = (data ?? []) as Array<{ open_rate: number | null; click_rate: number | null }>
-    if (rows.length > 0) {
-      const avgOpen  = avg(rows.map((r) => r.open_rate  ?? 0))
-      const avgClick = avg(rows.map((r) => r.click_rate ?? 0))
-      // Industry avg open rate for real-estate newsletters ~ 25%; click ~ 3%.
-      // Linear maps that grade above-avg performance generously.
-      score += Math.min(8, (avgOpen  / 0.35) * 8)
-      score += Math.min(8, (avgClick / 0.06) * 8)
+  // Newsletter signals — both direct campaign asset refs AND newsletter_video
+  // ledger refs that resolve to a campaign.
+  const campaignRatesForTopic: Array<{ open_rate: number; click_rate: number }> = []
+  for (const a of assets) {
+    if (!a.asset_id) continue
+    if (a.asset_type === "newsletter_campaign") {
+      const r = maps.campaignRates.get(a.asset_id)
+      if (r) campaignRatesForTopic.push(r)
+    } else if (a.asset_type === "newsletter_video") {
+      const campaignId = maps.videoLedgerToCampaign.get(a.asset_id)
+      if (campaignId) {
+        const r = maps.campaignRates.get(campaignId)
+        if (r) campaignRatesForTopic.push(r)
+      }
     }
   }
-
-  // ── Social signals ──
-  const socialIds = assets.filter((a) => a.asset_type === "social_post" && a.asset_id).map((a) => a.asset_id as string)
-  if (socialIds.length > 0) {
-    try {
-      const { data } = await svc.from("social_posts")
-        .select("likes_count, comments_count, shares_count")
-        .in("id", socialIds)
-      const rows = (data ?? []) as Array<{ likes_count?: number | null; comments_count?: number | null; shares_count?: number | null }>
-      const totalEngagement = rows.reduce((s, r) =>
-        s + (r.likes_count ?? 0) + (r.comments_count ?? 0) + (r.shares_count ?? 0), 0)
-      // Log-compressed — 1000 total engagements → 8 points; 100 → 4 points.
-      score += Math.min(8, 8 * Math.log10(totalEngagement + 1) / 3)
-    } catch { /* optional columns; best-effort */ }
+  if (campaignRatesForTopic.length > 0) {
+    const avgOpen  = avg(campaignRatesForTopic.map((r) => r.open_rate))
+    const avgClick = avg(campaignRatesForTopic.map((r) => r.click_rate))
+    score += Math.min(8, (avgOpen  / 0.35) * 8)
+    score += Math.min(8, (avgClick / 0.06) * 8)
   }
 
-  // ── Podcast signals (when plays are tracked) ──
+  // Social signals — sum across all this topic's social_post asset IDs.
+  const socialIds = assets.filter((a) => a.asset_type === "social_post" && a.asset_id).map((a) => a.asset_id as string)
+  if (socialIds.length > 0) {
+    const total = socialIds.reduce((s, id) => s + (maps.socialEngagement.get(id) ?? 0), 0)
+    score += Math.min(8, 8 * Math.log10(total + 1) / 3)
+  }
+
+  // Podcast signals.
   const podcastIds = assets.filter((a) => a.asset_type === "podcast_episode" && a.asset_id).map((a) => a.asset_id as string)
   if (podcastIds.length > 0) {
-    try {
-      const { data } = await svc.from("podcast_episodes")
-        .select("play_count")
-        .in("id", podcastIds)
-      const rows = (data ?? []) as Array<{ play_count?: number | null }>
-      const totalPlays = rows.reduce((s, r) => s + (r.play_count ?? 0), 0)
-      score += Math.min(6, 6 * Math.log10(totalPlays + 1) / 3)
-    } catch { /* play_count may not be wired yet */ }
+    const total = podcastIds.reduce((s, id) => s + (maps.podcastPlays.get(id) ?? 0), 0)
+    score += Math.min(6, 6 * Math.log10(total + 1) / 3)
   }
 
   return score

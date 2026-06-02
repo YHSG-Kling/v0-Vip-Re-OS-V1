@@ -53,6 +53,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 
 export type ListingPromoEventType = "just_listed" | "just_sold" | "price_changed"
 
@@ -145,41 +146,22 @@ export async function dispatchListingPromoVideo(
   const facts = buildFacts(l, input.eventType)
   let script: string
   try {
-    script = await draftScript({ facts, eventType: input.eventType, violations: [] })
-  } catch (err) {
-    await svc.from("listing_promo_videos")
-      .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
-      .eq("id", ledgerId!)
-    return { ok: false, status: "failed", reason: "script generation failed" }
-  }
-
-  const compliance1 = await evaluateOutbound({
-    actorContext: { brokerageId: input.brokerageId, userId: input.agentUserId, role: "system" },
-    journeyType:  "seller",
-    persona:      "other",
-    messageType:  "social",
-    content:      script,
-    // broadcast shape — no per-contact gates
-  })
-
-  if (!compliance1.allowed) {
-    try {
-      script = await draftScript({ facts, eventType: input.eventType, violations: compliance1.violations })
-    } catch (err) {
-      await svc.from("listing_promo_videos")
-        .update({ status: "failed", error_message: `redraft: ${(err as Error).message}` })
-        .eq("id", ledgerId!)
-      return { ok: false, status: "failed", reason: "script redraft failed" }
-    }
-    const compliance2 = await evaluateOutbound({
-      actorContext: { brokerageId: input.brokerageId, userId: input.agentUserId, role: "system" },
-      journeyType:  "seller",
-      persona:      "other",
-      messageType:  "social",
-      content:      script,
+    const result = await runWithComplianceRedraft({
+      draft: ({ violations }) => draftScript({ facts, eventType: input.eventType, violations }),
+      gate: async (s) => {
+        const r = await evaluateOutbound({
+          actorContext: { brokerageId: input.brokerageId, userId: input.agentUserId, role: "system" },
+          journeyType:  "seller",
+          persona:      "other",
+          messageType:  "social",
+          content:      s,
+          // broadcast shape — no per-contact gates
+        })
+        return { allowed: r.allowed, violations: r.violations }
+      },
     })
-    if (!compliance2.allowed) {
-      const reason = compliance2.violations.join("; ").slice(0, 800)
+    if (!result.ok) {
+      const reason = result.violations.join("; ").slice(0, 800)
       await svc.from("listing_promo_videos")
         .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
         .eq("id", ledgerId!)
@@ -187,9 +169,15 @@ export async function dispatchListingPromoVideo(
         ok:         false,
         status:     "failed",
         reason:     "compliance violations on both attempts",
-        violations: compliance2.violations,
+        violations: result.violations,
       }
     }
+    script = result.script
+  } catch (err) {
+    await svc.from("listing_promo_videos")
+      .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
+      .eq("id", ledgerId!)
+    return { ok: false, status: "failed", reason: "script generation failed" }
   }
 
   // 5. Stage at status='remotion_pending'. The Wave 14 render cron drains

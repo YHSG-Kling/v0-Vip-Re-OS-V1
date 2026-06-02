@@ -51,6 +51,8 @@ import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
+import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
 
 type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
@@ -181,13 +183,9 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   const contact = (contactRes.data as ContactRow | null) ?? null
   if (!contact) return { ok: false, status: "skipped", reason: "contact not found" }
 
-  // 2. Resolve agents.id → users.id
-  const { data: agentRow } = await svc
-    .from("agents")
-    .select("id, user_id")
-    .eq("id", input.agentId)
-    .maybeSingle()
-  const agentUserId = (agentRow?.user_id as string | null) ?? null
+  // 2. Resolve agents.id → users.id via the canonical resolver
+  //    (lib/kernel/agent-identity-resolver.ts — cached at module scope).
+  const agentUserId = await resolveAgentRecordToUserId(input.agentId)
   if (!agentUserId) {
     return { ok: false, status: "skipped", reason: "agent record not found or missing user_id" }
   }
@@ -281,56 +279,38 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   //    brand-voice corrections layer.
   const journey: JourneyType = contact.contact_type === "seller" ? "seller" : "buyer"
   const persona = normalizePersona(contact.contact_persona)
-  const compliance1 = await evaluateOutbound({
-    actorContext: {
-      brokerageId: input.brokerageId,
-      userId:      agentUserId,
-      role:        "system",
-    },
-    journeyType:  journey,
-    persona,
-    messageType:  "email",
-    content:      script,
-    // contact: undefined — broadcast-shape gating
-  })
-
-  if (!compliance1.allowed) {
-    // Single redraft attempt — feed the violations back so the model can fix.
-    try {
-      script = await draftScript({
-        trigger:     input.trigger,
-        firstName:   contact.first_name ?? "there",
-        personaRaw:  contact.contact_persona ?? null,
-        yearsAgo:    input.yearsAgo,
-        violations:  compliance1.violations,
+  const complianceResult = await runWithComplianceRedraft({
+    draft: ({ violations }) => draftScript({
+      trigger:     input.trigger,
+      firstName:   contact.first_name ?? "there",
+      personaRaw:  contact.contact_persona ?? null,
+      yearsAgo:    input.yearsAgo,
+      violations,
+    }),
+    gate: async (s) => {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: input.brokerageId, userId: agentUserId, role: "system" },
+        journeyType:  journey,
+        persona,
+        messageType:  "email",
+        content:      s,
+        // contact: undefined — broadcast-shape gating
       })
-    } catch (err) {
-      await svc.from("agent_intro_videos")
-        .update({ status: "failed", error_message: `redraft: ${(err as Error).message}` })
-        .eq("id", introVideoId!)
-      return { ok: false, status: "failed", reason: "script redraft failed" }
-    }
-
-    const compliance2 = await evaluateOutbound({
-      actorContext: { brokerageId: input.brokerageId, userId: agentUserId, role: "system" },
-      journeyType:  journey,
-      persona,
-      messageType:  "email",
-      content:      script,
-      // contact: undefined — broadcast-shape gating, same as the initial draft
-    })
-
-    if (!compliance2.allowed) {
-      const reason = compliance2.violations.join("; ").slice(0, 800)
-      await svc.from("agent_intro_videos")
-        .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
-        .eq("id", introVideoId!)
-      return {
-        ok:         false,
-        status:     "failed",
-        reason:     "compliance violations on both initial draft and redraft",
-        violations: compliance2.violations,
-      }
+      return { allowed: r.allowed, violations: r.violations }
+    },
+  })
+  if (complianceResult.ok) {
+    script = complianceResult.script
+  } else {
+    const reason = complianceResult.violations.join("; ").slice(0, 800)
+    await svc.from("agent_intro_videos")
+      .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
+      .eq("id", introVideoId!)
+    return {
+      ok:         false,
+      status:     "failed",
+      reason:     "compliance violations on both initial draft and redraft",
+      violations: complianceResult.violations,
     }
   }
 

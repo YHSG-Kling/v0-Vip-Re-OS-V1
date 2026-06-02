@@ -140,14 +140,9 @@ export async function GET(req: NextRequest) {
 
     // FK gotcha: listing_promo_videos.agent_id stores users.id (m124), but
     // social_posts.agent_id FKs to agents.id (the legacy column convention).
-    // Resolve via agents.user_id.
-    const { data: agentRecord } = await svc
-      .from("agents")
-      .select("id")
-      .eq("user_id", r.agent_id)
-      .eq("brokerage_id", r.brokerage_id)
-      .maybeSingle()
-    const socialAgentId = (agentRecord?.id as string | null) ?? null
+    // Resolve via the canonical resolver (cached at module scope).
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const socialAgentId = await resolveUserIdToAgentRecord(r.agent_id, r.brokerage_id)
     if (!socialAgentId) {
       await svc.from("listing_promo_videos").update({
         status:        "failed",

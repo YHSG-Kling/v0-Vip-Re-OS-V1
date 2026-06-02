@@ -31,10 +31,11 @@ import { put } from "@vercel/blob"
 import { createServiceClient } from "@/lib/supabase/service"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { generateTextRouted } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
-import { bundle } from "@remotion/bundler"
+import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -96,23 +97,11 @@ export async function POST(req: NextRequest) {
         .filter(Boolean)
     )).slice(0, 3)
 
-    // Light "market beat" line — for autonomous mode the agent's marketing
-    // assistant would supply this. For now, derive from the recent
-    // newsletter_teasers row OR fall back to a brand-clean default.
-    let marketBeat = "A quick recap of what moved in your local market this week"
-    try {
-      const { data: teaser } = await svc.from("newsletter_teasers")
-        .select("content")
-        .eq("brokerage_id", camp.brokerage_id)
-        .eq("status", "approved")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (teaser && (teaser as { content?: string }).content) {
-        marketBeat = ((teaser as { content?: string }).content as string).slice(0, 110)
-      }
-    } catch { /* best-effort */ }
-
+    // Market beat line — the topic bank's lead candidate IS the marketBeat
+    // now (Wave 16 onwards). We previously fell back to newsletter_teasers
+    // when no topic ranked; with Reddit + Exa + RSS + Apify ingesting daily,
+    // the bank is rarely empty. Default fallback kicks in only when every
+    // source went silent — much rarer than the teasers path was solving for.
     // 3. Pull this week's value-first topics for the narration LEAD. The
     //    20-second video opens with the most timely audience-relevant
     //    insight (e.g. "rates dropped 25bps — here's what it means");
@@ -126,6 +115,12 @@ export async function POST(req: NextRequest) {
                             // moving to 'used'. The podcast cron is the
                             // canonical 'used' flipper.
     })
+
+    // marketBeat headline = the top topic's title (truncated for the visual)
+    // or a brand-clean default when the bank ran dry.
+    const marketBeat = topics.length > 0
+      ? (topics[0].value_angle ?? topics[0].topic_title).slice(0, 110)
+      : "A quick recap of what moved in your local market this week"
 
     // 4. Draft narration — value-first, 25-35 spoken words.
     const draft = async (violations: string[]): Promise<string> => {
@@ -160,19 +155,18 @@ Return ONLY the spoken text.${fix}`
       })
       return text.trim()
     }
-    let script = await draft([])
-    const c1 = await evaluateOutbound({
-      actorContext: { brokerageId: camp.brokerage_id, userId: ledger.agent_id, role: "system" },
-      journeyType:  "buyer", persona: "other", messageType: "email", content: script,
+    const complianceResult = await runWithComplianceRedraft({
+      draft: ({ violations }) => draft(violations),
+      gate:  async (s) => {
+        const r = await evaluateOutbound({
+          actorContext: { brokerageId: camp.brokerage_id, userId: ledger.agent_id, role: "system" },
+          journeyType:  "buyer", persona: "other", messageType: "email", content: s,
+        })
+        return { allowed: r.allowed, violations: r.violations }
+      },
     })
-    if (!c1.allowed) {
-      script = await draft(c1.violations)
-      const c2 = await evaluateOutbound({
-        actorContext: { brokerageId: camp.brokerage_id, userId: ledger.agent_id, role: "system" },
-        journeyType:  "buyer", persona: "other", messageType: "email", content: script,
-      })
-      if (!c2.allowed) throw new Error(`compliance failed after redraft: ${c2.violations.join("; ")}`)
-    }
+    if (!complianceResult.ok) throw new Error(`compliance failed after redraft: ${complianceResult.violations.join("; ")}`)
+    const script = complianceResult.script
 
     // 4. ElevenLabs voiceover.
     const { data: profile } = await svc.from("agent_voice_profiles")
@@ -192,7 +186,7 @@ Return ONLY the spoken text.${fix}`
 
     // 5. Remotion render.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
-    const bundleLoc = await bundle({ entryPoint })
+    const bundleLoc = await getBundle(entryPoint)
 
     const inputProps = {
       subject:        camp.subject_line ?? camp.campaign_name ?? "This week's digest",

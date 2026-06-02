@@ -298,9 +298,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       const listingAgentRecordId = (l?.agent_id as string | null) ?? null
       let agentUserId: string | null = params.agentUserId ?? null
       if (!agentUserId && listingAgentRecordId) {
-        const { data: a } = await svc
-          .from("agents").select("user_id").eq("id", listingAgentRecordId).maybeSingle()
-        agentUserId = (a?.user_id as string | null) ?? null
+        const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+        agentUserId = await resolveAgentRecordToUserId(listingAgentRecordId)
       }
       if (agentUserId) {
         const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")

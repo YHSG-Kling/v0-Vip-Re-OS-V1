@@ -68,6 +68,15 @@ interface SubscriberRow {
   status:       string
   brokerage_id: string
   agent_id:     string | null
+  /** Joined from contacts in a single query — persona + location for
+   *  per-recipient section filtering. Eliminates the per-recipient N+1
+   *  the cron previously did inside the publish loop. */
+  contact:      {
+    contact_persona: string | null
+    city:            string | null
+    state:           string | null
+    zip_code:        string | null
+  } | null
 }
 
 interface CampaignResult {
@@ -97,7 +106,7 @@ export async function GET(req: NextRequest) {
     .from("newsletter_campaigns")
     .select("id, brokerage_id, agent_id, campaign_name, subject_line, content, status, approval_status, marketing_campaign_id, created_by")
     .eq("approval_status", "approved")
-    .in("status", ["scheduled", "queued"])
+    .in("status", ["scheduled"])
     .lte("send_date", new Date().toISOString())
     .order("send_date", { ascending: true })
     .limit(25)
@@ -171,7 +180,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     .from("newsletter_campaigns")
     .update({ status: "sending" })
     .eq("id", c.id)
-    .in("status", ["scheduled", "queued"])
+    .in("status", ["scheduled"])
     .select("id")
   if (!claimed?.length) {
     return {
@@ -189,13 +198,20 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     const ownerAgent = c.agent_id ?? c.created_by ?? null
     let q = svc
       .from("newsletter_subscribers")
-      .select("id, contact_id, email, first_name, last_name, status, brokerage_id, agent_id")
+      .select("id, contact_id, email, first_name, last_name, status, brokerage_id, agent_id, contact:contacts(contact_persona, city, state, zip_code)")
       .eq("brokerage_id", c.brokerage_id)
       .eq("status", "active")
     if (ownerAgent) q = q.eq("agent_id", ownerAgent)
-    const { data } = await q
-    subs = (data ?? []) as SubscriberRow[]
-  } catch { /* fall through with empty list */ }
+    const { data, error } = await q
+    if (error) {
+      // Surface so the team sees degradation instead of silently sending
+      // un-localized newsletters.
+      console.error(`[publish-newsletters] subscriber join failed for campaign ${c.id}:`, error.message)
+    }
+    subs = (data ?? []) as unknown as SubscriberRow[]
+  } catch (e) {
+    console.error(`[publish-newsletters] subscriber query threw for campaign ${c.id}:`, (e as Error).message)
+  }
 
   if (subs.length === 0) {
     await svc.from("newsletter_campaigns").update({ status: "sent" }).eq("id", c.id)
@@ -220,31 +236,20 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
           .select("id")
           .eq("campaign_id", c.id)
           .eq("contact_id", s.contact_id)
-          .in("status", ["sent", "queued", "delivered"])
+          .in("status", ["sent", "delivered"])
           .limit(1)
           .maybeSingle()
         if (prior) continue
       } catch { /* if the check fails, fall through and let dispatch run */ }
     }
 
-    // Persona + LOCATION from contacts table — Wave 18 makes the location
-    // signal flow through to the section filter. Per-recipient section
-    // scoping (a Miami subscriber sees Miami-only sections, Tampa sees
-    // Tampa, all from one campaign).
-    let persona: string | null = null
-    let location: { city?: string | null; state?: string | null; zip_code?: string | null } | null = null
-    if (s.contact_id) {
-      try {
-        const { data: contact } = await svc
-          .from("contacts")
-          .select("contact_persona, city, state, zip_code")
-          .eq("id", s.contact_id)
-          .maybeSingle()
-        const cr = contact as { contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null } | null
-        persona  = cr?.contact_persona ?? null
-        location = cr ? { city: cr.city, state: cr.state, zip_code: cr.zip_code } : null
-      } catch { /* anonymous subscriber — fall through with both null */ }
-    }
+    // Persona + LOCATION come from the join we did up at the subscribers
+    // query — no per-recipient round-trip. A subscriber without a linked
+    // contact (anonymous capture) has s.contact === null which is
+    // semantically distinct from "query errored" (handled at the
+    // subscribers-query layer above with explicit console.error).
+    const persona  = s.contact?.contact_persona ?? null
+    const location = s.contact ? { city: s.contact.city, state: s.contact.state, zip_code: s.contact.zip_code } : null
 
     const sections = await resolveSectionsForRecipient({
       brokerageId:       c.brokerage_id,

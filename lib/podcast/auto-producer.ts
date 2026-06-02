@@ -37,6 +37,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 
 export interface RunInput {
   brokerageId: string
@@ -111,7 +112,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
 
     // 4. Fact pack — grounded numbers ABOUT THE BROKERAGE (folded in as
     //    supporting examples, not the lead).
-    const facts = await buildFactPack(svc, input.brokerageId)
+    const facts = await buildBrokerageTidbits(svc, input.brokerageId)
 
     // 5. Draft + pre-flight compliance — VALUE-FIRST prompt.
     const script = await draftAndClearScript({
@@ -187,59 +188,64 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
 
 // ─── Fact pack ──────────────────────────────────────────────────────────────
 
-async function buildFactPack(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<FactPack> {
+/**
+ * Build the BROKERAGE TIDBITS pack — internal data about the agent's own
+ * activity (recent listings, transactions, etc.). This is INTENTIONALLY
+ * separate from the content topic bank: the topic bank holds EXTERNAL
+ * audience signal (Reddit / Exa / RSS / Apify) that leads the script as
+ * value content; the tidbits below are folded in as ~20% supporting
+ * context in the "bridge to local" segment. Renamed from buildFactPack
+ * to make the distinction explicit per the code-review clarification.
+ *
+ * All 4 independent counts run in parallel via Promise.all (~150ms total
+ * instead of ~600ms serial). Each query's failure is logged (not swallowed
+ * silently) so a schema drift or RLS regression shows up in monitoring.
+ */
+async function buildBrokerageTidbits(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<FactPack> {
   const since7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const since7dDate = since7d.slice(0, 10)
 
-  let newListingsCount = 0
-  let medianPrice = ""
-  let soldCount = 0
-  let soldMedianDom: number | null = null
-  let underContractCount = 0
-  let brokerageName = "Our Team"
-
-  try {
-    const { data: b } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
-    brokerageName = (b as { name?: string } | null)?.name ?? "Our Team"
-  } catch { /* default */ }
-
-  try {
-    const { data: newL } = await svc.from("listings")
+  const [brokerageRes, newListingsRes, soldRes, underContractRes] = await Promise.all([
+    svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle(),
+    svc.from("listings")
       .select("list_price")
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
       .gte("created_at", since7d)
-      .limit(500)
-    const prices = (newL ?? []).map((r) => (r as { list_price?: number | null }).list_price ?? null).filter((p): p is number => typeof p === "number")
-    newListingsCount = (newL ?? []).length
-    if (prices.length > 0) {
-      const sorted = [...prices].sort((a, b) => a - b)
-      const median = sorted[Math.floor(sorted.length / 2)]
-      medianPrice = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(median)
-    }
-  } catch { /* best-effort */ }
-
-  try {
-    const { count } = await svc.from("transactions")
+      .limit(500),
+    svc.from("transactions")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("status", "closed")
-      .gte("close_date", since7d.slice(0, 10))
-    soldCount = count ?? 0
-  } catch { /* table optional */ }
-
-  try {
-    const { count } = await svc.from("transactions")
+      .gte("close_date", since7dDate),
+    svc.from("transactions")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .eq("status", "under_contract")
-    underContractCount = count ?? 0
-  } catch { /* table optional */ }
+      .eq("status", "under_contract"),
+  ])
+
+  if (brokerageRes.error)     console.error("[auto-producer] brokerages query failed:",      brokerageRes.error.message)
+  if (newListingsRes.error)   console.error("[auto-producer] listings query failed:",        newListingsRes.error.message)
+  if (soldRes.error)          console.error("[auto-producer] transactions(closed) failed:",  soldRes.error.message)
+  if (underContractRes.error) console.error("[auto-producer] transactions(uc) failed:",      underContractRes.error.message)
+
+  const brokerageName = (brokerageRes.data as { name?: string } | null)?.name ?? "Our Team"
+  const prices = (newListingsRes.data ?? []).map((r) => (r as { list_price?: number | null }).list_price ?? null).filter((p): p is number => typeof p === "number")
+  const newListingsCount = (newListingsRes.data ?? []).length
+  let medianPrice = ""
+  if (prices.length > 0) {
+    const sorted = [...prices].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)]
+    medianPrice = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(median)
+  }
+  const soldCount = soldRes.count ?? 0
+  const underContractCount = underContractRes.count ?? 0
 
   return {
     new_listings_count:        newListingsCount,
     new_listings_median_price: medianPrice,
     sold_count:                soldCount,
-    sold_median_dom:           soldMedianDom,
+    sold_median_dom:           null,
     under_contract_count:      underContractCount,
     brokerage_name:            brokerageName,
   }
@@ -313,19 +319,18 @@ segment labels read aloud.${fix}`
     return text.trim()
   }
 
-  let script = await draft([])
-  const c1 = await evaluateOutbound({
-    actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
-    journeyType:  "buyer", persona: "other", messageType: "social", content: script,
+  const result = await runWithComplianceRedraft({
+    draft: ({ violations }) => draft(violations),
+    gate:  async (script) => {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
+        journeyType:  "buyer", persona: "other", messageType: "social", content: script,
+      })
+      return { allowed: r.allowed, violations: r.violations }
+    },
   })
-  if (c1.allowed) return script
-  script = await draft(c1.violations)
-  const c2 = await evaluateOutbound({
-    actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
-    journeyType:  "buyer", persona: "other", messageType: "social", content: script,
-  })
-  if (c2.allowed) return script
-  throw new Error(`compliance failed after redraft: ${c2.violations.join("; ")}`)
+  if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)
+  return result.script
 }
 
 // ─── ISO week helper ────────────────────────────────────────────────────────

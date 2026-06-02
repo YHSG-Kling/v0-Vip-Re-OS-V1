@@ -40,10 +40,11 @@ import { put } from "@vercel/blob"
 import { createServiceClient } from "@/lib/supabase/service"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted } from "@/lib/ai/models"
-import { bundle } from "@remotion/bundler"
+import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -334,25 +335,21 @@ Return ONLY the script text the avatar will speak — no scene directions.${viol
     })
     return text.trim()
   }
-  let script = await draft([])
-  const c1 = await evaluateOutbound({
-    actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
-    journeyType:  "seller",
-    persona:      "other",
-    messageType:  "social",
-    content:      script,
+  const result = await runWithComplianceRedraft({
+    draft: ({ violations }) => draft(violations),
+    gate:  async (script) => {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
+        journeyType:  "seller",
+        persona:      "other",
+        messageType:  "social",
+        content:      script,
+      })
+      return { allowed: r.allowed, violations: r.violations }
+    },
   })
-  if (c1.allowed) return script
-  script = await draft(c1.violations)
-  const c2 = await evaluateOutbound({
-    actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
-    journeyType:  "seller",
-    persona:      "other",
-    messageType:  "social",
-    content:      script,
-  })
-  if (c2.allowed) return script
-  throw new Error(`compliance failed after redraft: ${c2.violations.join("; ")}`)
+  if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)
+  return result.script
 }
 
 async function renderVoiceover(args: {
@@ -390,7 +387,7 @@ async function renderRemotionReel(args: {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
   const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
-  const bundleLocation = await bundle({ entryPoint })
+  const bundleLocation = await getBundle(entryPoint)
 
   const inputProps = {
     hook:        eventLabel(args.eventType),
