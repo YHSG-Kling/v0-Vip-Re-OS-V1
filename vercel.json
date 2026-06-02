@@ -335,6 +335,10 @@
     {
       "path": "/api/cron/content-intel-apify",
       "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/cron/content-performance-aggregator",
+      "schedule": "0 8 * * *"
     }
   ]
 }

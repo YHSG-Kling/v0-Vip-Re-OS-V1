@@ -59,7 +59,7 @@ export async function pickTopics(args: {
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")
-    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at, geo_relevance")
+    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, geo_relevance")
     .eq("status", "fresh")
     .gt("expires_at", new Date().toISOString())
     .or(`brokerage_id.is.null,brokerage_id.eq.${args.brokerageId}`)
@@ -79,6 +79,7 @@ export async function pickTopics(args: {
     source_url:       string | null
     categories:       string[]
     engagement_score: number
+    performance_score: number
     topic_posted_at:  string | null
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
@@ -91,9 +92,13 @@ export async function pickTopics(args: {
     const freshBoost = ageDays <= 7 ? 10 : 0
     const geoMatch   = matchesGeo(r.geo_relevance, args.recipientLocation)
     const geoBoost   = geoMatch ? 20 : 0
+    // Wave 19 — performance feedback loop. content_topic_uses → engagement
+    // signals → aggregator → performance_score (0..30). Winning topics
+    // compound; flops decay.
+    const perfBoost  = r.performance_score ?? 0
     return {
       ...r,
-      adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost,
+      adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost + perfBoost,
       is_brokerage_local: isLocal,
       geo_match: geoMatch,
     }

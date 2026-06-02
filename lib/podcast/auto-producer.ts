@@ -36,6 +36,7 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
+import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 
 export interface RunInput {
   brokerageId: string
@@ -154,6 +155,16 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       .select("id")
       .single()
     if (epErr || !episode) throw new Error(`podcast_episodes insert: ${epErr?.message}`)
+
+    // Wave 19 — close the performance loop. Log which topics seeded this
+    // episode so the daily aggregator can read downstream engagement and
+    // boost / decay their picker rank.
+    void logTopicUses({
+      topicIds:    topics.map((t) => t.id),
+      brokerageId: input.brokerageId,
+      assetType:   "podcast_episode",
+      assetId:     episode.id,
+    })
 
     await svc.from("podcast_auto_runs").update({
       status:             "rendered",

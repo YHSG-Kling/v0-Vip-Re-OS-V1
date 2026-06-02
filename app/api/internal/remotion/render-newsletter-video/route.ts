@@ -33,6 +33,7 @@ import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { generateTextRouted } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt } from "@/lib/content-intel/topic-bank"
+import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { bundle } from "@remotion/bundler"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import path from "node:path"
@@ -255,6 +256,17 @@ Return ONLY the spoken text.${fix}`
       video_project_id: project!.id,
       completed_at:    new Date().toISOString(),
     }).eq("id", ledger.id)
+
+    // Wave 19 — close the performance loop. Log topics → newsletter_video
+    // so the aggregator can score them by the campaign's downstream
+    // open/click rate. asset_id is the ledger (newsletter_video_renders)
+    // row; the aggregator resolves to newsletter_campaign_id from there.
+    void logTopicUses({
+      topicIds:    topics.map((t) => t.id),
+      brokerageId: camp.brokerage_id,
+      assetType:   "newsletter_video",
+      assetId:     ledger.id,
+    })
 
     return NextResponse.json({
       ok: true,
