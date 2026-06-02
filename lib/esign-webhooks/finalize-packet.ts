@@ -32,6 +32,7 @@ import { logEventAndTrigger }  from "@/lib/events"
 import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -82,7 +83,7 @@ export async function finalizeVoiceCockpitPacket(
 
     await logEventAndTrigger({
       brokerage_id: docRow.brokerage_id as string,
-      event_type:   "voice_cockpit.packet.signed",
+      event_type:   KernelEvent.ESIGN_PACKET_SIGNED,
       user_id:      (docRow.contact_id as string | null) ?? "",
       payload:      { documentId: docRow.id, documentType: docRow.document_type, envelopeId, provider },
       source:       "webhook",
@@ -109,7 +110,7 @@ export async function finalizeVoiceCockpitPacket(
 
     await logEventAndTrigger({
       brokerage_id: matchedBBA.brokerage_id as string,
-      event_type:   "buyer_broker_agreement.signed",
+      event_type:   KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED,
       user_id:      matchedBBA.buyer_contact_id as string,
       payload:      { agreementId: matchedBBA.id, envelopeId, provider },
       source:       "webhook",

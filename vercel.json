@@ -248,6 +248,34 @@
     {
       "path": "/api/cron/publish-newsletters",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/health-check",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/em-receipt-watcher",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-coaching",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/tenant-safety-scan",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/revenue-protection-rollup",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/lifetime-npv-forecast-rollup",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/portal-stream-projector",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -8,6 +8,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ListingStage } from "./lifecycle-definitions"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export interface LifecycleEventData {
   listingId: string
@@ -100,7 +101,7 @@ export async function logFailedTransition(
     brokerage_id:  event.brokerageId,
     entity_type:   'listing_stage_machine',
     entity_id:     event.listingId,
-    event_type:    'lifecycle.LISTING_STAGE_TRANSITION_FAILED',
+    event_type:    KernelEvent.LISTING_STAGE_TRANSITION_FAILED,
     actor_user_id: event.userId,
     metadata: {
       from_stage:       event.fromStage,

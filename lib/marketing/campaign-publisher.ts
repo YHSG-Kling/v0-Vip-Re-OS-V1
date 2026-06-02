@@ -23,6 +23,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveCampaignAudience, type AudienceCriteria } from "./audience-resolver"
 import { recordCampaignTouchpointsBulkSafe } from "./touchpoint-recorder"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export interface PublishCampaignResult {
   ok:              boolean
@@ -143,7 +144,7 @@ export async function publishMarketingCampaignSafe(
   // Lifecycle event — fan-out to portal_event_stream via projector
   if (newStatus === "live") {
     await svc.from("lifecycle_events").insert({
-      event_type:   "marketing.campaign_launched",
+      event_type:   KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
       entity_type:  "marketing_campaign",
       entity_id:    c.id,
       brokerage_id: c.brokerage_id,

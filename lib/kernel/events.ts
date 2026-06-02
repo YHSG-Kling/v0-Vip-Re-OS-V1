@@ -560,4 +560,17 @@ export enum KernelEvent {
   FORM_SUBMITTED                     = 'form_submitted',
   ESIGN_SIGNED_COMPLETED             = 'esign_signed_completed',
   BUYER_PROPERTY_ACTION_RECORDED     = 'buyer_property_action_recorded',
+
+  // ── Layer 8 — Wave 7 canonicalization (m120) ─────────────────────────────────
+  // Replacements for dotted-form lifecycle_events.event_type writes that were
+  // never reaching the underscore-form KernelEvent reactor. Zero dotted rows
+  // existed in production at consolidation time — no migration needed.
+  LEAD_TAGGED_HOT                    = 'lead_tagged_hot',
+  LISTING_APPOINTMENT_SCHEDULED      = 'listing_appointment_scheduled',
+  CREDIT_STATUS_UPDATED              = 'credit_status_updated',
+  SEQUENCE_PAUSED_ON_REPLY           = 'sequence_paused_on_reply',
+  NEGOTIATION_STRATEGY_READY         = 'negotiation_strategy_ready',
+  ESIGN_PACKET_SIGNED                = 'esign_packet_signed',
+  LISTING_STAGE_TRANSITION_FAILED    = 'listing_stage_transition_failed',
+  BUYER_BROKER_AGREEMENT_SIGNED      = 'buyer_broker_agreement_signed',
 }
