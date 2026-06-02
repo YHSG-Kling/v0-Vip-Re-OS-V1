@@ -30,7 +30,41 @@ function unauthorized() {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 }
 
-const PLATFORMS = ["facebook", "instagram", "linkedin"] as const
+const PLATFORMS = ["facebook", "instagram", "linkedin", "tiktok", "youtube", "pinterest", "twitter", "google_business"] as const
+
+/** Per-platform caption — tailored to each network's voice + char limits.
+ *  All variants are compliance-pre-cleared by the reactor's gate (Brand
+ *  voice + Fair Housing + Them-First); the platform-specific wrapping is
+ *  presentational only (hashtag mix, length, CTA shape). */
+function captionFor(platform: typeof PLATFORMS[number], parts: {
+  hook: string; address: string; cityState: string; price: string
+}): string {
+  const { hook, address, cityState, price } = parts
+  const head = `${hook}: ${address}${cityState ? " — " + cityState : ""}${price ? " · " + price : ""}.`
+  switch (platform) {
+    case "facebook":
+      return `${head}\nDM to schedule a tour.\n#RealEstate #JustListed`
+    case "linkedin":
+      return `${head}\nReach out to schedule a tour or learn more about the local market.\n#RealEstate`
+    case "instagram":
+      return `${head}\n.\nDM to tour 🏡\n.\n#RealEstate #JustListed #DreamHome #PropertyOfTheDay #HomeSweetHome`
+    case "tiktok":
+      return `${head} 🏡\nDM to tour.\n#RealEstate #JustListed #HouseTour #PropertyOfTheDay #RealEstateAgent`
+    case "youtube":
+      // YouTube Shorts — SEO-rich, links to landing page when wired
+      return `${head}\nDM to schedule a tour.\n\n#Shorts #RealEstate #JustListed #HouseTour`
+    case "pinterest":
+      // Pinterest — aspirational, longer description encouraged
+      return `${head}\nA new property has come to market — tap to explore the photos and arrange a tour.\n#RealEstate #JustListed #DreamHome #HomeInspiration`
+    case "twitter":
+      // 280-char ceiling — keep it tight
+      return `${head} DM to tour. #RealEstate`
+    case "google_business":
+      // Google Business Profile updates render under the listing's local
+      // knowledge panel; lean local + actionable.
+      return `${head}\nDM to schedule a tour today.`
+  }
+}
 
 interface PromoRow {
   id:               string
@@ -92,29 +126,52 @@ export async function GET(req: NextRequest) {
     }
     const hook = hookByEvent[r.event_type] ?? "New Listing"
 
-    // Caption is concise + brand-voice-clean. The script (in the video) carries
-    // the detailed pitch; the caption is the post copy.
-    const caption =
-      `${hook}: ${address}${cityState ? " — " + cityState : ""}${price ? " · " + price : ""}.\n` +
-      `DM to schedule a tour.\n` +
-      `#RealEstate #${r.event_type === "just_sold" ? "JustSold" : "JustListed"}`
-
     const postIds: string[] = []
     let inserted = 0
     let failed   = 0
+    // Map our listing_promo_videos.event_type to social_posts.post_type
+    // (its check constraint covers new_listing | coming_soon | open_house_* |
+    // price_reduction | just_sold | open_house_recap | market_update | custom).
+    const postType =
+      r.event_type === "just_listed"   ? "new_listing"
+      : r.event_type === "just_sold"   ? "just_sold"
+      : r.event_type === "price_changed" ? "price_reduction"
+      : "custom"
+
+    // FK gotcha: listing_promo_videos.agent_id stores users.id (m124), but
+    // social_posts.agent_id FKs to agents.id (the legacy column convention).
+    // Resolve via agents.user_id.
+    const { data: agentRecord } = await svc
+      .from("agents")
+      .select("id")
+      .eq("user_id", r.agent_id)
+      .eq("brokerage_id", r.brokerage_id)
+      .maybeSingle()
+    const socialAgentId = (agentRecord?.id as string | null) ?? null
+    if (!socialAgentId) {
+      await svc.from("listing_promo_videos").update({
+        status:        "failed",
+        error_message: "social-publish: agents.id lookup failed for users.id " + r.agent_id,
+      }).eq("id", r.id)
+      results.push({ id: r.id, outcome: "failed", reason: "agents_id_lookup_failed" })
+      continue
+    }
+
     for (const platform of PLATFORMS) {
+      const caption = captionFor(platform, { hook, address, cityState, price })
       try {
         const { data: post } = await svc
           .from("social_posts")
           .insert({
             brokerage_id:     r.brokerage_id,
-            agent_id:         r.agent_id,
-            user_id:          r.agent_id,
+            agent_id:         socialAgentId, // agents.id (resolved above)
+            user_id:          r.agent_id,    // users.id (legacy column on social_posts)
             listing_id:       r.listing_id,
             platform,
+            post_type:        postType,
             content:          caption,
             status:           "scheduled",
-            approval_status:  "pending_review",
+            approval_status:  "pending",
             scheduled_for:    new Date(Date.now() + 60 * 60_000).toISOString(),
           })
           .select("id")

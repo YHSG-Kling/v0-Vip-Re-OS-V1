@@ -6,6 +6,16 @@
       "memory": 3008,
       "maxDuration": 300,
       "includeFiles": "node_modules/ffmpeg-static/**"
+    },
+    "app/api/internal/remotion/render-just-listed/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/@sparticuz/chromium-min/**"
+    },
+    "app/api/cron/listing-promo-hybrid-composite/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
     }
   },
   "crons": [
@@ -288,6 +298,14 @@
     {
       "path": "/api/cron/marketing-agent-weekly",
       "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/cron/listing-promo-render",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/listing-promo-hybrid-composite",
+      "schedule": "*/2 * * * *"
     }
   ]
 }

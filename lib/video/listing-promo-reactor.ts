@@ -4,31 +4,50 @@
  * Auto-generated listing promo video reactor. Fires on KernelEvent.LISTING_PUBLISHED
  * from the kernel event-reactor.
  *
- * WAVE 12 PARK NOTICE — the original Wave 11 implementation called
- * dispatchVideo() (D-ID-first) which produces a TALKING-HEAD video of the
- * agent's avatar reading the listing facts. That is the WRONG format for a
- * Just Listed social-media promo — the audience wants to SEE THE PROPERTY,
- * not the agent's face. The correct shape is a Remotion-rendered property
- * reel: property images from listing_media stitched with branded overlays
- * (price banner, beds/baths/sqft, brokerage logo) + the agent's cloned voice
- * as the narration track (via ElevenLabs). An optional brief D-ID intro hook
- * + outro CTA can be composited around it via the existing ffmpeg pipeline
- * in lib/video/composite-attribution.ts.
+ * WAVE 14 — Remotion + D-ID hybrid pipeline. The reactor stages the row at
+ * status='remotion_pending' (after pre-flight compliance) and the
+ * /api/cron/listing-promo-render cron drains those rows by POSTing to the
+ * internal Remotion render endpoint. Decoupling the kickoff lets the kernel
+ * event-reactor return fast (no 90s render blocking) and gives us natural
+ * retry semantics — a failed render leaves the row at remotion_pending and
+ * the next tick picks it up.
  *
- * Until the Remotion pipeline ships in a focused follow-up wave, this reactor:
- *   1. Still runs every safe step — agent voice/avatar gate, idempotency
- *      ledger, script draft, pre-flight compliance (broadcast shape).
- *   2. Parks the row at status='remotion_pending' (m125) instead of calling
- *      dispatchVideo. No D-ID render dollars are spent on the wrong format.
- *   3. The compliance-cleared script + listing facts + ledger row are all
- *      available for the Remotion build to consume — it picks up pending
- *      rows and renders the property reel.
+ * End-to-end flow once a listing publishes:
  *
- * Once Remotion ships:
- *   - Replace the remotion_pending park (below) with a render-and-queue call
- *     to the Remotion endpoint (`/api/internal/remotion/render-just-listed`).
- *   - The downstream listing-promo-social-publish cron stays unchanged — it
- *     watches the linked ai_video_projects.video_url and drafts social_posts.
+ *   LISTING_PUBLISHED
+ *     → kernel reactor invokes this module
+ *     → contacts.video_opt_out (n/a for listings) + agent_voice_profile gate
+ *     → idempotency ledger insert (m124, partial unique on listing × event)
+ *     → AI Gateway drafts the narration script
+ *     → pre-flight evaluateOutbound (broadcast shape — Brand voice + Fair
+ *       Housing state-specific + Them-First; ONE redraft on violation)
+ *     → status='remotion_pending' (this file ends here)
+ *
+ *   /api/cron/listing-promo-render every 5 min
+ *     → claims the oldest remotion_pending row
+ *     → POSTs to /api/internal/remotion/render-just-listed
+ *         · re-resolves listing facts + brand + agent voice id
+ *         · re-runs compliance against the freshly-drafted script
+ *         · synthesizes ElevenLabs voiceover → Supabase blob URL
+ *         · Remotion render (1080×1920, 25s, @ 30fps) → Supabase blob URL
+ *         · creates ai_video_projects row with compliance_status='passed'
+ *         · submits D-ID intro hook + outro CTA renders via dispatchVideo
+ *         · status='generating' until both D-ID renders land
+ *
+ *   poll-did-videos every 2 min (existing)
+ *     → downloads each D-ID render to OUR Supabase storage
+ *     → updates the linked ai_video_projects rows
+ *
+ *   /api/cron/listing-promo-hybrid-composite every 2 min
+ *     → detects projects with all 3 components ready (Remotion + intro + outro)
+ *     → ffmpeg concatIntroOutro from lib/video/composite-attribution.ts
+ *     → uploads stitched mp4 → updates ai_video_projects.video_url
+ *     → status='completed', listing_promo_videos.status='rendering'
+ *
+ *   /api/cron/listing-promo-social-publish every 2 min (Wave 11+)
+ *     → drafts social_posts rows for FB / IG / LinkedIn / Twitter / TikTok /
+ *       YouTube / Pinterest / Google Business with per-platform captions
+ *     → existing publish-social-posts cron sends once approved
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -173,32 +192,24 @@ export async function dispatchListingPromoVideo(
     }
   }
 
-  // 5. WAVE 12 PARK — do NOT call dispatchVideo (would produce a D-ID
-  //    talking head, wrong format for a property promo). The Remotion
-  //    pipeline will pick up rows with status='remotion_pending' and the
-  //    pre-cleared script_content from this update.
+  // 5. Stage at status='remotion_pending'. The Wave 14 render cron drains
+  //    these rows by POSTing to /api/internal/remotion/render-just-listed.
+  //    The render endpoint re-resolves facts + re-runs compliance against
+  //    the freshly-drafted script (deterministic on facts × event_type) so
+  //    the pre-clear we just did is the FAST-FAIL guard — a script that
+  //    fails compliance here never reaches the cron + render dollars are
+  //    never spent on it.
   await svc.from("listing_promo_videos")
     .update({
       status:         "remotion_pending",
-      // Note: video_project_id stays NULL until Remotion creates the
-      //       ai_video_projects row alongside the rendered MP4.
       error_message:  null,
     })
     .eq("id", ledgerId!)
 
-  // Stash the compliance-cleared script in a transient metadata field on the
-  // ledger by writing it onto error_message? No — better: leave the script
-  // attached to the listing_promo_videos row via the listing+facts; the
-  // Remotion build re-derives the script from the same facts using the same
-  // prompt. The compliance pre-clear stays valid because the prompt is
-  // deterministic on the (facts × event_type) input. We DO NOT persist the
-  // script text on this ledger today since the column doesn't exist; the
-  // Remotion build can either add a column (m126+) or re-draft.
-
   return {
     ok:        true,
     status:    "remotion_pending",
-    reason:    "Wave 12 — Remotion property reel pipeline is the correct format; D-ID talking-head dispatch parked.",
+    reason:    "Staged for Remotion + ElevenLabs + (hybrid) D-ID intro/outro pipeline; the listing-promo-render cron picks this up within 5 minutes.",
     ledgerId,
   }
 }
