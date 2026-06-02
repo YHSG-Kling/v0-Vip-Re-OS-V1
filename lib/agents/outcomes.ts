@@ -31,6 +31,7 @@ export type AgentOutcomeKind =
   | "deal_coordinator"
   | "sphere_of_influence"
   | "campaign_orchestrator"
+  | "marketing_agent"
 
 export interface OutcomeRubric {
   /** Short description for the agent (what they're working toward, in plain language). */
@@ -259,9 +260,127 @@ You PASS when all 8 hold. Iterate until they do or max_iterations hits.
   }
 }
 
+/**
+ * Marketing Agent — owns the BRAND/PROMOTION lane (1:many broadcast).
+ * Distinct from campaign_orchestrator which owns the 1:1 contact lane.
+ *
+ * Inputs the agent watches each week:
+ *   - listing_promo_videos rows in 'remotion_pending' (Just Listed reels
+ *     ready for the Remotion+D-ID hybrid render pipeline)
+ *   - newly-published listings without a promo yet (LISTING_PUBLISHED but
+ *     no listing_promo_videos row for 'just_listed')
+ *   - listing_health_scores rows ≤ 40 (at-risk listings that need a
+ *     refreshed marketing push: price update post, expanded social cadence)
+ *   - newsletter_campaigns due / drafted but not yet approved
+ *   - recent social_posts engagement signal (which channels are working)
+ *   - blog_posts pipeline (gaps in publishing cadence)
+ *   - marketing_campaigns currently active and their performance
+ *
+ * Output: a ranked weekly brand-marketing plan the agent reviews and a
+ * compliance-cleared queue of assets ready to ship. The agent NEVER
+ * auto-publishes; everything stays approval-gated.
+ */
+function buildMarketingAgentRubric(params: {
+  brokerageName:        string
+  pendingListingPromos: number
+  atRiskListings:       number
+  weekSocialBudget:     number
+}): OutcomeRubric {
+  return {
+    description:
+      `Own the brand/promotion marketing lane for ${params.brokerageName} this week. ` +
+      `${params.pendingListingPromos} Just Listed reels are queued for production. ` +
+      `${params.atRiskListings} listings are at risk and need a marketing push. ` +
+      `Budget cap: ${params.weekSocialBudget} broadcast sends this week (newsletter + ` +
+      `social_post + blog + ad combined). Produce a ranked weekly plan with each ` +
+      `asset compliance-cleared and queued for agent approval. NEVER auto-publish.`,
+    rubric: `
+You are SATISFIED for this run when ALL of the following are true:
+
+1. weekly_plan[] is non-empty. Every item names ONE specific asset to ship
+   this week and one trigger that justifies it:
+     • just_listed_reel       — for listings with status='published' that
+                                 don't yet have a listing_promo_videos row
+     • listing_refresh_post   — for listings with health score ≤ 40
+     • price_update_promo     — for listings with a recent price drop
+     • market_report_post     — weekly cadence (Tuesday is canonical)
+     • brand_social           — agent or brokerage spotlight; ≤2/week
+     • blog_post              — SEO + market commentary; ≤2/week
+     • newsletter             — segmented; ≤1/segment/week per the
+                                 de-conflict broadcast cap
+
+2. Each asset carries the channel + format:
+     • Reel/promo videos      → Remotion property reel + ElevenLabs voice
+                                 + optional D-ID intro/outro hybrid
+     • Social posts           → FB, IG, LinkedIn; one row per platform
+     • Newsletter             → multi-section per-persona via the
+                                 newsletter_sections taxonomy
+     • Blog                   → 600-800 words SEO, internal link to
+                                 listing or market hub
+     • Direct mail            → only when ROI > break-even per
+                                 brokerage's COST schedule
+
+3. Pre-flight compliance attestation per asset: Brand voice (brokerage
+   prohibited words + tone), Fair Housing state-specific (Florida
+   protected classes when applicable), Them-First. Cite the canonical
+   evaluateOutbound surface. Per-contact gates (TCPA, Authority) skipped
+   for broadcast — handled at send time by dispatchEmail/dispatchVideo.
+
+4. Pre-flight de-conflict attestation per channel: respect the broadcast
+   frequency cap (newsletter 1/segment/7d, social_post 3/day, blog
+   2/7d, ad 5/7d). Cite the recent count from deconflict_suppression_log.
+
+5. Cost discipline: a Just Listed reel hybrid render costs ~$0.07-0.37
+   per listing (Remotion + ElevenLabs + optional D-ID hook). Newsletter
+   video render is once-per-campaign (NOT per-recipient). Social posts
+   reuse the listing's existing video_url instead of re-rendering.
+
+6. No proposal includes a contact outside ${params.brokerageName}
+   (tenant guard).
+
+7. No proposal duplicates a campaign already queued by the
+   campaign_orchestrator (the 1:1 lane). Resolve overlap by deferring
+   to the orchestrator's outreach; only ship broadcast assets here.
+
+8. Response is valid JSON matching the format:
+   {
+     "weekly_plan": [{
+       "trigger":      string,                    // taxonomy above
+       "asset_type":   "reel"|"post"|"newsletter"|"blog"|"direct_mail",
+       "subject":      string,                    // listing_id or 'brand' or 'market'
+       "channels":     ("facebook"|"instagram"|"linkedin"|"email"|"mail")[],
+       "format_spec":  {
+         "video_kind":      "remotion_property_reel"|"d_id_talking_head"|"hybrid"|null,
+         "duration_seconds": number,
+         "voiceover":        boolean
+       },
+       "compliance_attestation":  { "gates_run": string[], "passed": true, "evaluated_at": ISO8601 },
+       "deconflict_attestation":  { "channel": string, "recent_count_in_window": number, "policy_max": number },
+       "rationale":               string,
+       "review_priority":         "high"|"medium"|"low"
+     }],
+     "skipped":     [{ "trigger": string, "subject": string, "reason": string }],
+     "summary":     string,
+     "next_check_at": ISO8601
+   }
+
+You PASS when all 8 hold. Iterate until they do or max_iterations hits.
+`.trim(),
+    maxIterations: 5,
+  }
+}
+
 export function buildOutcomeFor(
   kind: AgentOutcomeKind,
-  params: { brokerageName: string; subjectName: string; sphereSize?: number; opportunityCount?: number },
+  params: {
+    brokerageName: string
+    subjectName:   string
+    sphereSize?:   number
+    opportunityCount?:    number
+    pendingListingPromos?: number
+    atRiskListings?:      number
+    weekSocialBudget?:    number
+  },
 ): OutcomeRubric {
   switch (kind) {
     case "buyer_concierge":       return buildBuyerConciergeRubric({   brokerageName: params.brokerageName, buyerName:  params.subjectName })
@@ -269,6 +388,12 @@ export function buildOutcomeFor(
     case "deal_coordinator":      return buildDealCoordinatorRubric({  brokerageName: params.brokerageName, dealName:   params.subjectName })
     case "sphere_of_influence":   return buildSphereOfInfluenceRubric({ brokerageName: params.brokerageName, sphereSize: params.sphereSize ?? 0 })
     case "campaign_orchestrator": return buildCampaignOrchestratorRubric({ brokerageName: params.brokerageName, opportunityCount: params.opportunityCount ?? 0 })
+    case "marketing_agent":       return buildMarketingAgentRubric({
+      brokerageName:        params.brokerageName,
+      pendingListingPromos: params.pendingListingPromos ?? 0,
+      atRiskListings:       params.atRiskListings       ?? 0,
+      weekSocialBudget:     params.weekSocialBudget     ?? 21,  // 1 newsletter + 3*7 social + 2 blog
+    })
   }
 }
 
