@@ -10,6 +10,7 @@
 import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
+import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 
 // 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
 // canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
@@ -44,6 +45,24 @@ export const RemotionRoot: React.FC = () => {
             primaryColor: "#0F172A",
             accentColor:  "#F59E0B",
             showEhoMark:  true,
+          },
+        }}
+      />
+      <Composition
+        id="NewsletterDigestVideo"
+        component={NewsletterDigestVideo as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={600}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{
+          subject:        "Your weekly market digest",
+          marketBeat:     "Median price up 3.2% vs last month",
+          sectionTitles:  ["Market Update", "New Listings", "Local News"],
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
           },
         }}
       />

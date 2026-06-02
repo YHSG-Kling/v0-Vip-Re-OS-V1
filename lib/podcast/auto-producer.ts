@@ -1,0 +1,287 @@
+/**
+ * lib/podcast/auto-producer.ts
+ *
+ * Wave 15 — autonomous weekly voice podcast episode generator.
+ *
+ * Replaces the agent's biggest time-sink in their content cadence: writing
+ * + recording + uploading a 5-7 minute weekly market commentary episode.
+ *
+ *   1. Build a structured fact pack from the brokerage's last 7 days:
+ *      - recently-published listings (count + price ranges)
+ *      - recently-sold transactions (count + days-on-market)
+ *      - listings under contract this week
+ *      - active market metrics if available (median price, inventory)
+ *   2. AI Gateway drafts a 5-7 minute spoken-format script grounded in
+ *      the fact pack (banned: invented numbers, protected-class refs,
+ *      rate / value guarantees).
+ *   3. Pre-flight evaluateOutbound — broadcast shape: Brand voice + Fair
+ *      Housing state-specific (Florida etc.) + Them-First. ONE redraft
+ *      on violation.
+ *   4. ElevenLabs TTS in the agent's cloned voice → Supabase Blob URL.
+ *   5. Insert podcast_episodes row (agents.id for agent_id per the FK
+ *      convention on this table; status='completed', is_ai_generated=true,
+ *      approval_status='pending_review' — the agent reviews before
+ *      distribute-podcast-episodes cron syndicates).
+ *   6. Update podcast_auto_runs ledger: status='rendered', linked
+ *      podcast_episode_id, duration estimate.
+ *
+ * Idempotency: podcast_auto_runs has a unique partial index on
+ * (brokerage_id, iso_week). Re-running the cron for the same week is a
+ * cheap no-op.
+ */
+import "server-only"
+import { createServiceClient } from "@/lib/supabase/service"
+import { put } from "@vercel/blob"
+import { generateTextRouted } from "@/lib/ai/models"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+
+export interface RunInput {
+  brokerageId: string
+  /** users.id of the host agent — resolved by the cron from podcast_show_settings. */
+  hostUserId:  string
+  /** ISO week string for idempotency, e.g. "2026-W23". */
+  isoWeek:     string
+}
+
+export interface RunResult {
+  ok:     boolean
+  status: "queued" | "rendered" | "skipped" | "already_run" | "failed"
+  podcast_episode_id?: string
+  ledger_id?:          string
+  reason?:             string
+  violations?:         string[]
+}
+
+interface FactPack {
+  new_listings_count: number
+  new_listings_median_price: string
+  sold_count: number
+  sold_median_dom: number | null
+  under_contract_count: number
+  brokerage_name: string
+}
+
+export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
+  const svc = createServiceClient()
+
+  // 1. Idempotency ledger.
+  const ledgerIns = await svc.from("podcast_auto_runs").insert({
+    brokerage_id: input.brokerageId,
+    agent_id:     input.hostUserId,
+    iso_week:     input.isoWeek,
+    status:       "queued",
+  }).select("id").maybeSingle()
+  if (ledgerIns.error) {
+    if ((ledgerIns.error as { code?: string }).code === "23505") {
+      return { ok: true, status: "already_run", reason: "duplicate (brokerage, iso_week)" }
+    }
+    return { ok: false, status: "failed", reason: `ledger insert: ${ledgerIns.error.message}` }
+  }
+  const ledgerId = ledgerIns.data!.id as string
+
+  try {
+    // 2. Voice profile gate.
+    const { data: profile } = await svc.from("agent_voice_profiles")
+      .select("elevenlabs_voice_id")
+      .eq("agent_id", input.hostUserId)
+      .maybeSingle()
+    const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
+    if (!voiceId) {
+      await svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId)
+      return { ok: true, status: "skipped", reason: "host voice profile not configured" }
+    }
+
+    // podcast_episodes.agent_id FKs to users.id (verified on the live schema —
+    // despite the column name, the FK targets users, not agents). So we pass
+    // input.hostUserId directly; no agents.id resolution needed for this table.
+
+    // 3. Fact pack — grounded numbers only.
+    const facts = await buildFactPack(svc, input.brokerageId)
+
+    // 4. Draft + pre-flight compliance.
+    const script = await draftAndClearScript({ svc, brokerageId: input.brokerageId, hostUserId: input.hostUserId, facts, isoWeek: input.isoWeek })
+
+    // 5. ElevenLabs TTS → Supabase blob.
+    const tts = await synthesizeSpeech({ text: script, voiceId })
+    if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
+    const audioBlob = await put(
+      `podcast/episodes/${ledgerId}.mp3`,
+      tts.audioBuffer,
+      { access: "public", contentType: "audio/mpeg" },
+    )
+
+    // Estimated duration — ~155 words/minute spoken in the agent's voice.
+    const wordCount = script.split(/\s+/).filter(Boolean).length
+    const durationSeconds = Math.max(120, Math.round((wordCount / 155) * 60))
+
+    // 6. Insert podcast_episodes (status='completed' + approval_status='pending_review';
+    //    the distribute-podcast-episodes cron skips episodes that aren't
+    //    approval_status='approved').
+    const { data: episode, error: epErr } = await svc.from("podcast_episodes")
+      .insert({
+        brokerage_id:      input.brokerageId,
+        agent_id:          input.hostUserId, // users.id per the FK on this table
+        title:             `${facts.brokerage_name} Weekly — ${input.isoWeek}`,
+        description:       `Auto-generated weekly market commentary. Reviewed by the host before publication.`,
+        script,
+        audio_url:         audioBlob.url,
+        duration_seconds:  durationSeconds,
+        status:            "completed",
+        is_ai_generated:   true,
+        approval_status:   "pending_review",
+      })
+      .select("id")
+      .single()
+    if (epErr || !episode) throw new Error(`podcast_episodes insert: ${epErr?.message}`)
+
+    await svc.from("podcast_auto_runs").update({
+      status:             "rendered",
+      podcast_episode_id: episode.id,
+      script_word_count:  wordCount,
+      duration_seconds:   durationSeconds,
+      completed_at:       new Date().toISOString(),
+    }).eq("id", ledgerId)
+
+    return { ok: true, status: "rendered", podcast_episode_id: episode.id, ledger_id: ledgerId }
+  } catch (err) {
+    const msg = (err as Error).message
+    await svc.from("podcast_auto_runs").update({
+      status:        "failed",
+      error_message: msg.slice(0, 800),
+    }).eq("id", ledgerId)
+    return { ok: false, status: "failed", reason: msg, ledger_id: ledgerId }
+  }
+}
+
+// ─── Fact pack ──────────────────────────────────────────────────────────────
+
+async function buildFactPack(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<FactPack> {
+  const since7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
+
+  let newListingsCount = 0
+  let medianPrice = ""
+  let soldCount = 0
+  let soldMedianDom: number | null = null
+  let underContractCount = 0
+  let brokerageName = "Our Team"
+
+  try {
+    const { data: b } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
+    brokerageName = (b as { name?: string } | null)?.name ?? "Our Team"
+  } catch { /* default */ }
+
+  try {
+    const { data: newL } = await svc.from("listings")
+      .select("list_price")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "active")
+      .gte("created_at", since7d)
+      .limit(500)
+    const prices = (newL ?? []).map((r) => (r as { list_price?: number | null }).list_price ?? null).filter((p): p is number => typeof p === "number")
+    newListingsCount = (newL ?? []).length
+    if (prices.length > 0) {
+      const sorted = [...prices].sort((a, b) => a - b)
+      const median = sorted[Math.floor(sorted.length / 2)]
+      medianPrice = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(median)
+    }
+  } catch { /* best-effort */ }
+
+  try {
+    const { count } = await svc.from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "closed")
+      .gte("close_date", since7d.slice(0, 10))
+    soldCount = count ?? 0
+  } catch { /* table optional */ }
+
+  try {
+    const { count } = await svc.from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "under_contract")
+    underContractCount = count ?? 0
+  } catch { /* table optional */ }
+
+  return {
+    new_listings_count:        newListingsCount,
+    new_listings_median_price: medianPrice,
+    sold_count:                soldCount,
+    sold_median_dom:           soldMedianDom,
+    under_contract_count:      underContractCount,
+    brokerage_name:            brokerageName,
+  }
+}
+
+// ─── Draft + compliance ─────────────────────────────────────────────────────
+
+async function draftAndClearScript(args: {
+  svc: ReturnType<typeof createServiceClient>
+  brokerageId: string
+  hostUserId: string
+  facts: FactPack
+  isoWeek: string
+}): Promise<string> {
+  const draft = async (violations: string[]): Promise<string> => {
+    const fix = violations.length > 0
+      ? `\n\nResolve these violations from your prior draft:\n- ${violations.join("\n- ")}\n`
+      : ""
+    const prompt = `Write a 5-7 minute spoken podcast script for a real-estate agent's weekly market commentary, ISO week ${args.isoWeek}.
+
+Use ONLY these facts — do not invent any number:
+- Brokerage: ${args.facts.brokerage_name}
+- New listings published this week: ${args.facts.new_listings_count}
+- Median list price of new inventory: ${args.facts.new_listings_median_price || "(omitted)"}
+- Closed transactions this week: ${args.facts.sold_count}
+- Currently under contract: ${args.facts.under_contract_count}
+
+Style:
+- First-person, warm, conversational. Read at ~155 words/minute spoken.
+- 750-1000 words total.
+- Three segments separated by natural transitions:
+  1. "This week in the local market" — open with one fact, frame what it means.
+  2. "What we're watching" — buyer/seller behavior, signals (not specific predictions).
+  3. "Closing thoughts" — a low-pressure invitation to call/email the agent if listeners want to talk.
+- No exclamation marks.
+- No protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income).
+- No phrases like "perfect for families" or "great starter for newlyweds".
+- No rate / valuation / appreciation guarantees.
+- Mention facts marked "(omitted)" only if you can do so without inventing a number.
+Return ONLY the spoken script — no scene directions, no headers, no segment labels read aloud.${fix}`
+    const { text } = await generateTextRouted({
+      feature:     "podcast_weekly_auto_script",
+      prompt,
+      maxTokens:   1800,
+      temperature: 0.55,
+    })
+    return text.trim()
+  }
+
+  let script = await draft([])
+  const c1 = await evaluateOutbound({
+    actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
+    journeyType:  "buyer", persona: "other", messageType: "social", content: script,
+  })
+  if (c1.allowed) return script
+  script = await draft(c1.violations)
+  const c2 = await evaluateOutbound({
+    actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
+    journeyType:  "buyer", persona: "other", messageType: "social", content: script,
+  })
+  if (c2.allowed) return script
+  throw new Error(`compliance failed after redraft: ${c2.violations.join("; ")}`)
+}
+
+// ─── ISO week helper ────────────────────────────────────────────────────────
+
+export function currentIsoWeek(d: Date = new Date()): string {
+  // ISO 8601 week — Thursday-anchored to handle year boundaries.
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  const dayNr  = (target.getUTCDay() + 6) % 7
+  target.setUTCDate(target.getUTCDate() - dayNr + 3)
+  const firstThu = new Date(Date.UTC(target.getUTCFullYear(), 0, 4))
+  const diff     = (target.getTime() - firstThu.getTime()) / 86_400_000
+  const week     = 1 + Math.round((diff - 3 + ((firstThu.getUTCDay() + 6) % 7)) / 7)
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
+}

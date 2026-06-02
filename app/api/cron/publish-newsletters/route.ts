@@ -123,6 +123,31 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // separate newsletters row to pull sections from.
   const newsletterId: string = c.id
 
+  // Wave 15 — newsletter video. ONE render per campaign embeds in every
+  // recipient's body (cost-bounded: $0.30 ÷ N, never × N). Read the URL
+  // from newsletter_video_renders; if present, prepend an embed block to
+  // the campaign body before per-persona section assembly.
+  let videoEmbed = ""
+  try {
+    const { data: vr } = await svc
+      .from("newsletter_video_renders")
+      .select("video_url, status")
+      .eq("newsletter_campaign_id", c.id)
+      .maybeSingle()
+    const ready = vr as { video_url: string | null; status: string } | null
+    if (ready?.status === "completed" && ready.video_url) {
+      videoEmbed = [
+        `<div style="margin:0 0 24px 0;text-align:center">`,
+        `  <video controls preload="metadata" style="max-width:100%;border-radius:8px;">`,
+        `    <source src="${ready.video_url}" type="video/mp4">`,
+        `    Your email client doesn't support video — `,
+        `    <a href="${ready.video_url}">click here to watch</a>.`,
+        `  </video>`,
+        `</div>`,
+      ].join("\n")
+    }
+  } catch { /* best-effort — newsletter still sends without the video */ }
+
   // Brokerage-wide newsletter cooldown (1/7d default). Per-segment scoping is
   // a follow-up — the campaign row doesn't carry the audience segment yet
   // and adding the join would silently filter most setups to zero matches.
@@ -227,7 +252,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
         brokerageId:      c.brokerage_id,
         newsletterId,
         campaignSubject:  c.subject_line,
-        campaignBodyHtml: c.content,
+        // Video embed (when rendered) prepends the campaign body — same URL
+        // for every recipient (cost-bounded pattern; $0.30 per campaign).
+        campaignBodyHtml: videoEmbed
+          ? `${videoEmbed}\n${c.content ?? ""}`
+          : c.content,
       },
       sections,
     })
