@@ -23,6 +23,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { normalizeSectionType, defaultOrderFor, type NewsletterSectionType } from "./section-types"
 
 export interface NewsletterSection {
   id:              string
@@ -32,6 +33,7 @@ export interface NewsletterSection {
   content:         string | null
   order_index:     number | null
   target_personas: string[] | null
+  section_type:    NewsletterSectionType | null
 }
 
 export interface CampaignAssemblyContext {
@@ -63,17 +65,24 @@ export async function resolveSectionsForRecipient(args: {
   const svc = createServiceClient()
   const { data } = await svc
     .from("newsletter_sections")
-    .select("id, newsletter_id, brokerage_id, title, content, order_index, target_personas")
+    .select("id, newsletter_id, brokerage_id, title, content, order_index, target_personas, section_type")
     .eq("brokerage_id", args.brokerageId)
     .eq("newsletter_id", args.newsletterId)
-    .order("order_index", { ascending: true })
 
   const all = (data ?? []) as NewsletterSection[]
   const persona = args.recipientPersona ?? null
-  return all.filter(s =>
+  const filtered = all.filter(s =>
     !s.target_personas || s.target_personas.length === 0 ||
     (persona !== null && s.target_personas.includes(persona))
   )
+
+  // Sort: explicit order_index first; fall back to the section_type's default
+  // weight from the canonical taxonomy. Sections with neither stay stable.
+  return filtered.sort((a, b) => {
+    const ao = a.order_index ?? defaultOrderFor(a.section_type)
+    const bo = b.order_index ?? defaultOrderFor(b.section_type)
+    return ao - bo
+  })
 }
 
 /**
