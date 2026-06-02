@@ -10,8 +10,10 @@
  *
  *   For agent_intro_videos rows where:
  *     - status = 'rendering'
- *     - trigger = 'lead_assigned' (the assignment trigger; anniversaries are
- *       portal-only by design and don't need the email backfill)
+ *     - trigger = 'contact_agent_assigned' (per the app rule: contacts are
+ *       assigned to agents — m123 renamed this from the old 'lead_assigned'
+ *       value). Home-anniversary videos are portal-only by design and don't
+ *       need the email backfill.
  *     - delivery_channel includes 'email' (i.e. 'email' or 'both')
  *     - the linked ai_video_projects.video_url is populated (the
  *       poll-did-videos cron has finished downloading the render to OUR
@@ -72,7 +74,7 @@ export async function GET(req: NextRequest) {
       project:ai_video_projects!agent_intro_videos_video_project_id_fkey(video_url, status, title)
     `)
     .eq("status", "rendering")
-    .eq("trigger", "lead_assigned")
+    .eq("trigger", "contact_agent_assigned")
     .in("delivery_channel", ["email", "both"])
     .not("video_project_id", "is", null)
     .order("created_at", { ascending: true })

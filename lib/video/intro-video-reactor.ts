@@ -12,28 +12,37 @@
  *   dispatchAnniversaryVideo      — fired by sendAnniversaryMessage in the
  *                                   lifetime-customer-touchpoints daily cron.
  *
- * Both share a single render path:
+ * Both share a single render path with a PRE-FLIGHT COMPLIANCE GATE so we
+ * never spend D-ID render credit on a non-compliant script:
+ *
  *   1. Gate on contacts.video_opt_out.
- *   2. Resolve agents.id (the kernel id stored on contacts.agent_id) to
- *      users.id (the FK target for ai_video_projects.agent_id +
- *      agent_voice_profiles.agent_id) via the agents table.
- *   3. Gate on the agent_voice_profiles row — must have elevenlabs_voice_id
- *      AND a Supabase-hosted avatar (did_photo_url OR did_video_url uploaded
- *      by the agent during onboarding). The avatar is OUR storage URL, never
- *      a D-ID-side asset; D-ID renders pull from our URL and we re-host the
- *      output via poll-did-videos cron.
- *   4. Insert agent_intro_videos (m121) — the unique partial index makes the
- *      whole reactor idempotent.
- *   5. Generate a short personalized script via the Vercel AI Gateway.
- *   6. Create an ai_video_projects row + dispatchVideo (D-ID-first per
- *      getPlatformVideoProvider). The poll-did-videos cron polls D-ID,
- *      downloads the finished mp4 to OUR Supabase storage, writes
- *      ai_video_projects.video_url, and emits VIDEO_GENERATION_COMPLETED.
- *   7. NO placeholder email goes out. The intro-video-email-backfill cron
- *      (registered alongside this wave) sweeps rendered videos and queues
- *      the assignment email via dispatchEmail at that point — using OUR
- *      Supabase URL embedded.
- *   8. Portal card auto-renders via the portal-stream-projector cron when
+ *   2. Resolve agents.id (kernel id on contacts.agent_id) → users.id (FK
+ *      target for ai_video_projects.agent_id + agent_voice_profiles.agent_id).
+ *   3. Gate on agent_voice_profiles — elevenlabs_voice_id + a Supabase-hosted
+ *      avatar source URL (our storage, never D-ID-side).
+ *   4. Insert agent_intro_videos (m121) — partial unique index = idempotency.
+ *   5. Draft the script via Vercel AI Gateway.
+ *   6. PRE-FLIGHT COMPLIANCE — run evaluateOutbound() on the script BEFORE
+ *      we submit to D-ID. The canonical surface chains all five gates:
+ *        - Brand voice (brokerage prohibited words, tone, key messages)
+ *        - TCPA + per-channel opt-out
+ *        - Authority rule (no outreach to a contact represented by another
+ *          brokerage; ISA re-engagement only with explicit approval)
+ *        - Fair Housing — state-specific via state_protected_classes table
+ *          (Florida's protected classes are loaded from there per state
+ *          property of the brokerage; the canonical fair-housing-patterns
+ *          file is the regex bank both gates share)
+ *        - Them-First (≥60% client-focused pronouns + softener rules)
+ *      On violations: re-prompt the AI Gateway ONCE feeding the specific
+ *      violation list back in so the model can self-correct. If the redraft
+ *      ALSO fails, mark the ledger 'failed' with the violation list and bail.
+ *      No D-ID render dollars are ever spent on a non-compliant script.
+ *   7. Create ai_video_projects + dispatchVideo (D-ID-first per
+ *      getPlatformVideoProvider). compliance_status is stamped 'passed' on
+ *      the project row so the broker cockpit shows we pre-cleared.
+ *   8. The intro-video-email-backfill cron sends the email when the render
+ *      lands (with OUR Supabase storage URL embedded).
+ *   9. Portal card auto-renders via portal-stream-projector when
  *      VIDEO_GENERATION_COMPLETED lands.
  */
 import "server-only"
@@ -41,15 +50,16 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import type { Persona, JourneyType, KernelContact } from "@/lib/kernel/types"
 
-type IntroTrigger = "lead_assigned" | "home_anniversary"
+type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
 
 interface BaseInput {
   brokerageId:  string
   contactId:    string
   /** agents.id — the value stored on contacts.agent_id (per m111 / RLS).
-   *  Resolved to the agent's users.id inside the reactor before passing to
-   *  agent_voice_profiles / ai_video_projects (both of which key on users.id). */
+   *  Resolved to the agent's users.id inside the reactor. */
   agentId:      string
   /** 'email' (default), 'portal', or 'both' */
   delivery?:    "email" | "portal" | "both"
@@ -67,6 +77,8 @@ export interface ReactorResult {
   videoProjectId?: string
   introVideoId?:   string
   reason?:   string
+  /** When status='failed' due to compliance, the canonical violation list. */
+  violations?: string[]
 }
 
 // ─── Public entry points ────────────────────────────────────────────────────
@@ -74,12 +86,9 @@ export interface ReactorResult {
 export async function dispatchAssignmentIntroVideo(
   input: AssignmentIntroInput,
 ): Promise<ReactorResult> {
-  // The m121 ledger uses 'lead_assigned' as the historical trigger key — kept
-  // for back-compat with already-inserted rows. The trigger semantically means
-  // "contact got assigned to an agent for the first time".
   return runReactor({
     ...input,
-    trigger:      "lead_assigned",
+    trigger:      "contact_agent_assigned",
     triggerYear:  null,
   })
 }
@@ -110,21 +119,69 @@ interface ReactorInput extends BaseInput {
   yearsAgo?:   number
 }
 
+/**
+ * Map the loose contacts.contact_persona string to the strict Persona union.
+ * Unknown values fall back to "other" so the compliance gate still runs —
+ * brand-voice + Fair Housing checks don't depend on persona accuracy.
+ */
+function normalizePersona(p: string | null | undefined): Persona {
+  if (!p) return "other"
+  const known: Persona[] = [
+    "first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
+    "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other",
+  ]
+  // Common contacts.contact_persona aliases.
+  const alias: Record<string, Persona> = {
+    first_time_buyer: "first_time",
+    investor:         "other",
+    seller_only:      "other",
+    move_up:          "upsize",
+    empty_nester:     "downsize",
+  }
+  if (alias[p]) return alias[p]
+  return (known as string[]).includes(p) ? (p as Persona) : "other"
+}
+
+interface ContactRow {
+  id:                  string
+  first_name:          string | null
+  last_name:           string | null
+  email:               string | null
+  phone:               string | null
+  contact_type:        string | null
+  contact_persona:     string | null
+  status:              string | null
+  lifecycle_state:     string | null
+  video_opt_out:       boolean | null
+  dnc_status:          boolean | null
+  tcpa_consent:        boolean | null
+  tcpa_consent_date:   string | null
+  email_opt_out:       boolean | null
+  sms_opt_out:         boolean | null
+  phone_opt_out:       boolean | null
+  direct_mail_opt_out: boolean | null
+  isa_reengage_allowed: boolean | null
+}
+
 async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   const svc      = createServiceClient()
   const delivery = input.delivery ?? "email"
 
-  // 1. Contact opt-out + persona resolution
-  const { data: contact } = await svc
+  // 1. Contact opt-out + persona resolution. Pull the full KernelContact
+  //    shape since the compliance gate needs it. Cast the long column list
+  //    because the inferred type from Supabase's overloads doesn't propagate
+  //    cleanly through a multi-column select on this table.
+  const contactRes = await svc
     .from("contacts")
-    .select("first_name, last_name, email, contact_persona, video_opt_out")
+    .select(
+      "id, first_name, last_name, email, phone, contact_type, contact_persona, status, lifecycle_state, video_opt_out, dnc_status, tcpa_consent, tcpa_consent_date, email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out, isa_reengage_allowed"
+    )
     .eq("id", input.contactId)
     .maybeSingle()
+  const contact = (contactRes.data as ContactRow | null) ?? null
   if (!contact) return { ok: false, status: "skipped", reason: "contact not found" }
 
-  // 2. Resolve agents.id → users.id. agent_voice_profiles + ai_video_projects
-  //    both FK to users.id; contacts.agent_id (and the m121 ledger) hold
-  //    agents.id. agents.user_id is the bridge.
+  // 2. Resolve agents.id → users.id
   const { data: agentRow } = await svc
     .from("agents")
     .select("id, user_id")
@@ -139,7 +196,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
-      agent_id:     agentUserId, // ledger.agent_id FKs to users.id per m121
+      agent_id:     agentUserId,
       trigger:      input.trigger,
       trigger_year: input.triggerYear,
       status:       "suppressed",
@@ -149,9 +206,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
-  // 3. Voice + avatar gate. Both URLs are OUR Supabase storage URLs (the
-  //    avatar was uploaded by the agent during onboarding; D-ID fetches from
-  //    our URL when rendering). Missing either = nothing to render with.
+  // 3. Voice + avatar gate (OUR storage URLs)
   const { data: profile } = await svc
     .from("agent_voice_profiles")
     .select("elevenlabs_voice_id, did_photo_url, did_video_url")
@@ -171,7 +226,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
   }
 
-  // 4. Idempotency — the m121 partial unique index does the work.
+  // 4. Idempotency ledger
   const ledger = await svc
     .from("agent_intro_videos")
     .insert({
@@ -193,16 +248,15 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
   const introVideoId = ledger.data?.id as string | undefined
 
-  // 5. Script via Vercel AI Gateway — short, persona-aware, no jargon.
+  // 5. Draft initial script
   let script: string
   try {
     script = await draftScript({
       trigger:     input.trigger,
       firstName:   contact.first_name ?? "there",
-      persona:     contact.contact_persona ?? null,
+      personaRaw:  contact.contact_persona ?? null,
       yearsAgo:    input.yearsAgo,
-      brokerageId: input.brokerageId,
-      agentUserId,
+      violations:  [],
     })
   } catch (err) {
     await svc.from("agent_intro_videos")
@@ -211,16 +265,91 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: false, status: "failed", reason: "script generation failed" }
   }
 
-  // 6. ai_video_projects + dispatchVideo. agent_id keys to users.id per the
-  //    table's FK (caught and fixed in Wave 6).
-  const videoType = input.trigger === "lead_assigned" ? "agent_intro" : "just_sold"
+  // 6. PRE-FLIGHT COMPLIANCE — runs BEFORE D-ID render submission.
+  //    Build the KernelContact shape the gate expects. messageType='email'
+  //    because the avatar video lands in the recipient's inbox.
+  const ct = (contact.contact_type as KernelContact["contact_type"] | null) ?? "buyer"
+  const journey: JourneyType =
+    ct === "seller" ? "seller" : ct === "both" ? "dual" : "buyer"
+  const persona = normalizePersona(contact.contact_persona)
+  const kernelContact: KernelContact = {
+    id:                contact.id,
+    first_name:        contact.first_name ?? "",
+    last_name:         contact.last_name ?? "",
+    email:             contact.email ?? undefined,
+    phone:             contact.phone ?? undefined,
+    contact_type:      ct,
+    persona,
+    status:            contact.status ?? undefined,
+    lifecycle_state:   contact.lifecycle_state ?? undefined,
+    tcpa_consent:      contact.tcpa_consent ?? false,
+    tcpa_consent_date: contact.tcpa_consent_date ?? undefined,
+  } as KernelContact
+
+  const compliance1 = await evaluateOutbound({
+    actorContext: {
+      brokerageId: input.brokerageId,
+      userId:      agentUserId,
+      role:        "system",
+    },
+    journeyType:  journey,
+    persona,
+    messageType:  "email",
+    content:      script,
+    contact:      kernelContact,
+  })
+
+  if (!compliance1.allowed) {
+    // Single redraft attempt — feed the violations back so the model can fix.
+    try {
+      script = await draftScript({
+        trigger:     input.trigger,
+        firstName:   contact.first_name ?? "there",
+        personaRaw:  contact.contact_persona ?? null,
+        yearsAgo:    input.yearsAgo,
+        violations:  compliance1.violations,
+      })
+    } catch (err) {
+      await svc.from("agent_intro_videos")
+        .update({ status: "failed", error_message: `redraft: ${(err as Error).message}` })
+        .eq("id", introVideoId!)
+      return { ok: false, status: "failed", reason: "script redraft failed" }
+    }
+
+    const compliance2 = await evaluateOutbound({
+      actorContext: { brokerageId: input.brokerageId, userId: agentUserId, role: "system" },
+      journeyType:  journey,
+      persona,
+      messageType:  "email",
+      content:      script,
+      contact:      kernelContact,
+    })
+
+    if (!compliance2.allowed) {
+      const reason = compliance2.violations.join("; ").slice(0, 800)
+      await svc.from("agent_intro_videos")
+        .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
+        .eq("id", introVideoId!)
+      return {
+        ok:         false,
+        status:     "failed",
+        reason:     "compliance violations on both initial draft and redraft",
+        violations: compliance2.violations,
+      }
+    }
+  }
+
+  // 7. ai_video_projects + dispatchVideo. We only reach here when the script
+  //    is compliance-clean — D-ID render dollars never wasted on a script
+  //    that would fail the gate later.
+  const videoType = input.trigger === "contact_agent_assigned" ? "agent_intro" : "just_sold"
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id:   input.brokerageId,
       agent_id:       agentUserId,
       contact_id:     input.contactId,
-      title:          input.trigger === "lead_assigned"
+      title:          input.trigger === "contact_agent_assigned"
                         ? `Intro for ${contact.first_name}`
                         : `Home anniversary (${input.yearsAgo}y) — ${contact.first_name}`,
       script_content: script,
@@ -229,6 +358,8 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       usage_intent:   "public_marketing",
       audience_type:  "customer_facing",
       duration_seconds: 45,
+      compliance_status: "passed",
+      compliance_evaluated_at: new Date().toISOString(),
       video_metadata: {
         trigger:        input.trigger,
         trigger_year:   input.triggerYear,
@@ -274,8 +405,6 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: false, status: "failed", reason: submission.error ?? "dispatchVideo failed" }
   }
 
-  // 7. Canonical lifecycle event so the reactor picks up the request for
-  //    sequence enrollment + portal-card eligibility downstream.
   await svc.from("lifecycle_events").insert({
     brokerage_id:  input.brokerageId,
     actor_user_id: agentUserId,
@@ -291,11 +420,6 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     processed:   false,
   })
 
-  // 8. Email delivery is NOT sent here. The intro-video-email-backfill cron
-  //    polls for agent_intro_videos rows whose linked ai_video_projects.video_url
-  //    is populated and sends the email then — embedding OUR Supabase URL.
-  //    This avoids both the placeholder-email problem AND the double-send risk.
-
   return {
     ok:             true,
     status:         "rendering",
@@ -304,30 +428,35 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
 }
 
-// ─── AI Gateway script generation ────────────────────────────────────────────
+// ─── AI Gateway script generation w/ optional violation feedback ────────────
 
 async function draftScript(args: {
   trigger:     IntroTrigger
   firstName:   string
-  persona:     string | null
+  personaRaw:  string | null
   yearsAgo?:   number
-  brokerageId: string
-  agentUserId: string
+  /** When non-empty, this is a redraft. The model is fed the specific
+   *  evaluateOutbound violations from the prior attempt and asked to fix
+   *  them — much cheaper than a wasted D-ID render. */
+  violations:  string[]
 }): Promise<string> {
-  const personaLine = args.persona
-    ? `The recipient's persona is: ${args.persona}. Match that register.`
+  const personaLine = args.personaRaw
+    ? `The recipient's persona is: ${args.personaRaw}. Match that register.`
     : ""
-  const prompt = args.trigger === "lead_assigned"
+  const violationLine = args.violations.length > 0
+    ? `\n\nYour previous draft failed the brokerage's compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite the script so EVERY one of these violations is resolved. Same length + same intent, just compliance-clean.`
+    : ""
+  const basePrompt = args.trigger === "contact_agent_assigned"
     ? `Write a 30-45 second video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
 Voice: first-person, warm, professional. ${personaLine}
-Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Return ONLY the script text the agent will speak on camera.`
+Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
     : `Write a 30-40 second home-anniversary video script. The recipient ${args.firstName} closed on their home ${args.yearsAgo} year${(args.yearsAgo ?? 0) > 1 ? "s" : ""} ago.
 Voice: first-person, warm, professional. ${personaLine}
-Acknowledge the anniversary without being saccharine. Mention you've been thinking about them. End with a low-pressure invitation (catch up coffee, market update on their neighborhood, no pitch). 80-110 words. No specific home-value claims. Return ONLY the script text the agent will speak on camera.`
+Acknowledge the anniversary without being saccharine. Mention you've been thinking about them. End with a low-pressure invitation (catch up coffee, market update on their neighborhood, no pitch). 80-110 words. No specific home-value claims. No guaranteed returns or appreciation language. Avoid any reference to protected characteristics. Return ONLY the script text the agent will speak on camera.`
 
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
-    prompt,
+    prompt:      basePrompt + violationLine,
     maxTokens:   300,
     temperature: 0.6,
   })
