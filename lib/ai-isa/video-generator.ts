@@ -1,9 +1,12 @@
 'use server'
 
 // AI-ISA personalized intro video generator.
-// Routes through dispatchVideo, which uses D-ID + ElevenLabs by default
-// (per kernel-OS plan FIX 0C.6) and falls back to HeyGen only when the
-// platform-level video provider is set to "heygen".
+//
+// Routes through `dispatchVideo`, which is platform-locked to D-ID + ElevenLabs
+// (the agent's own avatar/voice cloned in Settings → Voice & Avatar) and falls
+// back to HeyGen ONLY when the superadmin platform_video_provider override is set
+// to "heygen". Provider key returned from dispatch is the source of truth for the
+// log row — never hard-code "heygen" here.
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { dispatchVideo } from '@/lib/providers/dispatch'
@@ -14,6 +17,8 @@ export interface VideoGenerationContext {
   brokerageId: string
   agentUserId?: string
   recipientEmail: string
+  /** D-ID path: rendered script template (variables filled by dispatch).
+   *  HeyGen path: HeyGen template_id. */
   templateId?: string
   motivation_type?: string
   property_interest?: string
@@ -21,16 +26,11 @@ export interface VideoGenerationContext {
 }
 
 export async function generateAvatarVideo(context: VideoGenerationContext) {
-  return generateHeyGenVideo(context)
-}
-
-export async function generateHeyGenVideo(context: VideoGenerationContext) {
   try {
-    // Step 1: Dispatch through provider resolution layer
     const result = await dispatchVideo({
       brokerageId:    context.brokerageId,
       userId:         context.agentUserId,
-      templateId:     context.templateId ?? process.env.HEYGEN_DEFAULT_TEMPLATE_ID ?? '',
+      templateId:     context.templateId ?? '',
       recipientEmail: context.recipientEmail,
       recipientName:  context.firstName,
       scriptVars: {
@@ -43,11 +43,11 @@ export async function generateHeyGenVideo(context: VideoGenerationContext) {
       leadId:       context.leadId,
     })
 
-    // Step 2: Fire-and-forget provider log
+    // The actual provider that rendered the video comes back from dispatch.
     const supabase = createServiceClient()
     supabase.from('message_provider_logs').insert({
       brokerage_id:        context.brokerageId,
-      provider_key:        'heygen',
+      provider_key:        result.providerKey,
       channel:             'video',
       direction:           'outbound',
       provider_message_id: result.messageId ?? null,
@@ -56,14 +56,13 @@ export async function generateHeyGenVideo(context: VideoGenerationContext) {
     })
 
     return {
-      success:  result.success,
-      videoId:  result.messageId,
-      error:    result.error,
+      success:     result.success,
+      videoId:     result.messageId,
+      providerKey: result.providerKey,
+      error:       result.error,
     }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
-
-    // Log error but don't block email send
     const supabase = createServiceClient()
     await supabase.from('automation_errors').insert({
       workflow_name: 'ai_isa_video_generation',
@@ -73,28 +72,23 @@ export async function generateHeyGenVideo(context: VideoGenerationContext) {
       status:        'open',
       created_at:    new Date().toISOString(),
     })
-
-    return { success: false, videoId: undefined, error: msg }
+    return { success: false, videoId: undefined, providerKey: undefined, error: msg }
   }
 }
 
 export async function embedVideoInEmail(emailBody: string, videoUrl: string | null) {
   if (!videoUrl) {
-    // Remove video placeholder if generation failed
-    return emailBody.replace('[Video will be embedded here]', 
+    return emailBody.replace('[Video will be embedded here]',
       '[Note: Personalized video intro is being prepared and will be sent shortly]')
   }
-  
-  // Embed video with proper HTML
   const videoEmbed = `
     <div style="margin: 20px 0; text-align: center;">
       <video controls style="max-width: 100%; border-radius: 8px;">
         <source src="${videoUrl}" type="video/mp4">
-        Your email client doesn't support video playback. 
+        Your email client doesn't support video playback.
         <a href="${videoUrl}">Click here to watch</a>
       </video>
     </div>
   `
-  
   return emailBody.replace('[Video will be embedded here]', videoEmbed)
 }

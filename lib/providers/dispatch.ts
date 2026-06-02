@@ -562,10 +562,14 @@ export async function dispatchDirectMail(
 }
 
 // ─── VIDEO (superadmin-controlled, system-only) ───────────────────────────────
-// video is SYSTEM_ONLY — resolveProvider always returns 'heygen'.
+// video is SYSTEM_ONLY. Platform-locked vendor: D-ID + ElevenLabs (per kernel-OS
+// plan FIX 0C.6) — agent's own avatar (did_photo_url / did_video_url) + cloned
+// voice (elevenlabs_voice_id) from agent_voice_profiles. Falls back to HeyGen
+// only when getPlatformVideoProvider() returns 'heygen' (superadmin override).
 
 export interface DispatchVideoParams extends DispatchActorContext {
-  /** HeyGen template / avatar ID */
+  /** D-ID path: rendered narration script (the avatar reads this).
+   *  HeyGen path: HeyGen template_id. */
   templateId: string
   recipientEmail: string
   recipientName?: string
@@ -625,7 +629,7 @@ async function dispatchVideoViaDID({
 
   const { data: didProfile } = await supabase
     .from("agent_voice_profiles")
-    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url, default_expression, expression_intensity")
     .eq("agent_id", agentUserId)
     .maybeSingle()
 
@@ -682,17 +686,27 @@ async function dispatchVideoViaDID({
   const audioUrl = pub.publicUrl
 
   // ─── 2. Submit to D-ID ──────────────────────────────────────────────────────
+  // driver_expressions controls facial affect — without it the avatar reads
+  // monotone, which is the #1 reason talking-head videos feel "uncanny" in
+  // real-estate marketing. Default is a warm "happy" at 0.7 intensity (per
+  // m112); per-agent override is read from agent_voice_profiles.
+  const expression = (didProfile as { default_expression?: string }).default_expression ?? "happy"
+  const intensity  = Number((didProfile as { expression_intensity?: number }).expression_intensity ?? 0.7)
+  const driverExpressions = {
+    expressions: [{ start_frame: 0, expression, intensity }],
+  }
+
   const didPayload = isVideoSource
     ? {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
-        config: { stitch: true, result_format: "mp4" },
+        config: { stitch: true, result_format: "mp4", driver_expressions: driverExpressions },
       }
     : {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
         driver_url: "bank://natural",
-        config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0 },
+        config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0, driver_expressions: driverExpressions },
       }
 
   const didRes = await callConnector<{ id?: string }>({

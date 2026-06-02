@@ -19,7 +19,7 @@ export type { LeadEmailContext } from './email-generator'
 
 // ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
 export {
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
 } from './video-generator'
 export type { VideoGenerationContext } from './video-generator'

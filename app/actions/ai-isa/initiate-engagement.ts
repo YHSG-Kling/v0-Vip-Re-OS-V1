@@ -24,7 +24,7 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
@@ -337,7 +337,7 @@ async function dispatchToChannel(
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailContext)
 
-    const videoResult = await generateHeyGenVideo({
+    const videoResult = await generateAvatarVideo({
       leadId: lead.id,
       firstName: lead.first_name || 'there',
       brokerageId: lead.brokerage_id,

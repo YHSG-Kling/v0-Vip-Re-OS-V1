@@ -52,6 +52,15 @@ export interface GenerateVideoInput {
   voiceId?: string
   /** If true, produce audio-only output (no avatar rendering) */
   voiceOnly?: boolean
+  /** D-ID facial expression. Without this the avatar renders monotone.
+   *  When omitted, falls back to the agent's default_expression on
+   *  agent_voice_profiles (m112), then to platform default "happy" @ 0.7. */
+  expression?: "happy" | "neutral" | "surprise" | "serious"
+  /** 0..1 — D-ID expression intensity. Defaults to 0.7 (warm-professional). */
+  expressionIntensity?: number
+  /** Optional agent (users.id) — used to load agent_voice_profiles defaults
+   *  for `expression`/`expressionIntensity` when caller didn't pass them. */
+  agentUserId?: string
   /**
    * URL of the agent's photo used as the talking-head source.
    * Resolved from agents.avatar_image_url by the caller; pass null to use
@@ -261,8 +270,28 @@ export async function generateVideo(
     }
   }
 
+  // Resolve facial expression — caller > agent profile > platform default.
+  let expression: string = input.expression ?? "happy"
+  let intensity: number  = input.expressionIntensity ?? 0.7
+  if (!input.expression && input.agentUserId) {
+    try {
+      const svc = createServiceClient()
+      const { data: prof } = await svc
+        .from("agent_voice_profiles")
+        .select("default_expression, expression_intensity")
+        .eq("agent_id", input.agentUserId)
+        .maybeSingle()
+      if (prof?.default_expression) expression = prof.default_expression as string
+      if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
+    } catch { /* best-effort — keep defaults */ }
+  }
+
   const config: Record<string, unknown> = {
     result_format: "mp4",
+    stitch: true,
+    driver_expressions: {
+      expressions: [{ start_frame: 0, expression, intensity }],
+    },
   }
 
   if (input.backgroundUrl) {
