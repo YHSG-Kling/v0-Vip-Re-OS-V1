@@ -115,6 +115,25 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     occasionType: "Home Anniversary",
   })
 
+  // Fire the personalized anniversary D-ID + cloned-voice video alongside the
+  // email. Gated on contacts.video_opt_out + agent voice profile, idempotent
+  // per calendar year via agent_intro_videos (m121). Never throws — a video
+  // failure must not block the email touchpoint that just succeeded.
+  if (agentId) {
+    try {
+      const { dispatchAnniversaryVideo } = await import("@/lib/video/intro-video-reactor")
+      void dispatchAnniversaryVideo({
+        brokerageId,
+        contactId,
+        agentUserId: agentId,
+        yearsAgo,
+        delivery: "portal",
+      })
+    } catch (err) {
+      console.error("[anniversary] video dispatch failed:", err)
+    }
+  }
+
   revalidatePath("/lifetime-customers")
   return { success: true }
 }

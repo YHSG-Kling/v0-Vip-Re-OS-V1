@@ -234,5 +234,38 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (E) Agent-assignment intro video — when a lead is assigned to an agent,
+  // fire a personalized D-ID + cloned-voice intro. Gated on
+  // contacts.video_opt_out + agent_voice_profiles configured. Idempotent via
+  // agent_intro_videos (m121). Never throws.
+  if (
+    params.brokerageId &&
+    params.event === KernelEvent.LEAD_ASSIGNED
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      // entity_id for LEAD_ASSIGNED is a leads.id — resolve the contact + agent.
+      const { data: lead } = await svc
+        .from("leads")
+        .select("contact_id, agent_id")
+        .eq("id", params.entityId)
+        .maybeSingle()
+      const contactId = (lead?.contact_id as string | null) ?? params.contactId ?? null
+      const agentUserId = (lead?.agent_id as string | null) ?? params.agentUserId ?? null
+      if (contactId && agentUserId) {
+        const { dispatchAssignmentIntroVideo } = await import("@/lib/video/intro-video-reactor")
+        void dispatchAssignmentIntroVideo({
+          brokerageId: params.brokerageId,
+          contactId,
+          agentUserId,
+          delivery:    "both",
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] intro-video dispatch failed:", err)
+    }
+  }
+
   return { ...mk, sequencesEnrolled, portalUpdated }
 }
