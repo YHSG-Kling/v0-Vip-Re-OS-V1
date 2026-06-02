@@ -234,32 +234,38 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
-  // (E) Agent-assignment intro video — when a lead is assigned to an agent,
-  // fire a personalized D-ID + cloned-voice intro. Gated on
-  // contacts.video_opt_out + agent_voice_profiles configured. Idempotent via
-  // agent_intro_videos (m121). Never throws.
+  // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
+  // (the canonical assignment moment per the app rule: raw_leads → platform,
+  // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID
+  // + cloned-voice intro. Trigger event m122 emits CONTACT_AGENT_ASSIGNED from
+  // a Postgres trigger so every assignment path lands here uniformly.
+  //
+  // Gated on contacts.video_opt_out + agent_voice_profiles configured.
+  // Idempotent via agent_intro_videos (m121). Never throws.
   if (
     params.brokerageId &&
-    params.event === KernelEvent.LEAD_ASSIGNED
+    params.event === KernelEvent.CONTACT_AGENT_ASSIGNED
   ) {
     try {
+      // entity_id is the contact_id (per the trigger). agent_id (agents.id)
+      // comes either from metadata.agent_id or from the contact row.
       const { createServiceClient } = await import("@/lib/supabase/service")
       const svc = createServiceClient()
-      // entity_id for LEAD_ASSIGNED is a leads.id — resolve the contact + agent.
-      const { data: lead } = await svc
-        .from("leads")
-        .select("contact_id, agent_id")
-        .eq("id", params.entityId)
-        .maybeSingle()
-      const contactId = (lead?.contact_id as string | null) ?? params.contactId ?? null
-      const agentUserId = (lead?.agent_id as string | null) ?? params.agentUserId ?? null
-      if (contactId && agentUserId) {
+      const contactId = params.entityId
+      const metaAgentId = (params.metadata as { agent_id?: string } | null | undefined)?.agent_id ?? null
+      let agentRecordId: string | null = metaAgentId
+      if (!agentRecordId) {
+        const { data: c } = await svc
+          .from("contacts").select("agent_id").eq("id", contactId).maybeSingle()
+        agentRecordId = (c?.agent_id as string | null) ?? null
+      }
+      if (agentRecordId) {
         const { dispatchAssignmentIntroVideo } = await import("@/lib/video/intro-video-reactor")
         void dispatchAssignmentIntroVideo({
-          brokerageId: params.brokerageId,
+          brokerageId:  params.brokerageId,
           contactId,
-          agentUserId,
-          delivery:    "both",
+          agentId:      agentRecordId,
+          delivery:     "both",
         })
       }
     } catch (err) {

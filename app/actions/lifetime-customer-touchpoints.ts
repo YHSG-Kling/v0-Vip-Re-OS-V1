@@ -125,7 +125,7 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
       void dispatchAnniversaryVideo({
         brokerageId,
         contactId,
-        agentUserId: agentId,
+        agentId,   // agents.id from resolveAgentId — the reactor resolves to users.id internally
         yearsAgo,
         delivery: "portal",
       })

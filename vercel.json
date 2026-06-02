@@ -276,6 +276,10 @@
     {
       "path": "/api/cron/portal-stream-projector",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/intro-video-email-backfill",
+      "schedule": "*/2 * * * *"
     }
   ]
 }

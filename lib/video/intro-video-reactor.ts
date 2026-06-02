@@ -3,36 +3,42 @@
  *
  * Two trigger-driven personalized avatar videos that ride the egress:
  *
- *   dispatchAssignmentIntroVideo  — fired by the kernel reactor on LEAD_ASSIGNED.
+ *   dispatchAssignmentIntroVideo  — fired by the kernel reactor on
+ *                                   CONTACT_AGENT_ASSIGNED (m122 trigger).
+ *                                   Per the app rule: raw_leads → platform,
+ *                                   leads → AI ISA + brokerage, contacts →
+ *                                   agents. The intro fires on the contact-to-
+ *                                   agent assignment, not lead assignment.
  *   dispatchAnniversaryVideo      — fired by sendAnniversaryMessage in the
  *                                   lifetime-customer-touchpoints daily cron.
  *
  * Both share a single render path:
- *   1. Gate on contacts.video_opt_out (canonical opt-out column).
- *   2. Gate on the agent having a configured agent_voice_profiles row
- *      (cloned voice + D-ID avatar source). Skip cleanly if missing.
- *   3. Insert agent_intro_videos (m121) — the unique partial index makes the
- *      whole reactor idempotent; a second call for the same trigger returns
- *      'already_queued'.
- *   4. Generate a short, personalized script via the Vercel AI Gateway
- *      (generateTextRouted) using the contact's name + persona register.
- *   5. Create an ai_video_projects row + emit KernelEvent.VIDEO_GENERATION_REQUESTED
- *      so the poll-did-videos cron picks it up. The cron applies the canonical
- *      brand-overlay + intro/outro stitching pipeline and writes back the URL.
- *   6. Email delivery rides dispatchEmail (compliance + suppression + 1:1
- *      de-conflict gates already wired). The portal card is auto-rendered by
- *      the portal-stream-projector cron when VIDEO_GENERATION_COMPLETED fires.
- *
- * Both flows leave the network egress through callConnector exclusively
- * (ElevenLabs TTS + D-ID submission inside dispatchVideo); the local
- * lifecycle_events insert uses canonical KernelEvent values; the audit table
- * is the agent_intro_videos row.
+ *   1. Gate on contacts.video_opt_out.
+ *   2. Resolve agents.id (the kernel id stored on contacts.agent_id) to
+ *      users.id (the FK target for ai_video_projects.agent_id +
+ *      agent_voice_profiles.agent_id) via the agents table.
+ *   3. Gate on the agent_voice_profiles row — must have elevenlabs_voice_id
+ *      AND a Supabase-hosted avatar (did_photo_url OR did_video_url uploaded
+ *      by the agent during onboarding). The avatar is OUR storage URL, never
+ *      a D-ID-side asset; D-ID renders pull from our URL and we re-host the
+ *      output via poll-did-videos cron.
+ *   4. Insert agent_intro_videos (m121) — the unique partial index makes the
+ *      whole reactor idempotent.
+ *   5. Generate a short personalized script via the Vercel AI Gateway.
+ *   6. Create an ai_video_projects row + dispatchVideo (D-ID-first per
+ *      getPlatformVideoProvider). The poll-did-videos cron polls D-ID,
+ *      downloads the finished mp4 to OUR Supabase storage, writes
+ *      ai_video_projects.video_url, and emits VIDEO_GENERATION_COMPLETED.
+ *   7. NO placeholder email goes out. The intro-video-email-backfill cron
+ *      (registered alongside this wave) sweeps rendered videos and queues
+ *      the assignment email via dispatchEmail at that point — using OUR
+ *      Supabase URL embedded.
+ *   8. Portal card auto-renders via the portal-stream-projector cron when
+ *      VIDEO_GENERATION_COMPLETED lands.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchVideo } from "@/lib/providers/dispatch"
-import { dispatchEmail } from "@/lib/providers/dispatch"
-import { embedVideoInEmail } from "@/lib/ai-isa/video-generator"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -41,8 +47,10 @@ type IntroTrigger = "lead_assigned" | "home_anniversary"
 interface BaseInput {
   brokerageId:  string
   contactId:    string
-  /** users.id of the assigned agent — matches ai_video_projects.agent_id FK */
-  agentUserId:  string
+  /** agents.id — the value stored on contacts.agent_id (per m111 / RLS).
+   *  Resolved to the agent's users.id inside the reactor before passing to
+   *  agent_voice_profiles / ai_video_projects (both of which key on users.id). */
+  agentId:      string
   /** 'email' (default), 'portal', or 'both' */
   delivery?:    "email" | "portal" | "both"
 }
@@ -66,6 +74,9 @@ export interface ReactorResult {
 export async function dispatchAssignmentIntroVideo(
   input: AssignmentIntroInput,
 ): Promise<ReactorResult> {
+  // The m121 ledger uses 'lead_assigned' as the historical trigger key — kept
+  // for back-compat with already-inserted rows. The trigger semantically means
+  // "contact got assigned to an agent for the first time".
   return runReactor({
     ...input,
     trigger:      "lead_assigned",
@@ -79,13 +90,11 @@ export async function dispatchAnniversaryVideo(
   if (!Number.isFinite(input.yearsAgo) || input.yearsAgo <= 0) {
     return { ok: false, status: "skipped", reason: "invalid yearsAgo" }
   }
-  // trigger_year keys to THIS calendar year so the partial unique index lets
-  // a contact get one anniversary video per calendar year.
   const triggerYear = new Date().getUTCFullYear()
   return runReactor({
     brokerageId: input.brokerageId,
     contactId:   input.contactId,
-    agentUserId: input.agentUserId,
+    agentId:     input.agentId,
     delivery:    input.delivery,
     trigger:     "home_anniversary",
     triggerYear,
@@ -112,11 +121,25 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .eq("id", input.contactId)
     .maybeSingle()
   if (!contact) return { ok: false, status: "skipped", reason: "contact not found" }
+
+  // 2. Resolve agents.id → users.id. agent_voice_profiles + ai_video_projects
+  //    both FK to users.id; contacts.agent_id (and the m121 ledger) hold
+  //    agents.id. agents.user_id is the bridge.
+  const { data: agentRow } = await svc
+    .from("agents")
+    .select("id, user_id")
+    .eq("id", input.agentId)
+    .maybeSingle()
+  const agentUserId = (agentRow?.user_id as string | null) ?? null
+  if (!agentUserId) {
+    return { ok: false, status: "skipped", reason: "agent record not found or missing user_id" }
+  }
+
   if (contact.video_opt_out) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
-      agent_id:     input.agentUserId,
+      agent_id:     agentUserId, // ledger.agent_id FKs to users.id per m121
       trigger:      input.trigger,
       trigger_year: input.triggerYear,
       status:       "suppressed",
@@ -126,37 +149,38 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
-  // 2. Agent voice profile gate — no profile = nothing to render with
+  // 3. Voice + avatar gate. Both URLs are OUR Supabase storage URLs (the
+  //    avatar was uploaded by the agent during onboarding; D-ID fetches from
+  //    our URL when rendering). Missing either = nothing to render with.
   const { data: profile } = await svc
     .from("agent_voice_profiles")
     .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-    .eq("agent_id", input.agentUserId)
+    .eq("agent_id", agentUserId)
     .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
-      agent_id:     input.agentUserId,
+      agent_id:     agentUserId,
       trigger:      input.trigger,
       trigger_year: input.triggerYear,
       status:       "failed",
       delivery_channel: delivery,
       error_message: "agent has no voice/avatar profile — Settings → Voice & Avatar",
-    }).select("id").maybeSingle()
+    })
     return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
   }
 
-  // 3. Idempotency — the unique partial index on m121 enforces this. A duplicate
-  //    insert returns 23505 which we resolve to 'already_queued'.
+  // 4. Idempotency — the m121 partial unique index does the work.
   const ledger = await svc
     .from("agent_intro_videos")
     .insert({
-      brokerage_id: input.brokerageId,
-      contact_id:   input.contactId,
-      agent_id:     input.agentUserId,
-      trigger:      input.trigger,
-      trigger_year: input.triggerYear,
-      status:       "queued",
+      brokerage_id:     input.brokerageId,
+      contact_id:       input.contactId,
+      agent_id:         agentUserId,
+      trigger:          input.trigger,
+      trigger_year:     input.triggerYear,
+      status:           "queued",
       delivery_channel: delivery,
     })
     .select("id")
@@ -169,16 +193,16 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
   const introVideoId = ledger.data?.id as string | undefined
 
-  // 4. Script via Vercel AI Gateway — short, persona-aware, no jargon.
+  // 5. Script via Vercel AI Gateway — short, persona-aware, no jargon.
   let script: string
   try {
     script = await draftScript({
-      trigger:        input.trigger,
-      firstName:      contact.first_name ?? "there",
-      persona:        contact.contact_persona ?? null,
-      yearsAgo:       input.yearsAgo,
-      brokerageId:    input.brokerageId,
-      agentUserId:    input.agentUserId,
+      trigger:     input.trigger,
+      firstName:   contact.first_name ?? "there",
+      persona:     contact.contact_persona ?? null,
+      yearsAgo:    input.yearsAgo,
+      brokerageId: input.brokerageId,
+      agentUserId,
     })
   } catch (err) {
     await svc.from("agent_intro_videos")
@@ -187,15 +211,14 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: false, status: "failed", reason: "script generation failed" }
   }
 
-  // 5. Create the ai_video_projects row + dispatch via the platform vendor
-  //    selector (D-ID-first per getPlatformVideoProvider). The poll-did-videos
-  //    cron handles render polling, brand overlay, intro/outro stitching.
+  // 6. ai_video_projects + dispatchVideo. agent_id keys to users.id per the
+  //    table's FK (caught and fixed in Wave 6).
   const videoType = input.trigger === "lead_assigned" ? "agent_intro" : "just_sold"
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id:   input.brokerageId,
-      agent_id:       input.agentUserId,
+      agent_id:       agentUserId,
       contact_id:     input.contactId,
       title:          input.trigger === "lead_assigned"
                         ? `Intro for ${contact.first_name}`
@@ -207,10 +230,10 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       audience_type:  "customer_facing",
       duration_seconds: 45,
       video_metadata: {
-        trigger:           input.trigger,
-        trigger_year:      input.triggerYear,
-        intro_video_id:    introVideoId,
-        years_ago:         input.yearsAgo ?? null,
+        trigger:        input.trigger,
+        trigger_year:   input.triggerYear,
+        intro_video_id: introVideoId,
+        years_ago:      input.yearsAgo ?? null,
       },
     })
     .select("id")
@@ -226,20 +249,17 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .update({ video_project_id: project.id, status: "rendering" })
     .eq("id", introVideoId!)
 
-  // Submit to the vendor (D-ID by default). This is async — the poll-did-videos
-  // cron will fill in video_url + heygen_video_id and emit
-  // VIDEO_GENERATION_COMPLETED when the render lands.
   const submission = await dispatchVideo({
     brokerageId:    input.brokerageId,
-    userId:         input.agentUserId,
+    userId:         agentUserId,
     contactId:      input.contactId,
     templateId:     script,
     recipientEmail: contact.email ?? "",
     recipientName:  contact.first_name ?? undefined,
     scriptVars: {
-      first_name:   contact.first_name ?? "",
-      trigger:      input.trigger,
-      years_ago:    String(input.yearsAgo ?? 0),
+      first_name: contact.first_name ?? "",
+      trigger:    input.trigger,
+      years_ago:  String(input.yearsAgo ?? 0),
     },
     systemSource:   `intro_video.${input.trigger}`,
     metadata: {
@@ -254,11 +274,11 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: false, status: "failed", reason: submission.error ?? "dispatchVideo failed" }
   }
 
-  // 6. Lifecycle event — the reactor picks up VIDEO_GENERATION_REQUESTED for
+  // 7. Canonical lifecycle event so the reactor picks up the request for
   //    sequence enrollment + portal-card eligibility downstream.
   await svc.from("lifecycle_events").insert({
     brokerage_id:  input.brokerageId,
-    actor_user_id: input.agentUserId,
+    actor_user_id: agentUserId,
     event_type:    KernelEvent.VIDEO_GENERATION_REQUESTED,
     metadata: {
       intro_video_id:      introVideoId,
@@ -271,31 +291,10 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     processed:   false,
   })
 
-  // 7. Email delivery (when requested). For 'lead_assigned' we send the
-  //    "Hi I'm your new agent" email with the video embedded. For
-  //    'home_anniversary' the existing sendAnniversaryMessage handles the
-  //    email — the reactor only renders + delivers the portal-side card.
-  if ((delivery === "email" || delivery === "both") && contact.email && input.trigger === "lead_assigned") {
-    const subject  = `${contact.first_name ?? "Hi"} — a quick intro from your agent`
-    const baseHtml = `<p>Hi ${contact.first_name ?? ""},</p><p>I wanted to introduce myself.</p><p>[Video will be embedded here]</p>`
-    // The video URL won't be ready synchronously (D-ID render is async).
-    // We still queue the email NOW with a placeholder; a follow-up worker
-    // rewrites the email when the URL lands. For this first ship the
-    // placeholder fallback in embedVideoInEmail() handles the case.
-    const html = await embedVideoInEmail(baseHtml, null)
-    await dispatchEmail({
-      brokerageId:    input.brokerageId,
-      userId:         input.agentUserId,
-      contactId:      input.contactId,
-      systemSource:   "intro_video_email",
-      channelPurpose: "conversation",
-      from:           "agent@platform.com",
-      to:             contact.email,
-      subject,
-      html,
-      metadata: { ai_video_project_id: project.id, intro_video_id: introVideoId },
-    })
-  }
+  // 8. Email delivery is NOT sent here. The intro-video-email-backfill cron
+  //    polls for agent_intro_videos rows whose linked ai_video_projects.video_url
+  //    is populated and sends the email then — embedding OUR Supabase URL.
+  //    This avoids both the placeholder-email problem AND the double-send risk.
 
   return {
     ok:             true,
