@@ -25,6 +25,7 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
+import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
@@ -57,6 +58,28 @@ interface DispatchResult {
   providerKey: string
   messageId?: string
   error?: string
+}
+
+// ─── De-Conflict helper — single chokepoint for over-touch suppression ──────
+// Runs the De-Conflict Engine and converts a suppression decision into a
+// DispatchResult that callers can return as-is. Every call writes an audit
+// row to deconflict_suppression_log (m113) regardless of outcome.
+async function deconflictGate(args: {
+  brokerageId:   string
+  channel:       DeconflictChannel
+  contactId?:    string | null
+  recipientEmail?: string | null
+  recipientPhone?: string | null
+  systemSource?: string
+}): Promise<DispatchResult | null> {
+  if (!args.contactId && !args.recipientEmail && !args.recipientPhone) return null
+  const d = await evaluateDeconflict(args)
+  if (d.allowed) return null
+  return {
+    success:     false,
+    providerKey: "deconflict_gate",
+    error:       `Outbound deferred: ${d.reason}`,
+  }
 }
 
 // ─── EMAIL ────────────────────────────────────────────────────────────────────
@@ -131,6 +154,16 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
         }
       }
     }
+
+    // ── De-Conflict gate (over-touch suppression) ────────────────────────────
+    const deferred = await deconflictGate({
+      brokerageId:    params.brokerageId,
+      channel:        "email",
+      contactId:      params.contactId ?? null,
+      recipientEmail: params.to ?? null,
+      systemSource:   params.systemSource,
+    })
+    if (deferred) return deferred
   }
 
   const { providerKey } = await resolveProvider({
@@ -287,6 +320,16 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
         }
       }
     }
+
+    // ── De-Conflict gate (over-touch suppression) ────────────────────────────
+    const deferred = await deconflictGate({
+      brokerageId:    params.brokerageId,
+      channel:        "sms",
+      contactId:      params.contactId ?? null,
+      recipientPhone: params.to ?? null,
+      systemSource:   params.systemSource,
+    })
+    if (deferred) return deferred
   }
 
   const { providerKey } = await resolveProvider({
@@ -394,6 +437,16 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
         }
       }
     }
+
+    // ── De-Conflict gate (over-touch suppression) ────────────────────────────
+    const deferred = await deconflictGate({
+      brokerageId:    params.brokerageId,
+      channel:        "phone",
+      contactId:      params.contactId ?? null,
+      recipientPhone: params.to ?? null,
+      systemSource:   params.systemSource,
+    })
+    if (deferred) return deferred
   }
 
   const { providerKey } = await resolveProvider({
@@ -466,6 +519,19 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
 export async function dispatchDirectMail(
   params: DispatchDirectMailParams
 ): Promise<DispatchResult> {
+  // ── De-Conflict gate (over-touch suppression) ────────────────────────────
+  // Lob postcards/letters land in mailboxes — physical touches count too.
+  // The default policy caps 1 piece / 30 days per contact.
+  if (params.contactId) {
+    const deferred = await deconflictGate({
+      brokerageId:  params.brokerageId,
+      channel:      "mail",
+      contactId:    params.contactId,
+      systemSource: params.systemSource,
+    })
+    if (deferred) return deferred
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "direct_mail",
     actorContext: {
@@ -578,6 +644,19 @@ export interface DispatchVideoParams extends DispatchActorContext {
 }
 
 export async function dispatchVideo(params: DispatchVideoParams): Promise<DispatchResult> {
+  // ── De-Conflict gate (over-touch suppression) ────────────────────────────
+  // D-ID renders are expensive AND avatar-video saturation hurts engagement;
+  // default policy caps 1 video / 21 days per contact.
+  if (params.contactId) {
+    const deferred = await deconflictGate({
+      brokerageId:  params.brokerageId,
+      channel:      "video",
+      contactId:    params.contactId,
+      systemSource: params.systemSource,
+    })
+    if (deferred) return deferred
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "video",
     actorContext: {
