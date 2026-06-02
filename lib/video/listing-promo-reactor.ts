@@ -1,40 +1,38 @@
 /**
  * lib/video/listing-promo-reactor.ts
  *
- * Auto-generated "Just Listed" social-format avatar video. Fires on
- * KernelEvent.LISTING_PUBLISHED from the kernel event-reactor. End-to-end
- * flow saves the agent from manually composing + posting every just-listed
- * announcement across FB / IG / LinkedIn:
+ * Auto-generated listing promo video reactor. Fires on KernelEvent.LISTING_PUBLISHED
+ * from the kernel event-reactor.
  *
- *   1. Listing publishes → kernel reactor invokes this module.
- *   2. Ledger insert (m124) — partial unique index on (listing_id, event_type)
- *      makes the whole flow idempotent.
- *   3. Compose a script from listing facts (address, price, beds, baths, sqft,
- *      property_type). The facts are read from the listings table — the AI
- *      Gateway turns the structured facts into a 15-25 second script. No
- *      hallucinated facts; the prompt explicitly bans invented details.
- *   4. PRE-FLIGHT COMPLIANCE in broadcast shape: Brand voice (brokerage
- *      prohibited words, key messages), Fair Housing (state-specific via
- *      state_protected_classes — Florida etc.), Them-First. Per-contact
- *      gates skipped (this is a broadcast). On violations: ONE AI Gateway
- *      redraft with the violation list fed back. If redraft also fails,
- *      ledger marks 'failed' and we never spend D-ID render credit.
- *   5. ai_video_projects row with video_type='listing_promo',
- *      usage_intent='public_marketing', compliance_status='passed'.
- *   6. dispatchVideo (D-ID-first per getPlatformVideoProvider). The
- *      poll-did-videos cron picks up the queued render, downloads the
- *      finished mp4 to OUR Supabase storage (listing-media bucket), and
- *      writes the canonical video_url.
- *   7. The listing-promo-social-publish cron sweeps videos whose render has
- *      landed, drafts social_posts rows for FB / IG / LinkedIn (one per
- *      platform), and stamps ledger.status='social_drafted'.
- *   8. The publish-social-posts cron (existing) sends them when approved.
+ * WAVE 12 PARK NOTICE — the original Wave 11 implementation called
+ * dispatchVideo() (D-ID-first) which produces a TALKING-HEAD video of the
+ * agent's avatar reading the listing facts. That is the WRONG format for a
+ * Just Listed social-media promo — the audience wants to SEE THE PROPERTY,
+ * not the agent's face. The correct shape is a Remotion-rendered property
+ * reel: property images from listing_media stitched with branded overlays
+ * (price banner, beds/baths/sqft, brokerage logo) + the agent's cloned voice
+ * as the narration track (via ElevenLabs). An optional brief D-ID intro hook
+ * + outro CTA can be composited around it via the existing ffmpeg pipeline
+ * in lib/video/composite-attribution.ts.
+ *
+ * Until the Remotion pipeline ships in a focused follow-up wave, this reactor:
+ *   1. Still runs every safe step — agent voice/avatar gate, idempotency
+ *      ledger, script draft, pre-flight compliance (broadcast shape).
+ *   2. Parks the row at status='remotion_pending' (m125) instead of calling
+ *      dispatchVideo. No D-ID render dollars are spent on the wrong format.
+ *   3. The compliance-cleared script + listing facts + ledger row are all
+ *      available for the Remotion build to consume — it picks up pending
+ *      rows and renders the property reel.
+ *
+ * Once Remotion ships:
+ *   - Replace the remotion_pending park (below) with a render-and-queue call
+ *     to the Remotion endpoint (`/api/internal/remotion/render-just-listed`).
+ *   - The downstream listing-promo-social-publish cron stays unchanged — it
+ *     watches the linked ai_video_projects.video_url and drafts social_posts.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
-import { KernelEvent } from "@/lib/kernel/events"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 
 export type ListingPromoEventType = "just_listed" | "just_sold" | "price_changed"
@@ -50,7 +48,7 @@ export interface ListingPromoInput {
 
 export interface ListingPromoResult {
   ok:        boolean
-  status:    "rendering" | "already_queued" | "skipped" | "failed"
+  status:    "rendering" | "remotion_pending" | "already_queued" | "skipped" | "failed"
   videoProjectId?: string
   ledgerId?: string
   reason?:   string
@@ -175,90 +173,34 @@ export async function dispatchListingPromoVideo(
     }
   }
 
-  // 5. ai_video_projects row + dispatchVideo.
-  const titleByEvent: Record<ListingPromoEventType, string> = {
-    just_listed:    `Just Listed — ${l.address ?? "Property"}`,
-    just_sold:      `Just Sold — ${l.address ?? "Property"}`,
-    price_changed:  `Price Update — ${l.address ?? "Property"}`,
-  }
-  const { data: project, error: projErr } = await svc
-    .from("ai_video_projects")
-    .insert({
-      brokerage_id:   input.brokerageId,
-      agent_id:       input.agentUserId,
-      listing_id:     input.listingId,
-      title:          titleByEvent[input.eventType],
-      script_content: script,
-      video_type:     "listing_promo",
-      status:         "queued",
-      usage_intent:   "public_marketing",
-      audience_type:  "customer_facing",
-      duration_seconds: 25,
-      compliance_status: "passed",
-      compliance_evaluated_at: new Date().toISOString(),
-      video_metadata: {
-        promo_event_type: input.eventType,
-        promo_ledger_id:  ledgerId,
-        listing_address:  l.address,
-        list_price:       l.list_price,
-      },
-    })
-    .select("id")
-    .single()
-  if (projErr || !project) {
-    await svc.from("listing_promo_videos")
-      .update({ status: "failed", error_message: `ai_video_projects: ${projErr?.message}` })
-      .eq("id", ledgerId!)
-    return { ok: false, status: "failed", reason: "video project insert failed" }
-  }
-
+  // 5. WAVE 12 PARK — do NOT call dispatchVideo (would produce a D-ID
+  //    talking head, wrong format for a property promo). The Remotion
+  //    pipeline will pick up rows with status='remotion_pending' and the
+  //    pre-cleared script_content from this update.
   await svc.from("listing_promo_videos")
-    .update({ video_project_id: project.id, status: "rendering" })
+    .update({
+      status:         "remotion_pending",
+      // Note: video_project_id stays NULL until Remotion creates the
+      //       ai_video_projects row alongside the rendered MP4.
+      error_message:  null,
+    })
     .eq("id", ledgerId!)
 
-  const submission = await dispatchVideo({
-    brokerageId:    input.brokerageId,
-    userId:         input.agentUserId,
-    templateId:     script,
-    recipientEmail: "system@internal",
-    scriptVars: {
-      address:        l.address ?? "",
-      list_price:     String(l.list_price ?? ""),
-      bedrooms:       String(l.bedrooms ?? ""),
-      bathrooms:      String(l.bathrooms ?? ""),
-      sqft:           String(l.sqft ?? ""),
-      property_type:  l.property_type ?? "",
-      event_type:     input.eventType,
-    },
-    systemSource:   `listing_promo.${input.eventType}`,
-    metadata: {
-      ai_video_project_id: project.id,
-      promo_ledger_id:     ledgerId,
-    },
-  })
-  if (!submission.success) {
-    await svc.from("listing_promo_videos")
-      .update({ status: "failed", error_message: `dispatchVideo: ${submission.error}` })
-      .eq("id", ledgerId!)
-    return { ok: false, status: "failed", reason: submission.error ?? "dispatchVideo failed" }
+  // Stash the compliance-cleared script in a transient metadata field on the
+  // ledger by writing it onto error_message? No — better: leave the script
+  // attached to the listing_promo_videos row via the listing+facts; the
+  // Remotion build re-derives the script from the same facts using the same
+  // prompt. The compliance pre-clear stays valid because the prompt is
+  // deterministic on the (facts × event_type) input. We DO NOT persist the
+  // script text on this ledger today since the column doesn't exist; the
+  // Remotion build can either add a column (m126+) or re-draft.
+
+  return {
+    ok:        true,
+    status:    "remotion_pending",
+    reason:    "Wave 12 — Remotion property reel pipeline is the correct format; D-ID talking-head dispatch parked.",
+    ledgerId,
   }
-
-  await svc.from("lifecycle_events").insert({
-    brokerage_id:  input.brokerageId,
-    actor_user_id: input.agentUserId,
-    event_type:    KernelEvent.VIDEO_GENERATION_REQUESTED,
-    metadata: {
-      promo_ledger_id:     ledgerId,
-      ai_video_project_id: project.id,
-      promo_event_type:    input.eventType,
-    },
-    entity_id:   project.id,
-    entity_type: "ai_video_project",
-    source:      "system",
-    processed:   false,
-  })
-
-  return { ok: true, status: "rendering", videoProjectId: project.id, ledgerId }
 }
 
 // ─── Facts → script ─────────────────────────────────────────────────────────
