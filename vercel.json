@@ -323,6 +323,14 @@
     {
       "path": "/api/cron/content-intel-reddit",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-exa",
+      "schedule": "30 6,14 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-rss",
+      "schedule": "0 7 * * *"
     }
   ]
 }
