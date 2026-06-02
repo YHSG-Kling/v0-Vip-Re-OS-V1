@@ -236,6 +236,14 @@
     {
       "path": "/api/cron/weekly-income-digest",
       "schedule": "0 13 * * 1"
+    },
+    {
+      "path": "/api/cron/sphere-weekly",
+      "schedule": "0 22 * * 0"
+    },
+    {
+      "path": "/api/cron/campaign-orchestrator-weekly",
+      "schedule": "0 7 * * 1"
     }
   ]
 }

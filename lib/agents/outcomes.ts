@@ -25,7 +25,12 @@
  */
 import "server-only"
 
-export type AgentOutcomeKind = "buyer_concierge" | "listing_concierge" | "deal_coordinator" | "sphere_of_influence"
+export type AgentOutcomeKind =
+  | "buyer_concierge"
+  | "listing_concierge"
+  | "deal_coordinator"
+  | "sphere_of_influence"
+  | "campaign_orchestrator"
 
 export interface OutcomeRubric {
   /** Short description for the agent (what they're working toward, in plain language). */
@@ -183,15 +188,87 @@ You PASS when all 7 hold. Iterate until they do or max_iterations hits.
   }
 }
 
+/**
+ * Campaign Orchestrator — composes Sphere opportunities, Listing Health Radar
+ * risks, and Revenue Protection signals into ranked, channel-multiplexed
+ * campaigns. Outcome: every opportunity has a compliance-cleared,
+ * de-conflicted, persona-aware campaign queued for agent review.
+ */
+function buildCampaignOrchestratorRubric(params: {
+  brokerageName: string
+  opportunityCount: number
+}): OutcomeRubric {
+  return {
+    description:
+      `Compose ${params.opportunityCount} pending opportunities for ${params.brokerageName} into ` +
+      `ranked, multi-channel campaigns this week. For each opportunity, select the channel mix, ` +
+      `draft the asset through the brokerage's brand voice, and queue for agent review. The agent ` +
+      `reviews + sends; you NEVER auto-send. The De-Conflict Engine filters before delivery — ` +
+      `your job is to make sure each campaign is APPROVABLE the first time.`,
+    rubric: `
+You are SATISFIED for this orchestration run when ALL of the following are true:
+
+1. campaigns[] is non-empty AND every input opportunity has either a queued campaign OR a
+   recommended_skip entry with an audit-grade reason.
+2. Each campaign picks a CHANNEL MIX appropriate to the trigger + the contact's persona +
+   the contact's consent state:
+   • refi_window / equity_tap   — email is the default; SMS only with sms_consent=true;
+                                  postcard via Lob is a strong fit (high-value, slow-burn).
+   • upsizer / downsizer        — email + persona-aware ai_video (D-ID + ElevenLabs) when
+                                  the agent has a configured avatar (agent_voice_profiles).
+   • anniversary                — email + postcard.
+   • referral_ask               — email only (asks are softer than other triggers).
+   • neighborhood_signal        — email + ai_video for the equity/listing pitch.
+3. Each campaign asset is DRAFTED, not just outlined — body copy ≤180 words, brand-voice
+   compliant (no prohibited words from brokerage_brand_voice), Them-First (≥60% client-focused
+   pronouns), Fair Housing clean, persona register matched.
+4. For ai_video drafts, narration is ≤90 seconds spoken length AND specifies the
+   expression: 'happy' | 'neutral' | 'surprise' | 'serious' (D-ID driver_expressions).
+   Default to the agent's agent_voice_profiles.default_expression when uncertain.
+5. Pre-flight de-conflict check: for EACH (contact_id, channel) you queue, attest that the
+   contact has not been touched on that channel within the platform suppression window
+   (email 14d, sms 7d, mail 30d, video 21d). Cite the touch source you considered.
+6. tracking_qr is set for every direct_mail piece (route to a per-contact micro-landing
+   page via the qr_codes table).
+7. No cross-brokerage contact appears (tenant leak guard).
+8. Response is valid JSON matching the format:
+   {
+     "campaigns": [{
+       "contact_id":     uuid,
+       "trigger":        string,        // matches sphere_of_influence trigger taxonomy
+       "channel_mix":    ("email"|"sms"|"mail"|"video")[],
+       "drafts": {
+         "email":   { "subject": string, "body": string },
+         "sms":     string?,
+         "mail":    { "front_template_id": string?, "body": string },
+         "video":   { "script": string, "expression": "happy"|"neutral"|"surprise"|"serious",
+                      "voice_id": string? }
+       },
+       "tracking_qr":     string?,
+       "deconflict_attestation": { "checked_at": ISO8601, "sources": string[] },
+       "review_priority": "high"|"medium"|"low"
+     }],
+     "recommended_skip": [{ "contact_id": uuid, "reason": string }],
+     "summary":          string,
+     "next_check_at":    ISO8601
+   }
+
+You PASS when all 8 hold. Iterate until they do or max_iterations hits.
+`.trim(),
+    maxIterations: 5,
+  }
+}
+
 export function buildOutcomeFor(
   kind: AgentOutcomeKind,
-  params: { brokerageName: string; subjectName: string; sphereSize?: number },
+  params: { brokerageName: string; subjectName: string; sphereSize?: number; opportunityCount?: number },
 ): OutcomeRubric {
   switch (kind) {
-    case "buyer_concierge":    return buildBuyerConciergeRubric({   brokerageName: params.brokerageName, buyerName:  params.subjectName })
-    case "listing_concierge":  return buildListingConciergeRubric({ brokerageName: params.brokerageName, sellerName: params.subjectName })
-    case "deal_coordinator":   return buildDealCoordinatorRubric({  brokerageName: params.brokerageName, dealName:   params.subjectName })
-    case "sphere_of_influence":return buildSphereOfInfluenceRubric({ brokerageName: params.brokerageName, sphereSize: params.sphereSize ?? 0 })
+    case "buyer_concierge":       return buildBuyerConciergeRubric({   brokerageName: params.brokerageName, buyerName:  params.subjectName })
+    case "listing_concierge":     return buildListingConciergeRubric({ brokerageName: params.brokerageName, sellerName: params.subjectName })
+    case "deal_coordinator":      return buildDealCoordinatorRubric({  brokerageName: params.brokerageName, dealName:   params.subjectName })
+    case "sphere_of_influence":   return buildSphereOfInfluenceRubric({ brokerageName: params.brokerageName, sphereSize: params.sphereSize ?? 0 })
+    case "campaign_orchestrator": return buildCampaignOrchestratorRubric({ brokerageName: params.brokerageName, opportunityCount: params.opportunityCount ?? 0 })
   }
 }
 

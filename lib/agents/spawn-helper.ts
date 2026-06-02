@@ -18,14 +18,20 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createManagedAgent, createManagedSession, sendManagedSessionEvents } from "./managed-agents-egress"
 
-export type AgentKind = "deal_coordinator" | "shopping_agent" | "listing_concierge" | "sphere_of_influence"
+export type AgentKind =
+  | "deal_coordinator"
+  | "shopping_agent"
+  | "listing_concierge"
+  | "sphere_of_influence"
+  | "campaign_orchestrator"
 export type EntityType = "transaction" | "contact" | "listing" | "brokerage"
 
 const KIND_LABEL: Record<AgentKind, string> = {
-  deal_coordinator:    "Deal Coordinator",
-  shopping_agent:      "Buyer Concierge",
-  listing_concierge:   "Listing Concierge",
-  sphere_of_influence: "Sphere of Influence",
+  deal_coordinator:      "Deal Coordinator",
+  shopping_agent:        "Buyer Concierge",
+  listing_concierge:     "Listing Concierge",
+  sphere_of_influence:   "Sphere of Influence",
+  campaign_orchestrator: "Campaign Orchestrator",
 }
 
 /**
