@@ -244,6 +244,10 @@
     {
       "path": "/api/cron/campaign-orchestrator-weekly",
       "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/publish-newsletters",
+      "schedule": "0 * * * *"
     }
   ]
 }

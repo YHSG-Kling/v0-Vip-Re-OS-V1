@@ -648,52 +648,100 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       return { success: false, error: `Brand compliance failed: ${compliance.violations?.join(", ")}` }
     }
 
+    // Manual-send path. The publish-newsletters cron is the canonical batch
+    // sender; this action lets an authenticated agent fire one campaign
+    // immediately. Both paths converge on the SAME dispatch + assembly
+    // helpers so the De-Conflict + compliance + suppression gates fire once.
     const { data: subscribers } = await supabase
       .from("newsletter_subscribers")
-      .select("*, contact:contacts(*)")
+      .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona)")
+      .eq("brokerage_id", sessionBrokerageId)
       .eq("agent_id", sessionAgentId ?? sessionUserId)
-      .eq("segment", newsletter.audience_segment)
-      .eq("subscribed", true)
+      .eq("status", "active")
 
     if (!subscribers || subscribers.length === 0) {
-      return { success: false, error: "No subscribers in this segment" }
+      return { success: false, error: "No active subscribers for this agent" }
     }
 
-    // Create send record
-    const { data: sendRecord } = await supabase
-      .from("newsletter_scheduled_sends")
-      .insert({
-        newsletter_id: params.newsletterId,
-        agent_id: sessionAgentId ?? sessionUserId,
-        sent_at: new Date().toISOString(),
-        recipient_count: subscribers.length,
-        status: "sending",
-      })
-      .select()
-      .maybeSingle()
+    // newsletter_sections.newsletter_id targets newsletter_campaigns.id, so the
+    // section parent for this campaign IS the campaign itself.
+    const newsletterId: string = params.newsletterId
 
-    // Queue emails for each subscriber using actual email_queue schema
+    const { dispatchEmail } = await import("@/lib/providers/dispatch")
+    const { resolveSectionsForRecipient, assembleNewsletterHtml } = await import("@/lib/kernel/newsletter/assemble")
+
+    const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
+    let sent = 0, suppressed = 0, errors = 0
+
     for (const subscriber of subscribers) {
-      const contactEmail: string | null = subscriber.contact?.email ?? null
+      const contactObj = (subscriber as { contact?: { email?: string | null; contact_persona?: string | null } }).contact
+      const contactEmail = (contactObj?.email ?? subscriber.email) as string | null
       if (!contactEmail) continue
-      await supabase.from("email_queue").insert({
-        brokerage_id: sessionBrokerageId,
-        to_email:     contactEmail,
-        to_name:      subscriber.contact
-          ? `${subscriber.contact.first_name ?? ""} ${subscriber.contact.last_name ?? ""}`.trim() || null
-          : null,
-        subject:      newsletter.subject ?? "Newsletter",
-        body:         newsletter.content ?? "",
-        template:     "newsletter",
-        metadata:     { send_record_id: sendRecord?.id, newsletter_id: params.newsletterId },
-        status:       "queued",
+      const persona = (contactObj?.contact_persona as string | null) ?? null
+
+      const sections = await resolveSectionsForRecipient({
+        brokerageId: sessionBrokerageId,
+        newsletterId,
+        recipientPersona: persona,
       })
+
+      const assembled = assembleNewsletterHtml({
+        context: {
+          campaignId:       params.newsletterId,
+          brokerageId:      sessionBrokerageId,
+          newsletterId,
+          campaignSubject:  (newsletter as { subject_line?: string | null }).subject_line ?? null,
+          campaignBodyHtml: newsletter.content ?? null,
+        },
+        sections,
+      })
+
+      const result = await dispatchEmail({
+        brokerageId:    sessionBrokerageId,
+        userId:         sessionUserId,
+        contactId:      subscriber.contact_id ?? undefined,
+        systemSource:   "newsletter",
+        channelPurpose: "campaign",
+        from:           fromAddress,
+        to:             contactEmail,
+        subject:        assembled.subject,
+        html:           assembled.html,
+        text:           assembled.text,
+        metadata:       {
+          newsletter_campaign_id: params.newsletterId,
+          newsletter_id:          newsletterId,
+        },
+      })
+
+      const status =
+        result.success                                ? "sent"
+        : result.providerKey === "deconflict_gate"   ? "suppressed"
+        : result.providerKey === "compliance_gate"   ? "suppressed"
+                                                      : "failed"
+
+      if (status === "sent")       sent++
+      if (status === "suppressed") suppressed++
+      if (status === "failed")     errors++
+
+      try {
+        await supabase.from("newsletter_sends").insert({
+          brokerage_id:        sessionBrokerageId,
+          campaign_id:         params.newsletterId,
+          contact_id:          subscriber.contact_id ?? null,
+          template_id:         null,
+          subject:             assembled.subject,
+          status,
+          provider_message_id: result.messageId ?? null,
+          sent_at:             status === "sent" ? new Date().toISOString() : null,
+        })
+      } catch { /* per-recipient log failure shouldn't block remaining recipients */ }
     }
 
-    // Update newsletter status
+    const sendRecord = { id: null as string | null }
+
     await supabase
       .from("newsletter_campaigns")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .update({ status: "sent" })
       .eq("id", params.newsletterId)
       .eq("brokerage_id", sessionBrokerageId)
 
@@ -712,6 +760,9 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       success: true,
       sendId: sendRecord?.id,
       recipientCount: subscribers.length,
+      sent,
+      suppressed,
+      errors,
     }
   } catch (error) {
     console.error("[AI Newsletter] Send error:", error)

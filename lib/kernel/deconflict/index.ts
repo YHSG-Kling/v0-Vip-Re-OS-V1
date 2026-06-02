@@ -137,6 +137,139 @@ async function countVideoTouches(svc: Svc, brokerageId: string, contactId: strin
   return n
 }
 
+// ─── Broadcast (1:many) frequency cap ───────────────────────────────────────
+// Counts brokerage-wide broadcast sends per channel + optional segment in the
+// trailing window. Used by the newsletter publisher cron and the future
+// Brand/Listing Orchestrator agent. Same audit table — outcome flips to
+// 'suppressed_cooldown' so the cockpit can distinguish per-contact over-touch
+// from brokerage-wide cooldown.
+
+export type BroadcastChannel = "newsletter" | "social_post" | "blog" | "ad"
+
+interface BroadcastPolicy {
+  /** Max sends in window across the brokerage (or the segment when supplied). */
+  maxSends:    number
+  windowDays:  number
+}
+
+const BROADCAST_POLICY: Record<BroadcastChannel, BroadcastPolicy> = {
+  newsletter:  { maxSends: 1, windowDays: 7  },
+  social_post: { maxSends: 3, windowDays: 1  },
+  blog:        { maxSends: 2, windowDays: 7  },
+  ad:          { maxSends: 5, windowDays: 7  },
+}
+
+export interface BroadcastDeconflictInput {
+  brokerageId:  string
+  channel:      BroadcastChannel
+  /** When supplied, the cap is per-segment instead of brokerage-wide
+   *  (e.g. one newsletter per segment per week, not per brokerage). */
+  segment?:     string | null
+  systemSource?: string
+  policyOverride?: Partial<BroadcastPolicy>
+  skipLog?:     boolean
+}
+
+export interface BroadcastDeconflictDecision {
+  allowed:     boolean
+  reason?:     string
+  sendsInWindow: number
+  policyMax:   number
+  windowDays:  number
+}
+
+export async function evaluateBroadcastDeconflict(
+  input: BroadcastDeconflictInput,
+): Promise<BroadcastDeconflictDecision> {
+  const svc    = createServiceClient()
+  const policy = { ...BROADCAST_POLICY[input.channel], ...(input.policyOverride ?? {}) }
+  const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
+
+  let sends = 0
+  try {
+    if (input.channel === "newsletter") {
+      let q = svc
+        .from("newsletter_campaigns")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", input.brokerageId)
+        .eq("status", "sent")
+        .gte("send_date", since)
+      if (input.segment) {
+        // newsletter_campaigns doesn't carry a segment column directly today —
+        // segment-scoped counting joins through newsletters.audience_segment
+        // when the segment is provided. Best-effort: skip the segment filter
+        // if no campaigns join cleanly (still falls back to brokerage cap).
+        const { data: scoped } = await svc
+          .from("newsletters")
+          .select("id")
+          .eq("brokerage_id", input.brokerageId)
+          .eq("audience_segment", input.segment)
+        const ids = (scoped ?? []).map(r => r.id as string)
+        if (ids.length > 0) {
+          q = svc
+            .from("newsletter_campaigns")
+            .select("id", { count: "exact", head: true })
+            .eq("brokerage_id", input.brokerageId)
+            .eq("status", "sent")
+            .in("marketing_campaign_id", ids)
+            .gte("send_date", since)
+        }
+      }
+      const { count } = await q
+      sends = count ?? 0
+    } else if (input.channel === "social_post") {
+      const { count } = await svc
+        .from("social_posts")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", input.brokerageId)
+        .eq("status", "published")
+        .gte("published_at", since)
+      sends = count ?? 0
+    } else if (input.channel === "blog") {
+      const { count } = await svc
+        .from("blog_posts")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", input.brokerageId)
+        .eq("publish_status", "published")
+        .gte("published_at", since)
+      sends = count ?? 0
+    }
+    // ad has no canonical platform-side log we own; orchestrator passes
+    // policyOverride / skipLog when bidding against external campaigns.
+  } catch { /* best-effort */ }
+
+  const allowed = sends < policy.maxSends
+  const decision: BroadcastDeconflictDecision = {
+    allowed,
+    reason: allowed
+      ? undefined
+      : `Broadcast cooldown: ${sends} ${input.channel} sends in last ${policy.windowDays}d ≥ policy max ${policy.maxSends}` +
+        (input.segment ? ` (segment=${input.segment})` : ""),
+    sendsInWindow: sends,
+    policyMax:     policy.maxSends,
+    windowDays:    policy.windowDays,
+  }
+
+  if (!input.skipLog) {
+    try {
+      await svc.from("deconflict_suppression_log").insert({
+        brokerage_id:      input.brokerageId,
+        contact_id:        null,
+        channel:           input.channel, // m116 widened the check constraint
+        system_source:     input.systemSource ?? null,
+        outcome:           allowed ? "allowed" : "suppressed_cooldown",
+        reason:            decision.reason ?? null,
+        touches_in_window: sends,
+        window_days:       policy.windowDays,
+        policy_max:        policy.maxSends,
+        metadata:          { broadcast_channel: input.channel, segment: input.segment ?? null },
+      })
+    } catch { /* never fail a send because audit hiccuped */ }
+  }
+
+  return decision
+}
+
 async function countTouchesByChannel(
   svc:  Svc,
   args: { brokerageId: string; contactId: string; channel: DeconflictChannel; since: string },
