@@ -654,7 +654,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
     // helpers so the De-Conflict + compliance + suppression gates fire once.
     const { data: subscribers } = await supabase
       .from("newsletter_subscribers")
-      .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona)")
+      .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona, city, state, zip_code)")
       .eq("brokerage_id", sessionBrokerageId)
       .eq("agent_id", sessionAgentId ?? sessionUserId)
       .eq("status", "active")
@@ -674,15 +674,17 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
     let sent = 0, suppressed = 0, errors = 0
 
     for (const subscriber of subscribers) {
-      const contactObj = (subscriber as { contact?: { email?: string | null; contact_persona?: string | null } }).contact
+      const contactObj = (subscriber as { contact?: { email?: string | null; contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null } }).contact
       const contactEmail = (contactObj?.email ?? subscriber.email) as string | null
       if (!contactEmail) continue
+      const recipientLocation = contactObj ? { city: contactObj.city, state: contactObj.state, zip_code: contactObj.zip_code } : null
       const persona = (contactObj?.contact_persona as string | null) ?? null
 
       const sections = await resolveSectionsForRecipient({
         brokerageId: sessionBrokerageId,
         newsletterId,
-        recipientPersona: persona,
+        recipientPersona:  persona,
+        recipientLocation: recipientLocation,
       })
 
       const assembled = assembleNewsletterHtml({

@@ -34,6 +34,17 @@ export interface NewsletterSection {
   order_index:     number | null
   target_personas: string[] | null
   section_type:    NewsletterSectionType | null
+  target_locations: {
+    cities?:    string[]
+    states?:    string[]
+    zip_codes?: string[]
+  } | null
+}
+
+export interface RecipientLocation {
+  city?:     string | null
+  state?:    string | null
+  zip_code?: string | null
 }
 
 export interface CampaignAssemblyContext {
@@ -60,21 +71,21 @@ export interface AssembledNewsletter {
 export async function resolveSectionsForRecipient(args: {
   brokerageId:    string
   newsletterId:   string
-  recipientPersona: string | null
+  recipientPersona:  string | null
+  recipientLocation?: RecipientLocation | null
 }): Promise<NewsletterSection[]> {
   const svc = createServiceClient()
   const { data } = await svc
     .from("newsletter_sections")
-    .select("id, newsletter_id, brokerage_id, title, content, order_index, target_personas, section_type")
+    .select("id, newsletter_id, brokerage_id, title, content, order_index, target_personas, section_type, target_locations")
     .eq("brokerage_id", args.brokerageId)
     .eq("newsletter_id", args.newsletterId)
 
   const all = (data ?? []) as NewsletterSection[]
   const persona = args.recipientPersona ?? null
-  const filtered = all.filter(s =>
-    !s.target_personas || s.target_personas.length === 0 ||
-    (persona !== null && s.target_personas.includes(persona))
-  )
+  const loc     = args.recipientLocation ?? null
+
+  const filtered = all.filter(s => matchesRecipient(s, persona, loc))
 
   // Sort: explicit order_index first; fall back to the section_type's default
   // weight from the canonical taxonomy. Sections with neither stay stable.
@@ -83,6 +94,35 @@ export async function resolveSectionsForRecipient(args: {
     const bo = b.order_index ?? defaultOrderFor(b.section_type)
     return ao - bo
   })
+}
+
+/** Decide whether a section qualifies for a given recipient. Two filters:
+ *
+ *  1. PERSONA — target_personas NULL/empty = everyone; otherwise the
+ *     recipient's contact_persona must be in the list.
+ *  2. LOCATION — target_locations NULL = everyone; otherwise the recipient's
+ *     city / state / zip_code must match at least one entry in any of the
+ *     three buckets ({cities[], states[], zip_codes[]}). Case-insensitive
+ *     on city + state.
+ */
+function matchesRecipient(s: NewsletterSection, persona: string | null, loc: RecipientLocation | null): boolean {
+  // Persona
+  if (s.target_personas && s.target_personas.length > 0) {
+    if (persona === null || !s.target_personas.includes(persona)) return false
+  }
+  // Location
+  const tl = s.target_locations
+  if (tl && (tl.cities?.length || tl.states?.length || tl.zip_codes?.length)) {
+    if (!loc) return false
+    const city  = (loc.city  ?? "").trim().toLowerCase()
+    const state = (loc.state ?? "").trim().toUpperCase()
+    const zip   = (loc.zip_code ?? "").trim()
+    const cityHit  = (tl.cities    ?? []).some((c) => c.trim().toLowerCase() === city  && city  !== "")
+    const stateHit = (tl.states    ?? []).some((s2) => s2.trim().toUpperCase() === state && state !== "")
+    const zipHit   = (tl.zip_codes ?? []).some((z) => z.trim() === zip && zip !== "")
+    if (!cityHit && !stateHit && !zipHit) return false
+  }
+  return true
 }
 
 /**

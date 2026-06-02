@@ -30,6 +30,15 @@ export interface TopicCandidate {
   engagement_score: number
   topic_posted_at:  string | null
   is_brokerage_local: boolean
+  /** When set + matched against the recipient's location, the picker
+   *  applied a +20 score boost (Wave 18 location-aware boost). */
+  geo_match:        boolean
+}
+
+export interface RecipientLocation {
+  city?:     string | null
+  state?:    string | null
+  zip_code?: string | null
 }
 
 export async function pickTopics(args: {
@@ -41,12 +50,16 @@ export async function pickTopics(args: {
   /** When true, automatically flip the returned topics to status='used'
    *  so a concurrent generator picks different topics. */
   markUsed?:     boolean
+  /** Optional recipient location — when supplied, the picker applies a +20
+   *  score boost to topics whose geo_relevance jsonb matches. Wave 18
+   *  per-recipient localization. */
+  recipientLocation?: RecipientLocation | null
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")
-    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at")
+    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at, geo_relevance")
     .eq("status", "fresh")
     .gt("expires_at", new Date().toISOString())
     .or(`brokerage_id.is.null,brokerage_id.eq.${args.brokerageId}`)
@@ -67,6 +80,7 @@ export async function pickTopics(args: {
     categories:       string[]
     engagement_score: number
     topic_posted_at:  string | null
+    geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
 
   const now = Date.now()
@@ -75,10 +89,13 @@ export async function pickTopics(args: {
     const ageDays = r.topic_posted_at ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000) : 14
     const localBoost = isLocal ? 15 : 0
     const freshBoost = ageDays <= 7 ? 10 : 0
+    const geoMatch   = matchesGeo(r.geo_relevance, args.recipientLocation)
+    const geoBoost   = geoMatch ? 20 : 0
     return {
       ...r,
-      adjusted_score: r.engagement_score + localBoost + freshBoost,
+      adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost,
       is_brokerage_local: isLocal,
+      geo_match: geoMatch,
     }
   })
   .sort((a, b) => b.adjusted_score - a.adjusted_score)
@@ -99,7 +116,28 @@ export async function pickTopics(args: {
     engagement_score:   s.engagement_score,
     topic_posted_at:    s.topic_posted_at,
     is_brokerage_local: s.is_brokerage_local,
+    geo_match:          s.geo_match,
   }))
+}
+
+/** Does the topic's geo_relevance match the recipient's location?
+ *  Geo-tagged topics that DON'T match still pass (returns false here just
+ *  to deny the boost) — they're not excluded, just not boosted. The picker
+ *  treats geo as a positive lift, not an exclusion filter (a Miami subscriber
+ *  is fine receiving a "national rate news" topic; they just get a Miami-
+ *  specific one first when available). */
+function matchesGeo(
+  geo: { cities?: string[]; states?: string[]; zip_codes?: string[] } | null,
+  loc: RecipientLocation | null | undefined,
+): boolean {
+  if (!geo || !loc) return false
+  const city  = (loc.city  ?? "").trim().toLowerCase()
+  const state = (loc.state ?? "").trim().toUpperCase()
+  const zip   = (loc.zip_code ?? "").trim()
+  if ((geo.cities ?? []).some((c) => c.trim().toLowerCase() === city && city !== "")) return true
+  if ((geo.states ?? []).some((s) => s.trim().toUpperCase() === state && state !== "")) return true
+  if ((geo.zip_codes ?? []).some((z) => z.trim() === zip && zip !== "")) return true
+  return false
 }
 
 /**

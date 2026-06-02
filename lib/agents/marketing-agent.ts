@@ -101,6 +101,23 @@ interface MarketingSnapshot {
   recentNewsletterSends: number
   recentBlogPublishes:  number
   weekSocialBudget:     number
+  /** Wave 17/18 — top of the content topic bank, ranked for THIS brokerage.
+   *  The agent uses these as the LEAD content topics for the week's
+   *  podcast / newsletter / social mix. */
+  topTopics: Array<{
+    title:            string
+    categories:       string[]
+    engagement_score: number
+    is_brokerage_local: boolean
+    is_geo_tagged:    boolean
+  }>
+  /** Wave 18 — subscriber location distribution. Top 5 (city, state)
+   *  buckets so the agent can route location-specific content. */
+  topSubscriberLocations: Array<{
+    city:    string | null
+    state:   string | null
+    count:   number
+  }>
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -172,9 +189,56 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
   } catch { /* table optional */ }
 
   // Weekly broadcast budget: 1 newsletter + 3 social posts/day + 2 blogs
-  // The agent stays under this combined cap. Per-channel caps are still
-  // enforced by the De-Conflict broadcast layer.
   const weekSocialBudget = 1 + 21 + 2
+
+  // Wave 17 — top of the content topic bank for THIS brokerage. The agent
+  // builds the week's plan from these instead of inventing topics.
+  let topTopics: MarketingSnapshot["topTopics"] = []
+  try {
+    const { data } = await svc
+      .from("content_topic_bank")
+      .select("topic_title, categories, engagement_score, brokerage_id, geo_relevance")
+      .eq("status", "fresh")
+      .gt("expires_at", new Date().toISOString())
+      .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+      .order("engagement_score", { ascending: false })
+      .limit(10)
+    topTopics = ((data ?? []) as Array<{ topic_title: string; categories: string[]; engagement_score: number; brokerage_id: string | null; geo_relevance: unknown }>).map((t) => ({
+      title:              t.topic_title,
+      categories:         t.categories ?? [],
+      engagement_score:   t.engagement_score,
+      is_brokerage_local: t.brokerage_id !== null,
+      is_geo_tagged:      t.geo_relevance !== null,
+    }))
+  } catch { /* best-effort — bank may be empty in fresh installs */ }
+
+  // Wave 18 — subscriber location distribution. The agent routes
+  // location-specific content (newsletter sections, ad targeting) by
+  // looking at where the audience actually is.
+  let topSubscriberLocations: MarketingSnapshot["topSubscriberLocations"] = []
+  try {
+    // newsletter_subscribers → contacts.{city,state}. Aggregate the top 5.
+    const { data } = await svc
+      .from("newsletter_subscribers")
+      .select("contact:contacts(city, state)")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "active")
+      .limit(2000)
+    const counts = new Map<string, { city: string | null; state: string | null; count: number }>()
+    for (const row of (data ?? []) as Array<{ contact?: { city?: string | null; state?: string | null } | null }>) {
+      const c = row.contact
+      if (!c) continue
+      const city  = (c.city  ?? "").trim() || null
+      const state = (c.state ?? "").trim().toUpperCase() || null
+      const key   = `${city ?? "-"}|${state ?? "-"}`
+      const cur   = counts.get(key) ?? { city, state, count: 0 }
+      cur.count++
+      counts.set(key, cur)
+    }
+    topSubscriberLocations = [...counts.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+  } catch { /* best-effort */ }
 
   return {
     pendingListingPromos,
@@ -184,6 +248,8 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     recentNewsletterSends,
     recentBlogPublishes,
     weekSocialBudget,
+    topTopics,
+    topSubscriberLocations,
   }
 }
 
@@ -199,6 +265,21 @@ export async function spawnMarketingAgentForBrokerage(params: {
   })
   const snap = await buildMarketingSnapshot(params.brokerageId)
 
+  const topicLines = snap.topTopics.length === 0
+    ? "(content_topic_bank is empty — fall back to evergreen real-estate education)"
+    : snap.topTopics.map((t, i) =>
+        `  ${i + 1}. [${t.engagement_score}] ${t.title}` +
+        (t.categories.length > 0 ? ` (${t.categories.join(", ")})` : "") +
+        (t.is_brokerage_local ? " · LOCAL" : "") +
+        (t.is_geo_tagged ? " · GEO-TAGGED" : "")
+      ).join("\n")
+
+  const locationLines = snap.topSubscriberLocations.length === 0
+    ? "(no subscriber location data on file yet)"
+    : snap.topSubscriberLocations.map((l) =>
+        `  ${l.city ?? "(unknown city)"}, ${l.state ?? "(?)"}  →  ${l.count} subscribers`
+      ).join("\n")
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -210,6 +291,20 @@ export async function spawnMarketingAgentForBrokerage(params: {
     `Newsletter campaigns sent last 7d:         ${snap.recentNewsletterSends}`,
     `Blog posts published last 7d:              ${snap.recentBlogPublishes}`,
     `Combined weekly broadcast budget:          ${snap.weekSocialBudget}`,
+    "",
+    "──── CONTENT INTELLIGENCE — TOP TOPICS FROM THE BANK ────",
+    "Lead every asset this week with one of these. The audience is asking",
+    "about these RIGHT NOW. Score is 0-100 engagement; LOCAL = brokerage-",
+    "specific; GEO-TAGGED = bound to a city/state/zip (use those for",
+    "location-targeted newsletter sections).",
+    topicLines,
+    "",
+    "──── SUBSCRIBER LOCATION DISTRIBUTION ────",
+    "The newsletter assembler honors target_locations on newsletter_sections —",
+    "a Miami subscriber sees Miami-only sections, Tampa sees Tampa, all from",
+    "ONE campaign send. Use this distribution to decide which location-",
+    "specific sections are worth authoring this week.",
+    locationLines,
     "",
     "Read the de-conflict log (deconflict_suppression_log) for the brokerage's recent",
     "broadcast cooldown decisions before scheduling new sends. Honor the broadcast",

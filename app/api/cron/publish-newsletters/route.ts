@@ -227,23 +227,30 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       } catch { /* if the check fails, fall through and let dispatch run */ }
     }
 
-    // Persona from contacts table.
+    // Persona + LOCATION from contacts table — Wave 18 makes the location
+    // signal flow through to the section filter. Per-recipient section
+    // scoping (a Miami subscriber sees Miami-only sections, Tampa sees
+    // Tampa, all from one campaign).
     let persona: string | null = null
+    let location: { city?: string | null; state?: string | null; zip_code?: string | null } | null = null
     if (s.contact_id) {
       try {
         const { data: contact } = await svc
           .from("contacts")
-          .select("contact_persona")
+          .select("contact_persona, city, state, zip_code")
           .eq("id", s.contact_id)
           .maybeSingle()
-        persona = (contact?.contact_persona as string | null) ?? null
-      } catch { /* anonymous subscriber — persona stays null */ }
+        const cr = contact as { contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null } | null
+        persona  = cr?.contact_persona ?? null
+        location = cr ? { city: cr.city, state: cr.state, zip_code: cr.zip_code } : null
+      } catch { /* anonymous subscriber — fall through with both null */ }
     }
 
     const sections = await resolveSectionsForRecipient({
-      brokerageId:      c.brokerage_id,
+      brokerageId:       c.brokerage_id,
       newsletterId,
-      recipientPersona: persona,
+      recipientPersona:  persona,
+      recipientLocation: location,
     })
 
     const assembled = assembleNewsletterHtml({

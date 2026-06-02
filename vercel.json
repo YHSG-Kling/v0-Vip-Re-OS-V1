@@ -331,6 +331,10 @@
     {
       "path": "/api/cron/content-intel-rss",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-apify",
+      "schedule": "30 7 * * *"
     }
   ]
 }
