@@ -319,6 +319,10 @@
     {
       "path": "/api/cron/podcast-weekly-auto",
       "schedule": "0 10 * * 3"
+    },
+    {
+      "path": "/api/cron/content-intel-reddit",
+      "schedule": "0 6 * * *"
     }
   ]
 }

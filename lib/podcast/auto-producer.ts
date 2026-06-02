@@ -35,6 +35,7 @@ import { put } from "@vercel/blob"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 
 export interface RunInput {
   brokerageId: string
@@ -96,11 +97,30 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
     // despite the column name, the FK targets users, not agents). So we pass
     // input.hostUserId directly; no agents.id resolution needed for this table.
 
-    // 3. Fact pack — grounded numbers only.
+    // 3. Pull value-first topics from the content intelligence bank. The
+    //    podcast LEADS with these (audience-driven Reddit threads, market
+    //    education topics). The agent's own listings/closings fold in as
+    //    20% supporting context, not the headline.
+    const topics = await pickTopics({
+      brokerageId:   input.brokerageId,
+      categoriesAny: ["buyer_advice", "seller_advice", "finance", "market_education", "neighborhood", "regulation"],
+      limit:         5,
+      markUsed:      true,
+    })
+
+    // 4. Fact pack — grounded numbers ABOUT THE BROKERAGE (folded in as
+    //    supporting examples, not the lead).
     const facts = await buildFactPack(svc, input.brokerageId)
 
-    // 4. Draft + pre-flight compliance.
-    const script = await draftAndClearScript({ svc, brokerageId: input.brokerageId, hostUserId: input.hostUserId, facts, isoWeek: input.isoWeek })
+    // 5. Draft + pre-flight compliance — VALUE-FIRST prompt.
+    const script = await draftAndClearScript({
+      svc,
+      brokerageId: input.brokerageId,
+      hostUserId: input.hostUserId,
+      facts,
+      topics,
+      isoWeek: input.isoWeek,
+    })
 
     // 5. ElevenLabs TTS → Supabase blob.
     const tts = await synthesizeSpeech({ text: script, voiceId })
@@ -221,34 +241,58 @@ async function draftAndClearScript(args: {
   brokerageId: string
   hostUserId: string
   facts: FactPack
+  topics: TopicCandidate[]
   isoWeek: string
 }): Promise<string> {
   const draft = async (violations: string[]): Promise<string> => {
     const fix = violations.length > 0
       ? `\n\nResolve these violations from your prior draft:\n- ${violations.join("\n- ")}\n`
       : ""
-    const prompt = `Write a 5-7 minute spoken podcast script for a real-estate agent's weekly market commentary, ISO week ${args.isoWeek}.
+    const prompt = `Write a 5-7 minute spoken podcast script for a real-estate agent's weekly show, ISO week ${args.isoWeek}.
 
-Use ONLY these facts — do not invent any number:
+THIS SHOW IS NOT ABOUT THE AGENT'S BUSINESS. The audience is buyers, sellers, owners, and curious neighbors. Lead with VALUE TO THEM. The agent's own listings/closings are folded in ONLY where they support a value point — never as the headline.
+
+LEAD TOPICS (this week's audience-relevant threads + themes from the
+content intelligence bank — choose the 2-3 strongest as the spine of the
+episode):
+
+${renderTopicsForPrompt(args.topics)}
+
+BROKERAGE TIDBITS (fold in 1-2 sentences MAX as supporting examples,
+not as features):
 - Brokerage: ${args.facts.brokerage_name}
-- New listings published this week: ${args.facts.new_listings_count}
-- Median list price of new inventory: ${args.facts.new_listings_median_price || "(omitted)"}
+- New listings published this week: ${args.facts.new_listings_count}${args.facts.new_listings_median_price ? ` (median ${args.facts.new_listings_median_price})` : ""}
 - Closed transactions this week: ${args.facts.sold_count}
 - Currently under contract: ${args.facts.under_contract_count}
 
-Style:
+EPISODE STRUCTURE (no segment headers read aloud):
+  ▸ Cold open (30s) — the most provocative question or counter-intuitive
+    insight from the lead topics. Hook the listener.
+  ▸ Main value segment 1 (~2 min) — explain the top topic. Why does it
+    matter to a buyer / seller / owner? What's the practical takeaway?
+    Cite numbers from the topic itself when appropriate.
+  ▸ Main value segment 2 (~2 min) — second topic, same treatment.
+  ▸ Bridge to local context (~1 min) — connect the broader themes back
+    to ${args.facts.brokerage_name}'s local market. THIS is where the
+    brokerage tidbits land naturally ("here's how that's playing out
+    in our market — we saw X new listings this week"). Don't overstate.
+  ▸ Closing thought (~30s) — one durable takeaway the listener can use,
+    plus a low-pressure "if you've got a question on any of this, you
+    know where to find me."
+
+STYLE:
 - First-person, warm, conversational. Read at ~155 words/minute spoken.
 - 750-1000 words total.
-- Three segments separated by natural transitions:
-  1. "This week in the local market" — open with one fact, frame what it means.
-  2. "What we're watching" — buyer/seller behavior, signals (not specific predictions).
-  3. "Closing thoughts" — a low-pressure invitation to call/email the agent if listeners want to talk.
 - No exclamation marks.
-- No protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income).
+- No protected-class refs (race, religion, family status, national
+  origin, gender, sexual orientation, disability, source of income).
 - No phrases like "perfect for families" or "great starter for newlyweds".
 - No rate / valuation / appreciation guarantees.
-- Mention facts marked "(omitted)" only if you can do so without inventing a number.
-Return ONLY the spoken script — no scene directions, no headers, no segment labels read aloud.${fix}`
+- No invented numbers — only use facts present in the topics or the
+  brokerage tidbits.
+
+Return ONLY the spoken script — no scene directions, no headers, no
+segment labels read aloud.${fix}`
     const { text } = await generateTextRouted({
       feature:     "podcast_weekly_auto_script",
       prompt,

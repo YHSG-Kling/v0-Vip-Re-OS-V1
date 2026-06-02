@@ -32,6 +32,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { generateTextRouted } from "@/lib/ai/models"
+import { pickTopics, renderTopicsForPrompt } from "@/lib/content-intel/topic-bank"
 import { bundle } from "@remotion/bundler"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import path from "node:path"
@@ -111,19 +112,44 @@ export async function POST(req: NextRequest) {
       }
     } catch { /* best-effort */ }
 
-    // 3. Draft narration script (20-30 words — voiceover only, the visual
-    //    carries the structural content).
+    // 3. Pull this week's value-first topics for the narration LEAD. The
+    //    20-second video opens with the most timely audience-relevant
+    //    insight (e.g. "rates dropped 25bps — here's what it means");
+    //    the brokerage's digest sections are the supporting context.
+    const topics = await pickTopics({
+      brokerageId:   camp.brokerage_id,
+      categoriesAny: ["buyer_advice", "finance", "market_education", "neighborhood"],
+      limit:         3,
+      markUsed:      false, // newsletters are sent more often than podcasts;
+                            // let the same topic anchor 1-2 newsletters before
+                            // moving to 'used'. The podcast cron is the
+                            // canonical 'used' flipper.
+    })
+
+    // 4. Draft narration — value-first, 25-35 spoken words.
     const draft = async (violations: string[]): Promise<string> => {
       const fix = violations.length > 0
         ? `\n\nResolve these violations from prior draft:\n- ${violations.join("\n- ")}`
         : ""
       const prompt = `Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
-Subject: ${camp.subject_line ?? camp.campaign_name ?? "This week's market digest"}
-Market beat: ${marketBeat}
-Sections in the digest: ${sectionTitles.join(", ") || "Market Update, New Listings, Local News"}
 
-Style: first-person, warm, professional. Open with a hook. State what's inside. Close with "Open the email to read more."
-Banned: protected-class refs (race, religion, family status, etc.); phrases like "perfect for families"; rate / valuation / appreciation guarantees; exclamation marks.
+THE VIDEO IS NOT A LIST OF OUR SECTIONS. It opens with a hook from the
+audience's lens — what's the most timely VALUE insight the recipient
+should know this week? Then a one-line bridge to "the email below."
+
+This week's lead value topics (drawn from the content intelligence bank
+— pick the strongest single thread):
+
+${renderTopicsForPrompt(topics)}
+
+Subject line of the newsletter email: ${camp.subject_line ?? camp.campaign_name ?? "This week's market digest"}
+What's IN the email (supporting context, not the lead): ${sectionTitles.join(", ") || "Market Update, New Listings, Local News"}
+
+Style: first-person, warm, professional. Open with the value hook. Close
+with "Open the email for the full breakdown." or equivalent.
+Banned: protected-class refs (race, religion, family status, etc.);
+phrases like "perfect for families"; rate / valuation / appreciation
+guarantees; exclamation marks.
 Return ONLY the spoken text.${fix}`
       const { text } = await generateTextRouted({
         feature:     "newsletter_video_narration",
