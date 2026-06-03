@@ -73,9 +73,11 @@ interface PromoRow {
   agent_id:         string
   video_project_id: string | null
   event_type:       string
+  created_at:       string | null
   project:          {
     video_url:      string | null
     thumbnail_url:  string | null
+    status:         string | null
   } | null
   listing:          {
     address:        string | null
@@ -97,8 +99,8 @@ export async function GET(req: NextRequest) {
   const { data: rows, error } = await svc
     .from("listing_promo_videos")
     .select(`
-      id, brokerage_id, listing_id, agent_id, video_project_id, event_type,
-      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url),
+      id, brokerage_id, listing_id, agent_id, video_project_id, event_type, created_at,
+      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status),
       listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, list_price)
     `)
     .eq("status", "rendering")
@@ -110,7 +112,36 @@ export async function GET(req: NextRequest) {
   const results: Array<{ id: string; outcome: string; reason?: string; post_count?: number }> = []
 
   for (const r of (rows ?? []) as unknown as PromoRow[]) {
-    if (!r.project?.video_url) continue // still rendering — wait next tick
+    // Wave 28 — readiness branch. Three states:
+    //   1. project.status='failed' → mark the listing_promo_videos row
+    //      'failed' so the cron stops looping on it; agent sees it in the
+    //      degraded-renders observability surface
+    //   2. project.video_url unset, project.status NOT failed → still
+    //      rendering, wait next tick (existing behavior)
+    //   3. project.video_url set → proceed to social draft (existing)
+    //
+    // Beyond a generous grace window (24h from the listing_promo_videos
+    // row creation) we also defer — a stuck render at that point needs
+    // human intervention, not silent waiting.
+    const projectStatus = r.project?.status ?? null
+    if (projectStatus === "failed") {
+      await svc.from("listing_promo_videos")
+        .update({ status: "failed", error_message: "render failed (ai_video_projects.status='failed')" })
+        .eq("id", r.id)
+      results.push({ id: r.id, outcome: "deferred", reason: "render_failed" })
+      continue
+    }
+    if (!r.project?.video_url) {
+      const createdMs = r.created_at ? Date.parse(r.created_at) : null
+      const stuckPastGrace = createdMs !== null && (Date.now() - createdMs > 24 * 60 * 60 * 1000)
+      if (stuckPastGrace) {
+        await svc.from("listing_promo_videos")
+          .update({ status: "failed", error_message: "render did not complete within 24h grace window" })
+          .eq("id", r.id)
+        results.push({ id: r.id, outcome: "deferred", reason: "render_stuck_past_grace_window" })
+      }
+      continue // otherwise still rendering — wait next tick
+    }
 
     const usd = (n: number | null | undefined) =>
       n != null

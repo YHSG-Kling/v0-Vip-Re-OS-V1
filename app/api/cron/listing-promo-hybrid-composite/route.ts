@@ -135,6 +135,53 @@ export async function GET(req: NextRequest) {
         await svc.from("listing_promo_videos")
           .update({ status: "rendering" })
           .eq("video_project_id", p.id)
+
+        // Wave 28 — fire the per-persona post-pass against the final
+        // composite. Listing-promo's audience is the brokerage's entire
+        // subscriber base (not asset-scoped like newsletter), so we let
+        // the shared module resolve the top personas. Each persona gets
+        // a thumbnail + ffmpeg overlay on the composite for inbox /
+        // social-card preview personalization. Fire-and-forget — the
+        // post-pass logs failures per-persona without blocking the
+        // social-publish handoff.
+        try {
+          const { runPersonaVariantPostPass } = await import("@/lib/video/persona-variant-post-pass")
+          // Pull listing + brokerage display data for the still composition.
+          const { data: listingRow } = await svc.from("listings")
+            .select("address, city, state")
+            .eq("id", p.listing_id)
+            .maybeSingle()
+          const lr = listingRow as { address: string | null; city: string | null; state: string | null } | null
+          const { data: brokerage } = await svc.from("brokerages")
+            .select("name, logo_url, brand_primary_color, brand_accent_color")
+            .eq("id", p.brokerage_id)
+            .maybeSingle()
+          const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+          const subject = [lr?.address, [lr?.city, lr?.state].filter(Boolean).join(", ")]
+            .filter(Boolean).join(" — ") || "New listing"
+          void runPersonaVariantPostPass({
+            assetType:    "listing_promo",
+            assetId:      p.listing_id,
+            brokerageId:  p.brokerage_id,
+            agentUserId:  p.agent_id,
+            brand: {
+              primaryColor:  br?.brand_primary_color ?? "#0F172A",
+              accentColor:   br?.brand_accent_color  ?? "#F59E0B",
+              logoUrl:       br?.logo_url            ?? undefined,
+              brokerageName: br?.name                ?? "Your Brokerage",
+            },
+            mainVideoUrl:    blob.url,
+            subject,
+            // bundleLoc omitted — composite cron has no Remotion bundle.
+            // The post-pass module skips the still thumbnail and only runs
+            // the ffmpeg drawtext overlay. Each persona gets composite_video_url
+            // set + thumbnail_url=null; the social-publish loop picks the
+            // composite per recipient persona.
+            hookContextHint: "a new listing that matches the recipient's search criteria",
+          })
+        } catch (postPassErr) {
+          console.error("[listing-promo-hybrid-composite] persona post-pass dispatch failed:", (postPassErr as Error).message)
+        }
       }
 
       await svc.from("lifecycle_events").insert({

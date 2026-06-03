@@ -360,18 +360,18 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     }
   }
 
-  // Wave 22 (a + b) — per-persona video variants. Each (campaign × persona)
-  // row in newsletter_video_persona_renders may have a persona-overlaid
-  // composite MP4 + a persona-themed thumbnail. We fetch the whole map in
-  // ONE query before the recipient loop, then look up per-recipient by
-  // their contact_persona. Recipients whose persona has no completed row
-  // fall back to the universal videoEmbed assembled above.
+  // Wave 22 (a + b) — per-persona video variants. Wave 28 generalized to
+  // asset_persona_renders(asset_type, asset_id, persona). We fetch the
+  // whole map in ONE query before the recipient loop, then look up
+  // per-recipient by their contact_persona. Recipients whose persona has
+  // no completed row fall back to the universal videoEmbed assembled above.
   const personaVariantMap = new Map<string, { composite_video_url: string | null; thumbnail_url: string | null }>()
   try {
     const { data: variants } = await svc
-      .from("newsletter_video_persona_renders")
+      .from("asset_persona_renders")
       .select("persona, composite_video_url, thumbnail_url")
-      .eq("newsletter_campaign_id", c.id)
+      .eq("asset_type", "newsletter_campaign")
+      .eq("asset_id", c.id)
       .eq("status", "completed")
     for (const v of (variants ?? []) as Array<{ persona: string; composite_video_url: string | null; thumbnail_url: string | null }>) {
       personaVariantMap.set(v.persona, { composite_video_url: v.composite_video_url, thumbnail_url: v.thumbnail_url })
