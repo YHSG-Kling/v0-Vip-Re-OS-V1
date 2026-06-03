@@ -187,7 +187,165 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
       console.error(`[performance-aggregator] update score failed for topic ${topicId}:`, (e as Error).message)
     }
   }
+
+  // Wave 23 — per-persona attribution. The global score above averages
+  // engagement across all subscriber personas; this pass recomputes per
+  // (topic, persona) from raw newsletter_sends ⨝ contacts so the picker
+  // can rank topics differently when authoring persona-targeted sections.
+  // Runs SECOND so the global update has already landed for cron observability.
+  await aggregatePersonaPerformance(svc, since)
+
   return { topics_updated: updated }
+}
+
+/**
+ * Wave 23 — recompute (topic × persona) performance scores from raw
+ * per-recipient newsletter_sends. Joins:
+ *   content_topic_uses (topic_id, asset_id=campaign_id)
+ *     ⨝ newsletter_sends (campaign_id → contact_id, opened_at, clicked_at)
+ *     ⨝ contacts (id → contact_persona)
+ * groups by (topic_id, persona), computes open + click rates from the
+ * per-recipient outcomes, and upserts content_topic_persona_performance.
+ *
+ * Score shape mirrors the global score (cap 0..30) so the picker can use
+ * either value uniformly. The persona-specific bonus comes from the
+ * sample_count gate: persona scores with fewer than MIN_SAMPLES backing
+ * are NOT written (returns 'noisy' bucket) — the picker falls back to
+ * the global topic score for sparse personas.
+ *
+ * Only newsletter signals are folded in here. Podcast + social don't
+ * attribute per-persona today (no recipient lifecycle), so those stay
+ * in the global score only.
+ */
+async function aggregatePersonaPerformance(
+  svc: ReturnType<typeof createServiceClient>,
+  since: string,
+): Promise<void> {
+  // Pull all topic uses against newsletter_campaign assets in the window —
+  // the only asset type we can persona-attribute through newsletter_sends.
+  const { data: uses } = await svc
+    .from("content_topic_uses")
+    .select("topic_id, asset_id")
+    .eq("asset_type", "newsletter_campaign")
+    .gte("used_at", since)
+    .not("asset_id", "is", null)
+    .limit(5000)
+  if (!uses || uses.length === 0) return
+
+  // Map topic → set of campaign IDs that seeded it.
+  const topicToCampaigns = new Map<string, Set<string>>()
+  const allCampaignIds = new Set<string>()
+  for (const u of uses as Array<{ topic_id: string; asset_id: string }>) {
+    if (!u.asset_id) continue
+    const set = topicToCampaigns.get(u.topic_id) ?? new Set()
+    set.add(u.asset_id)
+    topicToCampaigns.set(u.topic_id, set)
+    allCampaignIds.add(u.asset_id)
+  }
+  if (allCampaignIds.size === 0) return
+
+  // Pull all per-recipient sends for these campaigns in ONE query, joined
+  // to contacts for the persona. The aggregator runs daily — one batch
+  // join is fine; the WHERE clause keys on the indexed campaign_id.
+  const { data: sends } = await svc
+    .from("newsletter_sends")
+    .select("campaign_id, contact_id, opened_at, clicked_at, contact:contacts!newsletter_sends_contact_id_fkey(contact_persona)")
+    .in("campaign_id", Array.from(allCampaignIds))
+    .limit(50000)
+  if (!sends || sends.length === 0) return
+
+  // Build (campaign_id × persona) → { sent, opened, clicked } buckets.
+  type Bucket = { sent: number; opened: number; clicked: number }
+  const campaignPersonaStats = new Map<string, Bucket>()  // key: `${campaign_id}|${persona}`
+  for (const row of sends as Array<{
+    campaign_id: string
+    contact_id: string | null
+    opened_at: string | null
+    clicked_at: string | null
+    contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null
+  }>) {
+    const cobj = Array.isArray(row.contact) ? row.contact[0] : row.contact
+    const persona = (cobj?.contact_persona ?? "").trim()
+    if (!persona) continue  // unattributable; falls into the global score only
+    const key = `${row.campaign_id}|${persona}`
+    const cur = campaignPersonaStats.get(key) ?? { sent: 0, opened: 0, clicked: 0 }
+    cur.sent++
+    if (row.opened_at)  cur.opened++
+    if (row.clicked_at) cur.clicked++
+    campaignPersonaStats.set(key, cur)
+  }
+
+  // Compose (topic × persona) → aggregated rates by walking each topic's
+  // campaign set and summing per persona across those campaigns.
+  type TopicPersonaAgg = {
+    sent: number
+    opened: number
+    clicked: number
+  }
+  const topicPersonaAgg = new Map<string, TopicPersonaAgg>()  // key: `${topic_id}|${persona}`
+  const personasPerTopic = new Map<string, Set<string>>()
+  for (const [topicId, campaignIds] of topicToCampaigns.entries()) {
+    const personasSeen = new Set<string>()
+    for (const cid of campaignIds) {
+      // Walk every (campaign × persona) bucket whose campaign is in this set
+      for (const [key, stats] of campaignPersonaStats.entries()) {
+        const [bucketCampaignId, persona] = key.split("|")
+        if (bucketCampaignId !== cid) continue
+        personasSeen.add(persona)
+        const aggKey = `${topicId}|${persona}`
+        const cur = topicPersonaAgg.get(aggKey) ?? { sent: 0, opened: 0, clicked: 0 }
+        cur.sent    += stats.sent
+        cur.opened  += stats.opened
+        cur.clicked += stats.clicked
+        topicPersonaAgg.set(aggKey, cur)
+      }
+    }
+    personasPerTopic.set(topicId, personasSeen)
+  }
+
+  // Score each (topic, persona). Same shape as the global scorer for
+  // newsletter signals: open_rate × 8 / 100 + click_rate × 8 / 100, capped
+  // at 16 (the newsletter signal headroom). Persona-only — no podcast/social.
+  const MIN_SAMPLES = 5  // below this we treat the persona score as noise and skip the write
+  const upserts: Array<{
+    topic_id: string
+    persona: string
+    persona_open_rate: number
+    persona_click_rate: number
+    persona_samples_count: number
+    performance_score: number
+  }> = []
+  for (const [aggKey, agg] of topicPersonaAgg.entries()) {
+    if (agg.sent < MIN_SAMPLES) continue
+    const [topicId, persona] = aggKey.split("|")
+    const openRate  = agg.sent > 0 ? Math.min(100, (agg.opened  / agg.sent) * 100) : 0
+    const clickRate = agg.sent > 0 ? Math.min(100, (agg.clicked / agg.sent) * 100) : 0
+    const score = Math.round(
+      Math.min(16, (openRate / 100) * 8 + (clickRate / 100) * 8)
+    )
+    upserts.push({
+      topic_id: topicId,
+      persona,
+      persona_open_rate:     Math.round(openRate * 100) / 100,
+      persona_click_rate:    Math.round(clickRate * 100) / 100,
+      persona_samples_count: agg.sent,
+      performance_score:     Math.max(0, Math.min(30, score)),
+    })
+  }
+
+  if (upserts.length === 0) return
+
+  try {
+    // Supabase doesn't batch upsert + onConflict by ARRAY param in one call;
+    // chunk in groups of 200 to stay under URL-length + payload limits.
+    for (let i = 0; i < upserts.length; i += 200) {
+      const chunk = upserts.slice(i, i + 200).map((u) => ({ ...u, computed_at: new Date().toISOString() }))
+      await svc.from("content_topic_persona_performance")
+        .upsert(chunk, { onConflict: "topic_id,persona" })
+    }
+  } catch (e) {
+    console.error("[performance-aggregator] persona perf upsert failed:", (e as Error).message)
+  }
 }
 
 function scoreTopicFromMaps(

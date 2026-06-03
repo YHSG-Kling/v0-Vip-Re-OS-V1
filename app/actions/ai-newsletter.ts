@@ -310,7 +310,17 @@ export async function aiWriteNewsletterContent(params: {
     // surface the video and podcast already use. Failure here is non-fatal:
     // we drop back to evergreen real-estate education so the section author
     // still has something coherent to write about.
+    //
+    // Wave 23 — when the audience is segmentable, ALSO pull per-persona
+    // top picks so the section author has different topic threads to
+    // anchor different persona sections around. Each persona's pick uses
+    // content_topic_persona_performance: a topic that converted hard with
+    // first_time_buyer last week scores higher for first_time_buyer this
+    // week than for investor. The brokerage-wide pick still anchors the
+    // universal sections (Welcome / Market Update); persona picks anchor
+    // the persona-specific sections (first-time tips, investor beat, etc.).
     let topics: TopicCandidate[] = []
+    let personaTopicMap = new Map<string, TopicCandidate[]>()  // persona → top 2 topics
     try {
       if (Array.isArray(params.seedTopicIds) && params.seedTopicIds.length > 0) {
         const seedSvc = await createClient()
@@ -343,9 +353,42 @@ export async function aiWriteNewsletterContent(params: {
                                 // weekly topic anchor both producers before
                                 // the podcast cron flips it to 'used'
         })
+        // Wave 23 — persona-specific picks. Cap at top 3 personas to keep
+        // the picker query count + prompt size bounded. Only fires on
+        // segmentable audiences; flat audiences don't benefit from per-
+        // persona threads. Skips when seedTopicIds are supplied — the
+        // agent's plan owns the topic set in that path.
+        if (audienceIsSegmentable) {
+          const topThreePersonas = [...personaCounts.entries()]
+            .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p]) => p)
+          for (const persona of topThreePersonas) {
+            try {
+              const personaPicks = await pickTopics({
+                brokerageId:      sessionBrokerageId,
+                categoriesAny:    ["buyer_advice", "finance", "market_education", "neighborhood", "seller_advice"],
+                limit:            2,
+                markUsed:         false,
+                recipientPersona: persona,
+              })
+              personaTopicMap.set(persona, personaPicks)
+            } catch (perPersonaErr) {
+              console.warn(`[AI Newsletter] persona pick failed for ${persona}; using brokerage-wide only:`, (perPersonaErr as Error).message)
+            }
+          }
+        }
       }
     } catch (e) {
       console.warn("[AI Newsletter] topic-bank pick failed; falling back to evergreen:", (e as Error).message)
+    }
+
+    // Wave 23 — union all persona picks with the brokerage-wide picks,
+    // dedupe by topic id, so seedTopicIds reported back to the caller
+    // include EVERY topic the section author was seeded with (the Wave 19
+    // content_topic_uses ledger captures all of them; the video render path
+    // reads back from there for cohesion).
+    const allTopicIds = new Set(topics.map((t) => t.id))
+    for (const list of personaTopicMap.values()) {
+      for (const t of list) allTopicIds.add(t.id)
     }
 
     const { object: content } = await generateObject({
@@ -395,7 +438,22 @@ campaign opens with the strongest single thread; the sections should
 develop the same threads in depth so the issue reads as cohesive (video
 hook → email substance), not as two unrelated assets.
 
+UNIVERSAL TOPICS (anchor the market_update / agent_intro / cta sections):
 ${renderTopicsForPrompt(topics)}
+${personaTopicMap.size > 0 ? `
+═══ Wave 23 — PERSONA-PERFORMANCE TOPICS ═══
+These threads scored highest with SPECIFIC subscriber personas over the
+last 30 days (per-persona open + click rate aggregated from
+newsletter_sends). When authoring persona-targeted sections, anchor each
+persona's section on its OWN list — these are the threads that have
+ALREADY converted with that persona. Set target_personas on the section
+to lock the row to that segment so the assembler only shows it to
+matching recipients.
+
+${[...personaTopicMap.entries()].map(([persona, list]) =>
+  `── For persona='${persona}' ──\n${renderTopicsForPrompt(list)}`
+).join("\n\n")}
+` : ""}
 
 ═══ AUDIENCE SHAPE ═══
 ${audienceIsSegmentable
@@ -510,8 +568,10 @@ ready with a fenced yard" is not.`,
        *  The caller passes these into createNewsletterCampaign so the
        *  performance loop can log them against the newsletter_campaign
        *  asset (content_topic_uses ledger → daily aggregator → topic
-       *  performance_score → next pick scores them higher). */
-      seedTopicIds: topics.map((t) => t.id),
+       *  performance_score → next pick scores them higher).
+       *  Wave 23 — the union now includes per-persona picks so all
+       *  topics actually fed to the section author get attributed. */
+      seedTopicIds: [...allTopicIds],
     }
   } catch (error) {
     console.error("[AI Newsletter] Content error:", error)

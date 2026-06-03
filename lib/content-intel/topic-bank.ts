@@ -54,6 +54,15 @@ export async function pickTopics(args: {
    *  score boost to topics whose geo_relevance jsonb matches. Wave 18
    *  per-recipient localization. */
   recipientLocation?: RecipientLocation | null
+  /** Wave 23 — optional persona key. When supplied, the picker prefers the
+   *  per-(topic, persona) performance_score from
+   *  content_topic_persona_performance (the persona that opened/clicked
+   *  this topic's prior assets) over the global performance_score. Falls
+   *  back to the global score for topics with no per-persona row OR with
+   *  fewer than MIN_SAMPLES backing (suppressed during aggregation).
+   *  Passed by the AI section author when authoring persona-targeted
+   *  newsletter sections (Wave 20's segmentable audience path). */
+  recipientPersona?: string | null
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
@@ -84,6 +93,25 @@ export async function pickTopics(args: {
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
 
+  // Wave 23 — per-persona performance score lookup. ONE query over the
+  // candidate set instead of per-topic round-trips inside the scoring map.
+  // Falls back to the global performance_score for topics with no row.
+  const personaPerfMap = new Map<string, number>()
+  if (args.recipientPersona && rows.length > 0) {
+    try {
+      const { data: personaPerf } = await svc
+        .from("content_topic_persona_performance")
+        .select("topic_id, performance_score")
+        .eq("persona", args.recipientPersona)
+        .in("topic_id", rows.map((r) => r.id))
+      for (const r of (personaPerf ?? []) as Array<{ topic_id: string; performance_score: number }>) {
+        personaPerfMap.set(r.topic_id, r.performance_score)
+      }
+    } catch (e) {
+      console.error("[topic-bank] persona perf lookup failed:", (e as Error).message)
+    }
+  }
+
   const now = Date.now()
   const scored = rows.map((r) => {
     const isLocal = r.brokerage_id !== null
@@ -95,7 +123,14 @@ export async function pickTopics(args: {
     // Wave 19 — performance feedback loop. content_topic_uses → engagement
     // signals → aggregator → performance_score (0..30). Winning topics
     // compound; flops decay.
-    const perfBoost  = r.performance_score ?? 0
+    // Wave 23 — when a recipient persona is supplied AND we have a
+    // per-(topic, persona) score with enough samples (sample-count gate
+    // happens at aggregator write-time — missing row = noise = use global),
+    // use the persona-specific score instead of the global. Same 0..30
+    // scale so the rest of the math is unchanged.
+    const perfBoost = (args.recipientPersona && personaPerfMap.has(r.id))
+      ? personaPerfMap.get(r.id)!
+      : (r.performance_score ?? 0)
     return {
       ...r,
       adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost + perfBoost,
