@@ -143,12 +143,19 @@ async function measureWeek(
     clicked_at: string | null
     contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null
   }>) {
+    const cobj = Array.isArray(row.contact) ? row.contact[0] : row.contact
+    const persona = (cobj?.contact_persona ?? "").trim()
+    // Code-review pass 2 — the persona breakdown and the global rate must
+    // share a denominator. Previously `total++` ran BEFORE the null-persona
+    // check, so null-persona rows counted in the global rate but not in any
+    // persona bucket. The agent's snapshot then surfaced rates that didn't
+    // add up: "global open=58%, FTB=60%, investor=20%, sum=?"  Now both
+    // counters skip null-persona rows, so the global rate represents the
+    // attributed audience exactly.
+    if (!persona) continue
     total++
     if (row.opened_at)  opened++
     if (row.clicked_at) clicked++
-    const cobj = Array.isArray(row.contact) ? row.contact[0] : row.contact
-    const persona = (cobj?.contact_persona ?? "").trim()
-    if (!persona) continue
     const cur = personaBuckets.get(persona) ?? { sent: 0, opened: 0, clicked: 0 }
     cur.sent++
     if (row.opened_at)  cur.opened++

@@ -56,13 +56,19 @@ export async function pickTopics(args: {
   recipientLocation?: RecipientLocation | null
   /** Wave 23 — optional persona key. When supplied, the picker prefers the
    *  per-(topic, persona) performance_score from
-   *  content_topic_persona_performance (the persona that opened/clicked
+   *  content_asset_persona_performance (the persona that opened/clicked
    *  this topic's prior assets) over the global performance_score. Falls
    *  back to the global score for topics with no per-persona row OR with
    *  fewer than MIN_SAMPLES backing (suppressed during aggregation).
    *  Passed by the AI section author when authoring persona-targeted
    *  newsletter sections (Wave 20's segmentable audience path). */
   recipientPersona?: string | null
+  /** Wave 26 — generalized asset attribution. When `recipientPersona` is
+   *  set, the picker reads per-persona scores scoped to THIS asset type
+   *  (a topic that scored hard with FTB in newsletter may score
+   *  differently for podcast/listing-promo). Defaults to
+   *  'newsletter_campaign' so existing callers keep prior behavior. */
+  assetType?: string
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
@@ -96,15 +102,25 @@ export async function pickTopics(args: {
   // Wave 23 — per-persona performance score lookup. ONE query over the
   // candidate set instead of per-topic round-trips inside the scoring map.
   // Falls back to the global performance_score for topics with no row.
+  //
+  // Code-review pass 2 — re-check persona_samples_count >= MIN_SAMPLES at
+  // READ time (aggregator already gates at WRITE time, but stale rows from
+  // prior aggregator runs OR rows whose underlying sample count later
+  // shrinks below the floor would otherwise outrank reliable global
+  // scores). Keeps the picker's reliability contract independent of
+  // aggregator history.
+  const MIN_RELIABLE_SAMPLES = 5
   const personaPerfMap = new Map<string, number>()
   if (args.recipientPersona && rows.length > 0) {
     try {
       const { data: personaPerf } = await svc
-        .from("content_topic_persona_performance")
-        .select("topic_id, performance_score")
+        .from("content_asset_persona_performance")
+        .select("topic_id, performance_score, persona_samples_count")
         .eq("persona", args.recipientPersona)
+        .eq("asset_type", args.assetType ?? "newsletter_campaign")
+        .gte("persona_samples_count", MIN_RELIABLE_SAMPLES)
         .in("topic_id", rows.map((r) => r.id))
-      for (const r of (personaPerf ?? []) as Array<{ topic_id: string; performance_score: number }>) {
+      for (const r of (personaPerf ?? []) as Array<{ topic_id: string; performance_score: number; persona_samples_count: number }>) {
         personaPerfMap.set(r.topic_id, r.performance_score)
       }
     } catch (e) {

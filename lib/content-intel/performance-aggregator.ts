@@ -340,8 +340,14 @@ async function aggregatePersonaPerformance(
     // chunk in groups of 200 to stay under URL-length + payload limits.
     for (let i = 0; i < upserts.length; i += 200) {
       const chunk = upserts.slice(i, i + 200).map((u) => ({ ...u, computed_at: new Date().toISOString() }))
-      await svc.from("content_topic_persona_performance")
-        .upsert(chunk, { onConflict: "topic_id,persona" })
+      // m136 — generalize to (topic_id, asset_type, persona). The newsletter
+      // aggregator pass stamps asset_type='newsletter_campaign'; future
+      // per-channel aggregators (listing-promo, podcast, …) write their
+      // own asset_type so the same topic can carry distinct scores per
+      // medium for the same persona.
+      const stamped = chunk.map((u) => ({ ...u, asset_type: "newsletter_campaign" }))
+      await svc.from("content_asset_persona_performance")
+        .upsert(stamped, { onConflict: "topic_id,asset_type,persona" })
     }
   } catch (e) {
     console.error("[performance-aggregator] persona perf upsert failed:", (e as Error).message)

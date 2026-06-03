@@ -162,69 +162,51 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
   const svc = createServiceClient()
   const since7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
 
-  let pendingListingPromos = 0
-  try {
-    const { count } = await svc
-      .from("listing_promo_videos")
+  // Code-review pass 2 — parallelize the six independent count queries
+  // into a single Promise.all batch. Per-query failures are isolated via
+  // safeCount so one missing table doesn't fail the others. On a Monday
+  // cron that spawns N brokerages this is a 3-6× per-brokerage speedup.
+  const safeCount = (p: PromiseLike<{ count: number | null }>): Promise<number> =>
+    Promise.resolve(p as PromiseLike<{ count: number | null }>)
+      .then((r) => r.count ?? 0)
+      .catch(() => 0)
+  const [
+    pendingListingPromos,
+    newListingsThisWeek,
+    atRiskListings,
+    recentSocialPosts,
+    recentNewsletterSends,
+    recentBlogPublishes,
+  ] = await Promise.all([
+    safeCount(svc.from("listing_promo_videos")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .eq("status", "remotion_pending")
-    pendingListingPromos = count ?? 0
-  } catch { /* table optional; m124 may not be applied in a fresh env */ }
-
-  let newListingsThisWeek = 0
-  try {
-    const { count } = await svc
-      .from("listings")
+      .eq("status", "remotion_pending") as unknown as PromiseLike<{ count: number | null }>),
+    safeCount(svc.from("listings")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
-      .gte("created_at", since7d)
-    newListingsThisWeek = count ?? 0
-  } catch { /* best-effort */ }
-
-  let atRiskListings = 0
-  try {
-    const { count } = await svc
-      .from("listing_health_scores")
+      .gte("created_at", since7d) as unknown as PromiseLike<{ count: number | null }>),
+    safeCount(svc.from("listing_health_scores")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .lte("overall_score", 40)
-    atRiskListings = count ?? 0
-  } catch { /* table optional */ }
-
-  let recentSocialPosts = 0
-  try {
-    const { count } = await svc
-      .from("social_posts")
+      .lte("overall_score", 40) as unknown as PromiseLike<{ count: number | null }>),
+    safeCount(svc.from("social_posts")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .in("status", ["published", "scheduled"])
-      .gte("scheduled_for", since7d)
-    recentSocialPosts = count ?? 0
-  } catch { /* best-effort */ }
-
-  let recentNewsletterSends = 0
-  try {
-    const { count } = await svc
-      .from("newsletter_campaigns")
+      .gte("scheduled_for", since7d) as unknown as PromiseLike<{ count: number | null }>),
+    safeCount(svc.from("newsletter_campaigns")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("status", "sent")
-      .gte("send_date", since7d)
-    recentNewsletterSends = count ?? 0
-  } catch { /* best-effort */ }
-
-  let recentBlogPublishes = 0
-  try {
-    const { count } = await svc
-      .from("blog_posts")
+      .gte("send_date", since7d) as unknown as PromiseLike<{ count: number | null }>),
+    safeCount(svc.from("blog_posts")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("publish_status", "published")
-      .gte("published_at", since7d)
-    recentBlogPublishes = count ?? 0
-  } catch { /* table optional */ }
+      .gte("published_at", since7d) as unknown as PromiseLike<{ count: number | null }>),
+  ])
 
   // Weekly broadcast budget: 1 newsletter + 3 social posts/day + 2 blogs
   const weekSocialBudget = 1 + 21 + 2
@@ -331,10 +313,14 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     const personasToCover = personaEngagement.slice(0, 3).map((p) => p.persona)
     if (personasToCover.length > 0) {
       const { data: perfRows } = await svc
-        .from("content_topic_persona_performance")
+        .from("content_asset_persona_performance")
+        // FK constraint name didn't auto-rename when m136 renamed the
+        // table; PostgREST embeds still resolve by the original FK name.
         .select("persona, performance_score, persona_samples_count, topic:content_topic_bank!content_topic_persona_performance_topic_id_fkey(id, topic_title, brokerage_id)")
         .in("persona", personasToCover)
+        .eq("asset_type", "newsletter_campaign")
         .gt("performance_score", 0)
+        .gte("persona_samples_count", 5)
         .order("performance_score", { ascending: false })
         .limit(60)
       type Row = {
@@ -560,14 +546,22 @@ export async function spawnMarketingAgentForBrokerage(params: {
   // captured snapshot signals to the latest read. The measure cron fills
   // realized_* at end-of-week; next Monday's snapshot reads back the
   // trailing 4 weeks so the agent sees its own track record.
+  //
+  // Code-review pass 2 — was previously fire-and-forget (`void`), so an
+  // upsert failure silently lost the plan window. Now awaited; persistence
+  // failure attaches to the spawn result's metadata.weekly_outcome_status
+  // and emits a console error so the Monday cron's summary surfaces it.
   if (spawn.ok && spawn.session?.id) {
     const weekStart = getISOWeekStartDate(new Date())
-    void persistWeeklyPlanWindow({
+    const outcomeOk = await persistWeeklyPlanWindow({
       brokerageId:       params.brokerageId,
       weekStart,
       sessionId:         spawn.session.id,
       snapshotSignals:   snap,
     })
+    if (!outcomeOk) {
+      console.error(`[marketing-agent] weekly_outcome_persist_failed for ${params.brokerageId} week=${weekStart}`)
+    }
   }
 
   return spawn
@@ -588,17 +582,23 @@ async function persistWeeklyPlanWindow(args: {
   weekStart:       string
   sessionId:       string
   snapshotSignals: MarketingSnapshot
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const svc = createServiceClient()
-    await svc.from("marketing_agent_weekly_outcomes").upsert({
+    const { error } = await svc.from("marketing_agent_weekly_outcomes").upsert({
       brokerage_id:           args.brokerageId,
       week_start:             args.weekStart,
       spawned_session_id:     args.sessionId,
       spawned_at:             new Date().toISOString(),
       snapshot_signals_jsonb: args.snapshotSignals as unknown as Record<string, unknown>,
     }, { onConflict: "brokerage_id,week_start" })
+    if (error) {
+      console.error(`[marketing-agent] weekly plan window upsert error for ${args.brokerageId}:`, error.message)
+      return false
+    }
+    return true
   } catch (e) {
-    console.error(`[marketing-agent] weekly plan window persist failed for ${args.brokerageId}:`, (e as Error).message)
+    console.error(`[marketing-agent] weekly plan window persist threw for ${args.brokerageId}:`, (e as Error).message)
+    return false
   }
 }

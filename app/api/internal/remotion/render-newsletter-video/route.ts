@@ -394,6 +394,27 @@ async function renderPersonaVariants(args: {
     const topPersonas = [...personaCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p]) => p)
     if (topPersonas.length === 0) return  // no segmentable audience; main render covers everyone
 
+    // Code-review pass 2 — pre-stage one queued ledger row per persona BEFORE
+    // any per-persona work runs. Without this, a total failure (Remotion
+    // bundle unavailable, ffmpeg missing, all hooks fail compliance) leaves
+    // zero rows for the publish loop and the agent's observability — the
+    // post-pass becomes a silent black hole. Pre-staged rows let downstream
+    // surfaces detect "all 5 personas in status='queued' for >5 min" as a
+    // real signal.
+    try {
+      const queuedRows = topPersonas.map((persona) => ({
+        newsletter_video_render_id: args.ledger.id,
+        newsletter_campaign_id:     args.camp.id,
+        brokerage_id:               args.camp.brokerage_id,
+        persona,
+        status:                     "queued" as const,
+      }))
+      await args.svc.from("newsletter_video_persona_renders")
+        .upsert(queuedRows, { onConflict: "newsletter_campaign_id,persona" })
+    } catch (e) {
+      console.error("[render-newsletter-video] pre-stage persona rows failed:", (e as Error).message)
+    }
+
     // 2. Agent name + photo for the thumbnail composition (users joined
     //    through agents.user_id).
     const { data: agentRow } = await args.svc

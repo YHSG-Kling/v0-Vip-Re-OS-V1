@@ -41,6 +41,7 @@ import {
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { checkAssetReadiness, ASSET_READINESS_CONFIGS } from "@/lib/kernel/composition-gate"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -192,71 +193,77 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // didn't send, instead of the campaign silently going out half-baked.
   //
   // Check (1) — video render completion for AI-generated campaigns.
-  // The newsletter-video-render cron stages a row in 'queued' as soon as
-  // approval flips, takes 30-90s to render, then writes status='completed'
-  // + video_url. If we're still 'queued' or 'rendering' and we're inside a
-  // short grace window past send_date, skip this tick (let the next hourly
-  // run pick it up). If we're past the grace window or the render 'failed',
-  // defer with the specific reason. Non-AI campaigns skip this check.
+  // m136 — the readiness decision tree is now in lib/kernel/composition-gate
+  // so listing-promo/podcast/direct-mail can call the same surface when
+  // they onboard. The newsletter publisher feeds in its config + send_date
+  // and reacts to the four-shape decision; the embed HTML stays here
+  // because it's channel-specific.
   let videoEmbed = ""
   if (c.is_ai_generated === true) {
-    const { data: vr } = await svc
-      .from("newsletter_video_renders")
-      .select("video_url, status")
-      .eq("newsletter_campaign_id", c.id)
-      .maybeSingle()
-    const ready = vr as { video_url: string | null; status: string } | null
-    const sendDateMs = c.send_date ? Date.parse(c.send_date) : null
-    const inGraceWindow = sendDateMs !== null && Date.now() - sendDateMs < 2 * 60 * 60 * 1000
-    if (!ready) {
-      // The kickoff cron should have staged a ledger row when approval
-      // flipped. If we're past the grace window with no row at all, defer
-      // — something upstream is broken and the agent needs to see it.
-      if (!inGraceWindow) {
-        return await deferCampaign(svc, c, "video_render:not_staged_past_grace_window")
-      }
-      return {
-        campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
-        outcome: "skipped_concurrent", recipients: 0, sent: 0, suppressed: 0, errors: 0,
-        reason: "video_render:awaiting_kickoff",
-      }
+    const decision = await checkAssetReadiness({
+      assetId:  c.id,
+      sendDate: c.send_date,
+      config:   ASSET_READINESS_CONFIGS.newsletter_video,
+    })
+    switch (decision.kind) {
+      case "not_staged":
+        return await deferCampaign(svc, c, `video_${decision.reason}`)
+      case "defer":
+        return await deferCampaign(svc, c, `video_${decision.reason}`)
+      case "wait":
+        return {
+          campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
+          outcome: "skipped_concurrent", recipients: 0, sent: 0, suppressed: 0, errors: 0,
+          reason: `video_${decision.reason}`,
+        }
+      case "ready":
+        videoEmbed = [
+          `<div style="margin:0 0 24px 0;text-align:center">`,
+          `  <video controls preload="metadata" style="max-width:100%;border-radius:8px;">`,
+          `    <source src="${decision.url}" type="video/mp4">`,
+          `    Your email client doesn't support video — `,
+          `    <a href="${decision.url}">click here to watch</a>.`,
+          `  </video>`,
+          `</div>`,
+        ].join("\n")
+        break
     }
-    if (ready.status === "failed") {
-      return await deferCampaign(svc, c, "video_render:failed")
-    }
-    if (ready.status !== "completed" || !ready.video_url) {
-      if (!inGraceWindow) {
-        return await deferCampaign(svc, c, `video_render:${ready.status}_past_grace_window`)
-      }
-      return {
-        campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
-        outcome: "skipped_concurrent", recipients: 0, sent: 0, suppressed: 0, errors: 0,
-        reason: `video_render:${ready.status}`,
-      }
-    }
-    videoEmbed = [
-      `<div style="margin:0 0 24px 0;text-align:center">`,
-      `  <video controls preload="metadata" style="max-width:100%;border-radius:8px;">`,
-      `    <source src="${ready.video_url}" type="video/mp4">`,
-      `    Your email client doesn't support video — `,
-      `    <a href="${ready.video_url}">click here to watch</a>.`,
-      `  </video>`,
-      `</div>`,
-    ].join("\n")
   }
 
   // Check (2) — section presence. The Wave 20 decomposer should have
   // populated at least one newsletter_sections row. When that's zero AND
   // the campaign body itself is empty, the assembled email would be blank;
   // defer instead of sending a 1-pixel email blast.
-  const { count: sectionCount } = await svc
+  // Code-review pass 2 — section presence is necessary but not sufficient:
+  // if every section has target_personas/target_locations set AND the
+  // campaign body is empty, a recipient whose persona/location matches
+  // NONE gets a blank email. Require at least one persona-AND-location
+  // universal section (no targeting columns set) OR a non-empty body.
+  const sectionGate = await svc
     .from("newsletter_sections")
-    .select("id", { count: "exact", head: true })
+    .select("target_personas, target_locations", { count: "exact" })
     .eq("newsletter_id", c.id)
     .eq("brokerage_id", c.brokerage_id)
-  const hasCampaignBody = ((c.content ?? "").trim().length > 0)
-  if ((sectionCount ?? 0) === 0 && !hasCampaignBody) {
+  const sectionRows = (sectionGate.data ?? []) as Array<{
+    target_personas:  string[] | null
+    target_locations: { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
+  }>
+  const sectionCount  = sectionGate.count ?? sectionRows.length
+  const hasCampaignBody  = ((c.content ?? "").trim().length > 0)
+  const hasUniversalSection = sectionRows.some((s) => {
+    const personaScoped  = Array.isArray(s.target_personas)  && s.target_personas.length > 0
+    const locationScoped = !!s.target_locations && (
+      (s.target_locations.cities?.length ?? 0) +
+      (s.target_locations.states?.length ?? 0) +
+      (s.target_locations.zip_codes?.length ?? 0)
+    ) > 0
+    return !personaScoped && !locationScoped
+  })
+  if (sectionCount === 0 && !hasCampaignBody) {
     return await deferCampaign(svc, c, "sections_missing:empty_body")
+  }
+  if (!hasUniversalSection && !hasCampaignBody) {
+    return await deferCampaign(svc, c, "sections_missing:no_universal_fallback")
   }
 
   // Check (3) — final-shape compliance gate. Per-section evaluateOutbound runs
