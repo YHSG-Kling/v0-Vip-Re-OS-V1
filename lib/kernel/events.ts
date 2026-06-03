@@ -47,6 +47,10 @@ export enum KernelEvent {
   OFFER_REJECTED                            = 'offer_rejected',
   LISTING_CREATED                           = 'listing_created',
   LISTING_UNDER_CONTRACT                    = 'listing_under_contract',
+  /** Wave 27 — fires when listings.list_price is updated AND the new price
+   *  is lower than the old. Routes through the lifecycle-promo reactor as
+   *  event_type='price_reduction' (policy-gated; default opt-out). */
+  LISTING_PRICE_REDUCED                     = 'listing_price_reduced',
   OPEN_HOUSE_SCHEDULED                      = 'open_house_scheduled',
   OPEN_HOUSE_CONTACT_RESOLVED               = 'open_house_contact_resolved',
   OPEN_HOUSE_ATTENDEE_CREATED               = 'open_house_attendee_created',

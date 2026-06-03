@@ -309,6 +309,10 @@
       "schedule": "30 22 * * 0"
     },
     {
+      "path": "/api/cron/open-house-reminder",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/cron/listing-promo-render",
       "schedule": "*/5 * * * *"
     },

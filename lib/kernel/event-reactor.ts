@@ -315,5 +315,107 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (G) Wave 27 — extended lifecycle promo dispatcher. Each event below
+  // routes through the same listing-promo-reactor with a different
+  // event_type. The policy resolver inside the reactor gates auto-spawn
+  // per (agent → team → brokerage → platform default), so this block is
+  // safe to fan out: opted-out events return status='skipped' without
+  // staging any render or spending render dollars.
+  if (
+    params.brokerageId &&
+    params.entityType === "listing" &&
+    (
+      params.event === KernelEvent.LISTING_STAGE_CHANGED ||
+      params.event === KernelEvent.LISTING_UNDER_CONTRACT ||
+      params.event === KernelEvent.LISTING_PRICE_REDUCED
+    )
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: l } = await svc
+        .from("listings")
+        .select("agent_id")
+        .eq("id", params.entityId)
+        .maybeSingle()
+      const listingAgentRecordId = (l?.agent_id as string | null) ?? null
+      let agentUserId: string | null = params.agentUserId ?? null
+      if (!agentUserId && listingAgentRecordId) {
+        const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+        agentUserId = await resolveAgentRecordToUserId(listingAgentRecordId)
+      }
+      if (agentUserId) {
+        // Map kernel event → lifecycle event_type. STAGE_CHANGED inspects
+        // metadata.new_stage to pick the right promo variant.
+        const meta = params.metadata as { new_stage?: string } | null | undefined
+        const newStage = meta?.new_stage ?? null
+        let eventType: import("@/lib/video/listing-promo-reactor").ListingPromoEventType | null = null
+        if (params.event === KernelEvent.LISTING_PRICE_REDUCED) {
+          eventType = "price_reduction"
+        } else if (params.event === KernelEvent.LISTING_UNDER_CONTRACT) {
+          eventType = "under_contract"
+        } else if (params.event === KernelEvent.LISTING_STAGE_CHANGED) {
+          if (newStage === "coming_soon")    eventType = "coming_soon"
+          else if (newStage === "under_contract") eventType = "under_contract"
+          else if (newStage === "sold" || newStage === "closed") eventType = "just_sold"
+          // 'active' is covered by LISTING_PUBLISHED above; don't double-fire.
+        }
+        if (eventType) {
+          const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+          void dispatchListingPromoVideo({
+            brokerageId: params.brokerageId,
+            listingId:   params.entityId,
+            agentUserId,
+            eventType,
+          })
+        }
+      }
+    } catch (err) {
+      console.error("[event-reactor] lifecycle promo dispatch failed:", err)
+    }
+  }
+
+  // (H) Wave 27 — open-house announcement on schedule. Reminder is fired
+  // separately by app/api/cron/open-house-reminder on a T-24h window.
+  if (
+    params.brokerageId &&
+    params.event === KernelEvent.OPEN_HOUSE_SCHEDULED &&
+    params.entityType === "open_house"
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      // open_house_events row → listing_id + start_time + event_date for context
+      const { data: oh } = await svc
+        .from("open_house_events")
+        .select("listing_id, event_date, start_time, agent_id")
+        .eq("id", params.entityId)
+        .maybeSingle()
+      const ohRow = oh as { listing_id: string | null; event_date: string | null; start_time: string | null; agent_id: string | null } | null
+      if (ohRow?.listing_id) {
+        // Resolve users.id from open_house_events.agent_id (FK to agents.id
+        // per live schema, same pattern as listings.agent_id).
+        let agentUserId: string | null = null
+        if (ohRow.agent_id) {
+          const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+          agentUserId = await resolveAgentRecordToUserId(ohRow.agent_id)
+        }
+        if (agentUserId) {
+          const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+          const eventDateLine = [ohRow.event_date, ohRow.start_time].filter(Boolean).join(" ")
+          void dispatchListingPromoVideo({
+            brokerageId:  params.brokerageId,
+            listingId:    ohRow.listing_id,
+            agentUserId,
+            eventType:    "open_house_announce",
+            eventContext: eventDateLine ? { event_date: eventDateLine } : undefined,
+          })
+        }
+      }
+    } catch (err) {
+      console.error("[event-reactor] open-house announce dispatch failed:", err)
+    }
+  }
+
   return { ...mk, sequencesEnrolled, portalUpdated }
 }
