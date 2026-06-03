@@ -142,6 +142,20 @@ interface MarketingSnapshot {
       samples:           number
     }>
   }>
+  /** Wave 25 — trailing 4 weeks of this brokerage's prior plan outcomes
+   *  from marketing_agent_weekly_outcomes (m135). Each row's
+   *  realized_* columns get filled by the Sunday-night measure cron.
+   *  Surfaced in the kickoff so the agent sees its own track record
+   *  ("last 4 plans averaged X% open, Y% click — beat that this week").
+   *  Unmeasured weeks (this current week, or weeks whose cron hasn't run)
+   *  show null realized values — explicit "not yet measured" in the prompt. */
+  priorPlanOutcomes: Array<{
+    week_start:                 string
+    realized_campaigns_sent:    number | null
+    realized_open_rate:         number | null
+    realized_click_rate:        number | null
+    plan_quality_score:         number | null
+  }>
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -354,6 +368,26 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] persona top-topics read failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 25 — pull the trailing 4 weeks of plan windows + their realized
+  // outcomes (filled by marketing-agent-weekly-measure cron). Surfaced
+  // in the kickoff so the agent sees its own win/loss trend, not just
+  // the current week's signals.
+  let priorPlanOutcomes: MarketingSnapshot["priorPlanOutcomes"] = []
+  try {
+    const fourWeeksAgo = new Date(Date.now() - 28 * 86_400_000)
+    fourWeeksAgo.setUTCHours(0, 0, 0, 0)
+    const { data: prior } = await svc
+      .from("marketing_agent_weekly_outcomes")
+      .select("week_start, realized_campaigns_sent, realized_open_rate, realized_click_rate, plan_quality_score")
+      .eq("brokerage_id", brokerageId)
+      .gte("week_start", fourWeeksAgo.toISOString().slice(0, 10))
+      .order("week_start", { ascending: false })
+      .limit(4)
+    priorPlanOutcomes = (prior ?? []) as MarketingSnapshot["priorPlanOutcomes"]
+  } catch (e) {
+    console.error(`[marketing-agent] prior plan outcomes read failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     pendingListingPromos,
     newListingsThisWeek,
@@ -366,6 +400,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     topSubscriberLocations,
     personaEngagement,
     personaTopTopics,
+    priorPlanOutcomes,
   }
 }
 
@@ -413,6 +448,27 @@ export async function spawnMarketingAgentForBrokerage(params: {
         ).join("\n")
       ).join("\n")
 
+  // Wave 25 — agent's own prior-plan track record.
+  const measuredPrior = snap.priorPlanOutcomes.filter((p) => p.realized_open_rate !== null)
+  const priorPlanLines = snap.priorPlanOutcomes.length === 0
+    ? "(no prior plans on record — this is the first measured Monday for this brokerage)"
+    : snap.priorPlanOutcomes.map((p) => {
+        const measured = p.realized_open_rate !== null
+        return `  ${p.week_start}  ` + (measured
+          ? `campaigns=${p.realized_campaigns_sent ?? 0}  open=${(p.realized_open_rate ?? 0).toFixed(1)}%  click=${(p.realized_click_rate ?? 0).toFixed(1)}%  quality=${p.plan_quality_score ?? "?"}`
+          : `(not yet measured — current week or pending Sunday-night cron)`)
+      }).join("\n")
+  const priorPlanAvg = measuredPrior.length === 0
+    ? null
+    : {
+        open:  measuredPrior.reduce((s, p) => s + (p.realized_open_rate  ?? 0), 0) / measuredPrior.length,
+        click: measuredPrior.reduce((s, p) => s + (p.realized_click_rate ?? 0), 0) / measuredPrior.length,
+        n:     measuredPrior.length,
+      }
+  const priorPlanAvgLine = priorPlanAvg
+    ? `  ── trailing ${priorPlanAvg.n}-week avg:  open=${priorPlanAvg.open.toFixed(1)}%  click=${priorPlanAvg.click.toFixed(1)}%  → THIS WEEK'S PLAN should beat that.`
+    : "  ── (not enough measured weeks yet to compute a trailing average)"
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -454,6 +510,19 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "decide WHICH personas earn airtime this week + how many sections each gets.",
     personaTopicsLines,
     "",
+    "──── WAVE 25 — YOUR PRIOR PLANS (TRAILING 4 WEEKS) ────",
+    "Every Monday your spawn captures a plan window; every Sunday night the",
+    "measure cron fills realized open/click rates from newsletter_sends in",
+    "that week. This is YOUR OWN TRACK RECORD on this brokerage — beat it.",
+    "If the trailing average shows declining click rates, REDUCE the mix",
+    "of cold-topic sections this week and lean harder into the personas",
+    "+ topics that scored highest above. If a prior plan flatlined (low",
+    "campaigns_sent), it means de-conflict caps or composition-gate defers",
+    "ate the week — check the snapshot's defer_reasons before planning.",
+    "",
+    priorPlanLines,
+    priorPlanAvgLine,
+    "",
     "Read the de-conflict log (deconflict_suppression_log) for the brokerage's recent",
     "broadcast cooldown decisions before scheduling new sends. Honor the broadcast",
     "frequency cap (newsletter 1/segment/7d, social_post 3/day, blog 2/7d, ad 5/7d).",
@@ -470,7 +539,7 @@ export async function spawnMarketingAgentForBrokerage(params: {
   })
   const outcomeEvent = buildDefineOutcomeEvent(rubric, kickoff)
 
-  return spawnManagedAgentSession(TEMPLATE, {
+  const spawn = await spawnManagedAgentSession(TEMPLATE, {
     brokerageId:   params.brokerageId,
     entityType:    "brokerage",
     entityId:      params.brokerageId, // brokerage-level, like sphere + campaign_orchestrator
@@ -484,4 +553,52 @@ export async function spawnMarketingAgentForBrokerage(params: {
       tier:                    brokerage.tierKey,
     },
   })
+
+  // Wave 25 — record the plan window for end-of-week measurement. We
+  // upsert by (brokerage_id, week_start) so the row is idempotent across
+  // skipped/replayed Mondays AND so a same-day re-spawn updates the
+  // captured snapshot signals to the latest read. The measure cron fills
+  // realized_* at end-of-week; next Monday's snapshot reads back the
+  // trailing 4 weeks so the agent sees its own track record.
+  if (spawn.ok && spawn.session?.id) {
+    const weekStart = getISOWeekStartDate(new Date())
+    void persistWeeklyPlanWindow({
+      brokerageId:       params.brokerageId,
+      weekStart,
+      sessionId:         spawn.session.id,
+      snapshotSignals:   snap,
+    })
+  }
+
+  return spawn
+}
+
+/** Monday (00:00 UTC) of the week the timestamp falls in. Returns YYYY-MM-DD. */
+function getISOWeekStartDate(d: Date): string {
+  const utc = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  const day = utc.getUTCDay()
+  // 0=Sun → back to prior Monday means -6; otherwise -(day-1)
+  const diff = day === 0 ? -6 : -(day - 1)
+  utc.setUTCDate(utc.getUTCDate() + diff)
+  return utc.toISOString().slice(0, 10)
+}
+
+async function persistWeeklyPlanWindow(args: {
+  brokerageId:     string
+  weekStart:       string
+  sessionId:       string
+  snapshotSignals: MarketingSnapshot
+}): Promise<void> {
+  try {
+    const svc = createServiceClient()
+    await svc.from("marketing_agent_weekly_outcomes").upsert({
+      brokerage_id:           args.brokerageId,
+      week_start:             args.weekStart,
+      spawned_session_id:     args.sessionId,
+      spawned_at:             new Date().toISOString(),
+      snapshot_signals_jsonb: args.snapshotSignals as unknown as Record<string, unknown>,
+    }, { onConflict: "brokerage_id,week_start" })
+  } catch (e) {
+    console.error(`[marketing-agent] weekly plan window persist failed for ${args.brokerageId}:`, (e as Error).message)
+  }
 }

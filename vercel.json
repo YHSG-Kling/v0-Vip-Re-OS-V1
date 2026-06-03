@@ -305,6 +305,10 @@
       "schedule": "0 9 * * 1"
     },
     {
+      "path": "/api/cron/marketing-agent-weekly-measure",
+      "schedule": "30 22 * * 0"
+    },
+    {
       "path": "/api/cron/listing-promo-render",
       "schedule": "*/5 * * * *"
     },
