@@ -118,6 +118,30 @@ interface MarketingSnapshot {
     state:   string | null
     count:   number
   }>
+  /** Wave 24 — per-persona aggregate engagement over the last 30 days.
+   *  Computed from newsletter_sends ⨝ contacts grouped by contact_persona,
+   *  so the agent sees WHICH SEGMENTS are converting and can lean the
+   *  week's plan into the stronger ones. Sample-floor filtered (≥5) to
+   *  exclude noise from sparse personas. */
+  personaEngagement: Array<{
+    persona:        string
+    sends:          number
+    open_rate:      number   // percent, 0..100, rounded to 1 decimal
+    click_rate:     number   // percent, 0..100, rounded to 1 decimal
+  }>
+  /** Wave 24 — top-performing topics per persona pulled from
+   *  content_topic_persona_performance (m134). At most 3 personas, 2 topics
+   *  each. Lets the agent's plan name SPECIFIC threads to anchor per
+   *  segment — the same data the AI section author now uses, surfaced
+   *  upstream so the agent's plan and the producer agree. */
+  personaTopTopics: Array<{
+    persona:    string
+    topics: Array<{
+      title:             string
+      persona_score:     number   // 0..30 from content_topic_persona_performance
+      samples:           number
+    }>
+  }>
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -240,6 +264,96 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       .slice(0, 5)
   } catch { /* best-effort */ }
 
+  // Wave 24 — per-persona aggregate engagement (last 30 days). Joins
+  // newsletter_sends ⨝ contacts.contact_persona for this brokerage and
+  // computes open + click rate per persona. Sample-floor of 5 sends
+  // suppresses noise from sparse personas (same threshold the picker uses).
+  let personaEngagement: MarketingSnapshot["personaEngagement"] = []
+  try {
+    const since30d = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const { data: sends } = await svc
+      .from("newsletter_sends")
+      .select("contact_id, opened_at, clicked_at, contact:contacts!newsletter_sends_contact_id_fkey(contact_persona)")
+      .eq("brokerage_id", brokerageId)
+      .gte("sent_at", since30d)
+      .limit(20000)
+    const buckets = new Map<string, { sent: number; opened: number; clicked: number }>()
+    for (const row of (sends ?? []) as Array<{
+      contact_id: string | null
+      opened_at:  string | null
+      clicked_at: string | null
+      contact?:   { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null
+    }>) {
+      const cobj = Array.isArray(row.contact) ? row.contact[0] : row.contact
+      const persona = (cobj?.contact_persona ?? "").trim()
+      if (!persona) continue
+      const cur = buckets.get(persona) ?? { sent: 0, opened: 0, clicked: 0 }
+      cur.sent++
+      if (row.opened_at)  cur.opened++
+      if (row.clicked_at) cur.clicked++
+      buckets.set(persona, cur)
+    }
+    personaEngagement = [...buckets.entries()]
+      .filter(([, s]) => s.sent >= 5)
+      .map(([persona, s]) => ({
+        persona,
+        sends:      s.sent,
+        open_rate:  Math.round((s.opened  / s.sent) * 1000) / 10,
+        click_rate: Math.round((s.clicked / s.sent) * 1000) / 10,
+      }))
+      .sort((a, b) => b.click_rate - a.click_rate || b.open_rate - a.open_rate)
+      .slice(0, 6)
+  } catch (e) {
+    console.error(`[marketing-agent] persona engagement read failed for ${brokerageId}:`, (e as Error).message)
+  }
+
+  // Wave 24 — top topics per persona, pulled from the m134 perf table
+  // joined to the topic bank. Cap at 3 personas × 2 topics so the kickoff
+  // prompt stays readable + tokenized cheaply. Personas chosen are those
+  // we already aggregated in personaEngagement (so we only show data for
+  // personas with real send volume in this brokerage).
+  let personaTopTopics: MarketingSnapshot["personaTopTopics"] = []
+  try {
+    const personasToCover = personaEngagement.slice(0, 3).map((p) => p.persona)
+    if (personasToCover.length > 0) {
+      const { data: perfRows } = await svc
+        .from("content_topic_persona_performance")
+        .select("persona, performance_score, persona_samples_count, topic:content_topic_bank!content_topic_persona_performance_topic_id_fkey(id, topic_title, brokerage_id)")
+        .in("persona", personasToCover)
+        .gt("performance_score", 0)
+        .order("performance_score", { ascending: false })
+        .limit(60)
+      type Row = {
+        persona: string
+        performance_score: number
+        persona_samples_count: number
+        topic?: { id: string; topic_title: string; brokerage_id: string | null } | Array<{ id: string; topic_title: string; brokerage_id: string | null }> | null
+      }
+      // Filter rows whose topic actually belongs to this brokerage (or is
+      // platform-wide) — the foreign-key join can return cross-brokerage
+      // topics otherwise.
+      const grouped = new Map<string, Array<{ title: string; persona_score: number; samples: number }>>()
+      for (const r of (perfRows ?? []) as Row[]) {
+        const t = Array.isArray(r.topic) ? r.topic[0] : r.topic
+        if (!t) continue
+        if (t.brokerage_id !== null && t.brokerage_id !== brokerageId) continue
+        const list = grouped.get(r.persona) ?? []
+        if (list.length >= 2) continue   // cap 2 per persona
+        list.push({
+          title:         t.topic_title,
+          persona_score: r.performance_score,
+          samples:       r.persona_samples_count,
+        })
+        grouped.set(r.persona, list)
+      }
+      personaTopTopics = personasToCover
+        .map((persona) => ({ persona, topics: grouped.get(persona) ?? [] }))
+        .filter((p) => p.topics.length > 0)
+    }
+  } catch (e) {
+    console.error(`[marketing-agent] persona top-topics read failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     pendingListingPromos,
     newListingsThisWeek,
@@ -250,6 +364,8 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     weekSocialBudget,
     topTopics,
     topSubscriberLocations,
+    personaEngagement,
+    personaTopTopics,
   }
 }
 
@@ -280,6 +396,23 @@ export async function spawnMarketingAgentForBrokerage(params: {
         `  ${l.city ?? "(unknown city)"}, ${l.state ?? "(?)"}  →  ${l.count} subscribers`
       ).join("\n")
 
+  // Wave 24 — per-persona performance intelligence block. Shown only when
+  // we have meaningful data (at least one persona with ≥5 sends). Empty
+  // brokerages fall through to the universal topic + location guidance.
+  const personaEngagementLines = snap.personaEngagement.length === 0
+    ? "(no persona-segmented send data yet — first cohort of newsletter_sends is still landing)"
+    : snap.personaEngagement.map((p) =>
+        `  ${p.persona.padEnd(22)}  sends=${String(p.sends).padStart(4)}  open=${p.open_rate.toFixed(1)}%  click=${p.click_rate.toFixed(1)}%`
+      ).join("\n")
+  const personaTopicsLines = snap.personaTopTopics.length === 0
+    ? "(no per-persona topic scores yet — aggregator needs ≥5 sends per persona)"
+    : snap.personaTopTopics.map((p) =>
+        `  ${p.persona}:\n` +
+        p.topics.map((t) =>
+          `    · [score ${t.persona_score} · n=${t.samples}] ${t.title}`
+        ).join("\n")
+      ).join("\n")
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -305,6 +438,21 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "ONE campaign send. Use this distribution to decide which location-",
     "specific sections are worth authoring this week.",
     locationLines,
+    "",
+    "──── WAVE 24 — PER-PERSONA PERFORMANCE INTELLIGENCE (LAST 30 DAYS) ────",
+    "Last 30 days of newsletter_sends ⨝ contacts grouped by contact_persona.",
+    "Lean THIS WEEK'S plan into the segments that are converting — author",
+    "more sections (and more time) for high-click personas; pull back from",
+    "low-click ones. Floor: 5 sends per persona (lower = noise, suppressed).",
+    "",
+    "PER-PERSONA OPEN + CLICK RATES (ranked by click_rate):",
+    personaEngagementLines,
+    "",
+    "TOPICS THAT CONVERTED PER PERSONA (anchor persona-targeted sections here):",
+    "Each persona's section should develop ITS list, not the others'. The",
+    "AI section author already does this when authoring; your job is to",
+    "decide WHICH personas earn airtime this week + how many sections each gets.",
+    personaTopicsLines,
     "",
     "Read the de-conflict log (deconflict_suppression_log) for the brokerage's recent",
     "broadcast cooldown decisions before scheduling new sends. Honor the broadcast",
