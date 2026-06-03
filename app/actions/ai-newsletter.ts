@@ -25,6 +25,8 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { normalizeSectionType, defaultOrderFor } from "@/lib/kernel/newsletter/section-types"
+import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
+import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 
 // ============================================
 // AI NEWSLETTER SYSTEM
@@ -237,6 +239,13 @@ export async function aiWriteNewsletterContent(params: {
   featuredListings?: any[]
   marketStats?: any
   customSections?: string[]
+  /** Wave 20.1 — when the marketing agent's approved plan names specific
+   *  topics for the week, the caller passes the topic_ids here so the
+   *  section author and the newsletter video render share the SAME source
+   *  thread (cohesive issue, not two independently-picked themes). When
+   *  omitted, this action runs pickTopics() itself so the manual UI flow
+   *  also gets topic-seeded sections. */
+  seedTopicIds?: string[]
 }) {
   try {
     const ctx = await getAgentContext()
@@ -294,6 +303,51 @@ export async function aiWriteNewsletterContent(params: {
       .map((l) => `${l.city ?? "(unknown)"} ${l.state ?? ""}`.trim() + ` (${l.count})`)
     const audienceIsSegmentable = topPersonas.length > 1 || topLocations.length > 1
 
+    // Wave 20.1 — value-first topic seed from content_topic_bank. When the
+    // marketing agent supplied seedTopicIds via params, fetch those exact
+    // rows so video + sections share the same week's thread. Otherwise pick
+    // top 4 fresh, brokerage-boosted, geo-aware topics — the same picker
+    // surface the video and podcast already use. Failure here is non-fatal:
+    // we drop back to evergreen real-estate education so the section author
+    // still has something coherent to write about.
+    let topics: TopicCandidate[] = []
+    try {
+      if (Array.isArray(params.seedTopicIds) && params.seedTopicIds.length > 0) {
+        const seedSvc = await createClient()
+        const { data: seedRows } = await seedSvc
+          .from("content_topic_bank")
+          .select("id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at, brokerage_id")
+          .in("id", params.seedTopicIds)
+          .or(`brokerage_id.is.null,brokerage_id.eq.${sessionBrokerageId}`)
+        topics = ((seedRows ?? []) as Array<{
+          id: string; topic_title: string; value_angle: string | null; source_url: string | null;
+          categories: string[] | null; engagement_score: number; topic_posted_at: string | null;
+          brokerage_id: string | null
+        }>).map((r) => ({
+          id:                 r.id,
+          topic_title:        r.topic_title,
+          value_angle:        r.value_angle,
+          source_url:         r.source_url,
+          categories:         r.categories ?? [],
+          engagement_score:   r.engagement_score,
+          topic_posted_at:    r.topic_posted_at,
+          is_brokerage_local: r.brokerage_id !== null,
+          geo_match:          false,
+        }))
+      } else {
+        topics = await pickTopics({
+          brokerageId:   sessionBrokerageId,
+          categoriesAny: ["buyer_advice", "finance", "market_education", "neighborhood", "seller_advice"],
+          limit:         4,
+          markUsed:      false, // the newsletter video also pulls; let one
+                                // weekly topic anchor both producers before
+                                // the podcast cron flips it to 'used'
+        })
+      }
+    } catch (e) {
+      console.warn("[AI Newsletter] topic-bank pick failed; falling back to evergreen:", (e as Error).message)
+    }
+
     const { object: content } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: z.object({
@@ -329,6 +383,19 @@ ${brandVoice ? `Brand Voice: ${brandVoice.tone}, ${brandVoice.style}` : ""}
 
 ${params.featuredListings?.length ? `Featured Listings: ${JSON.stringify(params.featuredListings)}` : ""}
 ${params.marketStats ? `Market Stats: ${JSON.stringify(params.marketStats)}` : ""}
+
+═══ LEAD CONTENT — TOPIC INTELLIGENCE BANK ═══
+These are the audience-relevant value threads the platform's content-
+intelligence layer surfaced this week (Reddit + Exa + RSS + Apify ingest,
+ranked by engagement + freshness + brokerage-locality + Wave 19 performance
+feedback). Build the market_update, tips, neighborhood_spotlight, and
+local_news sections AROUND THESE THREADS — do not invent generic copy
+when these are sitting here. The newsletter VIDEO produced for this
+campaign opens with the strongest single thread; the sections should
+develop the same threads in depth so the issue reads as cohesive (video
+hook → email substance), not as two unrelated assets.
+
+${renderTopicsForPrompt(topics)}
 
 ═══ AUDIENCE SHAPE ═══
 ${audienceIsSegmentable
@@ -439,6 +506,12 @@ ready with a fenced yard" is not.`,
       sections: brandedSections,
       estimatedReadTime: (content as any).estimatedReadTime ?? null,
       wordCount: (content as any).wordCount ?? null,
+      /** Wave 20.1 — the content_topic_bank IDs that seeded this issue.
+       *  The caller passes these into createNewsletterCampaign so the
+       *  performance loop can log them against the newsletter_campaign
+       *  asset (content_topic_uses ledger → daily aggregator → topic
+       *  performance_score → next pick scores them higher). */
+      seedTopicIds: topics.map((t) => t.id),
     }
   } catch (error) {
     console.error("[AI Newsletter] Content error:", error)
@@ -608,6 +681,12 @@ export async function createNewsletterCampaign(params: {
   content: NewsletterSection[]
   audienceSegment: string
   scheduledAt?: string
+  /** Wave 20.1 — content_topic_bank IDs that seeded this campaign's sections.
+   *  Pulled from aiWriteNewsletterContent's return shape; the caller passes
+   *  them through so the Wave 19 performance loop captures which topics
+   *  produced this newsletter. The aggregator reads open/click rates back
+   *  per topic and bumps its performance_score for the picker. */
+  seedTopicIds?: string[]
 }) {
   try {
     const ctx = await getAgentContext()
@@ -699,6 +778,22 @@ export async function createNewsletterCampaign(params: {
         // breaking the caller.
         console.error(`[AI Newsletter] section decompose failed for campaign ${newsletter.id}:`, secErr.message)
       }
+    }
+
+    // Wave 20.1 — close the loop on the content intelligence layer for the
+    // newsletter section channel. The Wave 19 ledger (content_topic_uses)
+    // is already wired for newsletter_video and podcast_episode; the
+    // newsletter_campaign asset type was reserved but had no producer
+    // logging it. Now the campaign create logs which topics seeded the
+    // sections, so the daily aggregator can read open/click rates back
+    // per topic and bump performance_score → next picker run weighs them.
+    if (Array.isArray(params.seedTopicIds) && params.seedTopicIds.length > 0) {
+      void logTopicUses({
+        topicIds:    params.seedTopicIds,
+        brokerageId: sessionBrokerageId,
+        assetType:   "newsletter_campaign",
+        assetId:     newsletter.id,
+      })
     }
 
     // STEP 3: Fix newsletter_subscribers query — use agents.id not users.id

@@ -106,15 +106,53 @@ export async function POST(req: NextRequest) {
     //    20-second video opens with the most timely audience-relevant
     //    insight (e.g. "rates dropped 25bps — here's what it means");
     //    the brokerage's digest sections are the supporting context.
-    const topics = await pickTopics({
-      brokerageId:   camp.brokerage_id,
-      categoriesAny: ["buyer_advice", "finance", "market_education", "neighborhood"],
-      limit:         3,
-      markUsed:      false, // newsletters are sent more often than podcasts;
-                            // let the same topic anchor 1-2 newsletters before
-                            // moving to 'used'. The podcast cron is the
-                            // canonical 'used' flipper.
-    })
+    //
+    // Wave 20.1 cohesion fix — if the campaign's sections already logged
+    // seed topics in content_topic_uses, honor those exact topics so the
+    // video and the email sections develop the SAME threads instead of
+    // each producer independently picking and drifting apart. When the
+    // sections weren't topic-seeded (older campaigns, manual content),
+    // fall back to an independent pickTopics() so the video still gets
+    // its own value-first lead.
+    let topics = [] as Awaited<ReturnType<typeof pickTopics>>
+    const { data: priorUses } = await svc.from("content_topic_uses")
+      .select("topic_id")
+      .eq("brokerage_id", camp.brokerage_id)
+      .eq("asset_type", "newsletter_campaign")
+      .eq("asset_id", camp.id)
+      .limit(6)
+    const sectionSeedIds = ((priorUses ?? []) as Array<{ topic_id: string }>).map((r) => r.topic_id)
+    if (sectionSeedIds.length > 0) {
+      const { data: seedRows } = await svc.from("content_topic_bank")
+        .select("id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at, brokerage_id")
+        .in("id", sectionSeedIds)
+      topics = ((seedRows ?? []) as Array<{
+        id: string; topic_title: string; value_angle: string | null; source_url: string | null;
+        categories: string[] | null; engagement_score: number; topic_posted_at: string | null;
+        brokerage_id: string | null
+      }>).map((r) => ({
+        id:                 r.id,
+        topic_title:        r.topic_title,
+        value_angle:        r.value_angle,
+        source_url:         r.source_url,
+        categories:         r.categories ?? [],
+        engagement_score:   r.engagement_score,
+        topic_posted_at:    r.topic_posted_at,
+        is_brokerage_local: r.brokerage_id !== null,
+        geo_match:          false,
+      })).slice(0, 3)
+    }
+    if (topics.length === 0) {
+      topics = await pickTopics({
+        brokerageId:   camp.brokerage_id,
+        categoriesAny: ["buyer_advice", "finance", "market_education", "neighborhood"],
+        limit:         3,
+        markUsed:      false, // newsletters are sent more often than podcasts;
+                              // let the same topic anchor 1-2 newsletters before
+                              // moving to 'used'. The podcast cron is the
+                              // canonical 'used' flipper.
+      })
+    }
 
     // marketBeat headline = the top topic's title (truncated for the visual)
     // or a brand-clean default when the bank ran dry.
