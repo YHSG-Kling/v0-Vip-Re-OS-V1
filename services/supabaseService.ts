@@ -854,18 +854,6 @@ export const supabaseService = {
     }
   },
 
-  async createNewsletterCampaign(campaign: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("newsletter_campaigns").insert(campaign).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating newsletter campaign:", error)
-      return null
-    }
-  },
-
   async getDirectMailCampaigns() {
     try {
       const supabase = getSupabaseAdmin()

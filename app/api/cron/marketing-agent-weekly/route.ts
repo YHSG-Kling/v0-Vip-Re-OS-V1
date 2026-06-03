@@ -43,17 +43,33 @@ export async function GET(req: NextRequest) {
 
   for (const b of brokerages ?? []) {
     try {
-      // Skip brokerages with no brand-marketing signal at all.
-      const [newListings, pendingPromos, atRisk] = await Promise.all([
+      // Skip brokerages with no brand-marketing signal at all. Four signals:
+      //   1. new listings published in the last 7d
+      //   2. listing promo videos pending Remotion render
+      //   3. listings whose health score has dropped (≤40)
+      //   4. NEWSLETTER CADENCE — a brokerage with active subscribers that
+      //      hasn't sent a newsletter in the last 7d still needs the agent's
+      //      attention. Without this signal a brokerage with zero listings
+      //      activity but a real subscriber list would never trigger.
+      const [newListings, pendingPromos, atRisk, recentSends, activeSubs] = await Promise.all([
         svc.from("listings").select("id", { count: "exact", head: true })
           .eq("brokerage_id", b.id).eq("status", "active").gte("created_at", since7d),
         svc.from("listing_promo_videos").select("id", { count: "exact", head: true })
           .eq("brokerage_id", b.id).eq("status", "remotion_pending"),
         svc.from("listing_health_scores").select("id", { count: "exact", head: true })
           .eq("brokerage_id", b.id).lte("overall_score", 40),
+        svc.from("newsletter_campaigns").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", b.id).eq("status", "sent").gte("send_date", since7d),
+        svc.from("newsletter_subscribers").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", b.id).eq("subscribed", true),
       ])
+      const newsletterCadenceSignal =
+        (activeSubs.count ?? 0) > 0 && (recentSends.count ?? 0) === 0 ? 1 : 0
       const totalSignal =
-        (newListings.count ?? 0) + (pendingPromos.count ?? 0) + (atRisk.count ?? 0)
+        (newListings.count ?? 0) +
+        (pendingPromos.count ?? 0) +
+        (atRisk.count ?? 0) +
+        newsletterCadenceSignal
       if (totalSignal === 0) {
         results.push({ brokerage_id: b.id, brokerage_name: b.name, result: "skipped:no_signal" })
         continue
