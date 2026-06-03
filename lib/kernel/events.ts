@@ -277,6 +277,12 @@ export enum KernelEvent {
   // ── Layer 9.7 — Newsletter / Email Campaigns ─────────────────────────────
   NEWSLETTER_SCHEDULED               = 'newsletter_scheduled',
   NEWSLETTER_SENT                    = 'newsletter_sent',
+  /** Wave 21 — emitted by publish-newsletters when the pre-send composition
+   *  gate defers a campaign (video render not ready, sections missing, or
+   *  final-shape compliance failed). Marketing-agent observability + the
+   *  weekly snapshot consume this so the agent can see WHICH campaigns
+   *  degraded and why, instead of silently sending half-baked.  */
+  NEWSLETTER_SEND_DEFERRED           = 'newsletter_send_deferred',
   EMAIL_CAMPAIGN_CREATED             = 'email_campaign_created',
   EMAIL_CAMPAIGN_SENT                = 'email_campaign_sent',
 

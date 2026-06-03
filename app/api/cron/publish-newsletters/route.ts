@@ -38,6 +38,9 @@ import {
   resolveSectionsForRecipient,
   assembleNewsletterHtml,
 } from "@/lib/kernel/newsletter/assemble"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -57,6 +60,12 @@ interface CampaignRow {
   approval_status:      string | null
   marketing_campaign_id: string | null
   created_by:           string | null
+  /** Wave 21 — the composition gate's video-render readiness check only
+   *  fires for AI-authored campaigns (the only ones the newsletter-video-
+   *  render cron stages). Human-authored campaigns never had a video
+   *  expectation, so the gate skips that check for them. */
+  is_ai_generated:      boolean | null
+  send_date:            string | null
 }
 
 interface SubscriberRow {
@@ -104,7 +113,7 @@ export async function GET(req: NextRequest) {
   // tick so a backlog drains across multiple cron runs instead of timing out.
   const { data: campaigns, error } = await svc
     .from("newsletter_campaigns")
-    .select("id, brokerage_id, agent_id, campaign_name, subject_line, content, status, approval_status, marketing_campaign_id, created_by")
+    .select("id, brokerage_id, agent_id, campaign_name, subject_line, content, status, approval_status, marketing_campaign_id, created_by, is_ai_generated, send_date")
     .eq("approval_status", "approved")
     .in("status", ["scheduled"])
     .lte("send_date", new Date().toISOString())
@@ -126,36 +135,42 @@ export async function GET(req: NextRequest) {
   })
 }
 
+/**
+ * Wave 21 — defer helper for the composition gate. Writes the structured
+ * reason into newsletter_campaigns.defer_reason (m132) and emits the
+ * NEWSLETTER_SEND_DEFERRED kernel event so the marketing-agent observability
+ * surfaces see WHICH campaigns degraded and why. The campaign stays in
+ * 'deferred' status — the agent can manually re-queue or the next cron run
+ * picks it up after the gating condition clears (e.g. video render
+ * completes between ticks).
+ */
+async function deferCampaign(
+  svc: ReturnType<typeof createServiceClient>,
+  c: CampaignRow,
+  reason: string,
+): Promise<CampaignResult> {
+  await svc.from("newsletter_campaigns")
+    .update({ status: "deferred", defer_reason: reason })
+    .eq("id", c.id)
+  processKernelEvent({
+    event:       KernelEvent.NEWSLETTER_SEND_DEFERRED,
+    brokerageId: c.brokerage_id,
+    entityType:  "newsletter_campaign",
+    entityId:    c.id,
+    metadata:    { reason, campaign_name: c.campaign_name },
+  }).catch((err) => console.error(`[publish-newsletters] NEWSLETTER_SEND_DEFERRED emit failed for ${c.id}:`, err))
+  return {
+    campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
+    outcome: "deferred", recipients: 0, sent: 0, suppressed: 0, errors: 0,
+    reason,
+  }
+}
+
 async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: CampaignRow): Promise<CampaignResult> {
   // newsletter_sections.newsletter_id FKs to newsletter_campaigns.id — so the
   // "newsletter" for section assembly is the campaign itself. There is no
   // separate newsletters row to pull sections from.
   const newsletterId: string = c.id
-
-  // Wave 15 — newsletter video. ONE render per campaign embeds in every
-  // recipient's body (cost-bounded: $0.30 ÷ N, never × N). Read the URL
-  // from newsletter_video_renders; if present, prepend an embed block to
-  // the campaign body before per-persona section assembly.
-  let videoEmbed = ""
-  try {
-    const { data: vr } = await svc
-      .from("newsletter_video_renders")
-      .select("video_url, status")
-      .eq("newsletter_campaign_id", c.id)
-      .maybeSingle()
-    const ready = vr as { video_url: string | null; status: string } | null
-    if (ready?.status === "completed" && ready.video_url) {
-      videoEmbed = [
-        `<div style="margin:0 0 24px 0;text-align:center">`,
-        `  <video controls preload="metadata" style="max-width:100%;border-radius:8px;">`,
-        `    <source src="${ready.video_url}" type="video/mp4">`,
-        `    Your email client doesn't support video — `,
-        `    <a href="${ready.video_url}">click here to watch</a>.`,
-        `  </video>`,
-        `</div>`,
-      ].join("\n")
-    }
-  } catch { /* best-effort — newsletter still sends without the video */ }
 
   // Brokerage-wide newsletter cooldown (1/7d default). Per-segment scoping is
   // a follow-up — the campaign row doesn't carry the audience segment yet
@@ -167,12 +182,129 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     systemSource: "publish-newsletters",
   })
   if (!cap.allowed) {
-    await svc.from("newsletter_campaigns").update({ status: "deferred" }).eq("id", c.id)
-    return {
-      campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
-      outcome: "deferred", recipients: 0, sent: 0, suppressed: 0, errors: 0,
-      reason: cap.reason,
+    return await deferCampaign(svc, c, `broadcast_cap:${cap.reason ?? "exceeded"}`)
+  }
+
+  // ── Wave 21 COMPOSITION GATE ─────────────────────────────────────────────
+  // Three checks. Any failure marks status='deferred' with a structured
+  // defer_reason and emits NEWSLETTER_SEND_DEFERRED so the marketing-agent
+  // observability surfaces (admin page + weekly snapshot) show WHY a campaign
+  // didn't send, instead of the campaign silently going out half-baked.
+  //
+  // Check (1) — video render completion for AI-generated campaigns.
+  // The newsletter-video-render cron stages a row in 'queued' as soon as
+  // approval flips, takes 30-90s to render, then writes status='completed'
+  // + video_url. If we're still 'queued' or 'rendering' and we're inside a
+  // short grace window past send_date, skip this tick (let the next hourly
+  // run pick it up). If we're past the grace window or the render 'failed',
+  // defer with the specific reason. Non-AI campaigns skip this check.
+  let videoEmbed = ""
+  if (c.is_ai_generated === true) {
+    const { data: vr } = await svc
+      .from("newsletter_video_renders")
+      .select("video_url, status")
+      .eq("newsletter_campaign_id", c.id)
+      .maybeSingle()
+    const ready = vr as { video_url: string | null; status: string } | null
+    const sendDateMs = c.send_date ? Date.parse(c.send_date) : null
+    const inGraceWindow = sendDateMs !== null && Date.now() - sendDateMs < 2 * 60 * 60 * 1000
+    if (!ready) {
+      // The kickoff cron should have staged a ledger row when approval
+      // flipped. If we're past the grace window with no row at all, defer
+      // — something upstream is broken and the agent needs to see it.
+      if (!inGraceWindow) {
+        return await deferCampaign(svc, c, "video_render:not_staged_past_grace_window")
+      }
+      return {
+        campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
+        outcome: "skipped_concurrent", recipients: 0, sent: 0, suppressed: 0, errors: 0,
+        reason: "video_render:awaiting_kickoff",
+      }
     }
+    if (ready.status === "failed") {
+      return await deferCampaign(svc, c, "video_render:failed")
+    }
+    if (ready.status !== "completed" || !ready.video_url) {
+      if (!inGraceWindow) {
+        return await deferCampaign(svc, c, `video_render:${ready.status}_past_grace_window`)
+      }
+      return {
+        campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
+        outcome: "skipped_concurrent", recipients: 0, sent: 0, suppressed: 0, errors: 0,
+        reason: `video_render:${ready.status}`,
+      }
+    }
+    videoEmbed = [
+      `<div style="margin:0 0 24px 0;text-align:center">`,
+      `  <video controls preload="metadata" style="max-width:100%;border-radius:8px;">`,
+      `    <source src="${ready.video_url}" type="video/mp4">`,
+      `    Your email client doesn't support video — `,
+      `    <a href="${ready.video_url}">click here to watch</a>.`,
+      `  </video>`,
+      `</div>`,
+    ].join("\n")
+  }
+
+  // Check (2) — section presence. The Wave 20 decomposer should have
+  // populated at least one newsletter_sections row. When that's zero AND
+  // the campaign body itself is empty, the assembled email would be blank;
+  // defer instead of sending a 1-pixel email blast.
+  const { count: sectionCount } = await svc
+    .from("newsletter_sections")
+    .select("id", { count: "exact", head: true })
+    .eq("newsletter_id", c.id)
+    .eq("brokerage_id", c.brokerage_id)
+  const hasCampaignBody = ((c.content ?? "").trim().length > 0)
+  if ((sectionCount ?? 0) === 0 && !hasCampaignBody) {
+    return await deferCampaign(svc, c, "sections_missing:empty_body")
+  }
+
+  // Check (3) — final-shape compliance gate. Per-section evaluateOutbound runs
+  // at draft time inside aiWriteNewsletterContent (broadcast shape), but the
+  // FINAL assembled email body (video embed + sections stitched into one
+  // document) has never been gated as a single unit. Some patterns only
+  // surface once the document is composed (e.g. a benign section title +
+  // a benign section body that, side-by-side, read as protected-class
+  // adjacency). Run one final broadcast-shape evaluateOutbound on the
+  // assembled preview HTML. The compliance fence catches it here, in the
+  // last 30 seconds before send, instead of after a thousand recipients.
+  const previewSections = await resolveSectionsForRecipient({
+    brokerageId:       c.brokerage_id,
+    newsletterId:      c.id,
+    recipientPersona:  null,
+    recipientLocation: null,
+  })
+  const previewAssembled = assembleNewsletterHtml({
+    context: {
+      campaignId:       c.id,
+      brokerageId:      c.brokerage_id,
+      newsletterId,
+      campaignSubject:  c.subject_line,
+      campaignBodyHtml: videoEmbed + (c.content ?? ""),
+    },
+    sections: previewSections,
+  })
+  const finalCompliance = await evaluateOutbound({
+    actorContext: { userId: c.created_by ?? c.agent_id ?? c.brokerage_id, role: "agent", brokerageId: c.brokerage_id },
+    journeyType:  "seller",
+    // 'other' is the canonical Persona value when no specific persona
+    // narrows the broadcast; the per-recipient pass later uses the actual
+    // contact persona — this gate runs on the broadcast-shape preview.
+    persona:      "other",
+    messageType:  "email",
+    content:      previewAssembled.text,
+    contact: {
+      id: "broadcast_preview",
+      first_name: "Subscriber",
+      last_name: "Audience",
+      contact_type: "buyer",
+      tcpa_consent: true,
+      isa_reengage_allowed: false,
+      dnc_status: false,
+    },
+  }).catch(() => ({ allowed: true, violations: [] as string[] }))
+  if (!finalCompliance.allowed) {
+    return await deferCampaign(svc, c, `final_compliance:${finalCompliance.violations.slice(0, 3).join("|") || "blocked"}`)
   }
 
   // Claim the campaign so concurrent ticks don't re-send it.

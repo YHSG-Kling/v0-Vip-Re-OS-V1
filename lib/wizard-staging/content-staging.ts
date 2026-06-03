@@ -54,16 +54,45 @@ export async function stageNewsletterDraft(
   if (!intake.title?.trim()) return { success: false, error: "title required" }
 
   try {
-    const { createNewsletterCampaign } = await import("@/app/actions/ai-newsletter")
+    // Wave 21 — when the marketing agent calls stage_newsletter_draft, run the
+    // full canonical authoring chain instead of stuffing the intake topic into
+    // a single-section stub. aiWriteNewsletterContent pulls top topics from
+    // content_topic_bank, authors multi-section persona+location-targeted
+    // copy, runs the per-section compliance + brand-voice chain, and returns
+    // structured sections plus the seedTopicIds that anchored the issue.
+    // Those flow into createNewsletterCampaign so:
+    //   · the multi-section decomposer (Wave 20) actually has sections to
+    //     decompose (instead of one stub)
+    //   · seedTopicIds get logged to content_topic_uses (Wave 20.1) so the
+    //     performance loop captures which topics produced this draft
+    //   · the video render path (Wave 20.1) reads those same topic IDs back
+    //     for cohesion — video + sections develop the same threads
+    const { aiWriteNewsletterContent, createNewsletterCampaign } = await import("@/app/actions/ai-newsletter")
+    const topicForAuthor = intake.topic?.trim() || intake.title.trim()
+    const authored = await aiWriteNewsletterContent({
+      agentId:        ctx.userId,
+      brokerageId:    ctx.brokerageId,
+      topic:          topicForAuthor,
+      targetAudience: intake.audience ?? "all",
+      tone:           "friendly",
+    })
+    const authoredOk = authored as { success: boolean; sections?: unknown[]; seedTopicIds?: string[]; error?: string }
+    if (!authoredOk.success) {
+      return { success: false, error: authoredOk.error ?? "Newsletter content authoring failed" }
+    }
+    const sections = (authoredOk.sections ?? []) as Array<Record<string, unknown>>
+    const seedTopicIds = Array.isArray(authoredOk.seedTopicIds) ? authoredOk.seedTopicIds : []
+
     const result = await createNewsletterCampaign({
-      agentId: ctx.userId,
-      brokerageId: ctx.brokerageId,
-      title: intake.title,
-      subjectLine: intake.subjectLine ?? intake.title,
-      preheaderText: "",
-      template: "default",
-      content: intake.topic ? [{ id: "intro", type: "intro", body: intake.topic } as never] : [],
+      agentId:         ctx.userId,
+      brokerageId:     ctx.brokerageId,
+      title:           intake.title,
+      subjectLine:     intake.subjectLine ?? intake.title,
+      preheaderText:   "",
+      template:        "default",
+      content:         sections as never,
       audienceSegment: intake.audience ?? "all",
+      seedTopicIds,
     })
     if (!result.success) return { success: false, error: result.error ?? "Newsletter creation failed" }
     const newsletterId = (result as { newsletter?: { id?: string } }).newsletter?.id
@@ -71,7 +100,7 @@ export async function stageNewsletterDraft(
       success: true,
       draftId: newsletterId,
       openUrl: newsletterId ? `/newsletters?draft=${newsletterId}` : "/newsletters",
-      summary: `Newsletter draft "${intake.title}" staged via canonical newsletter pipeline (brand voice + compliance + feature gates intact). Agent opens the newsletter editor to add sections and schedule send.`,
+      summary: `Newsletter draft "${intake.title}" staged via canonical pipeline — ${sections.length} topic-seeded section(s) authored from ${seedTopicIds.length} content_topic_bank thread(s); brand voice + per-section compliance gates intact. Agent opens the newsletter editor to review and schedule.`,
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Newsletter staging failed" }
