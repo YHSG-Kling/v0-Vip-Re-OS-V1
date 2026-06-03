@@ -11,6 +11,7 @@ import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
+import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 
 // 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
 // canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
@@ -59,6 +60,30 @@ export const RemotionRoot: React.FC = () => {
           subject:        "Your weekly market digest",
           marketBeat:     "Median price up 3.2% vs last month",
           sectionTitles:  ["Market Update", "New Listings", "Local News"],
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+          },
+        }}
+      />
+      {/* Wave 22a — per-persona inbox-preview still thumbnail. 1200×630
+          Open-Graph ratio so it works in Gmail/Apple Mail inbox previews
+          AND when the email is forwarded into Slack/Teams/iOS Messages.
+          durationInFrames=1 because renderStill() needs an anchor; the
+          composition itself is pure (no animation). */}
+      <Composition
+        id="NewsletterDigestThumb"
+        component={NewsletterDigestThumb as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1200}
+        height={630}
+        defaultProps={{
+          agentName:     "Your Agent",
+          agentPhotoUrl: null,
+          personaHook:   "This week's market window in your area",
+          subject:       "Your weekly market digest",
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",

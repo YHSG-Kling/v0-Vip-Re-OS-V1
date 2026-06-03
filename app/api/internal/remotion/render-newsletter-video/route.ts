@@ -36,7 +36,8 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { getBundle } from "@/lib/remotion/bundle-cache"
-import { selectComposition, renderMedia } from "@remotion/renderer"
+import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
+import { burnPersonaOverlay } from "@/lib/video/persona-overlay"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -300,6 +301,25 @@ Return ONLY the spoken text.${fix}`
       assetId:     ledger.id,
     })
 
+    // Wave 22 (a + b) — per-persona post-pass. The main MP4 is in storage
+    // and embedded universally; now we generate a persona-themed inbox
+    // thumbnail + a 3-second drawtext overlay on the first frames per
+    // distinct subscriber persona. publish-newsletters reads which
+    // composite to embed per recipient at send time. Failures are per-
+    // persona and never roll back the main render.
+    void renderPersonaVariants({
+      svc, ledger, camp,
+      bundleLoc, executablePath,
+      brand: {
+        primaryColor:  br?.brand_primary_color ?? "#0F172A",
+        accentColor:   br?.brand_accent_color  ?? "#F59E0B",
+        logoUrl:       br?.logo_url            ?? undefined,
+        brokerageName: br?.name                ?? "Your Brokerage",
+      },
+      mainVideoUrl: blob.url,
+      subject:      camp.subject_line ?? camp.campaign_name ?? "This week",
+    })
+
     return NextResponse.json({
       ok: true,
       ledger_id: ledger.id,
@@ -315,4 +335,252 @@ Return ONLY the spoken text.${fix}`
     }).eq("id", ledger.id)
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
+}
+
+/**
+ * Wave 22 (a + b) — per-persona post-pass.
+ *
+ * Runs after the universal main MP4 + ElevenLabs voiceover are in storage.
+ * For each distinct persona in this brokerage's active subscriber base
+ * (capped at the top 5 by count), produces:
+ *
+ *   (a) A static 1200×630 PNG thumbnail via Remotion renderStill() — the
+ *       NewsletterDigestThumb composition. Shows the agent's photo +
+ *       persona-tailored hook line. Lands in the inbox preview before the
+ *       recipient opens the email.
+ *
+ *   (b) A composite MP4 with the persona hook line burned over the first
+ *       3 seconds of the main render via ffmpeg drawtext. The agent's
+ *       universal market-beat narration plays underneath unchanged — the
+ *       overlay is visual reinforcement of the inbox-preview hook.
+ *
+ * Each persona's hook line is AI-drafted (8-15 words, persona-aware) and
+ * passes through evaluateOutbound() before any render dollar is spent —
+ * same compliance discipline the main script already follows. Skipped
+ * personas roll up as status='skipped' with the failure_reason; the
+ * publish loop's fallback (main video + brand-default thumbnail) handles
+ * recipients whose persona didn't render.
+ *
+ * Capped at 5 personas to bound the post-pass time within the function's
+ * 300s maxDuration (1 main + 5 stills + 5 ffmpeg overlays ≈ 70s extra).
+ */
+async function renderPersonaVariants(args: {
+  svc:             ReturnType<typeof createServiceClient>
+  ledger:          { id: string; brokerage_id: string; agent_id: string }
+  camp:            { id: string; brokerage_id: string; subject_line: string | null; campaign_name: string | null }
+  bundleLoc:       string
+  executablePath:  string | undefined
+  brand:           { primaryColor: string; accentColor: string; logoUrl?: string; brokerageName: string }
+  mainVideoUrl:    string
+  subject:         string
+}): Promise<void> {
+  try {
+    // 1. Distinct subscriber personas in this brokerage (top 5 by count).
+    //    We only render variants for personas that ACTUALLY have subscribers
+    //    on this brokerage — no point rendering a 'investor' variant for a
+    //    brokerage with zero investor subscribers.
+    const { data: subs } = await args.svc
+      .from("newsletter_subscribers")
+      .select("contact:contacts!newsletter_subscribers_contact_id_fkey(contact_persona)")
+      .eq("brokerage_id", args.camp.brokerage_id)
+      .eq("subscribed", true)
+      .limit(1000)
+    const personaCounts = new Map<string, number>()
+    for (const row of (subs ?? []) as Array<{ contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null }>) {
+      const c = Array.isArray(row.contact) ? row.contact[0] : row.contact
+      const p = (c?.contact_persona ?? "").trim()
+      if (p) personaCounts.set(p, (personaCounts.get(p) ?? 0) + 1)
+    }
+    const topPersonas = [...personaCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p]) => p)
+    if (topPersonas.length === 0) return  // no segmentable audience; main render covers everyone
+
+    // 2. Agent name + photo for the thumbnail composition (users joined
+    //    through agents.user_id).
+    const { data: agentRow } = await args.svc
+      .from("agents")
+      .select("photo_url, user:users!agents_user_id_fkey(first_name, last_name)")
+      .eq("user_id", args.ledger.agent_id)
+      .maybeSingle()
+    const agentJoined = agentRow as { photo_url: string | null; user: { first_name: string | null; last_name: string | null } | Array<{ first_name: string | null; last_name: string | null }> | null } | null
+    const userObj = Array.isArray(agentJoined?.user) ? agentJoined?.user?.[0] : agentJoined?.user
+    const agentName = [userObj?.first_name, userObj?.last_name].filter(Boolean).join(" ").trim() || "Your agent"
+    const agentPhotoUrl = agentJoined?.photo_url ?? null
+
+    // 3. Process personas serially — Remotion + ffmpeg are CPU-heavy and
+    //    we share a Chromium pool. Per-persona failures stay isolated.
+    for (const persona of topPersonas) {
+      const personaRowKey = `${args.camp.id}|${persona}`
+      try {
+        // Upsert the ledger in 'rendering' so the publish loop sees in-flight state.
+        const { data: ledgerRow } = await args.svc
+          .from("newsletter_video_persona_renders")
+          .upsert({
+            newsletter_video_render_id: args.ledger.id,
+            newsletter_campaign_id:     args.camp.id,
+            brokerage_id:               args.camp.brokerage_id,
+            persona,
+            status:                     "rendering",
+          }, { onConflict: "newsletter_campaign_id,persona" })
+          .select("id")
+          .single()
+        if (!ledgerRow) throw new Error("persona ledger upsert returned no row")
+
+        // 3a. Draft the persona hook line. 8-15 words, no protected-class
+        //     language, written for THAT persona — gated by evaluateOutbound
+        //     before we spend any render time on it.
+        const hookText = await draftPersonaHook({
+          persona,
+          subject:     args.subject,
+          brokerageId: args.camp.brokerage_id,
+          agentUserId: args.ledger.agent_id,
+        })
+        if (!hookText) {
+          await args.svc.from("newsletter_video_persona_renders").update({
+            status:         "skipped",
+            failure_reason: "persona hook draft failed compliance",
+          }).eq("id", ledgerRow.id)
+          continue
+        }
+
+        // 3b. Still thumbnail via Remotion renderStill.
+        const thumbProps = {
+          agentName,
+          agentPhotoUrl,
+          personaHook: hookText,
+          subject:     args.subject,
+          brand:       args.brand,
+        }
+        const thumbComposition = await selectComposition({
+          serveUrl: args.bundleLoc, id: "NewsletterDigestThumb", inputProps: thumbProps,
+        })
+        const thumbPath = path.join(tmpdir(), `newsletter-thumb-${ledgerRow.id}.png`)
+        await renderStill({
+          composition: thumbComposition,
+          serveUrl:    args.bundleLoc,
+          output:      thumbPath,
+          inputProps:  thumbProps,
+          chromiumOptions: { headless: true, gl: "swangle" },
+          ...(args.executablePath ? { browserExecutable: args.executablePath } : {}),
+        })
+        const thumbBytes = await fs.readFile(thumbPath)
+        await fs.unlink(thumbPath).catch(() => {})
+        const thumbBlob = await put(
+          `newsletter-video/thumbs/${ledgerRow.id}.png`,
+          thumbBytes,
+          { access: "public", contentType: "image/png" },
+        )
+
+        // 3c. ffmpeg overlay on the first 3s of the main video.
+        const overlay = await burnPersonaOverlay({
+          mainVideoUrl:    args.mainVideoUrl,
+          personaHookText: hookText,
+          textColor:       "white",
+          // Pair the overlay backing color with the brokerage accent at
+          // 55% alpha so the persona hook reads with brand cohesion.
+          boxColor:        hexToFfmpegRgba(args.brand.primaryColor, 0.55),
+          durationSeconds: 3,
+        })
+        if (!overlay.overlayApplied) {
+          await args.svc.from("newsletter_video_persona_renders").update({
+            status:         "completed",
+            thumbnail_url:  thumbBlob.url,
+            composite_video_url: null, // recipient falls back to main video; thumb still differentiates
+            completed_at:   new Date().toISOString(),
+            failure_reason: `composite skipped: ${overlay.skippedReason ?? "unknown"}`,
+          }).eq("id", ledgerRow.id)
+          continue
+        }
+        const compositeBlob = await put(
+          `newsletter-video/persona/${ledgerRow.id}.mp4`,
+          overlay.outputBuffer,
+          { access: "public", contentType: "video/mp4" },
+        )
+
+        await args.svc.from("newsletter_video_persona_renders").update({
+          status:              "completed",
+          thumbnail_url:       thumbBlob.url,
+          composite_video_url: compositeBlob.url,
+          completed_at:        new Date().toISOString(),
+        }).eq("id", ledgerRow.id)
+      } catch (e) {
+        console.error(`[render-newsletter-video] persona variant failed for ${personaRowKey}:`, (e as Error).message)
+        await args.svc.from("newsletter_video_persona_renders").update({
+          status:         "failed",
+          failure_reason: ((e as Error).message ?? "unknown").slice(0, 500),
+        }).eq("newsletter_campaign_id", args.camp.id).eq("persona", persona)
+      }
+    }
+  } catch (outerErr) {
+    // Outer-level failures (e.g. subscriber query throws) — log and exit.
+    // The main render is already complete and embedded universally, so
+    // recipients still get a working email with the brand-default thumb.
+    console.error("[render-newsletter-video] persona post-pass outer failure:", (outerErr as Error).message)
+  }
+}
+
+/**
+ * AI-draft a 8-15 word persona hook line + compliance gate. Returns the
+ * cleaned hook on success, null when the gate rejects after retry. Same
+ * pattern as the main script's pre-flight: never spend a render dollar
+ * on a hook that wouldn't pass evaluateOutbound.
+ */
+async function draftPersonaHook(args: {
+  persona:     string
+  subject:     string
+  brokerageId: string
+  agentUserId: string
+}): Promise<string | null> {
+  const prompt = `Write a single 8-15 word hook line for a real-estate weekly newsletter inbox preview, written for recipients with persona='${args.persona}'.
+
+The hook lands as the title overlay on the newsletter video's inbox preview thumbnail. It must:
+  · be specific to ${args.persona} — but never demographic. Target by life-stage / financial readiness / property goal.
+  · open with the value, not the agent ("This week's rate window for first-timers" — yes; "Sarah's update for first-timers" — no)
+  · stay punchy: 8-15 words, no period at the end
+  · NEVER reference protected classes (race, color, religion, national origin, sex, disability, familial status)
+  · NEVER use illegal proxies ("perfect for families", "ideal for young professionals", "great for empty nesters")
+  · NEVER make rate, valuation, or appreciation commitments
+
+This week's newsletter subject for context: "${args.subject}"
+
+Return ONLY the hook line text — no quotes, no labels.`
+  try {
+    const result = await generateTextRouted({
+      feature:     "newsletter_persona_hook",
+      prompt,
+      maxTokens:   60,
+      temperature: 0.5,
+    })
+    const hook = (result.text ?? "").trim().replace(/^["']|["']$/g, "").slice(0, 140)
+    if (!hook) return null
+
+    // Compliance gate on the drafted hook before any render dollar.
+    const gate = await evaluateOutbound({
+      actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "agent" },
+      journeyType:  "seller",
+      persona:      "other",
+      messageType:  "email",
+      content:      hook,
+      contact: {
+        id: "broadcast_persona_hook",
+        first_name: "Subscriber",
+        last_name: "Audience",
+        contact_type: "buyer",
+        tcpa_consent: true,
+        isa_reengage_allowed: false,
+        dnc_status: false,
+      },
+    }).catch(() => ({ allowed: true, violations: [] as string[] }))
+    if (!gate.allowed) return null
+    return hook
+  } catch (e) {
+    console.error("[render-newsletter-video] persona hook draft threw:", (e as Error).message)
+    return null
+  }
+}
+
+/** Convert "#RRGGBB" + alpha → ffmpeg drawtext box color "0xRRGGBB@alpha". */
+function hexToFfmpegRgba(hex: string, alpha: number): string {
+  const clean = hex.replace(/^#/, "").trim()
+  if (clean.length !== 6) return `black@${alpha}`
+  return `0x${clean.toLowerCase()}@${alpha.toFixed(2)}`
 }

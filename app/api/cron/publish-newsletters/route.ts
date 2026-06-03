@@ -353,6 +353,28 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     }
   }
 
+  // Wave 22 (a + b) — per-persona video variants. Each (campaign × persona)
+  // row in newsletter_video_persona_renders may have a persona-overlaid
+  // composite MP4 + a persona-themed thumbnail. We fetch the whole map in
+  // ONE query before the recipient loop, then look up per-recipient by
+  // their contact_persona. Recipients whose persona has no completed row
+  // fall back to the universal videoEmbed assembled above.
+  const personaVariantMap = new Map<string, { composite_video_url: string | null; thumbnail_url: string | null }>()
+  try {
+    const { data: variants } = await svc
+      .from("newsletter_video_persona_renders")
+      .select("persona, composite_video_url, thumbnail_url")
+      .eq("newsletter_campaign_id", c.id)
+      .eq("status", "completed")
+    for (const v of (variants ?? []) as Array<{ persona: string; composite_video_url: string | null; thumbnail_url: string | null }>) {
+      personaVariantMap.set(v.persona, { composite_video_url: v.composite_video_url, thumbnail_url: v.thumbnail_url })
+    }
+  } catch (e) {
+    // Variant lookup failure is non-fatal — every recipient gets the
+    // universal videoEmbed, same as before Wave 22.
+    console.error(`[publish-newsletters] persona variant lookup failed for ${c.id}:`, (e as Error).message)
+  }
+
   // For each subscriber: resolve persona → sections → assemble → dispatch → log.
   let sent = 0, suppressed = 0, errors = 0
   const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
@@ -390,16 +412,47 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       recipientLocation: location,
     })
 
+    // Wave 22 (a + b) — per-recipient video embed. When the recipient's
+    // persona has a completed variant render, embed the persona overlay
+    // MP4 + the persona thumbnail (poster attribute drives the inbox
+    // preview). Otherwise fall back to the universal videoEmbed assembled
+    // above. The universal main MP4 is always present (the composition gate
+    // wouldn't have let us reach this point otherwise on AI campaigns).
+    const variant = persona ? personaVariantMap.get(persona) ?? null : null
+    const recipientVideoEmbed = (() => {
+      // No video for this campaign at all (non-AI-generated path).
+      if (!videoEmbed && !variant) return ""
+      // Persona variant has both pieces (composite + thumbnail) → use them.
+      if (variant?.composite_video_url) {
+        return [
+          `<div style="margin:0 0 24px 0;text-align:center">`,
+          `  <video controls preload="metadata" ${variant.thumbnail_url ? `poster="${variant.thumbnail_url}"` : ""} style="max-width:100%;border-radius:8px;">`,
+          `    <source src="${variant.composite_video_url}" type="video/mp4">`,
+          `    Your email client doesn't support video — `,
+          `    <a href="${variant.composite_video_url}">click here to watch</a>.`,
+          `  </video>`,
+          `</div>`,
+        ].join("\n")
+      }
+      // Persona has only a thumbnail (overlay was skipped, e.g. ffmpeg
+      // unavailable). Use the main video URL but pair it with the
+      // persona-themed thumbnail so the inbox preview still differentiates.
+      if (variant?.thumbnail_url && videoEmbed) {
+        return videoEmbed.replace(/<video controls preload="metadata"/,
+          `<video controls preload="metadata" poster="${variant.thumbnail_url}"`)
+      }
+      // No persona variant for this recipient — universal embed.
+      return videoEmbed
+    })()
+
     const assembled = assembleNewsletterHtml({
       context: {
         campaignId:       c.id,
         brokerageId:      c.brokerage_id,
         newsletterId,
         campaignSubject:  c.subject_line,
-        // Video embed (when rendered) prepends the campaign body — same URL
-        // for every recipient (cost-bounded pattern; $0.30 per campaign).
-        campaignBodyHtml: videoEmbed
-          ? `${videoEmbed}\n${c.content ?? ""}`
+        campaignBodyHtml: recipientVideoEmbed
+          ? `${recipientVideoEmbed}\n${c.content ?? ""}`
           : c.content,
       },
       sections,

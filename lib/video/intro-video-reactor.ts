@@ -279,12 +279,35 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   //    brand-voice corrections layer.
   const journey: JourneyType = contact.contact_type === "seller" ? "seller" : "buyer"
   const persona = normalizePersona(contact.contact_persona)
+
+  // Wave 22 — assignment intro is the ONE moment we set context for the
+  // ongoing relationship. If this contact is already on the agent's
+  // newsletter list, the script mentions the cadence so they recognize
+  // the next Tuesday send. We DON'T fire a separate newsletter-welcome
+  // trigger — assignment IS the welcome, with the newsletter line added
+  // when applicable. The anniversary trigger doesn't need this; recipients
+  // are years-deep into the relationship by then.
+  let isNewsletterSubscriber = false
+  if (input.trigger === "contact_agent_assigned") {
+    try {
+      const { data: sub } = await svc
+        .from("newsletter_subscribers")
+        .select("id")
+        .eq("contact_id", input.contactId)
+        .eq("subscribed", true)
+        .limit(1)
+        .maybeSingle()
+      isNewsletterSubscriber = !!sub
+    } catch { /* best-effort — fall back to non-newsletter script */ }
+  }
+
   const complianceResult = await runWithComplianceRedraft({
     draft: ({ violations }) => draftScript({
-      trigger:     input.trigger,
-      firstName:   contact.first_name ?? "there",
-      personaRaw:  contact.contact_persona ?? null,
-      yearsAgo:    input.yearsAgo,
+      trigger:               input.trigger,
+      firstName:             contact.first_name ?? "there",
+      personaRaw:            contact.contact_persona ?? null,
+      yearsAgo:              input.yearsAgo,
+      isNewsletterSubscriber,
       violations,
     }),
     gate: async (s) => {
@@ -410,6 +433,10 @@ async function draftScript(args: {
   firstName:   string
   personaRaw:  string | null
   yearsAgo?:   number
+  /** Wave 22 — when the contact is already on the newsletter list at
+   *  assignment time, the script mentions the weekly cadence so they
+   *  recognize the next Tuesday send. Ignored for anniversary trigger. */
+  isNewsletterSubscriber?: boolean
   /** When non-empty, this is a redraft. The model is fed the specific
    *  evaluateOutbound violations from the prior attempt and asked to fix
    *  them — much cheaper than a wasted D-ID render. */
@@ -418,12 +445,16 @@ async function draftScript(args: {
   const personaLine = args.personaRaw
     ? `The recipient's persona is: ${args.personaRaw}. Match that register.`
     : ""
+  // Wave 22 — newsletter cadence reference (assignment trigger only).
+  const newsletterLine = args.trigger === "contact_agent_assigned" && args.isNewsletterSubscriber
+    ? "They're also signed up for the weekly newsletter — mention they'll get the first issue next Tuesday so they recognize it in their inbox. Keep it to one short line."
+    : ""
   const violationLine = args.violations.length > 0
     ? `\n\nYour previous draft failed the brokerage's compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite the script so EVERY one of these violations is resolved. Same length + same intent, just compliance-clean.`
     : ""
   const basePrompt = args.trigger === "contact_agent_assigned"
     ? `Write a 30-45 second video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
-Voice: first-person, warm, professional. ${personaLine}
+Voice: first-person, warm, professional. ${personaLine} ${newsletterLine}
 Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
     : `Write a 30-40 second home-anniversary video script. The recipient ${args.firstName} closed on their home ${args.yearsAgo} year${(args.yearsAgo ?? 0) > 1 ? "s" : ""} ago.
 Voice: first-person, warm, professional. ${personaLine}
