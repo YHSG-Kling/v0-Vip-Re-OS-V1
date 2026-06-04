@@ -127,9 +127,17 @@ export async function GET(req: NextRequest) {
       const r = await generateBlogPost(agentUserId, {
         brokerageId,
         agentUserId,
-        keywords:          p.preferred_categories ?? [],
-        pullFromTopicBank: true,
-        recipientPersona:  p.preferred_persona ?? undefined,
+        keywords:           p.preferred_categories ?? [],
+        pullFromTopicBank:  true,
+        recipientPersona:   p.preferred_persona ?? undefined,
+        // Wave 30 — auto-spawn posts always include a DALL-E cover image.
+        // generateBlogPost honors the existing brand injection (logo
+        // composite via Sharp, brokerage primary color in the prompt) so
+        // every cadence-generated post lands with a properly-branded
+        // 1792×1024 hero image that doubles as the Open Graph card.
+        // Cost: ~$0.08/image standard quality; ~12 posts/year/agent at
+        // weekly cadence = ~$1/agent/year.
+        generateCoverImage: true,
       })
       results.push({
         scope_type: p.scope_type,

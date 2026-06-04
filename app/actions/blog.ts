@@ -217,7 +217,31 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   if (params.generateCoverImage && blogResult.featuredImagePrompt) {
     try {
       const { generateImage } = await import("@/lib/ai/image-generation")
-      const img = await generateImage({ prompt: blogResult.featuredImagePrompt, purpose: "blog_hero" })
+      // Wave 30 — thread brand hints into the call so the image inherits
+      // brokerage logo + primary color + agent attribution. Without these
+      // the generator falls back to a generic real-estate stock-looking
+      // image; with them every post lands branded and consistent with
+      // the brokerage's other marketing.
+      const { data: brokerage } = await supabase
+        .from("brokerages")
+        .select("name, dba_name, license_number, license_state, logo_url, brand_primary_color")
+        .eq("id", params.brokerageId)
+        .maybeSingle()
+      const b = brokerage as { name: string | null; dba_name: string | null; license_number: string | null; license_state: string | null; logo_url: string | null; brand_primary_color: string | null } | null
+      const img = await generateImage({
+        prompt:   blogResult.featuredImagePrompt,
+        purpose:  "blog_hero",
+        size:     "1792x1024",  // 16:9 Open Graph card ratio — works for inline blog hero AND for OG/Twitter card meta tags
+        quality:  "standard",
+        brand: {
+          brokerageName:         b?.name ?? null,
+          brokerageDba:          b?.dba_name ?? null,
+          brokerageLicense:      b?.license_number ?? null,
+          brokerageLicenseState: b?.license_state ?? null,
+          logoUrl:               b?.logo_url ?? null,
+          primaryColor:          b?.brand_primary_color ?? null,
+        },
+      })
       if (img.success && img.imageUrl) featuredImageUrl = img.imageUrl
     } catch (imgErr) {
       console.error("[generateBlogPost] Cover image generation failed (non-blocking):", imgErr)
@@ -446,6 +470,18 @@ export async function publishToWordPress(
   }
 
   // ── 3. Call WordPress REST API ──────────────────────────────────────────────
+  // Wave 30 — augment the content with online-visibility instrumentation:
+  //   · Inline view-tracker script that fires POST /api/blog/track-view on
+  //     page load (parses ?p= / ?c= / ?utm_source= URL params)
+  //   · Share-button block with per-channel onclick handlers that fire
+  //     POST /api/blog/track-share BEFORE opening the share dialog
+  // Both endpoints accept anonymous requests; the brokerage_id is
+  // derived from the blog_post_id on the server. The platform's public
+  // URL is read from env (NEXT_PUBLIC_APP_URL or VERCEL_URL) so the
+  // injected script always points at the canonical tracker.
+  const trackerBase = process.env.NEXT_PUBLIC_APP_URL
+    ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+  const augmentedContent = buildInstrumentedBlogContent(post.content, postId, trackerBase)
   try {
     const authHeader = credentials.access_token
       ? `Bearer ${credentials.access_token}`
@@ -454,7 +490,7 @@ export async function publishToWordPress(
     const response = await callConnector<{ id?: string | number }>({
       connector: "wordpress", baseUrl: credentials.api_url, path: "/wp-json/wp/v2/posts", method: "POST",
       auth: { style: "header", name: "Authorization", value: authHeader },
-      body: { title: post.title, content: post.content, excerpt: post.excerpt, status: "publish" },
+      body: { title: post.title, content: augmentedContent, excerpt: post.excerpt, status: "publish" },
     })
 
     if (!response.ok) {
@@ -1179,4 +1215,108 @@ Return ONLY valid JSON (no markdown, no code blocks):
     console.error("[suggestSEOKeywords] AI failed:", err)
     return { success: false, error: "Failed to suggest keywords" }
   }
+}
+
+/**
+ * Wave 30 — wrap blog HTML with view-tracking script + share-button block.
+ * Called from publishToWordPress before the WP REST insert. The script is
+ * self-contained: reads its own data-blog-post-id attribute, parses URL
+ * params (?p= persona, ?c= contact_id, ?utm_source= source), and fires a
+ * fire-and-forget POST to the tracker endpoint. Share buttons render as
+ * inline HTML with onclick handlers that fire the share-tracker before
+ * opening the platform-specific share dialog.
+ *
+ * Why injected into content (not the WP theme): zero theme modification,
+ * works on every WP install including managed hosts where theme edits are
+ * locked. Some heavily-sanitized themes may strip the inline <script>;
+ * those installs can add the script to their theme footer instead — but
+ * the share buttons (pure HTML+onclick) survive every sanitizer.
+ */
+function buildInstrumentedBlogContent(originalContent: string, blogPostId: string, trackerBase: string): string {
+  const safeBase = trackerBase.replace(/['"<>]/g, "")
+  const safeId   = blogPostId.replace(/[^a-z0-9-]/gi, "")
+  // Share buttons — emoji + label + onclick handler. The handler fires the
+  // tracker THEN opens the share window (so a blocked window doesn't lose
+  // the signal). Each channel is a simple anchor with javascript:void(0).
+  const shareBlock = `
+<div class="blog-share-block" style="margin:32px 0 16px 0;padding:16px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;text-align:center;font-family:system-ui,-apple-system,sans-serif">
+  <div style="font-size:14px;font-weight:600;color:#374151;margin-bottom:12px">Found this useful? Share it</div>
+  <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
+    <a href="javascript:void(0)" onclick="window.__bptShare('facebook')"   style="padding:8px 14px;background:#1877f2;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">Facebook</a>
+    <a href="javascript:void(0)" onclick="window.__bptShare('twitter')"    style="padding:8px 14px;background:#000;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">X / Twitter</a>
+    <a href="javascript:void(0)" onclick="window.__bptShare('linkedin')"   style="padding:8px 14px;background:#0a66c2;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">LinkedIn</a>
+    <a href="javascript:void(0)" onclick="window.__bptShare('whatsapp')"   style="padding:8px 14px;background:#25d366;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">WhatsApp</a>
+    <a href="javascript:void(0)" onclick="window.__bptShare('email_share')" style="padding:8px 14px;background:#374151;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">Email</a>
+    <a href="javascript:void(0)" onclick="window.__bptShare('copy_link')"   style="padding:8px 14px;background:#6b7280;color:#fff;border-radius:6px;text-decoration:none;font-size:13px">Copy Link</a>
+  </div>
+</div>`
+  // The tracker script — view fires on load, share fires on button click.
+  // Uses mode:'no-cors' so cross-origin posts succeed without preflight
+  // (the tracker endpoint accepts the body as-is from any origin since
+  // it's public by design).
+  const trackerScript = `
+<script data-blog-post-id="${safeId}">
+(function(){
+  var BASE   = "${safeBase}";
+  var POSTID = "${safeId}";
+  if (!BASE || !POSTID) return;
+  function paramOf(name){
+    try { return new URLSearchParams(window.location.search).get(name); } catch(e) { return null; }
+  }
+  var persona = paramOf("p");
+  var contactId = paramOf("c");
+  var source = paramOf("utm_source") || (document.referrer ? guessSource(document.referrer) : "direct");
+  function guessSource(ref){
+    if (!ref) return "direct";
+    var h = (function(){ try { return new URL(ref).hostname; } catch(e){ return ""; } })();
+    if (h.indexOf("newsletter") >= 0 || ref.indexOf("utm_source=newsletter") >= 0) return "newsletter";
+    if (h.indexOf("facebook") >= 0 || h.indexOf("twitter") >= 0 || h.indexOf("linkedin") >= 0 || h.indexOf("x.com") >= 0) return "social_post";
+    if (h.indexOf("google") >= 0 || h.indexOf("bing") >= 0) return "organic";
+    if (h.indexOf("openai") >= 0 || h.indexOf("perplexity") >= 0 || h.indexOf("chat.") >= 0 || h.indexOf("gemini") >= 0) return "ai_overview";
+    return "unknown";
+  }
+  function post(path, body){
+    try {
+      fetch(BASE + path, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        keepalive: true
+      });
+    } catch(e){}
+  }
+  // View tracker — fire once on load
+  post("/api/blog/track-view", {
+    blog_post_id: POSTID,
+    source: source,
+    referrer: document.referrer || null,
+    contact_id: contactId,
+    persona_snapshot: persona
+  });
+  // Share handler — fire tracker, then open the share dialog
+  window.__bptShare = function(channel){
+    post("/api/blog/track-share", {
+      blog_post_id: POSTID,
+      share_channel: channel,
+      contact_id: contactId,
+      persona_snapshot: persona
+    });
+    var url = window.location.href;
+    var title = document.title || "";
+    if (channel === "copy_link") {
+      try { navigator.clipboard.writeText(url); } catch(e){}
+      return;
+    }
+    var target = "";
+    if (channel === "facebook") target = "https://www.facebook.com/sharer/sharer.php?u=" + encodeURIComponent(url);
+    else if (channel === "twitter") target = "https://twitter.com/intent/tweet?url=" + encodeURIComponent(url) + "&text=" + encodeURIComponent(title);
+    else if (channel === "linkedin") target = "https://www.linkedin.com/sharing/share-offsite/?url=" + encodeURIComponent(url);
+    else if (channel === "whatsapp") target = "https://api.whatsapp.com/send?text=" + encodeURIComponent(title + " " + url);
+    else if (channel === "email_share") target = "mailto:?subject=" + encodeURIComponent(title) + "&body=" + encodeURIComponent(url);
+    if (target) window.open(target, "_blank", "noopener,noreferrer");
+  };
+})();
+</script>`
+  return originalContent + shareBlock + trackerScript
 }
