@@ -12,6 +12,7 @@ import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
+import { PostcardFront4x6 } from "./PostcardFront4x6"
 
 // 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
 // canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
@@ -88,6 +89,33 @@ export const RemotionRoot: React.FC = () => {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
+          },
+        }}
+      />
+      {/* Wave 36 — 4×6 postcard front. Lob's bleed canvas is 4.25"×6.25"
+          at 300 DPI = 1275×1875 px. renderStill() produces the PNG that
+          ships to Lob's postcards.create({ front: <url> }). */}
+      <Composition
+        id="PostcardFront4x6"
+        component={PostcardFront4x6 as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1275}
+        height={1875}
+        defaultProps={{
+          headline:      "Your block, your number",
+          body:          "Homes on your street sold in 11 days last month. Curious what yours would do today?",
+          cta:           "Get your home's number",
+          qrCodeDataUrl: null,
+          brand: {
+            primaryColor:    "#0F172A",
+            accentColor:     "#F59E0B",
+            logoUrl:         null,
+            brokerageName:   "Your Brokerage",
+            websiteWordmark: "yourbrokerage.com",
+            phone:           "(555) 555-1212",
+            licenseLine:     "CA License # 02345678",
+            shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
       />

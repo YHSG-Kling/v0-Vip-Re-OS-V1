@@ -1,0 +1,270 @@
+/**
+ * lib/direct-mail/draft-copy.ts
+ *
+ * Wave 36 — direct-mail copy generator. Drafts creative + engaging
+ * postcard / letter copy with the canonical compliance gate
+ * (lib/kernel/compliance.evaluateOutbound, messageType='direct_mail')
+ * applied to every output. One automatic redraft on violation so a
+ * Fair Housing flag becomes a corrected draft, not a hard failure.
+ *
+ * The prompt is engineered for "creative + highly engaging" as the
+ * user requested:
+ *   - Specific market data hooks (the agent's farm, recent sales)
+ *   - Direct, conversational voice (60%+ them-pronouns)
+ *   - Actionable CTA tied to the QR destination
+ *   - Local references (neighborhood landmarks) — never demographic
+ *
+ * Three shapes returned:
+ *   - postcard: { headline, body, cta }       — ~80 words total
+ *   - letter:   { greeting, body, signoff }   — ~250 words total
+ *
+ * Both shapes share the brand context resolver so brokerage tagline +
+ * preferred-phrase rules flow through to the AI prompt.
+ */
+import "server-only"
+import { generateTextRouted } from "@/lib/ai/models"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
+import { resolveBrokerageBrandContext } from "@/lib/branding/resolve-brokerage-brand"
+import type { Persona } from "@/lib/kernel/types"
+
+export type DirectMailCopyShape = "postcard" | "letter"
+
+/** Map any incoming persona string to the canonical Persona union.
+ *  Anything unrecognized falls to "other" so we never narrow off a
+ *  valid CRM persona that the compliance gate just doesn't enumerate. */
+function normalizePersona(p: string): Persona {
+  const KNOWN: Persona[] = [
+    "first_time", "relocated", "luxury", "fsbo", "probate",
+    "upsize", "downsize", "military", "divorce", "senior",
+    "expired", "foreclosure", "other",
+  ]
+  return (KNOWN as string[]).includes(p) ? (p as Persona) : "other"
+}
+
+export interface DirectMailCopyContext {
+  brokerageId: string
+  /** The lead/contact the piece is going to. Drives compliance gates
+   *  (opt-outs, DNC, representation). Pass null for bulk farm
+   *  mailings where there's no specific contact yet. */
+  contactId:   string | null
+  /** Persona for tonal targeting — first_time_buyer, mover_up, downsizing,
+   *  investor, luxury, divorce, probate, sphere. */
+  persona:     string
+  /** What the QR on this piece routes to (m148 destination_type). The
+   *  CTA copy should match what the recipient sees on scan. */
+  qrDestinationType?:
+    | "landing_page" | "video_avatar_tour" | "cma_form"
+    | "listing_detail" | "book_meeting" | "podcast_episode"
+    | "anniversary_video" | "other"
+  /** Optional context the prompt weaves in — recent sale, market beat,
+   *  listing address, anniversary month, etc. Pure data, no copy. */
+  hookFacts?: {
+    farmZip?:           string
+    medianPrice?:       number
+    daysOnMarket?:      number
+    recentSaleAddress?: string
+    listingAddress?:    string
+    anniversaryYears?:  number
+    podcastEpisode?:    string
+  }
+}
+
+export interface PostcardCopy {
+  headline: string
+  body:     string
+  cta:      string
+}
+
+export interface LetterCopy {
+  greeting: string
+  body:     string
+  signoff:  string
+}
+
+const POSTCARD_PROMPT = `\
+You are writing copy for a REAL ESTATE DIRECT-MAIL POSTCARD. The piece is going to ONE recipient — write in a direct, conversational voice that earns 3 seconds of attention from someone holding the postcard between their mailbox and their kitchen counter.
+
+Rules (each line is a non-negotiable):
+- Output VALID JSON with keys: headline, body, cta. Nothing else.
+- headline: 4-7 words. Specific, surprising, or curiosity-inducing. NOT generic.
+- body: 25-40 words. Lead with a SPECIFIC FACT from the hookFacts JSON. End with a sentence that earns the CTA.
+- cta: 3-5 words. Matches what the QR destination delivers.
+- ZERO Fair Housing risk language: no race, color, religion, sex, familial status, national origin, disability, sexual orientation, gender identity. Don't describe the neighborhood by demographic. Don't say "perfect for families" or "great for retirees" or "Christian community" or "quiet adult area".
+- ZERO pushy phrasing: no "act now", "limited time", "don't miss out", "you'd be crazy", "trust me".
+- 60%+ client-focused pronouns (you / your) vs agent pronouns (I / we / our).
+- NEVER guarantee appreciation, ROI, or a sale outcome.
+
+Voice:
+- Direct + warm, like an agent who's lived in the area for a decade.
+- Specific over generic. "Homes on Elmwood sold in 9 days last month" beats "the market is hot".
+- A microcopy CTA the recipient actually wants to do — not "Call now".
+
+Examples of strong CTAs by qrDestinationType:
+- video_avatar_tour: "See the 30-second tour"
+- cma_form: "Get your home's number"
+- listing_detail: "See the listing"
+- book_meeting: "Grab 15 minutes"
+- podcast_episode: "Hear the 9-minute story"
+- anniversary_video: "Watch your moment"
+- landing_page: "See the inside"`
+
+const LETTER_PROMPT = `\
+You are writing a REAL ESTATE LETTER (not a postcard). The recipient will read this front-to-back if the first paragraph earns it. Write like a person, not a brochure.
+
+Rules:
+- Output VALID JSON with keys: greeting, body, signoff. Nothing else.
+- greeting: "Hi [first name]," — exactly that shape with a placeholder {{first_name}}.
+- body: 180-260 words across 3-4 paragraphs. Lead with a SPECIFIC FACT from hookFacts. Use ONE concrete example. Close with one clear next step.
+- signoff: 1-2 sentences. Personal, not "Sincerely yours".
+- ZERO Fair Housing risk language. Treat the recipient as an individual, never as a demographic category.
+- ZERO pushy phrasing. No urgency manufacturing.
+- 60%+ client-focused pronouns (you / your).
+- NEVER guarantee market outcomes.
+
+Voice:
+- A neighbor who happens to know the local market cold, not a salesperson.
+- Specific. Use real numbers and a concrete street/neighborhood reference when available.
+- Plain English. Read it aloud — if it sounds like a brochure, rewrite.`
+
+function buildHookContextLine(ctx: DirectMailCopyContext): string {
+  const facts: string[] = []
+  const h = ctx.hookFacts ?? {}
+  if (h.farmZip)            facts.push(`farm zip = ${h.farmZip}`)
+  if (h.medianPrice)        facts.push(`median price last 30d = $${h.medianPrice.toLocaleString()}`)
+  if (h.daysOnMarket)       facts.push(`avg days on market = ${h.daysOnMarket}`)
+  if (h.recentSaleAddress)  facts.push(`recent comparable sale = ${h.recentSaleAddress}`)
+  if (h.listingAddress)     facts.push(`listing address = ${h.listingAddress}`)
+  if (h.anniversaryYears)   facts.push(`anniversary years = ${h.anniversaryYears}`)
+  if (h.podcastEpisode)     facts.push(`podcast episode = "${h.podcastEpisode}"`)
+  return facts.length === 0 ? "no extra hook facts" : facts.join("; ")
+}
+
+async function callModelAndParse(
+  prompt: string,
+  feedback: string[],
+  brokerageId: string,
+): Promise<string> {
+  // Feed the prior round's violations back into the prompt so the
+  // redraft is targeted, not a blind retry.
+  const violationsBlock = feedback.length > 0
+    ? `\nYour PREVIOUS draft violated these compliance rules — fix EACH one:\n` +
+      feedback.map((v) => `- ${v}`).join("\n")
+    : ""
+
+  const { text } = await generateTextRouted({
+    feature:     "direct_mail_copy",
+    brokerageId,
+    prompt:      prompt + violationsBlock,
+    temperature: feedback.length > 0 ? 0.4 : 0.7,
+    maxTokens:   600,
+  })
+  return text
+}
+
+/**
+ * draftPostcardCopy
+ *
+ * Returns compliance-gated headline/body/CTA for a postcard piece.
+ * ok=false when both attempts fail the gate — caller should fall back
+ * to the brokerage's default static template rather than mail copy
+ * the agent + Fair Housing both rejected.
+ */
+export async function draftPostcardCopy(
+  ctx: DirectMailCopyContext,
+): Promise<{ ok: true; copy: PostcardCopy } | { ok: false; violations: string[] }> {
+  const brand = await resolveBrokerageBrandContext(ctx.brokerageId)
+  const hookLine = buildHookContextLine(ctx)
+  const promptHead =
+    `${POSTCARD_PROMPT}\n\n` +
+    `Brokerage: ${brand.brokerageName}\n` +
+    `Persona: ${ctx.persona}\n` +
+    `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
+    `Hook facts: ${hookLine}\n\n` +
+    `Return JSON now.`
+
+  const result = await runWithComplianceRedraft({
+    draft: async ({ violations }) => callModelAndParse(promptHead, violations, ctx.brokerageId),
+    gate:  async (script) => {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: ctx.brokerageId, role: "agent", userId: ctx.brokerageId },
+        messageType:  "direct_mail",
+        journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
+        persona:      normalizePersona(ctx.persona),
+        content:      extractCopyForGate(script),
+      })
+      return { allowed: r.allowed, violations: r.violations }
+    },
+  })
+  if (!result.ok) return { ok: false, violations: result.violations }
+
+  const parsed = parseJsonObject<PostcardCopy>(result.script)
+  if (!parsed || !parsed.headline || !parsed.body || !parsed.cta) {
+    return { ok: false, violations: ["model returned non-JSON or missing required keys"] }
+  }
+  return { ok: true, copy: parsed }
+}
+
+/**
+ * draftLetterCopy
+ *
+ * Same as draftPostcardCopy for the longer letter shape.
+ */
+export async function draftLetterCopy(
+  ctx: DirectMailCopyContext,
+): Promise<{ ok: true; copy: LetterCopy } | { ok: false; violations: string[] }> {
+  const brand = await resolveBrokerageBrandContext(ctx.brokerageId)
+  const hookLine = buildHookContextLine(ctx)
+  const promptHead =
+    `${LETTER_PROMPT}\n\n` +
+    `Brokerage: ${brand.brokerageName}\n` +
+    `Persona: ${ctx.persona}\n` +
+    `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
+    `Hook facts: ${hookLine}\n\n` +
+    `Return JSON now.`
+
+  const result = await runWithComplianceRedraft({
+    draft: async ({ violations }) => callModelAndParse(promptHead, violations, ctx.brokerageId),
+    gate:  async (script) => {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: ctx.brokerageId, role: "agent", userId: ctx.brokerageId },
+        messageType:  "direct_mail",
+        journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
+        persona:      normalizePersona(ctx.persona),
+        content:      extractCopyForGate(script),
+      })
+      return { allowed: r.allowed, violations: r.violations }
+    },
+  })
+  if (!result.ok) return { ok: false, violations: result.violations }
+
+  const parsed = parseJsonObject<LetterCopy>(result.script)
+  if (!parsed || !parsed.body) {
+    return { ok: false, violations: ["model returned non-JSON or missing required keys"] }
+  }
+  return { ok: true, copy: parsed }
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function parseJsonObject<T>(s: string): T | null {
+  // Models sometimes wrap JSON in ```json fences or prepend prose.
+  // Find the first { and the matching last } and parse that span.
+  const start = s.indexOf("{")
+  const end   = s.lastIndexOf("}")
+  if (start < 0 || end <= start) return null
+  try {
+    return JSON.parse(s.slice(start, end + 1)) as T
+  } catch {
+    return null
+  }
+}
+
+function extractCopyForGate(jsonString: string): string {
+  // Flatten the JSON to a single content string for the compliance
+  // gate — the gate's Fair Housing + Them-First rules don't care about
+  // the JSON wrapper, only the human-readable text.
+  const parsed = parseJsonObject<Record<string, unknown>>(jsonString)
+  if (!parsed) return jsonString
+  return Object.values(parsed).filter((v): v is string => typeof v === "string").join("\n")
+}
