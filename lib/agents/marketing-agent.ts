@@ -205,6 +205,29 @@ interface MarketingSnapshot {
     totalEngagement28d:  number  // sum(likes + comments + shares) across the window
     topPostByEngagement: { post_text: string; engagement: number } | null
   }
+  /** Wave 36 — direct-mail channel state. The agent uses these numbers to
+   *  decide when to emit verify_lead_address / cancel_direct_mail_send /
+   *  retry_direct_mail_design / flag_design_for_review resolutions.
+   *  Leads with a populated address but verified=false are the highest-
+   *  leverage signal — re-verifying them unlocks dispatch with one Lob
+   *  API call (~$0.0025) and turns blocked sends into delivered mail. */
+  directMailChannel: {
+    pendingMailers:                 number
+    sentLast28d:                    number
+    failedLast28d:                  number
+    /** Leads with a populated mailing_address but mailing_address_verified=false.
+     *  Candidate set for verify_lead_address. */
+    leadsWithUnverifiedAddresses:   number
+    /** Recent delivery-status failures across direct_mail_recipients
+     *  (returned, undeliverable, failed). Candidate set for
+     *  flag_design_for_review when concentrated in one campaign. */
+    recentDeliveryFailures28d:      number
+    /** The single oldest currently-pending campaign so the agent can
+     *  cite it explicitly in a cancel_direct_mail_send or
+     *  retry_direct_mail_design resolution. */
+    oldestPendingCampaignId:        string | null
+    oldestPendingCampaignAgeHours:  number | null
+  }
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -566,6 +589,69 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] social channel snapshot failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 36 — direct-mail channel snapshot. Pulls the four counters the
+  // agent needs to decide when to emit the new direct-mail resolutions,
+  // plus a single oldest-pending pointer so the agent can target a
+  // specific campaign_id rather than emit a vague "review mailers"
+  // resolution that the human can't action.
+  let directMailChannel: MarketingSnapshot["directMailChannel"] = {
+    pendingMailers: 0,
+    sentLast28d: 0,
+    failedLast28d: 0,
+    leadsWithUnverifiedAddresses: 0,
+    recentDeliveryFailures28d: 0,
+    oldestPendingCampaignId: null,
+    oldestPendingCampaignAgeHours: null,
+  }
+  try {
+    const [pendingR, sentR, failedR, unverifiedR, deliveryFailR, oldestR] = await Promise.all([
+      svc.from("direct_mail_campaigns")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending"),
+      svc.from("direct_mail_campaigns")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "sent")
+        .gte("created_at", since28d),
+      svc.from("direct_mail_campaigns")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "failed")
+        .gte("created_at", since28d),
+      svc.from("leads")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .not("mailing_address", "is", null)
+        .or("mailing_address_verified.is.null,mailing_address_verified.eq.false"),
+      svc.from("direct_mail_recipients")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .in("delivery_status", ["returned", "undeliverable", "failed"])
+        .gte("created_at", since28d),
+      svc.from("direct_mail_campaigns")
+        .select("id, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+    ])
+    directMailChannel.pendingMailers              = pendingR.count ?? 0
+    directMailChannel.sentLast28d                 = sentR.count ?? 0
+    directMailChannel.failedLast28d               = failedR.count ?? 0
+    directMailChannel.leadsWithUnverifiedAddresses = unverifiedR.count ?? 0
+    directMailChannel.recentDeliveryFailures28d   = deliveryFailR.count ?? 0
+    const oldest = oldestR.data as { id: string; created_at: string } | null
+    if (oldest) {
+      directMailChannel.oldestPendingCampaignId       = oldest.id
+      directMailChannel.oldestPendingCampaignAgeHours =
+        Math.round((Date.now() - new Date(oldest.created_at).getTime()) / 3_600_000)
+    }
+  } catch (e) {
+    console.error(`[marketing-agent] direct-mail channel snapshot failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     pendingListingPromos,
     newListingsThisWeek,
@@ -582,6 +668,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     blogChannel,
     listingPromoRenderStatus,
     socialChannel,
+    directMailChannel,
   }
 }
 
@@ -761,6 +848,22 @@ export async function spawnMarketingAgentForBrokerage(params: {
     snap.socialChannel.topPostByEngagement
       ? `Top post: [${snap.socialChannel.topPostByEngagement.engagement}] ${snap.socialChannel.topPostByEngagement.post_text}`
       : "Top post: (no published posts in window)",
+    "",
+    "──── WAVE 36 — DIRECT-MAIL CHANNEL ────",
+    `Pending mailers:                ${snap.directMailChannel.pendingMailers}`,
+    `Sent last 28d:                  ${snap.directMailChannel.sentLast28d}`,
+    `Failed last 28d:                ${snap.directMailChannel.failedLast28d}`,
+    `Leads with unverified addresses: ${snap.directMailChannel.leadsWithUnverifiedAddresses} (candidates for verify_lead_address)`,
+    `Recent delivery failures 28d:    ${snap.directMailChannel.recentDeliveryFailures28d}`,
+    snap.directMailChannel.oldestPendingCampaignId
+      ? `Oldest pending campaign:        ${snap.directMailChannel.oldestPendingCampaignId} (${snap.directMailChannel.oldestPendingCampaignAgeHours}h old)`
+      : "Oldest pending campaign:        (none)",
+    snap.directMailChannel.leadsWithUnverifiedAddresses > 0
+      ? `ACTION HINT: ${snap.directMailChannel.leadsWithUnverifiedAddresses} leads have a populated mailing_address but verified=false. Each verify_lead_address resolution costs ~$0.0025 (Lob) and unlocks direct-mail dispatch for that lead. High-leverage; prefer this over deferring sends.`
+      : "",
+    snap.directMailChannel.failedLast28d > 5
+      ? `ACTION HINT: ${snap.directMailChannel.failedLast28d} failed mailers in 28d. Inspect the oldest pending campaign — if it's a transient Lob 5xx, emit retry_direct_mail_design; if a design problem, emit flag_design_for_review.`
+      : "",
     "",
     "──── WAVE 33 — YOU CAN RESOLVE CONFLICTS, NOT JUST OBSERVE ────",
     "Up through Wave 32, your output was a JSON plan a human reviewed.",
