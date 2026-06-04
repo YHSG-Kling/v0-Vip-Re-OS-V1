@@ -479,6 +479,18 @@ export async function publishBlogPost(
     return { success: true, hostedUrl }
   }
 
+  if (p.publish_target === "embed") {
+    // Wave 32 — embed target is hosted-shape (no external API call), but
+    // the URL the brokerage embeds is the chrome-stripped /embed route.
+    // Both /blog/[slug] and /embed/blog/[slug] return the post on hit so
+    // a brokerage can A/B test landing vs embed without re-publishing.
+    await supabase.from("blog_posts").update({
+      publish_status: "published",
+      published_at:   new Date().toISOString(),
+    }).eq("id", postId)
+    return { success: true, hostedUrl: `${baseUrl}/embed/blog/${p.slug}` }
+  }
+
   if (p.publish_target === "wordpress") {
     return await publishToWordPress(userId, postId)
   }

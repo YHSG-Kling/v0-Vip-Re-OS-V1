@@ -1,11 +1,20 @@
 "use client"
 
+import { useRouter, usePathname } from "next/navigation"
 import { useState, useTransition } from "react"
 import {
   upsertBlogCadencePolicy,
   type BlogCadencePolicyRow,
   type CadenceValue,
 } from "@/app/actions/blog-cadence-policy"
+import type { PolicyScopeAccess } from "@/lib/identity/policy-scope"
+
+type TabKey = "agent" | "team" | "brokerage"
+const TAB_LABEL: Record<TabKey, string> = {
+  agent:     "Your Settings",
+  team:      "Team Settings",
+  brokerage: "Brokerage Settings",
+}
 
 const DOW_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -28,7 +37,19 @@ const PERSONA_OPTIONS = [
   { value: "downsize",          label: "Downsizer" },
 ]
 
-export function BlogCadenceSettingsClient({ initialPolicy }: { initialPolicy: BlogCadencePolicyRow | null }) {
+export function BlogCadenceSettingsClient({
+  initialPolicy,
+  access,
+  activeTab = "agent",
+  activeTeamId = null,
+}: {
+  initialPolicy: BlogCadencePolicyRow | null
+  access?:       PolicyScopeAccess
+  activeTab?:    TabKey
+  activeTeamId?: string | null
+}) {
+  const router = useRouter()
+  const pathname = usePathname()
   const [cadence, setCadence] = useState<CadenceValue>((initialPolicy?.cadence as CadenceValue) ?? "off")
   const [fireDay, setFireDay] = useState<number>(initialPolicy?.fire_day ?? 0)
   const [categories, setCategories] = useState<string[]>(initialPolicy?.preferred_categories ?? [])
@@ -36,6 +57,19 @@ export function BlogCadenceSettingsClient({ initialPolicy }: { initialPolicy: Bl
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState<Date | null>(null)
+
+  const visibleTabs: TabKey[] = access ? [
+    ...(access.canEditAgent ? ["agent"] as TabKey[] : []),
+    ...(access.canEditTeam ? ["team"] as TabKey[] : []),
+    ...(access.canEditBrokerage ? ["brokerage"] as TabKey[] : []),
+  ] : []
+
+  function gotoTab(tab: TabKey, team?: string) {
+    const url = new URL(pathname, "http://x")
+    url.searchParams.set("tab", tab)
+    if (team) url.searchParams.set("team", team)
+    router.push(url.pathname + url.search)
+  }
 
   function toggleCategory(value: string) {
     setCategories((prev) => prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value])
@@ -50,6 +84,8 @@ export function BlogCadenceSettingsClient({ initialPolicy }: { initialPolicy: Bl
         fireDay:             cadence === "off" ? null : fireDay,
         preferredCategories: categories.length > 0 ? categories : null,
         preferredPersona:    persona || null,
+        scopeType:           activeTab,
+        scopeId:             activeTab === "team" ? (activeTeamId ?? undefined) : undefined,
       })
       if (!r.success) {
         setError(r.error ?? "Save failed")
@@ -69,6 +105,26 @@ export function BlogCadenceSettingsClient({ initialPolicy }: { initialPolicy: Bl
           to WordPress without your approval.
         </p>
       </header>
+
+      {visibleTabs.length > 1 && (
+        <div className="mb-6 border-b border-gray-200">
+          <nav className="flex gap-2">
+            {visibleTabs.map((t) => (
+              <button
+                key={t}
+                onClick={() => gotoTab(t)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === t
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+                }`}
+              >
+                {TAB_LABEL[t]}
+              </button>
+            ))}
+          </nav>
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-800 rounded">{error}</div>

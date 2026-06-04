@@ -67,11 +67,17 @@ export async function getMyBlogCadencePolicy(): Promise<GetMyBlogCadenceResult> 
   }
 }
 
+/**
+ * Wave 32 — scoped upsert. Without scopeType the action defaults to AGENT
+ * (backward compat). Other tiers gated by resolvePolicyScopeAccess.
+ */
 export async function upsertBlogCadencePolicy(input: {
   cadence:              CadenceValue
   fireDay:              number | null
   preferredCategories:  string[] | null
   preferredPersona:     string | null
+  scopeType?:           "agent" | "team" | "brokerage"
+  scopeId?:             string
 }): Promise<{ success: boolean; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
@@ -91,19 +97,28 @@ export async function upsertBlogCadencePolicy(input: {
     }
   }
 
-  const svc = createServiceClient()
-  const { data: agentRow } = await svc
-    .from("agents")
-    .select("id")
-    .eq("user_id", ctx.userId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-  const agentRecordId = (agentRow?.id as string | undefined) ?? null
-  if (!agentRecordId) return { success: false, error: "Agent record not found" }
+  const scopeType = input.scopeType ?? "agent"
+  const { resolvePolicyScopeAccess } = await import("@/lib/identity/policy-scope")
+  const access = await resolvePolicyScopeAccess()
+  let scopeId = input.scopeId ?? null
+  if (scopeType === "agent") {
+    if (!access.canEditAgent) return { success: false, error: "Forbidden" }
+    scopeId = access.agentScopeId
+  } else if (scopeType === "team") {
+    if (!access.canEditTeam) return { success: false, error: "Forbidden" }
+    if (!scopeId || !access.teamScopeIds.includes(scopeId)) {
+      return { success: false, error: "Forbidden — team not in your scope" }
+    }
+  } else if (scopeType === "brokerage") {
+    if (!access.canEditBrokerage) return { success: false, error: "Forbidden" }
+    scopeId = access.brokerageScopeId
+  }
+  if (!scopeId) return { success: false, error: "Could not resolve scope id" }
 
+  const svc = createServiceClient()
   const { error } = await svc.from("blog_cadence_policy").upsert({
-    scope_type:           "agent",
-    scope_id:             agentRecordId,
+    scope_type:           scopeType,
+    scope_id:             scopeId,
     cadence:              input.cadence,
     fire_day:             input.fireDay,
     preferred_categories: input.preferredCategories,

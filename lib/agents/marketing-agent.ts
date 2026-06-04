@@ -156,6 +156,30 @@ interface MarketingSnapshot {
     realized_click_rate:        number | null
     plan_quality_score:         number | null
   }>
+  /** Wave 32 — blog channel oversight. The agent now sees the blog
+   *  cadence policies that have fired in the trailing 28d (which agents
+   *  have auto-spawn on), aggregate views + shares across published
+   *  posts in window, and the top 3 share-driving posts.  Lets the
+   *  marketing agent weigh blog allocation against newsletter + social
+   *  for the week's plan based on actual signal. */
+  blogChannel: {
+    publishedLast28d:        number
+    publishedHosted:         number
+    publishedWordpress:      number
+    publishedEmbed:          number
+    totalViewsLast28d:       number
+    totalSharesLast28d:      number
+    /** Number of scopes (agent/team/brokerage) with auto-spawn cadence
+     *  active for this brokerage. Tells the agent how much of the
+     *  cadence is policy-driven vs manual generation. */
+    activeCadencePolicies:   number
+    topSharedPosts: Array<{
+      title:        string
+      slug:         string
+      shareCount:   number
+      viewCount:    number
+    }>
+  }
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -374,6 +398,57 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] prior plan outcomes read failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 32 — blog channel oversight. 4 parallel reads: published posts
+  // in window grouped by publish_target, total views/shares (denormalized
+  // counters from m140), active cadence policies, top shared posts.
+  const since28d = new Date(Date.now() - 28 * 86_400_000).toISOString()
+  let blogChannel: MarketingSnapshot["blogChannel"] = {
+    publishedLast28d: 0, publishedHosted: 0, publishedWordpress: 0, publishedEmbed: 0,
+    totalViewsLast28d: 0, totalSharesLast28d: 0, activeCadencePolicies: 0,
+    topSharedPosts: [],
+  }
+  try {
+    const [publishedR, cadenceR, topSharedR] = await Promise.all([
+      svc.from("blog_posts")
+        .select("publish_target, view_count_total, share_count_total")
+        .eq("brokerage_id", brokerageId)
+        .eq("publish_status", "published")
+        .gte("published_at", since28d)
+        .limit(500),
+      svc.from("blog_cadence_policy")
+        .select("scope_id", { count: "exact", head: true })
+        .neq("cadence", "off")
+        .in("scope_id", await resolveScopeIdsForBrokerage(svc, brokerageId)),
+      svc.from("blog_posts")
+        .select("title, slug, view_count_total, share_count_total")
+        .eq("brokerage_id", brokerageId)
+        .eq("publish_status", "published")
+        .gte("published_at", since28d)
+        .order("share_count_total", { ascending: false })
+        .limit(3),
+    ])
+    const rows = (publishedR.data ?? []) as Array<{ publish_target: string; view_count_total: number | null; share_count_total: number | null }>
+    blogChannel.publishedLast28d = rows.length
+    for (const r of rows) {
+      if (r.publish_target === "hosted")    blogChannel.publishedHosted++
+      if (r.publish_target === "wordpress") blogChannel.publishedWordpress++
+      if (r.publish_target === "embed")     blogChannel.publishedEmbed++
+      if (r.publish_target === "both")    { blogChannel.publishedHosted++; blogChannel.publishedWordpress++ }
+      blogChannel.totalViewsLast28d  += r.view_count_total  ?? 0
+      blogChannel.totalSharesLast28d += r.share_count_total ?? 0
+    }
+    blogChannel.activeCadencePolicies = cadenceR.count ?? 0
+    blogChannel.topSharedPosts = ((topSharedR.data ?? []) as Array<{ title: string; slug: string; view_count_total: number | null; share_count_total: number | null }>)
+      .map((p) => ({
+        title:      p.title,
+        slug:       p.slug,
+        shareCount: p.share_count_total ?? 0,
+        viewCount:  p.view_count_total  ?? 0,
+      }))
+  } catch (e) {
+    console.error(`[marketing-agent] blog channel snapshot read failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     pendingListingPromos,
     newListingsThisWeek,
@@ -387,7 +462,27 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     personaEngagement,
     personaTopTopics,
     priorPlanOutcomes,
+    blogChannel,
   }
+}
+
+/** Wave 32 — pull every (scope_type, scope_id) tuple within this brokerage
+ *  whose policy might fire blog auto-spawn. Used to count active cadence
+ *  policies for the agent's snapshot. */
+async function resolveScopeIdsForBrokerage(
+  svc: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+): Promise<string[]> {
+  const ids: string[] = [brokerageId]
+  try {
+    const [agentsR, teamsR] = await Promise.all([
+      svc.from("agents").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(500),
+      svc.from("teams").select("id").eq("brokerage_id", brokerageId).limit(100),
+    ])
+    for (const r of (agentsR.data ?? []) as Array<{ id: string }>) ids.push(r.id)
+    for (const r of (teamsR.data  ?? []) as Array<{ id: string }>) ids.push(r.id)
+  } catch { /* best-effort — snapshot tolerates missing roster */ }
+  return ids
 }
 
 export async function spawnMarketingAgentForBrokerage(params: {
@@ -508,6 +603,25 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "",
     priorPlanLines,
     priorPlanAvgLine,
+    "",
+    "──── WAVE 32 — BLOG CHANNEL OVERSIGHT (TRAILING 28 DAYS) ────",
+    "Blog is now wired into the agentic loop: topic-bank-seeded articles",
+    "(Wave 29), branded cover images (Wave 30), hosted at /blog/[slug]",
+    "OR pushed to WordPress OR embedded via /embed/blog/[slug] (Wave 31-32).",
+    "Each publication carries a view + share tracker that feeds the same",
+    "per-(topic, persona) score table the newsletter uses. Decide whether",
+    "to lean more into blog this week based on the signal below.",
+    "",
+    `Published last 28d:           ${snap.blogChannel.publishedLast28d} (hosted=${snap.blogChannel.publishedHosted}, wordpress=${snap.blogChannel.publishedWordpress}, embed=${snap.blogChannel.publishedEmbed})`,
+    `Total page views (28d):       ${snap.blogChannel.totalViewsLast28d}`,
+    `Total share clicks (28d):     ${snap.blogChannel.totalSharesLast28d}`,
+    `Active cadence policies:      ${snap.blogChannel.activeCadencePolicies} (subscribers with auto-spawn ON)`,
+    "",
+    snap.blogChannel.topSharedPosts.length === 0
+      ? "Top-shared posts: (none yet — share tracker hasn't accumulated data)"
+      : "Top-shared posts (last 28d):\n" + snap.blogChannel.topSharedPosts.map((p, i) =>
+          `  ${i + 1}. [${p.shareCount} shares · ${p.viewCount} views] ${p.title}`
+        ).join("\n"),
     "",
     "Read the de-conflict log (deconflict_suppression_log) for the brokerage's recent",
     "broadcast cooldown decisions before scheduling new sends. Honor the broadcast",
