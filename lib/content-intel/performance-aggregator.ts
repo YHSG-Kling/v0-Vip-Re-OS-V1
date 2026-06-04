@@ -140,14 +140,22 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
   }
 
   // Pre-fetch social_posts engagement.
+  // Wave 34 — drift fix. The previous code read
+  // social_posts.likes_count / comments_count / shares_count — columns
+  // that DO NOT EXIST on the live schema. The canonical engagement
+  // column is engagement_data jsonb with shape:
+  //   { likes?: int, comments?: int, shares?: int, reactions?: int }
+  // The signal had been silently returning zeros at runtime.
   const socialEngagement = new Map<string, number>()
   if (socialPostAssetIds.size > 0) {
     try {
       const { data } = await svc.from("social_posts")
-        .select("id, likes_count, comments_count, shares_count")
+        .select("id, engagement_data")
         .in("id", Array.from(socialPostAssetIds))
-      for (const r of (data ?? []) as Array<{ id: string; likes_count?: number | null; comments_count?: number | null; shares_count?: number | null }>) {
-        socialEngagement.set(r.id, (r.likes_count ?? 0) + (r.comments_count ?? 0) + (r.shares_count ?? 0))
+      for (const r of (data ?? []) as Array<{ id: string; engagement_data: { likes?: number | null; comments?: number | null; shares?: number | null; reactions?: number | null } | null }>) {
+        const ed = r.engagement_data ?? {}
+        const sum = (ed.likes ?? 0) + (ed.comments ?? 0) + (ed.shares ?? 0) + (ed.reactions ?? 0)
+        socialEngagement.set(r.id, sum)
       }
     } catch (e) {
       console.error("[performance-aggregator] social_posts batch lookup failed:", (e as Error).message)

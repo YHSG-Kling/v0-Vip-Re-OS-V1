@@ -56,6 +56,10 @@ interface BrandSetupClientProps {
   brokerageEmail: string
   agentName: string
   agentEmail: string
+  /** Wave 34 — agent's personal real-estate website. Optional. When set,
+   *  the platform uses it as the canonical embed/CSP origin for
+   *  /embed/blog and as the byline link on hosted /blog/[slug] pages. */
+  agentPersonalWebsite?: string
   initialStatus: BrandSetupStatus | null
 }
 
@@ -108,6 +112,7 @@ export function BrandSetupClient({
   brokerageName,
   brokeragePhone,
   brokerageEmail,
+  agentPersonalWebsite = "",
   agentName,
   agentEmail,
   initialStatus,
@@ -144,6 +149,22 @@ export function BrandSetupClient({
   const [signatureName, setSignatureName] = useState(agentName)
   const [signaturePhone, setSignaturePhone] = useState(brokeragePhone)
   const [signatureEmail, setSignatureEmail] = useState(agentEmail)
+  // Wave 34 — agent personal website captured during onboarding. Optional
+  // (many brokerages don't have a site and the agent uses their personal one).
+  const [personalWebsite, setPersonalWebsite] = useState(agentPersonalWebsite)
+  const [personalWebsiteSaving, setPersonalWebsiteSaving] = useState(false)
+  const [personalWebsiteError, setPersonalWebsiteError] = useState<string | null>(null)
+  async function savePersonalWebsite() {
+    setPersonalWebsiteError(null)
+    setPersonalWebsiteSaving(true)
+    try {
+      const { updateMyProfile } = await import("@/app/actions/user-profile")
+      const r = await updateMyProfile({ personalWebsiteUrl: personalWebsite })
+      if (!r.success) setPersonalWebsiteError(r.error ?? "Save failed")
+    } finally {
+      setPersonalWebsiteSaving(false)
+    }
+  }
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
@@ -990,6 +1011,38 @@ export function BrandSetupClient({
                             onChange={(e) => setSignatureEmail(e.target.value)}
                             placeholder="you@example.com"
                           />
+                        </div>
+                        {/* Wave 34 — agent personal website. Optional. Saved
+                            separately from the signature so blank/invalid
+                            here doesn't block the brand-setup save. */}
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label>
+                            Your personal website <span className="text-xs text-gray-500">(optional — Realtor.com profile, Wix, custom domain)</span>
+                          </Label>
+                          <div className="flex gap-2">
+                            <Input
+                              type="url"
+                              inputMode="url"
+                              value={personalWebsite}
+                              onChange={(e) => setPersonalWebsite(e.target.value)}
+                              placeholder="https://your-domain.com"
+                              disabled={personalWebsiteSaving}
+                            />
+                            <Button
+                              onClick={savePersonalWebsite}
+                              variant="outline"
+                              size="sm"
+                              disabled={personalWebsiteSaving}
+                            >
+                              {personalWebsiteSaving ? "Saving…" : "Save"}
+                            </Button>
+                          </div>
+                          {personalWebsiteError && (
+                            <p className="text-xs text-red-600">{personalWebsiteError}</p>
+                          )}
+                          <p className="text-xs text-gray-500">
+                            Used as the canonical embed origin for blog posts and the byline link on your hosted articles.
+                          </p>
                         </div>
                       </div>
                       <Button onClick={handleSaveSignature} variant="outline" disabled={isSubmitting}>
