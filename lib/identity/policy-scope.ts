@@ -6,12 +6,17 @@
  * blog-cadence Settings page to decide whether to render the Team and
  * Brokerage tabs.
  *
+ * Wave 33 — user_role_assignments is deprecated. We resolve role
+ * exclusively from users.user_type. Live values in production:
+ *   agent | contact | admin | system | lender | vendor | broker |
+ *   compliance_officer | tc
+ *
  * Resolution rules:
  *   · Every authenticated user can see the AGENT tab (their own override)
- *   · userType ∈ {broker, admin, compliance_officer} → BROKERAGE tab visible
- *     AND can pick any TEAM in the brokerage for the team tab
- *   · userType='team_lead' OR agents.id matches teams.team_lead_id →
- *     TEAM tab visible (their own team only)
+ *   · user_type ∈ {broker, admin, compliance_officer} → BROKERAGE tab
+ *     visible AND can pick any TEAM in the brokerage for the team tab
+ *   · agents.id matches teams.team_lead_id on some row → TEAM tab
+ *     visible (their own team only)
  *
  * Returns the resolved scopeIds so the calling server action can write
  * to the right (scope_type, scope_id) without re-resolving role.

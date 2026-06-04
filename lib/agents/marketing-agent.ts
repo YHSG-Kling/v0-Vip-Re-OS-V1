@@ -180,6 +180,31 @@ interface MarketingSnapshot {
       viewCount:    number
     }>
   }
+  /** Wave 33 — listing-promo per-persona render snapshot. For each
+   *  recently-rendered listing_promo asset, surface how many persona
+   *  variants completed vs failed vs queued. The agent can see "we have
+   *  3 just_listed videos that completed all persona variants and 1
+   *  that's stuck queued past 2h" and either re-trigger or defer. */
+  listingPromoRenderStatus: {
+    publishedLast14d:           number
+    /** Sum across all recent listing_promo assets. */
+    personaVariantsCompleted:   number
+    personaVariantsFailed:      number
+    /** Variants in 'queued' or 'rendering' for >2 hours — degraded. */
+    personaVariantsStuck:       number
+    /** Per-event_type rollup: count published in window. */
+    perEventTypeCounts: Array<{ event_type: string; count: number }>
+  }
+  /** Wave 33 — social posts engagement aggregated in 28d window. The
+   *  social channel has its own per-post engagement counters; surfacing
+   *  them lets the agent weigh social against newsletter + blog when
+   *  allocating the week's broadcast budget. */
+  socialChannel: {
+    publishedLast28d:    number
+    scheduledNext7d:     number
+    totalEngagement28d:  number  // sum(likes + comments + shares) across the window
+    topPostByEngagement: { post_text: string; engagement: number } | null
+  }
 }
 
 async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSnapshot> {
@@ -449,6 +474,98 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] blog channel snapshot read failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 33 — listing-promo per-persona render snapshot. We surface
+  // BOTH the asset count and the persona-variant render state so the
+  // agent can detect "all 3 just_listed videos are missing their
+  // first_time_buyer persona variant" and either trigger a re-render or
+  // defer the publish.
+  const since14d = new Date(Date.now() - 14 * 86_400_000).toISOString()
+  let listingPromoRenderStatus: MarketingSnapshot["listingPromoRenderStatus"] = {
+    publishedLast14d: 0, personaVariantsCompleted: 0, personaVariantsFailed: 0,
+    personaVariantsStuck: 0, perEventTypeCounts: [],
+  }
+  try {
+    const { data: recentPromos } = await svc.from("listing_promo_videos")
+      .select("id, listing_id, event_type, created_at")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", since14d)
+      .in("status", ["rendering", "social_drafted"])
+      .limit(50)
+    const promos = (recentPromos ?? []) as Array<{ id: string; listing_id: string | null; event_type: string; created_at: string }>
+    listingPromoRenderStatus.publishedLast14d = promos.length
+    const perEvent = new Map<string, number>()
+    for (const r of promos) {
+      perEvent.set(r.event_type, (perEvent.get(r.event_type) ?? 0) + 1)
+    }
+    listingPromoRenderStatus.perEventTypeCounts = [...perEvent.entries()]
+      .map(([event_type, count]) => ({ event_type, count }))
+      .sort((a, b) => b.count - a.count)
+
+    // Persona-variant rollup via asset_persona_renders (Wave 28 generalized
+    // m138). One query for all the listing_ids in window.
+    if (promos.length > 0) {
+      const listingIds = promos.map((p) => p.listing_id).filter((x): x is string => !!x)
+      if (listingIds.length > 0) {
+        const stuckThreshold = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+        const { data: variants } = await svc.from("asset_persona_renders")
+          .select("status, created_at")
+          .eq("asset_type", "listing_promo")
+          .in("asset_id", listingIds)
+          .limit(500)
+        for (const v of (variants ?? []) as Array<{ status: string; created_at: string }>) {
+          if (v.status === "completed") listingPromoRenderStatus.personaVariantsCompleted++
+          else if (v.status === "failed") listingPromoRenderStatus.personaVariantsFailed++
+          else if ((v.status === "queued" || v.status === "rendering") && v.created_at < stuckThreshold) {
+            listingPromoRenderStatus.personaVariantsStuck++
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[marketing-agent] listing-promo render snapshot failed for ${brokerageId}:`, (e as Error).message)
+  }
+
+  // Wave 33 — social posts engagement snapshot. Aggregates engagement_data
+  // jsonb across the 28d window. The existing performance-aggregator reads
+  // non-existent likes_count/comments_count/shares_count columns (a real
+  // drift flagged in this commit's message); the snapshot uses the
+  // canonical engagement_data jsonb shape instead.
+  let socialChannel: MarketingSnapshot["socialChannel"] = {
+    publishedLast28d: 0, scheduledNext7d: 0, totalEngagement28d: 0, topPostByEngagement: null,
+  }
+  try {
+    const next7d = new Date(Date.now() + 7 * 86_400_000).toISOString()
+    const [publishedR, scheduledR] = await Promise.all([
+      svc.from("social_posts")
+        .select("content, engagement_data")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "published")
+        .gte("published_at", since28d)
+        .limit(500),
+      svc.from("social_posts")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "scheduled")
+        .lte("scheduled_for", next7d)
+        .gte("scheduled_for", new Date().toISOString()),
+    ])
+    const rows = (publishedR.data ?? []) as Array<{ content: string | null; engagement_data: { likes?: number; comments?: number; shares?: number; reactions?: number } | null }>
+    socialChannel.publishedLast28d = rows.length
+    socialChannel.scheduledNext7d  = scheduledR.count ?? 0
+    let top: { post_text: string; engagement: number } | null = null
+    for (const r of rows) {
+      const ed = r.engagement_data ?? {}
+      const sum = (ed.likes ?? 0) + (ed.comments ?? 0) + (ed.shares ?? 0) + (ed.reactions ?? 0)
+      socialChannel.totalEngagement28d += sum
+      if (sum > 0 && (top === null || sum > top.engagement)) {
+        top = { post_text: (r.content ?? "").slice(0, 120), engagement: sum }
+      }
+    }
+    socialChannel.topPostByEngagement = top
+  } catch (e) {
+    console.error(`[marketing-agent] social channel snapshot failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     pendingListingPromos,
     newListingsThisWeek,
@@ -463,6 +580,8 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     personaTopTopics,
     priorPlanOutcomes,
     blogChannel,
+    listingPromoRenderStatus,
+    socialChannel,
   }
 }
 
@@ -622,6 +741,43 @@ export async function spawnMarketingAgentForBrokerage(params: {
       : "Top-shared posts (last 28d):\n" + snap.blogChannel.topSharedPosts.map((p, i) =>
           `  ${i + 1}. [${p.shareCount} shares · ${p.viewCount} views] ${p.title}`
         ).join("\n"),
+    "",
+    "──── WAVE 33 — LISTING-PROMO RENDER STATE (LAST 14d) ────",
+    `Active listing promos in window: ${snap.listingPromoRenderStatus.publishedLast14d}`,
+    `Persona variants — completed: ${snap.listingPromoRenderStatus.personaVariantsCompleted}, failed: ${snap.listingPromoRenderStatus.personaVariantsFailed}, STUCK > 2h: ${snap.listingPromoRenderStatus.personaVariantsStuck}`,
+    snap.listingPromoRenderStatus.perEventTypeCounts.length === 0
+      ? "Per event type: (none)"
+      : "Per event type:\n" + snap.listingPromoRenderStatus.perEventTypeCounts.map((e) =>
+          `  · ${e.event_type}: ${e.count}`
+        ).join("\n"),
+    snap.listingPromoRenderStatus.personaVariantsStuck > 0
+      ? "ACTION: stuck persona variants ARE a conflict you should resolve in your plan. Propose either (a) re-trigger via dispatchListingPromoVideo with bypassPolicy and bypassCooldown, or (b) defer the publish until the variant clears."
+      : "",
+    "",
+    "──── WAVE 33 — SOCIAL POSTS CHANNEL (28d) ────",
+    `Published last 28d:  ${snap.socialChannel.publishedLast28d}`,
+    `Scheduled next 7d:   ${snap.socialChannel.scheduledNext7d}`,
+    `Total engagement:    ${snap.socialChannel.totalEngagement28d} (likes + comments + shares + reactions)`,
+    snap.socialChannel.topPostByEngagement
+      ? `Top post: [${snap.socialChannel.topPostByEngagement.engagement}] ${snap.socialChannel.topPostByEngagement.post_text}`
+      : "Top post: (no published posts in window)",
+    "",
+    "──── WAVE 33 — YOU CAN RESOLVE CONFLICTS, NOT JUST OBSERVE ────",
+    "Up through Wave 32, your output was a JSON plan a human reviewed.",
+    "Starting this week, when your snapshot shows a CONFLICT, your plan",
+    "should INCLUDE the resolution, not just flag the problem:",
+    "  · Stuck listing-promo persona variants → propose dispatch retry",
+    "  · Newsletter cadence overdue (snapshot 'recentNewsletterSends'=0",
+    "    + active subscribers) → propose a specific newsletter topic + send_date",
+    "  · Topic already 'used' across channels → pick an alternative from",
+    "    topTopics that didn't fire this week",
+    "  · A persona's blog engagement crashed week-over-week → propose",
+    "    pulling back blog allocation for that persona in next plan",
+    "  · Listing whose health score dropped below 40 → propose a price-",
+    "    update promo OR an expanded social cadence, with the agent's",
+    "    approval gate as the safety net",
+    "Output the plan with explicit RESOLUTION actions, not just observations.",
+    "The human approver wants one click to greenlight, not a list of TODOs.",
     "",
     "Read the de-conflict log (deconflict_suppression_log) for the brokerage's recent",
     "broadcast cooldown decisions before scheduling new sends. Honor the broadcast",
