@@ -320,8 +320,16 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
 /** Wave 34 — keep only entries with a known action_type and a present
  *  action_input object. Per-action_type schema validation happens
  *  inside the handler at execute time. */
+type MarketingActionTypeWh =
+  | "retry_listing_promo_render"
+  | "mark_topic_used"
+  | "defer_newsletter_campaign"
+  | "stage_newsletter_draft"
+  | "cancel_blog_cadence_tick"
+  | "flag_listing_for_review"
+
 function filterValidResolutions(arr: unknown[]): Array<{
-  action_type: "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft"
+  action_type: MarketingActionTypeWh
   action_input: Record<string, unknown>
   rationale?: string
 }> {
@@ -330,9 +338,11 @@ function filterValidResolutions(arr: unknown[]): Array<{
     "mark_topic_used",
     "defer_newsletter_campaign",
     "stage_newsletter_draft",
+    "cancel_blog_cadence_tick",
+    "flag_listing_for_review",
   ])
   const out: Array<{
-    action_type: "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft"
+    action_type: MarketingActionTypeWh
     action_input: Record<string, unknown>
     rationale?: string
   }> = []
@@ -344,7 +354,7 @@ function filterValidResolutions(arr: unknown[]): Array<{
     const inp = obj.action_input
     if (!inp || typeof inp !== "object" || Array.isArray(inp)) continue
     out.push({
-      action_type:  at as "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft",
+      action_type:  at as MarketingActionTypeWh,
       action_input: inp as Record<string, unknown>,
       rationale:    typeof obj.rationale === "string" ? obj.rationale.slice(0, 800) : undefined,
     })

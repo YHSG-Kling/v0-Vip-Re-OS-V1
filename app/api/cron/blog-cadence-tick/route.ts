@@ -37,6 +37,7 @@ interface PolicyRow {
   fire_day:             number | null
   preferred_categories: string[] | null
   preferred_persona:    string | null
+  skipped_until:        string | null
 }
 
 export async function GET(req: NextRequest) {
@@ -52,10 +53,15 @@ export async function GET(req: NextRequest) {
   const dayOfMonth = now.getUTCDate()
   const todayIso = now.toISOString().slice(0, 10)
 
+  // Wave 35 — exclude policies whose skipped_until is today or in the
+  // future. cancel_blog_cadence_tick writes that field so the agent can
+  // surgically skip a single week without mutating the underlying
+  // cadence. PostgREST .or() composes the "null OR < today" check.
   const { data: policies, error } = await svc
     .from("blog_cadence_policy")
-    .select("scope_type, scope_id, cadence, fire_day, preferred_categories, preferred_persona")
+    .select("scope_type, scope_id, cadence, fire_day, preferred_categories, preferred_persona, skipped_until")
     .neq("cadence", "off")
+    .or(`skipped_until.is.null,skipped_until.lt.${todayIso}`)
     .limit(500)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

@@ -26,6 +26,8 @@ export type MarketingActionType =
   | "mark_topic_used"
   | "defer_newsletter_campaign"
   | "stage_newsletter_draft"
+  | "cancel_blog_cadence_tick"
+  | "flag_listing_for_review"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -211,6 +213,89 @@ async function runHandler(
       } catch (e) {
         return { status: "failed", result: { error: (e as Error).message } }
       }
+    }
+
+    case "cancel_blog_cadence_tick": {
+      // Skip this week's blog auto-spawn for a given (scope_type, scope_id).
+      // Writes blog_cadence_policy.skipped_until = end-of-this-week so the
+      // cadence-tick cron's WHERE clause excludes the row for the remaining
+      // days. The next week the field is in the past and the tick fires
+      // normally — no policy mutation.
+      const scopeType = String(input.scope_type ?? "")
+      const scopeId   = String(input.scope_id ?? "")
+      if (!["agent","team","brokerage"].includes(scopeType) || !scopeId) {
+        return { status: "failed", result: { error: "scope_type ∈ (agent|team|brokerage) and scope_id required" } }
+      }
+      // Tenant scope check: the scope_id must belong to this brokerage.
+      // For agent scope, the agents row must have brokerage_id = us; for
+      // team scope same on teams; for brokerage scope the id IS us.
+      const svc = createServiceClient()
+      let belongs = false
+      if (scopeType === "brokerage") {
+        belongs = scopeId === brokerageId
+      } else if (scopeType === "agent") {
+        const { data } = await svc.from("agents").select("id").eq("id", scopeId).eq("brokerage_id", brokerageId).maybeSingle()
+        belongs = !!data
+      } else {
+        const { data } = await svc.from("teams").select("id").eq("id", scopeId).eq("brokerage_id", brokerageId).maybeSingle()
+        belongs = !!data
+      }
+      if (!belongs) return { status: "failed", result: { error: "scope not in tenant" } }
+
+      // End-of-this-week = next Monday (UTC). The cadence cron is
+      // day-of-week based; setting skipped_until to next Monday's date
+      // covers every remaining tick this week.
+      const now = new Date()
+      const dayOfWeek = (now.getUTCDay() + 6) % 7   // Monday = 0
+      const daysToNextMonday = 7 - dayOfWeek
+      const nextMonday = new Date(now)
+      nextMonday.setUTCDate(now.getUTCDate() + daysToNextMonday)
+      nextMonday.setUTCHours(0, 0, 0, 0)
+      const skipUntilDate = nextMonday.toISOString().slice(0, 10)
+
+      const { error, count } = await svc.from("blog_cadence_policy")
+        .update({ skipped_until: skipUntilDate }, { count: "exact" })
+        .eq("scope_type", scopeType)
+        .eq("scope_id", scopeId)
+      if (error) return { status: "failed", result: { error: error.message } }
+      if ((count ?? 0) === 0) return { status: "skipped", result: { reason: "no policy row for that scope" } }
+      return { status: "succeeded", result: { skipped_until: skipUntilDate, scope_type: scopeType, scope_id: scopeId } }
+    }
+
+    case "flag_listing_for_review": {
+      // Route a degraded listing asset to the broker's
+      // automation_errors review queue. The platform's existing admin
+      // observability already surfaces automation_errors entries —
+      // reusing the queue means no new admin UI needed for the flag
+      // itself.
+      const listingId = String(input.listing_id ?? "")
+      const reason    = String(input.reason ?? "marketing_agent_flag")
+      if (!listingId) return { status: "failed", result: { error: "listing_id required" } }
+      const svc = createServiceClient()
+      // Tenant + existence check
+      const { data: listing } = await svc.from("listings")
+        .select("id, brokerage_id, address, city")
+        .eq("id", listingId)
+        .maybeSingle()
+      const l = listing as { id: string; brokerage_id: string | null; address: string | null; city: string | null } | null
+      if (!l) return { status: "failed", result: { error: "listing not found" } }
+      if (l.brokerage_id !== brokerageId) return { status: "failed", result: { error: "tenant mismatch" } }
+
+      const { data: errRow, error } = await svc.from("automation_errors").insert({
+        brokerage_id:  brokerageId,
+        workflow_name: "marketing_agent_listing_flag",
+        error_message: `Marketing agent flagged listing for broker review: ${reason.slice(0, 200)}`,
+        severity:      "warning",
+        status:        "open",
+        context_json:  {
+          listing_id:      listingId,
+          listing_address: [l.address, l.city].filter(Boolean).join(", "),
+          agent_reason:    reason,
+          flagged_at:      new Date().toISOString(),
+        },
+      }).select("id").single()
+      if (error) return { status: "failed", result: { error: error.message } }
+      return { status: "succeeded", result: { automation_error_id: errRow.id, listing_id: listingId } }
     }
 
     default: {
