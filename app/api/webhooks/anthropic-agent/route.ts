@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
   const svc = createServiceClient()
   const { data: sessionRow } = await svc
     .from("managed_agent_sessions")
-    .select("id, brokerage_id, entity_type, entity_id, status")
+    .select("id, brokerage_id, entity_type, entity_id, status, agent:managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
     .eq("anthropic_session_id", sessionId)
     .maybeSingle()
 
@@ -212,6 +212,34 @@ export async function POST(request: NextRequest) {
             compliance_passed:    true,
           },
         })
+
+        // Wave 34 — marketing-agent resolution capture. The marketing
+        // agent's prompt instructs it to emit a top-level resolutions[]
+        // array alongside the plan JSON. Parse it, validate each entry
+        // against the known action types, and persist proposed rows in
+        // the m143 ledger. Approval / execution happens via a separate
+        // server action call from the admin UI.
+        const agentEmbed = (sessionRow as unknown as { agent?: { agent_kind?: string } | Array<{ agent_kind?: string }> | null }).agent
+        const agentKind = Array.isArray(agentEmbed) ? agentEmbed[0]?.agent_kind : agentEmbed?.agent_kind
+        if (agentKind === "marketing_agent") {
+          try {
+            const parsed = tryParseJsonObject(text)
+            const resolutions = Array.isArray(parsed?.resolutions) ? parsed.resolutions : []
+            if (resolutions.length > 0) {
+              const { recordProposedActions } = await import("@/lib/agents/marketing-agent-actions")
+              const valid = filterValidResolutions(resolutions as unknown[])
+              if (valid.length > 0) {
+                await recordProposedActions({
+                  brokerageId:           sessionRow.brokerage_id as string,
+                  managedAgentSessionId: sessionRow.id as string,
+                  actions:               valid,
+                })
+              }
+            }
+          } catch (e) {
+            console.error("[anthropic-webhook] marketing-agent resolutions parse failed:", (e as Error).message)
+          }
+        }
       } else if (text && !complianceAllowed) {
         // Log the block. The agent's next idle can re-draft (the agent will see
         // last_agent_message as null after this update — TODO follow-up: surface
@@ -269,4 +297,57 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ received: true, eventType, sessionId })
+}
+
+/** Wave 34 — extract a JSON object from the agent's message text.
+ *  The marketing-agent prompt says "Output JSON only" but in practice
+ *  Claude sometimes wraps in ```json fences or adds a brief preamble.
+ *  This is intentionally tolerant: strip fences, find the first {…}
+ *  block, parse. Returns null on any failure. */
+function tryParseJsonObject(text: string): Record<string, unknown> | null {
+  const stripped = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim()
+  const start = stripped.indexOf("{")
+  const end   = stripped.lastIndexOf("}")
+  if (start < 0 || end <= start) return null
+  try {
+    const obj = JSON.parse(stripped.slice(start, end + 1))
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : null
+  } catch {
+    return null
+  }
+}
+
+/** Wave 34 — keep only entries with a known action_type and a present
+ *  action_input object. Per-action_type schema validation happens
+ *  inside the handler at execute time. */
+function filterValidResolutions(arr: unknown[]): Array<{
+  action_type: "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft"
+  action_input: Record<string, unknown>
+  rationale?: string
+}> {
+  const known = new Set([
+    "retry_listing_promo_render",
+    "mark_topic_used",
+    "defer_newsletter_campaign",
+    "stage_newsletter_draft",
+  ])
+  const out: Array<{
+    action_type: "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft"
+    action_input: Record<string, unknown>
+    rationale?: string
+  }> = []
+  for (const r of arr) {
+    if (!r || typeof r !== "object") continue
+    const obj = r as Record<string, unknown>
+    const at = String(obj.action_type ?? "")
+    if (!known.has(at)) continue
+    const inp = obj.action_input
+    if (!inp || typeof inp !== "object" || Array.isArray(inp)) continue
+    out.push({
+      action_type:  at as "retry_listing_promo_render" | "mark_topic_used" | "defer_newsletter_campaign" | "stage_newsletter_draft",
+      action_input: inp as Record<string, unknown>,
+      rationale:    typeof obj.rationale === "string" ? obj.rationale.slice(0, 800) : undefined,
+    })
+  }
+  return out
 }
