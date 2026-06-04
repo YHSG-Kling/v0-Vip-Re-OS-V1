@@ -22,7 +22,7 @@
  */
 import "server-only"
 import { dispatchDirectMail, type DirectMailPieceType } from "@/lib/providers/dispatch"
-import { renderPostcardFront4x6 } from "@/lib/direct-mail/render-postcard"
+import { renderPostcardBothSides4x6 } from "@/lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 
@@ -68,18 +68,23 @@ export async function orchestrateRenderAndSend(
   args: OrchestrateSendArgs,
 ): Promise<OrchestrateSendResult> {
   // Render path varies by piece type.
-  let templateForLob: string | undefined
+  let templateForLob:     string | undefined
+  let backTemplateForLob: string | undefined
   let rendered = false
   let fellBackReason: string | null = null
 
   if (args.pieceType === "postcard") {
-    const r = await renderPostcardFront4x6({
-      brokerageId: args.brokerageId,
-      copyCtx:     args.copyCtx,
-      qrScanUrl:   args.qrScanUrl ?? null,
+    const r = await renderPostcardBothSides4x6({
+      brokerageId:   args.brokerageId,
+      copyCtx:       args.copyCtx,
+      qrScanUrl:     args.qrScanUrl ?? null,
+      agentName:     args.agentName ?? null,
+      // Future: pull agent photo from agents.did_photo_url / users.avatar_url
+      agentPhotoUrl: null,
     })
-    if (r.ok && r.url) {
-      templateForLob = r.url
+    if (r.ok && r.frontUrl && r.backUrl) {
+      templateForLob     = r.frontUrl
+      backTemplateForLob = r.backUrl
       rendered = true
     } else {
       fellBackReason = r.violations?.length
@@ -128,6 +133,7 @@ export async function orchestrateRenderAndSend(
     state:          args.state,
     zip:            args.zip,
     templateId:     templateForLob,
+    backTemplateId: backTemplateForLob,
     pieceType:      args.pieceType,
     systemSource:   args.systemSource ?? "orchestrated",
     metadata: {

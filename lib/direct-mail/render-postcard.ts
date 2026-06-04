@@ -51,6 +51,17 @@ export interface RenderPostcardResult {
   violations?: string[]
 }
 
+/** Both-sides render result. Front + back URLs ready to drop into
+ *  lob.postcards.create({ front: frontUrl, back: backUrl }). */
+export interface RenderPostcardBothSidesResult {
+  ok:        boolean
+  frontUrl?: string
+  backUrl?:  string
+  copy?:     { headline: string; body: string; cta: string }
+  error?:    string
+  violations?: string[]
+}
+
 export async function renderPostcardFront4x6(
   args: RenderPostcardArgs,
 ): Promise<RenderPostcardResult> {
@@ -130,5 +141,109 @@ export async function renderPostcardFront4x6(
     width:  composition.width,
     height: composition.height,
     copy:   copyResult.copy,
+  }
+}
+
+/**
+ * renderPostcardBothSides4x6
+ *
+ * Renders front + back of a 4×6 postcard in a single call. Drafts
+ * the copy ONCE and reuses it across both sides (so the body on
+ * the back is verbatim the same body that earned the headline on
+ * the front — coherent reading order). Compliance gate runs once
+ * because the copy bundle is the same.
+ *
+ * Returns frontUrl + backUrl. dispatchDirectMail caller passes
+ * them as `templateId` (front) + `backTemplateId` (back).
+ */
+export async function renderPostcardBothSides4x6(args: {
+  brokerageId: string
+  copyCtx:     DirectMailCopyContext
+  qrScanUrl:   string | null
+  agentName:   string | null
+  agentPhotoUrl: string | null
+}): Promise<RenderPostcardBothSidesResult> {
+  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const copyResult = await draftPostcardCopy(args.copyCtx)
+  if (!copyResult.ok) {
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+  }
+
+  let qrCodeDataUrl: string | null = null
+  if (args.qrScanUrl) {
+    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
+      width: 600,
+      margin: 1,
+      errorCorrectionLevel: "M",
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+  }
+
+  const entry = path.join(process.cwd(), "remotion", "Root.tsx")
+  const serveUrl = await getBundle(entry)
+
+  const brandProp = {
+    primaryColor:    brand.visual.primaryColor,
+    accentColor:     brand.visual.accentColor,
+    logoUrl:         brand.visual.logoUrl,
+    brokerageName:   brand.brokerageName,
+    websiteWordmark: brand.display.websiteWordmark,
+    phone:           brand.display.phone,
+    licenseLine:     brand.display.licenseLine,
+    shortDisclosure: brand.fairHousing.shortDisclosure,
+  }
+
+  // Render front
+  const frontInput = {
+    headline: copyResult.copy.headline,
+    body:     copyResult.copy.body,
+    cta:      copyResult.copy.cta,
+    qrCodeDataUrl,
+    brand: brandProp,
+  }
+  const frontComp = await selectComposition({ serveUrl, id: "PostcardFront4x6", inputProps: frontInput })
+  const frontPath = path.join(tmpdir(), `postcard-front-${Date.now()}.png`)
+  await renderStill({
+    composition: frontComp, serveUrl,
+    output: frontPath, inputProps: frontInput, imageFormat: "png",
+  })
+
+  // Render back
+  const backInput = {
+    body:    copyResult.copy.body,
+    signoff: args.agentName ? `— ${args.agentName.split(" ")[0] ?? args.agentName}` : null,
+    agentPhotoUrl: args.agentPhotoUrl,
+    agentName: args.agentName,
+    brand: brandProp,
+  }
+  const backComp = await selectComposition({ serveUrl, id: "PostcardBack4x6", inputProps: backInput })
+  const backPath = path.join(tmpdir(), `postcard-back-${Date.now()}.png`)
+  await renderStill({
+    composition: backComp, serveUrl,
+    output: backPath, inputProps: backInput, imageFormat: "png",
+  })
+
+  // Upload both
+  const [frontBuf, backBuf] = await Promise.all([
+    fs.readFile(frontPath),
+    fs.readFile(backPath),
+  ])
+  await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
+
+  const stamp = Date.now()
+  const [frontUp, backUp] = await Promise.all([
+    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
+      access: "public", contentType: "image/png",
+    }),
+    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, {
+      access: "public", contentType: "image/png",
+    }),
+  ])
+
+  return {
+    ok:       true,
+    frontUrl: frontUp.url,
+    backUrl:  backUp.url,
+    copy:     copyResult.copy,
   }
 }
