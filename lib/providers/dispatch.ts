@@ -519,6 +519,36 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
 export async function dispatchDirectMail(
   params: DispatchDirectMailParams
 ): Promise<DispatchResult> {
+  // ── Lead consent + verification gate ──────────────────────────────────────
+  // Wave 36 — leads are unconsented for most channels; the only outbound
+  // touches permitted to a lead row are direct_mail and email. For mail
+  // specifically, we additionally require `mailing_address_verified=true`
+  // on the lead so we don't pay Lob for an undeliverable piece. The gate
+  // lives inside dispatch (not just at the trigger) so every caller —
+  // workflow adapters, AI-ISA, marketing-agent resolutions — is covered.
+  if (params.leadId) {
+    const svc = createServiceClient()
+    const { data: lead } = await svc
+      .from("leads")
+      .select("brokerage_id, mailing_address_verified")
+      .eq("id", params.leadId)
+      .maybeSingle()
+    const l = lead as { brokerage_id: string | null; mailing_address_verified: boolean | null } | null
+    if (!l) {
+      return { success: false, providerKey: "lead_gate", error: "Lead not found" }
+    }
+    if (l.brokerage_id !== params.brokerageId) {
+      return { success: false, providerKey: "lead_gate", error: "Lead/brokerage tenant mismatch" }
+    }
+    if (l.mailing_address_verified !== true) {
+      return {
+        success:     false,
+        providerKey: "lead_gate",
+        error:       "Lead mailing address not verified — Lob send blocked. Run lob-address-verify first.",
+      }
+    }
+  }
+
   // ── De-Conflict gate (over-touch suppression) ────────────────────────────
   // Lob postcards/letters land in mailboxes — physical touches count too.
   // The default policy caps 1 piece / 30 days per contact.
