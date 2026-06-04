@@ -77,5 +77,12 @@ export async function POST(req: NextRequest) {
     viewer_ip_hash:          ipHash,
   })
 
+  // Wave 31 — denormalized counter increment so the public landing page
+  // can show "1.2k readers" without a live count() join. Best-effort; the
+  // view row above is the source of truth and the aggregator's per-persona
+  // scoring reads from there.
+  try { await svc.rpc("increment_blog_view_count", { p_blog_post_id: p.id }) }
+  catch { /* RPC may not exist on older envs — best-effort denormalized counter */ }
+
   return NextResponse.json({ ok: true })
 }

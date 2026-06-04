@@ -434,6 +434,68 @@ export async function updateBlogPost(
 }
 
 // ─── publishToWordPress ───────────────────────────────────────────────────────
+// Wave 31 — kept as the WordPress-specific implementation. New callers use
+// publishBlogPost() below which routes to the right backend based on
+// blog_posts.publish_target. publishToWordPress is still exported for the
+// 'both' target's WP leg and for backward-compat.
+
+/**
+ * Wave 31 — top-level publish entrypoint. Routes to the right backend
+ * based on blog_posts.publish_target:
+ *
+ *   'hosted'    — flip publish_status='published' + published_at; the
+ *                 /blog/[slug] route serves the post directly. No external
+ *                 API call. Brokerages without WordPress use this.
+ *   'wordpress' — call publishToWordPress (existing path); also flips
+ *                 publish_status. Requires platform_credentials row.
+ *   'both'      — fire the hosted publish AND the WordPress publish; the
+ *                 WP content gets a rel="canonical" tag pointing to the
+ *                 hosted URL so search engines don't see duplicate content.
+ */
+export async function publishBlogPost(
+  userId: string,
+  postId: string,
+): Promise<{ success: boolean; hostedUrl?: string; wordpressPostId?: string; error?: string }> {
+  const supabase = await createClient()
+  const { data: post } = await supabase
+    .from("blog_posts")
+    .select("id, brokerage_id, slug, publish_status, publish_target")
+    .eq("id", postId)
+    .maybeSingle()
+  const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string } | null
+  if (!p) return { success: false, error: "Blog post not found" }
+  if (p.publish_status !== "approved" && p.publish_status !== "published") {
+    return { success: false, error: "Post must be approved before publishing" }
+  }
+
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  const hostedUrl = `${baseUrl}/blog/${p.slug}`
+
+  if (p.publish_target === "hosted") {
+    await supabase.from("blog_posts").update({
+      publish_status: "published",
+      published_at:   new Date().toISOString(),
+    }).eq("id", postId)
+    return { success: true, hostedUrl }
+  }
+
+  if (p.publish_target === "wordpress") {
+    return await publishToWordPress(userId, postId)
+  }
+
+  // 'both' — fire hosted first (it never fails), then WordPress.
+  await supabase.from("blog_posts").update({
+    publish_status: "published",
+    published_at:   new Date().toISOString(),
+  }).eq("id", postId)
+  const wpResult = await publishToWordPress(userId, postId)
+  return {
+    success:         true,
+    hostedUrl,
+    wordpressPostId: wpResult.wordpressPostId,
+    error:           wpResult.success ? undefined : wpResult.error,
+  }
+}
 
 export async function publishToWordPress(
   userId: string,

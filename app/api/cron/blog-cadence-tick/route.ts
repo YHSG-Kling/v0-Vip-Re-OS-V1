@@ -100,9 +100,43 @@ export async function GET(req: NextRequest) {
         .limit(1)
         .maybeSingle()
       agentUserId = (u?.id as string | undefined) ?? null
-    } else {
-      results.push({ scope_type: p.scope_type, scope_id: p.scope_id, outcome: "skipped", reason: "team scope deferred to Wave 30" })
-      continue
+    } else if (p.scope_type === "team") {
+      // Wave 31 — team-scope round-robin. Pick the team's least-recently-
+      // attributed-active agent so blog publication rotates across the
+      // team. The "last attribution" is the most recent blog_posts row
+      // for that agent_user_id; picking the agent with NULL or the
+      // OLDEST last_attributed gives us round-robin without an explicit
+      // pointer column.
+      const { data: teamAgents } = await svc.from("agents")
+        .select("id, user_id, brokerage_id")
+        .eq("team_id", p.scope_id)
+        .eq("is_active", true)
+      const candidates = (teamAgents ?? []) as Array<{ id: string; user_id: string; brokerage_id: string }>
+      if (candidates.length === 0) {
+        results.push({ scope_type: p.scope_type, scope_id: p.scope_id, outcome: "skipped", reason: "team has no active agents" })
+        continue
+      }
+      // For each candidate, find the timestamp of their most recent
+      // AI-generated blog post (NULL means never). The agent with the
+      // oldest/NULL stamp wins.
+      const sinceForLookup = new Date(Date.now() - 90 * 86_400_000).toISOString()
+      const { data: recentAttribs } = await svc.from("blog_posts")
+        .select("agent_user_id, created_at")
+        .in("agent_user_id", candidates.map((c) => c.user_id))
+        .eq("is_ai_generated", true)
+        .gte("created_at", sinceForLookup)
+        .order("created_at", { ascending: false })
+      const lastByUser = new Map<string, string>()
+      for (const r of (recentAttribs ?? []) as Array<{ agent_user_id: string; created_at: string }>) {
+        if (!lastByUser.has(r.agent_user_id)) lastByUser.set(r.agent_user_id, r.created_at)
+      }
+      const sortedCandidates = [...candidates].sort((a, b) => {
+        const aLast = lastByUser.get(a.user_id) ?? ""  // "" sorts first → never-fired wins
+        const bLast = lastByUser.get(b.user_id) ?? ""
+        return aLast.localeCompare(bLast)
+      })
+      agentUserId = sortedCandidates[0]?.user_id ?? null
+      brokerageId = sortedCandidates[0]?.brokerage_id ?? null
     }
 
     if (!agentUserId || !brokerageId) {

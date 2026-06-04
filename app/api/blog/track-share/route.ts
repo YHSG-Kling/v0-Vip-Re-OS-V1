@@ -44,5 +44,7 @@ export async function POST(req: NextRequest) {
     viewer_persona_snapshot: body.persona_snapshot ?? null,
     share_channel:           body.share_channel,
   })
+  try { await svc.rpc("increment_blog_share_count", { p_blog_post_id: p.id }) }
+  catch { /* best-effort denormalized counter */ }
   return NextResponse.json({ ok: true })
 }
