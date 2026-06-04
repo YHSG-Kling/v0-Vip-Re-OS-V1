@@ -313,6 +313,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/blog-cadence-tick",
+      "schedule": "0 7 * * *"
+    },
+    {
       "path": "/api/cron/listing-promo-render",
       "schedule": "*/5 * * * *"
     },

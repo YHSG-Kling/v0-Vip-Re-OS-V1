@@ -194,8 +194,159 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
   // can rank topics differently when authoring persona-targeted sections.
   // Runs SECOND so the global update has already landed for cron observability.
   await aggregatePersonaPerformance(svc, since)
+  // Wave 29 — extend per-(topic, persona) scoring to the blog channel.
+  // Reads from blog_post_views + blog_post_share_clicks instead of
+  // newsletter_sends because blog engagement is page views + share
+  // clicks, not opens + clicks.
+  await aggregateBlogPersonaPerformance(svc, since)
 
   return { topics_updated: updated }
+}
+
+/**
+ * Wave 29 — per-(topic, persona) performance for the blog channel.
+ * Joins content_topic_uses (asset_type='blog_post') ⨝ blog_post_views
+ * ⨝ contacts (when viewer_contact_id is set) AND honors viewer_persona_snapshot
+ * (when the inbound URL carried a persona tag from a tagged newsletter/social link).
+ *
+ * Scoring shape mirrors the newsletter aggregator's headroom (cap 16 for
+ * the channel) but the inputs are different:
+ *   · view rate per persona — up to 8 points (proxy for the "open" signal)
+ *   · share-click rate per persona — up to 8 points (the "online visibility"
+ *     signal the user explicitly framed: an article worth sharing is
+ *     stronger than an article merely viewed)
+ *
+ * MIN_SAMPLES floor still applies (≥5 views per persona) so noisy buckets
+ * don't outrank reliable signal.
+ */
+async function aggregateBlogPersonaPerformance(
+  svc: ReturnType<typeof createServiceClient>,
+  since: string,
+): Promise<void> {
+  // 1. Topic uses with asset_type='blog_post' in window.
+  const { data: uses } = await svc
+    .from("content_topic_uses")
+    .select("topic_id, asset_id")
+    .eq("asset_type", "blog_post")
+    .gte("used_at", since)
+    .not("asset_id", "is", null)
+    .limit(5000)
+  if (!uses || uses.length === 0) return
+
+  const topicToBlogs = new Map<string, Set<string>>()
+  const allBlogIds   = new Set<string>()
+  for (const u of uses as Array<{ topic_id: string; asset_id: string }>) {
+    const set = topicToBlogs.get(u.topic_id) ?? new Set()
+    set.add(u.asset_id)
+    topicToBlogs.set(u.topic_id, set)
+    allBlogIds.add(u.asset_id)
+  }
+  if (allBlogIds.size === 0) return
+
+  // 2. Batch read views + share clicks for these posts. Persona attribution
+  //    walks: viewer_contact_id → contact.contact_persona FIRST; falls back
+  //    to viewer_persona_snapshot (URL tag) when contact_id is null.
+  const [viewsR, sharesR] = await Promise.all([
+    svc.from("blog_post_views")
+      .select("blog_post_id, viewer_persona_snapshot, contact:contacts!blog_post_views_viewer_contact_id_fkey(contact_persona)")
+      .in("blog_post_id", Array.from(allBlogIds))
+      .limit(50000),
+    svc.from("blog_post_share_clicks")
+      .select("blog_post_id, viewer_persona_snapshot, contact:contacts!blog_post_share_clicks_viewer_contact_id_fkey(contact_persona)")
+      .in("blog_post_id", Array.from(allBlogIds))
+      .limit(20000),
+  ])
+
+  type Bucket = { views: number; shares: number }
+  const blogPersonaStats = new Map<string, Bucket>()  // key: `${blog_post_id}|${persona}`
+
+  const personaFor = (row: { viewer_persona_snapshot: string | null; contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null }): string | null => {
+    const c = Array.isArray(row.contact) ? row.contact[0] : row.contact
+    const cp = (c?.contact_persona ?? "").trim()
+    if (cp) return cp
+    const tag = (row.viewer_persona_snapshot ?? "").trim()
+    return tag || null
+  }
+
+  for (const v of (viewsR.data ?? []) as Array<{ blog_post_id: string; viewer_persona_snapshot: string | null; contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null }>) {
+    const persona = personaFor(v)
+    if (!persona) continue
+    const k = `${v.blog_post_id}|${persona}`
+    const cur = blogPersonaStats.get(k) ?? { views: 0, shares: 0 }
+    cur.views++
+    blogPersonaStats.set(k, cur)
+  }
+  for (const s of (sharesR.data ?? []) as Array<{ blog_post_id: string; viewer_persona_snapshot: string | null; contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null }>) {
+    const persona = personaFor(s)
+    if (!persona) continue
+    const k = `${s.blog_post_id}|${persona}`
+    const cur = blogPersonaStats.get(k) ?? { views: 0, shares: 0 }
+    cur.shares++
+    blogPersonaStats.set(k, cur)
+  }
+
+  // 3. Compose (topic × persona) — sum across all blogs the topic seeded.
+  type Agg = { views: number; shares: number }
+  const topicPersonaAgg = new Map<string, Agg>()
+  for (const [topicId, blogIds] of topicToBlogs.entries()) {
+    for (const bid of blogIds) {
+      for (const [k, stats] of blogPersonaStats.entries()) {
+        const [bucketBlogId, persona] = k.split("|")
+        if (bucketBlogId !== bid) continue
+        const aggKey = `${topicId}|${persona}`
+        const cur = topicPersonaAgg.get(aggKey) ?? { views: 0, shares: 0 }
+        cur.views  += stats.views
+        cur.shares += stats.shares
+        topicPersonaAgg.set(aggKey, cur)
+      }
+    }
+  }
+
+  // 4. Score + upsert. View ≥5 floor; share clicks contribute the
+  //    "online visibility" signal at higher per-event weight (each share
+  //    is worth ~3 views as engagement). Capped at 16 to match newsletter
+  //    channel headroom in the m136 0..30 scale.
+  const MIN_SAMPLES = 5
+  const upserts: Array<{
+    topic_id: string
+    asset_type: "blog_post"
+    persona: string
+    persona_open_rate: number
+    persona_click_rate: number
+    persona_samples_count: number
+    performance_score: number
+  }> = []
+  for (const [aggKey, agg] of topicPersonaAgg.entries()) {
+    if (agg.views < MIN_SAMPLES) continue
+    const [topicId, persona] = aggKey.split("|")
+    // Engagement model: views are the denominator; share rate maps to the
+    // click-equivalent. Normalize both to 0..100 percent for stable scoring.
+    const viewRate  = Math.min(100, 100)  // every row IS a view, so view_rate is implicit; report 100 to keep schema parity
+    const shareRate = agg.views > 0 ? Math.min(100, (agg.shares / agg.views) * 100) : 0
+    const score = Math.round(
+      Math.min(16, 4 + (shareRate / 100) * 12)  // 4-point floor for the view itself + up to 12 for share lift
+    )
+    upserts.push({
+      topic_id:               topicId,
+      asset_type:             "blog_post",
+      persona,
+      persona_open_rate:      viewRate,
+      persona_click_rate:     Math.round(shareRate * 100) / 100,
+      persona_samples_count:  agg.views,
+      performance_score:      Math.max(0, Math.min(30, score)),
+    })
+  }
+
+  if (upserts.length === 0) return
+  try {
+    for (let i = 0; i < upserts.length; i += 200) {
+      const chunk = upserts.slice(i, i + 200).map((u) => ({ ...u, computed_at: new Date().toISOString() }))
+      await svc.from("content_asset_persona_performance")
+        .upsert(chunk, { onConflict: "topic_id,asset_type,persona" })
+    }
+  } catch (e) {
+    console.error("[performance-aggregator] blog persona perf upsert failed:", (e as Error).message)
+  }
 }
 
 /**

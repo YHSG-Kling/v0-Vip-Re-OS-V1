@@ -14,6 +14,8 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
+import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -29,6 +31,15 @@ export interface GenerateBlogPostParams {
   sourceContent?: string
   /** When true, generate a branded cover image and set featured_image_url. */
   generateCoverImage?: boolean
+  /** Wave 29 — when set, the generator picks topics from content_topic_bank
+   *  for this persona (per-persona perf score weighted via m136). The blog
+   *  author then writes from those topics' value_angle rather than from
+   *  keyword input alone. Same Wave 20.1 cohesion pattern newsletter has. */
+  recipientPersona?: string
+  /** Wave 29 — when true (cadence-cron path), the generator pulls topics
+   *  from the topic bank automatically. When false (manual path), it
+   *  honors the keywords array as-is. */
+  pullFromTopicBank?: boolean
 }
 
 export interface UpdateBlogPostParams {
@@ -76,24 +87,78 @@ export async function generateBlogPost(
   }) as any
 
   const toneDescription = params.tone || brandVoice.tone || "professional and helpful"
+
+  // Wave 29 — topic-bank consumption. When pullFromTopicBank=true (cadence
+  // cron path), the picker returns the strongest threads for this brokerage
+  // (and for the supplied persona when provided). The value_angle of each
+  // picked topic becomes the article's substance. The keywords[] input is
+  // still honored — it widens the picker's category filter.
+  let topicSeeds: TopicCandidate[] = []
+  if (params.pullFromTopicBank) {
+    try {
+      topicSeeds = await pickTopics({
+        brokerageId:       params.brokerageId,
+        categoriesAny:     params.keywords.length > 0 ? params.keywords : undefined,
+        limit:             3,
+        markUsed:          false,
+        recipientPersona:  params.recipientPersona ?? null,
+        assetType:         "blog_post",
+      })
+    } catch (e) {
+      console.warn("[generateBlogPost] topic-bank pick failed; falling back to keywords-only:", (e as Error).message)
+    }
+  }
   const topicKeywords = params.keywords.join(", ")
+  const topicSeedBlock = topicSeeds.length > 0
+    ? `\n\nWave 29 — TOPIC INTELLIGENCE THREADS (build the article around these):
+The platform's content-intelligence bank surfaced these as the highest-engagement
+threads for this brokerage's audience right now. Lead with the strongest
+single thread; weave the others as supporting structure.
+
+${renderTopicsForPrompt(topicSeeds)}`
+    : ""
 
   // ── 4. Generate blog post via Claude API ────────────────────────────────────
+  // Wave 29 — reframed from "SEO-keyword optimization" to ONLINE VISIBILITY.
+  // The user's explicit preference: not keyword stuffing, but rather
+  // shareability + AI-citability + cross-channel repurposability. The
+  // structural choices below (FAQ-style sections, named entity emphasis,
+  // 3-sentence summary at top, attributed-claim format) make the article
+  // EXTRACTABLE by Google AI Overviews / ChatGPT browsing / Perplexity /
+  // Gemini citations — that's the modern discoverability signal.
   const systemPrompt = `You are a real estate content writer for a professional brokerage. Write in a ${toneDescription} style.
 ${brandVoice.customInstructions ? `Brand voice instructions: ${brandVoice.customInstructions}` : ""}
 ${brandVoice.keyBrandMessages?.length ? `Key messages to incorporate: ${brandVoice.keyBrandMessages.join(", ")}` : ""}
-${brandVoice.prohibitedWords?.length ? `Avoid these words: ${brandVoice.prohibitedWords.join(", ")}` : ""}`
+${brandVoice.prohibitedWords?.length ? `Avoid these words: ${brandVoice.prohibitedWords.join(", ")}` : ""}
 
-  const userPrompt = `Write a 600-800 word SEO-optimized blog post about real estate topics related to: ${topicKeywords}.
-${params.sourceContent ? `Base the article on this source material (repurpose its key points; do not invent specific properties, prices, or guarantees):\n"""${params.sourceContent.slice(0, 6000)}"""\n` : ""}${params.title ? `Use this title: ${params.title}` : "Create an engaging title."}
+ONLINE VISIBILITY (this brokerage's chosen positioning — NOT SEO keyword stuffing):
+  · Be CITABLE by AI search (Google AI Overviews, ChatGPT, Claude, Perplexity, Gemini). Use clear facts with named entities + named sources where applicable.
+  · Open with a 2-3 sentence summary that an AI engine can pull as a citation snippet.
+  · Use FAQ-style H2/H3 headings written as the QUESTIONS a real-estate buyer/seller actually types.
+  · Attribute non-obvious claims to a source (e.g. "According to the National Association of Realtors 2025 Q1 report,…"). Never invent a source — when uncertain, soften with "in many markets" rather than fabricate a citation.
+  · Make the article shareable: end with a single specific takeaway readers can quote on social.`
 
-Include these keywords naturally throughout the content: ${topicKeywords}
+  const userPrompt = `Write a 700-900 word blog post about real estate topics related to: ${topicKeywords}.
+${params.sourceContent ? `Base the article on this source material (repurpose its key points; do not invent specific properties, prices, or guarantees):\n"""${params.sourceContent.slice(0, 6000)}"""\n` : ""}${params.title ? `Use this title: ${params.title}` : "Create an engaging title — written as a question or a specific claim the reader is searching for."}
+${topicSeedBlock}
+
+Structure (online-visibility format):
+1. 2-3 sentence opening summary (the citation snippet).
+2. 3-5 H2 sections written as questions the reader would search for.
+3. Each section: a direct answer in the first sentence, then supporting context.
+4. Closing takeaway — one specific actionable sentence (not "contact us").
+
+Compliance fence (non-negotiable):
+  · Never reference protected characteristics (race, color, religion, national origin, sex, disability, familial status).
+  · No "perfect for families", "great for empty-nesters", or similar demographic proxies.
+  · No guaranteed appreciation / valuation / rate claims.
+  · No predictive market direction claims without an attributed source.
 
 Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 {
   "title": "The blog post title",
   "slug": "the-blog-post-slug",
-  "excerpt": "A compelling 150-160 character meta description",
+  "excerpt": "A compelling 150-160 character meta description (also the OG card description)",
   "content": "The full blog post content with proper HTML headings (h2, h3) and paragraphs",
   "featuredImagePrompt": "A descriptive prompt for generating a featured image"
 }`
@@ -182,6 +247,20 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   if (postError || !post) {
     console.error("[generateBlogPost] Insert failed:", postError)
     return { success: false, error: "Failed to save blog post" }
+  }
+
+  // Wave 29 — close the content intelligence loop for the blog channel.
+  // Log every topic that seeded this post into content_topic_uses with
+  // asset_type='blog_post' so the daily aggregator can compute per-(topic,
+  // blog_post, persona) performance scores from blog_post_views downstream.
+  // Same Wave 19 pattern the newsletter video and podcast use.
+  if (topicSeeds.length > 0) {
+    void logTopicUses({
+      topicIds:    topicSeeds.map((t) => t.id),
+      brokerageId: params.brokerageId,
+      assetType:   "blog_post",
+      assetId:     post.id,
+    })
   }
 
   // ── 7. Link keywords via seo_keywords + blog_post_keywords ──────────────────
