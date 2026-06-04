@@ -327,6 +327,10 @@ type MarketingActionTypeWh =
   | "stage_newsletter_draft"
   | "cancel_blog_cadence_tick"
   | "flag_listing_for_review"
+  | "verify_lead_address"
+  | "cancel_direct_mail_send"
+  | "retry_direct_mail_design"
+  | "flag_design_for_review"
 
 function filterValidResolutions(arr: unknown[]): Array<{
   action_type: MarketingActionTypeWh
@@ -340,6 +344,10 @@ function filterValidResolutions(arr: unknown[]): Array<{
     "stage_newsletter_draft",
     "cancel_blog_cadence_tick",
     "flag_listing_for_review",
+    "verify_lead_address",
+    "cancel_direct_mail_send",
+    "retry_direct_mail_design",
+    "flag_design_for_review",
   ])
   const out: Array<{
     action_type: MarketingActionTypeWh

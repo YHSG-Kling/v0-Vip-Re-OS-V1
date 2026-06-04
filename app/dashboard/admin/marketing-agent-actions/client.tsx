@@ -37,6 +37,26 @@ const ACTION_LABELS: Record<string, { label: string; color: string; explain: str
     color:   "red",
     explain: "Routes a degraded listing asset to the broker's automation_errors review queue.",
   },
+  verify_lead_address: {
+    label:   "Verify Lead Address (Lob)",
+    color:   "cyan",
+    explain: "Re-runs Lob US verification on the lead's mailing address and writes the canonical flag.",
+  },
+  cancel_direct_mail_send: {
+    label:   "Cancel Pending Direct Mail",
+    color:   "gray",
+    explain: "Moves a pending direct_mail_campaigns row to cancelled with a structured reason.",
+  },
+  retry_direct_mail_design: {
+    label:   "Retry Failed Direct Mail",
+    color:   "blue",
+    explain: "Re-dispatches a failed mailer through Lob. Verification + de-conflict gates still apply.",
+  },
+  flag_design_for_review: {
+    label:   "Flag Mailer Design for Review",
+    color:   "red",
+    explain: "Routes a degraded mailer design to the broker's automation_errors review queue.",
+  },
 }
 
 const STATUS_BADGE: Record<string, string> = {

@@ -28,6 +28,11 @@ export type MarketingActionType =
   | "stage_newsletter_draft"
   | "cancel_blog_cadence_tick"
   | "flag_listing_for_review"
+  // Wave 36 — direct-mail resolution surface.
+  | "verify_lead_address"
+  | "cancel_direct_mail_send"
+  | "retry_direct_mail_design"
+  | "flag_design_for_review"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -296,6 +301,239 @@ async function runHandler(
       }).select("id").single()
       if (error) return { status: "failed", result: { error: error.message } }
       return { status: "succeeded", result: { automation_error_id: errRow.id, listing_id: listingId } }
+    }
+
+    case "verify_lead_address": {
+      // Wave 36 — re-run Lob US verification on a lead and write the
+      // canonical mailing_address_verified flag. Used when a lead has
+      // a populated mailing_address but the dispatch gate keeps
+      // blocking it (the flag was set false by an earlier enrichment
+      // pass before Lob saw the address).
+      const leadId = String(input.lead_id ?? "")
+      if (!leadId) return { status: "failed", result: { error: "lead_id required" } }
+      const svc = createServiceClient()
+      const { data: lead } = await svc.from("leads")
+        .select("id, brokerage_id, mailing_address, mailing_city, mailing_state, mailing_zip")
+        .eq("id", leadId)
+        .maybeSingle()
+      const l = lead as {
+        id: string
+        brokerage_id: string | null
+        mailing_address: string | null
+        mailing_city: string | null
+        mailing_state: string | null
+        mailing_zip: string | null
+      } | null
+      if (!l) return { status: "failed", result: { error: "lead not found" } }
+      if (l.brokerage_id !== brokerageId) return { status: "failed", result: { error: "tenant mismatch" } }
+      if (!l.mailing_address || !l.mailing_zip) {
+        return { status: "failed", result: { error: "lead has no mailing_address/zip to verify" } }
+      }
+
+      const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
+      const { data: result } = await verifyAddressViaLob({
+        primary_line: l.mailing_address,
+        city:         l.mailing_city ?? undefined,
+        state:        l.mailing_state ?? undefined,
+        zip_code:     l.mailing_zip,
+      })
+      if (!result) {
+        return { status: "failed", result: { error: "Lob verification call failed (transient or unconfigured)" } }
+      }
+
+      // Write back the canonical flag + standardized parts so the next
+      // dispatch attempt uses Lob's deliverability-correct values.
+      const update: Record<string, unknown> = {
+        mailing_address_verified: result.verified,
+        mailing_address_source:   "marketing_agent_resolution",
+      }
+      if (result.verified && result.standardized.primary_line) {
+        update.mailing_address = result.standardized.primary_line
+      }
+      if (result.standardized.city)     update.mailing_city  = result.standardized.city
+      if (result.standardized.state)    update.mailing_state = result.standardized.state
+      if (result.standardized.zip_code) update.mailing_zip   = result.standardized.zip_code
+      await svc.from("leads").update(update).eq("id", leadId)
+
+      return {
+        status: result.verified ? "succeeded" : "skipped",
+        result: {
+          verified:       result.verified,
+          deliverability: result.deliverability,
+          lead_id:        leadId,
+        },
+      }
+    }
+
+    case "cancel_direct_mail_send": {
+      // Move a pending direct_mail_campaigns row to status='cancelled'
+      // with a structured reason. Only cancels rows that haven't yet
+      // been dispatched (status in 'pending'|'queued') — sent rows can't
+      // be recalled.
+      const campaignId = String(input.campaign_id ?? "")
+      const reason     = String(input.reason ?? "agent_resolution")
+      if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
+      const svc = createServiceClient()
+      const { error, count } = await svc.from("direct_mail_campaigns")
+        .update({ status: "cancelled" }, { count: "exact" })
+        .eq("id", campaignId)
+        .eq("brokerage_id", brokerageId)
+        .in("status", ["pending", "queued", "draft"])
+      if (error) return { status: "failed", result: { error: error.message } }
+      if ((count ?? 0) === 0) {
+        return { status: "skipped", result: { reason: "row not in pending/queued/draft or tenant mismatch" } }
+      }
+      // Log the structured reason so the admin sees WHY the agent
+      // cancelled it (not just a status flip).
+      await svc.from("automation_errors").insert({
+        brokerage_id:  brokerageId,
+        workflow_name: "marketing_agent_direct_mail_cancel",
+        error_message: `Marketing agent cancelled direct-mail send: ${reason.slice(0, 200)}`,
+        severity:      "info",
+        status:        "resolved",
+        context_json:  { campaign_id: campaignId, agent_reason: reason },
+      })
+      return { status: "succeeded", result: { campaign_id: campaignId, cancelled: true } }
+    }
+
+    case "retry_direct_mail_design": {
+      // Re-dispatch a failed direct_mail_campaigns row. The same
+      // verification gate + de-conflict gate apply inside
+      // dispatchDirectMail, so a real underlying problem surfaces
+      // again. Useful when a transient Lob 5xx caused the original
+      // failure.
+      const campaignId = String(input.campaign_id ?? "")
+      if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
+      const svc = createServiceClient()
+      const { data: campaign } = await svc.from("direct_mail_campaigns")
+        .select("id, brokerage_id, lead_id, contact_id, piece_type, status")
+        .eq("id", campaignId)
+        .maybeSingle()
+      const r = campaign as {
+        id: string
+        brokerage_id: string | null
+        lead_id: string | null
+        contact_id: string | null
+        piece_type: string | null
+        status: string | null
+      } | null
+      if (!r) return { status: "failed", result: { error: "campaign not found" } }
+      if (r.brokerage_id !== brokerageId) return { status: "failed", result: { error: "tenant mismatch" } }
+      if (r.status !== "failed") {
+        return { status: "skipped", result: { reason: "campaign not in failed status" } }
+      }
+
+      // Resolve recipient address. The original send recorded the
+      // recipient in direct_mail_recipients (if a fan-out batch) or
+      // implied it via lead_id / contact_id. For the v1 retry we
+      // require the canonical resolver to find the address — same
+      // gate the original send used.
+      let recipientName  = "Resident"
+      let address: { street: string; city: string; state: string; zip: string } | null = null
+      if (r.lead_id) {
+        const { data: lead } = await svc.from("leads")
+          .select("first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip")
+          .eq("id", r.lead_id)
+          .maybeSingle()
+        const l = lead as {
+          first_name: string | null
+          last_name: string | null
+          mailing_address: string | null
+          mailing_city: string | null
+          mailing_state: string | null
+          mailing_zip: string | null
+        } | null
+        if (l?.mailing_address && l.mailing_city && l.mailing_state && l.mailing_zip) {
+          recipientName = [l.first_name, l.last_name].filter(Boolean).join(" ") || recipientName
+          address = { street: l.mailing_address, city: l.mailing_city, state: l.mailing_state, zip: l.mailing_zip }
+        }
+      } else if (r.contact_id) {
+        const { resolveMailingAddressForContact } = await import("@/lib/contacts/resolve-mailing-address")
+        const resolved = await resolveMailingAddressForContact({ contactId: r.contact_id, brokerageId })
+        if (resolved) {
+          address = { street: resolved.street, city: resolved.city, state: resolved.state, zip: resolved.zip }
+          const { data: c } = await svc.from("contacts").select("first_name, last_name").eq("id", r.contact_id).maybeSingle()
+          recipientName = [c?.first_name, c?.last_name].filter(Boolean).join(" ") || recipientName
+        }
+      }
+      if (!address) {
+        return { status: "failed", result: { error: "no verified address available for retry" } }
+      }
+
+      const tplId = process.env.LOB_DEFAULT_TEMPLATE_ID ?? ""
+      if (!tplId) {
+        return { status: "failed", result: { error: "LOB_DEFAULT_TEMPLATE_ID not configured" } }
+      }
+
+      const { dispatchDirectMail } = await import("@/lib/providers/dispatch")
+      const dispatch = await dispatchDirectMail({
+        brokerageId,
+        userId:         brokerageId,
+        contactId:      r.contact_id ?? undefined,
+        leadId:         r.lead_id ?? undefined,
+        recipientName,
+        mailingAddress: address.street,
+        city:           address.city,
+        state:          address.state,
+        zip:            address.zip,
+        templateId:     tplId,
+        pieceType:      (r.piece_type as "letter" | "postcard" | "self_mailer" | undefined) ?? "postcard",
+        systemSource:   "marketing_agent_retry",
+      })
+
+      await svc.from("direct_mail_campaigns")
+        .update({
+          status:        dispatch.success ? "sent" : "failed",
+          lob_order_id:  dispatch.messageId ?? null,
+          mailing_date:  dispatch.success ? new Date().toISOString().slice(0, 10) : null,
+        })
+        .eq("id", campaignId)
+
+      return {
+        status: dispatch.success ? "succeeded" : "failed",
+        result: { campaign_id: campaignId, lob_order_id: dispatch.messageId ?? null, error: dispatch.error ?? null },
+      }
+    }
+
+    case "flag_design_for_review": {
+      // Route a degraded mailer design to the broker's automation_errors
+      // review queue — parallel to flag_listing_for_review. The platform
+      // admin already surfaces automation_errors rows.
+      const campaignId = String(input.campaign_id ?? "")
+      const reason     = String(input.reason ?? "marketing_agent_design_flag")
+      if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
+      const svc = createServiceClient()
+      const { data: campaign } = await svc.from("direct_mail_campaigns")
+        .select("id, brokerage_id, campaign_name, piece_type, status")
+        .eq("id", campaignId)
+        .maybeSingle()
+      const c = campaign as {
+        id: string
+        brokerage_id: string | null
+        campaign_name: string | null
+        piece_type: string | null
+        status: string | null
+      } | null
+      if (!c) return { status: "failed", result: { error: "campaign not found" } }
+      if (c.brokerage_id !== brokerageId) return { status: "failed", result: { error: "tenant mismatch" } }
+
+      const { data: errRow, error } = await svc.from("automation_errors").insert({
+        brokerage_id:  brokerageId,
+        workflow_name: "marketing_agent_design_flag",
+        error_message: `Marketing agent flagged direct-mail design for broker review: ${reason.slice(0, 200)}`,
+        severity:      "warning",
+        status:        "open",
+        context_json:  {
+          campaign_id:   campaignId,
+          campaign_name: c.campaign_name ?? null,
+          piece_type:    c.piece_type ?? null,
+          status:        c.status ?? null,
+          agent_reason:  reason,
+          flagged_at:    new Date().toISOString(),
+        },
+      }).select("id").single()
+      if (error) return { status: "failed", result: { error: error.message } }
+      return { status: "succeeded", result: { automation_error_id: errRow.id, campaign_id: campaignId } }
     }
 
     default: {
