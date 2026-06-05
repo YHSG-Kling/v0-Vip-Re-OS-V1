@@ -351,6 +351,10 @@
     {
       "path": "/api/cron/content-performance-aggregator",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/farm-mail-weekly",
+      "schedule": "0 8 * * 4"
     }
   ]
 }
