@@ -172,12 +172,28 @@ export async function orchestrateBundleSend(
       // dispatcher just wrote. The preset orchestrator inserts the
       // direct_mail_campaigns row via dispatchDirectMail's vendor
       // log path; we patch the FK in here.
+      //
+      // Robustness: PostgREST's count="exact" lets us detect when the
+      // update matched zero rows (the campaign insert ran but didn't
+      // land an lob_order_id, or the row hasn't materialised yet).
+      // We log loudly so attribution drift is visible in cron logs —
+      // a downstream bundle-attribution-rollup tick would otherwise
+      // silently miss this dispatch.
       if (r.success && r.messageId) {
-        await svc
+        const { count: stampedRows, error: stampErr } = await svc
           .from("direct_mail_campaigns")
-          .update({ bundle_dispatch_id: bundleDispatchId })
+          .update({ bundle_dispatch_id: bundleDispatchId }, { count: "exact" })
           .eq("brokerage_id", args.brokerageId)
           .eq("lob_order_id", r.messageId)
+        if (stampErr) {
+          console.error("[bundle-send] bundle_dispatch_id stamp failed:", stampErr.message, {
+            bundleDispatchId, lob_order_id: r.messageId,
+          })
+        } else if ((stampedRows ?? 0) === 0) {
+          console.warn("[bundle-send] bundle_dispatch_id stamp matched 0 rows — attribution will drop", {
+            bundleDispatchId, lob_order_id: r.messageId, brokerage_id: args.brokerageId,
+          })
+        }
       }
     } else if (item.channel === "email" && item.preset_id) {
       // Wave 37 — email channel via dispatchEmail (compliance gate

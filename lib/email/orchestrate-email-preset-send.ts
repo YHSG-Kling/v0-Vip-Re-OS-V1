@@ -85,8 +85,12 @@ export async function orchestrateEmailPresetSend(
     || brand.agentName
     || brand.displayName
     || brand.brokerageName
-  const replyTo  = preset.reply_to_override?.trim() || undefined  // dispatchEmail's assembler picks a default when omitted
   const fromEmail = process.env.OUTBOUND_EMAIL_FROM ?? "noreply@vipre.io"
+  // NOTE: preset.reply_to_override is NOT yet applied. DispatchEmailParams
+  // has no replyTo field — the address is fully derived from `from`.
+  // Wiring reply-to through the dispatch surface is a follow-up that
+  // touches lib/providers/dispatch.ts + every assembler downstream;
+  // until that lands the preset column is informational only.
 
   const vars: Record<string, string> = {
     first_name:     args.recipientFirstName ?? "",
@@ -103,7 +107,7 @@ export async function orchestrateEmailPresetSend(
     brokerageId: args.brokerageId,
     contactId:   args.contactId,
     leadId:      args.leadId,
-    from:        replyTo ? `${fromName} <${fromEmail}>` : `${fromName} <${fromEmail}>`,
+    from:        `${fromName} <${fromEmail}>`,
     to:          args.toEmail,
     subject,
     html,

@@ -233,26 +233,35 @@ export async function upsertChannelPreset(
 
   // Run the compliance gate ONCE if the channel has one. Failures
   // bubble up to the UI as violations; the row never lands.
+  //
+  // Empty-copy guard: if the channel has a gate but the locked copy is
+  // empty (or only mustache placeholders), refuse the save. Skipping the
+  // gate on empty content would let an admin land a "{{agent_name}}"-only
+  // body and bypass Fair Housing review entirely.
   let complianceEventId: string | null = null
   const gateMessageType = GATE_MESSAGE_TYPE[channel]
   if (gateMessageType) {
     const copy = extractGateCopy(channel, p)
-    if (copy.trim().length > 0) {
-      const gateResult = await evaluateOutbound({
-        actorContext: { brokerageId, role: "agent", userId: brokerageId },
-        messageType:  gateMessageType,
-        journeyType:  "buyer",
-        persona:      "other",
-        content:      copy,
-      })
-      if (!gateResult.allowed) {
-        return { success: false, violations: gateResult.violations, error: "compliance_gate_blocked" }
-      }
-      // evaluateOutbound returns the compliance_events.id it just
-      // inserted. Stamp that directly instead of re-querying (which
-      // is race-prone under concurrent saves).
-      complianceEventId = gateResult.complianceEventId ?? null
+    // Strip mustache placeholders for the substance check — {{name}}
+    // tokens carry no Fair Housing semantics on their own.
+    const substantive = copy.replace(/{{\s*[\w_]+\s*}}/g, "").trim()
+    if (substantive.length === 0) {
+      return { success: false, error: "preset needs non-template copy for the compliance gate to evaluate" }
     }
+    const gateResult = await evaluateOutbound({
+      actorContext: { brokerageId, role: "agent", userId: brokerageId },
+      messageType:  gateMessageType,
+      journeyType:  "buyer",
+      persona:      "other",
+      content:      copy,
+    })
+    if (!gateResult.allowed) {
+      return { success: false, violations: gateResult.violations, error: "compliance_gate_blocked" }
+    }
+    // evaluateOutbound returns the compliance_events.id it just
+    // inserted. Stamp that directly instead of re-querying (which
+    // is race-prone under concurrent saves).
+    complianceEventId = gateResult.complianceEventId ?? null
   }
 
   const svc = createServiceClient()
