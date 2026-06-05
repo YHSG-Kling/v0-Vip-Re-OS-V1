@@ -41,7 +41,7 @@ import {
   AppointmentCoachingPanel,
   WeeklyImprovementPanel,
 } from "./components/os"
-import { generateWeeklyCoachingReport } from "@/lib/intelligence/coaching-engine"
+import { generateWeeklyCoachingReport } from "@/app/actions/coaching"
 import { createClient } from "@/lib/supabase/client"
 import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
 import { getAgentCoachingInsights } from "@/app/actions/ai-predictions"

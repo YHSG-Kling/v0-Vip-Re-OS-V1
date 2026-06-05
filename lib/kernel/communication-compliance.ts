@@ -267,6 +267,10 @@ export async function evaluateOutboundCompliance(
  * HELPER: Check if contact is eligible for ANY outbound
  * (Used for quick checks before queuing work)
  */
+// Client components: import the pure versions from
+// @/lib/kernel/communication-compliance-helpers — this file pulls in
+// createServiceClient and Turbopack walks the graph into server-only
+// modules.
 export function isEligibleForOutbound(contact: ContactData): boolean {
   if (contact.dnc_status || contact.call_stop_flag) return false
   if (contact.email_opt_out || contact.sms_opt_out) return false

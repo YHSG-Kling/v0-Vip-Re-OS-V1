@@ -6,8 +6,7 @@
 
 import { Badge } from "@/app/components/ui/badge"
 import { AlertCircle, CheckCircle, Info } from "lucide-react"
-import { getSuppressionReasons } from "@/lib/kernel/communication-compliance"
-import type { ContactData } from "@/lib/kernel/communication-compliance"
+import { getSuppressionReasons, type ContactData } from "@/lib/kernel/communication-compliance-helpers"
 
 interface SuppressionBadgeProps {
   contact: ContactData

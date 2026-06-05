@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, useRef, useEffect } from "react"
 import { Mic, X, Send, Bot, Loader2, Sparkles } from "lucide-react"
-import { generateAIText } from "@/lib/ai"
+import { generateAIText } from "@/app/actions/ai-generate"
 import { useAuth } from "@/lib/auth/client"
 import { UserRole } from "@/types"
 
