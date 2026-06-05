@@ -107,64 +107,27 @@ async function stageMembership(args: {
 }
 
 /**
- * Hook for KernelEvent.LEAD_CAPTURED.
+ * Wave 38 CORRECTION — `onLeadCapturedForAudience` REMOVED.
  *
- * Stages the lead into the brokerage's default FB retargeting
- * audience. No-op when the brokerage hasn't connected FB.
- */
-export async function onLeadCapturedForAudience(args: {
-  leadId:      string
-  brokerageId: string
-}): Promise<AudienceSyncOutcome> {
-  const out: AudienceSyncOutcome = { ok: true, audiencesProcessed: 0, membersInserted: 0, skippedReasons: [] }
-  const svc = createServiceClient()
-
-  // Consent + opt-out check on the lead.
-  const { data: lead } = await svc.from("leads")
-    .select("id, brokerage_id, direct_mail_opt_out, email_opt_out, tcpa_consent")
-    .eq("id", args.leadId)
-    .maybeSingle()
-  const l = lead as { brokerage_id: string | null; direct_mail_opt_out: boolean | null; email_opt_out: boolean | null; tcpa_consent: boolean | null } | null
-  if (!l) { out.ok = false; out.skippedReasons.push("lead_not_found"); return out }
-  if (l.brokerage_id !== args.brokerageId) {
-    out.ok = false; out.skippedReasons.push("tenant_mismatch"); return out
-  }
-  // Soft suppression — leads who've opted out of every marketing
-  // channel shouldn't be in retargeting audiences either.
-  if (l.direct_mail_opt_out && l.email_opt_out) {
-    out.skippedReasons.push("all_channels_opted_out")
-    return out
-  }
-
-  const audience = await findAudienceForScope({ brokerageId: args.brokerageId })
-  if (!audience) {
-    out.skippedReasons.push("no_brokerage_audience_configured")
-    return out
-  }
-  out.audiencesProcessed = 1
-  const r = await stageMembership({
-    brokerageId: args.brokerageId,
-    audienceId:  audience.id,
-    leadId:      args.leadId,
-    consent:     {
-      tcpa_consent:        l.tcpa_consent ?? false,
-      direct_mail_opt_out: l.direct_mail_opt_out ?? false,
-      email_opt_out:       l.email_opt_out ?? false,
-      snapshot_at:         new Date().toISOString(),
-    },
-  })
-  if (r.inserted) out.membersInserted++
-  if (r.skipped) out.skippedReasons.push(r.skipped)
-  return out
-}
-
-/**
+ * Meta's Custom Audiences policy requires that uploaded recipients have
+ * an opt-in relationship. Leads on this platform are explicitly
+ * unconsented (lifecycle_state='unconsented' at capture); pushing
+ * them violates FB's TOS and risks the brokerage's ad account.
+ *
+ * Audience membership now begins ONLY when a lead becomes a contact
+ * (handleLeadAssigned / handleLeadConvertedToContact). At that point
+ * the kernel has either explicit tcpa_consent OR established active
+ * representation, both of which satisfy FB's consent requirement.
+ *
  * Hook for KernelEvent.LEAD_CONVERTED_TO_CONTACT.
  *
- * Adds the contact to the assigned agent's personal FB audience
- * (when the agent has connected) while keeping the brokerage-tier
- * membership intact. Both audiences sync independently via the
- * existing audience-sync runner.
+ * Adds the contact to BOTH the brokerage-tier audience AND the
+ * assigned agent's personal FB audience (when the agent has connected).
+ * Hard-gates on tcpa_consent being true OR dnc_status being false
+ * with an active representation flag — leads that converted via the
+ * web-form/QR path with explicit consent satisfy the first; agent-
+ * imported contacts where the agent has an existing relationship
+ * satisfy the second.
  */
 export async function onLeadConvertedForAudience(args: {
   contactId:   string
@@ -195,6 +158,19 @@ export async function onLeadConvertedForAudience(args: {
     return out
   }
 
+  // Wave 38 CORRECTION — FB Custom Audiences requires an opt-in
+  // relationship. Hard gate: tcpa_consent must be true OR the contact
+  // is in active representation (where consent is implied by signed
+  // agreement). Without one of those signals, skip the push entirely.
+  if (c.tcpa_consent !== true) {
+    const { hasActiveRepresentation } = await import("@/lib/kernel/compliance/active-representation")
+    const repFlag = await hasActiveRepresentation(svc, args.contactId, args.brokerageId)
+    if (!repFlag) {
+      out.skippedReasons.push("no_consent_or_representation")
+      return out
+    }
+  }
+
   const consent = {
     tcpa_consent:        c.tcpa_consent ?? false,
     direct_mail_opt_out: c.direct_mail_opt_out ?? false,
@@ -208,28 +184,17 @@ export async function onLeadConvertedForAudience(args: {
   const brokerageAud = await findAudienceForScope({ brokerageId: args.brokerageId })
   if (brokerageAud) {
     out.audiencesProcessed++
-    // Try to update the existing lead-keyed row first; if not present
-    // insert a fresh contact-keyed row.
-    const { data: existing } = await svc.from("audience_members")
-      .select("id")
-      .eq("audience_id", brokerageAud.id)
-      .eq("lead_id", args.leadId)
-      .maybeSingle()
-    if (existing) {
-      await svc.from("audience_members")
-        .update({ contact_id: args.contactId, consent_snapshot: consent, sync_status: "pending" })
-        .eq("id", existing.id)
-    } else {
-      const r = await stageMembership({
-        brokerageId: args.brokerageId,
-        audienceId:  brokerageAud.id,
-        contactId:   args.contactId,
-        leadId:      args.leadId,
-        consent,
-      })
-      if (r.inserted) out.membersInserted++
-      if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
-    }
+    // Wave 38 CORRECTION — contact-only push (no lead_id). Membership
+    // begins at conversion; legacy lead-keyed rows from prior code
+    // paths are no longer expected.
+    const r = await stageMembership({
+      brokerageId: args.brokerageId,
+      audienceId:  brokerageAud.id,
+      contactId:   args.contactId,
+      consent,
+    })
+    if (r.inserted) out.membersInserted++
+    if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
   } else {
     out.skippedReasons.push("no_brokerage_audience_configured")
   }
@@ -246,7 +211,6 @@ export async function onLeadConvertedForAudience(args: {
         brokerageId: args.brokerageId,
         audienceId:  agentAud.id,
         contactId:   args.contactId,
-        leadId:      args.leadId,
         consent,
       })
       if (r.inserted) out.membersInserted++

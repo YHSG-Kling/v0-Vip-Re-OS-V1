@@ -69,9 +69,16 @@ export async function GET(req: NextRequest) {
 
   // Pull pending rows. Per-cycle cap to avoid one cron tick eating
   // an enormous backlog in one shot.
+  //
+  // Wave 38 CORRECTION — contact-only push. The .not('contact_id',
+  // 'is', null) filter guards against any legacy lead-only rows
+  // that may have leaked in before m165 marked them 'removed'.
+  // Meta Custom Audiences require consent; only contacts (with
+  // tcpa_consent verified at conversion) qualify.
   const { data: pendingRows } = await svc.from("audience_members")
     .select("id, brokerage_id, audience_id, contact_id, lead_id")
     .eq("sync_status", "pending")
+    .not("contact_id", "is", null)
     .order("added_at", { ascending: true })
     .limit(5000)
   const pending = (pendingRows ?? []) as PendingRow[]

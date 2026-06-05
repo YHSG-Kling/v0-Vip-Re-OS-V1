@@ -97,16 +97,12 @@ export async function handleLeadCaptured(params: {
     entityId: leadId,
   })
 
-  // Wave 38 — auto-add to brokerage's FB retargeting audience.
-  // Non-blocking: a missing FB audience config or sync failure must
-  // not unwind the lead capture. The function returns a structured
-  // outcome with skippedReasons; we log on error but don't throw.
-  try {
-    const { onLeadCapturedForAudience } = await import('@/lib/audiences/audience-sync')
-    void onLeadCapturedForAudience({ leadId, brokerageId }).catch((e) => {
-      console.error('[lead-acquisition] FB audience stage failed:', e)
-    })
-  } catch { /* best-effort */ }
+  // Wave 38 CORRECTION: lead-stage FB audience push REMOVED. Per Meta's
+  // Custom Audiences policy, recipients must be consented; leads on this
+  // platform are explicitly unconsented (lifecycle_state='unconsented' at
+  // capture time). The audience push happens in handleLeadAssigned (where
+  // the lead has converted to a CONTACT with tcpa_consent verified before
+  // staging).
 }
 
 // ─── HANDLER 2: handleLeadScored ─────────────────────────────────────────────
