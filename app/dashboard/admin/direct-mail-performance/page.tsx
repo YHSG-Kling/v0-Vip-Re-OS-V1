@@ -18,6 +18,7 @@ export default async function DirectMailPerformancePage() {
       overview={result.overview}
       topVariants={result.topVariants}
       recentCampaigns={result.recentCampaigns}
+      geoHeatmap={result.geoHeatmap}
     />
   )
 }

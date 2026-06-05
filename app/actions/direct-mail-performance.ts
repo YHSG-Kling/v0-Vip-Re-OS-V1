@@ -59,8 +59,21 @@ export interface RecentCampaignRow {
   contact_id:         string | null
 }
 
+/** Wave 36 item 3 — per-zip scan + lead aggregation for the geo
+ *  heatmap. v1 surface is a sortable table; SVG/Leaflet map can
+ *  layer on top of the same data shape later. */
+export interface GeoHeatmapRow {
+  zip:           string
+  sends_count:   number
+  scans_count:   number
+  leads_count:   number
+  scan_rate:     number
+  lead_rate:     number
+  cost_per_lead: number | null
+}
+
 export async function getDirectMailPerformance(): Promise<
-  | { success: true; overview: ChannelOverview; topVariants: VariantArmRow[]; recentCampaigns: RecentCampaignRow[] }
+  | { success: true; overview: ChannelOverview; topVariants: VariantArmRow[]; recentCampaigns: RecentCampaignRow[]; geoHeatmap: GeoHeatmapRow[] }
   | { success: false; error: string }
 > {
   const access = await resolvePolicyScopeAccess()
@@ -202,5 +215,95 @@ export async function getDirectMailPerformance(): Promise<
       : (r.compliance.allowed ? "passed" : "blocked"),
   }))
 
-  return { success: true, overview, topVariants, recentCampaigns }
+  // ── 4. Geo heatmap — scans + leads by zip ──────────────────────────────
+  // Pull every 28d sent campaign with contact_id (to know the recipient
+  // zip) + qr_code_id (to look up scans). The aggregation runs in JS
+  // because the (campaigns ⨝ contacts ⨝ qr_scan_events) join shape isn't
+  // expressible as one PostgREST query.
+  const geoHeatmap: GeoHeatmapRow[] = []
+  try {
+    const { data: campaignsForGeo } = await svc
+      .from("direct_mail_campaigns")
+      .select("contact_id, qr_code_id, per_piece_cost, pieces_mailed")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "sent")
+      .gte("mailing_date", since28d)
+      .not("contact_id", "is", null)
+      .limit(5000)
+    type GeoCampaign = {
+      contact_id: string
+      qr_code_id: string | null
+      per_piece_cost: number | null
+      pieces_mailed: number | null
+    }
+    const cs = (campaignsForGeo ?? []) as unknown as GeoCampaign[]
+    if (cs.length > 0) {
+      const contactIds = [...new Set(cs.map((c) => c.contact_id))]
+      const qrIds = [...new Set(cs.map((c) => c.qr_code_id).filter((q): q is string => !!q))]
+      const [contactsR, scansR] = await Promise.all([
+        svc.from("contacts").select("id, zip_code").in("id", contactIds),
+        qrIds.length > 0
+          ? svc.from("qr_scan_events")
+              .select("qr_code_id, contact_id")
+              .in("qr_code_id", qrIds)
+              .gte("scanned_at", since28d)
+          : Promise.resolve({ data: [] }),
+      ])
+      const zipByContact = new Map<string, string>()
+      for (const r of (contactsR.data ?? []) as Array<{ id: string; zip_code: string | null }>) {
+        if (r.zip_code) zipByContact.set(r.id, r.zip_code)
+      }
+      const campaignByQr = new Map<string, GeoCampaign>()
+      for (const c of cs) if (c.qr_code_id) campaignByQr.set(c.qr_code_id, c)
+
+      type ZipAgg = { sends: number; scans: number; leads: number; cost_cents: number }
+      const byZip = new Map<string, ZipAgg>()
+      const ensure = (z: string): ZipAgg => {
+        const e = byZip.get(z); if (e) return e
+        const fresh = { sends: 0, scans: 0, leads: 0, cost_cents: 0 }
+        byZip.set(z, fresh); return fresh
+      }
+
+      // SENDS — every campaign with a known zip counts.
+      for (const c of cs) {
+        const zip = zipByContact.get(c.contact_id); if (!zip) continue
+        const agg = ensure(zip)
+        agg.sends++
+        const costCents = Math.round(((c.per_piece_cost ?? 0) * (c.pieces_mailed ?? 1)) * 100)
+        agg.cost_cents += costCents > 0 ? costCents : 0
+      }
+
+      // SCANS — each scan event's QR resolves back to its campaign's
+      // contact's zip.
+      for (const r of (scansR.data ?? []) as Array<{ qr_code_id: string; contact_id: string | null }>) {
+        const camp = campaignByQr.get(r.qr_code_id); if (!camp) continue
+        const zip = zipByContact.get(camp.contact_id); if (!zip) continue
+        ensure(zip).scans++
+        // LEADS — a scan with a non-null contact_id is a converted lead
+        // (the QR submit handler bumps contact_id on the scan row).
+        if (r.contact_id) ensure(zip).leads++
+      }
+
+      for (const [zip, agg] of byZip.entries()) {
+        const scanRate = agg.sends > 0 ? agg.scans / agg.sends : 0
+        const leadRate = agg.sends > 0 ? agg.leads / agg.sends : 0
+        const cpl = agg.leads > 0 ? (agg.cost_cents / 100) / agg.leads : null
+        geoHeatmap.push({
+          zip,
+          sends_count:   agg.sends,
+          scans_count:   agg.scans,
+          leads_count:   agg.leads,
+          scan_rate:     Math.round(scanRate * 10000) / 10000,
+          lead_rate:     Math.round(leadRate * 10000) / 10000,
+          cost_per_lead: cpl == null ? null : Math.round(cpl * 100) / 100,
+        })
+      }
+      // Sort by leads desc → scans desc as the actionable order.
+      geoHeatmap.sort((a, b) => (b.leads_count - a.leads_count) || (b.scans_count - a.scans_count))
+    }
+  } catch (e) {
+    console.error("[direct-mail-performance] geo heatmap failed:", e)
+  }
+
+  return { success: true, overview, topVariants, recentCampaigns, geoHeatmap }
 }

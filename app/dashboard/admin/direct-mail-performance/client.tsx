@@ -4,12 +4,14 @@ import type {
   ChannelOverview,
   VariantArmRow,
   RecentCampaignRow,
+  GeoHeatmapRow,
 } from "@/app/actions/direct-mail-performance"
 
 export interface DirectMailPerformanceClientProps {
   overview:        ChannelOverview
   topVariants:     VariantArmRow[]
   recentCampaigns: RecentCampaignRow[]
+  geoHeatmap:      GeoHeatmapRow[]
 }
 
 export function DirectMailPerformanceClient(props: DirectMailPerformanceClientProps) {
@@ -26,8 +28,72 @@ export function DirectMailPerformanceClient(props: DirectMailPerformanceClientPr
 
       <OverviewSection overview={props.overview} />
       <TopVariantsSection topVariants={props.topVariants} />
+      <GeoHeatmapSection rows={props.geoHeatmap} />
       <RecentCampaignsSection rows={props.recentCampaigns} />
     </div>
+  )
+}
+
+function GeoHeatmapSection({ rows }: { rows: GeoHeatmapRow[] }) {
+  // Render scan intensity as a horizontal bar relative to the top zip,
+  // keyed off scans_count so the leader is fully filled and others
+  // visually scale. v1 surface; SVG/Leaflet map can layer on the same
+  // data shape later.
+  const maxScans = rows.length > 0 ? Math.max(...rows.map((r) => r.scans_count), 1) : 1
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-gray-900 mb-3">Geo heatmap (last 28 days, by zip)</h2>
+      {rows.length === 0 ? (
+        <p className="text-sm text-gray-500 italic">
+          No geo data yet. Once farm-mail or lifecycle postcards mail to contacts with verified zips, this lights up.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-left">
+                <th className="py-2 px-3 font-semibold text-gray-700">Zip</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Sends</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Scans</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Leads</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Scan%</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Lead%</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">CPL</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 w-1/3">Scan intensity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const pct = Math.round((r.scans_count / maxScans) * 100)
+                return (
+                  <tr key={r.zip} className="border-b border-gray-100">
+                    <td className="py-1.5 px-3 font-mono font-medium text-gray-900">{r.zip}</td>
+                    <td className="py-1.5 px-3 text-right text-gray-700">{r.sends_count}</td>
+                    <td className="py-1.5 px-3 text-right text-gray-700">{r.scans_count}</td>
+                    <td className="py-1.5 px-3 text-right font-medium text-green-700">{r.leads_count}</td>
+                    <td className="py-1.5 px-3 text-right text-gray-700">{(r.scan_rate * 100).toFixed(1)}%</td>
+                    <td className="py-1.5 px-3 text-right font-medium text-gray-900">{(r.lead_rate * 100).toFixed(1)}%</td>
+                    <td className="py-1.5 px-3 text-right text-gray-700">{r.cost_per_lead == null ? "—" : `$${r.cost_per_lead.toFixed(2)}`}</td>
+                    <td className="py-1.5 px-3">
+                      <div className="h-2 bg-gray-100 rounded overflow-hidden">
+                        <div className="h-full bg-blue-500" style={{ width: `${pct}%` }} />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <p className="text-xs text-gray-500 mt-2">
+            Sorted by leads desc → scans desc. Zips with high scan%/lead% are
+            the farm targets where the omnipresence agent should fanout more
+            topics; zips with high spend + low scans are candidates for
+            cancel_direct_mail_send or design retry.
+          </p>
+        </div>
+      )}
+    </section>
   )
 }
 
