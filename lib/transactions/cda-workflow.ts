@@ -1,3 +1,5 @@
+"use server"
+
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateCommission } from "@/lib/commission"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"

@@ -1,7 +1,12 @@
+"use server"
+
 // lib/ads/facebook-audience-sync.ts
 // Layer 9.5 — Facebook Custom Audience and Sync Server Actions
 // Kernel gates: canAccessFeature, createAudienceSegment, syncAudience, loadAudienceDefinitions
 // All audience writes and syncs flow through lib/kernel/ads.ts commands — no direct DB writes here.
+//
+// Next 16: file is "use server" so client components can import it
+// directly. Type exports live in ./facebook-audience-sync-types.
 
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { createClient } from "@/lib/supabase/server"
@@ -13,33 +18,11 @@ import {
   type AudienceType,
   type SourceRule,
 } from "@/lib/kernel/ads"
-
-// Re-export types that ads-dashboard-client.tsx imports from this module
-export type { AudienceType, SourceRule }
-
-// ─── TYPES ────────────────────────────────────────────────────────────────────
-
-export interface CreateAudienceParams {
-  brokerageId: string
-  agentId: string
-  audienceName: string
-  audienceType: AudienceType
-  sourceRule: SourceRule
-  consentBasis: string
-  adCampaignId?: string
-}
-
-export interface SyncAudienceParams {
-  brokerageId: string
-  agentId: string
-  audienceId: string
-}
-
-export interface LoadAudiencesParams {
-  brokerageId: string
-  agentId: string
-  campaignId?: string
-}
+import type {
+  CreateAudienceParams,
+  SyncAudienceParams,
+  LoadAudiencesParams,
+} from "@/lib/ads/facebook-audience-sync-types"
 
 // ─── createFacebookAudience ───────────────────────────────────────────────────
 
