@@ -30,6 +30,8 @@ import { orchestrateSmsPresetSend } from "@/lib/sms/orchestrate-sms-preset-send"
 import { orchestrateSocialPresetPublish } from "@/lib/social/orchestrate-social-preset-publish"
 import { orchestratePortalPushSend } from "@/lib/portal/orchestrate-portal-push-send"
 import { orchestrateVoicedropSend } from "@/lib/voicedrop/orchestrate-voicedrop-send"
+import { orchestratePodcastPresetPublish } from "@/lib/podcast/orchestrate-podcast-preset-publish"
+import { orchestrateAdRetargetSend } from "@/lib/ads/orchestrate-ad-retarget-send"
 
 export interface OrchestrateBundleSendArgs {
   brokerageId: string
@@ -291,6 +293,41 @@ export async function orchestrateBundleSend(
         // r.socialPostIds[0] used as the synthetic "messageId" so the
         // dispatch ledger has at least one id to reference.
         messageId: r.socialPostIds?.[0],
+        error:     r.error,
+      }
+    } else if (item.channel === "podcast_episode" && item.preset_id) {
+      // Wave 38 — stages podcast_distribution_log rows. Existing
+      // podcast publish cron walks them.
+      const r = await orchestratePodcastPresetPublish({
+        brokerageId: args.brokerageId,
+        presetId:    item.preset_id,
+        teamId:      args.teamId,
+        agentUserId: args.agentUserId,
+        systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+      })
+      outcome = {
+        channel:   item.channel,
+        preset_id: item.preset_id,
+        success:   r.success,
+        messageId: r.distributionLogIds?.[0],
+        error:     r.error,
+      }
+    } else if (item.channel === "ad_retarget" && item.preset_id) {
+      // Wave 38 — queues an ad_campaigns row for the ad-launcher
+      // cron. Brokerage's FB connector handles the actual launch.
+      const r = await orchestrateAdRetargetSend({
+        brokerageId: args.brokerageId,
+        presetId:    item.preset_id,
+        teamId:      args.teamId,
+        agentUserId: args.agentUserId,
+        bundleDispatchId,
+        systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+      })
+      outcome = {
+        channel:   item.channel,
+        preset_id: item.preset_id,
+        success:   r.success,
+        messageId: r.adCampaignId,
         error:     r.error,
       }
     } else {
