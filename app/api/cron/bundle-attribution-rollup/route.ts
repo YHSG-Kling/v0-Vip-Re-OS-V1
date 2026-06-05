@@ -34,12 +34,17 @@
  *             sends are skipped entirely).
  *     leads = COUNT contacts CREATED via the reply path
  *
- *   SOCIAL_POST (social_media_analytics by social_posts.id)
- *     scans = SUM clicks + saves + shares across each platform row
+ *   SOCIAL_POST (social_media_analytics by post_id)
+ *     scans = SUM clicks + engagements per platform row (engagements
+ *             aggregates reactions/saves/shares server-side; the live
+ *             schema does not expose them as separate columns)
  *     leads = ad_performance.conversions when the post drove an ad
  *
- *   PODCAST (podcast_analytics_events by episode_id)
- *     scans = COUNT play_starts in the 7d after distribution
+ *   PODCAST (podcast_analytics_events by episode_id, via
+ *            podcast_distribution_log.podcast_episode_id)
+ *     scans = COUNT cta_click events after dispatch (the listen-
+ *             through event isn't yet emitted; cta_click is the
+ *             canonical engagement signal the rest of the OS reads)
  *     leads = COUNT contacts CREATED via the podcast's QR/CTA
  *
  *   AD_RETARGET (ad_performance by ad_campaign_id from dispatch metadata)
@@ -185,32 +190,42 @@ export async function GET(req: NextRequest) {
     }
 
     // ── SOCIAL_POST — social_media_analytics ────────────────────────────────
+    // Live schema: post_id (NOT social_post_id), and clicks + engagements +
+    // impressions are the available counters — no separate shares/saves
+    // (engagements aggregates those). Use clicks + engagements as the
+    // "scan-equivalent" engagement signal.
     const socialMsgId = outcomes.social_post?.message_id
     if (socialMsgId) {
       const { data: analytics } = await svc.from("social_media_analytics")
-        .select("clicks, shares, saves")
-        .eq("social_post_id", socialMsgId)
-      for (const a of (analytics ?? []) as Array<{ clicks: number | null; shares: number | null; saves: number | null }>) {
-        scans += (a.clicks ?? 0) + (a.shares ?? 0) + (a.saves ?? 0)
+        .select("clicks, engagements")
+        .eq("post_id", socialMsgId)
+      for (const a of (analytics ?? []) as Array<{ clicks: number | null; engagements: number | null }>) {
+        scans += (a.clicks ?? 0) + (a.engagements ?? 0)
       }
     }
 
     // ── PODCAST — podcast_analytics_events ──────────────────────────────────
+    // Live schema:
+    //   podcast_distribution_log.podcast_episode_id (NOT episode_id)
+    //   podcast_analytics_events.created_at  (no occurred_at column)
+    //   event_type values written by the platform today include
+    //   'cta_click' (lib/campaigns/roi-calculator.ts is the canonical
+    //   reader). Listen-through events aren't yet tracked, so cta_click
+    //   is the strongest engagement signal we can attribute to a bundle.
     const podcastLogId = outcomes.podcast_episode?.message_id
     if (podcastLogId) {
-      // Distribution-log id; look up the episode then count plays.
       const { data: distLog } = await svc.from("podcast_distribution_log")
-        .select("episode_id")
+        .select("podcast_episode_id")
         .eq("id", podcastLogId)
         .maybeSingle()
-      const episodeId = (distLog?.episode_id as string | undefined) ?? null
+      const episodeId = (distLog?.podcast_episode_id as string | undefined) ?? null
       if (episodeId) {
-        const { count: playCount } = await svc.from("podcast_analytics_events")
+        const { count: ctaCount } = await svc.from("podcast_analytics_events")
           .select("id", { count: "exact", head: true })
           .eq("episode_id", episodeId)
-          .eq("event_type", "play_start")
-          .gte("occurred_at", d.dispatched_at)
-        scans += playCount ?? 0
+          .eq("event_type", "cta_click")
+          .gte("created_at", d.dispatched_at)
+        scans += ctaCount ?? 0
       }
     }
 
