@@ -36,6 +36,12 @@ export default async function DirectMailSettingsPage() {
               </Link>
               <span className="text-gray-500 ml-2">Enable just_sold / just_listed / open_house postcards per event</span>
             </li>
+            <li>
+              <Link href="/settings/direct-mail/variants" className="text-blue-600 hover:underline">
+                Bandit catalog (A/B arms) →
+              </Link>
+              <span className="text-gray-500 ml-2">Deprecate platform arms or add your own (composition × copy_style) combos</span>
+            </li>
           </ul>
         </div>
       </div>
