@@ -25,6 +25,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { orchestratePresetSend, type OrchestratePresetSendArgs } from "./orchestrate-preset-send"
+import { orchestrateEmailPresetSend } from "@/lib/email/orchestrate-email-preset-send"
+import { orchestrateSmsPresetSend } from "@/lib/sms/orchestrate-sms-preset-send"
 
 export interface OrchestrateBundleSendArgs {
   brokerageId: string
@@ -40,6 +42,12 @@ export interface OrchestrateBundleSendArgs {
   city:  string
   state: string
   zip:   string
+  /** Email + SMS reach details. When omitted, the dispatcher tries
+   *  to resolve from the contact_id / lead_id row. */
+  recipientFirstName?: string | null
+  recipientLastName?:  string | null
+  recipientEmail?: string | null
+  recipientPhone?: string | null
   qrScanUrl?: string | null
   teamId?:      string | null
   agentUserId?: string | null
@@ -166,8 +174,69 @@ export async function orchestrateBundleSend(
           .eq("brokerage_id", args.brokerageId)
           .eq("lob_order_id", r.messageId)
       }
+    } else if (item.channel === "email" && item.preset_id) {
+      // Wave 37 — email channel via dispatchEmail (compliance gate
+      // still applies per piece for suppression + opt-out + repr).
+      // Resolve to-email from args or fall back to the contact row.
+      let toEmail = args.recipientEmail ?? null
+      if (!toEmail && args.contactId) {
+        const { data } = await svc.from("contacts").select("email").eq("id", args.contactId).maybeSingle()
+        toEmail = (data?.email as string | null) ?? null
+      }
+      if (!toEmail) {
+        outcome = { channel: item.channel, preset_id: item.preset_id, success: false, error: "no_recipient_email" }
+      } else {
+        const r = await orchestrateEmailPresetSend({
+          brokerageId: args.brokerageId,
+          presetId:    item.preset_id,
+          contactId:   args.contactId,
+          leadId:      args.leadId,
+          toEmail,
+          recipientFirstName: args.recipientFirstName,
+          recipientLastName:  args.recipientLastName,
+          teamId:      args.teamId,
+          agentUserId: args.agentUserId,
+          systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+        })
+        outcome = {
+          channel:   item.channel,
+          preset_id: item.preset_id,
+          success:   r.success,
+          messageId: r.messageId,
+          error:     r.error,
+        }
+      }
+    } else if (item.channel === "sms" && item.preset_id) {
+      // Wave 37 — SMS via dispatchSms (TCPA + sms_opt_out enforced).
+      let toPhone = args.recipientPhone ?? null
+      if (!toPhone && args.contactId) {
+        const { data } = await svc.from("contacts").select("phone").eq("id", args.contactId).maybeSingle()
+        toPhone = (data?.phone as string | null) ?? null
+      }
+      if (!toPhone) {
+        outcome = { channel: item.channel, preset_id: item.preset_id, success: false, error: "no_recipient_phone" }
+      } else {
+        const r = await orchestrateSmsPresetSend({
+          brokerageId: args.brokerageId,
+          presetId:    item.preset_id,
+          contactId:   args.contactId,
+          leadId:      args.leadId,
+          toPhone,
+          recipientFirstName: args.recipientFirstName,
+          teamId:      args.teamId,
+          agentUserId: args.agentUserId,
+          systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+        })
+        outcome = {
+          channel:   item.channel,
+          preset_id: item.preset_id,
+          success:   r.success,
+          messageId: r.messageId,
+          error:     r.error,
+        }
+      }
     } else {
-      // Channel not yet implemented OR preset_id missing.
+      // Channel not yet implemented (social_post) OR preset_id missing.
       outcome = {
         channel:    item.channel,
         preset_id:  item.preset_id,
