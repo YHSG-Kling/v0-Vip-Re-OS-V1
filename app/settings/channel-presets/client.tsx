@@ -56,11 +56,14 @@ const CHANNELS: PresetChannel[] = [
 type PresetsByChannel = Record<PresetChannel, ChannelPresetRow[]>
 
 export function ChannelPresetsClient({
-  initialPresets, loadErrors, access,
+  initialPresets, loadErrors, access, voiceCloneReady,
 }: {
-  initialPresets: PresetsByChannel
-  loadErrors:     string[]
-  access:         AccessProp
+  initialPresets:   PresetsByChannel
+  loadErrors:       string[]
+  access:           AccessProp
+  /** Whether the caller's agent has a voice clone ready. The voicedrop
+   *  tab shows a warning + setup deep link when this is false. */
+  voiceCloneReady:  boolean
 }) {
   const [activeTab, setActiveTab] = useState<PresetChannel>("email")
   const [presets, setPresets] = useState<PresetsByChannel>(initialPresets)
@@ -135,6 +138,22 @@ export function ChannelPresetsClient({
       </div>
 
       <p className="text-xs text-gray-500 italic">{CHANNEL_GATE_NOTE[activeTab]}</p>
+
+      {activeTab === "voicedrop" && !voiceCloneReady && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm">
+          <div className="font-medium text-amber-900 mb-1">Voice clone not set up</div>
+          <p className="text-amber-800 text-xs mb-2">
+            Voicedrop presets with a TTS script need the agent&apos;s cloned
+            voice to render. Without it, presets that rely on a script
+            will fail at dispatch (presets with a pre-uploaded audio URL
+            still work). Set up your voice clone in 3 minutes:
+          </p>
+          <a href="/dashboard/videos/voice"
+            className="inline-block text-xs px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700">
+            Set up voice clone →
+          </a>
+        </div>
+      )}
 
       <div className="flex justify-end">
         <button
