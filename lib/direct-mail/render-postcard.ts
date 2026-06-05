@@ -24,7 +24,7 @@ import { put } from "@vercel/blob"
 import QRCode from "qrcode"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
-import { resolveBrokerageBrandContext } from "@/lib/branding/resolve-brokerage-brand"
+import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { draftPostcardCopy, type DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -66,7 +66,11 @@ export async function renderPostcardFront4x6(
   args: RenderPostcardArgs,
 ): Promise<RenderPostcardResult> {
   // 1. Brand context — primary/accent color, logo, license, Fair Housing line.
-  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: args.brokerageId,
+    teamId:      args.copyCtx.teamId ?? null,
+    agentUserId: args.copyCtx.agentUserId ?? null,
+  })
 
   // 2. AI-drafted copy with compliance redraft loop. Fail closed if
   //    both attempts violate — dispatchDirectMail caller will fall
@@ -103,7 +107,9 @@ export async function renderPostcardFront4x6(
       primaryColor:    brand.visual.primaryColor,
       accentColor:     brand.visual.accentColor,
       logoUrl:         brand.visual.logoUrl,
-      brokerageName:   brand.brokerageName,
+      // displayName cascades team > brokerage so a team's piece shows
+      // the team's name + logo + colors, not the parent brokerage's.
+      brokerageName:   brand.displayName,
       websiteWordmark: brand.display.websiteWordmark,
       phone:           brand.display.phone,
       licenseLine:     brand.display.licenseLine,
@@ -165,7 +171,11 @@ export async function renderPostcardBothSides4x6(args: {
   agentName:   string | null
   agentPhotoUrl: string | null
 }): Promise<RenderPostcardBothSidesResult> {
-  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: args.brokerageId,
+    teamId:      args.copyCtx.teamId ?? null,
+    agentUserId: args.copyCtx.agentUserId ?? null,
+  })
   const copyResult = await draftPostcardCopy(args.copyCtx)
   if (!copyResult.ok) {
     return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
@@ -278,7 +288,11 @@ export async function renderPostcardBothSides6x9(args: {
   /** Optional pull quote on the back. */
   pullQuote: string | null
 }): Promise<RenderPostcardBothSidesResult> {
-  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: args.brokerageId,
+    teamId:      args.copyCtx.teamId ?? null,
+    agentUserId: args.copyCtx.agentUserId ?? null,
+  })
   const copyResult = await draftPostcardCopy(args.copyCtx)
   if (!copyResult.ok) {
     return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }

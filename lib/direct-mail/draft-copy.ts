@@ -25,7 +25,7 @@ import "server-only"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
-import { resolveBrokerageBrandContext } from "@/lib/branding/resolve-brokerage-brand"
+import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import type { Persona } from "@/lib/kernel/types"
 
 export type DirectMailCopyShape = "postcard" | "letter"
@@ -44,6 +44,14 @@ function normalizePersona(p: string): Persona {
 
 export interface DirectMailCopyContext {
   brokerageId: string
+  /** Wave 36 tier cascade — when set, the team's brand wins over the
+   *  brokerage's. Pass through from the caller's actor context. */
+  teamId?:     string | null
+  /** When set, the agent's brand + license + signature flow into the
+   *  resolver. The license LINE on the printed piece will use the
+   *  agent's individual license (state law requires this for any
+   *  direct mail signed by an agent). */
+  agentUserId?: string | null
   /** The lead/contact the piece is going to. Drives compliance gates
    *  (opt-outs, DNC, representation). Pass null for bulk farm
    *  mailings where there's no specific contact yet. */
@@ -194,11 +202,15 @@ async function callModelAndParse(
 export async function draftPostcardCopy(
   ctx: DirectMailCopyContext,
 ): Promise<{ ok: true; copy: PostcardCopy } | { ok: false; violations: string[] }> {
-  const brand = await resolveBrokerageBrandContext(ctx.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: ctx.brokerageId,
+    teamId:      ctx.teamId ?? null,
+    agentUserId: ctx.agentUserId ?? null,
+  })
   const hookLine = buildHookContextLine(ctx)
   const promptHead =
     `${POSTCARD_PROMPT}\n\n` +
-    `Brokerage: ${brand.brokerageName}\n` +
+    `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
     `Hook facts: ${hookLine}\n\n` +
@@ -234,11 +246,15 @@ export async function draftPostcardCopy(
 export async function draftLetterCopy(
   ctx: DirectMailCopyContext,
 ): Promise<{ ok: true; copy: LetterCopy } | { ok: false; violations: string[] }> {
-  const brand = await resolveBrokerageBrandContext(ctx.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: ctx.brokerageId,
+    teamId:      ctx.teamId ?? null,
+    agentUserId: ctx.agentUserId ?? null,
+  })
   const hookLine = buildHookContextLine(ctx)
   const promptHead =
     `${LETTER_PROMPT}\n\n` +
-    `Brokerage: ${brand.brokerageName}\n` +
+    `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
     `Hook facts: ${hookLine}\n\n` +

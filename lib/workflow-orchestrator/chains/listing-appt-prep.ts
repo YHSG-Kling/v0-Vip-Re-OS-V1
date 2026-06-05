@@ -353,8 +353,23 @@ export const listingApptPrepChain: WorkflowChain = {
         // AndSend instead of merging vars into a static Lob template.
         // Fall-through guarantees the kit still ships (via the static
         // template) if the copy gate fails for any reason.
+        // Wave 36 tier cascade: resolve the agent's team_id so the
+        // brand resolver picks team logo/colors when the listing
+        // agent is on a team. agentUserId is already in ctx.
+        let agentTeamId: string | null = null
+        if (ctx.agentUserId) {
+          const { data: agentRow } = await svc
+            .from("agents")
+            .select("team_id")
+            .eq("user_id", ctx.agentUserId)
+            .maybeSingle()
+          agentTeamId = (agentRow?.team_id as string | undefined) ?? null
+        }
+
         const copyCtxBase: Omit<DirectMailCopyContext, "qrDestinationType"> = {
           brokerageId: ctx.brokerageId,
+          teamId:      agentTeamId,
+          agentUserId: ctx.agentUserId ?? null,
           contactId:   ctx.contactId,
           persona:     "upsize",  // listing-appointment contacts are sellers; "upsize" is the closest canonical persona for "selling current home to upgrade/downsize"
           hookFacts: {

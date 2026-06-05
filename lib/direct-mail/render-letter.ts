@@ -19,7 +19,7 @@
  * draft-copy.ts:draftLetterCopy. This helper only does presentation.
  */
 import "server-only"
-import { resolveBrokerageBrandContext } from "@/lib/branding/resolve-brokerage-brand"
+import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { draftLetterCopy, type DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 
 export interface RenderLetterArgs {
@@ -51,7 +51,11 @@ const escape = (s: string): string =>
 export async function renderLetterHtml(
   args: RenderLetterArgs,
 ): Promise<RenderLetterResult> {
-  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const brand = await resolveBrandContext({
+    brokerageId: args.brokerageId,
+    teamId:      args.copyCtx.teamId ?? null,
+    agentUserId: args.copyCtx.agentUserId ?? null,
+  })
 
   const copyResult = await draftLetterCopy(args.copyCtx)
   if (!copyResult.ok) {
@@ -71,7 +75,7 @@ export async function renderLetterHtml(
 
   const agentLine = args.agentName
     ? `${escape(args.agentName)}${args.agentTitle ? ` — ${escape(args.agentTitle)}` : ""}`
-    : escape(brand.brokerageName)
+    : escape(brand.displayName)
 
   // Lob's letter spec: full 8.5×11 page, address block in the upper-
   // left envelope window region (top: ~0.94", left: ~0.5", width
@@ -99,7 +103,8 @@ export async function renderLetterHtml(
 <body>
   <div class="page">
     <div class="return">
-      <div class="name">${escape(brand.brokerageName)}</div>
+      <div class="name">${escape(brand.displayName)}</div>
+      ${brand.displayName !== brand.brokerageName ? `<div style="font-size:8pt;color:#666;">brokered by ${escape(brand.brokerageName)}</div>` : ""}
       ${brand.display.websiteWordmark ? `<div>${escape(brand.display.websiteWordmark)}</div>` : ""}
       ${brand.display.phone ? `<div>${escape(brand.display.phone)}</div>` : ""}
     </div>

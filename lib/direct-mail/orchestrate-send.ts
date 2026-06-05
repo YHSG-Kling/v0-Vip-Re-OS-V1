@@ -30,6 +30,10 @@ export type PostcardSize = "4x6" | "6x9"
 
 export interface OrchestrateSendArgs {
   brokerageId: string
+  /** Wave 36 tier cascade. The team and agent context BOTH live in
+   *  copyCtx (single source of truth — draft-copy + render-postcard
+   *  + render-letter all read from there). teamId/agentUserId
+   *  resolve the brand layers in resolveBrandContext. */
   /** Either lead OR contact recipient — at least one required. */
   leadId?:     string
   contactId?:  string

@@ -109,7 +109,18 @@ export async function dispatchFarmMail(
   const svc = createServiceClient()
   const maxRecipients = args.maxRecipients ?? DEFAULT_MAX_RECIPIENTS
 
-  // 1. Resolve farm zip codes for this agent.
+  // 1. Resolve farm zip codes for this agent + the agent's team_id +
+  //    user_id for the brand cascade. Pulled in one query so the
+  //    cascade info is available throughout the dispatch loop.
+  const { data: agentRow } = await svc
+    .from("agents")
+    .select("user_id, team_id")
+    .eq("id", args.agentId)
+    .eq("brokerage_id", args.brokerageId)
+    .maybeSingle()
+  const agentUserId: string | null = (agentRow?.user_id as string | undefined) ?? null
+  const agentTeamId: string | null = (agentRow?.team_id as string | undefined) ?? null
+
   const { data: territories } = await svc
     .from("farm_territories")
     .select("zip_codes")
@@ -242,6 +253,8 @@ export async function dispatchFarmMail(
         pieceType:      "postcard",
         copyCtx: {
           brokerageId: args.brokerageId,
+          teamId:      agentTeamId,
+          agentUserId,
           contactId:   c.id,
           persona,
           qrDestinationType: "cma_form",
