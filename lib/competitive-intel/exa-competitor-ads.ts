@@ -49,17 +49,30 @@ export interface ExaCompetitorAdRecord {
   raw_payload:       Record<string, unknown>
 }
 
-const META_DOMAIN   = "facebook.com/ads/library"
-const GOOGLE_DOMAIN = "adstransparency.google.com"
+const META_DOMAIN      = "facebook.com"
+const META_PATH_HINT   = "/ads/library"
+const GOOGLE_DOMAIN    = "adstransparency.google.com"
 
 /**
  * Search Exa for active ads from one competitor on Meta + Google.
+ *
+ * Uses Exa's canonical `includeDomains` parameter (the right
+ * mechanism) rather than `site:` operators in the query — neural
+ * search often drops those operators because it interprets the
+ * query semantically. With includeDomains we get a hard URL-scope
+ * filter Exa enforces server-side.
  *
  * The geographicHint (city/state/zip) is folded into the query so
  * Exa's neural ranker prefers ads that mention the locale — which
  * for real estate means the ads are actually targeting that geo.
  * Without the hint, a national brand's ads outrank local competitor
- * ads even when the local ones are more relevant to the brokerage.
+ * ads even when the local ones are more relevant.
+ *
+ * For the Meta side, includeDomains scopes to facebook.com which
+ * includes non-ad-library URLs. We post-filter on /ads/library/
+ * in the URL path so only actual ad library entries land in
+ * competitor_ads — same pattern your existing scraper uses for
+ * the Reddit subreddit verification.
  */
 export async function fetchExaCompetitorAds(args: {
   competitorName:  string
@@ -72,25 +85,30 @@ export async function fetchExaCompetitorAds(args: {
   const limit = Math.min(args.perPlatformLimit ?? 20, 50)
   const withinDays = args.withinDays ?? 60
   const geoPart = args.geographicHint ? ` ${args.geographicHint}` : ""
+  const query = `"${args.competitorName}" real estate${geoPart}`
 
   const [metaResults, googleResults] = await Promise.all([
     exaSearch({
-      query:       `site:${META_DOMAIN} "${args.competitorName}" real estate${geoPart}`,
-      type:        "neural",
-      numResults:  limit,
+      query,
+      type:           "neural",
+      numResults:     limit,
       withinDays,
+      includeDomains: [META_DOMAIN],
     }),
     exaSearch({
-      query:       `site:${GOOGLE_DOMAIN} "${args.competitorName}" real estate${geoPart}`,
-      type:        "neural",
-      numResults:  limit,
+      query,
+      type:           "neural",
+      numResults:     limit,
       withinDays,
+      includeDomains: [GOOGLE_DOMAIN],
     }),
   ])
 
   const out: ExaCompetitorAdRecord[] = []
   for (const r of metaResults) {
-    if (!r.url.includes(META_DOMAIN)) continue  // Exa sometimes ranks adjacent URLs
+    // Tight URL check — facebook.com alone returns posts/pages too;
+    // we only want ad library entries.
+    if (!r.url.includes(META_PATH_HINT)) continue
     out.push({
       provider_ad_id:    r.url,
       source_platform:   "facebook",
@@ -106,7 +124,8 @@ export async function fetchExaCompetitorAds(args: {
     })
   }
   for (const r of googleResults) {
-    if (!r.url.includes(GOOGLE_DOMAIN)) continue
+    // adstransparency.google.com is a tighter domain so any result
+    // here is an ad entry by construction.
     out.push({
       provider_ad_id:    r.url,
       source_platform:   "google",

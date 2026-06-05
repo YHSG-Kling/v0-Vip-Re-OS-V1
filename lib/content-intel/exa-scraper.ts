@@ -63,6 +63,14 @@ export async function exaSearch(args: {
   withinDays?:  number
   /** Optional category filter — e.g. "news" for HousingWire / Inman shape. */
   category?:    string
+  /** Restrict results to specific domains. Pass bare domains (no
+   *  scheme, no path) — e.g. ["facebook.com", "inman.com"]. Exa's
+   *  canonical domain-scope mechanism; far more reliable than putting
+   *  `site:` operators in the query string (neural interpretation
+   *  often drops them). */
+  includeDomains?: string[]
+  /** Skip results from these domains. */
+  excludeDomains?: string[]
 }): Promise<ExaSearchResult[]> {
   const apiKey = process.env.EXA_API_KEY
   if (!apiKey) return [] // graceful no-op when key not configured
@@ -79,6 +87,12 @@ export async function exaSearch(args: {
     body.startPublishedDate = start
   }
   if (args.category) body.category = args.category
+  if (args.includeDomains && args.includeDomains.length > 0) {
+    body.includeDomains = args.includeDomains
+  }
+  if (args.excludeDomains && args.excludeDomains.length > 0) {
+    body.excludeDomains = args.excludeDomains
+  }
 
   const res = await callConnector<ExaResponse>({
     connector: "exa",
