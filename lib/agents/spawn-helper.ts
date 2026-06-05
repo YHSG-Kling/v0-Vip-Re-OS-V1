@@ -25,6 +25,7 @@ export type AgentKind =
   | "sphere_of_influence"
   | "campaign_orchestrator"
   | "marketing_agent"
+  | "asset_manager"
 export type EntityType = "transaction" | "contact" | "listing" | "brokerage"
 
 const KIND_LABEL: Record<AgentKind, string> = {
@@ -34,6 +35,7 @@ const KIND_LABEL: Record<AgentKind, string> = {
   sphere_of_influence:   "Sphere of Influence",
   campaign_orchestrator: "Campaign Orchestrator",
   marketing_agent:       "Marketing Agent",
+  asset_manager:         "Asset Manager",
 }
 
 /**

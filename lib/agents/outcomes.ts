@@ -32,6 +32,7 @@ export type AgentOutcomeKind =
   | "sphere_of_influence"
   | "campaign_orchestrator"
   | "marketing_agent"
+  | "asset_manager"
 
 export interface OutcomeRubric {
   /** Short description for the agent (what they're working toward, in plain language). */
@@ -380,6 +381,9 @@ export function buildOutcomeFor(
     pendingListingPromos?: number
     atRiskListings?:      number
     weekSocialBudget?:    number
+    // Wave 37 Asset Manager params:
+    listingsMissingHero?:  number
+    underperformingCount?: number
   },
 ): OutcomeRubric {
   switch (kind) {
@@ -394,6 +398,33 @@ export function buildOutcomeFor(
       atRiskListings:       params.atRiskListings       ?? 0,
       weekSocialBudget:     params.weekSocialBudget     ?? 21,  // 1 newsletter + 3*7 social + 2 blog
     })
+    case "asset_manager":         return buildAssetManagerRubric({
+      brokerageName:        params.brokerageName,
+      listingsMissingHero:  params.listingsMissingHero  ?? 0,
+      underperformingCount: params.underperformingCount ?? 0,
+    })
+  }
+}
+
+// Wave 37 — Asset Manager rubric. The agent's outcome is "produce a
+// short prioritized resolutions[] list that closes the most-leveraged
+// gaps in this week's snapshot".
+function buildAssetManagerRubric(p: {
+  brokerageName: string
+  listingsMissingHero: number
+  underperformingCount: number
+}): OutcomeRubric {
+  return {
+    description: `Asset Manager weekly review for ${p.brokerageName}. Spot brand-library gaps + per-persona variant gaps + under-performers (${p.listingsMissingHero} listings missing hero; ${p.underperformingCount} under-performing asset_type × persona cells) and propose ≤ 12 resolutions for human approval.`,
+    rubric: [
+      "- Propose resolutions for ALL listings missing hero photos (up to weekly cap of 12 total)",
+      "- Propose rerender_persona_variants for any high-performing asset_type missing variants",
+      "- Propose deprecate_asset for any (asset_type × persona) with perf_score < 30 and ≥ 5 samples for > 2 weeks",
+      "- Cap proposals at 12 to keep the human approval queue workable",
+      "- Each rationale cites a specific snapshot signal (count, score, asset id, or example)",
+      "- ZERO Fair Housing risk in rationale text or new_prompt copy",
+    ].join("\n"),
+    maxIterations: 5,
   }
 }
 

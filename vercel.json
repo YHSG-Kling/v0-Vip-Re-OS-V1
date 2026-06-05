@@ -367,6 +367,10 @@
     {
       "path": "/api/cron/voice-distiller-weekly",
       "schedule": "0 9 * * 5"
+    },
+    {
+      "path": "/api/cron/asset-manager-weekly",
+      "schedule": "0 7 * * 1"
     }
   ]
 }
