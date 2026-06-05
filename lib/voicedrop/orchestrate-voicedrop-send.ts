@@ -131,14 +131,29 @@ async function synthVoicemail(args: {
 
   // Resolve agent's voice id from agent_voice_profiles when override
   // is null. The agent's CLONED voice is the differentiator.
+  //
+  // agent_voice_profiles is keyed on agents.id (see scripts/991-add-
+  // did-elevenlabs-columns and every other consumer — intro-video-
+  // reactor, listing-promo-reactor, etc.). The bundle dispatcher
+  // passes users.id as `agentUserId`, so we resolve users.id →
+  // agents.id first. (Previous code queried a non-existent
+  // `agent_user_id` column and returned null every time.)
   let voiceId = args.voiceIdOverride
   if (!voiceId && args.agentUserId) {
     const svc = createServiceClient()
-    const { data } = await svc.from("agent_voice_profiles")
-      .select("elevenlabs_voice_id")
-      .eq("agent_user_id", args.agentUserId)
+    const { data: agentRow } = await svc.from("agents")
+      .select("id")
+      .eq("user_id", args.agentUserId)
+      .eq("brokerage_id", args.brokerageId)
       .maybeSingle()
-    voiceId = (data?.elevenlabs_voice_id as string | null) ?? null
+    const agentId = (agentRow?.id as string | undefined) ?? null
+    if (agentId) {
+      const { data } = await svc.from("agent_voice_profiles")
+        .select("elevenlabs_voice_id")
+        .eq("agent_id", agentId)
+        .maybeSingle()
+      voiceId = (data?.elevenlabs_voice_id as string | null) ?? null
+    }
   }
   if (!voiceId) return null
 
