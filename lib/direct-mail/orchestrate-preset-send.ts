@@ -310,6 +310,39 @@ export async function orchestratePresetSend(
     },
   })
 
+  // Wave 38 — TTS letter audio. On successful letter dispatch, render
+  // the audio companion in the agent's voice and surface it on the
+  // contact portal. Fire-and-forget so a render failure doesn't roll
+  // back the underlying Lob send (the cron backfills any miss within
+  // 15 min). dispatch.messageId is the Lob order id which is also
+  // stamped on the direct_mail_campaigns row, letting us look up the
+  // row by lob_order_id to feed renderLetterAudio.
+  if (
+    dispatch.success &&
+    preset.piece_type === "letter" &&
+    dispatch.messageId &&
+    process.env.ELEVENLABS_API_KEY
+  ) {
+    void (async () => {
+      try {
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const { data: cmp } = await svc.from("direct_mail_campaigns")
+          .select("id")
+          .eq("brokerage_id", args.brokerageId)
+          .eq("lob_order_id", dispatch.messageId!)
+          .maybeSingle()
+        const campaignId = (cmp?.id as string | undefined) ?? null
+        if (campaignId) {
+          const { renderLetterAudio } = await import("@/lib/direct-mail/render-letter-audio")
+          await renderLetterAudio({ campaignId })
+        }
+      } catch (e) {
+        console.error("[orchestrate-preset-send] inline letter-audio render failed:", (e as Error).message)
+      }
+    })()
+  }
+
   return {
     success:        dispatch.success,
     providerKey:    dispatch.providerKey,
