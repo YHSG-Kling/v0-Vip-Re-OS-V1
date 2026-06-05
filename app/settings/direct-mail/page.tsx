@@ -42,6 +42,12 @@ export default async function DirectMailSettingsPage() {
               </Link>
               <span className="text-gray-500 ml-2">Deprecate platform arms or add your own (composition × copy_style) combos</span>
             </li>
+            <li>
+              <Link href="/settings/direct-mail/presets" className="text-blue-600 hover:underline">
+                Saved campaign presets →
+              </Link>
+              <span className="text-gray-500 ml-2">Hand-tuned mailers that bypass the bandit (anniversary blasts, listing-launch flagship pieces)</span>
+            </li>
           </ul>
         </div>
       </div>
