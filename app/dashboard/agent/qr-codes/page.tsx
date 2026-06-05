@@ -20,7 +20,7 @@ export default async function AgentQRCodesPage() {
 
   const { data: qrCodes } = await supabase
     .from('qr_codes')
-    .select('id, slug, label, purpose, scan_count, lead_count, is_active, created_at')
+    .select('id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, lead_count, is_active, created_at')
     .eq('agent_id', ctx.agentId)
     .order('created_at', { ascending: false })
 
