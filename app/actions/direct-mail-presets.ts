@@ -33,22 +33,42 @@ export interface PresetRow {
   fallback_template_id:   string | null
   compliance_event_id:    string | null
   is_active:              boolean
+  scope_type:             "agent" | "team" | "brokerage"
+  scope_id:               string
   created_at:             string
 }
 
+/** List presets accessible to the caller across every tier they can
+ *  read. An agent sees their own + their team's + their brokerage's;
+ *  a team lead sees team + brokerage; an admin sees brokerage. */
 export async function listDirectMailPresets(): Promise<
   | { success: true; presets: PresetRow[] }
   | { success: false; error: string }
 > {
   const access = await resolvePolicyScopeAccess()
-  if (!access.canEditBrokerage || !access.brokerageScopeId) {
-    return { success: false, error: "Brokerage admin scope required" }
+  if (!access.canEditAgent && !access.canEditTeam && !access.canEditBrokerage) {
+    return { success: false, error: "No edit scope available" }
+  }
+  if (!access.brokerageScopeId) {
+    return { success: false, error: "Brokerage scope unresolved" }
   }
   const svc = createServiceClient()
+
+  // Build the scope OR filter — every (scope_type, scope_id) tuple
+  // the caller can see across the cascade.
+  const scopeFilters: string[] = []
+  if (access.canEditAgent     && access.agentScopeId)     scopeFilters.push(`and(scope_type.eq.agent,scope_id.eq.${access.agentScopeId})`)
+  for (const teamId of access.teamScopeIds)               scopeFilters.push(`and(scope_type.eq.team,scope_id.eq.${teamId})`)
+  if (access.canEditBrokerage)                            scopeFilters.push(`and(scope_type.eq.brokerage,scope_id.eq.${access.brokerageScopeId})`)
+  if (scopeFilters.length === 0) {
+    return { success: true, presets: [] }
+  }
+
   const { data, error } = await svc
     .from("direct_mail_presets")
     .select("*")
     .eq("brokerage_id", access.brokerageScopeId)
+    .or(scopeFilters.join(","))
     .order("created_at", { ascending: false })
   if (error) return { success: false, error: error.message }
   return { success: true, presets: (data ?? []) as PresetRow[] }
@@ -70,6 +90,12 @@ export interface UpsertPresetInput {
   locked_letter_body?:     string | null
   locked_letter_signoff?:  string | null
   fallback_template_id?:   string | null
+  /** Wave 37 tier scope. Defaults to "brokerage" when omitted. */
+  scope_type?:             "agent" | "team" | "brokerage"
+  /** When scope_type='team', the team id. When 'agent', the agent id.
+   *  When 'brokerage', the brokerage id (defaults to the resolved
+   *  brokerage scope). */
+  scope_id?:               string
 }
 
 export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<{
@@ -79,8 +105,36 @@ export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<
   error?: string
 }> {
   const access = await resolvePolicyScopeAccess()
-  if (!access.canEditBrokerage || !access.brokerageScopeId) {
-    return { success: false, error: "Brokerage admin scope required" }
+  if (!access.canEditAgent && !access.canEditTeam && !access.canEditBrokerage) {
+    return { success: false, error: "No edit scope available" }
+  }
+  if (!access.brokerageScopeId) {
+    return { success: false, error: "Brokerage scope unresolved" }
+  }
+
+  // Resolve target tier — caller can write to any tier they have
+  // edit-access for. Defaults to brokerage when the caller is a
+  // brokerage admin; otherwise defaults to the highest-permission
+  // tier they can edit.
+  const requestedScope = input.scope_type ?? (
+    access.canEditBrokerage ? "brokerage" :
+    access.canEditTeam      ? "team"      :
+    "agent"
+  )
+  let targetScopeId: string | null = null
+  if (requestedScope === "agent") {
+    if (!access.canEditAgent) return { success: false, error: "agent_scope_forbidden" }
+    targetScopeId = input.scope_id ?? access.agentScopeId ?? null
+    if (!targetScopeId) return { success: false, error: "agent_scope_unresolved" }
+  } else if (requestedScope === "team") {
+    if (!access.canEditTeam) return { success: false, error: "team_scope_forbidden" }
+    targetScopeId = input.scope_id ?? access.teamScopeIds[0] ?? null
+    if (!targetScopeId || !access.teamScopeIds.includes(targetScopeId)) {
+      return { success: false, error: "team_not_in_your_scope" }
+    }
+  } else {
+    if (!access.canEditBrokerage) return { success: false, error: "brokerage_scope_forbidden" }
+    targetScopeId = input.scope_id ?? access.brokerageScopeId
   }
   if (!input.name?.trim()) return { success: false, error: "name required" }
   if (input.piece_type === "postcard") {
@@ -135,6 +189,8 @@ export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<
 
   const row = {
     brokerage_id:            brokerageId,
+    scope_type:              requestedScope,
+    scope_id:                targetScopeId,
     name:                    input.name.trim(),
     piece_type:              input.piece_type,
     postcard_size:           input.postcard_size ?? null,
@@ -177,14 +233,32 @@ export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<
 
 export async function deactivatePreset(presetId: string): Promise<{ success: boolean; error?: string }> {
   const access = await resolvePolicyScopeAccess()
-  if (!access.canEditBrokerage || !access.brokerageScopeId) {
-    return { success: false, error: "Brokerage admin scope required" }
+  if (!access.canEditAgent && !access.canEditTeam && !access.canEditBrokerage) {
+    return { success: false, error: "No edit scope available" }
+  }
+  if (!access.brokerageScopeId) {
+    return { success: false, error: "Brokerage scope unresolved" }
   }
   const svc = createServiceClient()
+
+  // Verify the preset is in a scope the caller can edit before flipping.
+  const { data: row } = await svc
+    .from("direct_mail_presets")
+    .select("scope_type, scope_id")
+    .eq("id", presetId)
+    .eq("brokerage_id", access.brokerageScopeId)
+    .maybeSingle()
+  const r = row as { scope_type: string; scope_id: string } | null
+  if (!r) return { success: false, error: "preset_not_found" }
+  const canEditScope =
+    (r.scope_type === "agent"     && access.canEditAgent     && r.scope_id === access.agentScopeId) ||
+    (r.scope_type === "team"      && access.canEditTeam      && access.teamScopeIds.includes(r.scope_id)) ||
+    (r.scope_type === "brokerage" && access.canEditBrokerage && r.scope_id === access.brokerageScopeId)
+  if (!canEditScope) return { success: false, error: "scope_forbidden" }
+
   const { error } = await svc.from("direct_mail_presets")
     .update({ is_active: false })
     .eq("id", presetId)
-    .eq("brokerage_id", access.brokerageScopeId)
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/direct-mail/presets")
   return { success: true }
