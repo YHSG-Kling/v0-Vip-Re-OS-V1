@@ -304,6 +304,7 @@ export async function dispatchFarmMail(
           pieces_mailed:   result.success ? 1 : 0,
           is_ai_generated: true,
           approval_status: result.rendered ? "auto_approved" : "fell_back",
+          variant_id:      result.variantPick?.variantId ?? null,
           created_at:      new Date().toISOString(),
         })
         .select("id")

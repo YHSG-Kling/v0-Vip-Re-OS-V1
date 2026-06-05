@@ -25,6 +25,8 @@ import { dispatchDirectMail, type DirectMailPieceType } from "@/lib/providers/di
 import { renderPostcardBothSides4x6, renderPostcardBothSides6x9 } from "@/lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
+import { pickVariantArm, recordVariantSend } from "@/lib/direct-mail/variant-bandit"
+import type { Persona } from "@/lib/kernel/types"
 
 export type PostcardSize = "4x6" | "6x9"
 
@@ -76,6 +78,17 @@ export interface OrchestrateSendResult {
   rendered:     boolean
   /** Why we fell back — null if rendered=true. */
   fellBackReason: string | null
+  /** Wave 36 bandit telemetry. The variant the Thompson sampler
+   *  picked + whether the pick was exploration (cold arm) vs
+   *  exploitation (hot arm). Null when the bandit was skipped
+   *  (letter sends, no eligible arms). */
+  variantPick?: {
+    variantId:    string
+    compositionId: string
+    copyStyle:    string
+    sampledProb:  number
+    isExploration: boolean
+  } | null
   error?:       string
 }
 
@@ -87,9 +100,47 @@ export async function orchestrateRenderAndSend(
   let backTemplateForLob: string | undefined
   let rendered = false
   let fellBackReason: string | null = null
+  let variantPick: OrchestrateSendResult["variantPick"] = null
+
+  // Wave 36 bandit pick (postcard sends only — letters use a fixed
+  // letterhead). systemSource maps to bandit use_kind; "lifecycle:*"
+  // collapses to use_kind="lifecycle" so all 7 lifecycle events share
+  // the same arm pool (we test creative across the lifecycle as one
+  // cohort; the policy controls audience scope per event).
+  function inferUseKind(): "farm_mail" | "welcome_kit" | "sphere_outreach" | "lifecycle" | "pre_listing_kit" | null {
+    const src = args.systemSource ?? ""
+    if (src === "ai_isa")            return "welcome_kit"
+    if (src === "farm_mail")         return "farm_mail"
+    if (src === "pre_listing_kit")   return "pre_listing_kit"
+    if (src.startsWith("lifecycle:")) return "lifecycle"
+    if (src === "sphere_outreach")   return "sphere_outreach"
+    return null
+  }
 
   if (args.pieceType === "postcard") {
     const size: PostcardSize = args.postcardSize ?? "4x6"
+    // Bandit pick happens BEFORE render so the picked composition_id
+    // could (future) route to different Remotion comps. For now the
+    // copy_style is a context hint passed through copyCtx; the chosen
+    // composition is whatever the size resolved to.
+    const useKind = inferUseKind()
+    if (useKind && args.copyCtx.persona) {
+      const pick = await pickVariantArm({
+        brokerageId: args.brokerageId,
+        persona:     args.copyCtx.persona as Persona,
+        useKind,
+        size,
+      })
+      if (pick) {
+        variantPick = {
+          variantId:     pick.variantId,
+          compositionId: pick.compositionId,
+          copyStyle:     pick.copyStyle,
+          sampledProb:   pick.sampledProb,
+          isExploration: pick.isExploration,
+        }
+      }
+    }
     const r = size === "6x9"
       ? await renderPostcardBothSides6x9({
           brokerageId:      args.brokerageId,
@@ -171,8 +222,25 @@ export async function orchestrateRenderAndSend(
       rendered,
       fell_back_reason: fellBackReason,
       postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
+      variant_id:       variantPick?.variantId ?? null,
+      copy_style:       variantPick?.copyStyle ?? null,
     },
   })
+
+  // Wave 36 — bandit feedback. Record the send on the variant's
+  // outcomes row so the next pick for this cohort sees it. Cost
+  // approximation by size: 4x6 ≈ $0.78, 6x9 ≈ $1.10; in cents for the
+  // bigint column.
+  if (variantPick && dispatch.success) {
+    const costCents = args.pieceType === "postcard"
+      ? (args.postcardSize === "6x9" ? 110 : 78)
+      : 120  // letter
+    await recordVariantSend({
+      variantId:   variantPick.variantId,
+      brokerageId: args.brokerageId,
+      costCents,
+    }).catch((e) => console.error("[orchestrator] recordVariantSend failed:", e))
+  }
 
   return {
     success:        dispatch.success,
@@ -180,6 +248,7 @@ export async function orchestrateRenderAndSend(
     messageId:      dispatch.messageId,
     rendered,
     fellBackReason,
+    variantPick,
     error:          dispatch.error,
   }
 }

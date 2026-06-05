@@ -359,6 +359,10 @@
     {
       "path": "/api/cron/competitor-ads-exa",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/variant-outcomes-aggregator",
+      "schedule": "30 8 * * *"
     }
   ]
 }

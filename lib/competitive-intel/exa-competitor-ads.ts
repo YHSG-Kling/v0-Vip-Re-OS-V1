@@ -90,14 +90,20 @@ export async function fetchExaCompetitorAds(args: {
   const [metaResults, googleResults] = await Promise.all([
     exaSearch({
       query,
-      type:           "neural",
+      // "auto" mixes neural (locale + topic context) with keyword
+      // (exact brand-name match). Better for competitor ad search
+      // than pure "neural" because the query carries a literal name.
+      type:           "auto",
       numResults:     limit,
       withinDays,
       includeDomains: [META_DOMAIN],
     }),
     exaSearch({
       query,
-      type:           "neural",
+      // "auto" mixes neural (locale + topic context) with keyword
+      // (exact brand-name match). Better for competitor ad search
+      // than pure "neural" because the query carries a literal name.
+      type:           "auto",
       numResults:     limit,
       withinDays,
       includeDomains: [GOOGLE_DOMAIN],

@@ -56,9 +56,16 @@ interface ExaResponse {
 export async function exaSearch(args: {
   query:        string
   numResults?:  number
-  /** "neural" lets Exa interpret the query; "keyword" is exact-match.
-   *  "auto" lets Exa pick. We default to "neural" for content intel. */
-  type?:        "neural" | "keyword" | "auto"
+  /** Valid Exa types (per exa-js SDK):
+   *    "keyword"  — exact-match lookup
+   *    "neural"   — semantic interpretation (slower, better intent)
+   *    "auto"     — Exa picks; recommended default for mixed queries
+   *    "hybrid"   — runs both and merges
+   *    "fast"     — keyword-fast lookup
+   *    "instant"  — minimal latency
+   *  Deep variants (deep-lite/deep/deep-reasoning) are for agentic
+   *  research flows and not used in this code path. */
+  type?:        "keyword" | "neural" | "auto" | "hybrid" | "fast" | "instant"
   /** Filter to results published in the last N days. */
   withinDays?:  number
   /** Optional category filter — e.g. "news" for HousingWire / Inman shape. */
