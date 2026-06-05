@@ -18,6 +18,7 @@
  */
 
 import { useMemo, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   upsertCampaignBundle,
   deactivateCampaignBundle,
@@ -72,6 +73,7 @@ export function CampaignBundlesClient({
   const [showCreate, setShowCreate] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  const router = useRouter()
 
   function handleSave(input: UpsertBundleInput, bundleId?: string) {
     setError(null)
@@ -82,8 +84,10 @@ export function CampaignBundlesClient({
         return
       }
       setEditing(null); setShowCreate(false)
-      // Reload page on success — easier than reconstructing the row in-place.
-      if (typeof window !== "undefined") window.location.reload()
+      // router.refresh re-renders the page's RSC tree with fresh data
+      // without unmounting the client tree — preserves scroll + the
+      // rest of client state, unlike a full window.location.reload.
+      router.refresh()
     })
   }
 
@@ -239,12 +243,21 @@ function BundleEditor({ initial, catalog, access, onClose, onSave, pending }: {
         : access.canEditTeam     ? "team"
         : "agent")
   )
-  const [scopeId, setScopeId]         = useState<string>(
-    initial?.scope_id
-    ?? (access.canEditBrokerage ? (access.brokerageScopeId ?? "")
-        : access.canEditTeam     ? (access.teamScopeIds[0] ?? "")
-        : (access.agentScopeId ?? ""))
-  )
+  // Initial scope_id: only auto-resolve when unambiguous (the caller
+  // has exactly one team / is brokerage tier / is a solo agent). When
+  // a brokerage admin lands on the team tab with N teams in scope, we
+  // leave scopeId empty and force them to pick — silently defaulting
+  // to teamScopeIds[0] would let a save land on the wrong team.
+  const initialScopeId = (() => {
+    if (initial?.scope_id) return initial.scope_id
+    if (access.canEditBrokerage) return access.brokerageScopeId ?? ""
+    if (access.canEditTeam) {
+      if (access.teamScopeIds.length === 1) return access.teamScopeIds[0]
+      return ""
+    }
+    return access.agentScopeId ?? ""
+  })()
+  const [scopeId, setScopeId] = useState<string>(initialScopeId)
   const [items, setItems] = useState<EditorItem[]>(
     initial
       ? initial.items.map((it) => ({
@@ -287,6 +300,7 @@ function BundleEditor({ initial, catalog, access, onClose, onSave, pending }: {
     e.preventDefault()
     setLocalError(null)
     if (!name.trim()) { setLocalError("Name required"); return }
+    if (scopeType === "team" && !scopeId) { setLocalError("Pick a team"); return }
     if (items.length === 0) { setLocalError("Add at least one item"); return }
     for (const it of items) {
       if (!it.preset_id) { setLocalError(`Pick a preset for the ${CHANNEL_LABEL[it.channel]} item`); return }
@@ -330,8 +344,13 @@ function BundleEditor({ initial, catalog, access, onClose, onSave, pending }: {
                 const next = e.target.value as "agent" | "team" | "brokerage"
                 setScopeType(next)
                 if (next === "agent")     setScopeId(access.agentScopeId ?? "")
-                if (next === "team")      setScopeId(teamOptions[0] ?? "")
                 if (next === "brokerage") setScopeId(access.brokerageScopeId ?? "")
+                if (next === "team") {
+                  // Same rule as initial resolution: auto-pick only
+                  // when there's a single team in scope; otherwise
+                  // empty + force the dropdown below to be touched.
+                  setScopeId(teamOptions.length === 1 ? teamOptions[0] : "")
+                }
               }}
               className="w-full border rounded px-3 py-1.5">
               {access.canEditAgent     && <option value="agent">Agent (mine)</option>}
@@ -343,9 +362,10 @@ function BundleEditor({ initial, catalog, access, onClose, onSave, pending }: {
 
         {scopeType === "team" && teamOptions.length > 1 && (
           <label className="text-sm block">
-            <span className="block text-xs text-gray-700 mb-1">Team</span>
-            <select value={scopeId} onChange={(e) => setScopeId(e.target.value)}
+            <span className="block text-xs text-gray-700 mb-1">Team (required)</span>
+            <select required value={scopeId} onChange={(e) => setScopeId(e.target.value)}
               className="w-full border rounded px-3 py-1.5 font-mono text-xs">
+              <option value="">— pick a team —</option>
               {teamOptions.map((tid) => <option key={tid} value={tid}>{tid}</option>)}
             </select>
           </label>

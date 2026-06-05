@@ -128,8 +128,15 @@ export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<
     if (!targetScopeId) return { success: false, error: "agent_scope_unresolved" }
   } else if (requestedScope === "team") {
     if (!access.canEditTeam) return { success: false, error: "team_scope_forbidden" }
-    targetScopeId = input.scope_id ?? access.teamScopeIds[0] ?? null
-    if (!targetScopeId || !access.teamScopeIds.includes(targetScopeId)) {
+    // Default only when the caller has exactly one team (team-lead).
+    // Brokerage admins see every team and MUST pick explicitly so the
+    // preset doesn't land on an unintended team.
+    targetScopeId = input.scope_id ?? null
+    if (!targetScopeId) {
+      if (access.teamScopeIds.length === 1) targetScopeId = access.teamScopeIds[0]
+      else return { success: false, error: "team_scope_id_required" }
+    }
+    if (!access.teamScopeIds.includes(targetScopeId)) {
       return { success: false, error: "team_not_in_your_scope" }
     }
   } else {

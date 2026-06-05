@@ -294,8 +294,14 @@ function resolveTargetScope(
   }
   if (tier === "team") {
     if (!access.canEditTeam) return { ok: false, error: "team_scope_forbidden" }
-    const id = requested.scope_id ?? access.teamScopeIds[0]
-    if (!id || !access.teamScopeIds.includes(id)) return { ok: false, error: "team_not_in_your_scope" }
+    // Only default when the caller has exactly one team (team-lead).
+    // Brokerage admins see every team and MUST pick explicitly.
+    let id = requested.scope_id
+    if (!id) {
+      if (access.teamScopeIds.length === 1) id = access.teamScopeIds[0]
+      else return { ok: false, error: "team_scope_id_required" }
+    }
+    if (!access.teamScopeIds.includes(id)) return { ok: false, error: "team_not_in_your_scope" }
     return { ok: true, scope_type: "team", scope_id: id }
   }
   if (!access.canEditBrokerage) return { ok: false, error: "brokerage_scope_forbidden" }

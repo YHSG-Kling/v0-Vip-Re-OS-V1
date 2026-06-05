@@ -10,6 +10,7 @@
  */
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   upsertChannelPreset,
   deactivateChannelPreset,
@@ -68,6 +69,7 @@ export function ChannelPresetsClient({
   const [error, setError] = useState<string | null>(null)
   const [violations, setViolations] = useState<string[] | null>(null)
   const [pending, startTransition] = useTransition()
+  const router = useRouter()
 
   function handleSave(input: UpsertChannelPresetInput, presetId?: string) {
     setError(null); setViolations(null)
@@ -79,7 +81,9 @@ export function ChannelPresetsClient({
         return
       }
       setEditing(null); setShowCreate(false)
-      if (typeof window !== "undefined") window.location.reload()
+      // router.refresh re-runs the page's RSC tree without unmounting
+      // the client tree — preserves tab + scroll state.
+      router.refresh()
     })
   }
 
@@ -250,12 +254,19 @@ function PresetEditor({ channel, initial, access, onClose, onSave, pending }: {
         : access.canEditTeam     ? "team"
         : "agent")
   )
-  const [scopeId, setScopeId] = useState<string>(
-    initial?.scope_id
-    ?? (access.canEditBrokerage ? (access.brokerageScopeId ?? "")
-        : access.canEditTeam     ? (access.teamScopeIds[0] ?? "")
-        : (access.agentScopeId ?? ""))
-  )
+  // Don't silently default to teamScopeIds[0] when the caller is a
+  // brokerage admin with N teams in scope — they must pick explicitly.
+  // Mirrors the server-side resolveTargetScope guard.
+  const initialScopeId = (() => {
+    if (initial?.scope_id) return initial.scope_id
+    if (access.canEditBrokerage) return access.brokerageScopeId ?? ""
+    if (access.canEditTeam) {
+      if (access.teamScopeIds.length === 1) return access.teamScopeIds[0]
+      return ""
+    }
+    return access.agentScopeId ?? ""
+  })()
+  const [scopeId, setScopeId] = useState<string>(initialScopeId)
   const [payload, setPayload] = useState<Record<string, unknown>>(initial?.payload ?? {})
 
   function setField<K extends string>(key: K, value: unknown) {
@@ -264,6 +275,10 @@ function PresetEditor({ channel, initial, access, onClose, onSave, pending }: {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    // The team picker is `required` when teamScopeIds.length > 1, so
+    // HTML form validation catches the empty case before we reach here.
+    // Belt-and-suspenders for the programmatic path.
+    if (scopeType === "team" && !scopeId) return
     onSave({
       name,
       scope_type: scopeType,
@@ -296,8 +311,10 @@ function PresetEditor({ channel, initial, access, onClose, onSave, pending }: {
                 const next = e.target.value as "agent" | "team" | "brokerage"
                 setScopeType(next)
                 if (next === "agent")     setScopeId(access.agentScopeId ?? "")
-                if (next === "team")      setScopeId(access.teamScopeIds[0] ?? "")
                 if (next === "brokerage") setScopeId(access.brokerageScopeId ?? "")
+                if (next === "team") {
+                  setScopeId(access.teamScopeIds.length === 1 ? access.teamScopeIds[0] : "")
+                }
               }}
               className="w-full border rounded px-3 py-1.5">
               {access.canEditAgent     && <option value="agent">Agent (mine)</option>}
@@ -309,9 +326,10 @@ function PresetEditor({ channel, initial, access, onClose, onSave, pending }: {
 
         {scopeType === "team" && access.teamScopeIds.length > 1 && (
           <label className="text-sm block">
-            <span className="block text-xs text-gray-700 mb-1">Team</span>
-            <select value={scopeId} onChange={(e) => setScopeId(e.target.value)}
+            <span className="block text-xs text-gray-700 mb-1">Team (required)</span>
+            <select required value={scopeId} onChange={(e) => setScopeId(e.target.value)}
               className="w-full border rounded px-3 py-1.5 font-mono text-xs">
+              <option value="">— pick a team —</option>
               {access.teamScopeIds.map((tid) => <option key={tid} value={tid}>{tid}</option>)}
             </select>
           </label>

@@ -116,8 +116,17 @@ function resolveTargetScope(
   }
   if (tier === "team") {
     if (!access.canEditTeam) return { ok: false, error: "team_scope_forbidden" }
-    const id = requested.scope_id ?? access.teamScopeIds[0]
-    if (!id || !access.teamScopeIds.includes(id)) return { ok: false, error: "team_not_in_your_scope" }
+    // Only default to the caller's single team when teamScopeIds has
+    // exactly one entry (the team-lead case). Brokerage admins see
+    // every team in the brokerage and MUST pick explicitly — silently
+    // defaulting to teamScopeIds[0] would let a broker write to a
+    // random team's presets without realising it.
+    let id = requested.scope_id
+    if (!id) {
+      if (access.teamScopeIds.length === 1) id = access.teamScopeIds[0]
+      else return { ok: false, error: "team_scope_id_required" }
+    }
+    if (!access.teamScopeIds.includes(id)) return { ok: false, error: "team_not_in_your_scope" }
     return { ok: true, scope_type: "team", scope_id: id }
   }
   if (!access.canEditBrokerage) return { ok: false, error: "brokerage_scope_forbidden" }
