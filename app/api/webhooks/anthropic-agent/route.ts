@@ -240,6 +240,28 @@ export async function POST(request: NextRequest) {
             console.error("[anthropic-webhook] marketing-agent resolutions parse failed:", (e as Error).message)
           }
         }
+        // Wave 37 — asset-manager resolution capture. Same parse pattern;
+        // separate handler + ledger so the action_type vocabularies stay
+        // focused per agent kind.
+        if (agentKind === "asset_manager") {
+          try {
+            const parsed = tryParseJsonObject(text)
+            const resolutions = Array.isArray(parsed?.resolutions) ? parsed.resolutions : []
+            if (resolutions.length > 0) {
+              const { recordProposedAssetActions } = await import("@/lib/agents/asset-manager-actions")
+              const valid = filterValidAssetResolutions(resolutions as unknown[])
+              if (valid.length > 0) {
+                await recordProposedAssetActions({
+                  brokerageId:           sessionRow.brokerage_id as string,
+                  managedAgentSessionId: sessionRow.id as string,
+                  actions:               valid,
+                })
+              }
+            }
+          } catch (e) {
+            console.error("[anthropic-webhook] asset-manager resolutions parse failed:", (e as Error).message)
+          }
+        }
       } else if (text && !complianceAllowed) {
         // Log the block. The agent's next idle can re-draft (the agent will see
         // last_agent_message as null after this update — TODO follow-up: surface
@@ -365,6 +387,53 @@ function filterValidResolutions(arr: unknown[]): Array<{
     if (!inp || typeof inp !== "object" || Array.isArray(inp)) continue
     out.push({
       action_type:  at as MarketingActionTypeWh,
+      action_input: inp as Record<string, unknown>,
+      rationale:    typeof obj.rationale === "string" ? obj.rationale.slice(0, 800) : undefined,
+    })
+  }
+  return out
+}
+
+// Wave 37 — asset-manager resolution validator. Same shape as
+// filterValidResolutions; separate vocab set so the marketing agent's
+// action_types and the asset manager's stay isolated.
+type AssetManagerActionTypeWh =
+  | "regenerate_asset"
+  | "deprecate_asset"
+  | "flag_asset_for_review"
+  | "request_listing_hero_photo"
+  | "request_agent_headshot"
+  | "rerender_persona_variants"
+  | "sync_asset_to_listing"
+
+function filterValidAssetResolutions(arr: unknown[]): Array<{
+  action_type: AssetManagerActionTypeWh
+  action_input: Record<string, unknown>
+  rationale?: string
+}> {
+  const known = new Set<string>([
+    "regenerate_asset",
+    "deprecate_asset",
+    "flag_asset_for_review",
+    "request_listing_hero_photo",
+    "request_agent_headshot",
+    "rerender_persona_variants",
+    "sync_asset_to_listing",
+  ])
+  const out: Array<{
+    action_type: AssetManagerActionTypeWh
+    action_input: Record<string, unknown>
+    rationale?: string
+  }> = []
+  for (const r of arr) {
+    if (!r || typeof r !== "object") continue
+    const obj = r as Record<string, unknown>
+    const at = String(obj.action_type ?? "")
+    if (!known.has(at)) continue
+    const inp = obj.action_input
+    if (!inp || typeof inp !== "object" || Array.isArray(inp)) continue
+    out.push({
+      action_type:  at as AssetManagerActionTypeWh,
       action_input: inp as Record<string, unknown>,
       rationale:    typeof obj.rationale === "string" ? obj.rationale.slice(0, 800) : undefined,
     })
