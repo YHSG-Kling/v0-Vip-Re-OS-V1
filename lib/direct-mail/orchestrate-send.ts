@@ -89,6 +89,9 @@ export interface OrchestrateSendResult {
     sampledProb:  number
     isExploration: boolean
   } | null
+  /** Wave 36 m156 — id of the compliance_events row the gate emitted.
+   *  Caller stamps it on direct_mail_campaigns for per-piece audit. */
+  complianceEventId?: string | null
   error?:       string
 }
 
@@ -101,6 +104,7 @@ export async function orchestrateRenderAndSend(
   let rendered = false
   let fellBackReason: string | null = null
   let variantPick: OrchestrateSendResult["variantPick"] = null
+  let complianceEventId: string | null = null
 
   // Wave 36 bandit pick (postcard sends only — letters use a fixed
   // letterhead). systemSource maps to bandit use_kind; "lifecycle:*"
@@ -169,6 +173,8 @@ export async function orchestrateRenderAndSend(
         ? `compliance: ${r.violations.slice(0, 2).join("; ")}`
         : (r.error ?? "postcard_render_failed")
     }
+    // Wave 36 m156 — surface the compliance event id from the gate run.
+    if (r.complianceEventId) complianceEventId = r.complianceEventId
   } else if (args.pieceType === "letter") {
     const r = await renderLetterHtml({
       brokerageId: args.brokerageId,
@@ -190,6 +196,7 @@ export async function orchestrateRenderAndSend(
         ? `compliance: ${r.violations.slice(0, 2).join("; ")}`
         : (r.error ?? "letter_render_failed")
     }
+    if (r.complianceEventId) complianceEventId = r.complianceEventId
   } else {
     // self_mailer not yet wired; fall through to static template.
     fellBackReason = "piece_type_not_orchestrated"
@@ -249,6 +256,7 @@ export async function orchestrateRenderAndSend(
     rendered,
     fellBackReason,
     variantPick,
+    complianceEventId,
     error:          dispatch.error,
   }
 }

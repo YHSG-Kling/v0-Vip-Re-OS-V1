@@ -116,17 +116,29 @@ export async function dispatchLifecycleMail(
     return { ok: false, event: args.eventType, status: "failed", reason: "tenant_mismatch" }
   }
 
-  // Hero photo from listing_photos.order_index=0. Null = postcard
-  // falls back to brand-color gradient via the 6x9 composition's
-  // null-photo branch.
-  const { data: heroPhoto } = await svc
-    .from("listing_photos")
-    .select("photo_url")
-    .eq("listing_id", args.listingId)
-    .order("order_index", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-  const propertyPhotoUrl = (heroPhoto?.photo_url as string | undefined) ?? null
+  // Hero photo precedence (Wave 36 m156):
+  //   1. listing_photos.is_hero=true — explicit agent pick
+  //   2. listing_photos.order_index=0 — MLS default
+  //   3. null → composition falls back to brand-color gradient
+  // Two parallel queries; pick the first non-null.
+  const [heroFlagged, mlsFirst] = await Promise.all([
+    svc.from("listing_photos")
+      .select("photo_url")
+      .eq("listing_id", args.listingId)
+      .eq("is_hero", true)
+      .limit(1)
+      .maybeSingle(),
+    svc.from("listing_photos")
+      .select("photo_url")
+      .eq("listing_id", args.listingId)
+      .order("order_index", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  const propertyPhotoUrl =
+    ((heroFlagged.data?.photo_url as string | undefined) ??
+     (mlsFirst.data?.photo_url as string | undefined) ??
+     null)
 
   // Agent team_id for brand cascade — listings.team_id first, agent's
   // own team_id as fallback for older listings without it set.
@@ -325,6 +337,7 @@ export async function dispatchLifecycleMail(
       is_ai_generated:     true,
       approval_status:     result.rendered ? "auto_approved" : "fell_back",
       variant_id:          result.variantPick?.variantId ?? null,
+      compliance_event_id: result.complianceEventId ?? null,
       created_at:          new Date().toISOString(),
     })
   }

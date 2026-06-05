@@ -42,6 +42,7 @@ export interface RenderLetterResult {
   html?: string
   /** Compliance violations when ok=false. */
   violations?: string[]
+  complianceEventId?: string | null
   error?: string
 }
 
@@ -59,7 +60,7 @@ export async function renderLetterHtml(
 
   const copyResult = await draftLetterCopy(args.copyCtx)
   if (!copyResult.ok) {
-    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations, complianceEventId: copyResult.complianceEventId }
   }
   const { greeting, body, signoff } = copyResult.copy
 
@@ -134,5 +135,5 @@ export async function renderLetterHtml(
 </body>
 </html>`
 
-  return { ok: true, html }
+  return { ok: true, html, complianceEventId: copyResult.complianceEventId }
 }

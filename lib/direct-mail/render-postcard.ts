@@ -46,6 +46,8 @@ export interface RenderPostcardResult {
   width?:   number
   height?:  number
   copy?:    { headline: string; body: string; cta: string }
+  /** Wave 36 m156 — id of the compliance_events row the gate emitted. */
+  complianceEventId?: string | null
   error?:   string
   /** Compliance violations when ok=false because the copy gate failed. */
   violations?: string[]
@@ -58,6 +60,7 @@ export interface RenderPostcardBothSidesResult {
   frontUrl?: string
   backUrl?:  string
   copy?:     { headline: string; body: string; cta: string }
+  complianceEventId?: string | null
   error?:    string
   violations?: string[]
 }
@@ -78,7 +81,7 @@ export async function renderPostcardFront4x6(
   //    rejected.
   const copyResult = await draftPostcardCopy(args.copyCtx)
   if (!copyResult.ok) {
-    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations, complianceEventId: copyResult.complianceEventId }
   }
 
   // 3. QR PNG. qrcode renders to a data URL we can drop straight into
@@ -147,6 +150,7 @@ export async function renderPostcardFront4x6(
     width:  composition.width,
     height: composition.height,
     copy:   copyResult.copy,
+    complianceEventId: copyResult.complianceEventId,
   }
 }
 
@@ -178,7 +182,7 @@ export async function renderPostcardBothSides4x6(args: {
   })
   const copyResult = await draftPostcardCopy(args.copyCtx)
   if (!copyResult.ok) {
-    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations, complianceEventId: copyResult.complianceEventId }
   }
 
   let qrCodeDataUrl: string | null = null
@@ -257,6 +261,7 @@ export async function renderPostcardBothSides4x6(args: {
     frontUrl: frontUp.url,
     backUrl:  backUp.url,
     copy:     copyResult.copy,
+    complianceEventId: copyResult.complianceEventId,
   }
 }
 
@@ -295,7 +300,7 @@ export async function renderPostcardBothSides6x9(args: {
   })
   const copyResult = await draftPostcardCopy(args.copyCtx)
   if (!copyResult.ok) {
-    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations, complianceEventId: copyResult.complianceEventId }
   }
 
   let qrCodeDataUrl: string | null = null
@@ -370,5 +375,6 @@ export async function renderPostcardBothSides6x9(args: {
     frontUrl: frontUp.url,
     backUrl:  backUp.url,
     copy:     copyResult.copy,
+    complianceEventId: copyResult.complianceEventId,
   }
 }

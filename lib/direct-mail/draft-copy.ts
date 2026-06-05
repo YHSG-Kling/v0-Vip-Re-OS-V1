@@ -201,7 +201,7 @@ async function callModelAndParse(
  */
 export async function draftPostcardCopy(
   ctx: DirectMailCopyContext,
-): Promise<{ ok: true; copy: PostcardCopy } | { ok: false; violations: string[] }> {
+): Promise<{ ok: true; copy: PostcardCopy; complianceEventId: string | null } | { ok: false; violations: string[]; complianceEventId: string | null }> {
   const brand = await resolveBrandContext({
     brokerageId: ctx.brokerageId,
     teamId:      ctx.teamId ?? null,
@@ -216,6 +216,7 @@ export async function draftPostcardCopy(
     `Hook facts: ${hookLine}\n\n` +
     `Return JSON now.`
 
+  const gateStartedAt = new Date().toISOString()
   const result = await runWithComplianceRedraft({
     draft: async ({ violations }) => callModelAndParse(promptHead, violations, ctx.brokerageId),
     gate:  async (script) => {
@@ -229,13 +230,41 @@ export async function draftPostcardCopy(
       return { allowed: r.allowed, violations: r.violations }
     },
   })
-  if (!result.ok) return { ok: false, violations: result.violations }
 
+  // Wave 36 m156 — capture the compliance_events row id the gate
+  // emitted so the caller can stamp it on direct_mail_campaigns for
+  // O(1) per-piece audit lookups. We query the LATEST row for this
+  // brokerage with message_type='direct_mail' created since the gate
+  // started. Reliable for normal serialized draft flows; if the same
+  // brokerage runs concurrent direct-mail drafts in the same second
+  // we'd associate the wrong row — acceptable miss rate for the
+  // audit use case, and the row carries the rule violations either
+  // way so the audit answer is the same.
+  const complianceEventId = await findRecentComplianceEventId(ctx.brokerageId, gateStartedAt)
+
+  if (!result.ok) return { ok: false, violations: result.violations, complianceEventId }
   const parsed = parseJsonObject<PostcardCopy>(result.script)
   if (!parsed || !parsed.headline || !parsed.body || !parsed.cta) {
-    return { ok: false, violations: ["model returned non-JSON or missing required keys"] }
+    return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed }
+  return { ok: true, copy: parsed, complianceEventId }
+}
+
+async function findRecentComplianceEventId(brokerageId: string, sinceIso: string): Promise<string | null> {
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data } = await svc
+      .from("compliance_events")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("message_type", "direct_mail")
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    return (data?.id as string | undefined) ?? null
+  } catch { return null }
 }
 
 /**
@@ -245,7 +274,7 @@ export async function draftPostcardCopy(
  */
 export async function draftLetterCopy(
   ctx: DirectMailCopyContext,
-): Promise<{ ok: true; copy: LetterCopy } | { ok: false; violations: string[] }> {
+): Promise<{ ok: true; copy: LetterCopy; complianceEventId: string | null } | { ok: false; violations: string[]; complianceEventId: string | null }> {
   const brand = await resolveBrandContext({
     brokerageId: ctx.brokerageId,
     teamId:      ctx.teamId ?? null,
@@ -260,6 +289,7 @@ export async function draftLetterCopy(
     `Hook facts: ${hookLine}\n\n` +
     `Return JSON now.`
 
+  const gateStartedAt = new Date().toISOString()
   const result = await runWithComplianceRedraft({
     draft: async ({ violations }) => callModelAndParse(promptHead, violations, ctx.brokerageId),
     gate:  async (script) => {
@@ -273,13 +303,14 @@ export async function draftLetterCopy(
       return { allowed: r.allowed, violations: r.violations }
     },
   })
-  if (!result.ok) return { ok: false, violations: result.violations }
+  const complianceEventId = await findRecentComplianceEventId(ctx.brokerageId, gateStartedAt)
+  if (!result.ok) return { ok: false, violations: result.violations, complianceEventId }
 
   const parsed = parseJsonObject<LetterCopy>(result.script)
   if (!parsed || !parsed.body) {
-    return { ok: false, violations: ["model returned non-JSON or missing required keys"] }
+    return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed }
+  return { ok: true, copy: parsed, complianceEventId }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
