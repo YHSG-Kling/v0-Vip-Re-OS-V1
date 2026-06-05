@@ -28,6 +28,8 @@ import { orchestratePresetSend, type OrchestratePresetSendArgs } from "./orchest
 import { orchestrateEmailPresetSend } from "@/lib/email/orchestrate-email-preset-send"
 import { orchestrateSmsPresetSend } from "@/lib/sms/orchestrate-sms-preset-send"
 import { orchestrateSocialPresetPublish } from "@/lib/social/orchestrate-social-preset-publish"
+import { orchestratePortalPushSend } from "@/lib/portal/orchestrate-portal-push-send"
+import { orchestrateVoicedropSend } from "@/lib/voicedrop/orchestrate-voicedrop-send"
 
 export interface OrchestrateBundleSendArgs {
   brokerageId: string
@@ -235,6 +237,42 @@ export async function orchestrateBundleSend(
           messageId: r.messageId,
           error:     r.error,
         }
+      }
+    } else if (item.channel === "portal_push" && item.preset_id && args.contactId) {
+      // Wave 38 — portal card insert. No external egress, no TCPA.
+      // Requires contactId (leads don't have portal accounts).
+      const r = await orchestratePortalPushSend({
+        brokerageId: args.brokerageId,
+        presetId:    item.preset_id,
+        contactId:   args.contactId,
+        teamId:      args.teamId,
+        agentUserId: args.agentUserId,
+        systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+      })
+      outcome = { channel: item.channel, preset_id: item.preset_id, success: r.success, messageId: r.messageId, error: r.error }
+    } else if (item.channel === "voicedrop" && item.preset_id) {
+      // Wave 38 — ringless voicemail. TCPA gate applies; phone
+      // resolved from args.recipientPhone or contact.phone.
+      let toPhone = args.recipientPhone ?? null
+      if (!toPhone && args.contactId) {
+        const { data } = await svc.from("contacts").select("phone").eq("id", args.contactId).maybeSingle()
+        toPhone = (data?.phone as string | null) ?? null
+      }
+      if (!toPhone) {
+        outcome = { channel: item.channel, preset_id: item.preset_id, success: false, error: "no_recipient_phone" }
+      } else {
+        const r = await orchestrateVoicedropSend({
+          brokerageId: args.brokerageId,
+          presetId:    item.preset_id,
+          contactId:   args.contactId,
+          leadId:      args.leadId,
+          toPhone,
+          recipientFirstName: args.recipientFirstName,
+          teamId:      args.teamId,
+          agentUserId: args.agentUserId,
+          systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+        })
+        outcome = { channel: item.channel, preset_id: item.preset_id, success: r.success, messageId: r.jobId, error: r.error }
       }
     } else if (item.channel === "social_post" && item.preset_id) {
       // Wave 37 — social: stages N platform-specific social_posts

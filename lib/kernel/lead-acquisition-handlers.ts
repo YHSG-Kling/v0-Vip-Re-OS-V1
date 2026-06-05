@@ -96,6 +96,17 @@ export async function handleLeadCaptured(params: {
     entityType: 'lead',
     entityId: leadId,
   })
+
+  // Wave 38 — auto-add to brokerage's FB retargeting audience.
+  // Non-blocking: a missing FB audience config or sync failure must
+  // not unwind the lead capture. The function returns a structured
+  // outcome with skippedReasons; we log on error but don't throw.
+  try {
+    const { onLeadCapturedForAudience } = await import('@/lib/audiences/audience-sync')
+    void onLeadCapturedForAudience({ leadId, brokerageId }).catch((e) => {
+      console.error('[lead-acquisition] FB audience stage failed:', e)
+    })
+  } catch { /* best-effort */ }
 }
 
 // ─── HANDLER 2: handleLeadScored ─────────────────────────────────────────────
@@ -508,6 +519,20 @@ export async function handleLeadAssigned(params: {
     entityType: 'lead',
     entityId: leadId,
   })
+
+  // Wave 38 — promote audience membership to the AGENT's FB
+  // retargeting audience too (brokerage row stays). Non-blocking.
+  try {
+    const { onLeadConvertedForAudience } = await import('@/lib/audiences/audience-sync')
+    void onLeadConvertedForAudience({
+      contactId:   contact.id,
+      leadId,
+      brokerageId,
+      agentUserId,
+    }).catch((e) => {
+      console.error('[lead-acquisition] FB audience promote failed:', e)
+    })
+  } catch { /* best-effort */ }
 
   // ── Post-conversion side-effects ──────────────────────────────────────
   // 1. Queue scoring + enrichment so the new contact has fresh data.
