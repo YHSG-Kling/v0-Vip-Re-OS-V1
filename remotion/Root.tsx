@@ -14,6 +14,8 @@ import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 import { PostcardFront4x6 } from "./PostcardFront4x6"
 import { PostcardBack4x6 } from "./PostcardBack4x6"
+import { PostcardFront6x9 } from "./PostcardFront6x9"
+import { PostcardBack6x9 } from "./PostcardBack6x9"
 
 // 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
 // canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
@@ -131,6 +133,64 @@ export const RemotionRoot: React.FC = () => {
         height={1875}
         defaultProps={{
           body:          "Homes on your street sold in 11 days last month. Curious what yours would do today?",
+          signoff:       "— Your agent",
+          agentPhotoUrl: null,
+          agentName:     "Your Agent",
+          brand: {
+            primaryColor:    "#0F172A",
+            accentColor:     "#F59E0B",
+            logoUrl:         null,
+            brokerageName:   "Your Brokerage",
+            websiteWordmark: "yourbrokerage.com",
+            phone:           "(555) 555-1212",
+            licenseLine:     "CA License # 02345678",
+            shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
+          },
+        }}
+      />
+      {/* Wave 36 — 6×9 postcard front (Lob premium tier, 1875×2775 bleed).
+          Photo hero top 55%, headline + body + CTA + QR below. Used for
+          listing promos (just_listed/just_sold/open_house), luxury
+          persona pieces, and lifetime-customer reach-outs where the
+          extra canvas earns its ~$1.10 cost. */}
+      <Composition
+        id="PostcardFront6x9"
+        component={PostcardFront6x9 as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1875}
+        height={2775}
+        defaultProps={{
+          headline:    "Coming this Saturday",
+          body:        "Open house at 185 Berry Street — modern 3-bed with rooftop deck. Stop by between 12 and 2.",
+          cta:         "See the photos",
+          statusBadge: "OPEN HOUSE",
+          propertyPhotoUrl: null,
+          qrCodeDataUrl:    null,
+          brand: {
+            primaryColor:    "#0F172A",
+            accentColor:     "#F59E0B",
+            logoUrl:         null,
+            brokerageName:   "Your Brokerage",
+            websiteWordmark: "yourbrokerage.com",
+            phone:           "(555) 555-1212",
+            licenseLine:     "CA License # 02345678",
+            shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
+          },
+        }}
+      />
+      {/* Wave 36 — 6×9 postcard back. Same indicia keep-out as 4×6
+          back; 6×9 gets room for a pull quote + 2-3 paragraphs of body. */}
+      <Composition
+        id="PostcardBack6x9"
+        component={PostcardBack6x9 as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1875}
+        height={2775}
+        defaultProps={{
+          body:          "Open houses are where the real conversations happen. Even if you're a year out, come walk through — you'll see what's possible.",
+          pullQuote:     "The best buyers don't wait for the listing — they tour the neighborhood first.",
           signoff:       "— Your agent",
           agentPhotoUrl: null,
           agentName:     "Your Agent",

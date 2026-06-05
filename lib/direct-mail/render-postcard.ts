@@ -155,6 +155,8 @@ export async function renderPostcardFront4x6(
  *
  * Returns frontUrl + backUrl. dispatchDirectMail caller passes
  * them as `templateId` (front) + `backTemplateId` (back).
+ *
+ * For 6×9 (premium tier), use renderPostcardBothSides6x9 instead.
  */
 export async function renderPostcardBothSides4x6(args: {
   brokerageId: string
@@ -236,6 +238,115 @@ export async function renderPostcardBothSides4x6(args: {
       access: "public", contentType: "image/png",
     }),
     put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, {
+      access: "public", contentType: "image/png",
+    }),
+  ])
+
+  return {
+    ok:       true,
+    frontUrl: frontUp.url,
+    backUrl:  backUp.url,
+    copy:     copyResult.copy,
+  }
+}
+
+/**
+ * renderPostcardBothSides6x9
+ *
+ * Lob's premium postcard tier (~$1.10/piece, ~40% more than 4×6).
+ * Reserve for sends where the larger canvas earns its cost:
+ *   - Listing promos (just_listed, just_sold, open_house, price_
+ *     reduction) — the property photo carries the impact
+ *   - Luxury persona pieces (statusBadge="JUST LISTED" on a $2M+
+ *     home — the agent paying extra postage signals premium service)
+ *   - Lifetime-customer reach-outs (anniversaryYears worth the cost)
+ *
+ * The optional propertyPhotoUrl + statusBadge are what justify 6×9 —
+ * without a photo this composition is just a more expensive 4×6.
+ */
+export async function renderPostcardBothSides6x9(args: {
+  brokerageId: string
+  copyCtx:     DirectMailCopyContext
+  qrScanUrl:   string | null
+  agentName:   string | null
+  agentPhotoUrl: string | null
+  /** Property photo for the front-hero (top 55% of the canvas). */
+  propertyPhotoUrl: string | null
+  /** Status badge — "JUST LISTED" | "JUST SOLD" | "OPEN HOUSE" | etc.
+   *  Null = no badge. */
+  statusBadge: string | null
+  /** Optional pull quote on the back. */
+  pullQuote: string | null
+}): Promise<RenderPostcardBothSidesResult> {
+  const brand = await resolveBrokerageBrandContext(args.brokerageId)
+  const copyResult = await draftPostcardCopy(args.copyCtx)
+  if (!copyResult.ok) {
+    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations }
+  }
+
+  let qrCodeDataUrl: string | null = null
+  if (args.qrScanUrl) {
+    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
+      width: 720, margin: 1, errorCorrectionLevel: "M",
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+  }
+
+  const entry = path.join(process.cwd(), "remotion", "Root.tsx")
+  const serveUrl = await getBundle(entry)
+  const brandProp = {
+    primaryColor:    brand.visual.primaryColor,
+    accentColor:     brand.visual.accentColor,
+    logoUrl:         brand.visual.logoUrl,
+    brokerageName:   brand.brokerageName,
+    websiteWordmark: brand.display.websiteWordmark,
+    phone:           brand.display.phone,
+    licenseLine:     brand.display.licenseLine,
+    shortDisclosure: brand.fairHousing.shortDisclosure,
+  }
+
+  const frontInput = {
+    headline:         copyResult.copy.headline,
+    body:             copyResult.copy.body,
+    cta:              copyResult.copy.cta,
+    statusBadge:      args.statusBadge,
+    propertyPhotoUrl: args.propertyPhotoUrl,
+    qrCodeDataUrl,
+    brand: brandProp,
+  }
+  const frontComp = await selectComposition({ serveUrl, id: "PostcardFront6x9", inputProps: frontInput })
+  const frontPath = path.join(tmpdir(), `postcard6x9-front-${Date.now()}.png`)
+  await renderStill({
+    composition: frontComp, serveUrl,
+    output: frontPath, inputProps: frontInput, imageFormat: "png",
+  })
+
+  const backInput = {
+    body:    copyResult.copy.body,
+    pullQuote: args.pullQuote,
+    signoff: args.agentName ? `— ${args.agentName.split(" ")[0] ?? args.agentName}` : null,
+    agentPhotoUrl: args.agentPhotoUrl,
+    agentName: args.agentName,
+    brand: brandProp,
+  }
+  const backComp = await selectComposition({ serveUrl, id: "PostcardBack6x9", inputProps: backInput })
+  const backPath = path.join(tmpdir(), `postcard6x9-back-${Date.now()}.png`)
+  await renderStill({
+    composition: backComp, serveUrl,
+    output: backPath, inputProps: backInput, imageFormat: "png",
+  })
+
+  const [frontBuf, backBuf] = await Promise.all([
+    fs.readFile(frontPath), fs.readFile(backPath),
+  ])
+  await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
+
+  const stamp = Date.now()
+  const [frontUp, backUp] = await Promise.all([
+    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
+      access: "public", contentType: "image/png",
+    }),
+    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-back.png`, backBuf, {
       access: "public", contentType: "image/png",
     }),
   ])

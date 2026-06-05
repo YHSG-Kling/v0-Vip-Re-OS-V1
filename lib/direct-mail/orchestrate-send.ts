@@ -22,9 +22,11 @@
  */
 import "server-only"
 import { dispatchDirectMail, type DirectMailPieceType } from "@/lib/providers/dispatch"
-import { renderPostcardBothSides4x6 } from "@/lib/direct-mail/render-postcard"
+import { renderPostcardBothSides4x6, renderPostcardBothSides6x9 } from "@/lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
+
+export type PostcardSize = "4x6" | "6x9"
 
 export interface OrchestrateSendArgs {
   brokerageId: string
@@ -50,6 +52,15 @@ export interface OrchestrateSendArgs {
   agentName?:  string | null
   agentTitle?: string | null
   systemSource?: string
+  /** Postcard size when pieceType='postcard'. Default 4x6. 6x9 is
+   *  Lob's premium tier (~$1.10/piece vs ~$0.78 for 4x6) and gets a
+   *  property photo hero + status badge — reserve for listing
+   *  promos, luxury persona, and lifetime-customer reach-outs. */
+  postcardSize?: PostcardSize
+  /** Optional 6x9-only inputs. Ignored for 4x6 sends. */
+  propertyPhotoUrl?: string | null
+  statusBadge?:     string | null
+  pullQuote?:       string | null
 }
 
 export interface OrchestrateSendResult {
@@ -74,14 +85,26 @@ export async function orchestrateRenderAndSend(
   let fellBackReason: string | null = null
 
   if (args.pieceType === "postcard") {
-    const r = await renderPostcardBothSides4x6({
-      brokerageId:   args.brokerageId,
-      copyCtx:       args.copyCtx,
-      qrScanUrl:     args.qrScanUrl ?? null,
-      agentName:     args.agentName ?? null,
-      // Future: pull agent photo from agents.did_photo_url / users.avatar_url
-      agentPhotoUrl: null,
-    })
+    const size: PostcardSize = args.postcardSize ?? "4x6"
+    const r = size === "6x9"
+      ? await renderPostcardBothSides6x9({
+          brokerageId:      args.brokerageId,
+          copyCtx:          args.copyCtx,
+          qrScanUrl:        args.qrScanUrl ?? null,
+          agentName:        args.agentName ?? null,
+          agentPhotoUrl:    null,
+          propertyPhotoUrl: args.propertyPhotoUrl ?? null,
+          statusBadge:      args.statusBadge ?? null,
+          pullQuote:        args.pullQuote ?? null,
+        })
+      : await renderPostcardBothSides4x6({
+          brokerageId:   args.brokerageId,
+          copyCtx:       args.copyCtx,
+          qrScanUrl:     args.qrScanUrl ?? null,
+          agentName:     args.agentName ?? null,
+          // Future: pull agent photo from agents.did_photo_url / users.avatar_url
+          agentPhotoUrl: null,
+        })
     if (r.ok && r.frontUrl && r.backUrl) {
       templateForLob     = r.frontUrl
       backTemplateForLob = r.backUrl
@@ -135,10 +158,15 @@ export async function orchestrateRenderAndSend(
     templateId:     templateForLob,
     backTemplateId: backTemplateForLob,
     pieceType:      args.pieceType,
+    // Lob accepts size strings like '4x6'/'6x9'/'6x11' on
+    // postcards.create; passing this through lets the 6x9 path
+    // actually order the larger card from Lob.
+    size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
     systemSource:   args.systemSource ?? "orchestrated",
     metadata: {
       rendered,
       fell_back_reason: fellBackReason,
+      postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
     },
   })
 
