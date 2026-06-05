@@ -274,6 +274,10 @@ export interface ComplianceResult {
   correctedContent?: string
   violations: string[]
   blockedReason?: string
+  /** compliance_events.id of the row this evaluation just logged. Lets
+   *  callers stamp the audit id on dependent rows (e.g. preset.compliance_event_id)
+   *  without a follow-up race-prone re-query. */
+  complianceEventId?: string
 }
 
 /** Feature access check result */

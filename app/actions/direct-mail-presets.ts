@@ -174,18 +174,10 @@ export async function upsertDirectMailPreset(input: UpsertPresetInput): Promise<
   if (!gateResult.allowed) {
     return { success: false, violations: gateResult.violations, error: "compliance_gate_blocked" }
   }
-
-  // Find the compliance_events row the gate just emitted to stamp on
-  // the preset.
-  const { data: ceRow } = await svc
-    .from("compliance_events")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("message_type", "direct_mail")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  const complianceEventId = (ceRow?.id as string | undefined) ?? null
+  // evaluateOutbound returns the compliance_events.id it just inserted.
+  // Stamp that directly — re-querying by (brokerage_id, message_type)
+  // is race-prone under concurrent saves.
+  const complianceEventId = gateResult.complianceEventId ?? null
 
   const row = {
     brokerage_id:            brokerageId,

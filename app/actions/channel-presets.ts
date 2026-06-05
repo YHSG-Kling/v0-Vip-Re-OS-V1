@@ -239,16 +239,10 @@ export async function upsertChannelPreset(
       if (!gateResult.allowed) {
         return { success: false, violations: gateResult.violations, error: "compliance_gate_blocked" }
       }
-      const svcForGate = createServiceClient()
-      const { data: ceRow } = await svcForGate
-        .from("compliance_events")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .eq("message_type", gateMessageType)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      complianceEventId = (ceRow?.id as string | undefined) ?? null
+      // evaluateOutbound returns the compliance_events.id it just
+      // inserted. Stamp that directly instead of re-querying (which
+      // is race-prone under concurrent saves).
+      complianceEventId = gateResult.complianceEventId ?? null
     }
   }
 

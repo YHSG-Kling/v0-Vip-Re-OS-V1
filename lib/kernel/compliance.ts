@@ -292,5 +292,6 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     violations,
     blockedReason,
     correctedContent,
+    complianceEventId: (complianceEvent?.id as string | undefined) ?? undefined,
   }
 }

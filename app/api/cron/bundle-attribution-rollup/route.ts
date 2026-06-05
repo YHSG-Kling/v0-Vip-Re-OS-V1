@@ -14,14 +14,24 @@
  *     leads = COUNT contacts CREATED WHERE source='qr_scan' AND the
  *             originating qr_code_id was on a bundled mailer
  *
- *   EMAIL (channel_outcomes.email.message_id → email_tracking)
+ *   EMAIL (channel_outcomes.email.message_id → email_sends.provider_message_id
+ *          → email_tracking.email_send_id)
  *     scans = COUNT email_tracking WHERE event_type IN ('click','open')
+ *             joined via email_sends. The provider_message_id is the
+ *             Resend/Postmark id stamped at egress; email_tracking
+ *             references the email_sends.id directly.
  *     leads = COUNT contacts CREATED via reply / form-submit tied to
  *             the email's tracking_id
  *
- *   SMS / VOICEDROP (messages.message_id from dispatch metadata)
- *     scans = COUNT messages WHERE direction='inbound' replying to the
- *             dispatched message (engagement proxy)
+ *   SMS / VOICEDROP (messages from contact in window after dispatch)
+ *     scans = COUNT messages WHERE contact_id=this.contact_id AND
+ *             direction='inbound' AND created_at >= dispatched_at.
+ *             ENGAGEMENT PROXY: we don't have a per-message reply
+ *             threading id in our schema, so any inbound from the
+ *             same contact in the window after dispatch is counted.
+ *             Over-counts when a contact replies for unrelated reasons;
+ *             under-counts when the bundle has no contact_id (lead-only
+ *             sends are skipped entirely).
  *     leads = COUNT contacts CREATED via the reply path
  *
  *   SOCIAL_POST (social_media_analytics by social_posts.id)
@@ -124,16 +134,30 @@ export async function GET(req: NextRequest) {
     }
 
     // ── EMAIL channel — email_tracking events ──────────────────────────────
+    // dispatchEmail stores the provider id on email_sends.provider_message_id;
+    // email_tracking references email_sends.id, NOT provider_message_id.
+    // Chain: outcomes.email.message_id → email_sends.id → email_tracking.email_send_id
     const emailMsgId = outcomes.email?.message_id
     if (emailMsgId) {
-      const { count: emailOpens } = await svc.from("email_tracking")
-        .select("id", { count: "exact", head: true })
+      const { data: sendRow } = await svc.from("email_sends")
+        .select("id")
+        .eq("brokerage_id", d.brokerage_id)
         .eq("provider_message_id", emailMsgId)
-        .in("event_type", ["open", "click"])
-      scans += emailOpens ?? 0
+        .maybeSingle()
+      const emailSendId = (sendRow?.id as string | undefined) ?? null
+      if (emailSendId) {
+        const { count: emailOpens } = await svc.from("email_tracking")
+          .select("id", { count: "exact", head: true })
+          .eq("email_send_id", emailSendId)
+          .in("event_type", ["open", "click"])
+        scans += emailOpens ?? 0
+      }
     }
 
-    // ── SMS / VOICEDROP — inbound message replies ──────────────────────────
+    // ── SMS — inbound message engagement proxy ─────────────────────────────
+    // No per-message reply threading id; any inbound SMS from the same
+    // contact after dispatch counts as engagement. See top docstring for
+    // the over/under-count caveat.
     const smsMsgId = outcomes.sms?.message_id
     if (smsMsgId && d.contact_id) {
       const { count: replyCount } = await svc.from("messages")
@@ -143,6 +167,21 @@ export async function GET(req: NextRequest) {
         .eq("type", "sms")
         .gte("created_at", d.dispatched_at)
       scans += replyCount ?? 0
+    }
+
+    // ── VOICEDROP — inbound phone/SMS callback proxy ───────────────────────
+    // Ringless voicemail has no callback API on Slybroadcast. We proxy
+    // engagement via inbound messages of any type from the same contact
+    // in the window after the drop — call-backs and SMS replies both
+    // count. Same over/under-count caveat as SMS above.
+    const voicedropJobId = outcomes.voicedrop?.message_id
+    if (voicedropJobId && d.contact_id) {
+      const { count: vmReplyCount } = await svc.from("messages")
+        .select("id", { count: "exact", head: true })
+        .eq("contact_id", d.contact_id)
+        .eq("direction", "inbound")
+        .gte("created_at", d.dispatched_at)
+      scans += vmReplyCount ?? 0
     }
 
     // ── SOCIAL_POST — social_media_analytics ────────────────────────────────
