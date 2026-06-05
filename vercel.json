@@ -357,7 +357,7 @@
       "schedule": "0 8 * * 4"
     },
     {
-      "path": "/api/cron/competitor-ads-meta",
+      "path": "/api/cron/competitor-ads-exa",
       "schedule": "0 11 * * *"
     }
   ]
