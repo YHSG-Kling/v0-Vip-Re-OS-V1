@@ -363,6 +363,10 @@
     {
       "path": "/api/cron/variant-outcomes-aggregator",
       "schedule": "30 8 * * *"
+    },
+    {
+      "path": "/api/cron/voice-distiller-weekly",
+      "schedule": "0 9 * * 5"
     }
   ]
 }

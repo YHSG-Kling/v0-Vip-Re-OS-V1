@@ -298,8 +298,15 @@ export async function draftPostcardCopy(
   // a copy_style; this swaps in the matching prompt block.
   const styleOverlay = POSTCARD_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? "default"]
     ?? POSTCARD_COPY_STYLE_OVERLAYS["default"]
+  // Wave 36.5 — per-agent voice examples. When the distiller has
+  // populated brand_voice_profile.tone_examples for THIS agent (the
+  // tier resolver picked the agent row), the examples land inline in
+  // the prompt as concrete voice anchors. Without this, the prompt
+  // only knew abstract tone tags ("warm", "direct") — the examples
+  // make the AI's output actually SOUND like the agent's writing.
+  const voiceBlock = await buildVoiceExamplesBlock(ctx)
   const promptHead =
-    `${POSTCARD_PROMPT}${styleOverlay}\n\n` +
+    `${POSTCARD_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
@@ -340,6 +347,51 @@ export async function draftPostcardCopy(
   return { ok: true, copy: parsed, complianceEventId }
 }
 
+/** Wave 36.5 — pull the agent-tier distilled voice profile and format
+ *  3 example sentences inline for the AI prompt. The cascade resolver
+ *  (lib/kernel/brand-voice.applyBrandVoice) already runs upstream of
+ *  the gate; this lookup is voice-EXAMPLES-only, separate from the
+ *  voice RULES the gate enforces. Returns "" when no distilled row
+ *  exists. */
+async function buildVoiceExamplesBlock(ctx: DirectMailCopyContext): Promise<string> {
+  if (!ctx.agentUserId) return ""
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data } = await svc
+      .from("brand_voice_profile")
+      .select("tone_examples, tone, preferred_words, prohibited_words")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("agent_id", ctx.agentUserId)
+      .eq("is_active", true)
+      .maybeSingle()
+    const row = data as {
+      tone_examples: string[] | null
+      tone: string | null
+      preferred_words: string[] | null
+      prohibited_words: string[] | null
+    } | null
+    if (!row) return ""
+    const lines: string[] = []
+    if (row.tone) lines.push(`\nAGENT VOICE TONE: ${row.tone}`)
+    if (row.preferred_words && row.preferred_words.length > 0) {
+      lines.push(`Preferred words this agent uses: ${row.preferred_words.slice(0, 8).join(", ")}`)
+    }
+    if (row.prohibited_words && row.prohibited_words.length > 0) {
+      lines.push(`Words to AVOID (the agent never uses these): ${row.prohibited_words.slice(0, 6).join(", ")}`)
+    }
+    if (row.tone_examples && row.tone_examples.length > 0) {
+      lines.push(`\nEXAMPLE SENTENCES from this agent's prior writing (your output should SOUND like these):`)
+      for (const ex of row.tone_examples.slice(0, 4)) {
+        lines.push(`  · "${ex}"`)
+      }
+    }
+    return lines.length === 0 ? "" : `\n\n──── PER-AGENT VOICE ANCHORS (Wave 36.5) ────${lines.join("\n")}`
+  } catch {
+    return ""
+  }
+}
+
 async function findRecentComplianceEventId(brokerageId: string, sinceIso: string): Promise<string | null> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -373,8 +425,9 @@ export async function draftLetterCopy(
   const hookLine = buildHookContextLine(ctx)
   const styleOverlay = LETTER_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? "default"]
     ?? LETTER_COPY_STYLE_OVERLAYS["default"]
+  const voiceBlock = await buildVoiceExamplesBlock(ctx)
   const promptHead =
-    `${LETTER_PROMPT}${styleOverlay}\n\n` +
+    `${LETTER_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
