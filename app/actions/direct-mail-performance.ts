@@ -38,8 +38,11 @@ export interface VariantArmRow {
   postcard_size:  string
   sends_count:    number
   scans_count:    number
+  leads_count:    number   // Wave 36 — contacts captured from QR submits attributed to this arm
   scan_rate:      number
+  lead_rate:      number   // leads / sends — the conversion signal the bandit ultimately optimizes for
   cost_per_scan:  number | null
+  cost_per_lead:  number | null
   posterior_mean: number       // E[Beta(scans+1, sends-scans+1)]
 }
 
@@ -103,7 +106,7 @@ export async function getDirectMailPerformance(): Promise<
   const { data: variantJoinData } = await svc
     .from("direct_mail_variant_outcomes")
     .select(`
-      variant_id, sends_count, scans_count, cost_spent_cents,
+      variant_id, sends_count, scans_count, leads_count, cost_spent_cents,
       variant:direct_mail_variants!direct_mail_variant_outcomes_variant_id_fkey(composition_id, copy_style, layout_variant, persona, use_kind, postcard_size)
     `)
     .eq("brokerage_id", brokerageId)
@@ -115,6 +118,7 @@ export async function getDirectMailPerformance(): Promise<
     variant_id: string
     sends_count: number
     scans_count: number
+    leads_count: number
     cost_spent_cents: number
     variant: {
       composition_id: string
@@ -131,7 +135,9 @@ export async function getDirectMailPerformance(): Promise<
     .map((r) => {
       const v = r.variant!
       const scanRate = r.sends_count > 0 ? r.scans_count / r.sends_count : 0
+      const leadRate = r.sends_count > 0 ? r.leads_count / r.sends_count : 0
       const cps = r.scans_count > 0 ? (r.cost_spent_cents / 100) / r.scans_count : null
+      const cpl = r.leads_count > 0 ? (r.cost_spent_cents / 100) / r.leads_count : null
       const alpha = r.scans_count + 1
       const beta  = Math.max(0, r.sends_count - r.scans_count) + 1
       const posteriorMean = alpha / (alpha + beta)
@@ -145,12 +151,17 @@ export async function getDirectMailPerformance(): Promise<
         postcard_size:  v.postcard_size,
         sends_count:    r.sends_count,
         scans_count:    r.scans_count,
+        leads_count:    r.leads_count ?? 0,
         scan_rate:      Math.round(scanRate * 10000) / 10000,
+        lead_rate:      Math.round(leadRate * 10000) / 10000,
         cost_per_scan:  cps == null ? null : Math.round(cps * 100) / 100,
+        cost_per_lead:  cpl == null ? null : Math.round(cpl * 100) / 100,
         posterior_mean: Math.round(posteriorMean * 10000) / 10000,
       }
     })
-    .sort((a, b) => b.scan_rate - a.scan_rate)
+    // Sort by lead_rate first (the conversion signal that matters);
+    // ties broken by scan_rate (the engagement proxy).
+    .sort((a, b) => (b.lead_rate - a.lead_rate) || (b.scan_rate - a.scan_rate))
 
   // ── 3. Recent campaigns ─────────────────────────────────────────────────
   const { data: recentRows } = await svc

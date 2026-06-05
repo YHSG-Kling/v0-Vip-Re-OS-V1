@@ -84,6 +84,61 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .from('qr_codes')
         .update({ lead_count: (qr.lead_count ?? 0) + 1 })
         .eq('id', qr.id)
+
+      // Wave 36 — variant lead attribution. If this QR was attached to
+      // a direct_mail_campaigns row that carried a variant_id, bump the
+      // variant's outcomes.leads_count so the bandit can optimize for
+      // LEADS (the action we actually care about) rather than just
+      // scans (a noisier proxy). Multiple campaigns may share the same
+      // QR over time; we pick the most-recently-mailed one as the
+      // attribution target.
+      try {
+        const { data: attribCampaign } = await supabase
+          .from('direct_mail_campaigns')
+          .select('id, variant_id, per_piece_cost, pieces_mailed')
+          .eq('brokerage_id', qr.brokerage_id)
+          .eq('qr_code_id', qr.id)
+          .not('variant_id', 'is', null)
+          .order('mailing_date', { ascending: false, nullsFirst: false })
+          .limit(1)
+          .maybeSingle()
+        const c = attribCampaign as {
+          id: string; variant_id: string;
+          per_piece_cost: number | null; pieces_mailed: number | null
+        } | null
+        if (c?.variant_id) {
+          // Bump leads_count atomically via SELECT-then-UPDATE. Same
+          // best-effort increment pattern as recordVariantSend; lost
+          // increments under concurrent contention are acceptable for
+          // a learning signal.
+          const { data: existingOutcomes } = await supabase
+            .from('direct_mail_variant_outcomes')
+            .select('id, leads_count')
+            .eq('variant_id', c.variant_id)
+            .eq('brokerage_id', qr.brokerage_id)
+            .maybeSingle()
+          if (existingOutcomes) {
+            await supabase
+              .from('direct_mail_variant_outcomes')
+              .update({
+                leads_count: ((existingOutcomes.leads_count as number) ?? 0) + 1,
+                updated_at:  new Date().toISOString(),
+              })
+              .eq('id', existingOutcomes.id)
+          } else {
+            await supabase.from('direct_mail_variant_outcomes').insert({
+              variant_id:   c.variant_id,
+              brokerage_id: qr.brokerage_id,
+              sends_count:  0,
+              scans_count:  0,
+              leads_count:  1,
+              updated_at:   new Date().toISOString(),
+            })
+          }
+        }
+      } catch (e) {
+        console.error('[qr/submit] variant lead attribution failed:', e)
+      }
     }
 
     // ── Step 5: Link most recent unlinked scan event to contact ───────────────

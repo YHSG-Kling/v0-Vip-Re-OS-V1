@@ -67,7 +67,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 function TopVariantsSection({ topVariants }: { topVariants: VariantArmRow[] }) {
   return (
     <section>
-      <h2 className="text-lg font-semibold text-gray-900 mb-3">Top variant arms (≥ 5 sends, sorted by scan rate)</h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-3">Top variant arms (≥ 5 sends, sorted by lead rate → scan rate)</h2>
       {topVariants.length === 0 ? (
         <p className="text-sm text-gray-500 italic">No arms have 5+ sends yet. Keep dispatching — the bandit needs ~5 sends per arm before scan-rate signal is reliable.</p>
       ) : (
@@ -82,9 +82,12 @@ function TopVariantsSection({ topVariants }: { topVariants: VariantArmRow[] }) {
                 <th className="py-2 px-3 font-semibold text-gray-700">Size</th>
                 <th className="py-2 px-3 font-semibold text-gray-700 text-right">Sends</th>
                 <th className="py-2 px-3 font-semibold text-gray-700 text-right">Scans</th>
-                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Scan rate</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Leads</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Scan%</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Lead%</th>
                 <th className="py-2 px-3 font-semibold text-gray-700 text-right">CPS</th>
-                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Beta mean</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">CPL</th>
+                <th className="py-2 px-3 font-semibold text-gray-700 text-right">Beta μ</th>
               </tr>
             </thead>
             <tbody>
@@ -97,8 +100,11 @@ function TopVariantsSection({ topVariants }: { topVariants: VariantArmRow[] }) {
                   <td className="py-2 px-3 text-gray-700">{v.postcard_size}</td>
                   <td className="py-2 px-3 text-right text-gray-700">{v.sends_count}</td>
                   <td className="py-2 px-3 text-right text-gray-700">{v.scans_count}</td>
-                  <td className="py-2 px-3 text-right font-medium text-gray-900">{(v.scan_rate * 100).toFixed(2)}%</td>
+                  <td className="py-2 px-3 text-right font-medium text-green-700">{v.leads_count}</td>
+                  <td className="py-2 px-3 text-right text-gray-700">{(v.scan_rate * 100).toFixed(2)}%</td>
+                  <td className="py-2 px-3 text-right font-medium text-gray-900">{(v.lead_rate * 100).toFixed(2)}%</td>
                   <td className="py-2 px-3 text-right text-gray-700">{v.cost_per_scan == null ? "—" : `$${v.cost_per_scan.toFixed(2)}`}</td>
+                  <td className="py-2 px-3 text-right font-medium text-gray-900">{v.cost_per_lead == null ? "—" : `$${v.cost_per_lead.toFixed(2)}`}</td>
                   <td className="py-2 px-3 text-right text-gray-500 text-xs">{v.posterior_mean.toFixed(3)}</td>
                 </tr>
               ))}
