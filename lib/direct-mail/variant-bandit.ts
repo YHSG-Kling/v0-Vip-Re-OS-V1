@@ -52,7 +52,20 @@ export interface BanditPick {
    *  for the admin dashboard's "% of mail used to explore vs
    *  exploit" metric. */
   isExploration: boolean
+  /** Wave 37 — which Beta the sampler used. "scans" is the engagement
+   *  proxy (Beta(scans+1, sends-scans+1)); "leads" is the conversion
+   *  target (Beta(leads+1, sends-leads+1)). The math switches per-
+   *  cohort when aggregate leads >= LEADS_COHORT_THRESHOLD. */
+  samplingMode:  "scans" | "leads"
 }
+
+/** Wave 37 — switch the Thompson Beta from scan-rate to lead-rate
+ *  when the cohort has accumulated enough lead observations that the
+ *  noisier-but-truer signal (leads) outweighs the higher-volume-but-
+ *  upstream signal (scans). Threshold of 30 is the standard small-N
+ *  → meaningful-N inflection from bandit literature; below this the
+ *  Beta(leads+1, ...) posterior is too flat to discriminate arms. */
+const LEADS_COHORT_THRESHOLD = 30
 
 /** Platform-default arm catalog. Each (use_kind, postcard_size)
  *  ships with N (composition × copy_style) combinations. The bandit
@@ -217,7 +230,7 @@ export async function pickVariantArm(args: {
     .from("direct_mail_variants")
     .select(`
       id, composition_id, copy_style, layout_variant,
-      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count)
+      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count, leads_count)
     `)
     .eq("brokerage_id", args.brokerageId)
     .eq("persona", args.persona)
@@ -230,20 +243,36 @@ export async function pickVariantArm(args: {
     composition_id: string
     copy_style: string
     layout_variant: string
-    outcomes: Array<{ sends_count: number; scans_count: number }> | null
+    outcomes: Array<{ sends_count: number; scans_count: number; leads_count: number }> | null
   }
   const armRows = (arms ?? []) as unknown as ArmRow[]
   if (armRows.length === 0) return null
 
+  // Wave 37 — sampling mode decision PER COHORT (not per-arm). Sum
+  // leads_count across every arm in this cohort; if the cohort has
+  // crossed LEADS_COHORT_THRESHOLD, every arm samples on lead-rate
+  // Beta. Below that, every arm samples on scan-rate Beta (the
+  // higher-volume signal). Cohort-level decision keeps arms
+  // comparable to each other — a mixed mode would let one arm
+  // appear better than another for the wrong statistical reason.
+  let cohortLeads = 0
+  for (const arm of armRows) {
+    const o = arm.outcomes?.[0]
+    if (o) cohortLeads += o.leads_count ?? 0
+  }
+  const samplingMode: "scans" | "leads" = cohortLeads >= LEADS_COHORT_THRESHOLD ? "leads" : "scans"
+
   // Thompson sample per arm.
   let best: { row: ArmRow; sample: number; isExploration: boolean } | null = null
   for (const arm of armRows) {
-    const outcome = arm.outcomes?.[0] ?? { sends_count: 0, scans_count: 0 }
-    // Sends-but-no-scans rows scrunch β heavy → near-zero sample;
-    // sends=0 rows get Beta(1,1) → uniform ~0.5 ± noise (cold start
-    // exploration).
-    const alpha = outcome.scans_count + 1
-    const beta  = Math.max(0, outcome.sends_count - outcome.scans_count) + 1
+    const outcome = arm.outcomes?.[0] ?? { sends_count: 0, scans_count: 0, leads_count: 0 }
+    // Mode-conditional Beta. In "leads" mode the positive
+    // observation is a LEAD (the action we actually want); in
+    // "scans" mode it's a SCAN (the high-volume proxy).
+    const positive = samplingMode === "leads" ? outcome.leads_count : outcome.scans_count
+    const negative = Math.max(0, outcome.sends_count - positive)
+    const alpha = positive + 1
+    const beta  = negative + 1
     const sample = sampleBeta(alpha, beta)
     const isExploration = outcome.sends_count === 0
     if (!best || sample > best.sample) {
@@ -259,6 +288,7 @@ export async function pickVariantArm(args: {
     layoutVariant: best.row.layout_variant,
     sampledProb:   best.sample,
     isExploration: best.isExploration,
+    samplingMode,
   }
 }
 
