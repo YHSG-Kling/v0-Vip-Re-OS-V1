@@ -271,18 +271,24 @@ export async function generateVideo(
   }
 
   // Resolve facial expression — caller > agent profile > platform default.
+  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
+  // through the canonical helper before querying.
   let expression: string = input.expression ?? "happy"
   let intensity: number  = input.expressionIntensity ?? 0.7
   if (!input.expression && input.agentUserId) {
     try {
       const svc = createServiceClient()
-      const { data: prof } = await svc
-        .from("agent_voice_profiles")
-        .select("default_expression, expression_intensity")
-        .eq("agent_id", input.agentUserId)
-        .maybeSingle()
-      if (prof?.default_expression) expression = prof.default_expression as string
-      if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
+      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+      const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+      if (agentRecordId) {
+        const { data: prof } = await svc
+          .from("agent_voice_profiles")
+          .select("default_expression, expression_intensity")
+          .eq("agent_id", agentRecordId)
+          .maybeSingle()
+        if (prof?.default_expression) expression = prof.default_expression as string
+        if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
+      }
     } catch { /* best-effort — keep defaults */ }
   }
 

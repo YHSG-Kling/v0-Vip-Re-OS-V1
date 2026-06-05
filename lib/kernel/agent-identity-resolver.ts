@@ -6,15 +6,18 @@
  *
  *   AGENTS-ID columns (FK → agents.id):
  *     contacts.agent_id, listings.agent_id, social_posts.agent_id,
+ *     agent_voice_profiles.agent_id,
  *     podcast_show_settings.agent_id (semantic, no FK)
  *
  *   USERS-ID columns (FK → users.id):
- *     ai_video_projects.agent_id, agent_voice_profiles.agent_id,
- *     podcast_episodes.agent_id, agent_intro_videos.agent_id (m121),
+ *     ai_video_projects.agent_id, podcast_episodes.agent_id,
+ *     agent_intro_videos.agent_id (m121),
  *     listing_promo_videos.agent_id (m124),
  *     newsletter_video_renders.agent_id (m127)
  *
  * Wave 6, 9, 11, 14, 15 each caught FK violations from this confusion.
+ * Wave 38 caught the agent_voice_profiles one — its agent_id FKs to
+ * agents(id), verified via Supabase MCP against the live constraint.
  * Use these helpers instead of inline lookups so the next producer
  * doesn't re-discover the gotcha.
  *

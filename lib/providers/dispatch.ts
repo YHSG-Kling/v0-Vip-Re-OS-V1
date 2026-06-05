@@ -728,6 +728,9 @@ async function dispatchVideoViaDID({
   }
 
   // Resolve agent's D-ID + ElevenLabs identity profile.
+  // agent_voice_profiles.agent_id FKs to agents(id), NOT users(id).
+  // Callers pass users.id (params.userId), so we resolve through the
+  // canonical helper so future producers don't re-discover the gotcha.
   const { createServiceClient } = await import("@/lib/supabase/service")
   const supabase = createServiceClient()
 
@@ -736,10 +739,16 @@ async function dispatchVideoViaDID({
     return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
   }
 
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, params.brokerageId)
+  if (!agentRecordId) {
+    return { success: false, providerKey, error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated." }
+  }
+
   const { data: didProfile } = await supabase
     .from("agent_voice_profiles")
     .select("elevenlabs_voice_id, did_photo_url, did_video_url, default_expression, expression_intensity")
-    .eq("agent_id", agentUserId)
+    .eq("agent_id", agentRecordId)
     .maybeSingle()
 
   if (!didProfile?.elevenlabs_voice_id) {

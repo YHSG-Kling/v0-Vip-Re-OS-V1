@@ -178,11 +178,17 @@ export async function dispatchListingPromoVideo(
   const ledgerId = ledger.data?.id as string | undefined
 
   // 3. Agent voice/avatar gate — same as intro-video-reactor.
-  const { data: profile } = await svc
-    .from("agent_voice_profiles")
-    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-    .eq("agent_id", input.agentUserId)
-    .maybeSingle()
+  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
+  // → agents.id via the canonical helper.
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+  const { data: profile } = agentRecordId
+    ? await svc
+        .from("agent_voice_profiles")
+        .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+        .eq("agent_id", agentRecordId)
+        .maybeSingle()
+    : { data: null }
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
     await svc.from("listing_promo_videos")
       .update({ status: "failed", error_message: "agent has no voice/avatar profile" })

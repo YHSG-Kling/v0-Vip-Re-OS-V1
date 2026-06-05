@@ -204,12 +204,20 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
-  // 3. Voice + avatar gate (OUR storage URLs)
-  const { data: profile } = await svc
-    .from("agent_voice_profiles")
-    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-    .eq("agent_id", agentUserId)
-    .maybeSingle()
+  // 3. Voice + avatar gate (OUR storage URLs).
+  // agent_voice_profiles.agent_id FKs to agents(id); we have users.id
+  // here. Resolve through the canonical helper so the join lands on
+  // the right row (previously this lookup silently returned null and
+  // every intro-video send failed with "no voice profile").
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
+  const { data: profile } = agentRecordId
+    ? await svc
+        .from("agent_voice_profiles")
+        .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+        .eq("agent_id", agentRecordId)
+        .maybeSingle()
+    : { data: null }
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
