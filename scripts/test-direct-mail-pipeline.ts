@@ -26,10 +26,12 @@ import "dotenv/config"
 import { randomUUID } from "node:crypto"
 import { createServiceClient } from "../lib/supabase/service"
 import { resolveBrokerageBrandContext } from "../lib/branding/resolve-brokerage-brand"
+import { resolveBrandContext } from "../lib/branding/resolve-brand-context"
 import { draftPostcardCopy } from "../lib/direct-mail/draft-copy"
 import { renderPostcardBothSides4x6 } from "../lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "../lib/direct-mail/render-letter"
 import { dispatchDirectMail } from "../lib/providers/dispatch"
+import { pickVariantArm } from "../lib/direct-mail/variant-bandit"
 
 type StageResult = { stage: string; ok: boolean; ms: number; detail?: string; error?: string }
 
@@ -250,11 +252,126 @@ async function main(): Promise<number> {
       results.push({ stage: "dispatch_direct_mail", ok: false, ms: 0, error: "skipped — render failed upstream" })
     }
 
+    // ── Stage 6 (Wave 36 team-tier): three-tier brand cascade ────────────────
+    // Inserts a test team with its own logo+colors + a test agent under it.
+    // Verifies resolveBrandContext returns team brand (not brokerage) for
+    // logo/color, and agent's license over brokerage's. Cleanup deletes the
+    // team + agent at the end of the finally block.
+    {
+      const t0 = Date.now()
+      try {
+        const teamTag = `dm-pipeline-team-${randomUUID().slice(0, 8)}`
+
+        const teamInsert = await svc.from("teams").insert({
+          name:           `Test Team ${teamTag}`,
+          brokerage_id:   brokerageId,
+          logo_url:       "https://example.invalid/team-logo.png",
+          primary_color:  "#7c3aed",  // distinct from brokerage primary
+          accent_color:   "#facc15",
+          phone:          "(555) 222-0001",
+          tagline:        "Where Test Team Sells",
+        }).select("id").single()
+        if (teamInsert.error || !teamInsert.data) {
+          throw new Error(`team insert: ${teamInsert.error?.message}`)
+        }
+        const teamId = teamInsert.data.id as string
+        inserted.push({ table: "teams", id: teamId })
+
+        // Insert a test users row first since agents.user_id FKs to users
+        // (agents.id is the agent record id, not a user id).
+        // Most live envs have a constraint that user_id NOT NULL — we
+        // accept the failure path if not.
+        let testUserId: string | null = null
+        const userInsert = await svc.from("users").insert({
+          email:        `${teamTag}@example.invalid`,
+          first_name:   "Pipeline",
+          last_name:    teamTag,
+          user_type:    "agent",
+          brokerage_id: brokerageId,
+        }).select("id").single()
+        if (userInsert.error || !userInsert.data) {
+          throw new Error(`user insert: ${userInsert.error?.message}`)
+        }
+        testUserId = userInsert.data.id as string
+        inserted.push({ table: "users", id: testUserId })
+
+        const agentInsert = await svc.from("agents").insert({
+          user_id:        testUserId,
+          brokerage_id:   brokerageId,
+          team_id:        teamId,
+          first_name:     "Pipeline",
+          last_name:      teamTag,
+          is_active:      true,
+          license_state:  "CA",
+          license_number: "TEST-99-99999",
+          phone_office:   "(555) 222-0002",
+        }).select("id").single()
+        if (agentInsert.error || !agentInsert.data) {
+          throw new Error(`agent insert: ${agentInsert.error?.message}`)
+        }
+        const testAgentId = agentInsert.data.id as string
+        inserted.push({ table: "agents", id: testAgentId })
+
+        // Now invoke the resolver with team + agent context.
+        const teamBrand = await resolveBrandContext({
+          brokerageId,
+          teamId,
+          agentUserId: testUserId,
+        })
+
+        // Assertions:
+        //   - displayName = team name (not brokerage)
+        //   - source.logo = "team" (we set team.logo_url)
+        //   - source.color = "team" (we set team.primary_color)
+        //   - source.license = "agent" (agent license overrides brokerage)
+        const checks = [
+          teamBrand.displayName.includes(teamTag),
+          teamBrand.source.logo === "team",
+          teamBrand.source.color === "team",
+          teamBrand.source.license === "agent",
+          teamBrand.display.licenseLine?.includes("TEST-99-99999"),
+        ]
+        const allPassed = checks.every(Boolean)
+        results.push({
+          stage: "tier_cascade_team_brand",
+          ok:    allPassed,
+          ms:    Date.now() - t0,
+          detail: `displayName="${teamBrand.displayName}" logoSrc=${teamBrand.source.logo} colorSrc=${teamBrand.source.color} licSrc=${teamBrand.source.license} license="${teamBrand.display.licenseLine}"`,
+        })
+      } catch (e) {
+        results.push({ stage: "tier_cascade_team_brand", ok: false, ms: Date.now() - t0, error: (e as Error).message })
+      }
+    }
+
+    // ── Stage 7 (Wave 36 bandit): pickVariantArm materializes catalog ────────
+    {
+      const t0 = Date.now()
+      try {
+        const pick = await pickVariantArm({
+          brokerageId,
+          persona:     "downsize",
+          useKind:     "farm_mail",
+          size:        "4x6",
+        })
+        results.push({
+          stage: "bandit_pick_arm",
+          ok:    !!pick && !!pick.variantId,
+          ms:    Date.now() - t0,
+          detail: pick ? `picked composition=${pick.compositionId} copy_style=${pick.copyStyle} sampled=${pick.sampledProb.toFixed(3)} exploration=${pick.isExploration}` : "no arms (catalog seed failed)",
+        })
+      } catch (e) {
+        results.push({ stage: "bandit_pick_arm", ok: false, ms: Date.now() - t0, error: (e as Error).message })
+      }
+    }
+
   } finally {
     // ── Cleanup: delete every test row we inserted ────────────────────────────
     console.log("[test] Cleaning up test rows…")
-    // direct_mail_campaigns rows created by dispatchDirectMail's vendor
-    // logging (if any) — clean those too.
+    // Wave 36 — also clean bandit catalog rows materialized for this
+    // brokerage during the test (the catalog is brokerage-scoped, so
+    // arms seeded by Stage 7's pickVariantArm linger otherwise).
+    await svc.from("direct_mail_variant_outcomes").delete().eq("brokerage_id", brokerageId).gte("updated_at", new Date(Date.now() - 5 * 60_000).toISOString())
+    await svc.from("direct_mail_variants").delete().eq("brokerage_id", brokerageId).gte("created_at", new Date(Date.now() - 5 * 60_000).toISOString())
     await svc.from("direct_mail_campaigns").delete().eq("contact_id", testContactId)
     await svc.from("message_provider_logs").delete().eq("brokerage_id", brokerageId).gte("created_at", new Date(Date.now() - 5 * 60_000).toISOString())
     for (const row of inserted.reverse()) {
