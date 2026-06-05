@@ -48,6 +48,11 @@ export default function SettingsDashboard() {
             <p className="text-gray-600">Compose presets across channels into coordinated dispatches</p>
           </SettingsCard>
         </Link>
+        <Link href="/settings/channel-presets">
+          <SettingsCard title="Channel Presets" description="Email / SMS / social / voicedrop / ad / portal">
+            <p className="text-gray-600">Locked creative for every bundle channel</p>
+          </SettingsCard>
+        </Link>
       </div>
     </div>
   );
