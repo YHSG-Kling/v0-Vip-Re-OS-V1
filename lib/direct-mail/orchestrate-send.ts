@@ -143,6 +143,12 @@ export async function orchestrateRenderAndSend(
           sampledProb:   pick.sampledProb,
           isExploration: pick.isExploration,
         }
+        // Wave 36 — stamp the bandit's copy_style into copyCtx so
+        // draftPostcardCopy / draftLetterCopy actually swap in the
+        // arm's prompt overlay. Without this the bandit rotated
+        // labels but not the writing; with this each arm produces
+        // structurally different creative.
+        args.copyCtx.copyStyle = pick.copyStyle
       }
     }
     const r = size === "6x9"

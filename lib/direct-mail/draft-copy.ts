@@ -90,6 +90,12 @@ export interface DirectMailCopyContext {
      *  row after dispatch (closes the performance feedback loop). */
     topicId:    string
   }
+  /** Wave 36 — A/B bandit pick. The orchestrator stamps this with the
+   *  copy_style chosen by pickVariantArm so draftPostcardCopy / draft
+   *  LetterCopy actually swap their prompt template per arm. Without
+   *  this the bandit rotated labels but not real creative; with it,
+   *  each arm renders a structurally different piece. */
+  copyStyle?: string
 }
 
 export interface PostcardCopy {
@@ -130,6 +136,85 @@ Examples of strong CTAs by qrDestinationType:
 - podcast_episode: "Hear the 9-minute story"
 - anniversary_video: "Watch your moment"
 - landing_page: "See the inside"`
+
+/** Wave 36 — copy-style overlays the bandit picks per arm. Each style
+ *  appends structural rules ON TOP OF the shared rules above so the
+ *  Fair Housing + Them-First + brand voice gates still apply. The
+ *  bandit picks the style; this map translates it into the prompt
+ *  variation that distinguishes one arm from another.
+ *
+ *  Adding a new style: extend this map AND add an arm to
+ *  variant-bandit.ts PLATFORM_CATALOG with the same copy_style key. */
+const POSTCARD_COPY_STYLE_OVERLAYS: Record<string, string> = {
+  // Default / fallback — exact behavior as before this commit
+  "default": "",
+
+  // Direct-fact: lead with a number, no question, statement headline
+  "direct-fact":
+    `\n\nCOPY STYLE: DIRECT-FACT (this arm's twist)\n` +
+    `- headline must be a STATEMENT, not a question — start with a number or a noun phrase\n` +
+    `- body opens with the fact and closes with a single soft suggestion\n` +
+    `- avoid words like "imagine" / "wouldn't" / "should" — keep it declarative\n`,
+
+  // Question-hook: open with a curiosity question
+  "question-hook":
+    `\n\nCOPY STYLE: QUESTION-HOOK (this arm's twist)\n` +
+    `- headline must be a QUESTION the recipient is likely already wondering\n` +
+    `- body answers the question with a specific local fact + a microcopy CTA\n` +
+    `- do NOT use "What if" — use direct questions ("How long…", "What's your block worth?")\n`,
+
+  // Social-proof: reference recent neighbor activity
+  "social-proof":
+    `\n\nCOPY STYLE: SOCIAL-PROOF (this arm's twist)\n` +
+    `- headline references that NEIGHBORS / OTHERS already did the thing the CTA invites\n` +
+    `- body cites a specific recent sale or activity without naming the seller\n` +
+    `- the body MUST imply momentum without manufactured urgency\n`,
+
+  // Photo-led (6×9 only): minimal copy, photo carries the impact
+  "photo-led":
+    `\n\nCOPY STYLE: PHOTO-LED (this arm's twist — for 6×9 with hero photo)\n` +
+    `- headline: 3-5 words MAX (the photo is the headline; copy is the caption)\n` +
+    `- body: 18-30 words. One specific fact, one CTA. Nothing else.\n` +
+    `- assume the recipient looks at the photo first; copy is the "now what"\n`,
+
+  // Intro-warm (welcome kit): introduce the agent + brokerage warmly
+  "intro-warm":
+    `\n\nCOPY STYLE: INTRO-WARM (welcome-kit arm)\n` +
+    `- headline introduces the SENDER, not the offer ("Your new neighborhood resource")\n` +
+    `- body in first person, warm, references "we're here when you're ready"\n` +
+    `- CTA is low-commitment ("Save my number", "See my recent work")\n`,
+
+  // Intro-credibility (welcome kit): lead with proof
+  "intro-credibility":
+    `\n\nCOPY STYLE: INTRO-CREDIBILITY (welcome-kit arm)\n` +
+    `- headline leads with a CREDIBILITY anchor ("123 closings on this side of town")\n` +
+    `- body cites ONE specific number or testimonial-style fact\n` +
+    `- CTA invites a low-pressure first conversation\n`,
+
+  // Checkin-personal (sphere outreach): "thinking of you" tone
+  "checkin-personal":
+    `\n\nCOPY STYLE: CHECKIN-PERSONAL (sphere outreach arm)\n` +
+    `- headline is conversational ("Thinking of you" energy without being saccharine)\n` +
+    `- body references that the recipient is a known contact, not a stranger\n` +
+    `- CTA is relationship-not-transaction ("Catch up over coffee" beats "Get a CMA")\n`,
+
+  // Appointment-prep (pre-listing kit): seller-appointment specific
+  "appointment-prep":
+    `\n\nCOPY STYLE: APPOINTMENT-PREP (pre-listing kit arm)\n` +
+    `- headline names the upcoming appointment specifically ("Looking forward to Saturday")\n` +
+    `- body sets ONE expectation the seller can walk into the meeting with\n` +
+    `- CTA points to a prep resource (sample CMA, prep checklist), not "schedule"\n`,
+}
+
+const LETTER_COPY_STYLE_OVERLAYS: Record<string, string> = {
+  "default": "",
+  "intro-warm":
+    `\n\nCOPY STYLE: INTRO-WARM\n- Greeting + first paragraph introduce the sender, second paragraph proves competence with one specific fact, third paragraph invites a low-commitment next step.\n`,
+  "intro-credibility":
+    `\n\nCOPY STYLE: INTRO-CREDIBILITY\n- Lead the body with a specific credibility anchor (closings count, market share in the area, etc.); keep the warm voice but anchor in proof.\n`,
+  "appointment-prep":
+    `\n\nCOPY STYLE: APPOINTMENT-PREP\n- This letter PRECEDES the listing appointment. Tell the seller what to expect and what to have ready. End with a single ask, not three.\n`,
+}
 
 const LETTER_PROMPT = `\
 You are writing a REAL ESTATE LETTER (not a postcard). The recipient will read this front-to-back if the first paragraph earns it. Write like a person, not a brochure.
@@ -208,8 +293,13 @@ export async function draftPostcardCopy(
     agentUserId: ctx.agentUserId ?? null,
   })
   const hookLine = buildHookContextLine(ctx)
+  // Wave 36 — copy-style overlay. Defaults to "default" (no overlay)
+  // so non-bandit callers keep their prior behavior. The bandit picks
+  // a copy_style; this swaps in the matching prompt block.
+  const styleOverlay = POSTCARD_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? "default"]
+    ?? POSTCARD_COPY_STYLE_OVERLAYS["default"]
   const promptHead =
-    `${POSTCARD_PROMPT}\n\n` +
+    `${POSTCARD_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
@@ -281,8 +371,10 @@ export async function draftLetterCopy(
     agentUserId: ctx.agentUserId ?? null,
   })
   const hookLine = buildHookContextLine(ctx)
+  const styleOverlay = LETTER_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? "default"]
+    ?? LETTER_COPY_STYLE_OVERLAYS["default"]
   const promptHead =
-    `${LETTER_PROMPT}\n\n` +
+    `${LETTER_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
