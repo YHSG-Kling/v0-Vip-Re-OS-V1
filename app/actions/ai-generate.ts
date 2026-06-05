@@ -7,7 +7,14 @@
  * Next.js requires "use server" files to export only async functions —
  * re-export syntax is not permitted, so each function is explicitly wrapped.
  *
- * UI components should import directly from "@/lib/ai/generate" instead.
+ * IMPORT RULES (Next 16 / Turbopack):
+ *   · Server-side callers (app/actions/*, other lib/* files, route handlers,
+ *     RSCs): import from "@/lib/ai/generate" directly — no Server Action
+ *     overhead, no per-call POST round-trip.
+ *   · Client components ("use client"): import from this file. Importing
+ *     "@/lib/ai/generate" directly causes Turbopack to walk the transitive
+ *     graph into Node-only modules (e.g. @ai-sdk/gateway, runPipelineSimple
+ *     → DB writes) and the client bundle fails.
  */
 
 import {
