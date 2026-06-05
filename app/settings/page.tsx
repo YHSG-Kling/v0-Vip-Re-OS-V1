@@ -43,6 +43,11 @@ export default function SettingsDashboard() {
             <p className="text-gray-600">Manage API credentials</p>
           </SettingsCard>
         </Link>
+        <Link href="/settings/campaign-bundles">
+          <SettingsCard title="Campaign Bundles" description="Multi-channel campaigns">
+            <p className="text-gray-600">Compose presets across channels into coordinated dispatches</p>
+          </SettingsCard>
+        </Link>
       </div>
     </div>
   );
