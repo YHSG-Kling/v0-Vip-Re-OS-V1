@@ -48,18 +48,37 @@ export async function promoteCompetitorAdsToTopicBank(args: {
   // 1. Pull the top-engagement-score competitor ads for this brokerage
   //    that we haven't already promoted (or whose promotion expired
   //    so we want them back in the fresh pool).
+  //
+  //    Wave 36 item 6 — per-watchlist threshold cascade. Each
+  //    competitor_brokerages row carries min_engagement_score; the
+  //    promoter selects ads where engagement_score >= the watchlist
+  //    row's threshold OR the platform default when null. We do this
+  //    in two passes (fetch ads + watchlist thresholds, then filter
+  //    in app code) because the cross-row threshold can't express
+  //    cleanly as a single SQL filter.
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const { data: thresholdRows } = await svc
+    .from("competitor_brokerages")
+    .select("id, min_engagement_score")
+    .eq("brokerage_id", args.brokerageId)
+    .eq("is_active", true)
+  const thresholdByCompetitor = new Map<string, number>()
+  for (const r of (thresholdRows ?? []) as Array<{ id: string; min_engagement_score: number | null }>) {
+    thresholdByCompetitor.set(r.id, r.min_engagement_score ?? MIN_ENGAGEMENT)
+  }
+
   const { data: adsData } = await svc
     .from("competitor_ads")
-    .select("id, page_name, ad_headline, ad_copy, ad_creative_title, ad_creative_body, categories, geo_relevance, engagement_score")
+    .select("id, competitor_id, page_name, ad_headline, ad_copy, ad_creative_title, ad_creative_body, categories, geo_relevance, engagement_score")
     .eq("brokerage_id", args.brokerageId)
     .gte("first_seen_at", since)
-    .gte("engagement_score", MIN_ENGAGEMENT)
+    .gte("engagement_score", MIN_ENGAGEMENT)  // floor: nothing below platform min ever lands
     .order("engagement_score", { ascending: false })
-    .limit(topN * 3)  // overfetch in case some are already promoted
+    .limit(topN * 3)  // overfetch in case some are already promoted or fall below per-watchlist threshold
 
   type AdRow = {
     id: string
+    competitor_id: string | null
     page_name: string | null
     ad_headline: string | null
     ad_copy: string | null
@@ -69,7 +88,13 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     geo_relevance: Record<string, unknown> | null
     engagement_score: number | null
   }
-  const ads = (adsData ?? []) as unknown as AdRow[]
+  // Per-watchlist threshold filter — runs AFTER the SQL platform-min
+  // floor so we only enforce a HIGHER bar, never a lower one.
+  const ads = ((adsData ?? []) as unknown as AdRow[]).filter((a) => {
+    if (!a.competitor_id) return true  // legacy rows without a watchlist binding
+    const threshold = thresholdByCompetitor.get(a.competitor_id) ?? MIN_ENGAGEMENT
+    return (a.engagement_score ?? 0) >= threshold
+  })
 
   if (ads.length === 0) {
     return { brokerage_id: args.brokerageId, considered: 0, promoted: 0, topic_ids: [], skipped: [] }

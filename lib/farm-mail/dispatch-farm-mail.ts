@@ -45,6 +45,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { pickTopics, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
 import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
+import { resolveDirectMailSize } from "@/lib/direct-mail/resolve-size-pref"
 import type { Persona } from "@/lib/kernel/types"
 
 export interface DispatchFarmMailArgs {
@@ -240,6 +241,17 @@ export async function dispatchFarmMail(
       })
       if (!address) { failed++; continue }
 
+      // Wave 36 item 5 — subscriber-controlled per-persona size.
+      // resolveDirectMailSize cascades agent → team → brokerage →
+      // platform recommendation → "4x6" fallback.
+      const sizePref = await resolveDirectMailSize({
+        brokerageId: args.brokerageId,
+        teamId:      agentTeamId,
+        agentUserId,
+        useKind:     "farm_mail",
+        persona:     persona as Persona,
+      })
+
       const result = await orchestrateRenderAndSend({
         brokerageId: args.brokerageId,
         contactId:   c.id,
@@ -251,6 +263,7 @@ export async function dispatchFarmMail(
         state:          address.state,
         zip:            address.zip,
         pieceType:      "postcard",
+        postcardSize:   sizePref.size,
         copyCtx: {
           brokerageId: args.brokerageId,
           teamId:      agentTeamId,
