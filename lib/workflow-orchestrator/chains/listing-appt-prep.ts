@@ -30,7 +30,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
 import { generatePropertyChapterVideos } from "@/lib/video/chapter-video-generator"
 import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
-import { dispatchDirectMail } from "@/lib/providers/dispatch"
+import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
+import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 
 export const listingApptPrepChain: WorkflowChain = {
   key: "listing-appt-prep",
@@ -344,46 +345,69 @@ export const listingApptPrepChain: WorkflowChain = {
 
         const property = ctx.metadata.property_data ?? {}
         const apptDateIso = new Date(apptTime).toISOString().slice(0, 10)
-        const mergeVars: Record<string, string> = {
-          first_name:       c?.first_name ?? "",
-          property_address: String(property.address ?? ""),
-          property_city:    String(property.city ?? ""),
-          appointment_date: apptDateIso,
+
+        // Wave 36 — pre-listing kit copy is HIGH-CONTEXT: we know the
+        // property address, the appointment date, and the seller's
+        // first name. That's exactly the signal the AI copy generator
+        // shines on, so we route the pieces through orchestrateRender
+        // AndSend instead of merging vars into a static Lob template.
+        // Fall-through guarantees the kit still ships (via the static
+        // template) if the copy gate fails for any reason.
+        const copyCtxBase: Omit<DirectMailCopyContext, "qrDestinationType"> = {
+          brokerageId: ctx.brokerageId,
+          contactId:   ctx.contactId,
+          persona:     "upsize",  // listing-appointment contacts are sellers; "upsize" is the closest canonical persona for "selling current home to upgrade/downsize"
+          hookFacts: {
+            listingAddress: [property.address, property.city].filter(Boolean).join(", ") || undefined,
+          },
         }
 
-        const sent: Array<{ piece: string; success: boolean; messageId?: string; error?: string }> = []
+        const sent: Array<{
+          piece: string; success: boolean; messageId?: string; error?: string
+          rendered?: boolean; fellBackReason?: string | null
+        }> = []
 
         for (const [piece, tpl] of [["letter", letterTpl], ["postcard", postcardTpl]] as const) {
           if (!tpl) continue
-          const dispatchResult = await dispatchDirectMail({
+          const result = await orchestrateRenderAndSend({
             brokerageId:    ctx.brokerageId,
-            userId:         ctx.agentUserId ?? ctx.brokerageId,
             contactId:      ctx.contactId,
+            userId:         ctx.agentUserId ?? ctx.brokerageId,
             recipientName,
             mailingAddress: address.street,
             city:           address.city,
             state:          address.state,
             zip:            address.zip,
-            templateId:     tpl,
             pieceType:      piece,
-            systemSource:   "pre_listing_kit",
-            mergeVars,
-            metadata: {
-              chain_run_id:    ctx.runId,
-              appointment_date: apptDateIso,
-              address_source:   address.source,
+            copyCtx: {
+              ...copyCtxBase,
+              // Postcards land best with a fast "book_meeting" CTA —
+              // the appointment is the contact's actual next step.
+              // Letters carry the longer narrative and don't need a
+              // CTA enum.
+              qrDestinationType: piece === "postcard" ? "book_meeting" : "landing_page",
             },
+            fallbackTemplateId: tpl,
+            agentName:          null,
+            agentTitle:         "REALTOR®",
+            systemSource:       "pre_listing_kit",
           })
+
           sent.push({
             piece,
-            success:   dispatchResult.success,
-            messageId: dispatchResult.messageId,
-            error:     dispatchResult.error,
+            success:        result.success,
+            messageId:      result.messageId,
+            error:          result.error,
+            rendered:       result.rendered,
+            fellBackReason: result.fellBackReason,
           })
 
           // Record a direct_mail_campaigns row tagged for the
           // pre-listing analytics cohort so the admin can see
           // pre-listing kit ROI separately from welcome kits.
+          // approval_status reflects the render path: 'auto_approved'
+          // when AI-drafted copy passed the gate, 'fell_back' when we
+          // dropped to the static template (admin can audit drift).
           await svc.from("direct_mail_campaigns").insert({
             brokerage_id:    ctx.brokerageId,
             agent_id:        ctx.agentUserId ?? null,
@@ -391,12 +415,13 @@ export const listingApptPrepChain: WorkflowChain = {
             campaign_name:   `Pre-Listing Kit (${piece}) - ${recipientName}`,
             target_audience: "pre_listing_kit",
             quantity:        1,
-            status:          dispatchResult.success ? "sent" : "failed",
+            status:          result.success ? "sent" : "failed",
             piece_type:      piece,
-            lob_order_id:    dispatchResult.messageId ?? null,
-            mailing_date:    dispatchResult.success ? new Date().toISOString().slice(0, 10) : null,
-            pieces_mailed:   dispatchResult.success ? 1 : 0,
+            lob_order_id:    result.messageId ?? null,
+            mailing_date:    result.success ? new Date().toISOString().slice(0, 10) : null,
+            pieces_mailed:   result.success ? 1 : 0,
             is_ai_generated: true,
+            approval_status: result.rendered ? "auto_approved" : "fell_back",
             created_at:      new Date().toISOString(),
           })
         }

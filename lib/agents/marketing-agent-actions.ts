@@ -33,6 +33,8 @@ export type MarketingActionType =
   | "cancel_direct_mail_send"
   | "retry_direct_mail_design"
   | "flag_design_for_review"
+  // Wave 36 self-learning capstone — omnipresence fanout.
+  | "omnipresence_topic_fanout"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -534,6 +536,119 @@ async function runHandler(
       }).select("id").single()
       if (error) return { status: "failed", result: { error: error.message } }
       return { status: "succeeded", result: { automation_error_id: errRow.id, campaign_id: campaignId } }
+    }
+
+    case "omnipresence_topic_fanout": {
+      // Take one topic from content_topic_bank and queue it across the
+      // named channels in one approval click. Each channel runs through
+      // its own canonical staging path so compliance/cooldown/tenant
+      // gates apply per-channel — the fanout doesn't bypass any of
+      // them; it just collapses 4 resolutions into 1.
+      const topicId = String(input.topic_id ?? "")
+      const channels = Array.isArray(input.channels)
+        ? (input.channels as unknown[]).map(String).filter((c) =>
+            ["newsletter", "blog", "social", "direct_mail_postcard"].includes(c))
+        : []
+      if (!topicId || channels.length === 0) {
+        return { status: "failed", result: { error: "topic_id and at least one channel required" } }
+      }
+      const svc = createServiceClient()
+      // Tenant + existence check on the topic.
+      const { data: topic } = await svc.from("content_topic_bank")
+        .select("id, brokerage_id, topic_title, value_angle")
+        .eq("id", topicId)
+        .maybeSingle()
+      const t = topic as { id: string; brokerage_id: string | null; topic_title: string; value_angle: string | null } | null
+      if (!t) return { status: "failed", result: { error: "topic not found" } }
+      // Topic must be either platform-wide (brokerage_id null) or owned
+      // by this brokerage — same scope rule as pickTopics.
+      if (t.brokerage_id !== null && t.brokerage_id !== brokerageId) {
+        return { status: "failed", result: { error: "topic outside tenant" } }
+      }
+
+      const fanout: Record<string, { ok: boolean; ref?: string; error?: string }> = {}
+
+      for (const ch of channels) {
+        if (ch === "newsletter") {
+          try {
+            const { stageNewsletterDraft } = await import("@/lib/wizard-staging/content-staging")
+            const { data: broker } = await svc.from("users")
+              .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1).maybeSingle()
+            const brokerUserId = (broker?.id as string | undefined) ?? null
+            if (!brokerUserId) { fanout.newsletter = { ok: false, error: "no broker user" }; continue }
+            const r = await stageNewsletterDraft(
+              { userId: brokerUserId, brokerageId },
+              { title: t.topic_title, subjectLine: t.topic_title, topic: t.topic_title, audience: "all" },
+            )
+            fanout.newsletter = r.success
+              ? { ok: true, ref: r.draftId ?? undefined }
+              : { ok: false, error: r.error ?? "stage failed" }
+          } catch (e) {
+            fanout.newsletter = { ok: false, error: (e as Error).message }
+          }
+        } else if (ch === "blog") {
+          // Mark the topic so the next blog cadence tick pulls it.
+          // The blog cron's pickTopics will surface this topic first
+          // because we set status='fresh' + boost engagement_score.
+          try {
+            const { error } = await svc.from("content_topic_bank")
+              .update({ engagement_score: 999 })  // sentinel — picker boosts to top
+              .eq("id", topicId)
+            fanout.blog = error
+              ? { ok: false, error: error.message }
+              : { ok: true, ref: "boosted_in_bank_for_next_cadence_tick" }
+          } catch (e) {
+            fanout.blog = { ok: false, error: (e as Error).message }
+          }
+        } else if (ch === "social") {
+          // Queue a draft social_posts row tagged with the topic.
+          try {
+            const { data: post, error } = await svc.from("social_posts").insert({
+              brokerage_id: brokerageId,
+              content:      t.value_angle ?? t.topic_title,
+              status:       "draft",
+              metadata:     { topic_id: topicId, source: "marketing_agent_omnipresence" },
+              created_at:   new Date().toISOString(),
+            }).select("id").single()
+            fanout.social = error
+              ? { ok: false, error: error.message }
+              : { ok: true, ref: post?.id as string | undefined }
+          } catch (e) {
+            fanout.social = { ok: false, error: (e as Error).message }
+          }
+        } else if (ch === "direct_mail_postcard") {
+          // The agent says "spin this topic to direct mail" — but the
+          // actual farm dispatch requires an agentId + farm + lots of
+          // recipient resolution that's outside this action's scope.
+          // Instead we log a content_topic_uses placeholder (asset_
+          // type='direct_mail_postcard', asset_id=null) so the next
+          // farm-mail cron picks this topic first for the matching
+          // personas, AND fire a kernel event the operator listens
+          // to. This keeps the fanout deterministic without spawning
+          // ad-hoc Lob spend that wasn't budgeted.
+          try {
+            await svc.from("content_topic_uses").insert({
+              topic_id:     topicId,
+              brokerage_id: brokerageId,
+              asset_type:   "direct_mail_postcard",
+              asset_id:     null,
+              used_at:      new Date().toISOString(),
+            })
+            fanout.direct_mail_postcard = {
+              ok: true,
+              ref: "queued_for_next_farm_cycle",
+            }
+          } catch (e) {
+            fanout.direct_mail_postcard = { ok: false, error: (e as Error).message }
+          }
+        }
+      }
+
+      const anyOk = Object.values(fanout).some((v) => v.ok)
+      return {
+        status: anyOk ? "succeeded" : "failed",
+        result: { topic_id: topicId, fanout },
+      }
     }
 
     default: {

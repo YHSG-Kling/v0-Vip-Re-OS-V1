@@ -331,6 +331,7 @@ type MarketingActionTypeWh =
   | "cancel_direct_mail_send"
   | "retry_direct_mail_design"
   | "flag_design_for_review"
+  | "omnipresence_topic_fanout"
 
 function filterValidResolutions(arr: unknown[]): Array<{
   action_type: MarketingActionTypeWh
@@ -348,6 +349,7 @@ function filterValidResolutions(arr: unknown[]): Array<{
     "cancel_direct_mail_send",
     "retry_direct_mail_design",
     "flag_design_for_review",
+    "omnipresence_topic_fanout",
   ])
   const out: Array<{
     action_type: MarketingActionTypeWh

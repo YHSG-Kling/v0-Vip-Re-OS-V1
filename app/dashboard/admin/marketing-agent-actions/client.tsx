@@ -57,6 +57,11 @@ const ACTION_LABELS: Record<string, { label: string; color: string; explain: str
     color:   "red",
     explain: "Routes a degraded mailer design to the broker's automation_errors review queue.",
   },
+  omnipresence_topic_fanout: {
+    label:   "Omnipresence: Fanout Topic Across Channels",
+    color:   "violet",
+    explain: "Promotes one high-performing topic across newsletter + blog + social + direct mail in one approval. Each channel still applies its own compliance/cooldown gates.",
+  },
 }
 
 const STATUS_BADGE: Record<string, string> = {

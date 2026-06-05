@@ -68,6 +68,20 @@ export interface DirectMailCopyContext {
     anniversaryYears?:  number
     podcastEpisode?:    string
   }
+  /** Wave 36 farm-mail — when a topic is pulled from content_topic_bank,
+   *  pass title + value_angle here so the AI can build the headline
+   *  around the topic rather than a generic farm message. The
+   *  performance feedback loop runs upstream (content_topic_uses + the
+   *  per-(asset_type, persona) score in content_asset_persona_
+   *  performance), so picking the same topic again later only happens
+   *  when prior scans/engagement justify it. */
+  topicHook?: {
+    title:      string
+    valueAngle: string | null
+    /** content_topic_bank.id so the caller can log a content_topic_uses
+     *  row after dispatch (closes the performance feedback loop). */
+    topicId:    string
+  }
 }
 
 export interface PostcardCopy {
@@ -137,6 +151,13 @@ function buildHookContextLine(ctx: DirectMailCopyContext): string {
   if (h.listingAddress)     facts.push(`listing address = ${h.listingAddress}`)
   if (h.anniversaryYears)   facts.push(`anniversary years = ${h.anniversaryYears}`)
   if (h.podcastEpisode)     facts.push(`podcast episode = "${h.podcastEpisode}"`)
+  if (ctx.topicHook?.title) {
+    // Topic from content_topic_bank — the AI should make THIS the lead.
+    facts.push(`THIS WEEK'S TOPIC (build the headline around this): "${ctx.topicHook.title}"`)
+    if (ctx.topicHook.valueAngle) {
+      facts.push(`topic angle (the "why it matters"): ${ctx.topicHook.valueAngle}`)
+    }
+  }
   return facts.length === 0 ? "no extra hook facts" : facts.join("; ")
 }
 
