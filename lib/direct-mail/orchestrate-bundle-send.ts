@@ -27,6 +27,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { orchestratePresetSend, type OrchestratePresetSendArgs } from "./orchestrate-preset-send"
 import { orchestrateEmailPresetSend } from "@/lib/email/orchestrate-email-preset-send"
 import { orchestrateSmsPresetSend } from "@/lib/sms/orchestrate-sms-preset-send"
+import { orchestrateSocialPresetPublish } from "@/lib/social/orchestrate-social-preset-publish"
 
 export interface OrchestrateBundleSendArgs {
   brokerageId: string
@@ -235,15 +236,32 @@ export async function orchestrateBundleSend(
           error:     r.error,
         }
       }
+    } else if (item.channel === "social_post" && item.preset_id) {
+      // Wave 37 — social: stages N platform-specific social_posts
+      // rows for the existing publish-social-posts cron to dispatch.
+      const r = await orchestrateSocialPresetPublish({
+        brokerageId: args.brokerageId,
+        presetId:    item.preset_id,
+        teamId:      args.teamId,
+        agentUserId: args.agentUserId,
+        systemSource: args.systemSource ?? `bundle:${bundle.name}`,
+      })
+      outcome = {
+        channel:   item.channel,
+        preset_id: item.preset_id,
+        success:   r.success,
+        // r.socialPostIds[0] used as the synthetic "messageId" so the
+        // dispatch ledger has at least one id to reference.
+        messageId: r.socialPostIds?.[0],
+        error:     r.error,
+      }
     } else {
-      // Channel not yet implemented (social_post) OR preset_id missing.
+      // preset_id missing.
       outcome = {
         channel:    item.channel,
         preset_id:  item.preset_id,
         success:    false,
-        error:      item.preset_id
-          ? `channel_not_implemented:${item.channel}`
-          : "preset_id_required",
+        error:      "preset_id_required",
       }
     }
     outcomes.push(outcome)
