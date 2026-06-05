@@ -170,6 +170,15 @@ export function CampaignBundlesClient({
   )
 }
 
+function Metric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-xs font-semibold text-gray-900">{value}</span>
+      <span className="text-[10px] uppercase tracking-wide text-gray-400">{label}</span>
+    </div>
+  )
+}
+
 function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
   bundle:       BundleRow
   catalog:      PresetCatalog
@@ -182,6 +191,18 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
     const list = catalog[channel] ?? []
     return list.find((p) => p.id === presetId)?.name ?? "(preset removed)"
   }
+  const p = bundle.performance
+  const hasFired = p.dispatch_count > 0
+  const leadRate = hasFired ? (p.total_leads / p.dispatch_count) : 0
+  const lastFiredLabel = (() => {
+    if (!p.last_dispatched_at) return "never fired"
+    const days = Math.floor((Date.now() - new Date(p.last_dispatched_at).getTime()) / 86_400_000)
+    if (days <= 0) return "today"
+    if (days === 1) return "yesterday"
+    if (days < 30) return `${days}d ago`
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`
+    return `${Math.floor(days / 365)}y ago`
+  })()
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white">
       <div className="flex items-start justify-between gap-3">
@@ -194,6 +215,19 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
           {bundle.description && (
             <p className="mt-2 text-sm text-gray-600 line-clamp-2">{bundle.description}</p>
           )}
+          {/* Performance row — populated daily by the
+              bundle-attribution-rollup cron. Shown even when zero so
+              the agent can see the bundle has never fired. */}
+          <div className="mt-2 grid grid-cols-4 gap-2 border-t pt-2">
+            <Metric label="dispatches"  value={p.dispatch_count} />
+            <Metric label="scans"       value={p.total_scans}    />
+            <Metric label="leads"       value={p.total_leads}    />
+            <Metric
+              label="lead / send"
+              value={hasFired ? leadRate.toFixed(2) : "—"}
+            />
+          </div>
+          <div className="text-xs text-gray-400 mt-1">Last fired: {lastFiredLabel}</div>
           <ol className="mt-3 space-y-1">
             {bundle.items.map((it, idx) => (
               <li key={it.id} className="text-xs text-gray-700 flex gap-2">

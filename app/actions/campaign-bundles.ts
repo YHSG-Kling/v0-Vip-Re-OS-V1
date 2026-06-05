@@ -45,6 +45,19 @@ export interface BundleItemRow {
   send_after_minutes: number
 }
 
+export interface BundlePerformance {
+  /** Total campaign_bundle_dispatches rows for this bundle (lifetime). */
+  dispatch_count:      number
+  /** Sum(scans_count) across every dispatch — proxy for total
+   *  attributable engagement events (QR scans, email opens/clicks,
+   *  inbound replies, social engagements, etc.). */
+  total_scans:         number
+  /** Sum(leads_count) across every dispatch. */
+  total_leads:         number
+  /** ISO timestamp of the most recent dispatch, or null if never sent. */
+  last_dispatched_at:  string | null
+}
+
 export interface BundleRow {
   id:           string
   name:         string
@@ -54,6 +67,10 @@ export interface BundleRow {
   is_active:    boolean
   created_at:   string
   items:        BundleItemRow[]
+  /** Aggregate dispatch performance (lifetime). Updated daily by the
+   *  bundle-attribution-rollup cron. Zero when the bundle has never
+   *  fired. */
+  performance:  BundlePerformance
 }
 
 export interface PresetOption {
@@ -130,21 +147,54 @@ export async function listCampaignBundles(): Promise<
   const bundles = (bundleRows ?? []) as Array<Omit<BundleRow, "items">>
   if (bundles.length === 0) return { success: true, bundles: [] }
 
-  const { data: itemRows } = await svc
-    .from("campaign_bundle_items")
-    .select("id, bundle_id, channel, preset_id, order_index, send_after_minutes")
-    .in("bundle_id", bundles.map((b) => b.id))
-    .order("order_index", { ascending: true })
-  const items = (itemRows ?? []) as BundleItemRow[]
+  const bundleIds = bundles.map((b) => b.id)
+  const [itemsR, dispatchesR] = await Promise.all([
+    svc.from("campaign_bundle_items")
+      .select("id, bundle_id, channel, preset_id, order_index, send_after_minutes")
+      .in("bundle_id", bundleIds)
+      .order("order_index", { ascending: true }),
+    // Pull every dispatch row for these bundles and aggregate in JS —
+    // PostgREST doesn't support GROUP BY in the JS client. The dispatch
+    // table is bounded by the 28d window in practice (older rows still
+    // exist but the rollup cron only walks the recent slice), so the
+    // dataset stays small enough to aggregate in-process.
+    svc.from("campaign_bundle_dispatches")
+      .select("bundle_id, scans_count, leads_count, dispatched_at")
+      .in("bundle_id", bundleIds),
+  ])
+
+  const items = (itemsR.data ?? []) as BundleItemRow[]
   const itemsByBundle = new Map<string, BundleItemRow[]>()
   for (const it of items) {
     const arr = itemsByBundle.get(it.bundle_id) ?? []
     arr.push(it); itemsByBundle.set(it.bundle_id, arr)
   }
 
+  const perfByBundle = new Map<string, BundlePerformance>()
+  for (const id of bundleIds) {
+    perfByBundle.set(id, { dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null })
+  }
+  for (const d of (dispatchesR.data ?? []) as Array<{
+    bundle_id: string; scans_count: number | null;
+    leads_count: number | null; dispatched_at: string | null
+  }>) {
+    const p = perfByBundle.get(d.bundle_id)
+    if (!p) continue
+    p.dispatch_count++
+    p.total_scans += d.scans_count ?? 0
+    p.total_leads += d.leads_count ?? 0
+    if (d.dispatched_at && (p.last_dispatched_at === null || d.dispatched_at > p.last_dispatched_at)) {
+      p.last_dispatched_at = d.dispatched_at
+    }
+  }
+
   return {
     success: true,
-    bundles: bundles.map((b) => ({ ...b, items: itemsByBundle.get(b.id) ?? [] })),
+    bundles: bundles.map((b) => ({
+      ...b,
+      items:       itemsByBundle.get(b.id) ?? [],
+      performance: perfByBundle.get(b.id) ?? { dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null },
+    })),
   }
 }
 
