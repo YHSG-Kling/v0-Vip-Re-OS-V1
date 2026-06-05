@@ -75,6 +75,45 @@ interface AssetSnapshot {
   // Recent activity — total renders + flagged compliance events last 7d.
   rendersLast7d: number
   flaggedCompliance7d: number
+
+  // ─── Wave 38 surfaces ──────────────────────────────────────────────
+  // The Asset Manager is the canonical reviewer of every asset the
+  // platform produces. Wave 38 added 7 channel preset tables + the
+  // multi-channel bundle composition layer + TTS letter audio; the
+  // manager needs visibility into all of them so it can flag preset
+  // drift, surface bundles nobody ever fires, and request voice
+  // clone setup for agents whose voicedrop presets will fail at
+  // dispatch.
+  presetInventory: {
+    email:           number
+    sms:             number
+    social_post:     number
+    voicedrop:       number
+    podcast_episode: number
+    ad_retarget:     number
+    portal_push:     number
+  }
+  /** Presets with NULL compliance_event_id — gate never ran. These
+   *  are time bombs (a future dispatch lands without Fair Housing
+   *  clearance). Aggregate count across all 7 channel tables. */
+  presetsMissingComplianceGate: number
+  /** Active bundles in scope. */
+  activeBundles: number
+  /** Bundles that have never been dispatched (created > 14d ago, zero
+   *  campaign_bundle_dispatches rows). Either dead concepts or the
+   *  agent forgot the bundle exists. */
+  unusedBundles: number
+  /** Bundles with >= 5 dispatches but 0 attributed leads — strong
+   *  signal the bundle is mis-targeted or the copy isn't landing. */
+  bundlesZeroLeadRate: number
+  /** Agents with at least one voicedrop preset (tts_script set) but no
+   *  ElevenLabs voice clone on agent_voice_profiles. Voicedrop sends
+   *  for these agents WILL fail at dispatch. */
+  agentsWithVoicedropButNoVoice: number
+  /** Direct-mail letters dispatched > 24h ago where tts_audio_url is
+   *  still NULL despite the agent having a voice clone — the
+   *  letter-audio-renderer cron didn't catch them. */
+  lettersMissingTtsAudio: number
 }
 
 async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
@@ -101,6 +140,16 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     staleBrandAssetExamples: [],
     rendersLast7d: 0,
     flaggedCompliance7d: 0,
+    presetInventory: {
+      email: 0, sms: 0, social_post: 0, voicedrop: 0,
+      podcast_episode: 0, ad_retarget: 0, portal_push: 0,
+    },
+    presetsMissingComplianceGate: 0,
+    activeBundles: 0,
+    unusedBundles: 0,
+    bundlesZeroLeadRate: 0,
+    agentsWithVoicedropButNoVoice: 0,
+    lettersMissingTtsAudio: 0,
   }
 
   try {
@@ -208,7 +257,112 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       .gte("created_at", since7d)
     snap.flaggedCompliance7d = flagsCount ?? 0
 
-    void since28d  // reserved for future 28d signal additions
+    // ─── Wave 38: channel presets + bundles + voice / TTS surfaces ──
+    // All seven preset tables + bundle composition + TTS letters.
+    // Aggregated in parallel since none of them depend on each other.
+    const [emailP, smsP, socialP, vdP, podP, adP, ppP, bundlesAll, bundleDispatches28d, voiceProfiles, lettersOld] =
+      await Promise.all([
+        svc.from("email_presets")
+          .select("id, compliance_event_id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("sms_presets")
+          .select("id, compliance_event_id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("social_post_presets")
+          .select("id, compliance_event_id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("voicedrop_presets")
+          .select("id, compliance_event_id, scope_type, scope_id, tts_script", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("podcast_episode_presets")
+          .select("id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("ad_retarget_presets")
+          .select("id, compliance_event_id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("portal_push_presets")
+          .select("id", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("campaign_bundles")
+          .select("id, created_at", { count: "exact", head: false })
+          .eq("brokerage_id", brokerageId).eq("is_active", true),
+        svc.from("campaign_bundle_dispatches")
+          .select("bundle_id, scans_count, leads_count, dispatched_at")
+          .eq("brokerage_id", brokerageId)
+          .gte("dispatched_at", since28d),
+        svc.from("agent_voice_profiles")
+          .select("agent_id, elevenlabs_voice_id")
+          .eq("brokerage_id", brokerageId),
+        // Letters mailed > 24h ago without TTS audio. Only relevant
+        // when ElevenLabs is configured at the platform level.
+        svc.from("direct_mail_campaigns")
+          .select("id, agent_id")
+          .eq("brokerage_id", brokerageId)
+          .eq("piece_type", "letter")
+          .is("tts_audio_url", null)
+          .lt("created_at", new Date(Date.now() - 86_400_000).toISOString()),
+      ])
+
+    snap.presetInventory = {
+      email:           emailP.data?.length ?? 0,
+      sms:             smsP.data?.length ?? 0,
+      social_post:     socialP.data?.length ?? 0,
+      voicedrop:       vdP.data?.length ?? 0,
+      podcast_episode: podP.data?.length ?? 0,
+      ad_retarget:     adP.data?.length ?? 0,
+      portal_push:     ppP.data?.length ?? 0,
+    }
+    const gateMissing = (rows: Array<{ compliance_event_id: string | null }>) =>
+      rows.filter((r) => !r.compliance_event_id).length
+    snap.presetsMissingComplianceGate =
+      gateMissing((emailP.data  ?? []) as Array<{ compliance_event_id: string | null }>) +
+      gateMissing((smsP.data    ?? []) as Array<{ compliance_event_id: string | null }>) +
+      gateMissing((socialP.data ?? []) as Array<{ compliance_event_id: string | null }>) +
+      gateMissing((vdP.data     ?? []) as Array<{ compliance_event_id: string | null }>) +
+      gateMissing((adP.data     ?? []) as Array<{ compliance_event_id: string | null }>)
+
+    const bundles = (bundlesAll.data ?? []) as Array<{ id: string; created_at: string }>
+    snap.activeBundles = bundles.length
+    // Aggregate dispatches per bundle to compute unused + zero-lead-rate.
+    const dispatches = (bundleDispatches28d.data ?? []) as Array<{
+      bundle_id: string; scans_count: number | null; leads_count: number | null; dispatched_at: string
+    }>
+    const perBundle = new Map<string, { dispatches: number; leads: number }>()
+    for (const d of dispatches) {
+      const agg = perBundle.get(d.bundle_id) ?? { dispatches: 0, leads: 0 }
+      agg.dispatches++; agg.leads += d.leads_count ?? 0
+      perBundle.set(d.bundle_id, agg)
+    }
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 86_400_000).toISOString()
+    for (const b of bundles) {
+      const agg = perBundle.get(b.id)
+      if (!agg && b.created_at < fourteenDaysAgo) snap.unusedBundles++
+      if (agg && agg.dispatches >= 5 && agg.leads === 0) snap.bundlesZeroLeadRate++
+    }
+
+    // Voicedrop presets with TTS script vs voice clone coverage.
+    // voicedrop_presets.scope_type='agent' + scope_id=agents.id IS the
+    // signal — that agent needs a voice clone or dispatch will fail.
+    const voiceByAgent = new Map<string, string | null>()
+    for (const v of (voiceProfiles.data ?? []) as Array<{ agent_id: string; elevenlabs_voice_id: string | null }>) {
+      voiceByAgent.set(v.agent_id, v.elevenlabs_voice_id)
+    }
+    const agentsNeedingVoice = new Set<string>()
+    for (const v of (vdP.data ?? []) as Array<{ scope_type: string; scope_id: string; tts_script: string | null }>) {
+      if (v.tts_script && v.scope_type === "agent" && !voiceByAgent.get(v.scope_id)) {
+        agentsNeedingVoice.add(v.scope_id)
+      }
+    }
+    snap.agentsWithVoicedropButNoVoice = agentsNeedingVoice.size
+
+    // Letter audio gap. Only count letters whose agent DOES have a
+    // voice clone — the renderer can't help an agent without one.
+    let lettersMissing = 0
+    for (const l of (lettersOld.data ?? []) as Array<{ agent_id: string | null }>) {
+      if (!l.agent_id) continue
+      if (voiceByAgent.get(l.agent_id)) lettersMissing++
+    }
+    snap.lettersMissingTtsAudio = lettersMissing
   } catch (e) {
     console.error(`[asset-manager] snapshot build failed for ${brokerageId}:`, (e as Error).message)
   }
@@ -250,6 +404,33 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
     "──── RECENT ACTIVITY (last 7d) ────",
     `Video renders staged: ${snap.rendersLast7d}`,
     `Compliance flags raised: ${snap.flaggedCompliance7d} ← if > 0 inspect for flag_asset_for_review patterns`,
+    "",
+    "──── WAVE 38 CHANNEL PRESETS + BUNDLES + TTS ────",
+    "These are the channel-creative assets the platform now produces. Treat them the same as legacy marketing assets — they have lifecycle (active → stale), performance (firing or not), and risk (compliance gate freshness).",
+    "",
+    `Active preset counts per channel:`,
+    `  · email           ${snap.presetInventory.email}`,
+    `  · sms             ${snap.presetInventory.sms}`,
+    `  · social_post     ${snap.presetInventory.social_post}`,
+    `  · voicedrop       ${snap.presetInventory.voicedrop}`,
+    `  · podcast_episode ${snap.presetInventory.podcast_episode}`,
+    `  · ad_retarget     ${snap.presetInventory.ad_retarget}`,
+    `  · portal_push     ${snap.presetInventory.portal_push}`,
+    "",
+    `Presets without a compliance_event_id (gate never ran): ${snap.presetsMissingComplianceGate}`,
+    "  ← flag_asset_for_review with reason='no_compliance_gate'. The gate is the platform's Fair Housing chokepoint; a preset without one is a future dispatch that bypasses the check.",
+    "",
+    `Active bundles in scope:        ${snap.activeBundles}`,
+    `Bundles never fired (> 14d):    ${snap.unusedBundles}`,
+    "  ← deprecate_asset with reason='unused_bundle'. The agent composed these in Settings but never invoked them — either dead concepts or forgotten. Surface so they can clean the library.",
+    `Bundles with ≥5 dispatches + 0 leads: ${snap.bundlesZeroLeadRate}`,
+    "  ← flag_asset_for_review with reason='zero_lead_rate'. Mis-targeted audience or copy not landing. The cron computes lead-rate; the broker should see the bottom of the list.",
+    "",
+    `Agents with voicedrop presets but NO voice clone: ${snap.agentsWithVoicedropButNoVoice}`,
+    "  ← request_agent_headshot is the closest existing action (use it as a generic 'agent profile needs setup' signal); explain in rationale that the voicedrop preset will fail at dispatch until they finish /dashboard/videos/voice. The broker reviews the queue and can chase the agent.",
+    "",
+    `Direct-mail letters > 24h old without TTS audio: ${snap.lettersMissingTtsAudio}`,
+    "  ← flag_asset_for_review with reason='tts_audio_renderer_lag'. The letter-audio-renderer cron should have caught these; > 0 means either ElevenLabs is quota-paused for the brokerage or the cron is failing. Broker reviews and unblocks.",
     "",
     "──── RESOLUTION ACTIONS YOU CAN EMIT ────",
     "Append a top-level `resolutions[]` array to your JSON output. Each:",
