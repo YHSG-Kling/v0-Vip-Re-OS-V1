@@ -92,6 +92,12 @@ export async function GET(req: NextRequest) {
           event_date: `${row.event_date} ${row.start_time ?? ""}`.trim(),
         },
       })
+      // Wave 36 — DELIBERATELY no mail dispatch here. T-24h is too late
+      // for Lob (first-class transit 4-7 days). The mail for an open
+      // house ships from OPEN_HOUSE_SCHEDULED via the lifecycle reactor
+      // wired in kernel/event-reactor.ts; that fires as soon as the
+      // event is scheduled, giving the postcard real lead time. This
+      // cron stays video + SMS + email only.
       results.push({ open_house_id: row.id, outcome: r.status, reason: r.reason })
     } catch (e) {
       results.push({ open_house_id: row.id, outcome: "failed", reason: (e as Error).message })

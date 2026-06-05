@@ -227,6 +227,22 @@ interface MarketingSnapshot {
      *  retry_direct_mail_design resolution. */
     oldestPendingCampaignId:        string | null
     oldestPendingCampaignAgeHours:  number | null
+    /** Wave 36 self-learning enrichment — performance signals the
+     *  agent uses to fanout the right topic to the right persona. */
+    scansLast28d:                   number
+    costSpentLast28d:               number   // dollars (sum direct_mail_campaigns.per_piece_cost × pieces_mailed when set, else 0)
+    /** Cost per qualified scan over the 28d window — null when no
+     *  scans yet. The agent reads this as the channel's marginal
+     *  efficiency: a postcard cohort below the global CPS is
+     *  underperforming. */
+    costPerScanLast28d:             number | null
+    /** The persona whose direct_mail postcards have the highest scan
+     *  rate over the window. Null when no persona has > 5 scans
+     *  (statistical floor). */
+    topConvertingPersona:           { persona: string; scans: number; sends: number } | null
+    /** Top farm zip by scan count over the window. Null when no
+     *  geographic concentration. */
+    topFarmZipByScans:              { zip: string; scans: number } | null
   }
 }
 
@@ -602,6 +618,11 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     recentDeliveryFailures28d: 0,
     oldestPendingCampaignId: null,
     oldestPendingCampaignAgeHours: null,
+    scansLast28d: 0,
+    costSpentLast28d: 0,
+    costPerScanLast28d: null,
+    topConvertingPersona: null,
+    topFarmZipByScans: null,
   }
   try {
     const [pendingR, sentR, failedR, unverifiedR, deliveryFailR, oldestR] = await Promise.all([
@@ -650,6 +671,124 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     }
   } catch (e) {
     console.error(`[marketing-agent] direct-mail channel snapshot failed for ${brokerageId}:`, (e as Error).message)
+  }
+
+  // Wave 36 — self-learning enrichment. Joins direct_mail_campaigns →
+  // qr_scan_events (via the qr_code_id stamped on campaign rows by the
+  // orchestrator) → contacts (for persona attribution) to compute the
+  // signals the agent uses for fanout decisions.
+  try {
+    // 1. Sent campaigns in 28d with their qr_code_id + contact persona +
+    //    farm zip (contacts.zip_code is the recipient's residence zip
+    //    which IS the farm zip for farm_mail target_audience). per_piece
+    //    _cost × pieces_mailed gives spend per row.
+    const { data: sentCampaigns } = await svc
+      .from("direct_mail_campaigns")
+      .select("id, qr_code_id, per_piece_cost, pieces_mailed, contact_id, target_audience")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "sent")
+      .gte("mailing_date", since28d.slice(0, 10))
+      .limit(2000)
+    type CRow = {
+      id: string
+      qr_code_id: string | null
+      per_piece_cost: number | null
+      pieces_mailed: number | null
+      contact_id: string | null
+      target_audience: string | null
+    }
+    const campaigns = (sentCampaigns ?? []) as CRow[]
+    const qrCodeIds = [...new Set(campaigns.map((c) => c.qr_code_id).filter((id): id is string => !!id))]
+    const contactIds = [...new Set(campaigns.map((c) => c.contact_id).filter((id): id is string => !!id))]
+
+    // 2. Spend over the window — sum (per_piece_cost × pieces_mailed).
+    //    Rows with null cost don't contribute (typically auto-generated
+    //    pieces where Lob bills against the broker's account).
+    let spend = 0
+    for (const c of campaigns) {
+      const cost = (c.per_piece_cost ?? 0) * (c.pieces_mailed ?? 1)
+      if (cost > 0) spend += cost
+    }
+    directMailChannel.costSpentLast28d = Math.round(spend * 100) / 100
+
+    // 3. Scans in the window across all campaigns' QR codes.
+    let scans = 0
+    let scansByPersona = new Map<string, number>()
+    let sendsByPersona = new Map<string, number>()
+    let scansByZip = new Map<string, number>()
+
+    if (qrCodeIds.length > 0) {
+      const { data: scanRows } = await svc
+        .from("qr_scan_events")
+        .select("qr_code_id")
+        .in("qr_code_id", qrCodeIds)
+        .gte("scanned_at", since28d)
+      scans = scanRows?.length ?? 0
+      directMailChannel.scansLast28d = scans
+
+      // Build qr_code_id → campaign mapping for persona attribution.
+      const campaignByQr = new Map<string, CRow>()
+      for (const c of campaigns) if (c.qr_code_id) campaignByQr.set(c.qr_code_id, c)
+
+      // Pull contact persona + zip for all contacts in campaigns.
+      const personaByContact = new Map<string, { persona: string | null; zip: string | null }>()
+      if (contactIds.length > 0) {
+        const { data: contactRows } = await svc
+          .from("contacts")
+          .select("id, contact_persona, zip_code")
+          .in("id", contactIds)
+        for (const r of (contactRows ?? []) as Array<{ id: string; contact_persona: string | null; zip_code: string | null }>) {
+          personaByContact.set(r.id, { persona: r.contact_persona, zip: r.zip_code })
+        }
+      }
+
+      // 4. sends-by-persona — every campaign with a contact persona counts.
+      for (const c of campaigns) {
+        if (!c.contact_id) continue
+        const meta = personaByContact.get(c.contact_id)
+        const p = meta?.persona ?? "other"
+        sendsByPersona.set(p, (sendsByPersona.get(p) ?? 0) + 1)
+      }
+
+      // 5. scans-by-persona + scans-by-zip — each scan → its campaign →
+      //    its contact's persona + zip.
+      for (const row of (scanRows ?? []) as Array<{ qr_code_id: string }>) {
+        const campaign = campaignByQr.get(row.qr_code_id)
+        if (!campaign?.contact_id) continue
+        const meta = personaByContact.get(campaign.contact_id)
+        const p = meta?.persona ?? "other"
+        scansByPersona.set(p, (scansByPersona.get(p) ?? 0) + 1)
+        if (campaign.target_audience === "farm_mail" && meta?.zip) {
+          scansByZip.set(meta.zip, (scansByZip.get(meta.zip) ?? 0) + 1)
+        }
+      }
+    }
+
+    // 6. costPerScan + top-converting persona + top zip.
+    if (scans > 0) {
+      directMailChannel.costPerScanLast28d = Math.round((spend / scans) * 100) / 100
+    }
+
+    // Top persona by scan COUNT (not rate) gated by statistical floor.
+    // Rate would double-penalize tiny personas; raw count gives the
+    // agent the actionable cohort.
+    let topPersona: { persona: string; scans: number; sends: number } | null = null
+    for (const [persona, scanCount] of scansByPersona.entries()) {
+      if (scanCount < 5) continue
+      const sendCount = sendsByPersona.get(persona) ?? 0
+      if (!topPersona || scanCount > topPersona.scans) {
+        topPersona = { persona, scans: scanCount, sends: sendCount }
+      }
+    }
+    directMailChannel.topConvertingPersona = topPersona
+
+    let topZip: { zip: string; scans: number } | null = null
+    for (const [zip, count] of scansByZip.entries()) {
+      if (!topZip || count > topZip.scans) topZip = { zip, scans: count }
+    }
+    directMailChannel.topFarmZipByScans = topZip
+  } catch (e) {
+    console.error(`[marketing-agent] direct-mail performance signals failed for ${brokerageId}:`, (e as Error).message)
   }
 
   return {
@@ -863,6 +1002,22 @@ export async function spawnMarketingAgentForBrokerage(params: {
       : "",
     snap.directMailChannel.failedLast28d > 5
       ? `ACTION HINT: ${snap.directMailChannel.failedLast28d} failed mailers in 28d. Inspect the oldest pending campaign — if it's a transient Lob 5xx, emit retry_direct_mail_design; if a design problem, emit flag_design_for_review.`
+      : "",
+    "",
+    "──── WAVE 36 — DIRECT-MAIL SELF-LEARNING SIGNALS ────",
+    `QR scans last 28d:              ${snap.directMailChannel.scansLast28d}`,
+    `Lob spend last 28d:             $${snap.directMailChannel.costSpentLast28d.toFixed(2)}`,
+    snap.directMailChannel.costPerScanLast28d != null
+      ? `Cost per scan (CPS) 28d:        $${snap.directMailChannel.costPerScanLast28d.toFixed(2)} — the channel's marginal efficiency`
+      : `Cost per scan: (insufficient scans yet)`,
+    snap.directMailChannel.topConvertingPersona
+      ? `Top converting persona:         "${snap.directMailChannel.topConvertingPersona.persona}" — ${snap.directMailChannel.topConvertingPersona.scans} scans from ${snap.directMailChannel.topConvertingPersona.sends} sends (scan rate ${(snap.directMailChannel.topConvertingPersona.scans / Math.max(snap.directMailChannel.topConvertingPersona.sends, 1) * 100).toFixed(1)}%)`
+      : `Top converting persona: (no persona crossed the 5-scan floor yet)`,
+    snap.directMailChannel.topFarmZipByScans
+      ? `Top farm zip by scans:          ${snap.directMailChannel.topFarmZipByScans.zip} (${snap.directMailChannel.topFarmZipByScans.scans} scans)`
+      : `Top farm zip: (no farm scan concentration yet)`,
+    snap.directMailChannel.topConvertingPersona
+      ? `ACTION HINT: The top-converting persona's topic from content_topic_bank is the asymmetric pick for next week. Consider an omnipresence_topic_fanout for the topic that DROVE those scans — query content_topic_uses with asset_type='direct_mail_postcard' and the persona's recent topic_id to find the winner.`
       : "",
     "",
     "──── WAVE 33 — YOU CAN RESOLVE CONFLICTS, NOT JUST OBSERVE ────",
