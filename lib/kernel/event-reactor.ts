@@ -309,6 +309,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           agentUserId,
           eventType:   "just_listed",
         })
+        // Wave 36 — parallel direct-mail dispatch. The mail reactor
+        // reads lifecycle_promo_policy.mail_enabled per-(scope, event)
+        // and skips cleanly when the brokerage hasn't opted in.
+        const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
+        void dispatchLifecycleMail({
+          brokerageId: params.brokerageId,
+          listingId:   params.entityId,
+          agentUserId,
+          eventType:   "just_listed",
+        })
       }
     } catch (err) {
       console.error("[event-reactor] listing-promo dispatch failed:", err)
@@ -368,6 +378,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             agentUserId,
             eventType,
           })
+          // Wave 36 — parallel direct-mail dispatch (policy-gated).
+          const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
+          void dispatchLifecycleMail({
+            brokerageId: params.brokerageId,
+            listingId:   params.entityId,
+            agentUserId,
+            eventType,
+          })
         }
       }
     } catch (err) {
@@ -409,6 +427,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             agentUserId,
             eventType:    "open_house_announce",
             eventContext: eventDateLine ? { event_date: eventDateLine } : undefined,
+          })
+          // Wave 36 — parallel direct-mail dispatch for open-house
+          // announce. (Open-house reminder direct mail fires from the
+          // existing open-house-reminder cron once we add a mail
+          // branch there in a follow-up commit.)
+          const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
+          void dispatchLifecycleMail({
+            brokerageId: params.brokerageId,
+            listingId:   ohRow.listing_id,
+            agentUserId,
+            eventType:   "open_house_announce",
           })
         }
       }
