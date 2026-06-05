@@ -65,6 +65,11 @@ export interface LifecycleEventDisplay {
   hasAgentOverride:    boolean
   agentOverride:       { autoSpawn: boolean; cooldownHours: number | null } | null
   platformDefault:     { autoSpawn: boolean; cooldownHours: number | null }
+  // Wave 36 mail fields — null when no row exists at this scope yet.
+  mailEnabled:         boolean
+  mailPostcardSize:    "4x6" | "6x9" | null
+  mailTargetAudience:  "farm" | "sphere" | "farm+sphere" | null
+  mailMaxRecipients:   number | null
 }
 
 const EVENT_METADATA: Record<LifecycleEventType, { label: string; description: string }> = {
@@ -108,16 +113,24 @@ export async function getMyLifecyclePromoPolicy(): Promise<GetMyPolicyResult> {
   // Pull all 7 event rows for this agent in ONE query.
   const { data: overrideRows } = await svc
     .from("lifecycle_promo_policy")
-    .select("event_type, auto_spawn, cooldown_hours")
+    .select("event_type, auto_spawn, cooldown_hours, mail_enabled, mail_postcard_size, mail_target_audience, mail_max_recipients")
     .eq("scope_type", "agent")
     .eq("scope_id", agentRecordId)
-  const overrideMap = new Map<LifecycleEventType, { autoSpawn: boolean; cooldownHours: number | null }>()
-  for (const r of (overrideRows ?? []) as Array<{ event_type: LifecycleEventType; auto_spawn: boolean; cooldown_hours: number | null }>) {
-    overrideMap.set(r.event_type, { autoSpawn: r.auto_spawn, cooldownHours: r.cooldown_hours })
+  type Row = {
+    event_type: LifecycleEventType
+    auto_spawn: boolean
+    cooldown_hours: number | null
+    mail_enabled: boolean | null
+    mail_postcard_size: "4x6" | "6x9" | null
+    mail_target_audience: "farm" | "sphere" | "farm+sphere" | null
+    mail_max_recipients: number | null
   }
+  const rowMap = new Map<LifecycleEventType, Row>()
+  for (const r of (overrideRows ?? []) as Row[]) rowMap.set(r.event_type, r)
 
   const events: LifecycleEventDisplay[] = ALL_EVENT_TYPES.map((et) => {
-    const override = overrideMap.get(et) ?? null
+    const row = rowMap.get(et) ?? null
+    const override = row ? { autoSpawn: row.auto_spawn, cooldownHours: row.cooldown_hours } : null
     const platform = PLATFORM_DEFAULTS[et]
     const effective = override ?? platform
     return {
@@ -129,6 +142,10 @@ export async function getMyLifecyclePromoPolicy(): Promise<GetMyPolicyResult> {
       hasAgentOverride:    !!override,
       agentOverride:       override,
       platformDefault:     platform,
+      mailEnabled:         row?.mail_enabled ?? false,
+      mailPostcardSize:    row?.mail_postcard_size ?? null,
+      mailTargetAudience:  row?.mail_target_audience ?? null,
+      mailMaxRecipients:   row?.mail_max_recipients ?? null,
     }
   })
 
@@ -228,6 +245,103 @@ export async function deleteLifecyclePromoPolicy(input: {
   return { success: true }
 }
 
+/**
+ * Wave 36 — UPDATE-or-INSERT for the direct-mail subset of the policy row.
+ * Keeps the existing auto_spawn / cooldown columns untouched: if a row
+ * already exists we UPDATE only the mail_* columns; if no row exists we
+ * INSERT with PLATFORM_DEFAULTS for auto_spawn + cooldown so the video
+ * path inherits the platform default rather than getting null-clobbered.
+ *
+ * Pass mailEnabled=false (with the other fields untouched) to disable
+ * mail without touching the video toggle.
+ */
+export async function upsertLifecycleMailFields(input: {
+  eventType:           LifecycleEventType
+  mailEnabled?:        boolean
+  mailPostcardSize?:   "4x6" | "6x9" | null
+  mailTargetAudience?: "farm" | "sphere" | "farm+sphere"
+  mailTemplateId?:     string | null
+  mailMaxRecipients?:  number | null
+  scopeType?:          "agent" | "team" | "brokerage"
+  scopeId?:            string
+}): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const scopeType = input.scopeType ?? "agent"
+  const { resolvePolicyScopeAccess } = await import("@/lib/identity/policy-scope")
+  const access = await resolvePolicyScopeAccess()
+  let scopeId = input.scopeId ?? null
+  if (scopeType === "agent") {
+    if (!access.canEditAgent) return { success: false, error: "Forbidden" }
+    scopeId = access.agentScopeId
+  } else if (scopeType === "team") {
+    if (!access.canEditTeam) return { success: false, error: "Forbidden" }
+    if (!scopeId || !access.teamScopeIds.includes(scopeId)) {
+      return { success: false, error: "Forbidden — team not in your scope" }
+    }
+  } else if (scopeType === "brokerage") {
+    if (!access.canEditBrokerage) return { success: false, error: "Forbidden" }
+    scopeId = access.brokerageScopeId
+  }
+  if (!scopeId) return { success: false, error: "Could not resolve scope id" }
+
+  // Validate the mail input.
+  if (input.mailMaxRecipients !== undefined && input.mailMaxRecipients !== null) {
+    if (input.mailMaxRecipients < 1 || input.mailMaxRecipients > 500) {
+      return { success: false, error: "mailMaxRecipients must be 1-500" }
+    }
+  }
+
+  const svc = createServiceClient()
+  // Patch shape — only include the columns the caller is changing so
+  // an UPDATE preserves untouched fields.
+  const patch: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    updated_by: ctx.userId,
+  }
+  if (input.mailEnabled !== undefined)        patch.mail_enabled         = input.mailEnabled
+  if (input.mailPostcardSize !== undefined)   patch.mail_postcard_size   = input.mailPostcardSize
+  if (input.mailTargetAudience !== undefined) patch.mail_target_audience = input.mailTargetAudience
+  if (input.mailTemplateId !== undefined)     patch.mail_template_id     = input.mailTemplateId
+  if (input.mailMaxRecipients !== undefined)  patch.mail_max_recipients  = input.mailMaxRecipients
+
+  // Try UPDATE first.
+  const { data: updated, error: updateError } = await svc
+    .from("lifecycle_promo_policy")
+    .update(patch)
+    .eq("scope_type", scopeType)
+    .eq("scope_id", scopeId)
+    .eq("event_type", input.eventType)
+    .select("id")
+  if (updateError) return { success: false, error: updateError.message }
+  if (updated && updated.length > 0) {
+    revalidatePath("/settings/lifecycle-promos")
+    return { success: true }
+  }
+
+  // No row to update — INSERT with platform default video gates + the mail patch.
+  const defaults = PLATFORM_DEFAULTS[input.eventType]
+  const { error: insertError } = await svc.from("lifecycle_promo_policy").insert({
+    scope_type:           scopeType,
+    scope_id:             scopeId,
+    event_type:           input.eventType,
+    auto_spawn:           defaults.autoSpawn,
+    cooldown_hours:       defaults.cooldownHours,
+    mail_enabled:         input.mailEnabled ?? false,
+    mail_postcard_size:   input.mailPostcardSize ?? null,
+    mail_target_audience: input.mailTargetAudience ?? "farm",
+    mail_template_id:     input.mailTemplateId ?? null,
+    mail_max_recipients:  input.mailMaxRecipients ?? null,
+    updated_at:           new Date().toISOString(),
+    updated_by:           ctx.userId,
+  })
+  if (insertError) return { success: false, error: insertError.message }
+  revalidatePath("/settings/lifecycle-promos")
+  return { success: true }
+}
+
 /** Wave 32 — fetch policy state for a SPECIFIC tier (used by tab switches). */
 export async function getLifecyclePromoPolicyForScope(args: {
   scopeType: "agent" | "team" | "brokerage"
@@ -254,15 +368,23 @@ export async function getLifecyclePromoPolicyForScope(args: {
   const svc = createServiceClient()
   const { data: overrideRows } = await svc
     .from("lifecycle_promo_policy")
-    .select("event_type, auto_spawn, cooldown_hours")
+    .select("event_type, auto_spawn, cooldown_hours, mail_enabled, mail_postcard_size, mail_target_audience, mail_max_recipients")
     .eq("scope_type", args.scopeType)
     .eq("scope_id", resolvedScopeId)
-  const overrideMap = new Map<LifecycleEventType, { autoSpawn: boolean; cooldownHours: number | null }>()
-  for (const r of (overrideRows ?? []) as Array<{ event_type: LifecycleEventType; auto_spawn: boolean; cooldown_hours: number | null }>) {
-    overrideMap.set(r.event_type, { autoSpawn: r.auto_spawn, cooldownHours: r.cooldown_hours })
+  type Row = {
+    event_type: LifecycleEventType
+    auto_spawn: boolean
+    cooldown_hours: number | null
+    mail_enabled: boolean | null
+    mail_postcard_size: "4x6" | "6x9" | null
+    mail_target_audience: "farm" | "sphere" | "farm+sphere" | null
+    mail_max_recipients: number | null
   }
+  const rowMap = new Map<LifecycleEventType, Row>()
+  for (const r of (overrideRows ?? []) as Row[]) rowMap.set(r.event_type, r)
   const events: LifecycleEventDisplay[] = ALL_EVENT_TYPES.map((et) => {
-    const override = overrideMap.get(et) ?? null
+    const row = rowMap.get(et) ?? null
+    const override = row ? { autoSpawn: row.auto_spawn, cooldownHours: row.cooldown_hours } : null
     const platform = PLATFORM_DEFAULTS[et]
     const effective = override ?? platform
     return {
@@ -274,6 +396,10 @@ export async function getLifecyclePromoPolicyForScope(args: {
       hasAgentOverride:    !!override,
       agentOverride:       override,
       platformDefault:     platform,
+      mailEnabled:         row?.mail_enabled ?? false,
+      mailPostcardSize:    row?.mail_postcard_size ?? null,
+      mailTargetAudience:  row?.mail_target_audience ?? null,
+      mailMaxRecipients:   row?.mail_max_recipients ?? null,
     }
   })
   return { success: true, events }
