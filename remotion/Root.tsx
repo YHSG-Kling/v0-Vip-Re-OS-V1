@@ -10,6 +10,8 @@
 import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
+import { JustListedReelSquare } from "./JustListedReelSquare"
+import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 import { PostcardFront4x6 } from "./PostcardFront4x6"
@@ -50,6 +52,60 @@ export const RemotionRoot: React.FC = () => {
             primaryColor: "#0F172A",
             accentColor:  "#F59E0B",
             showEhoMark:  true,
+          },
+        }}
+      />
+      {/* Wave 39 — square 1:1 ad variant of JustListedReel. 12s @ 30fps
+          = 360 frames. 1080×1080 matches Meta/IG feed default + LinkedIn
+          sponsored content. The W40 ad creator picks this composition
+          when staging paid placements; the 9:16 vertical reel stays
+          the organic format. */}
+      <Composition
+        id="JustListedReelSquare"
+        component={JustListedReelSquare as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={360}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          hook:       "Just Listed",
+          address:    "123 Main Street",
+          cityState:  "Miami, FL",
+          price:      "$625,000",
+          bedrooms:   "3",
+          bathrooms:  "2",
+          sqft:       "1,850",
+          imageUrls:  [],
+          ctaLabel:   "Tour this listing",
+          brand: {
+            primaryColor: "#0F172A",
+            accentColor:  "#F59E0B",
+            showEhoMark:  true,
+          },
+        }}
+      />
+      {/* Wave 39 — 1200×630 Open-Graph lead-magnet card. Used by the
+          W40 ad creator for FB lead-form ads, LinkedIn Sponsored
+          Content, X/Twitter cards, and email-share fallback. Static
+          composition; renderStill() emits the PNG. */}
+      <Composition
+        id="LeadMagnetCard"
+        component={LeadMagnetCard as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1200}
+        height={630}
+        defaultProps={{
+          eyebrow:      "FREE GUIDE",
+          headline:     "What your home is worth in today's market",
+          subhead:      "A custom 5-page valuation report — no commitment, no spam.",
+          ctaLabel:     "Get my report",
+          heroImageUrl: null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
           },
         }}
       />

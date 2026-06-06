@@ -50,8 +50,15 @@ export async function GET(req: NextRequest) {
         ok:             r.ok,
         session_id:     r.sessionId ?? null,
         reason:         r.reason ?? null,
-        listings_missing_hero: r.snapshot?.listingsMissingHero ?? null,
+        listings_missing_hero:  r.snapshot?.listingsMissingHero ?? null,
         underperformers:        r.snapshot?.underperformingTopicPersonaCount ?? null,
+        // Wave 38 surface signals — surfaced here so ops can spot a
+        // brokerage with growing gaps without opening the agent session.
+        presets_missing_gate:        r.snapshot?.presetsMissingComplianceGate ?? null,
+        unused_bundles:              r.snapshot?.unusedBundles ?? null,
+        bundles_zero_lead_rate:      r.snapshot?.bundlesZeroLeadRate ?? null,
+        agents_voicedrop_no_voice:   r.snapshot?.agentsWithVoicedropButNoVoice ?? null,
+        letters_missing_tts_audio:   r.snapshot?.lettersMissingTtsAudio ?? null,
       })
     } catch (e) {
       results.push({ brokerage_id: b.id, brokerage_name: b.name, ok: false, reason: (e as Error).message })
