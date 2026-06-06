@@ -74,6 +74,16 @@ export interface RemotionCompositionRow {
   thumbnail_composition_id: string | null
   asset_manager_notes:      string | null
   last_rendered_at:         string | null
+  /** Wave 39 — when true the render coordinator wraps the output
+   *  with intro + outro pulled from the brokerage's video_assets
+   *  stock library via the existing concatIntroOutro helper in
+   *  lib/video/composite-attribution. Videos true; static cards +
+   *  postcards false. */
+  supports_bookends:        boolean
+  /** Wave 39 — video_assets.category to pull for the intro.
+   *  NULL = no intro even when supports_bookends=true. */
+  stock_intro_category:     string | null
+  stock_outro_category:     string | null
 }
 
 /** Tier ordering — every tier reachable by the SAME tier OR any

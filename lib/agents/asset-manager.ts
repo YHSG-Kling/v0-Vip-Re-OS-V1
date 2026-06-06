@@ -143,6 +143,22 @@ interface AssetSnapshot {
    *  pipeline signal — usually a missing brand asset, a bad Lob
    *  template, or an upstream provider quota issue. */
   compositionsFailingLast7d: number
+
+  // ─── Wave 39 stock-video library health ────────────────────────────
+  // The intro/outro/B-roll concat pipeline (scripts/1087) reads from
+  // video_assets per-brokerage. The Asset Manager surfaces inventory
+  // counts so the broker sees when a category is thin — the render
+  // coordinator can't bookend a Just-Listed reel with a brand intro
+  // if no brand_intro stock clip exists.
+  /** Distinct video_assets count for this brokerage. */
+  stockVideoAssetsCount: number
+  /** Count of stock intro clips (video_assets.category='brand_intro'). */
+  stockIntroCount: number
+  /** Count of stock outro clips (video_assets.category='logo_outro'). */
+  stockOutroCount: number
+  /** Count of B-roll clips (video_assets.category='neighborhood' or
+   *  'b_roll' — the BrollPicker uses both as B-roll source). */
+  stockBrollCount: number
 }
 
 async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
@@ -184,6 +200,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     compositionsStale90d:      0,
     compositionsTop3LastMonth: [],
     compositionsFailingLast7d: 0,
+    stockVideoAssetsCount: 0,
+    stockIntroCount:       0,
+    stockOutroCount:       0,
+    stockBrollCount:       0,
   }
 
   try {
@@ -473,6 +493,20 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       if (fails >= 2) failByComp.set(id, fails)
     }
     snap.compositionsFailingLast7d = failByComp.size
+
+    // Stock video library inventory — feeds the intro/outro/B-roll
+    // concat path. video_assets is the canonical brokerage stock
+    // table; the BrollPicker UI reads from it.
+    const { data: stockRows } = await svc.from("video_assets")
+      .select("id, category")
+      .eq("brokerage_id", brokerageId)
+    const stock = (stockRows ?? []) as Array<{ id: string; category: string | null }>
+    snap.stockVideoAssetsCount = stock.length
+    snap.stockIntroCount = stock.filter((r) => r.category === "brand_intro").length
+    snap.stockOutroCount = stock.filter((r) => r.category === "logo_outro").length
+    snap.stockBrollCount = stock.filter(
+      (r) => r.category === "neighborhood" || r.category === "b_roll"
+    ).length
   } catch (e) {
     console.error(`[asset-manager] snapshot build failed for ${brokerageId}:`, (e as Error).message)
   }
@@ -561,6 +595,17 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
         snap.compositionsTop3LastMonth.map((c) =>
           `  · ${c.display_name} — ${c.render_count} renders ← these are the formats to PROMOTE in the next content engine cycle`
         ).join("\n"),
+    "",
+    "──── STOCK VIDEO LIBRARY (intro/outro/B-roll inventory) ────",
+    "Bookendable video compositions wrap their output with intro + outro from the brokerage's video_assets stock library via concatIntroOutro (scripts/1087 + lib/video/composite-attribution). Inventory health here directly affects the final video quality.",
+    "",
+    `Total stock video_assets:    ${snap.stockVideoAssetsCount}`,
+    `Brand intro clips:           ${snap.stockIntroCount}`,
+    `Logo outro clips:            ${snap.stockOutroCount}`,
+    `B-roll clips:                ${snap.stockBrollCount}`,
+    snap.stockIntroCount < 2 || snap.stockOutroCount < 2 || snap.stockBrollCount < 3
+      ? "  ← flag_asset_for_review with reason='stock_video_library_thin'. The intro/outro/B-roll inventory is below comfortable thresholds (2 intros + 2 outros + 3 B-roll). Bookendable renders may fall back to no-intro mode or repeat the same clip — visible quality drop. Broker should commission or purchase more stock."
+      : "  ← inventory is healthy.",
     "",
     "──── RESOLUTION ACTIONS YOU CAN EMIT ────",
     "Append a top-level `resolutions[]` array to your JSON output. Each:",

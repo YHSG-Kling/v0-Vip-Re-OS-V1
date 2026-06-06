@@ -109,6 +109,11 @@ const REASON_BADGES: Record<string, { label: string; color: string; tooltip: str
     color:   "bg-red-50 text-red-700 border border-red-200",
     tooltip: "This composition failed 2+ renders in the last 7 days. Usually a missing brand asset, bad Lob template, or upstream provider quota issue.",
   },
+  stock_video_library_thin: {
+    label:   "stock library thin",
+    color:   "bg-amber-50 text-amber-800 border border-amber-200",
+    tooltip: "Intro / outro / B-roll inventory in video_assets is below comfortable thresholds. Bookendable renders may repeat the same clip or fall back to no-intro mode. Broker should commission or purchase more stock.",
+  },
 }
 
 function reasonOf(action: { action_input: Record<string, unknown> }): string | null {
@@ -162,12 +167,22 @@ export function AssetManagerActionsClient({ initialActions }: { initialActions: 
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Asset Manager Actions</h1>
-        <p className="text-gray-600 mt-2">
-          The Asset Manager Agent reviews the brokerage&apos;s asset library each
-          Monday and proposes resolutions. Each action runs through the canonical
-          pipelines (tenant + compliance gates apply).
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Asset Manager Actions</h1>
+            <p className="text-gray-600 mt-2 max-w-3xl">
+              The Asset Manager Agent reviews the brokerage&apos;s asset library each
+              Monday and proposes resolutions. Each action runs through the canonical
+              pipelines (tenant + compliance gates apply).
+            </p>
+          </div>
+          <a
+            href="/dashboard/admin/composition-library"
+            className="text-sm px-3 py-2 border border-gray-200 rounded hover:bg-gray-50 whitespace-nowrap"
+          >
+            View composition library →
+          </a>
+        </div>
       </header>
 
       {error && (
