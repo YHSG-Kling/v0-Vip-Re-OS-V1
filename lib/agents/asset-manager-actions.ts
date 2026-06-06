@@ -276,6 +276,12 @@ async function runHandler(
       const agentUserId   = (input.agent_user_id as string | null) ?? null
       const entityType    = (input.entity_type as string | null) ?? null
       const entityId      = (input.entity_id as string | null) ?? null
+      // Wave 39 m172 — the composition props payload. Persisted on the
+      // render row so the generic render endpoint reproduces the
+      // brokerage's branded piece (not the registry sample defaults).
+      const inputProps    = (input.input_props && typeof input.input_props === "object")
+        ? (input.input_props as Record<string, unknown>)
+        : {}
       if (!compositionId) return { status: "failed", result: { error: "composition_id required" } }
 
       const { getComposition, recordRenderQueued } = await import("@/lib/remotion/registry")
@@ -288,6 +294,8 @@ async function runHandler(
         agentUserId, entityType, entityId,
         usedDidAvatar: composition.requires_did_avatar,
         usedVoiceover: composition.requires_voiceover,
+        inputProps, scopeType, scopeId,
+        requestedVia: "asset_manager",
       })
       if (!queued.ok) return { status: "failed", result: { error: queued.error ?? "queue failed" } }
       return {
@@ -296,7 +304,7 @@ async function runHandler(
           composition_id: compositionId,
           render_id:      queued.renderId,
           scope:          { type: scopeType, id: scopeId },
-          note:           "Render row claimed; per-composition endpoint will pick it up on the next tick.",
+          note:           "Render row claimed; the composition-render-queue cron drains it on the next tick.",
         },
       }
     }
@@ -311,14 +319,17 @@ async function runHandler(
       if (!renderId) return { status: "failed", result: { error: "render_id required" } }
       const svc = createServiceClient()
       const { data: original } = await svc.from("remotion_composition_renders")
-        .select("composition_id, agent_user_id, entity_type, entity_id, render_status, brokerage_id")
+        .select("composition_id, agent_user_id, entity_type, entity_id, render_status, brokerage_id, input_props, scope_type, scope_id")
         .eq("id", renderId)
         .eq("brokerage_id", brokerageId)
         .maybeSingle()
       const o = original as {
         composition_id: string; agent_user_id: string | null;
         entity_type: string | null; entity_id: string | null;
-        render_status: string; brokerage_id: string
+        render_status: string; brokerage_id: string;
+        input_props: Record<string, unknown> | null;
+        scope_type: "agent" | "team" | "brokerage" | null;
+        scope_id: string | null
       } | null
       if (!o) return { status: "skipped", result: { reason: "render row not found or tenant mismatch" } }
       if (o.render_status !== "failed") {
@@ -328,6 +339,8 @@ async function runHandler(
       const composition = await getComposition(o.composition_id)
       if (!composition) return { status: "failed", result: { error: "composition_not_registered" } }
 
+      // Carry the original render's props + scope forward so the retry
+      // reproduces the SAME branded piece, not a defaults sample.
       const queued = await recordRenderQueued({
         brokerageId,
         compositionId: o.composition_id,
@@ -336,6 +349,10 @@ async function runHandler(
         entityId:      o.entity_id,
         usedDidAvatar: composition.requires_did_avatar,
         usedVoiceover: composition.requires_voiceover,
+        inputProps:    o.input_props ?? {},
+        scopeType:     o.scope_type ?? "brokerage",
+        scopeId:       o.scope_id ?? brokerageId,
+        requestedVia:  "asset_manager",
       })
       if (!queued.ok) return { status: "failed", result: { error: queued.error ?? "queue failed" } }
       return {

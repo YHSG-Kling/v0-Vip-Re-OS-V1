@@ -206,6 +206,15 @@ export async function recordRenderQueued(args: {
   entityId?:      string | null
   usedDidAvatar?: boolean
   usedVoiceover?: boolean
+  /** Wave 39 m172 — the composition props payload + scope the generic
+   *  render endpoint (app/api/internal/remotion/render-composition)
+   *  consumes. inputProps={} → the renderer falls back to the
+   *  registry defaultProps for the composition. scope drives the
+   *  coordinator's stock-asset (intro/outro/music) cascade. */
+  inputProps?:    Record<string, unknown> | null
+  scopeType?:     "agent" | "team" | "brokerage"
+  scopeId?:       string | null
+  requestedVia?:  "asset_manager" | "ad_creator" | "cron" | "manual" | "api"
 }): Promise<{ ok: boolean; renderId?: string; error?: string }> {
   const svc = createServiceClient()
   const { data, error } = await svc
@@ -218,6 +227,10 @@ export async function recordRenderQueued(args: {
       entity_id:        args.entityId ?? null,
       used_did_avatar:  args.usedDidAvatar ?? false,
       used_voiceover:   args.usedVoiceover ?? false,
+      input_props:      args.inputProps ?? {},
+      scope_type:       args.scopeType ?? "brokerage",
+      scope_id:         args.scopeId ?? args.brokerageId,
+      requested_via:    args.requestedVia ?? "asset_manager",
       render_status:    "queued",
     })
     .select("id")

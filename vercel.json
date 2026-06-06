@@ -21,6 +21,11 @@
       "memory": 3008,
       "maxDuration": 300,
       "includeFiles": "node_modules/@sparticuz/chromium-min/**"
+    },
+    "app/api/internal/remotion/render-composition/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/{@sparticuz/chromium-min,ffmpeg-static}/**"
     }
   },
   "crons": [
@@ -326,6 +331,10 @@
     },
     {
       "path": "/api/cron/newsletter-video-render",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/composition-render-queue",
       "schedule": "*/5 * * * *"
     },
     {
