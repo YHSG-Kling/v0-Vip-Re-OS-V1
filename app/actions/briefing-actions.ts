@@ -431,8 +431,8 @@ export async function getChurnRiskContacts(): Promise<{
     id: string
     first_name: string | null
     last_name: string | null
-    last_contact_date: string | null
-    lead_stage: string | null
+    last_contacted_at: string | null
+    status: string | null
   }>
   totalCount: number
   error?: string
@@ -453,13 +453,13 @@ export async function getChurnRiskContacts(): Promise<{
 
     const { data, count, error } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, last_contact_date, lead_stage", {
+      .select("id, first_name, last_name, last_contacted_at, status", {
         count: "exact",
       })
       .eq("agent_id", agentId)
-      .in("lead_stage", ["new", "nurture", "active", "qualified"])
-      .or(`last_contact_date.is.null,last_contact_date.lte.${thirtyDaysAgoStr}`)
-      .order("last_contact_date", { ascending: true, nullsFirst: true })
+      .in("status", ["new", "nurture", "active", "qualified"])
+      .or(`last_contacted_at.is.null,last_contacted_at.lte.${thirtyDaysAgoStr}`)
+      .order("last_contacted_at", { ascending: true, nullsFirst: true })
       .limit(5)
 
     if (error) {

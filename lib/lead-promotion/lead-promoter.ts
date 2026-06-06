@@ -88,6 +88,12 @@ export async function promoteRawRecordToLead(
         lifecycle_state: 'unconsented',
         ai_isa_owner: true,
         minimum_viable_for_isa: !!(rawData.email),
+        mailing_address_verified: true,  // canonical eligibility just confirmed it
+        // Propagate the actual address so AI-ISA direct_mail has something to send to.
+        mailing_address: rawData.mailing_address ?? null,
+        // email_verified: read the row's column (where the verification step writes it), falling
+        // back to the raw_data JSON. Drift-fix consistent with pipeline-processor.
+        email_verified: !!((rawRecord as any).email_verified ?? rawData.email_verified),
         raw_record_id: rawRecordId,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

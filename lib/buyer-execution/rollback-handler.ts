@@ -47,10 +47,10 @@ export async function emitRollbackEvent(
 
   // Agent task (correct location, no changes) — type: journey.rollback
   const { error } = await supabase.from('activities').insert({
-    type: 'journey.rollback',
+    activity_type: 'journey.rollback',
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: actorId,
+    agent_user_id: actorId,
     metadata: {
       journey_type: 'buyer',
       from_stage: fromStage,

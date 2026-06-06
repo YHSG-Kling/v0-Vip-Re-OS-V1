@@ -2,13 +2,13 @@
 // Layer 9.2 Social Media Automation — Cron Publisher
 // Tables: social_posts, social_media_accounts, social_publish_log, social_post_analytics
 
-import {
-createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { NextResponse } from "next/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { assembleSocialDisclosures, appendDisclosures } from "@/lib/social/assemble-disclosures"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -39,7 +39,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const now = new Date()
 
     // SELECT social_posts WHERE status='scheduled' AND approval_status='approved'
@@ -131,7 +131,34 @@ export async function GET(request: Request) {
               .eq("id", post.id)
           } catch (complianceError: any) {
             console.error("[cron/publish-social-posts] Compliance check error:", complianceError)
-            // Continue with publish if compliance check fails (non-blocking)
+            // Fail CLOSED — never push content we could not verify for Fair Housing /
+            // brand compliance to a public platform. Hold the post for review and skip.
+            await supabase
+              .from("social_posts")
+              .update({
+                status: "failed",
+                compliance_checked_at: new Date().toISOString(),
+                error_message: `Brand compliance check errored — held for review: ${complianceError?.message ?? "unknown error"}`,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", post.id)
+
+            await supabase.from("social_publish_log").insert({
+              social_post_id: post.id,
+              brokerage_id: post.brokerage_id,
+              platform: post.platform,
+              publish_status: "failed",
+              error_message: "Brand compliance check errored — held for review",
+              created_at: new Date().toISOString(),
+            })
+
+            results.push({
+              postId: post.id,
+              status: "failed",
+              platform: post.platform,
+              error: "Compliance check errored",
+            })
+            continue
           }
         }
 
@@ -147,9 +174,18 @@ export async function GET(request: Request) {
           throw new Error(`No active account found for social_account_id: ${post.social_account_id}`)
         }
 
-        // Step 4: Call lib/social/publisher.ts publishToSocialPlatform
+        // Step 4: Append required real-estate disclosures (brokerage name +
+        // license # + Equal Housing) resolved from the agent→brokerage settings
+        // cascade, then publish. Final chokepoint, so every published post is
+        // compliant by construction regardless of how it was created.
+        const disclosures = await assembleSocialDisclosures(supabase, {
+          brokerageId: post.brokerage_id,
+          userId: post.user_id,
+        })
+        const compliantContent = appendDisclosures(post.content, disclosures)
+
         const publishResult = await publishToSocialPlatform(post.platform, {
-          content: post.content,
+          content: compliantContent,
           mediaUrls: post.media_urls || [],
           accessToken: account.access_token,
           accountId: account.account_id,
@@ -182,11 +218,20 @@ export async function GET(request: Request) {
             created_at: new Date().toISOString(),
           })
 
-          // INSERT social_post_analytics (brokerage_id, social_post_id, platform)
-          await supabase.from("social_post_analytics").insert({
+          // Seed a zeroed engagement-tracking row so the published post surfaces
+          // in the social dashboard, which reads social_engagement_tracking.
+          // (Previously wrote social_post_analytics, a table nothing reads.)
+          await supabase.from("social_engagement_tracking").insert({
             social_post_id: post.id,
             brokerage_id: post.brokerage_id,
             platform: post.platform,
+            impressions_count: 0,
+            likes_count: 0,
+            comments_count: 0,
+            shares_count: 0,
+            saves_count: 0,
+            clicks_count: 0,
+            leads_generated: 0,
             captured_at: new Date().toISOString(),
           })
 

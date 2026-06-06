@@ -43,14 +43,17 @@ export async function checkSequenceAuthority(
     return { allowed: false, reason: "Contact not found" }
   }
 
-  // Map sequence channel to messageType expected by evaluateOutbound
+  // Map sequence channel to messageType expected by evaluateOutbound.
+  // direct_mail has its own message type so authority rules can distinguish it from email (no
+  // unsubscribe/opt-out coupling); evaluateKernelOutbound treats unknown types as default-permitted
+  // per its consent model — direct mail does not require electronic-consent gating.
   const channelToMessageType: Record<string, string> = {
     email: "email",
     sms: "sms",
     voice: "phone",
-    direct_mail: "email", // direct_mail has no consent gate — treat as email for authority check
-    in_app: "email",
-    video: "email",
+    direct_mail: "direct_mail",
+    in_app: "in_app",
+    video: "video",
   }
   const messageType = channelToMessageType[channel] ?? "email"
 

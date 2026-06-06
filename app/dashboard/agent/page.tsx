@@ -7,6 +7,7 @@ import { getAgentStats } from "@/app/actions/agents"
 import { generateDailyGameplan } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
 import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
@@ -375,6 +376,9 @@ export default function AgentDashboard() {
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />
+
+        {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
+        <BudgetWarningBanner />
 
         {/* Today's Focus — the "voice-read brief" card. Tap the speaker icon
             to hear the 3 priorities read aloud in the agent's cloned voice. */}

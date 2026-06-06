@@ -64,11 +64,11 @@ export default function IDXBrokerSettingsPage() {
       // Get role + brokerage_id from users table
       const { data: profile } = await supabase
         .from("users")
-        .select("role, brokerage_id")
+        .select("user_type, brokerage_id")
         .eq("id", user.id)
         .maybeSingle()
 
-      setRole(profile?.role ?? null)
+      setRole(profile?.user_type ?? null)
       setBrokerageId(profile?.brokerage_id ?? null)
 
       if (!profile?.brokerage_id) return

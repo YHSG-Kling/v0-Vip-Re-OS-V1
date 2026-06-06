@@ -85,13 +85,13 @@ export default async function ShowingsPage({
     // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, scheduled_at, status, feedback, notes, rating, buyer_interest_level, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .select("id, listing_id, scheduled_at, status, feedback, notes, rating, buyer_interest_level, listing:listings(id, address, list_price, bedrooms, bathrooms, primary_photo_url)")
       .eq("contact_id", contactId)
       .order("scheduled_at", { ascending: false }),
     // Showing requests - use correct columns
     supabase
       .from("showing_requests")
-      .select("id, listing_id, requested_date, requested_start_time, requested_end_time, seller_approved_at, status, message, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .select("id, listing_id, requested_date, requested_start_time, requested_end_time, seller_approved_at, status, message, listing:listings(id, address, list_price, bedrooms, bathrooms, primary_photo_url)")
       .eq("contact_id", contactId)
       .order("requested_date", { ascending: false }),
   ])

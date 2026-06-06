@@ -192,7 +192,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
       agent_id:    loginId,
       vapi_call_id: callData.id,
       direction:   "outbound",
-      call_type:   "isa_ai",
+      call_type:   "ai_isa_call",
       status:      "initiated",
       started_at:  new Date().toISOString(),
     })

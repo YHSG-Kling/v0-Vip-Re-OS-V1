@@ -89,9 +89,13 @@ export type MessageType =
   | "direct_mail"
 
 // ─── PROVIDER TYPE ────────────────────────────────────────────────────────────
-// Note: 'direct_mail' and 'video' are system-only — not in ProviderType
+// Authoritative union of every resolvable provider type. Mirrors the tiers in
+// lib/kernel/providers.ts. PER-TENANT types cascade (user→team→brokerage→
+// superadmin→default); PLATFORM types are system-only (superadmin override or
+// system default — no per-tenant overrides).
 
 export type ProviderType =
+  // Per-tenant (BYO via cascade)
   | "email"
   | "sms"
   | "social"
@@ -100,7 +104,18 @@ export type ProviderType =
   | "payment"
   | "esign"
   | "transaction"
+  | "crm"
+  | "accounting"
+  | "idx"
+  // Platform (system-only)
   | "ai"
+  | "video"
+  | "avatar"
+  | "voice_clone"
+  | "ai_voice"
+  | "direct_mail"
+  | "scraper"
+  | "enrichment"
 
 // ─── ACTOR ROLE ───────────────────────────────────────────────────────────────
 
@@ -160,8 +175,10 @@ export interface KernelContact {
   persona?: Persona
 
   // State & Lifecycle
+  // buyer_stage lives on the contact (buyers have no listing entity). The seller
+  // journey is tracked on the listing (listings.lifecycle_stage) — contacts has
+  // no seller_stage column, so it's intentionally not modeled here.
   buyer_stage?: BuyerStage
-  seller_stage?: SellerStage
   lifecycle_state?: string
   status?: string
 
@@ -232,7 +249,7 @@ export interface TransitionLifecycleParams {
   entityId: string
   fromState: string         // State values vary per entity (BuyerStage, SellerStage, etc.)
   toState: string
-  actorUserId: string
+  actorUserId: string | null  // null for system/webhook/cron transitions (no user session)
   actorRole?: ActorRole     // Optional — system-triggered transitions may not have a role
   eventType: string         // e.g. 'buyer.financial_verification_submitted'
   metadata?: Record<string, any>
@@ -257,6 +274,10 @@ export interface ComplianceResult {
   correctedContent?: string
   violations: string[]
   blockedReason?: string
+  /** compliance_events.id of the row this evaluation just logged. Lets
+   *  callers stamp the audit id on dependent rows (e.g. preset.compliance_event_id)
+   *  without a follow-up race-prone re-query. */
+  complianceEventId?: string
 }
 
 /** Feature access check result */

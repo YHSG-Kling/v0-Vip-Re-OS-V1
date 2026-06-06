@@ -190,3 +190,77 @@ export async function auditOfferDocuments(
     required_breakdown: required,
   }
 }
+
+/**
+ * Audit the deal file for a LISTING against the seller-side required-documents
+ * checklist. A listing agreement is only executable (and may auto-create a
+ * listing) when, besides both-party signatures/initials, all required listing
+ * documents are present. Presence is resolved from `documents` classified rows
+ * tied to the listing (metadata.linked_listing_id) and/or the seller contact.
+ */
+export async function auditListingDocuments(
+  supabase: SupabaseClient,
+  params: {
+    brokerageId:     string
+    sellerContactId?: string | null
+    agentUserId?:    string | null
+    teamId?:         string | null
+    stateCode?:      string | null
+    listingId?:      string | null
+  },
+): Promise<AuditResult> {
+  const required = await resolveRequiredDocuments(supabase, {
+    brokerageId: params.brokerageId,
+    agentUserId: params.agentUserId,
+    teamId:      params.teamId,
+    dealType:    "seller",
+    stateCode:   params.stateCode,
+  })
+
+  if (required.length === 0) {
+    return { required_total: 0, present: [], missing_blocking: [], missing_warning: [], required_breakdown: [] }
+  }
+
+  const presentSet = new Set<DocumentClassification>()
+
+  if (params.listingId) {
+    const { data: byListing } = await supabase
+      .from("documents")
+      .select("classification")
+      .eq("brokerage_id", params.brokerageId)
+      .filter("metadata->>linked_listing_id", "eq", params.listingId)
+      .not("classification", "is", null)
+    for (const d of byListing ?? []) {
+      if (d.classification) presentSet.add(d.classification as DocumentClassification)
+    }
+  }
+
+  if (params.sellerContactId) {
+    const { data: byContact } = await supabase
+      .from("documents")
+      .select("classification")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("contact_id", params.sellerContactId)
+      .not("classification", "is", null)
+    for (const d of byContact ?? []) {
+      if (d.classification) presentSet.add(d.classification as DocumentClassification)
+    }
+  }
+
+  const missing_blocking: DocumentClassification[] = []
+  const missing_warning:  DocumentClassification[] = []
+  for (const r of required) {
+    if (!presentSet.has(r.classification)) {
+      if (r.block_on_missing) missing_blocking.push(r.classification)
+      else                     missing_warning.push(r.classification)
+    }
+  }
+
+  return {
+    required_total:     required.length,
+    present:            Array.from(presentSet),
+    missing_blocking,
+    missing_warning,
+    required_breakdown: required,
+  }
+}

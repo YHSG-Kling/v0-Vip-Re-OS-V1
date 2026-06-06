@@ -115,7 +115,7 @@ export interface MediaAttachmentInput {
  * Create a new listing record.
  * Input: CreateListingInput
  * Output: { listing }
- * Writes: listings (INSERT) + lifecycle_events (LEAD stage entry)
+ * Writes: listings (INSERT) + lifecycle_events (LISTING_AGREEMENT_INITIATED stage entry)
  * Validates: agentId UUID, sellerContactId UUID, brokerageId UUID, address required
  */
 export async function createListingRecord(
@@ -146,9 +146,11 @@ export async function createListingRecord(
         bathrooms:         input.bathrooms   ?? null,
         sqft:              input.sqft        ?? null,
         property_type:     input.propertyType ?? "residential",
+        // A listing is created from a seller contact by an assigned agent who is
+        // about to run the listing agreement — so it starts at agreement-initiation,
+        // not LEAD (LEAD is the pre-assignment lead-pipeline stage on `leads`).
         status:            "active",
-        current_stage:     "LEAD",
-        lifecycle_stage:   "LEAD",
+        lifecycle_stage:   "LISTING_AGREEMENT_INITIATED",
       })
       .select()
       .single()
@@ -163,10 +165,23 @@ export async function createListingRecord(
         entity_id:    listing.id,
         event_type:   KernelEvent.LISTING_CREATED ?? "listing_created",
         brokerage_id: input.brokerageId,
-        metadata:     { stage: "LEAD", agent_id: input.agentId },
+        metadata:     { stage: "LISTING_AGREEMENT_INITIATED", agent_id: input.agentId },
         created_at:   new Date().toISOString(),
       })
       .then(() => {})
+
+    // Portal fan-out: the seller sees "Your listing is being prepared".
+    const { fanOutKernelEvent } = await import("./event-fanout")
+    await fanOutKernelEvent({
+      event:           KernelEvent.LISTING_CREATED,
+      brokerageId:     input.brokerageId,
+      entityType:      "listing",
+      entityId:        listing.id as string,
+      sellerContactId: input.sellerContactId,
+      listingId:       listing.id as string,
+      agentUserId:     input.agentId,
+      metadata:        { stage: "LISTING_AGREEMENT_INITIATED" },
+    }).catch(() => {})
 
     return { success: true, listing }
   } catch (err) {
@@ -447,8 +462,7 @@ export async function launchListing(input: {
         mls_number:      input.mlsNumber.trim(),
         mls_link:        input.mlsLink?.trim() ?? null,
         status:          "active",
-        current_stage:   "ACTIVE",
-        lifecycle_stage: "ACTIVE",
+        lifecycle_stage: "MLS_ACTIVE",
         listing_date:    new Date().toISOString().split("T")[0],
         updated_at:      new Date().toISOString(),
       })
@@ -689,11 +703,18 @@ export async function createTransactionShellFromAcceptedOffer(input: {
         brokerage_id:      input.brokerageId,
         listing_id:        input.listingId,
         offer_id:          input.offerId,
+        // contact_id = primary in-house client; this transaction is created from
+        // OUR listing, so the in-house client is the seller. Live column is
+        // deal_type (buyer|seller|dual) — "transaction_type"/"seller_side" did
+        // not exist / failed the CHECK, so the insert silently errored.
+        contact_id:        listing.seller_contact_id,
         seller_contact_id: listing.seller_contact_id,
         buyer_contact_id:  offer.buyer_contact_id ?? null,
-        transaction_type:  "seller_side",
+        deal_type:         "seller",
         status:            "under_contract",
+        stage:             "UNDER_CONTRACT",
         purchase_price:    offer.offer_price ?? listing.list_price,
+        deal_name:         [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || `Transaction ${input.offerId.slice(0, 8)}`,
         property_address:  [listing.address, listing.city, listing.state].filter(Boolean).join(", "),
       })
       .select("id")

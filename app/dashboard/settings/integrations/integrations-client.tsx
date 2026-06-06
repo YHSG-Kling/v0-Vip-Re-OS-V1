@@ -26,13 +26,18 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
 const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
 
+// eSign + transaction options are derived from the unified provider catalog
+// (single source of truth) so the UI offers exactly the IMPLEMENTED providers
+// and never the unimplemented ones (which crash the factory). Adding a provider
+// class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       ["dotloop", "docusign", "skyslope", "none"],
-  transaction: ["skyslope", "dotloop", "brokermint", "none"],
+  esign:       [...getEsignProviders(), "none"],
+  transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
@@ -46,6 +51,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   dotloop:      "Dotloop",
   docusign:     "DocuSign",
   skyslope:     "SkySlope",
+  authentisign: "Authentisign",
   brokermint:   "Brokermint",
   twilio:       "Twilio",
   bandwidth:    "Bandwidth",
@@ -70,6 +76,7 @@ const PLATFORM_ICONS: Record<string, string> = {
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
+  authentisign: "AS",
   brokermint: "BM",
   twilio:     "TW",
   sendgrid:   "SG",

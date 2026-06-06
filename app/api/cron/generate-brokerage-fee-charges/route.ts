@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { generatePeriodicCharges } from "@/app/actions/brokerage-fees"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 /**
  * Cron route — runs daily; generatePeriodicCharges is idempotent via the
@@ -10,11 +11,10 @@ import { generatePeriodicCharges } from "@/app/actions/brokerage-fees"
  *   { "path": "/api/cron/generate-brokerage-fee-charges", "schedule": "0 6 * * *" }
  */
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")
-  const expected = `Bearer ${process.env.CRON_SECRET ?? ""}`
-  if (process.env.CRON_SECRET && auth !== expected) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail-closed cron auth (the previous inline check skipped auth entirely when
+  // CRON_SECRET was unset — fail-open — exposing financial charge generation).
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
 
   const result = await generatePeriodicCharges()
   return NextResponse.json(result)

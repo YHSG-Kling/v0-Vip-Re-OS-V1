@@ -30,10 +30,10 @@ export default async function WorkflowReportsPage({ searchParams }: PageProps) {
 
   // Resolve scope context from user's role
   const { data: userRow } = await supabase
-    .from("users").select("brokerage_id, team_id, role, platform_role").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, team_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   if (!userRow?.brokerage_id) redirect("/login")
 
-  const role = userRow.role ?? userRow.platform_role ?? "agent"
+  const role = userRow.user_type ?? userRow.platform_role ?? "agent"
   const requestedScope = (params.scope as ReportScope | undefined) ?? defaultScopeForRole(role)
 
   // Resolve agent.id (offers/sequences ref agents.id, not user_id) for agent-scoped reports

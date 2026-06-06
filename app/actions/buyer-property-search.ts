@@ -27,21 +27,31 @@ async function requireContactAccess(contactId: string): Promise<
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return { ok: false, error: 'Unauthorized' }
-  const { data: callerRow } = await authClient
-    .from('users')
-    .select('brokerage_id')
-    .eq('id', user.id)
-    .maybeSingle()
-  if (!callerRow?.brokerage_id) return { ok: false, error: 'Unauthorized' }
   const svc = createServiceClient()
   const { data: contact } = await svc
     .from('contacts')
-    .select('brokerage_id')
+    .select('brokerage_id, contact_user_id, email')
     .eq('id', contactId)
     .maybeSingle()
-  if (!contact) return { ok: false, error: 'Contact not found' }
-  if (contact.brokerage_id !== callerRow.brokerage_id) return { ok: false, error: 'Forbidden' }
-  return { ok: true, brokerageId: callerRow.brokerage_id }
+  if (!contact?.brokerage_id) return { ok: false, error: 'Contact not found' }
+  // The contact viewing their own portal.
+  const isSelf =
+    contact.contact_user_id === user.id ||
+    !!(contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase())
+  if (isSelf) return { ok: true, brokerageId: contact.brokerage_id }
+  // Otherwise must be staff in the same brokerage (matches the portal layout whitelist).
+  const { data: callerRow } = await svc
+    .from('users')
+    .select('brokerage_id, user_type')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (
+    callerRow?.brokerage_id === contact.brokerage_id &&
+    ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")
+  ) {
+    return { ok: true, brokerageId: contact.brokerage_id }
+  }
+  return { ok: false, error: 'Forbidden' }
 }
 
 /**

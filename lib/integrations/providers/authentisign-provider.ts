@@ -39,6 +39,7 @@ import type {
   ListFormsResponse,
   ProviderForm,
 } from "./transaction-provider.interface"
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 export class AuthentisignProvider implements ITransactionProvider {
   readonly name = "authentisign"
@@ -55,36 +56,38 @@ export class AuthentisignProvider implements ITransactionProvider {
     this.baseUri     = (credentials.baseUri ?? "https://api.lwolf.com").replace(/\/$/, "")
   }
 
-  private url(path: string): string {
-    return `${this.baseUri}/authentisign/v1${path}`
-  }
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-      "X-LW-AccountId": this.accountId,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...extra,
-    }
+  /** Single egress choke point — every Authentisign API call leaves through the connector-gateway
+   *  (Bearer token + the X-LW-AccountId header). */
+  private request<T = any>(
+    subpath: string,
+    opts: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<GatewayResponse<T>> {
+    return callConnector<T>({
+      connector: "authentisign",
+      baseUrl: this.baseUri,
+      path: `authentisign/v1${subpath}`,
+      method: opts.method,
+      body: opts.body,
+      query: opts.query,
+      headers: { "X-LW-AccountId": this.accountId },
+      auth: { style: "bearer", token: this.accessToken },
+    })
   }
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
-      const res = await fetch(this.url("/signings"), {
+      const res = await this.request<{ signingId?: string; id?: string }>("/signings", {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
+        body: {
           name:    `${request.propertyAddress} — ${request.transactionType === "purchase" ? "Purchase" : "Listing"}`,
           subject: "Please review and sign.",
           accountId: this.accountId,
-        }),
+        },
       })
       if (!res.ok) {
-        return { success: false, error: `Authentisign createSigning ${res.status}: ${await res.text()}` }
+        return { success: false, error: `Authentisign createSigning ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      const signingId = data.signingId ?? data.id
+      const signingId = res.data?.signingId ?? res.data?.id
       if (!signingId) {
         return { success: false, error: "Authentisign returned no signingId" }
       }
@@ -99,14 +102,9 @@ export class AuthentisignProvider implements ITransactionProvider {
       let attached = 0
       for (const form of request.forms) {
         if (!form.formUrl) continue
-        const res = await fetch(this.url(`/signings/${request.externalTransactionId}/documents`), {
+        const res = await this.request(`/signings/${request.externalTransactionId}/documents`, {
           method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({
-            name:         form.formName,
-            sourceUri:    form.formUrl,
-            metadata:     form.formData ?? {},
-          }),
+          body: { name: form.formName, sourceUri: form.formUrl, metadata: form.formData ?? {} },
         })
         if (res.ok) attached++
       }
@@ -119,28 +117,21 @@ export class AuthentisignProvider implements ITransactionProvider {
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
       // Authentisign requires participants added before send.
-      const participantsRes = await fetch(this.url(`/signings/${request.externalTransactionId}/participants`), {
+      const participantsRes = await this.request(`/signings/${request.externalTransactionId}/participants`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          participants: request.signers.map((s, i) => ({
-            order: i + 1,
-            email: s.email,
-            name:  s.name,
-            role:  s.role,
-          })),
-        }),
+        body: {
+          participants: request.signers.map((s, i) => ({ order: i + 1, email: s.email, name: s.name, role: s.role })),
+        },
       })
       if (!participantsRes.ok) {
-        return { success: false, error: `Authentisign addParticipants ${participantsRes.status}: ${await participantsRes.text()}` }
+        return { success: false, error: `Authentisign addParticipants ${participantsRes.status}: ${participantsRes.error}` }
       }
-      const sendRes = await fetch(this.url(`/signings/${request.externalTransactionId}/send`), {
+      const sendRes = await this.request(`/signings/${request.externalTransactionId}/send`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ message: request.message ?? "Please review and sign." }),
+        body: { message: request.message ?? "Please review and sign." },
       })
       if (!sendRes.ok) {
-        return { success: false, error: `Authentisign send ${sendRes.status}: ${await sendRes.text()}` }
+        return { success: false, error: `Authentisign send ${sendRes.status}: ${sendRes.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -150,14 +141,11 @@ export class AuthentisignProvider implements ITransactionProvider {
 
   async getSignatureStatus(externalTransactionId: string): Promise<SignatureStatusResponse> {
     try {
-      const res = await fetch(this.url(`/signings/${externalTransactionId}`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ participants?: any[] }>(`/signings/${externalTransactionId}`)
       if (!res.ok) {
         return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: `Authentisign status ${res.status}` }
       }
-      const data = await res.json()
-      const items: any[] = data.participants ?? []
+      const items: any[] = res.data?.participants ?? []
       const total = items.length
       const signed = items.filter(p => (p.status ?? "").toString().toLowerCase() === "signed"
                                      || (p.status ?? "").toString().toLowerCase() === "completed").length
@@ -175,13 +163,12 @@ export class AuthentisignProvider implements ITransactionProvider {
 
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
-      const res = await fetch(this.url(`/signings/${request.externalTransactionId}/cancel`), {
+      const res = await this.request(`/signings/${request.externalTransactionId}/cancel`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ reason: request.reason ?? "Cancelled by agent" }),
+        body: { reason: request.reason ?? "Cancelled by agent" },
       })
       if (!res.ok) {
-        return { success: false, error: `Authentisign cancel ${res.status}: ${await res.text()}` }
+        return { success: false, error: `Authentisign cancel ${res.status}: ${res.error}` }
       }
       return { success: true }
     } catch (err: any) {
@@ -191,20 +178,14 @@ export class AuthentisignProvider implements ITransactionProvider {
 
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
-      const res = await fetch(this.url(`/signings/${request.externalTransactionId}/documents`), {
+      const res = await this.request<{ documentId?: string; id?: string }>(`/signings/${request.externalTransactionId}/documents`, {
         method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          name:      request.documentName,
-          sourceUri: request.documentUrl,
-          folder:    request.folderName ?? "Documents",
-        }),
+        body: { name: request.documentName, sourceUri: request.documentUrl, folder: request.folderName ?? "Documents" },
       })
       if (!res.ok) {
-        return { success: false, error: `Authentisign upload ${res.status}: ${await res.text()}` }
+        return { success: false, error: `Authentisign upload ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      return { success: true, externalDocumentId: String(data.documentId ?? data.id ?? "") }
+      return { success: true, externalDocumentId: String(res.data?.documentId ?? res.data?.id ?? "") }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "Authentisign uploadDocument failed" }
     }
@@ -212,14 +193,12 @@ export class AuthentisignProvider implements ITransactionProvider {
 
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
-      const res = await fetch(this.url(`/signings/${request.externalTransactionId}/documents`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ documents?: any[] }>(`/signings/${request.externalTransactionId}/documents`)
       if (!res.ok) {
         return { success: false, syncedCount: 0, documents: [], error: `Authentisign list ${res.status}` }
       }
-      const data = await res.json()
-      const documents: ProviderDocument[] = (data.documents ?? data ?? []).map((d: any) => ({
+      const docList: any[] = res.data?.documents ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
+      const documents: ProviderDocument[] = docList.map((d: any) => ({
         externalDocumentId: String(d.id ?? d.documentId),
         documentName:       d.name,
         folderName:         d.folder ?? "Documents",
@@ -238,20 +217,16 @@ export class AuthentisignProvider implements ITransactionProvider {
     try {
       // Lone Wolf Authentisign exposes the form library under /forms with
       // optional state + category filters.
-      const params = new URLSearchParams()
-      if (request.stateCode) params.set("state",    request.stateCode)
-      if (request.category)  params.set("category", request.category)
-      if (request.query)     params.set("q",         request.query)
-      params.set("limit", String(request.pageSize ?? 100))
+      const query: Record<string, string> = { limit: String(request.pageSize ?? 100) }
+      if (request.stateCode) query.state = request.stateCode
+      if (request.category)  query.category = request.category
+      if (request.query)     query.q = request.query
 
-      const res = await fetch(this.url(`/forms?${params.toString()}`), {
-        headers: this.headers(),
-      })
+      const res = await this.request<{ forms?: any[]; items?: any[] }>("/forms", { query })
       if (!res.ok) {
-        return { success: false, error: `Authentisign listForms ${res.status}: ${await res.text()}` }
+        return { success: false, error: `Authentisign listForms ${res.status}: ${res.error}` }
       }
-      const data = await res.json()
-      const items: any[] = data.forms ?? data.items ?? data ?? []
+      const items: any[] = res.data?.forms ?? res.data?.items ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
       const forms: ProviderForm[] = items.map(f => ({
         formId:    String(f.formId ?? f.id),
         name:      f.name ?? f.title ?? "Form",

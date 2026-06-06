@@ -3,6 +3,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -92,13 +96,18 @@ export async function createPodcastEpisode(params: {
       templateData = template
     }
 
-    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio)
-    const { data: agentRow } = await supabase
-      .from("users")
+    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio).
+    // The voice clone lives in agent_voice_profiles keyed by agents.id (agentId) —
+    // it is a customer-facing brand asset. (users has no elevenlabs_voice_id.)
+    const { data: voiceProfile } = await supabase
+      .from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
-      .eq("id", agentId)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .order("is_default", { ascending: false })
+      .limit(1)
       .maybeSingle()
-    const agentVoiceId = agentRow?.elevenlabs_voice_id ?? null
+    const agentVoiceId = voiceProfile?.elevenlabs_voice_id ?? null
 
     // Generate script from keywords if no script provided
     let finalScript = params.script
@@ -177,7 +186,8 @@ export async function createPodcastEpisode(params: {
       .from("podcast_episodes")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: agentId,
+        // podcast_episodes.agent_id FKs to users (content/business action), not agents.
+        agent_id: userId,
         template_id: params.templateId || null,
         marketing_campaign_id: params.marketingCampaignId || null,
         source_video_project_id: params.sourceVideoProjectId || null,
@@ -249,36 +259,23 @@ async function generateScriptFromKeywords(keywords: string[], category?: string,
   Format: Return only the script text, no additional formatting.`
 
   try {
-    const response = await fetch("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "grok-beta",
-        messages: [
-          {
-            role: "system",
-            content: "You are a professional podcast script writer for real estate agents.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.7,
-      }),
+    const response = await gatewayChat({
+      model: "xai/grok-beta",
+      temperature: 0.7,
+      maxTokens: 2048,
+      messages: [
+        { role: "system", content: "You are a professional podcast script writer for real estate agents." },
+        { role: "user", content: prompt },
+      ],
     })
 
     if (!response.ok) {
-      throw new Error(`Script API request failed: ${response.status} ${response.statusText}`)
+      throw new Error(`Script API request failed: ${response.error}`)
     }
-    const data = await response.json()
-    if (!data.choices?.[0]?.message?.content) {
+    if (!response.content) {
       throw new Error("Invalid API response: missing content")
     }
-    return data.choices[0].message.content
+    return response.content
   } catch (error) {
     console.error("[v0] Error generating script:", error)
     throw new Error("Failed to generate script from keywords")
@@ -371,7 +368,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== agentId) {
+    if (episode.agent_id !== userId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -556,62 +553,60 @@ async function synthesizeVoice(
     if (!process.env.HEYGEN_API_KEY) {
       throw new Error("HEYGEN_API_KEY is not configured. Contact your administrator to enable HeyGen voice synthesis.")
     }
-    const response = await fetch("https://api.heygen.com/v1/voice/tts", {
+    const response = await callConnector<Buffer>({
+      connector: "heygen",
+      baseUrl: "https://api.heygen.com",
+      path: "/v1/voice/tts",
       method: "POST",
-      headers: {
-        Accept: "audio/mpeg",
-        "Content-Type": "application/json",
-        "X-Api-Key": process.env.HEYGEN_API_KEY,
-      },
-      body: JSON.stringify({ text, voice_id: voiceId, output_format: "mp3" }),
+      auth: { style: "header", name: "X-Api-Key", value: process.env.HEYGEN_API_KEY },
+      headers: { Accept: "audio/mpeg" },
+      responseType: "arraybuffer",
+      body: { text, voice_id: voiceId, output_format: "mp3" },
     })
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "")
-      throw new Error(`HeyGen voice synthesis failed (${response.status}): ${body || response.statusText}`)
+    if (!response.ok || !response.data) {
+      throw new Error(`HeyGen voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
     }
 
-    const arrayBuffer = await response.arrayBuffer()
-    return Buffer.from(arrayBuffer)
+    return response.data
   }
 
   // ElevenLabs
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
   }
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+  const response = await callConnector<Buffer>({
+    connector: "elevenlabs",
+    baseUrl: "https://api.elevenlabs.io",
+    path: `/v1/text-to-speech/${voiceId}`,
     method: "POST",
-    headers: {
-      Accept: "audio/mpeg",
-      "Content-Type": "application/json",
-      "xi-api-key": process.env.ELEVENLABS_API_KEY,
-    },
-    body: JSON.stringify({
+    auth: { style: "header", name: "xi-api-key", value: process.env.ELEVENLABS_API_KEY },
+    headers: { Accept: "audio/mpeg" },
+    responseType: "arraybuffer",
+    body: {
       text,
       model_id: "eleven_monolingual_v1",
       voice_settings: settings,
-    }),
+    },
   })
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "")
-    throw new Error(`ElevenLabs voice synthesis failed (${response.status}): ${body || response.statusText}`)
+  if (!response.ok || !response.data) {
+    throw new Error(`ElevenLabs voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
   }
 
-  const arrayBuffer = await response.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return response.data
 }
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
-  if (!agentId || !brokerageId) {
+  const { userId, brokerageId } = await getAgentContext()
+  if (!userId || !brokerageId) {
     return { success: false, error: "Missing agent context", episodes: [] }
   }
   const supabase = await createClient()
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", userId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -636,6 +631,18 @@ export async function getPodcastEpisodes(filters?: { status?: string; category?:
 // Optional `scheduledAt` (ISO string) — if in the future, the episode is set to
 // status="scheduled" with `scheduled_at` populated; a separate cron job actually
 // fires the distribution at the scheduled time.
+async function loadPodcastTeamId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<string | null> {
+  try {
+    const { data } = await supabase.from("users").select("team_id").eq("id", userId).maybeSingle()
+    return (data?.team_id as string | null) ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function publishPodcastEpisode(
   episodeId: string,
   channels: string[],
@@ -677,7 +684,7 @@ export async function publishPodcastEpisode(
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== agentId) {
+    if (episode.agent_id !== userId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -712,7 +719,7 @@ export async function publishPodcastEpisode(
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -733,14 +740,36 @@ export async function publishPodcastEpisode(
       .eq("brokerage_id", brokerageId)
       .eq("is_enabled", true)
 
-    // Create distribution log entries for each channel
-    const distributionResults: { channel: string; success: boolean; error?: string }[] = []
+    void distributionChannels // informational; actual channel reach is handled by the host's RSS
 
+    // Resolve the per-tier podcast distributor through the unified ownership cascade
+    // (agent → team → brokerage → platform) and syndicate ONCE. A host like Transistor publishes
+    // the episode to its managed RSS, which fans out to Spotify / Apple / etc — so a single real
+    // publish covers every requested channel (no per-channel API + no simulated success).
+    const teamId = await loadPodcastTeamId(supabase, userId)
+    const distributor = await resolveScopedConnection("transistor", {
+      agentUserId: userId,
+      teamId,
+      brokerageId,
+    }).catch(() => null)
+
+    let syndication: SyndicateEpisodeResult
+    if (!distributor?.apiKey) {
+      syndication = { ok: false, error: "No podcast distributor connected. Connect one in the Connection Center." }
+    } else {
+      syndication = await syndicateEpisode({
+        apiKey: distributor.apiKey,
+        showId: ((distributor.config as Record<string, unknown> | null)?.show_id as string) ?? distributor.accountId ?? "",
+        title: episode.title ?? "Episode",
+        summary: episode.description ?? episode.summary ?? "",
+        audioUrl: episode.audio_url ?? "",
+      })
+    }
+
+    // One log row per requested channel, all reflecting the single real syndication result.
+    const distributionResults: { channel: string; success: boolean; error?: string }[] = []
     for (const channel of channels) {
-      const channelConfig = distributionChannels?.find(c => c.channel_name === channel)
-      
-      // Insert distribution log entry
-      const { data: logEntry, error: logError } = await supabase
+      const { data: logEntry } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -750,64 +779,37 @@ export async function publishPodcastEpisode(
         })
         .select()
         .single()
-      if (logError || !logEntry) {
-        distributionResults.push({ channel, success: false, error: logError?.message ?? "Failed to create log entry" })
-        continue
-      }
 
-      if (channelConfig) {
-        // Attempt distribution (actual implementation would call external APIs)
-        try {
-          // Simulate distribution attempt
-          const externalEpisodeId = `ext_${episodeId}_${channel}_${Date.now()}`
-
-          // Update log entry as published
+      if (syndication.ok) {
+        if (logEntry) {
           await supabase
             .from("podcast_distribution_log")
             .update({
               distribution_status: "published",
               published_at: new Date().toISOString(),
-              external_episode_id: externalEpisodeId,
-              provider_response: { status: "success", timestamp: new Date().toISOString() },
+              external_episode_id: syndication.episodeId,
+              provider_response: { provider: "transistor", share_url: syndication.shareUrl ?? null },
             })
             .eq("id", logEntry.id)
-
-          distributionResults.push({ channel, success: true })
-
-          // ══════════════════════════════════════════════════════════════════════
-          // KERNEL: Process Distribution Success Event
-          // ══════════════════════════════════════════════════════════════════════
-          await processKernelEvent({
-            event: KernelEvent.PODCAST_EPISODE_DISTRIBUTED,
-            brokerageId,
-            entityType: "podcast_episode",
-            entityId: episodeId,
-          }).catch((err) => console.error("[podcast] kernel event PODCAST_EPISODE_DISTRIBUTED failed:", err))
-
-        } catch (distError: any) {
-          // Update log entry as failed
+        }
+        distributionResults.push({ channel, success: true })
+      } else {
+        if (logEntry) {
           await supabase
             .from("podcast_distribution_log")
-            .update({
-              distribution_status: "failed",
-              error_message: distError.message,
-            })
+            .update({ distribution_status: "failed", error_message: syndication.error })
             .eq("id", logEntry.id)
-
-          distributionResults.push({ channel, success: false, error: distError.message })
-
-          // ══════════════════════════════════════════════════════════════════════
-          // KERNEL: Process Distribution Failure Event
-          // ══════════════════════════════════════════════════════════════════════
-          await processKernelEvent({
-            event: KernelEvent.PODCAST_EPISODE_FAILED,
-            brokerageId,
-            entityType: "podcast_episode",
-            entityId: episodeId,
-          }).catch((err) => console.error("[podcast] kernel event distribution PODCAST_EPISODE_FAILED failed:", err))
         }
+        distributionResults.push({ channel, success: false, error: syndication.error })
       }
     }
+
+    await processKernelEvent({
+      event: syndication.ok ? KernelEvent.PODCAST_EPISODE_DISTRIBUTED : KernelEvent.PODCAST_EPISODE_FAILED,
+      brokerageId,
+      entityType: "podcast_episode",
+      entityId: episodeId,
+    }).catch((err) => console.error("[podcast] kernel distribution event failed:", err))
 
     return { success: true, distributionResults }
   } catch (error: any) {
@@ -841,14 +843,14 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
@@ -871,7 +873,7 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -879,7 +881,7 @@ export async function createPodcastTemplate(params: {
       .from("podcast_templates")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: agentId,
+        agent_id: userId,
         name: params.name,
         description: params.description || "",
         template_type: params.templateType,
@@ -912,7 +914,7 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -929,7 +931,7 @@ export async function updatePodcastTemplate(
         updated_at: new Date().toISOString(),
       })
       .eq("id", templateId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
       .select()
       .single()
@@ -1063,7 +1065,7 @@ export async function getVideoScriptsLibrary() {
 
 // Get video projects for episode sourcing
 export async function getVideoProjects() {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -1071,7 +1073,7 @@ export async function getVideoProjects() {
       .from("ai_video_projects")
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .in("status", ["completed", "published"])
       .order("created_at", { ascending: false })
       .limit(50)
@@ -1168,7 +1170,7 @@ export async function getPodcastAnalytics() {
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -1184,7 +1186,7 @@ export async function deletePodcastEpisode(episodeId: string) {
       .from("podcast_episodes")
       .delete()
       .eq("id", episodeId)
-      .eq("agent_id", agentId)
+      .eq("agent_id", userId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error

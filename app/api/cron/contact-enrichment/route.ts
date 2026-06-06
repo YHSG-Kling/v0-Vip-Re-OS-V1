@@ -101,15 +101,21 @@ export async function GET(request: Request) {
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    // Log results
-    const { error: logError } = await supabase.from("audit_log").insert({
-      log_type: "cron_job",
-      source: "contact-enrichment",
-      message: "Contact enrichment cron completed",
-      metadata: {
-        ...results,
-        duration_ms: Date.now() - startTime,
-      },
+    // Log results. The generic audit_log table is (user_id, entity_type,
+    // entity_id, action, before, after) — wrong shape for cron telemetry.
+    // cron_execution_logs is the purpose-built sink (cron_path, status,
+    // records_processed, duration_ms, metadata).
+    const totalProcessed = (results.newEnrichments?.success ?? 0)
+      + (results.lifeChangeChecks?.success ?? 0)
+      + (results.ghlSyncEnrichments?.success ?? 0)
+    const { error: logError } = await supabase.from("cron_execution_logs").insert({
+      cron_path: "contact-enrichment",
+      cron_name: "Contact enrichment",
+      status: "completed",
+      duration_ms: Date.now() - startTime,
+      records_processed: totalProcessed,
+      metadata: results,
+      completed_at: new Date().toISOString(),
     })
 
     if (logError) {

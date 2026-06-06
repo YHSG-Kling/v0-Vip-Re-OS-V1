@@ -1,6 +1,6 @@
 import {
 NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { WorkflowOrchestrator } from "@/lib/orchestrator"
 import {
   createCronRunContextAction,
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Verify schema exists before running — tables may not be created in production yet
     const { error: schemaCheck } = await supabase

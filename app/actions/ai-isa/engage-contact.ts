@@ -22,7 +22,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
@@ -265,7 +265,7 @@ async function dispatchContactChannel(
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailCtx)
 
-    const videoResult = await generateHeyGenVideo({
+    const videoResult = await generateAvatarVideo({
       leadId: contact.id,
       firstName: contact.first_name || 'there',
       brokerageId,

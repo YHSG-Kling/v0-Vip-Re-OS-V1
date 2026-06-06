@@ -1,0 +1,432 @@
+/**
+ * lib/video/listing-promo-reactor.ts
+ *
+ * Auto-generated listing promo video reactor. Fires on KernelEvent.LISTING_PUBLISHED
+ * from the kernel event-reactor.
+ *
+ * WAVE 14 — Remotion + D-ID hybrid pipeline. The reactor stages the row at
+ * status='remotion_pending' (after pre-flight compliance) and the
+ * /api/cron/listing-promo-render cron drains those rows by POSTing to the
+ * internal Remotion render endpoint. Decoupling the kickoff lets the kernel
+ * event-reactor return fast (no 90s render blocking) and gives us natural
+ * retry semantics — a failed render leaves the row at remotion_pending and
+ * the next tick picks it up.
+ *
+ * End-to-end flow once a listing publishes:
+ *
+ *   LISTING_PUBLISHED
+ *     → kernel reactor invokes this module
+ *     → contacts.video_opt_out (n/a for listings) + agent_voice_profile gate
+ *     → idempotency ledger insert (m124, partial unique on listing × event)
+ *     → AI Gateway drafts the narration script
+ *     → pre-flight evaluateOutbound (broadcast shape — Brand voice + Fair
+ *       Housing state-specific + Them-First; ONE redraft on violation)
+ *     → status='remotion_pending' (this file ends here)
+ *
+ *   /api/cron/listing-promo-render every 5 min
+ *     → claims the oldest remotion_pending row
+ *     → POSTs to /api/internal/remotion/render-just-listed
+ *         · re-resolves listing facts + brand + agent voice id
+ *         · re-runs compliance against the freshly-drafted script
+ *         · synthesizes ElevenLabs voiceover → Supabase blob URL
+ *         · Remotion render (1080×1920, 25s, @ 30fps) → Supabase blob URL
+ *         · creates ai_video_projects row with compliance_status='passed'
+ *         · submits D-ID intro hook + outro CTA renders via dispatchVideo
+ *         · status='generating' until both D-ID renders land
+ *
+ *   poll-did-videos every 2 min (existing)
+ *     → downloads each D-ID render to OUR Supabase storage
+ *     → updates the linked ai_video_projects rows
+ *
+ *   /api/cron/listing-promo-hybrid-composite every 2 min
+ *     → detects projects with all 3 components ready (Remotion + intro + outro)
+ *     → ffmpeg concatIntroOutro from lib/video/composite-attribution.ts
+ *     → uploads stitched mp4 → updates ai_video_projects.video_url
+ *     → status='completed', listing_promo_videos.status='rendering'
+ *
+ *   /api/cron/listing-promo-social-publish every 2 min (Wave 11+)
+ *     → drafts social_posts rows for FB / IG / LinkedIn / Twitter / TikTok /
+ *       YouTube / Pinterest / Google Business with per-platform captions
+ *     → existing publish-social-posts cron sends once approved
+ */
+import "server-only"
+import { createServiceClient } from "@/lib/supabase/service"
+import { generateTextRouted } from "@/lib/ai/models"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
+import { resolveLifecycleAutoSpawn, isWithinCooldown, type LifecycleEventType } from "@/lib/kernel/lifecycle-promo-policy"
+
+// Wave 27 — extended from 3 event types to the full 7-moment listing
+// lifecycle. The reactor remains the single dispatcher; per-event branches
+// live in draftScript (hook + tone) and buildFacts (context hints —
+// e.g. open_house_announce gets the event date pulled in).
+export type ListingPromoEventType = LifecycleEventType
+
+export interface ListingPromoInput {
+  brokerageId:  string
+  listingId:    string
+  /** users.id of the listing agent. Resolved from listings.agent_id (which
+   *  on the live schema is already a users.id). */
+  agentUserId:  string
+  eventType:    ListingPromoEventType
+  /** Wave 27 — when true, skip the lifecycle_promo_policy auto_spawn check
+   *  (cooldown still applies). Set by the manual-trigger action when an
+   *  agent explicitly requests a promo for an opted-out event type. */
+  bypassPolicy?: boolean
+  /** Wave 27 — optional event-specific context the script template can
+   *  weave in. For open_house_announce/reminder this carries the event
+   *  date+time. For just_sold it can carry the sale price (when the agent
+   *  consents to disclosure). Schema-flexible; the template only reads
+   *  fields it cares about. */
+  eventContext?: Record<string, unknown>
+}
+
+export interface ListingPromoResult {
+  ok:        boolean
+  status:    "rendering" | "remotion_pending" | "already_queued" | "skipped" | "failed"
+  videoProjectId?: string
+  ledgerId?: string
+  reason?:   string
+  violations?: string[]
+}
+
+interface ListingRow {
+  id:            string
+  brokerage_id:  string | null
+  address:       string | null
+  city:          string | null
+  state:         string | null
+  zip:           string | null
+  list_price:    number | null
+  bedrooms:      number | null
+  bathrooms:     number | null
+  sqft:          number | null
+  property_type: string | null
+  status:        string | null
+  mls_number:    string | null
+}
+
+export async function dispatchListingPromoVideo(
+  input: ListingPromoInput,
+): Promise<ListingPromoResult> {
+  const svc = createServiceClient()
+
+  // 1. Load listing facts — these populate the script. The fact list is
+  //    AUTHORITATIVE; the prompt instructs the model to use only these.
+  const { data: listing } = await svc
+    .from("listings")
+    .select("id, brokerage_id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, status, mls_number")
+    .eq("id", input.listingId)
+    .maybeSingle()
+  const l = listing as ListingRow | null
+  if (!l) return { ok: false, status: "skipped", reason: "listing not found" }
+  if (l.brokerage_id !== input.brokerageId) {
+    return { ok: false, status: "skipped", reason: "tenant mismatch" }
+  }
+
+  // 1b. Wave 27 — policy + cooldown gate. The lifecycle-promo-policy
+  //     resolver walks agent → team → brokerage → platform_default for
+  //     the (event_type, scope) pair. If the resolved decision is
+  //     auto_spawn=false, the reactor exits with status='skipped' and
+  //     the manual-trigger action stays the only path to fire this promo
+  //     for this subscriber. Cooldown gates rapid-fire events (a listing
+  //     whose price is edited three times in a day → one price_reduction).
+  //
+  //     This gate is only consulted on automatic reactor invocations.
+  //     The manual-trigger action sets a `bypassPolicy: true` flag so
+  //     an agent who explicitly clicks "Generate promo" gets it even
+  //     when the policy is opted-out. (Cooldown still applies — manual
+  //     clicks during a 24h window still debounce.)
+  if (!input.bypassPolicy) {
+    const policy = await resolveLifecycleAutoSpawn(
+      { agentUserId: input.agentUserId, brokerageId: input.brokerageId },
+      input.eventType,
+    )
+    if (!policy.autoSpawn) {
+      return { ok: true, status: "skipped", reason: `policy_opt_out:${policy.resolvedFrom}` }
+    }
+    if (policy.cooldownHours && policy.cooldownHours > 0) {
+      const blocked = await isWithinCooldown({
+        listingId:     input.listingId,
+        eventType:     input.eventType,
+        cooldownHours: policy.cooldownHours,
+      })
+      if (blocked) {
+        return { ok: true, status: "skipped", reason: `cooldown:${policy.cooldownHours}h` }
+      }
+    }
+  }
+
+  // 2. Idempotency ledger
+  const ledger = await svc
+    .from("listing_promo_videos")
+    .insert({
+      brokerage_id: input.brokerageId,
+      listing_id:   input.listingId,
+      agent_id:     input.agentUserId,
+      event_type:   input.eventType,
+      status:       "queued",
+    })
+    .select("id")
+    .maybeSingle()
+  if (ledger.error) {
+    if ((ledger.error as { code?: string }).code === "23505") {
+      return { ok: true, status: "already_queued", reason: "duplicate event for this listing" }
+    }
+    return { ok: false, status: "failed", reason: `ledger insert: ${ledger.error.message}` }
+  }
+  const ledgerId = ledger.data?.id as string | undefined
+
+  // 3. Agent voice/avatar gate — same as intro-video-reactor.
+  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
+  // → agents.id via the canonical helper.
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+  const { data: profile } = agentRecordId
+    ? await svc
+        .from("agent_voice_profiles")
+        .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+        .eq("agent_id", agentRecordId)
+        .maybeSingle()
+    : { data: null }
+  if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
+    await svc.from("listing_promo_videos")
+      .update({ status: "failed", error_message: "agent has no voice/avatar profile" })
+      .eq("id", ledgerId!)
+    return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
+  }
+
+  // 4. Draft script + pre-flight compliance (broadcast shape — no contact).
+  const facts = buildFacts(l, input.eventType)
+  let script: string
+  try {
+    const result = await runWithComplianceRedraft({
+      draft: ({ violations }) => draftScript({ facts, eventType: input.eventType, eventContext: input.eventContext, violations }),
+      gate: async (s) => {
+        const r = await evaluateOutbound({
+          actorContext: { brokerageId: input.brokerageId, userId: input.agentUserId, role: "system" },
+          journeyType:  "seller",
+          persona:      "other",
+          messageType:  "social",
+          content:      s,
+          // broadcast shape — no per-contact gates
+        })
+        return { allowed: r.allowed, violations: r.violations }
+      },
+    })
+    if (!result.ok) {
+      const reason = result.violations.join("; ").slice(0, 800)
+      await svc.from("listing_promo_videos")
+        .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
+        .eq("id", ledgerId!)
+      return {
+        ok:         false,
+        status:     "failed",
+        reason:     "compliance violations on both attempts",
+        violations: result.violations,
+      }
+    }
+    script = result.script
+  } catch (err) {
+    await svc.from("listing_promo_videos")
+      .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
+      .eq("id", ledgerId!)
+    return { ok: false, status: "failed", reason: "script generation failed" }
+  }
+
+  // 5. Stage at status='remotion_pending'. The Wave 14 render cron drains
+  //    these rows by POSTing to /api/internal/remotion/render-just-listed.
+  //    The render endpoint re-resolves facts + re-runs compliance against
+  //    the freshly-drafted script (deterministic on facts × event_type) so
+  //    the pre-clear we just did is the FAST-FAIL guard — a script that
+  //    fails compliance here never reaches the cron + render dollars are
+  //    never spent on it.
+  await svc.from("listing_promo_videos")
+    .update({
+      status:         "remotion_pending",
+      error_message:  null,
+    })
+    .eq("id", ledgerId!)
+
+  return {
+    ok:        true,
+    status:    "remotion_pending",
+    reason:    "Staged for Remotion + ElevenLabs + (hybrid) D-ID intro/outro pipeline; the listing-promo-render cron picks this up within 5 minutes.",
+    ledgerId,
+  }
+}
+
+// ─── Facts → script ─────────────────────────────────────────────────────────
+
+interface ListingFacts {
+  address:       string
+  city_state:    string
+  list_price:    string
+  bedrooms:      string
+  bathrooms:     string
+  sqft:          string
+  property_type: string
+}
+
+function buildFacts(l: ListingRow, _event: ListingPromoEventType): ListingFacts {
+  const usd = (n: number | null) => n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : ""
+  return {
+    address:       l.address ?? "",
+    city_state:    [l.city, l.state].filter(Boolean).join(", "),
+    list_price:    usd(l.list_price),
+    bedrooms:      l.bedrooms != null ? String(l.bedrooms) : "",
+    bathrooms:     l.bathrooms != null ? String(l.bathrooms) : "",
+    sqft:          l.sqft != null ? l.sqft.toLocaleString("en-US") : "",
+    property_type: l.property_type ?? "",
+  }
+}
+
+async function draftScript(args: {
+  facts:        ListingFacts
+  eventType:    ListingPromoEventType
+  eventContext?: Record<string, unknown>
+  violations:   string[]
+}): Promise<string> {
+  // Wave 27 — per-event hook + close. Each lifecycle moment carries
+  // distinct intent: announcement vs. invitation vs. social-proof vs.
+  // pricing signal. The shared Fair-Housing fence stays universal.
+  const tmpl = TEMPLATES[args.eventType]
+  const ctxLine = renderEventContext(args.eventType, args.eventContext)
+  const violationLine = args.violations.length > 0
+    ? `\n\nYour previous draft failed the compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite so EVERY violation is resolved. Same length + same intent, just compliance-clean.`
+    : ""
+  const prompt = `Write a ${tmpl.durationSeconds}-second social-media video script for a real estate agent. ${tmpl.intent}
+
+Use ONLY these property facts — do not invent any number, feature, or claim:
+- Address: ${args.facts.address || "(omitted)"}
+- City/State: ${args.facts.city_state || "(omitted)"}
+- Price: ${args.facts.list_price || "(omitted)"}
+- Bedrooms: ${args.facts.bedrooms || "(omitted)"}
+- Bathrooms: ${args.facts.bathrooms || "(omitted)"}
+- Square feet: ${args.facts.sqft || "(omitted)"}
+- Property type: ${args.facts.property_type || "(omitted)"}
+${ctxLine}
+
+Style:
+- First-person, ${tmpl.tone}
+- Lead with: "${tmpl.hook}"
+- ${tmpl.bodyGuidance}
+- Close with: ${tmpl.closingCta}
+- ${tmpl.wordCount} words total
+- No exclamation marks
+- AVOID any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income)
+- AVOID phrases like "perfect for families", "great for empty-nesters", "ideal starter home for newlyweds" — these imply preference
+- AVOID guaranteed-return / value-promise / market-direction claims ("prices are going up", "you'll make money", "tight inventory will push prices")
+- Skip any fact that's "(omitted)"
+${tmpl.extraConstraints ? `- ${tmpl.extraConstraints}\n` : ""}
+Return ONLY the script text the agent will speak on camera.${violationLine}`
+
+  const { text } = await generateTextRouted({
+    feature:     "listing_promo_script",
+    prompt,
+    maxTokens:   220,
+    temperature: 0.55,
+  })
+  return text.trim()
+}
+
+interface EventTemplate {
+  hook:             string
+  intent:           string
+  tone:             string
+  bodyGuidance:     string
+  closingCta:       string
+  durationSeconds:  string
+  wordCount:        string
+  extraConstraints?: string
+}
+
+const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
+  coming_soon: {
+    hook:            "Coming soon",
+    intent:          "Announce a listing that's about to hit market and invite interested buyers to register early.",
+    tone:            "anticipatory, exclusive",
+    bodyGuidance:    "Hint at 2 standout features (without disclosing every detail — the goal is to drive registration)",
+    closingCta:      `"DM me to be first on the list when this hits MLS"`,
+    durationSeconds: "15-20",
+    wordCount:       "35-50",
+    extraConstraints: "Do NOT state an exact MLS go-live date unless eventContext.go_live_date was provided",
+  },
+  just_listed: {
+    hook:            "Just listed",
+    intent:          "Announce a new on-market listing.",
+    tone:            "energetic but professional",
+    bodyGuidance:    "2-3 quick facts about the property",
+    closingCta:      `"DM me to schedule a tour" or equivalent`,
+    durationSeconds: "15-25",
+    wordCount:       "40-60",
+  },
+  open_house_announce: {
+    hook:            "Open house this weekend",
+    intent:          "Invite the audience to a scheduled open house.",
+    tone:            "warm, welcoming, low-pressure",
+    bodyGuidance:    "Name the day + time window + 1-2 reasons it's worth a stop",
+    closingCta:      `"Come by — no appointment needed"`,
+    durationSeconds: "15-20",
+    wordCount:       "35-55",
+    extraConstraints: "Lead with the date+time from eventContext if provided",
+  },
+  open_house_reminder: {
+    hook:            "Reminder — open house tomorrow",
+    intent:          "Remind subscribers about the open house happening within the next 24 hours.",
+    tone:            "friendly, brief, urgent without pushy",
+    bodyGuidance:    "Restate day + time + address line",
+    closingCta:      `"See you there"`,
+    durationSeconds: "10-15",
+    wordCount:       "25-40",
+    extraConstraints: "Keep it short — this is a reminder, not the original announcement",
+  },
+  price_reduction: {
+    hook:            "Pricing update",
+    intent:          "Announce the new list price with no opinion on whether the property is underpriced or a deal.",
+    tone:            "neutral, factual",
+    bodyGuidance:    "State the new price + 1 line on what hasn't changed about the property",
+    closingCta:      `"Same property, new positioning — DM if it fits your search"`,
+    durationSeconds: "15-20",
+    wordCount:       "35-50",
+    extraConstraints: "Do NOT say 'priced to sell', 'motivated seller', 'great deal', 'won't last', or any phrase implying urgency, distress, or guaranteed appreciation",
+  },
+  under_contract: {
+    hook:            "Off market",
+    intent:          "Announce that the listing went under contract.",
+    tone:            "celebratory but understated",
+    bodyGuidance:    "Brief acknowledgement of the milestone + 1 line about buyer demand in the area (if eventContext provides supportable stats)",
+    closingCta:      `"If you missed this one, DM me — I track similar listings"`,
+    durationSeconds: "10-15",
+    wordCount:       "25-40",
+    extraConstraints: "Do NOT disclose sale price, contingencies, or any deal terms",
+  },
+  just_sold: {
+    hook:            "Just sold",
+    intent:          "Announce a closed sale as a social-proof signal.",
+    tone:            "professional, confident, not boastful",
+    bodyGuidance:    "Brief mention of the journey + 1 line about your process (NOT about price or value)",
+    closingCta:      `"If you're thinking of selling, let's talk about your timeline"`,
+    durationSeconds: "15-20",
+    wordCount:       "35-55",
+    extraConstraints: "Do NOT disclose final sale price unless eventContext.disclose_sale_price=true AND the disclosed_sale_price field is supplied. Do NOT make market-direction claims",
+  },
+}
+
+function renderEventContext(eventType: ListingPromoEventType, ctx: Record<string, unknown> | undefined): string {
+  if (!ctx) return ""
+  const lines: string[] = []
+  // Per-event whitelist: only render fields the template's prompt cares about.
+  // Schema-flexible inputs are common (caller might pass extra keys); the
+  // whitelist prevents the model from seeing irrelevant context.
+  if ((eventType === "open_house_announce" || eventType === "open_house_reminder") && ctx.event_date) {
+    lines.push(`- Open house date+time: ${String(ctx.event_date)}`)
+  }
+  if (eventType === "coming_soon" && ctx.go_live_date) {
+    lines.push(`- MLS go-live date: ${String(ctx.go_live_date)}`)
+  }
+  if (eventType === "just_sold" && ctx.disclose_sale_price === true && ctx.disclosed_sale_price) {
+    lines.push(`- Final sale price (disclosure approved): ${String(ctx.disclosed_sale_price)}`)
+  }
+  return lines.length > 0 ? `\nEvent context:\n${lines.join("\n")}` : ""
+}

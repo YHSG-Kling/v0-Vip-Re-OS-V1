@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
     errors.push(`Team heatmap snapshot failed: ${err.message}`)
     void supabase
       .from("automation_errors")
-      .insert({ cron_job: "team-heatmap-snapshot", error_message: err.message, occurred_at: ranAt })
+      .insert({ workflow_name: "team-heatmap-snapshot", error_message: err.message, severity: "error", created_at: ranAt })
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

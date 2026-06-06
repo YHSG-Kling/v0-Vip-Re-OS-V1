@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 // generateObjectRouted replaces direct `generateText` from "ai" — keeps
 // brokerage routing + fallback + gateway wrapping for structured outputs.
 import { generateObjectRouted } from "@/lib/ai/models"
@@ -440,35 +441,42 @@ export async function createOfferDotloop(params: {
       }
     }
 
-    // Create new loop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: `${params.propertyAddress} - Buyer Offer`,
-          status: "Active",
-          deal_type: "Purchase",
-          street_address: params.propertyAddress,
-        }),
-      }
-    )
+    // Create new loop — routed through the canonical connector-gateway so this Dotloop call gets
+    // the same single-egress, healer-observable, retry-instrumented treatment as every other
+    // vendor call (single source of truth: lib/agentic-os/connector-gateway.ts). The previous bare
+    // `fetch(...)` to api-gateway.dotloop.com bypassed all of that. Uses per-brokerage credentials
+    // from platform_credentials (not env vars) so multi-tenant routing is preserved.
+    const response = await callConnector<{ data?: { loop_id?: string } }>({
+      connector: "dotloop",
+      baseUrl:   "https://api-gateway.dotloop.com/public/v2",
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop`,
+      method:    "POST",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      body: {
+        name: `${params.propertyAddress} - Buyer Offer`,
+        status: "Active",
+        deal_type: "Purchase",
+        street_address: params.propertyAddress,
+      },
+    })
 
     if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
+      throw new Error(`Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}`)
     }
 
-    const result = await response.json()
-    const loopId = result.data?.loop_id
+    const loopId = response.data?.data?.loop_id
 
-    // Update transaction (ownership verified above)
+    // Update transaction (ownership verified above). Populates BOTH the legacy
+    // dotloop_loop_id column and the generic m106 provider-tracking columns so the
+    // provider-agnostic sync helper (lib/transactions/sync-from-provider.ts) can pull
+    // documents for this transaction.
     if (params.transactionId && loopId) {
       await supabase.from("transactions")
-        .update({ dotloop_loop_id: loopId })
+        .update({
+          dotloop_loop_id:                  loopId,
+          external_provider_source:         "dotloop",
+          external_provider_transaction_id: loopId,
+        })
         .eq("id", params.transactionId)
         .eq("brokerage_id", brokerageId)
     }
@@ -581,13 +589,19 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       .insert({
         agent_id: effectiveAgentId,
         brokerage_id: ctx.brokerageId,
-        buyer_id: params.buyerId,
+        // Live columns: contact_id (primary client = buyer) + buyer_contact_id;
+        // there is no buyer_id. deal_type ∈ {buyer,seller,dual}; status CHECK has
+        // no "offer_submitted"; close_date (not estimated_close_date). The old
+        // values failed the insert outright.
+        contact_id: params.buyerId,
+        buyer_contact_id: params.buyerId,
         listing_id: params.listingId,
-        deal_type: "buyer_side",
-        status: "offer_submitted",
+        deal_type: "buyer",
+        status: "active",
+        deal_name: listing.address || `Offer ${params.listingId}`, // NOT NULL
         property_address: listing.address,
         purchase_price: params.offerPrice,
-        estimated_close_date: params.closeDate,
+        close_date: params.closeDate,
       })
       .select()
       .single()
@@ -627,7 +641,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     // Notify listing agent
     await supabase.from("activities").insert({
-      user_id: listing.agent_id,
+      agent_user_id: listing.agent_id,
       activity_type: "offer_received",
       entity_type: "offer",
       entity_id: offer.id,

@@ -12,6 +12,14 @@
  *      using DID avatar + agent's cloned voice
  *   4. enroll_drip          — schedules each chapter video as a touchpoint
  *      timed to land before the appointment date
+ *   5. send_pre_listing_kit — Wave 36. Mails a physical Lob kit
+ *      (letter + postcard) to the contact's verified mailing address,
+ *      scheduled to arrive 2-3 days before the appointment. The kit
+ *      "sells the system before setting foot in the home" — referencing
+ *      the chapter-video drip the contact is already receiving so the
+ *      mailer reinforces a coordinated, tech-forward presentation. Soft-
+ *      fails if no verified address exists (the digital drip is still
+ *      enough on its own) — never blocks the chain.
  *
  * The agent gets a notification at each step's completion. By default the
  * chain runs to completion automatically; CMA and presentation steps can be
@@ -21,6 +29,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
 import { generatePropertyChapterVideos } from "@/lib/video/chapter-video-generator"
+import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
+import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
+import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 
 export const listingApptPrepChain: WorkflowChain = {
   key: "listing-appt-prep",
@@ -261,6 +272,185 @@ export const listingApptPrepChain: WorkflowChain = {
             touchpointsScheduled: touchpoints.length,
             firstTouchAt: touchpoints[0].scheduled_for,
             lastTouchAt: touchpoints[touchpoints.length - 1].scheduled_for,
+          },
+        }
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // 5. Send pre-listing physical kit (Wave 36)
+    //    Lob letter + postcard mailed to the contact's verified address,
+    //    timed to arrive 2-3 days before the appointment. Soft-fails so
+    //    the digital drip alone still completes the chain cleanly.
+    // -----------------------------------------------------------------------
+    {
+      key: "send_pre_listing_kit",
+      label: "Send Pre-Listing Physical Kit",
+      handler: async (ctx) => {
+        if (!ctx.contactId) {
+          return { success: true, output: { skipped: true, reason: "no_contact_id" } }
+        }
+
+        const apptDateRaw = ctx.metadata.appointment_date
+        if (!apptDateRaw) {
+          return { success: true, output: { skipped: true, reason: "no_appointment_date" } }
+        }
+
+        // The kit should land 2-3 days before the appointment. Lob's
+        // typical first-class transit is 4-7 days for postcards and
+        // 5-8 for letters; if the appointment is < 7 days out the kit
+        // wouldn't arrive in time, so we soft-skip to avoid wasting
+        // spend on a piece the contact would receive AFTER the
+        // appointment.
+        const apptTime = new Date(apptDateRaw).getTime()
+        const leadDays = Math.floor((apptTime - Date.now()) / 86_400_000)
+        if (leadDays < 7) {
+          return {
+            success: true,
+            output:  { skipped: true, reason: "appointment_too_soon_for_mail", lead_days: leadDays },
+          }
+        }
+
+        const address = await resolveMailingAddressForContact({
+          contactId:   ctx.contactId,
+          brokerageId: ctx.brokerageId,
+        })
+        if (!address) {
+          return {
+            success: true,
+            output:  { skipped: true, reason: "no_verified_mailing_address" },
+          }
+        }
+
+        // Pull contact name (the resolver returned only the address).
+        const svc = createServiceClient()
+        const { data: c } = await svc
+          .from("contacts")
+          .select("first_name, last_name")
+          .eq("id", ctx.contactId)
+          .maybeSingle()
+        const recipientName = [c?.first_name, c?.last_name].filter(Boolean).join(" ") || "Future Seller"
+
+        // Optional Lob templates the broker uploads ahead of time. If
+        // neither is configured this step is a documented no-op rather
+        // than a hard failure (the chain still ships the digital drip).
+        const letterTpl   = process.env.LOB_PRELISTING_LETTER_TEMPLATE_ID ?? ""
+        const postcardTpl = process.env.LOB_PRELISTING_POSTCARD_TEMPLATE_ID ?? ""
+        if (!letterTpl && !postcardTpl) {
+          return {
+            success: true,
+            output:  { skipped: true, reason: "no_lob_template_configured" },
+          }
+        }
+
+        const property = ctx.metadata.property_data ?? {}
+        const apptDateIso = new Date(apptTime).toISOString().slice(0, 10)
+
+        // Wave 36 — pre-listing kit copy is HIGH-CONTEXT: we know the
+        // property address, the appointment date, and the seller's
+        // first name. That's exactly the signal the AI copy generator
+        // shines on, so we route the pieces through orchestrateRender
+        // AndSend instead of merging vars into a static Lob template.
+        // Fall-through guarantees the kit still ships (via the static
+        // template) if the copy gate fails for any reason.
+        // Wave 36 tier cascade: resolve the agent's team_id so the
+        // brand resolver picks team logo/colors when the listing
+        // agent is on a team. agentUserId is already in ctx.
+        let agentTeamId: string | null = null
+        if (ctx.agentUserId) {
+          const { data: agentRow } = await svc
+            .from("agents")
+            .select("team_id")
+            .eq("user_id", ctx.agentUserId)
+            .maybeSingle()
+          agentTeamId = (agentRow?.team_id as string | undefined) ?? null
+        }
+
+        const copyCtxBase: Omit<DirectMailCopyContext, "qrDestinationType"> = {
+          brokerageId: ctx.brokerageId,
+          teamId:      agentTeamId,
+          agentUserId: ctx.agentUserId ?? null,
+          contactId:   ctx.contactId,
+          persona:     "upsize",  // listing-appointment contacts are sellers; "upsize" is the closest canonical persona for "selling current home to upgrade/downsize"
+          hookFacts: {
+            listingAddress: [property.address, property.city].filter(Boolean).join(", ") || undefined,
+          },
+        }
+
+        const sent: Array<{
+          piece: string; success: boolean; messageId?: string; error?: string
+          rendered?: boolean; fellBackReason?: string | null
+        }> = []
+
+        for (const [piece, tpl] of [["letter", letterTpl], ["postcard", postcardTpl]] as const) {
+          if (!tpl) continue
+          const result = await orchestrateRenderAndSend({
+            brokerageId:    ctx.brokerageId,
+            contactId:      ctx.contactId,
+            userId:         ctx.agentUserId ?? ctx.brokerageId,
+            recipientName,
+            mailingAddress: address.street,
+            city:           address.city,
+            state:          address.state,
+            zip:            address.zip,
+            pieceType:      piece,
+            copyCtx: {
+              ...copyCtxBase,
+              // Postcards land best with a fast "book_meeting" CTA —
+              // the appointment is the contact's actual next step.
+              // Letters carry the longer narrative and don't need a
+              // CTA enum.
+              qrDestinationType: piece === "postcard" ? "book_meeting" : "landing_page",
+            },
+            fallbackTemplateId: tpl,
+            agentName:          null,
+            agentTitle:         "REALTOR®",
+            systemSource:       "pre_listing_kit",
+          })
+
+          sent.push({
+            piece,
+            success:        result.success,
+            messageId:      result.messageId,
+            error:          result.error,
+            rendered:       result.rendered,
+            fellBackReason: result.fellBackReason,
+          })
+
+          // Record a direct_mail_campaigns row tagged for the
+          // pre-listing analytics cohort so the admin can see
+          // pre-listing kit ROI separately from welcome kits.
+          // approval_status reflects the render path: 'auto_approved'
+          // when AI-drafted copy passed the gate, 'fell_back' when we
+          // dropped to the static template (admin can audit drift).
+          await svc.from("direct_mail_campaigns").insert({
+            brokerage_id:    ctx.brokerageId,
+            agent_id:        ctx.agentUserId ?? null,
+            contact_id:      ctx.contactId,
+            campaign_name:   `Pre-Listing Kit (${piece}) - ${recipientName}`,
+            target_audience: "pre_listing_kit",
+            quantity:        1,
+            status:          result.success ? "sent" : "failed",
+            piece_type:      piece,
+            lob_order_id:    result.messageId ?? null,
+            mailing_date:    result.success ? new Date().toISOString().slice(0, 10) : null,
+            pieces_mailed:   result.success ? 1 : 0,
+            is_ai_generated: true,
+            approval_status: result.rendered ? "auto_approved" : "fell_back",
+            variant_id:          result.variantPick?.variantId ?? null,
+            compliance_event_id: result.complianceEventId ?? null,
+            created_at:          new Date().toISOString(),
+          })
+        }
+
+        const anyOk = sent.some((s) => s.success)
+        return {
+          success: true, // never block — digital drip is enough
+          output:  {
+            skipped:        false,
+            address_source: address.source,
+            pieces:         sent,
+            kit_dispatched: anyOk,
           },
         }
       },

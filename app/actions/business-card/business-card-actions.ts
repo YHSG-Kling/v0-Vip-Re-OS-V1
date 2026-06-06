@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -57,45 +58,27 @@ export async function uploadBusinessCard(params: {
   const raw_image_url = pub.publicUrl
 
   // 2) Call Claude Vision — JSON extraction only
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: params.mimeType,
-                data: params.imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text.",
-            },
-          ],
-        },
-      ],
-    }),
+  // Claude Vision OCR via the Vercel AI Gateway (image passed as a data URL).
+  const response = await gatewayChat({
+    model: "anthropic/claude-sonnet-4-20250514",
+    maxTokens: 300,
+    temperature: 0,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:${params.mimeType};base64,${params.imageBase64}` } },
+          { type: "text", text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text." },
+        ],
+      },
+    ],
   })
-
-  const aiData = await response.json() as {
-    content?: Array<{ text?: string }>
-  }
 
   let extracted: Record<string, string> = {}
   try {
-    extracted = JSON.parse(aiData.content?.[0]?.text ?? "{}") as Record<string, string>
+    const text = response.content ?? "{}"
+    const match = text.match(/\{[\s\S]*\}/)
+    extracted = JSON.parse(match ? match[0] : "{}") as Record<string, string>
   } catch {
     extracted = {}
   }
@@ -161,10 +144,12 @@ export async function uploadBusinessCard(params: {
     return { scanId: scan!.id, contactId: null, viable: false }
   }
 
-  // 6) Viable → captureContact (tcpa_consent=false always for business cards)
+  // 6) Viable → captureContact (tcpa_consent=false always for business cards).
+  // Owner agent resolves via brokerage assignment rules — the scanner doesn't
+  // own the contact just because they scanned it.
   const { contactId } = await captureContact({
     brokerageId: brokerageId,
-    agentUserId: null,
+    ownerAgentId: null,
     source: "business_card",
     first_name: extracted.first_name ?? null,
     last_name: extracted.last_name ?? null,

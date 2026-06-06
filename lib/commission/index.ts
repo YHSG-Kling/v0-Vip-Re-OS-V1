@@ -13,10 +13,6 @@ export { calculateCommission } from "./engine"
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 export { dollarsToCents, centsToDollars, calculatePercentAmount, validatePositive } from "./utils"
 
-// ─── ADJUSTMENTS ─────────────────────────────────────────────────────────────
-export type { CommissionAdjustment } from "./resolve-adjustments"
-export { resolveCommissionAdjustments } from "./resolve-adjustments"
-
 // ─── PAYMENT TRACKER ─────────────────────────────────────────────────────────
 export type {
   MarkCommissionPaidParams,

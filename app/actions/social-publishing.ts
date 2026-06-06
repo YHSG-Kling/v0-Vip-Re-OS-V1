@@ -67,13 +67,22 @@ export async function handleScheduledPost(payload: any) {
       .eq("id", post_id)
       .eq("brokerage_id", caller.brokerageId)
 
-    await supabase.from("tasks").insert({
-      assigned_to: post.user_id,
-      title: "Verify social post published",
-      due_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-      priority: "medium",
-      auto_generated: true,
-    })
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", post.user_id)
+      .eq("brokerage_id", post.brokerage_id)
+      .maybeSingle()
+    if (agentRow) {
+      await supabase.from("tasks").insert({
+        brokerage_id: post.brokerage_id,
+        assigned_to_agent_id: agentRow.id,
+        title: "Verify social post published",
+        due_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        priority: "medium",
+        auto_generated: true,
+      })
+    }
   }
 
   return { success: true }
@@ -105,13 +114,22 @@ export async function handlePostPublished(payload: any) {
     .eq("id", post_id)
     .eq("brokerage_id", caller.brokerageId)
 
-  await supabase.from("tasks").insert({
-    assigned_to: post.user_id,
-    title: `Check engagement on ${platform} post`,
-    due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    priority: "low",
-    auto_generated: true,
-  })
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", post.user_id)
+    .eq("brokerage_id", post.brokerage_id)
+    .maybeSingle()
+  if (agentRow) {
+    await supabase.from("tasks").insert({
+      brokerage_id: post.brokerage_id,
+      assigned_to_agent_id: agentRow.id,
+      title: `Check engagement on ${platform} post`,
+      due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      priority: "low",
+      auto_generated: true,
+    })
+  }
 
   return { success: true }
 }

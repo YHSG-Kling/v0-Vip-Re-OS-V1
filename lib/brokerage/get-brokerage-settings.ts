@@ -14,16 +14,15 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import type { ProviderName } from "@/lib/integrations/providers/catalog"
 
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
 
-export type TransactionProvider =
-  | "dotloop"
-  | "skyslope"
-  | "formsimplicity"
-  | "brokermint"
+// Unified with the provider catalog (single source of truth). This adds the
+// already-implemented docusign + authentisign that were previously omitted here.
+export type TransactionProvider = ProviderName
 
 export type TransactionMode =
   | "hybrid"
@@ -105,7 +104,10 @@ export interface FinancialDefaults {
 
 export interface BrokerageSettings {
   // ── Transaction Provider ─────────────────────────────────
-  transaction_provider: TransactionProvider
+  // Nullable: there is NO silent default. A brokerage must explicitly configure
+  // its transaction/e-sign provider (we do not assume dotloop). Consumers that
+  // require one use getRequiredTransactionProvider(), which throws when unset.
+  transaction_provider: TransactionProvider | null
   transaction_mode: TransactionMode
   compliance_authority: AuthorityMode
   commission_authority: AuthorityMode
@@ -148,7 +150,8 @@ export interface BrokerageSettings {
 // ─────────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS: BrokerageSettings = {
-  transaction_provider: "dotloop",
+  // No silent default — null forces explicit provider setup (dotloop is NOT assumed).
+  transaction_provider: null,
   transaction_mode: "hybrid",
   compliance_authority: "internal",
   commission_authority: "internal",
@@ -261,7 +264,7 @@ export async function getBrokerageSettings(
 /** Which transaction management provider this brokerage uses */
 export async function getTransactionProvider(
   brokerageId: string
-): Promise<TransactionProvider> {
+): Promise<TransactionProvider | null> {
   return (await getBrokerageSettings(brokerageId)).transaction_provider
 }
 

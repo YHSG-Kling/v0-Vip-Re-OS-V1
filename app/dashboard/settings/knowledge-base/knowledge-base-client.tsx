@@ -255,7 +255,7 @@ export function KnowledgeBaseClient({
 
     setIsSearching(true)
     try {
-      const { searchKB } = await import('@/lib/intelligence/kb-search')
+      const { searchKB } = await import('@/app/actions/kb-search')
       const results = await searchKB(searchQuery, brokerageId, 3)
       setSearchResults(results)
     } catch (error) {

@@ -3,19 +3,19 @@
  *
  * Single entry point for the new AI-driven CMA. Composes:
  *   1. Comp source — Perplexity (free, default) OR paid premium (BatchData /
- *      HouseCanary, agent-triggered before listing appointments)
+ *      RentCast, agent-triggered before listing appointments)
  *   2. State-specific adjustment rates → applied per comp
  *   3. AI valuation narrative + range (low/mid/high)
  *   4. Investor ARV mode (best-condition comps + repair budget formula)
  *
  * Three call modes:
  *   - mode: 'standard'         Perplexity comps + state adjustments
- *   - mode: 'premium'          BatchData/HouseCanary comps (agent pays/clicks)
+ *   - mode: 'premium'          BatchData/RentCast comps (agent pays/clicks)
  *   - mode: 'investor_arv'     Best-condition comps + ARV + max-offer formula
  *
  * Cost summary (per CMA):
  *   standard:     ~$0.01–0.05  (Perplexity Sonar + GPT narrative)
- *   premium:      ~$0.30–1.00  (BatchData + HouseCanary comp pulls)
+ *   premium:      ~$0.30–1.00  (BatchData + RentCast comp pulls)
  *   investor_arv: ~$0.05       (Perplexity with ARV-mode prompt)
  */
 
@@ -289,98 +289,44 @@ async function runPremiumCompPull(input: AiCmaInput): Promise<{
   const closedComps: ScoredComp[] = []
   const citations: string[] = []
 
-  // BatchData comparable sales (closed only)
-  if (process.env.BATCHDATA_API_KEY) {
+  // RentCast comps — the platform comps provider (BatchData has no comps endpoint).
+  if (closedComps.length < 3) {
     try {
-      const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
-      const bd = await fetchComparableSales({
-        address: input.subject.address,
-        city: input.subject.city ?? "",
-        state: input.subject.state,
-        zip: input.subject.zip ?? undefined,
-        bedrooms: input.subject.bedrooms ?? 3,
-        bathrooms: (input.subject.fullBaths ?? 2) + (input.subject.halfBaths ?? 0) * 0.5,
-        squareFeet: input.subject.sqftLiving ?? 1500,
-        radiusMiles: 1,
-        maxAgeDays: 180,
+      const { getRentcastComps } = await import("@/lib/property/rentcast")
+      const rc = await getRentcastComps({
+        brokerageId: input.brokerageId,
+        address: [input.subject.address, input.subject.zip].filter(Boolean).join(" "),
         limit: 5,
       })
 
-      for (const c of bd ?? []) {
-        const cAny = c as unknown as { address?: string; sold_price?: number; sale_price?: number; sold_date?: string; sale_date?: string; square_feet?: number; bedrooms?: number; bathrooms?: number; days_on_market?: number }
-        closedComps.push({
-          address: cAny.address ?? "Unknown",
-          status: "closed",
-          salePrice: cAny.sold_price ?? cAny.sale_price ?? 0,
-          saleDate: cAny.sold_date ?? cAny.sale_date ?? new Date().toISOString().slice(0, 10),
-          sqftLiving: cAny.square_feet ?? null,
-          bedrooms: cAny.bedrooms ?? null,
-          fullBaths: Math.floor(cAny.bathrooms ?? 0),
-          halfBaths: 0,
-          garageSpaces: null,
-          hasPool: null,
-          isWaterfront: null,
-          hasView: null,
-          lotSizeAcres: null,
-          yearBuilt: null,
-          conditionGrade: null,
-          basementFinished: null,
-          isNewConstruction: null,
-          isGated: null,
-          daysOnMarket: cAny.days_on_market ?? null,
-          pricePerSqft: null,
-          similarityScore: 0.85,
-          citation: "BatchData premium pull",
-        })
-      }
-      citations.push("BatchData premium comp pull")
-    } catch {
-      // fall through to HouseCanary
-    }
-  }
-
-  // HouseCanary comps fallback / supplement
-  if (closedComps.length < 3 && process.env.HOUSECANARY_API_KEY) {
-    try {
-      const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
-      const hc = await fetchHouseCanaryComps({
-        address: input.subject.address,
-        zipCode: input.subject.zip ?? "",
-        bedrooms: input.subject.bedrooms ?? 3,
-        squareFeet: input.subject.sqftLiving ?? 1500,
-        maxAgeDays: 180,
-        limit: 5,
-      })
-
-      for (const c of hc ?? []) {
+      for (const c of rc) {
         if (closedComps.length >= 3) break
-        const cAny = c as unknown as { address?: string; sale_price?: number; sale_date?: string; sqft?: number; beds?: number; baths?: number }
         closedComps.push({
-          address: cAny.address ?? "Unknown",
+          address: c.address,
           status: "closed",
-          salePrice: cAny.sale_price ?? 0,
-          saleDate: cAny.sale_date ?? new Date().toISOString().slice(0, 10),
-          sqftLiving: cAny.sqft ?? null,
-          bedrooms: cAny.beds ?? null,
-          fullBaths: Math.floor(cAny.baths ?? 0),
+          salePrice: c.sale_price,
+          saleDate: new Date().toISOString().slice(0, 10),
+          sqftLiving: c.square_feet || null,
+          bedrooms: c.bedrooms || null,
+          fullBaths: Math.floor(c.bathrooms),
           halfBaths: 0,
           garageSpaces: null,
           hasPool: null,
           isWaterfront: null,
           hasView: null,
           lotSizeAcres: null,
-          yearBuilt: null,
+          yearBuilt: c.year_built,
           conditionGrade: null,
           basementFinished: null,
           isNewConstruction: null,
           isGated: null,
-          daysOnMarket: null,
-          pricePerSqft: null,
+          daysOnMarket: c.days_on_market || null,
+          pricePerSqft: c.price_per_sqft || null,
           similarityScore: 0.80,
-          citation: "HouseCanary premium pull",
+          citation: "RentCast premium pull",
         })
       }
-      citations.push("HouseCanary premium comp pull")
+      if (rc.length > 0) citations.push("RentCast premium comp pull")
     } catch {
       // fall through
     }

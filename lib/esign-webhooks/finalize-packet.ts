@@ -31,6 +31,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { logEventAndTrigger }  from "@/lib/events"
 import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -81,7 +83,7 @@ export async function finalizeVoiceCockpitPacket(
 
     await logEventAndTrigger({
       brokerage_id: docRow.brokerage_id as string,
-      event_type:   "voice_cockpit.packet.signed",
+      event_type:   KernelEvent.ESIGN_PACKET_SIGNED,
       user_id:      (docRow.contact_id as string | null) ?? "",
       payload:      { documentId: docRow.id, documentType: docRow.document_type, envelopeId, provider },
       source:       "webhook",
@@ -108,7 +110,7 @@ export async function finalizeVoiceCockpitPacket(
 
     await logEventAndTrigger({
       brokerage_id: matchedBBA.brokerage_id as string,
-      event_type:   "buyer_broker_agreement.signed",
+      event_type:   KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED,
       user_id:      matchedBBA.buyer_contact_id as string,
       payload:      { agreementId: matchedBBA.id, envelopeId, provider },
       source:       "webhook",
@@ -318,11 +320,31 @@ export async function finalizeLegacyEsignArtifacts(
       .from("listing_agreements")
       .update({ esign_status: "fully_signed", fully_executed_at: now })
       .eq("id", matchedAgreement.id)
-    await supabase
+    // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
+    // Run through the KERNEL (service client — webhooks have no session) so the
+    // LISTING_AGREEMENT_SIGNED event + automation fire. MLS_ACTIVE is set later
+    // by the execution engine. Guard to pre-signature stages (no regression).
+    const { data: listingRow } = await supabase
       .from("listings")
-      .update({ current_stage: "active", stage_entered_at: now })
+      .select("lifecycle_stage, brokerage_id")
       .eq("id", matchedAgreement.listing_id)
-      .in("current_stage", ["prep", "pre_listing", "coming_soon"])
+      .maybeSingle()
+    if (listingRow?.brokerage_id && (listingRow as any).lifecycle_stage === "LISTING_AGREEMENT_INITIATED") {
+      await transitionLifecycle({
+        brokerageId: (listingRow as any).brokerage_id,
+        entityType:  "listing_stage_machine",
+        entityId:    matchedAgreement.listing_id,
+        fromState:   (listingRow as any).lifecycle_stage,
+        toState:     "LISTING_AGREEMENT_SIGNED",
+        actorUserId: null,
+        eventType:   "listing_agreement_signed",
+        metadata:    { agreementId: matchedAgreement.id, envelopeId, source: "webhook" },
+      }, supabase)
+      await supabase
+        .from("listings")
+        .update({ status: "coming_soon", stage_entered_at: now })
+        .eq("id", matchedAgreement.listing_id)
+    }
   }
 
   return {

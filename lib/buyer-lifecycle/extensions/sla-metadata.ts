@@ -109,10 +109,10 @@ export async function emitSLAExpectationMetadata(params: {
   // Agent task (correct location, no changes) — type: buyer.lifecycle.sla_expectations, buyer.lifecycle.sla_breach, buyer.lifecycle.renewal_reminder
   // Emit one metadata event with all expectations
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.lifecycle.sla_expectations",
+    activity_type: "buyer.lifecycle.sla_expectations",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       buyer_state: state,
       expectations: expectations.map((exp) => ({
@@ -189,10 +189,9 @@ export async function emitSLABreachSignal(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.lifecycle.sla_breach",
+    activity_type: "buyer.lifecycle.sla_breach",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: "system",
     metadata: {
       buyer_state: state,
       sla_type: slaType,
@@ -325,10 +324,9 @@ export async function emitSLAWarningSignal(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.lifecycle.sla_warning",
+    activity_type: "buyer.lifecycle.sla_warning",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: "system",
     metadata: {
       buyer_state: state,
       sla_type: slaType,

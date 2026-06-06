@@ -528,6 +528,24 @@ export async function createOpenHouseEvent(params: {
     metadata: { event_id: event.id, event_date: params.eventDate },
   })
 
+  // Portal fan-out: the seller sees "Open house scheduled" on their portal.
+  const { data: ohListing } = await serviceClient
+    .from("listings")
+    .select("seller_contact_id")
+    .eq("id", params.listingId)
+    .maybeSingle()
+  const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+  await fanOutKernelEvent({
+    event:           KernelEvent.OPEN_HOUSE_SCHEDULED,
+    brokerageId:     auth.brokerageId,
+    entityType:      "listing",
+    entityId:        params.listingId,
+    sellerContactId: ohListing?.seller_contact_id ?? undefined,
+    listingId:       params.listingId,
+    agentUserId:     auth.userId,
+    metadata:        { event_id: event.id, event_date: params.eventDate },
+  }).catch(() => {})
+
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, event }
 }

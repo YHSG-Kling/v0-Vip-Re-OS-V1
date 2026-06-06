@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getVendorEarningsSummary } from "@/app/actions/vendor-payments"
+import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -42,7 +43,7 @@ export default async function VendorEarningsPage() {
   const svc = createServiceClient()
   const { data: profile } = await svc
     .from("vendor_marketplace_profiles")
-    .select("id, stripe_account_id, stripe_onboarding_complete")
+    .select("id")
     .eq("user_id", user.id)
     .maybeSingle()
 
@@ -57,6 +58,7 @@ export default async function VendorEarningsPage() {
     )
   }
 
+  const stripeConnect = await readVendorStripeConnect(svc, profile.id)
   const summary = await getVendorEarningsSummary(profile.id)
 
   return (
@@ -80,8 +82,8 @@ export default async function VendorEarningsPage() {
       {/* Stripe Connect status */}
       <VendorStripeConnect
         vendorId={profile.id}
-        stripeAccountId={profile.stripe_account_id}
-        onboardingComplete={profile.stripe_onboarding_complete ?? false}
+        stripeAccountId={stripeConnect.accountId}
+        onboardingComplete={stripeConnect.onboardingComplete}
       />
 
       {/* Stats */}
@@ -121,7 +123,7 @@ export default async function VendorEarningsPage() {
         <VendorPayoutButton
           vendorId={profile.id}
           availableAmount={summary.availableAmount}
-          stripeReady={profile.stripe_onboarding_complete ?? false}
+          stripeReady={stripeConnect.onboardingComplete}
         />
       )}
 

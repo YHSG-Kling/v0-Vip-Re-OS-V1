@@ -31,6 +31,7 @@ import "server-only"
 import { put } from "@vercel/blob"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,6 +52,15 @@ export interface GenerateVideoInput {
   voiceId?: string
   /** If true, produce audio-only output (no avatar rendering) */
   voiceOnly?: boolean
+  /** D-ID facial expression. Without this the avatar renders monotone.
+   *  When omitted, falls back to the agent's default_expression on
+   *  agent_voice_profiles (m112), then to platform default "happy" @ 0.7. */
+  expression?: "happy" | "neutral" | "surprise" | "serious"
+  /** 0..1 — D-ID expression intensity. Defaults to 0.7 (warm-professional). */
+  expressionIntensity?: number
+  /** Optional agent (users.id) — used to load agent_voice_profiles defaults
+   *  for `expression`/`expressionIntensity` when caller didn't pass them. */
+  agentUserId?: string
   /**
    * URL of the agent's photo used as the talking-head source.
    * Resolved from agents.avatar_image_url by the caller; pass null to use
@@ -88,37 +98,37 @@ export interface GenerateVideoResult {
 // D-ID helpers
 // ---------------------------------------------------------------------------
 
-function didAuthHeader(): string {
+// D-ID is a PLATFORM-owned connector (one DID_API_KEY; subscribers' avatars ride as request
+// params). Egress goes through the single connector-gateway. Auth = HTTP Basic base64(key + ":").
+function didKey(): string {
   const key = process.env.DID_API_KEY
   if (!key) throw new Error("DID_API_KEY is not configured")
-  return `Basic ${Buffer.from(`${key}:`).toString("base64")}`
+  return key
 }
 
 async function didPost(path: string, body: unknown): Promise<{ id: string }> {
-  const res = await fetch(`${DID_BASE}${path}`, {
+  const res = await callConnector<{ id: string }>({
+    connector: "did",
+    baseUrl: DID_BASE,
+    path,
     method: "POST",
-    headers: {
-      Authorization: didAuthHeader(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    auth: { style: "basic", username: didKey(), password: "" },
+    body,
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`D-ID API error (${res.status}): ${text}`)
-  }
-  return res.json()
+  if (!res.ok || !res.data) throw new Error(`D-ID API error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  return res.data
 }
 
 async function didGet(path: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${DID_BASE}${path}`, {
-    headers: { Authorization: didAuthHeader() },
+  const res = await callConnector<Record<string, unknown>>({
+    connector: "did",
+    baseUrl: DID_BASE,
+    path,
+    method: "GET",
+    auth: { style: "basic", username: didKey(), password: "" },
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`D-ID poll error (${res.status}): ${text}`)
-  }
-  return res.json()
+  if (!res.ok || !res.data) throw new Error(`D-ID poll error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  return res.data
 }
 
 /** Poll until done/error or timeout. Returns null on timeout (still processing). */
@@ -260,8 +270,34 @@ export async function generateVideo(
     }
   }
 
+  // Resolve facial expression — caller > agent profile > platform default.
+  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
+  // through the canonical helper before querying.
+  let expression: string = input.expression ?? "happy"
+  let intensity: number  = input.expressionIntensity ?? 0.7
+  if (!input.expression && input.agentUserId) {
+    try {
+      const svc = createServiceClient()
+      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+      const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+      if (agentRecordId) {
+        const { data: prof } = await svc
+          .from("agent_voice_profiles")
+          .select("default_expression, expression_intensity")
+          .eq("agent_id", agentRecordId)
+          .maybeSingle()
+        if (prof?.default_expression) expression = prof.default_expression as string
+        if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
+      }
+    } catch { /* best-effort — keep defaults */ }
+  }
+
   const config: Record<string, unknown> = {
     result_format: "mp4",
+    stitch: true,
+    driver_expressions: {
+      expressions: [{ start_frame: 0, expression, intensity }],
+    },
   }
 
   if (input.backgroundUrl) {
@@ -287,6 +323,17 @@ export async function generateVideo(
   // 2. Submit the D-ID job
   // ---------------------------------------------------------------------------
 
+  // Vendor budget gate — auto-pause D-ID renders when the brokerage is over its
+  // monthly platform-vendor ceiling (closes the metering→cap governance loop).
+  {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost: estCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estCost("did", 1) })
+    if (!budget.allowed) {
+      throw new Error(`Vendor budget exceeded — D-ID render paused ($${budget.spent}/$${budget.budget})`)
+    }
+  }
+
   let talkId: string
   try {
     const created = await didPost("/talks", bodyBase)
@@ -295,6 +342,17 @@ export async function generateVideo(
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`D-ID submit failed: ${msg}`)
   }
+
+  // Unified vendor-spend ledger — D-ID bills per submitted talk render.
+  const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+  void meterVendorSpend({
+    vendorName: "did",
+    usageType: "video_render",
+    cost: estimatePlatformVendorCost("did", 1),
+    brokerageId: input.brokerageId,
+    systemSource: "video_generation",
+    metadata: { talk_id: talkId },
+  })
 
   // ---------------------------------------------------------------------------
   // 3. Poll for completion
@@ -315,9 +373,12 @@ export async function generateVideo(
     // so the video URL stays valid for downstream {{step_N.video_url}} references
     // weeks or months later.
     try {
-      const dl = await fetch(videoUrl)
-      if (dl.ok) {
-        const bytes = Buffer.from(await dl.arrayBuffer())
+      const dl = await callConnector<Buffer>({
+        connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
+        method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+      })
+      if (dl.ok && dl.data) {
+        const bytes = dl.data
         const blob = await put(`workflow-video/${talkId}.mp4`, bytes, {
           access: "public",
           contentType: "video/mp4",

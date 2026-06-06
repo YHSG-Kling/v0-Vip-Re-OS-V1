@@ -28,10 +28,10 @@ async function authAdmin(): Promise<{ userId: string; brokerageId: string } | Ne
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   const { data: userRow } = await supabase
-    .from("users").select("brokerage_id, role, platform_role").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   if (!userRow?.brokerage_id) return NextResponse.json({ error: "No brokerage on user" }, { status: 422 })
 
-  const role = userRow.role ?? userRow.platform_role
+  const role = userRow.user_type ?? userRow.platform_role
   if (!role || !ALLOWED_ROLES.has(role)) {
     return NextResponse.json({ error: "Admin role required" }, { status: 403 })
   }

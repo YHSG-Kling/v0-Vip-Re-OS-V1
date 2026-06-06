@@ -15,8 +15,26 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import {
+  normalizeRentcastMarketStats,
+  normalizeRentcastComps,
+  type RentcastMarketStats,
+  type RentcastComp,
+} from "./rentcast-normalize"
+
+export { normalizeRentcastMarketStats, normalizeRentcastComps, type RentcastMarketStats, type RentcastComp }
 
 const RENTCAST_BASE = "https://api.rentcast.io/v1"
+
+/** RentCast GET through the connector-gateway (X-Api-Key header). */
+async function rentcastGet(apiKey: string, path: string, qs: URLSearchParams): Promise<{ ok: boolean; status: number; data: any }> {
+  const res = await callConnector<any>({
+    connector: "rentcast", baseUrl: RENTCAST_BASE, path, method: "GET",
+    query: Object.fromEntries(qs), auth: { style: "header", name: "X-Api-Key", value: apiKey },
+  })
+  return { ok: res.ok, status: res.status ?? 0, data: res.data }
+}
 
 // Approximate per-call costs at Rentcast's standard tier ($49/mo / 250 calls = $0.196).
 // Used for usage telemetry — actual billing happens via Rentcast directly.
@@ -55,6 +73,8 @@ export interface RentcastSearchFilters {
   priceMax?: number
   propertyType?: string
   limit?: number
+  /** Listing status filter (RentCast): 'Active' (default) | 'Inactive' (off-market/expired). */
+  status?: string
 }
 
 export interface RentcastListing {
@@ -117,15 +137,11 @@ export async function searchRentcastSaleListings(params: {
   if (f.bedroomsMin != null) qs.set("bedrooms", String(f.bedroomsMin))
   if (f.bathroomsMin != null) qs.set("bathrooms", String(f.bathroomsMin))
   if (f.propertyType) qs.set("propertyType", f.propertyType)
-  qs.set("status", "Active")
+  qs.set("status", f.status ?? "Active")
   qs.set("limit", String(f.limit ?? 30))
 
   try {
-    const res = await fetch(`${RENTCAST_BASE}/listings/sale?${qs.toString()}`, {
-      headers: { "X-Api-Key": apiKey, Accept: "application/json" },
-      // No Next.js cache — listing freshness matters
-      cache: "no-store",
-    })
+    const res = await rentcastGet(apiKey, "/listings/sale", qs)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
@@ -136,7 +152,7 @@ export async function searchRentcastSaleListings(params: {
     if (!res.ok) {
       return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
     }
-    const data = await res.json()
+    const data = res.data
     const arr: any[] = Array.isArray(data) ? data : []
 
     // Apply price filters client-side (Rentcast doesn't always honor min/max)
@@ -195,10 +211,7 @@ export async function searchRentcastRentalListings(params: {
   qs.set("limit", String(f.limit ?? 20))
 
   try {
-    const res = await fetch(`${RENTCAST_BASE}/listings/rental?${qs.toString()}`, {
-      headers: { "X-Api-Key": apiKey, Accept: "application/json" },
-      cache: "no-store",
-    })
+    const res = await rentcastGet(apiKey, "/listings/rental", qs)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
@@ -209,7 +222,7 @@ export async function searchRentcastRentalListings(params: {
     if (!res.ok) {
       return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
     }
-    const data = await res.json()
+    const data = res.data
     const arr: any[] = Array.isArray(data) ? data : []
     const listings: RentcastListing[] = arr.map((r) => ({
       externalId: r?.id ?? r?.formattedAddress ?? "",
@@ -247,10 +260,7 @@ export async function getRentcastAVM(params: {
 
   try {
     const qs = new URLSearchParams({ address: params.address })
-    const res = await fetch(`${RENTCAST_BASE}/avm/value?${qs.toString()}`, {
-      headers: { "X-Api-Key": apiKey, Accept: "application/json" },
-      cache: "no-store",
-    })
+    const res = await rentcastGet(apiKey, "/avm/value", qs)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "avm_lookup",
@@ -259,7 +269,7 @@ export async function getRentcastAVM(params: {
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) return { value: null, rangeLow: null, rangeHigh: null }
-    const data = await res.json()
+    const data = res.data
     return {
       value: data?.price ?? null,
       rangeLow: data?.priceRangeLow ?? null,
@@ -267,5 +277,71 @@ export async function getRentcastAVM(params: {
     }
   } catch {
     return { value: null, rangeLow: null, rangeHigh: null }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Market statistics endpoint — zip-level aggregate (median price, DOM, inventory).
+// This is the TIER-1 data feed for the AI market-insight report, replacing the
+// retired HouseCanary integration. RentCast is the brokerage's chosen property-data
+// provider for AVM/comps/market stats.
+// ---------------------------------------------------------------------------
+
+const COST_PER_MARKET_LOOKUP = 0.20
+
+/** Fetch zip-level sale market statistics from RentCast. Never throws. */
+export async function getRentcastMarketStats(params: {
+  brokerageId: string
+  zipCode: string
+}): Promise<RentcastMarketStats | null> {
+  const apiKey = await getApiKey(params.brokerageId)
+  if (!apiKey || !params.zipCode) return null
+
+  try {
+    const qs = new URLSearchParams({ zipCode: params.zipCode, dataType: "Sale", historyRange: "12" })
+    const res = await rentcastGet(apiKey, "/markets", qs)
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "market_stats",
+      cost: COST_PER_MARKET_LOOKUP,
+      endpoint: "/markets",
+      metadata: { ok: res.ok, status: res.status, zip: params.zipCode },
+    })
+    if (!res.ok) return null
+    const data = res.data
+    return normalizeRentcastMarketStats(data?.saleData)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch comparable sales for an address via RentCast's AVM endpoint (returns a
+ * `comparables[]` array). This is the chosen comps source for CMA generation,
+ * replacing the retired HouseCanary integration. Never throws.
+ */
+export async function getRentcastComps(params: {
+  brokerageId: string
+  address: string
+  limit?: number
+}): Promise<RentcastComp[]> {
+  const apiKey = await getApiKey(params.brokerageId)
+  if (!apiKey || !params.address) return []
+
+  try {
+    const qs = new URLSearchParams({ address: params.address, compCount: String(params.limit ?? 10) })
+    const res = await rentcastGet(apiKey, "/avm/value", qs)
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "comps_lookup",
+      cost: COST_PER_AVM_LOOKUP,
+      endpoint: "/avm/value(comps)",
+      metadata: { ok: res.ok, status: res.status },
+    })
+    if (!res.ok) return []
+    const data = res.data
+    return normalizeRentcastComps(data?.comparables)
+  } catch {
+    return []
   }
 }

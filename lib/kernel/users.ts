@@ -408,11 +408,9 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
 // ─── assignUserRoleAndEntitlements ────────────────────────────────────────────
 
 /**
- * Updates a user's role across both users table and user_role_assignments.
- * Enforces:
- *   - Non-superadmin callers cannot grant superadmin
- *   - Role change emits USER_ROLE_CHANGED event
- *   - Syncs role field in both users.user_type AND users.role (legacy compat)
+ * Updates a user's role across the users table and user_role_assignments.
+ * users.user_type is the single source of truth; users.role is legacy and
+ * no longer written (migration 036+).
  */
 export async function assignUserRoleAndEntitlements(
   params: RoleAssignmentParams
@@ -420,12 +418,10 @@ export async function assignUserRoleAndEntitlements(
   const service = createServiceClient()
 
   try {
-    // Update users table — keep both user_type and role in sync
     const { error: userErr } = await service
       .from("users")
       .update({
         user_type:  params.newRole,
-        role:       params.newRole,
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.userId)

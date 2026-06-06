@@ -10,6 +10,8 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
 
 // ============================================
@@ -507,64 +509,64 @@ export async function createOrPullDotloop(params: {
     const DOTLOOP_API_KEY = dotloopCred.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
+    // All three Dotloop calls now route through callConnector — single egress, healer-observable,
+    // never-throws contract, per-brokerage credentials preserved. The three bare `fetch(...)` calls
+    // (loop retrieval, document listing, loop creation) bypassed every layer of the canonical
+    // egress pipeline.
+    const DOTLOOP_BASE = "https://api-gateway.dotloop.com/public/v2"
+
     // If existing loop, pull data from it
     if (params.existingLoopId) {
-      const response = await fetch(
-        `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}`,
-        {
-          headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-        }
-      )
+      const loopRes = await callConnector<{ data?: unknown }>({
+        connector: "dotloop",
+        baseUrl:   DOTLOOP_BASE,
+        path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}`,
+        method:    "GET",
+        auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      })
 
-      if (!response.ok) {
-        throw new Error(`Dotloop API error: ${response.statusText}`)
+      if (!loopRes.ok) {
+        throw new Error(`Dotloop API error: ${loopRes.error ?? `HTTP ${loopRes.status ?? "?"}`}`)
       }
 
-      const loopData = await response.json()
-
-      // Get documents
-      const docsResponse = await fetch(
-        `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}/folder`,
-        {
-          headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-        }
-      )
-
-      const docsData = await docsResponse.json()
+      // Get documents — failure here is non-fatal; the loop pull still succeeds with an empty docs list.
+      const docsRes = await callConnector<{ data?: unknown[] }>({
+        connector: "dotloop",
+        baseUrl:   DOTLOOP_BASE,
+        path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.existingLoopId}/folder`,
+        method:    "GET",
+        auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      })
 
       return {
         success: true,
         loopId: params.existingLoopId,
-        loopData: loopData.data,
-        documents: docsData.data || [],
+        loopData: loopRes.data?.data,
+        documents: docsRes.ok ? (docsRes.data?.data ?? []) : [],
         pulled: true,
       }
     }
 
     // Create new loop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: `${params.propertyAddress} - ${params.transactionType === "listing" ? "Listing" : "Purchase"}`,
-          status: "Active",
-          transaction_type: params.transactionType === "listing" ? "Listing for Sale" : "Purchase",
-          street_address: params.propertyAddress,
-        }),
-      }
-    )
+    const response = await callConnector<{ data?: { loop_id?: string } }>({
+      connector: "dotloop",
+      baseUrl:   DOTLOOP_BASE,
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop`,
+      method:    "POST",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+      body: {
+        name: `${params.propertyAddress} - ${params.transactionType === "listing" ? "Listing" : "Purchase"}`,
+        status: "Active",
+        transaction_type: params.transactionType === "listing" ? "Listing for Sale" : "Purchase",
+        street_address: params.propertyAddress,
+      },
+    })
 
     if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
+      throw new Error(`Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}`)
     }
 
-    const result = await response.json()
-    const loopId = result.data?.loop_id
+    const loopId = response.data?.data?.loop_id
 
     // Update listing with loop ID — ownership verified above
     if (params.listingId) {
@@ -617,15 +619,20 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: 
     const DOTLOOP_API_KEY = dotloopCred2.access_token
     const DOTLOOP_PROFILE_ID = dotloopCred2.account_id
 
-    // Fetch documents from Dotloop
-    const response = await fetch(
-      `https://api-gateway.dotloop.com/public/v2/profile/${DOTLOOP_PROFILE_ID}/loop/${params.loopId}/folder`,
-      {
-        headers: { Authorization: `Bearer ${DOTLOOP_API_KEY}` },
-      }
-    )
+    // Fetch documents from Dotloop — routed through callConnector for single egress + healer
+    // observability (matches the three other Dotloop calls in this file).
+    const response = await callConnector<{ data?: Array<{ name?: string; documents?: any[] }> }>({
+      connector: "dotloop",
+      baseUrl:   "https://api-gateway.dotloop.com/public/v2",
+      path:      `/profile/${DOTLOOP_PROFILE_ID}/loop/${params.loopId}/folder`,
+      method:    "GET",
+      auth:      { style: "bearer", token: DOTLOOP_API_KEY },
+    })
+    if (!response.ok) {
+      return { success: false, error: `Dotloop API error: ${response.error ?? `HTTP ${response.status ?? "?"}`}` }
+    }
 
-    const folders = await response.json()
+    const folders = response.data ?? {}
     const documents: any[] = []
 
     for (const folder of folders.data || []) {
@@ -715,8 +722,10 @@ export async function createListing(params: ListingIntakeData) {
         bedrooms:          params.propertyDetails?.beds,
         bathrooms:         params.propertyDetails?.baths,
         sqft:              params.propertyDetails?.sqft,
+        // "draft" persists the partial listing row before the agreement is
+        // complete (added to the status CHECK). Becomes coming_soon when the
+        // listing agreement is signed.
         status:            "draft",
-        current_stage:     "LEAD",
         lifecycle_stage:   "LEAD",
       })
       .select()
@@ -724,36 +733,56 @@ export async function createListing(params: ListingIntakeData) {
 
     if (error || !listing) throw error ?? new Error("Failed to create listing")
 
-    // Create transaction record — stamped from session identity
-    const { data: transaction } = await supabase
+    // Create transaction record — stamped from session identity.
+    // Live schema: column is deal_type (buyer|seller|dual) and status is a fixed
+    // CHECK set; the previous transaction_type/"pre_listing" values silently
+    // failed the constraint, so no transaction row was ever created.
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
         agent_id:          ownerAgentId,
         brokerage_id:      ctx.brokerageId,
+        // contact_id is the primary in-house client; on a seller-side deal that
+        // is the seller. seller_contact_id is the same person in its role slot.
+        contact_id:        sellerId,
         seller_contact_id: sellerId,
         listing_id:        listing.id,
-        transaction_type:  "seller_side",
-        status:            "pre_listing",
+        deal_type:         "seller",
+        status:            "qualifying",
+        deal_name:         params.propertyAddress, // NOT NULL on transactions
         property_address:  params.propertyAddress,
       })
       .select()
       .maybeSingle()
 
-    // Create Dotloop loop
-    const dotloopResult = await createOrPullDotloop({
-      agentId: ownerAgentId,
-      listingId: listing.id,
-      propertyAddress: params.propertyAddress,
-      sellerId: sellerId ?? "",
-      transactionType: "listing",
-    })
+    if (txError) {
+      console.error("[AI Listing Intake] Transaction insert failed:", txError)
+    }
 
-    // Update listing with loop ID
-    if (dotloopResult.success && dotloopResult.loopId) {
-      await supabase
-        .from("listings")
-        .update({ dotloop_loop_id: dotloopResult.loopId })
-        .eq("id", listing.id)
+    // Provider container at intake is provider-specific. We do NOT assume dotloop:
+    // only create a Dotloop loop when the brokerage's resolved provider is dotloop.
+    // Other providers create their container later at send-for-signature time.
+    let dotloopResult: Awaited<ReturnType<typeof createOrPullDotloop>> | null = null
+    const resolvedProvider = await resolveTransactionProvider({
+      agentUserId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (resolvedProvider?.provider === "dotloop") {
+      dotloopResult = await createOrPullDotloop({
+        agentId: ownerAgentId,
+        listingId: listing.id,
+        propertyAddress: params.propertyAddress,
+        sellerId: sellerId ?? "",
+        transactionType: "listing",
+      })
+
+      // Update listing with loop ID
+      if (dotloopResult.success && dotloopResult.loopId) {
+        await supabase
+          .from("listings")
+          .update({ dotloop_loop_id: dotloopResult.loopId })
+          .eq("id", listing.id)
+      }
     }
 
     revalidatePath("/dashboard/listings")

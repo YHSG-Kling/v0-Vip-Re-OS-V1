@@ -9,6 +9,7 @@ import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCar
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
@@ -68,6 +69,26 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   // Previous code read (contact as any).agents?.name which doesn't exist on the
   // contact row — agentName was always undefined.
   const agentName = agent?.full_name ?? null
+
+  // Deal team — common-area visibility (who was/is part of this client's journey).
+  const lifetimeSupabase = await createClient()
+  let dealTeamMembers: any[] = []
+  let primaryAgent: any = null
+  if (transaction?.id) {
+    const { data: dt } = await lifetimeSupabase
+      .from("deal_team_members")
+      .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
+      .eq("transaction_id", transaction.id)
+    dealTeamMembers = dt ?? []
+  }
+  if (contact.agent_id) {
+    const { data: pa } = await lifetimeSupabase
+      .from("agents")
+      .select("id, first_name, last_name, phone, email, profile_photo_url")
+      .eq("id", contact.agent_id)
+      .maybeSingle()
+    primaryAgent = pa
+  }
 
   // Get last market update touchpoint
   const lastMarketUpdate = touchpoints.find(
@@ -292,6 +313,15 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Deal Team — who was part of your home journey */}
+      {(primaryAgent || dealTeamMembers.length > 0) && (
+        <DealTeamCard
+          primaryAgent={primaryAgent}
+          teamMembers={dealTeamMembers as any}
+          variant="full"
+        />
+      )}
 
       {/* Re-engagement: thinking of moving */}
       <Card className="border-blue-200 bg-blue-50">

@@ -329,11 +329,11 @@ export async function manualTierOverride(
 
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
-  if (profile?.role !== "superadmin") {
+  if (profile?.user_type !== "superadmin" && profile?.platform_role !== "superadmin") {
     throw new Error("Unauthorized: superadmin only")
   }
 

@@ -94,10 +94,10 @@ export async function emitFinancialVerificationEvent(
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.financial.verification",
+      activity_type: "buyer.financial.verification",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata,
     })
     .select("id")

@@ -23,7 +23,7 @@ import {
   ShieldCheck,
   Activity,
 } from "lucide-react"
-import { generateAIJSON } from "@/lib/ai"
+import { generateAIJSON } from "@/app/actions/ai-generate"
 import { executeWorkflow } from "@/app/actions/workflows"
 import { supabaseService } from "@/services/supabaseService"
 import { toast } from "sonner"
@@ -154,9 +154,9 @@ Return JSON with this structure:
   "parameters": { "name": "optional", "address": "optional", "actionType": "optional", "date": "optional" }
 }`
 
-      const response = await generateAIJSON(prompt)
+      const response = await generateAIJSON<AIResult>(prompt)
 
-      const result = (response.data ?? {}) as AIResult
+      const result = (response.data ?? {} as AIResult)
       setAiResponse(result)
 
       // Execute Logic based on intent

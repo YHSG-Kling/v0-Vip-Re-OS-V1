@@ -204,10 +204,10 @@ export async function emitGovernanceBlockEvent(params: {
     : 'buyer.action.blocked.lifecycle_gate'
 
   const { error } = await supabase.from('activities').insert({
-    type: eventType,
+    activity_type: eventType,
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action_attempted: action,
       blocker_type: blockResult.blockerType,
@@ -243,10 +243,10 @@ export async function emitEligibilityCheckEvent(params: {
   const supabase = createServiceClient()
 
   const { error } = await supabase.from('activities').insert({
-    type: 'buyer.lifecycle.eligibility_checked',
+    activity_type: 'buyer.lifecycle.eligibility_checked',
     entity_type: 'contact',
     entity_id: contactId,
-    user_id: userId,
+    agent_user_id: userId,
     metadata: {
       action: action,
       allowed: checkResult.allowed,
@@ -280,7 +280,7 @@ export async function checkAdminOverride(params: {
   // Verify admin/broker role
   const { data: user, error: userError } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, platform_role')
     .eq('id', userId)
     .single()
 
@@ -288,7 +288,7 @@ export async function checkAdminOverride(params: {
     return { allowed: false, error: 'User not found' }
   }
 
-  if (!['admin', 'broker'].includes(user.role)) {
+  if (!['admin', 'broker', 'broker_owner', 'superadmin'].includes(user.user_type ?? '') && user.platform_role !== 'superadmin') {
     return { allowed: false, error: 'Only admins or brokers can override governance' }
   }
 

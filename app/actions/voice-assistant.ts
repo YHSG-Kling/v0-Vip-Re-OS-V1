@@ -502,13 +502,16 @@ async function getTodayAppointments(agentId: string) {
   return data || []
 }
 
-async function addContactNote(contactId: string, noteText: string, agentId: string) {
+async function addContactNote(contactId: string, _noteText: string, _agentId: string) {
   const supabase = await createClient()
-  return await supabase.from("notes").insert({
+  // contact_notes uses body (not content), author_user_id (not agent_id), is_private.
+  // The voice-assistant flow doesn't carry the auth user id directly, so derive it.
+  const { data: { user } } = await supabase.auth.getUser()
+  return await supabase.from("contact_notes").insert({
     contact_id: contactId,
-    agent_id: agentId,
-    content: noteText,
-    note_type: "voice_command",
+    author_user_id: user?.id ?? null,
+    body: _noteText,
+    is_private: false,
   })
 }
 

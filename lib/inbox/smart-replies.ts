@@ -12,8 +12,7 @@
  */
 
 import "server-only"
-import { openai } from "@ai-sdk/openai"
-import { generateObject } from "ai"
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 const SmartReplySchema = z.object({
@@ -56,12 +55,14 @@ const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => 
 }
 
 export async function generateSmartReplies(input: BuildContextInput): Promise<SmartReply[]> {
-  if (!process.env.OPENAI_API_KEY) return FALLBACK_REPLIES(input)
+  // Routed via generateObjectRouted: gateway + AI_TASK_ROUTING + fallback + fair-use + cost log.
+  // Falls back to canned replies when the gateway key is missing.
+  if (!process.env.AI_GATEWAY_API_KEY) return FALLBACK_REPLIES(input)
 
   try {
-    const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
-      schema: SmartReplySchema,
+    const { object } = await generateObjectRouted({
+      feature: "smart_reply_generation",
+      schema:  SmartReplySchema,
       system:
         "You are a real estate agent's reply assistant. Produce three short replies to the inbound message. " +
         "Lead with empathy / acknowledgement (Them First). Never quote prices, never speak for the other side, " +

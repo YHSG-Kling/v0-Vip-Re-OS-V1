@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 
 import {
 NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     const { count, error } = await supabase
       .from("automation_errors")

@@ -91,10 +91,10 @@ export async function emitExpirationTransitionSignal(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.lifecycle.expiration_transition_signal",
+      activity_type: "buyer.lifecycle.expiration_transition_signal",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         from_state: fromState,
         target_state: "BUYER_ON_HOLD",
@@ -130,10 +130,9 @@ export async function emitSLAEscalation(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.lifecycle.sla_escalation",
+      activity_type: "buyer.lifecycle.sla_escalation",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: "system",
       metadata: {
         escalation_type: escalationType,
         severity,
@@ -291,10 +290,9 @@ export async function emitRenewalReminderSignal(params: {
 
   // Agent task (correct location, no changes) — type: buyer.lifecycle.renewal_reminder
   const { error } = await supabase.from("activities").insert({
-    type: "buyer.lifecycle.renewal_reminder",
+    activity_type: "buyer.lifecycle.renewal_reminder",
     entity_type: "contact",
     entity_id: contactId,
-    user_id: "system",
     metadata: {
       days_until_expiration: daysUntilExpiration,
       expires_at: expiresAt.toISOString(),

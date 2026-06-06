@@ -100,6 +100,7 @@ export const AI_TASK_ROUTING: Record<string, {
   competitive_monitoring:    { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live competitor listings + market positioning" },
   pricing_research:          { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Current comp sales data — live MLS/web context" },
   home_value_estimate:       { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Live AVM + recent sales context" },
+  lead_enrichment_research:  { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Web-research gap-fill for lead contact/identity when skip-trace is thin" },
 
   // ── STRUCTURED DATA EXTRACTION + JSON OUTPUT ──────────────────────────────
   // (offer_analysis lives above under decision-critical tasks; reuses same key)

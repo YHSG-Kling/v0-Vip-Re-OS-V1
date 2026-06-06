@@ -4,10 +4,11 @@
  * Dispatch a single tour stop's scheduling outreach to the listing agent.
  * Called by the buyer agent from the tour-confirm tab — one click per stop.
  *
- * Routing:
- *   - channel='showingtime' → POST to ShowingTime API (brokerage_credentials)
- *   - channel='sms'         → Twilio (brokerage_credentials)
- *   - channel='email'       → SendGrid (brokerage_credentials)
+ * Routing (all egress goes through the connector-gateway, never bespoke fetch):
+ *   - channel='showingtime' → ShowingTime API; key resolved via the unified
+ *                             ownership cascade (resolveScopedConnection)
+ *   - channel='sms'         → Twilio (integration_credentials) / agent deep-link
+ *   - channel='email'       → agent Gmail/Outlook OAuth → SendGrid → mailto
  *
  * If the brokerage doesn't have credentials for the chosen channel, returns
  * the rendered draft so the agent can copy/paste/send manually. Either
@@ -17,6 +18,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import {
   dispatchViaShowingTime, dispatchViaSms, dispatchViaEmail,
   type DispatchChannel, type DispatchResult,
@@ -131,7 +133,17 @@ export async function dispatchStopScheduling(
 
   let result: DispatchResult
   if (input.channel === "showingtime") {
-    const apiKey = await loadBrokerageCredential(supabase, ctx.brokerageId, "showingtime", "api_key") ?? process.env.SHOWINGTIME_API_KEY ?? null
+    // Resolve the ShowingTime key through the unified ownership cascade
+    // (agent → team → brokerage → platform). resolveScopedConnection also
+    // falls back to the legacy integration_credentials store, so keys
+    // connected either via the Connection Center or the old settings UI work.
+    const teamId = await loadTeamId(supabase, ctx.userId)
+    const conn = await resolveScopedConnection("showingtime", {
+      agentUserId: ctx.userId ?? null,
+      teamId,
+      brokerageId: ctx.brokerageId,
+    })
+    const apiKey = conn?.apiKey ?? process.env.SHOWINGTIME_API_KEY ?? null
     result = await dispatchViaShowingTime(dispatchCtx, apiKey)
   } else if (input.channel === "sms") {
     const [accountSid, authToken, fromNumber] = await Promise.all([
@@ -167,6 +179,19 @@ export async function dispatchStopScheduling(
   }).then(() => null, () => null)
 
   return { ...result, success: true, channel: input.channel }
+}
+
+async function loadTeamId(
+  supabase: ReturnType<typeof createServiceClient>,
+  userId: string | null | undefined,
+): Promise<string | null> {
+  if (!userId) return null
+  try {
+    const { data } = await supabase.from("users").select("team_id").eq("id", userId).maybeSingle()
+    return (data?.team_id as string | null) ?? null
+  } catch {
+    return null
+  }
 }
 
 async function loadBrokerageCredential(

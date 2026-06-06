@@ -21,6 +21,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -132,21 +133,16 @@ export async function ensureDIDAgent(
     },
   }
 
-  const res = await fetch(`${DID_API_BASE}/agents`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
+  const res = await callConnector<{ id?: string }>({
+    connector: "did", baseUrl: DID_API_BASE, path: "/agents", method: "POST",
+    auth: { style: "basic", username: didApiKey, password: "" }, body,
   })
 
-  const data = await res.json().catch(() => ({}))
+  const data = res.data ?? {}
   if (!res.ok || !data?.id) {
     return {
       ok: false,
-      error: data?.description ?? data?.message ?? `D-ID create-agent failed (${res.status})`,
+      error: res.error ?? `D-ID create-agent failed (${res.status})`,
     }
   }
 
@@ -195,24 +191,17 @@ export async function issueClientKey(
   const didApiKey = process.env.DID_API_KEY
   if (!didApiKey) return { ok: false, error: "DID_API_KEY not configured" }
 
-  const res = await fetch(`${DID_API_BASE}/agents/client-key`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      agent_id: params.didAgentId,
-      allowed_origins: params.allowedOrigins,
-    }),
+  const res = await callConnector<{ client_key?: string; expires_in?: number }>({
+    connector: "did", baseUrl: DID_API_BASE, path: "/agents/client-key", method: "POST",
+    auth: { style: "basic", username: didApiKey, password: "" },
+    body: { agent_id: params.didAgentId, allowed_origins: params.allowedOrigins },
   })
 
-  const data = await res.json().catch(() => ({}))
+  const data = res.data ?? {}
   if (!res.ok || !data?.client_key) {
     return {
       ok: false,
-      error: data?.description ?? data?.message ?? `D-ID client-key issuance failed (${res.status})`,
+      error: res.error ?? `D-ID client-key issuance failed (${res.status})`,
     }
   }
 

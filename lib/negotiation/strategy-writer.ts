@@ -13,6 +13,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildNegotiationContext } from "./analyzer"
 import { draftNegotiationStrategy } from "./copilot-ai"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export interface WriteStrategyResult {
   ok:         boolean
@@ -79,7 +80,7 @@ export async function writeNegotiationStrategy(
 
   // Sprint 5 portal projector picks this up to surface the customer-mirror.
   await svc.from("lifecycle_events").insert({
-    event_type:   "negotiation.strategy_ready",
+    event_type:   KernelEvent.NEGOTIATION_STRATEGY_READY,
     entity_type:  "offer",
     entity_id:    ctx.offerId,
     brokerage_id: ctx.brokerageId,

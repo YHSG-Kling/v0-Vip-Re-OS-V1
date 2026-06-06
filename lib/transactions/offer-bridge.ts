@@ -1,12 +1,78 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import type { TransactionStage } from "./transaction-stages"
 import { ensureRequiredMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
 
 /**
+ * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
+ * fields on the offers row — callers can't fabricate compliance / signature state by
+ * passing them as params; the gate refuses if the OFFER itself doesn't show them.
+ *
+ * Enforces, in order:
+ *   1. Offer exists in the brokerage (and not orphaned).
+ *   2. No prior transaction (no double-create).
+ *   3. Buyer has signed (buyer_signed_at IS NOT NULL).
+ *   4. Executed contract on file — either:
+ *        (a) buyer-first original offer: seller_response_type='accepted' AND
+ *            fully_signed_contract_received_at set, OR
+ *        (b) seller-first counter: seller_signed_at AND
+ *            fully_signed_contract_received_at set
+ *   5. Compliance passed (compliance_passed_at IS NOT NULL).
+ *
+ * Same gate logic as app/actions/buyer-offer/submit-to-compliance.ts — pulled INTO the
+ * bridge so every caller (the submit action, the e-sign webhook, the seller-accept path,
+ * the kernel-level converter, and any future agentic caller) inherits identical
+ * enforcement. Fail-closed: missing fields = refusal, no exceptions for "trust me" callers.
+ */
+export interface OfferGateRow {
+  id:                                string
+  brokerage_id:                      string
+  transaction_id:                    string | null
+  buyer_signed_at:                   string | null
+  seller_signed_at:                  string | null
+  seller_response_type:              string | null
+  fully_signed_contract_received_at: string | null
+  compliance_passed_at:              string | null
+}
+
+export interface OfferGateResult {
+  allowed: boolean
+  reason?: string
+  offer?:  OfferGateRow
+}
+
+export async function assertOfferReadyForTransaction(params: {
+  offerId:     string
+  brokerageId: string
+}): Promise<OfferGateResult> {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("offers")
+    .select("id, brokerage_id, transaction_id, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, compliance_passed_at")
+    .eq("id", params.offerId)
+    .maybeSingle()
+  if (error) return { allowed: false, reason: `offer load failed: ${error.message}` }
+  if (!data) return { allowed: false, reason: "offer not found" }
+  if (data.brokerage_id !== params.brokerageId) {
+    return { allowed: false, reason: "offer brokerage mismatch" }
+  }
+  const o = data as OfferGateRow
+  if (o.transaction_id)  return { allowed: false, reason: "transaction already exists for this offer", offer: o }
+  if (!o.buyer_signed_at) return { allowed: false, reason: "buyer has not signed yet", offer: o }
+  const executedViaResponse = o.seller_response_type === "accepted" && !!o.fully_signed_contract_received_at
+  const executedViaCounter  = !!o.seller_signed_at && !!o.fully_signed_contract_received_at
+  if (!executedViaResponse && !executedViaCounter) {
+    return { allowed: false, reason: "executed contract not on file (seller_response_type or seller_signed_at + fully_signed_contract_received_at missing)", offer: o }
+  }
+  if (!o.compliance_passed_at) {
+    return { allowed: false, reason: "compliance has not passed on this offer", offer: o }
+  }
+  return { allowed: true, offer: o }
+}
+
+/**
  * Create transaction from accepted offer
- * Enforces: contract_date + compliance_passed_at gates
+ * Enforces: contract_date + compliance_passed_at + signature-completeness gates
  */
 export async function createTransactionFromOffer(params: {
   offerId: string
@@ -20,24 +86,45 @@ export async function createTransactionFromOffer(params: {
     financingDeadline?: string
     closingDate?: string
   }
+  /** Set by callers that ARE the authoritative gate (submitOfferToCompliance — which
+   *  did the brokerage-required-docs audit + packet-completeness scan + stamped
+   *  compliance_passed_at all in one atomic call). Default false: re-verify the gate
+   *  inside the bridge from the offer row's source-of-truth fields. */
+  skipOfferGate?: boolean
 }) {
   const supabase = createServiceClient()
-  
-  // Validate gates
+
+  // Validate caller-supplied params first (no compute wasted on bad calls).
   if (!params.contractDate) {
     throw new Error("[offer-bridge] contract_date required to create transaction")
   }
-  
   if (!params.compliancePassedAt) {
     throw new Error("[offer-bridge] compliance_passed_at required to create transaction")
+  }
+
+  // Canonical OFFER-side gate — read source-of-truth fields and refuse if buyer/seller
+  // signatures, executed contract, or compliance aren't on the offer. Callers can't
+  // fabricate this by passing fake params; the gate looks at the OFFER row.
+  if (!params.skipOfferGate) {
+    const gate = await assertOfferReadyForTransaction({
+      offerId:     params.offerId,
+      brokerageId: params.brokerageId,
+    })
+    if (!gate.allowed) {
+      throw new Error(`[offer-bridge] Gate refused transaction creation: ${gate.reason}`)
+    }
   }
   
   // Get offer details.
   // NOTE: buyer_agents table does NOT exist — use offer.agent_id directly.
   //       offer.buyer_id does NOT exist — live FK is offer.contact_id.
+  // Also pull esign_provider + provider_envelope_id so we can stamp the transaction
+  // with the canonical external-provider tracking columns (m106). Without this,
+  // sync-from-provider can't pull documents for transactions whose provider isn't
+  // Dotloop (which is the only one with a dedicated legacy column).
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address")
+    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, esign_provider, provider_envelope_id")
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -89,6 +176,13 @@ export async function createTransactionFromOffer(params: {
       compliance_passed_at: params.compliancePassedAt,
       stage:                "UNDER_CONTRACT",
       status:               "under_contract",
+      // m106 — generic provider tracking inherited from the source offer's envelope so
+      // sync-from-provider can pull documents for this transaction regardless of
+      // which provider the brokerage uses. Dotloop transactions also keep their
+      // legacy dotloop_loop_id via the back-link from ai-offer-creation, but the
+      // generic columns are now the single source of truth.
+      external_provider_source:         (offer as any).esign_provider       ?? null,
+      external_provider_transaction_id: (offer as any).provider_envelope_id ?? null,
       created_at:           new Date().toISOString(),
     })
     .select()
@@ -115,16 +209,45 @@ export async function createTransactionFromOffer(params: {
     },
   })
   
+  // Earnest-money due date + title company come from the compliance review gate's contract read:
+  // offers.earnest_money_due_at is the scanner-resolved calendar date (contract_date +
+  // earnest_money_due_days); the title/escrow company is extracted onto the scanned signed contract
+  // (documents.extracted_fields.title_company). These feed both the EMD milestone date and the
+  // proactive "under contract" portal card.
+  // TZ-safe: derive the calendar due date from the execution (contract) date + "N days from
+  // execution" via pure UTC date arithmetic — NOT new Date(timestamptz).toISOString(), which would
+  // shift a money-sensitive deadline by a day for non-UTC stored times. Fall back to the stored
+  // value's literal date portion, then to any caller-provided term.
+  const dueDays = (offer as any).earnest_money_due_days as number | null
+  const earnestDueDate: string | undefined =
+    (params.contractDate && typeof dueDays === "number")
+      ? addDaysToDateString(params.contractDate.split("T")[0], dueDays)
+      : (offer as any).earnest_money_due_at
+        ? String((offer as any).earnest_money_due_at).slice(0, 10)
+        : params.contractTerms.earnestMoneyDue ?? undefined
+  let titleCompany: string | null = null
+  try {
+    const { data: doc } = await supabase
+      .from("documents")
+      .select("extracted_fields")
+      .eq("contact_id", (offer as any).contact_id)
+      .eq("classification", "signed_contract")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    titleCompany = ((doc?.extracted_fields as any)?.title_company as string) ?? null
+  } catch { /* title company is best-effort enrichment */ }
+
   // ensureRequiredMilestones looks up dates by snake_case milestone_name key
   // e.g. contractTerms["closing_date"], contractTerms["inspection_deadline"]
   // Normalise camelCase keys from the offer bridge params before passing in
   const normalisedTerms: Record<string, string> = {}
-  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline, earnestMoneyDue } = params.contractTerms
+  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = params.contractTerms
   if (closingDate)        normalisedTerms["closing_date"]        = closingDate
   if (inspectionDeadline) normalisedTerms["inspection_deadline"] = inspectionDeadline
   if (appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = appraisalDeadline
   if (financingDeadline)  normalisedTerms["financing_deadline"]  = financingDeadline
-  if (earnestMoneyDue)    normalisedTerms["earnest_money_due"]   = earnestMoneyDue
+  if (earnestDueDate)     normalisedTerms["earnest_money_due"]   = earnestDueDate
 
   await ensureRequiredMilestones(
     transaction.id,
@@ -151,20 +274,33 @@ export async function createTransactionFromOffer(params: {
     created_at:     new Date().toISOString(),
   })
   
-  // Create transparency update for client
-  await supabase.from("transparency_updates").insert({
-    transaction_id: transaction.id,
-    brokerage_id: params.brokerageId,
-    update_type: "stage_change",
-    title: "Under Contract",
-    message: `Congratulations! Your offer has been accepted and the contract is fully executed. 
-    
-Earnest money due: ${params.contractTerms.earnestMoneyDue || 'TBD'}
-Inspection deadline: ${params.contractTerms.inspectionDeadline || 'TBD'}
-Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
-    is_client_visible: true,
-    created_at: new Date().toISOString()
-  })
+  // Client-facing "under contract" card now flows through the canonical kernel template path
+  // (idempotent + buyer/seller-aware) instead of a one-off direct transparency_updates write — this
+  // is the single chokepoint all four accept flows share, so emitting here gives every flow the same
+  // notification + sequence-enrollment + portal card. For the seller-accept path (which also emits
+  // OFFER_ACCEPTED) the portal writer's idempotency collapses the two into one card. Best-effort:
+  // never break transaction creation on a fan-out failure. Contract dates surface as their own
+  // milestone cards (earnest money, inspection, closing) as the deal progresses.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.OFFER_ACCEPTED,
+      brokerageId: params.brokerageId,
+      entityId:    transaction.id,
+      actorUserId: "",
+      metadata: {
+        earnest_money_due:      earnestDueDate ?? null,
+        earnest_money_due_days: (offer as any).earnest_money_due_days ?? null,
+        title_company:          titleCompany,
+        inspection_deadline:    params.contractTerms.inspectionDeadline ?? null,
+        closing_date:           params.contractTerms.closingDate ?? null,
+        created_from_offer:     params.offerId,
+      },
+    })
+  } catch (err) {
+    console.error("[offer-bridge] emitTransactionEvent(OFFER_ACCEPTED) failed", err)
+  }
 
   // Auto-populate transaction_participants from offer + listing + brokerage
   // preferred-vendor directory. Never inserts placeholders — only rows for
@@ -179,4 +315,13 @@ Estimated closing: ${params.contractTerms.closingDate || 'TBD'}`,
   }
 
   return { success: true, transactionId: transaction.id }
+}
+
+/** Add N calendar days to a "YYYY-MM-DD" date string using pure UTC arithmetic (no local-timezone
+ *  drift), returning "YYYY-MM-DD". */
+function addDaysToDateString(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number)
+  const dt = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1))
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().split("T")[0]
 }

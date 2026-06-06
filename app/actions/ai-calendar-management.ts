@@ -476,15 +476,16 @@ Create a balanced follow-up schedule that:
     })
 
     // Create follow-up appointments
+    const { data: tpBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
     for (const followUp of followUpPlan.scheduledFollowUps) {
       await supabase.from("scheduled_touchpoints").insert({
         contact_id: followUp.contactId,
         agent_id: params.agentId,
+        brokerage_id: tpBrok?.brokerage_id,
         touchpoint_type: followUp.channel,
         scheduled_date: `${followUp.suggestedDate}T${followUp.suggestedTime}`,
-        purpose: followUp.purpose,
-        talking_points: followUp.talkingPoints,
-        priority: followUp.priority,
+        message_template: [followUp.purpose, followUp.talkingPoints, followUp.priority]
+          .filter(Boolean).join(" | "),
         ai_generated: true,
         status: "scheduled",
       })
@@ -736,7 +737,7 @@ Create a brief including:
       agent_id: params.agentId,
       brief_content: meetingBrief,
       generated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "appointment_id,agent_id" })
 
     return { success: true, meetingBrief }
   } catch (error) {
@@ -850,7 +851,7 @@ Create a balanced weekly plan that:
       week_start: params.weekStartDate,
       plan_content: weeklyPlan,
       generated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "agent_id,week_start" })
 
     return { success: true, weeklyPlan }
   } catch (error) {

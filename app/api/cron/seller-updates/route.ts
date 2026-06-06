@@ -104,7 +104,7 @@ export async function GET(req: NextRequest) {
     errors.push(`Seller updates cron failed: ${err.message}`)
     void supabase
       .from("automation_errors")
-      .insert({ cron_job: "seller-updates", error_message: err.message, occurred_at: ranAt })
+      .insert({ workflow_name: "seller-updates", error_message: err.message, severity: "error", created_at: ranAt })
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

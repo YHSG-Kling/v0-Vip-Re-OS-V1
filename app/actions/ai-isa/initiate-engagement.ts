@@ -24,7 +24,7 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
@@ -182,21 +182,36 @@ export async function initiateAIISAEngagement(
         }
         return ch
       }
-      // Lead only (unconsented): ONLY email or verified direct_mail
+      // Lead only (unconsented): ONLY email (when verified) or verified direct_mail. Per the
+      // canonical rule, an unconsented lead may only be reached by EMAIL when the email is verified.
+      // When neither channel is permitted, return the explicit sentinel 'no_outreach' so the caller
+      // can short-circuit BEFORE dispatchToChannel ever sends — avoiding CAN-SPAM / canonical-rule
+      // violations on an unverified address.
       const requested = (lead.preferred_channel ?? 'email') as string
-      if (!LEAD_ALLOWED_CHANNELS.has(requested)) return 'email'
-      if (requested === 'direct_mail') {
-        const hasVerifiedAddr = !!(
-          lead.mailing_address && lead.mailing_address_verified === true
-        )
-        return hasVerifiedAddr ? 'direct_mail' : 'email'
+      const hasVerifiedAddr = !!(lead.mailing_address && lead.mailing_address_verified === true)
+      const emailUsable = !!(lead.email && lead.email_verified === true)
+      const pick = (): string => {
+        if (!LEAD_ALLOWED_CHANNELS.has(requested)) return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
+        if (requested === 'direct_mail')           return hasVerifiedAddr ? 'direct_mail' : (emailUsable ? 'email' : 'no_outreach')
+        return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
       }
-      return 'email'
+      return pick()
     }
 
     const resolvedChannel = resolveKernelOutreachChannel(lead, contactRow)
     // forceChannel='email' overrides the resolved channel (operator-initiated send)
     const preferredChannel = opts?.forceChannel ?? resolvedChannel
+
+    // Honor the resolver's explicit no-permitted-channel sentinel — unconsented lead with no
+    // verified email AND no verified mailing address: skip outreach entirely. Without this, the
+    // dispatcher would have sent to an unverified email address, violating the canonical rule.
+    if (preferredChannel === 'no_outreach') {
+      return {
+        success: false,
+        error: 'No permitted outreach channel: email is not verified and mailing address is not verified.',
+        skipped_reason: 'no_outreach',
+      } as any
+    }
 
     return await dispatchToChannel(
       preferredChannel,
@@ -322,7 +337,7 @@ async function dispatchToChannel(
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailContext)
 
-    const videoResult = await generateHeyGenVideo({
+    const videoResult = await generateAvatarVideo({
       leadId: lead.id,
       firstName: lead.first_name || 'there',
       brokerageId: lead.brokerage_id,
@@ -394,6 +409,10 @@ async function dispatchToChannel(
 
     const shouldSendMail = await shouldTriggerDirectMail(leadId)
     if (shouldSendMail) {
+      // Wave 36 — welcome kit = postcard AND letter for a brand new
+      // lead with a verified address (idempotent at the trigger level:
+      // skipped if any individual_lead campaign already exists for this
+      // lead). Postcard for hand-time, letter for long-form intro.
       await triggerDirectMailCampaign({
         leadId: lead.id,
         brokerageId: lead.brokerage_id,
@@ -401,6 +420,7 @@ async function dispatchToChannel(
         lastName: lead.last_name || '',
         motivation_type: lead.motivation_type,
         property_interest: lead.property_interest,
+        pieceTypes: ['postcard', 'letter'],
       })
     }
 
@@ -487,7 +507,7 @@ async function dispatchToChannel(
         agent_id:    lead.agent_id ?? null,
         vapi_call_id: vapiResponse.id,
         direction:   'outbound',
-        call_type:   'isa_ai',
+        call_type:   'ai_isa_call',
         status:      'initiated',
         started_at:  new Date().toISOString(),
       })

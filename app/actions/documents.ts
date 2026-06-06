@@ -572,16 +572,55 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
         }
 
         if (classification.document_type === "listing_agreement") {
-          await triggerChainsForEvent({
-            eventType: "compliance.listing_agreement_passed",
-            brokerageId: docRecord.brokerage_id,
-            contactId: docRecord.contact_id ?? null,
-            metadata: {
-              document_id: docRecord.id,
-              extracted: baseExtracted,
-              signature_scan: signatureScan,
-            },
-          })
+          // A listing agreement is EXECUTABLE only when BOTH the listing agent AND
+          // the seller have completed signatures AND initials. overallStatus="pass"
+          // is an aggregate and can pass with one party missing, so enforce per-role
+          // from the scan before auto-creating the listing.
+          const sc = (signatureScan as any)?.signatureCompleteness ?? {}
+          const PARTIES = ["agent", "seller"]
+          const roleOf = (m: any) => String(m?.signer_role ?? "").toLowerCase()
+          const sigGap = (sc.missingSignatures ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
+          const initGap = (sc.missingInitials ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
+          const bothPartiesExecuted =
+            sc.allRequiredSignaturesPresent === true &&
+            sc.allRequiredInitialsPresent === true &&
+            !sigGap && !initGap
+
+          if (!bothPartiesExecuted) {
+            console.warn(
+              `[v0] Listing agreement ${docRecord.id} not fully executed by agent + seller (signatures/initials incomplete) — listing NOT auto-created`
+            )
+          } else {
+            // Executable also requires ALL required listing documents present
+            // (state/federal/brokerage checklist), not just the signed agreement.
+            const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+            const docAudit = await auditListingDocuments(supabase as any, {
+              brokerageId:     docRecord.brokerage_id,
+              sellerContactId: docRecord.contact_id ?? null,
+              stateCode:       baseExtracted.state ?? null,
+            })
+
+            if (docAudit.missing_blocking.length > 0) {
+              console.warn(
+                `[v0] Listing agreement ${docRecord.id} executed but required documents missing (${docAudit.missing_blocking.join(", ")}) — listing NOT auto-created`
+              )
+            } else {
+              await triggerChainsForEvent({
+                eventType: "compliance.listing_agreement_passed",
+                brokerageId: docRecord.brokerage_id,
+                contactId: docRecord.contact_id ?? null,
+                metadata: {
+                  document_id: docRecord.id,
+                  extracted: baseExtracted,
+                  signature_scan: signatureScan,
+                  required_docs_audit: {
+                    present: docAudit.present,
+                    missing_warning: docAudit.missing_warning,
+                  },
+                },
+              })
+            }
+          }
         } else if (classification.document_type === "purchase_agreement") {
           // Only auto-create transaction when there is an offer record but
           // no transaction yet; otherwise existing applyContractExtraction

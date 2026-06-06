@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next'
+import { withWorkflow } from 'workflow/next'
 
 // Route tree uses [id] as the universal dynamic segment throughout app/dashboard/**
 // Widget CORS headers applied to /widget/* iframe pages and /api/widget/* routes.
@@ -73,8 +74,41 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ['lucide-react', 'zustand'],
   },
+  // Skip bundling for packages that ship platform-specific native binaries
+  // or otherwise can't be analysed by Turbopack. They get plain Node
+  // `require()` at server runtime instead of being walked + chunked.
+  //
+  // Why each is here:
+  //   @remotion/* — the Remotion renderer + bundler depend on platform-
+  //     specific @remotion/compositor-* native modules and esbuild
+  //     binaries; walking those crashes Turbopack on the unparseable
+  //     binary + the missing other-platform variants.
+  //   @rspack/core — pulled by @remotion/bundler; uses node:worker_threads.
+  //   esbuild + @esbuild/* — Remotion's esbuild prebuild ships native
+  //     binaries + a README.md in its bin/ dir that Turbopack chokes on.
+  //   @sparticuz/chromium-min, ffmpeg-static — also native + already
+  //     handled via vercel.json's includeFiles override per route.
+  serverExternalPackages: [
+    "@remotion/bundler",
+    "@remotion/renderer",
+    "@remotion/compositor-darwin-arm64",
+    "@remotion/compositor-darwin-x64",
+    "@remotion/compositor-linux-x64-gnu",
+    "@remotion/compositor-linux-x64-musl",
+    "@remotion/compositor-linux-arm64-gnu",
+    "@remotion/compositor-linux-arm64-musl",
+    "@remotion/compositor-win32-x64-msvc",
+    "@rspack/core",
+    "esbuild",
+    "@sparticuz/chromium-min",
+    "ffmpeg-static",
+  ],
   reactStrictMode: true,
   poweredByHeader: false,
+  // Next 16 makes Turbopack the default builder; acknowledge it explicitly
+  // so the `webpack` block below (used only for the legacy dev watch path)
+  // doesn't promote a warning to a build error.
+  turbopack: {},
   // Reduce aggressive file watching to prevent duplicate dev server spawns
   webpack: (config, { isServer }) => {
     if (!isServer) {
@@ -89,4 +123,6 @@ const nextConfig: NextConfig = {
   },
 }
 
-export default nextConfig
+// withWorkflow enables the "use workflow" / "use step" directives (Vercel Workflow
+// DevKit). Durable workflows live in workflows/*; see workflows/market-insight-workflow.ts.
+export default withWorkflow(nextConfig)

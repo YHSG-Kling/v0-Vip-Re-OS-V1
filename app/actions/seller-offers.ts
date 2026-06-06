@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { emitTransactionEvent } from "@/lib/kernel/transactions"
 import { KernelEvent } from "@/lib/kernel/events"
 import { analyzeAndCompareOffers, calcNetToSeller } from "@/lib/offers/offer-analyzer"
 import { isValidUUID } from "@/lib/validations"
@@ -172,27 +172,16 @@ export async function acceptOffer(params: {
   // Clear winning flag on all other offers for this listing
   await supabase
     .from("offers")
-    .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+    // Live column is is_winning_offer; the older winning_offer alias was never deployed.
+    .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
 
-  // lifecycle_events + kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     offerId,
-    event_type:    KernelEvent.OFFER_ACCEPTED,
-    actor_user_id: agentUserId,
-    metadata:      { listing_id: listingId },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_ACCEPTED,
-    brokerageId,
-    entityType: "offer",
-    entityId:   offerId,
-  }).catch(() => {})
+  // OFFER_ACCEPTED is now emitted once, from the shared chokepoint createTransactionFromOffer (below),
+  // which carries the real contract dates (earnest money / inspection / closing) in metadata so the
+  // proactive "under contract" card is date-specific. Emitting here too would write a date-less card
+  // first and the portal writer's title-dedupe would then suppress the rich one — so we don't.
 
   // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT
   await transitionLifecycle({
@@ -356,26 +345,20 @@ export async function sendCounterOffer(params: {
     .eq("id", parentOfferId)
     .eq("brokerage_id", brokerageId)
 
-  // lifecycle_events + kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     counter.id,
-    event_type:    KernelEvent.OFFER_COUNTER_SENT,
-    actor_user_id: agentUserId,
+  // Canonical fan-out: lifecycle event + staff notification + buyer/seller
+  // portal updates. The counter offer row is the entity.
+  await emitTransactionEvent({
+    event:       KernelEvent.OFFER_COUNTER_SENT,
+    entityType:  "offer",
+    brokerageId,
+    entityId:    counter.id,
+    actorUserId: agentUserId,
     metadata: {
       listing_id:      listingId,
       parent_offer_id: parentOfferId,
       counter_price:   counterPrice,
       round:           nextRound,
     },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_COUNTER_SENT,
-    brokerageId,
-    entityType: "offer",
-    entityId:   counter.id,
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
@@ -421,20 +404,15 @@ export async function rejectOffer(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     offerId,
-    event_type:    KernelEvent.OFFER_REJECTED,
-    actor_user_id: agentUserId,
-    metadata:      { listing_id: listingId, reason: reason ?? null },
-  })
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_REJECTED,
+  // Canonical fan-out: lifecycle event + staff notification + buyer portal
+  // update ("Offer not accepted") so the buyer learns the outcome.
+  await emitTransactionEvent({
+    event:       KernelEvent.OFFER_REJECTED,
+    entityType:  "offer",
     brokerageId,
-    entityType: "offer",
-    entityId:   offerId,
+    entityId:    offerId,
+    actorUserId: agentUserId,
+    metadata:    { listing_id: listingId, reason: reason ?? null },
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)

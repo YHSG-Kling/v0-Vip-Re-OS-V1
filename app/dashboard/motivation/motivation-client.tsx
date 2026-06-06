@@ -622,7 +622,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <Link href="/dashboard/buyers">
+            <Link href="/crm?contact_type=buyer">
               <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
                 <Home className="h-8 w-8 mx-auto mb-2 text-primary" />
                 <p className="font-medium text-sm">Complete a Showing</p>
@@ -712,7 +712,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
               </div>
               <Progress value={50} className="h-2 mb-2" />
               <p className="text-sm text-muted-foreground mb-3">1 of 2 completed</p>
-              <Link href="/dashboard/buyers">
+              <Link href="/crm?contact_type=buyer">
                 <Button size="sm" className="w-full">
                   Start Challenge
                 </Button>

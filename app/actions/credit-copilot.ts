@@ -114,16 +114,19 @@ export async function referToCreditPartner(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
-  // Create partner referral record
+  // Create partner referral record. CHECK on status allows
+  //   referred | in_progress | completed | declined.
+  // 'pending' (the legacy value) gets rejected; map to 'referred'.
   const { data, error } = await supabase
-    .from("credit_partner_referral")
+    .from("credit_partner_referrals")
     .insert({
       contact_id: params.contact_id,
       partner_id: params.partner_id,
       referring_agent_id: user.id,
       referral_notes: params.referral_notes,
       expected_timeline: params.expected_timeline,
-      status: "pending",
+      status: "referred",
+      brokerage_id: profile.brokerage_id,
     })
     .select()
     .single()
@@ -210,12 +213,12 @@ export async function handlePartnerReferral(payload: any) {
   const supabase = await createServerClient()
   const { contact_id, partner_id, partner_name, user_id } = payload
 
-  // Create tracking record
-  await supabase.from("credit_partner_referral").insert({
+  // Create tracking record. status CHECK = referred|in_progress|completed|declined.
+  await supabase.from("credit_partner_referrals").insert({
     contact_id,
     partner_id,
     referring_agent_id: user_id,
-    status: "pending",
+    status: "referred",
     referred_at: new Date().toISOString(),
   })
 

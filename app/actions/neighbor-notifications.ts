@@ -233,7 +233,7 @@ export async function launchNeighborNotification(params: {
         city: r.property_city ?? "",
         state: r.property_state ?? "",
         zip: r.property_zip ?? "",
-        status: "queued",
+        delivery_status: "queued",
       }))
       await supabase.from("direct_mail_recipients").insert(dmRecipientRows)
     }

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const IDX_API_BASE = process.env.IDXBROKER_API_URL || "https://api.idxbroker.com"
 const IDX_API_KEY = process.env.IDXBROKER_API_KEY
@@ -33,24 +34,17 @@ export async function searchProperties(filters: PropertyFilters) {
       }
     }
 
-    const response = await fetch(`${IDX_API_BASE}/search`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${IDX_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...filters,
-        limit: 50,
-      }),
+    const response = await callConnector<{ results?: any[] }>({
+      connector: "idxbroker", baseUrl: IDX_API_BASE, path: "/search", method: "POST",
+      auth: { style: "bearer", token: IDX_API_KEY! },
+      body: { ...filters, limit: 50 },
     })
 
     if (!response.ok) {
-      throw new Error(`IDX API error: ${response.statusText}`)
+      throw new Error(`IDX API error: ${response.error ?? response.status}`)
     }
 
-    const data = await response.json()
-    return { success: true, properties: data.results || [] }
+    return { success: true, properties: response.data?.results || [] }
   } catch (error: any) {
     console.error("IDX Search error:", error)
     return { success: false, error: error.message, properties: [] }
@@ -135,10 +129,10 @@ Output ONLY valid JSON with this exact structure:
 
     await supabase.from("property_search_log").insert({
       contact_id: data.contactId,
-      natural_query: data.naturalLanguageQuery,
+      query_text: data.naturalLanguageQuery,
       extracted_filters: filters,
-      results_count: searchResult.properties?.length || 0,
-      intent: filters.intent || "browsing",
+      result_count: searchResult.properties?.length || 0,
+      metadata: { intent: filters.intent || "browsing" },
     })
 
     return {

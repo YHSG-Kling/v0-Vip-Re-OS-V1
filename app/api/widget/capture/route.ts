@@ -72,7 +72,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('brokerage_id', brokerage.id)
       .maybeSingle()
 
-    const agentUserId = session?.agent_id ?? null
+    // chat_sessions.agent_id is agents.id (FK to agents). Pass through.
+    const ownerAgentId = session?.agent_id ?? null
 
     // ── 3. Parse name ──────────────────────────────────────────────────────
     const parts = name.trim().split(/\s+/)
@@ -83,7 +84,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const now = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId:     brokerage.id,
-      agentUserId:     agentUserId,
+      ownerAgentId,
       source:          'widget',
       first_name,
       last_name,
@@ -100,7 +101,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (consentGiven) {
       await persistContactConsent({
         brokerageId: brokerage.id,
-        agentId: agentUserId,
+        agentId: ownerAgentId,
         contactId,
         consentText: 'Widget chat consent — TCPA disclosure accepted in chat widget',
         consentSource: `/widget/${brokerageSlug}`,

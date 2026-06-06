@@ -46,7 +46,7 @@ export async function ProvisioningHealthPanel({ brokerageId }: Props) {
     .select("id, first_name, last_name, email, user_type, role, created_at")
     .eq("brokerage_id", brokerageId)
     .is("deleted_at", null)
-    .in("user_type", ["agent", "admin", "broker", "coordinator"])
+    .in("user_type", ["agent", "admin", "broker", "tc"])
     .order("created_at", { ascending: false })
     .limit(50)
 

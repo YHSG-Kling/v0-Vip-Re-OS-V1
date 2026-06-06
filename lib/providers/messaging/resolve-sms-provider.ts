@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import {
   isSupportedSMSProvider,
   type SupportedSMSProvider,
@@ -57,105 +58,64 @@ async function readOverride(
   return (k && isSupportedSMSProvider(k)) ? k : null
 }
 
-async function readCredential(params: {
-  scopeColumn: "agent_user_id" | "brokerage_id"
-  scopeId: string
-  preferredProvider: string | null
-}): Promise<{
-  platform: SupportedSMSProvider
-  credentials: SMSProviderCredentials
-  credentialId: string
-} | null> {
-  const svc = createServiceClient()
-  let q = svc
-    .from("platform_credentials")
-    .select("id, platform, api_key, account_id, access_token, refresh_token, config")
-    .eq(params.scopeColumn, params.scopeId)
-    .eq("is_active", true)
-    .in("platform", params.preferredProvider ? [params.preferredProvider] : SUPPORTED_SMS_PLATFORMS)
-    .order("last_tested_at", { ascending: false, nullsFirst: false })
-    .limit(1)
-  const { data: cred } = await q.maybeSingle()
-  if (!cred || !isSupportedSMSProvider(cred.platform)) return null
-  const cfg = (cred.config as Record<string, unknown> | null) ?? {}
+/** Map a unified ScopedConnection onto the SMS adapter credential shape. */
+function toSMSCredentials(conn: {
+  apiKey: string | null; accessToken: string | null; refreshToken: string | null
+  accountId: string | null; config: Record<string, unknown>
+}): SMSProviderCredentials {
+  const cfg = conn.config ?? {}
   return {
-    platform: cred.platform as SupportedSMSProvider,
-    credentials: {
-      apiKey:     (cred.api_key as string) ?? (cred.access_token as string) ?? "",
-      apiSecret:  (cfg.auth_token as string | undefined)
-                  ?? (cred.refresh_token as string | undefined)
-                  ?? (cfg.api_password as string | undefined),
-      fromNumber: (cfg.from_number as string | undefined) ?? (cred.account_id as string | undefined),
-      config:     cfg,
-    },
-    credentialId: cred.id as string,
+    apiKey:     conn.apiKey ?? conn.accessToken ?? "",
+    apiSecret:  (cfg.auth_token as string | undefined)
+                ?? conn.refreshToken ?? (cfg.api_password as string | undefined),
+    fromNumber: (cfg.from_number as string | undefined) ?? conn.accountId ?? undefined,
+    config:     cfg,
   }
 }
 
 export async function resolveSMSProviderForActor(
   ctx: ResolveSMSContext,
 ): Promise<ResolvedSMSProvider> {
-  // 1. User-scoped override → user-scoped credential
-  if (ctx.userId) {
-    const userPick = await readOverride("user", ctx.userId)
-    const userCred = await readCredential({
-      scopeColumn: "agent_user_id",
-      scopeId:     ctx.userId,
-      preferredProvider: userPick,
-    })
-    if (userCred) {
+  // Provider SELECTION (provider_overrides), most-specific scope first. The actual CREDENTIAL
+  // read goes through the unified ownership cascade (resolveScopedConnection: agent → team →
+  // brokerage → platform, with the legacy connection-manager fallback) so per-tier scoping is
+  // resolved in ONE place — this also closes the old gap where a team override had no
+  // team-scoped credential read and silently fell back to brokerage.
+  const userPick      = ctx.userId      ? await readOverride("user", ctx.userId)            : null
+  const teamPick      = ctx.teamId      ? await readOverride("team", ctx.teamId)            : null
+  const brokeragePick = ctx.brokerageId ? await readOverride("brokerage", ctx.brokerageId)  : null
+  const preferredProvider = userPick ?? teamPick ?? brokeragePick ?? null
+
+  const scopeCtx = {
+    agentUserId: ctx.userId ?? null,
+    teamId:      ctx.teamId ?? null,
+    brokerageId: ctx.brokerageId ?? null,
+  }
+  const ownerScopeToResolved = (ownerType: string): ResolvedSMSProvider["resolvedScope"] =>
+    ownerType === "agent" ? "user" : ownerType === "team" ? "team" : "brokerage"
+
+  // Try the selected provider first; otherwise probe each supported SMS provider in order.
+  const providersToTry = preferredProvider ? [preferredProvider] : SUPPORTED_SMS_PLATFORMS
+  for (const provider of providersToTry) {
+    const conn = await resolveScopedConnection(provider, scopeCtx)
+    if (conn && isSupportedSMSProvider(conn.provider)) {
       return {
-        providerName:  userCred.platform,
-        credentials:   userCred.credentials,
-        credentialId:  userCred.credentialId,
+        providerName:  conn.provider as SupportedSMSProvider,
+        credentials:   toSMSCredentials(conn),
+        credentialId:  conn.credentialId,
         isEnvFallback: false,
-        resolvedScope: "user",
+        resolvedScope: ownerScopeToResolved(conn.ownerType),
       }
     }
-    if (userPick) {
-      // User override declared but no user-scoped credential — fall through to
-      // brokerage credentials matching the user's selection.
-    }
   }
 
-  // 2. Team-scoped override
-  let teamPick: string | null = null
-  if (ctx.teamId) {
-    teamPick = await readOverride("team", ctx.teamId)
+  if (preferredProvider) {
+    throw new Error(
+      `Selected '${preferredProvider}' as SMS provider but no active credentials are configured. Add credentials in Settings → Integrations.`
+    )
   }
 
-  // 3. Brokerage-scoped override
-  let brokeragePick: string | null = null
-  if (ctx.brokerageId) {
-    brokeragePick = await readOverride("brokerage", ctx.brokerageId)
-  }
-
-  const preferredProvider = teamPick ?? brokeragePick ?? null
-
-  // 4. Brokerage-scoped credential (matching the highest-scope override if any)
-  if (ctx.brokerageId) {
-    const brokCred = await readCredential({
-      scopeColumn:       "brokerage_id",
-      scopeId:           ctx.brokerageId,
-      preferredProvider,
-    })
-    if (brokCred) {
-      return {
-        providerName:  brokCred.platform,
-        credentials:   brokCred.credentials,
-        credentialId:  brokCred.credentialId,
-        isEnvFallback: false,
-        resolvedScope: teamPick ? "team" : "brokerage",
-      }
-    }
-    if (preferredProvider) {
-      throw new Error(
-        `Selected '${preferredProvider}' as SMS provider but no active credentials are configured. Add credentials in Settings → Integrations.`
-      )
-    }
-  }
-
-  // 5. Environment fallback — Twilio only
+  // Environment fallback — Twilio only
   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER) {
     return {
       providerName: "twilio",

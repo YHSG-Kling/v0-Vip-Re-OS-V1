@@ -54,6 +54,7 @@ export async function generateBriefAudio(params: {
     text: script,
     voiceId: resolved.voiceId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
+    brokerageId: ctx.brokerageId,
   })
 
   if (!result.success || !result.audioBuffer) {

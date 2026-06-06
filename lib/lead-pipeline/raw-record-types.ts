@@ -40,6 +40,25 @@ export interface NormalizedScrapedRecord {
   motivationScore?: number | null
   sourceUrl?: string | null
 
+  /** Rich intent classification (when the source produced enough text to score). Optional so
+   *  every scraper need not populate it; downstream code reads `intent?.winner` defensively. */
+  intent?: {
+    winner: "buyer" | "seller" | "investor" | "agent" | "generic"
+    persona:
+      | "first_time_buyer" | "move_up_buyer" | "downsizer"
+      | "fsbo_seller" | "motivated_seller" | "expired_listing"
+      | "investor_flipper" | "investor_buy_hold" | "investor_1031"
+      | "agent_recruit"
+      | null
+    scores: { buyer: number; seller: number; investor: number; agent: number; generic: number }
+    matched: string[]
+    /** True when the source page advertises a saved-search / property-alert profile (buyer side). */
+    buyerAlertProfile?: boolean
+    /** Property addresses + prices the normalizer pulled from text/highlights/summary. */
+    propertyAddresses?: string[]
+    prices?: number[]
+  }
+
   /** Original payload from the provider — preserved verbatim for audit. */
   rawPayload: Record<string, unknown>
 }

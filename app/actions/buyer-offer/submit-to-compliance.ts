@@ -67,7 +67,7 @@ export async function submitOfferToCompliance(
   //    to "executed contract on file".
   const { data: offer } = await supabase
     .from("offers")
-    .select("id, brokerage_id, contact_id, agent_id, transaction_id, parent_offer_id, offer_type, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, ready_for_compliance_at, compliance_passed_at, closing_date, inspection_period_days, appraisal_contingency_days, financing_contingency_days, earnest_money")
+    .select("id, brokerage_id, contact_id, agent_id, transaction_id, parent_offer_id, offer_type, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, ready_for_compliance_at, compliance_passed_at, closing_date, inspection_period_days, appraisal_contingency_days, financing_contingency_days, earnest_money, listing_id, property_address")
     .eq("id", offerId)
     .maybeSingle()
   if (!offer) return { success: false, error: "Offer not found" }
@@ -108,6 +108,20 @@ export async function submitOfferToCompliance(
     .maybeSingle()
   const teamId = (actingUser?.team_id as string | null) ?? null
 
+  // Resolve the property's state so the audit applies the correct state-specific
+  // required documents (in-house → listing.state; outside property → parse the
+  // 2-letter state from the address). Without this the audit can't scope by state.
+  let stateCode: string | null = null
+  if (offer.listing_id) {
+    const { data: listingRow } = await supabase
+      .from("listings").select("state").eq("id", offer.listing_id as string).maybeSingle()
+    stateCode = (listingRow?.state as string | null) ?? null
+  }
+  if (!stateCode && offer.property_address) {
+    const m = String(offer.property_address).match(/,\s*([A-Za-z]{2})\s*\d{5}(?:-\d{4})?\b/)
+    stateCode = m ? m[1].toUpperCase() : null
+  }
+
   const audit = await auditOfferDocuments(supabase as any, {
     offerId,
     brokerageId:  offer.brokerage_id as string,
@@ -115,6 +129,7 @@ export async function submitOfferToCompliance(
     agentUserId:  userId,
     teamId,
     dealType:     "buyer",
+    stateCode,
   })
 
   const packetScan = await scanOfferPacketCompleteness({

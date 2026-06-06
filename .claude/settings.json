@@ -10,5 +10,19 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "network",
+      "*.vercel.app",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__list_tables",
+      "mcp__github__pull_request_read",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__get_advisors",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__list_projects",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__get_project",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__get_logs",
+      "mcp__github__list_pull_requests",
+      "mcp__628ca5a4-53d5-4fb6-a088-7c117fec9d59__list_migrations"
+    ]
   }
 }

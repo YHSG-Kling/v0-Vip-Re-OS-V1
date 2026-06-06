@@ -12,13 +12,23 @@ interface Props {
   listingId: string
 }
 
+type RepresentationStatus = "unrepresented" | "represented" | "prefer_not_to_say"
+
 export function PublicShowingForm({ listingId }: Props) {
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle")
   const [agentName, setAgentName] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // NAR Code of Ethics Article 16 — captured here so the listing agent doesn't auto-take
+  // a buyer who already has another agent. Server side blocks conversion when "represented".
+  const [representation, setRepresentation] = useState<RepresentationStatus | "">("")
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (!representation) {
+      setErrorMsg("Please tell us whether you're currently working with another real estate agent.")
+      setStatus("error")
+      return
+    }
     setStatus("submitting")
     setErrorMsg(null)
 
@@ -35,6 +45,7 @@ export function PublicShowingForm({ listingId }: Props) {
         notes: String(fd.get("notes") ?? "") || undefined,
         sessionToken: crypto.randomUUID(),
         tcpaConsent: fd.get("tcpa_consent") === "on",
+        representationStatus: representation,
       })
 
       if (result.success) {
@@ -144,6 +155,35 @@ export function PublicShowingForm({ listingId }: Props) {
           className="text-sm bg-white border-blue-200 resize-none"
         />
       </div>
+
+      <fieldset className="space-y-1.5 border-t border-blue-100 pt-2">
+        <legend className="text-xs font-medium text-blue-900">
+          Are you currently working with another real estate agent? *
+        </legend>
+        {[
+          { value: "unrepresented",     label: "No, I'm not working with an agent" },
+          { value: "represented",       label: "Yes, I have an agent already" },
+          { value: "prefer_not_to_say", label: "Prefer not to say" },
+        ].map(opt => (
+          <label key={opt.value} className="flex items-center gap-2 cursor-pointer text-xs text-blue-800">
+            <input
+              type="radio"
+              name="representation"
+              value={opt.value}
+              checked={representation === opt.value}
+              onChange={() => setRepresentation(opt.value as RepresentationStatus)}
+              className="h-3.5 w-3.5"
+            />
+            <span>{opt.label}</span>
+          </label>
+        ))}
+        {representation === "represented" && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 leading-snug">
+            Thanks — we'll forward your showing request without taking you on as a buyer,
+            so your existing agent can coordinate the tour.
+          </p>
+        )}
+      </fieldset>
 
       <label className="flex items-start gap-2 cursor-pointer">
         <input

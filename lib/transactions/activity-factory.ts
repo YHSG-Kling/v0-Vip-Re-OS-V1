@@ -19,13 +19,13 @@ export class ActivityFactory {
         transaction_id: params.transactionId,
         brokerage_id: params.brokerageId,
         agent_id: params.agentId,
-        assigned_to: activity.assignedTo || params.agentId,
         activity_type: activity.type,
         title: activity.title,
         description: activity.description,
         priority: activity.priority || "medium",
-        due_date: activity.dueDate,
+        scheduled_at: activity.dueDate,
         status: "pending",
+        metadata: { assigned_to: activity.assignedTo || params.agentId },
         created_at: new Date().toISOString()
       })
     }
@@ -44,7 +44,6 @@ export class ActivityFactory {
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
       agent_id: params.assignedTo,
-      assigned_to: params.assignedTo,
       activity_type: activity.type,
       title: activity.title,
       description: activity.description,

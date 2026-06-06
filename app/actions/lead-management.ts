@@ -6,7 +6,6 @@ import {
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
-  serviceConvertLeadToContact,
   serviceRejectLead,
   serviceImportLeads,
 } from "@/lib/application/lead-application-service"
@@ -77,18 +76,6 @@ export async function enrichLead(leadId: string) {
   }
 }
 
-export async function convertLeadToContact(leadId: string) {
-  try {
-    if (!leadId) return { success: false, error: "Lead ID is required" }
-    const { agentId, brokerageId } = await getAgentContext()
-    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
-    const contact = await serviceConvertLeadToContact((agentId ?? null) as any, brokerageId, leadId)
-    return { success: true, contact }
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
-}
-
 export async function rejectLead(leadId: string, reason?: string) {
   try {
     if (!leadId) return { success: false, error: "Lead ID is required" }
@@ -101,14 +88,14 @@ export async function rejectLead(leadId: string, reason?: string) {
   }
 }
 
-export async function importLeads(leads: Partial<Lead>[]) {
+export async function importLeads(leads: Array<Partial<Lead> & { owner_agent_id?: string | null }>) {
   try {
-    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0 }
+    if (!leads?.length) return { success: false, error: "No leads provided", imported: 0, deduped: 0, unassigned: 0 }
     const { agentId, brokerageId } = await getAgentContext()
-    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0 }
-    const imported = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
-    return { success: true, imported }
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0, deduped: 0, unassigned: 0 }
+    const result = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
+    return { success: true, imported: result.imported, deduped: result.deduped, unassigned: result.unassigned }
   } catch (error) {
-    return { success: false, error: String(error), imported: 0 }
+    return { success: false, error: String(error), imported: 0, deduped: 0, unassigned: 0 }
   }
 }

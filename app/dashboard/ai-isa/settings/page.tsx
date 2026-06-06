@@ -76,12 +76,12 @@ export default function AIISASettingsPage() {
 
       const { data: profile } = await supabase
         .from('users')
-        .select('brokerage_id, role')
+        .select('brokerage_id, user_type')
         .eq('id', user.id)
         .maybeSingle()
 
       const bid  = profile?.brokerage_id ?? null
-      const r    = profile?.role ?? null
+      const r    = profile?.user_type ?? null
       setBrokerageId(bid)
       setRole(r)
 

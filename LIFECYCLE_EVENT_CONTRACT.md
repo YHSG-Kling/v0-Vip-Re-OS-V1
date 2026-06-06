@@ -1,565 +1,191 @@
 # LIFECYCLE EVENT CONTRACT (AUTHORITATIVE)
 
-**VERSION:** 1.0.0  
-**STATUS:** Constitutional - Must be obeyed by all systems  
-**LAST UPDATED:** 2026-02-10
+**VERSION:** 2.0.0
+**STATUS:** Constitutional — must be obeyed by all systems
+**LAST UPDATED:** 2026-05-29
+**SUPERSEDES:** 1.0.0 (the v1 "event-sourced / state-computed-from-`activities`" model was never the
+implementation; this version documents what the system actually does and is binding going forward.)
 
 ---
 
-## PURPOSE
+## 0. WHY THIS REWRITE
 
-This contract defines the single authoritative event model used across all systems to advance, freeze, roll back, or block journeys and automation. This contract governs how the `activities` table is interpreted as the source of truth for all lifecycle state.
-
----
-
-## CRITICAL CONSTRAINTS
-
-✅ **ALLOWED:**
-- Emit events to `activities` table
-- Read events from `activities` table
-- Derive state from event sequences
-- Define event semantics
-- Map external signals to canonical events
-- Deduplicate events
-
-🚫 **FORBIDDEN:**
-- Create new database tables
-- Modify schema columns
-- Store state outside `activities` table
-- Generate execution logic
-- Generate UI components
-- Bypass deduplication
+v1.0.0 declared an event-sourced model: state stored only in `activities`, computed from the event
+sequence, with dotted (`buyer.under_contract`) event types. **The implementation diverged**: state is
+stored in **dedicated columns on each entity**, transitions **emit a typed `KernelEvent`**, and
+`activities` / `lifecycle_events` are the **append-only audit log**, not the state source. v2 blesses
+the implemented model (it is dominant, working, and TypeScript-enforced) and records the remaining
+drift to consolidate. Any system that still assumes the v1 model is non-conformant.
 
 ---
 
-## CANONICAL EVENT MODEL
+## 1. CANONICAL STATE MODEL (STORED, NOT COMPUTED)
 
-Every lifecycle event stored in `activities` table MUST contain:
+Lifecycle state lives in entity **columns**. Each state machine is defined in
+`lib/kernel/lifecycle.ts` (`STAGE_EVENT_MAP` + `ENTITY_MAP`).
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `activity_id` | UUID | ✅ | Unique event identifier |
-| `event_type` | String | ✅ | Namespaced event type (see taxonomy below) |
-| `contact_id` | UUID | ✅ | Associated contact |
-| `user_id` | UUID | ✅ | Actor who triggered event (may be system) |
-| `activity_type` | String | ✅ | High-level category (journey, document, communication, etc.) |
-| `description` | Text | ✅ | Human-readable event description |
-| `metadata` | JSONB | ✅ | Event-specific structured data |
-| `created_at` | Timestamp | ✅ | Event timestamp |
+| Entity | Table.Column | Values |
+|---|---|---|
+| Contact (CRM) | `contacts.status` | raw CRM lead/contact state |
+| Buyer journey | `contacts.buyer_stage` | 13-state: `prospect → pre_approval_pending → financially_verified → search_configured → searching → touring → tour_completed → offer_strategy → buyer_under_contract → buyer_closed / buyer_disengaged / buyer_lifetime` |
+| Listing | `listings.lifecycle_stage` | uppercase machine `… → MLS_ACTIVE → UNDER_CONTRACT → CLOSED` (+ terminal `SELLER_DECLINED / LISTING_CANCELLED / LISTING_EXPIRED`) |
+| Transaction | `transactions.stage` | transaction stage machine |
+| Generic journey | `journey_states.current_stage` | buyer/seller journey rollups |
 
-### Metadata Structure (Flexible)
-
-While `metadata` is flexible JSONB, common fields include:
-
-```json
-{
-  "actor_role": "agent | broker | admin | lender | contact | system",
-  "actor_id": "uuid",
-  "journey_type": "buyer | seller",
-  "stage_from": "PREVIOUS_STAGE",
-  "stage_to": "NEW_STAGE",
-  "related_entity_type": "listing | transaction | document | tour | offer",
-  "related_entity_id": "uuid",
-  "reason": "human_readable_reason",
-  "override": false,
-  "override_reason": "if_override_is_true",
-  "evidence_type": "document | conversation | external_integration",
-  "evidence_id": "uuid"
-}
-```
+**Rule:** the column is the source of truth. `activities` (canonical audit per this contract) and
+`lifecycle_events` (legacy log) record history; they do **not** define current state.
 
 ---
 
-## EVENT NAMESPACING (REQUIRED)
+## 2. CANONICAL EVENT VOCABULARY
 
-All `event_type` values MUST follow this namespacing convention:
+There are two event vocabularies in the codebase. **`KernelEvent` (underscore) is canonical.**
 
-```
-<namespace>.<action>
-```
+| Vocabulary | Example | Emitted by | Consumed by | Status |
+|---|---|---|---|---|
+| **`KernelEvent`** (underscore, `lib/kernel/events.ts`, ~410 values) | `offer_accepted`, `listing_published`, `buyer_financially_verified` | state-machine transitions via `STAGE_EVENT_MAP` → `processKernelEvent` (89 sites) | notifications + the **kernel reactor** (marketing enrollment) + workflow `triggers.ts` + `marketing_campaign_triggers.trigger_value` | **CANONICAL** |
+| **Dotted** (`<namespace>.<action>`) | `listing.appointment_set`, `compliance.listing_agreement_passed`, `lead.created` | `lib/events` helpers (9 sites) + direct server-action calls | the **orchestrator** (`lib/orchestrator`) and the **chain engine** (`lib/workflow-orchestrator`) | **TO CONSOLIDATE** — keep as the chain-trigger surface, mapped to `KernelEvent` |
 
-### Namespace Definitions
-
-| Namespace | Purpose | Examples |
-|-----------|---------|----------|
-| `buyer.*` | Buyer journey events | `buyer.financial_verification_submitted`, `buyer.search_configured` |
-| `seller.*` | Seller journey events | `seller.equity_confirmed`, `seller.presentation_delivered` |
-| `listing.*` | Listing lifecycle events | `listing.stage_changed`, `listing.photos_uploaded` |
-| `transaction.*` | Transaction events | `transaction.created`, `transaction.closed` |
-| `document.*` | Document events | `document.uploaded`, `document.signed` |
-| `financial.*` | Financial verification events | `financial.preapproval_uploaded`, `financial.verification_expired` |
-| `compliance.*` | Compliance events | `compliance.freeze`, `compliance.cleared` |
-| `voice.*` | Voice assistant intents | `voice.intent.search_properties`, `voice.intent.schedule_tour` |
-| `automation.*` | System automation events | `automation.drip_sent`, `automation.sla_breach` |
-| `journey.*` | Journey state changes | `journey.rollback`, `journey.advance`, `journey.freeze` |
-| `offer.*` | Offer events | `offer.submitted`, `offer.accepted`, `offer.rejected` |
-| `tour.*` | Showing/tour events | `tour.scheduled`, `tour.completed`, `tour.cancelled` |
-| `repair.*` | Repair events | `repair.plan_created`, `repair.completed`, `repair.failed` |
-| `integration.*` | External system signals | `integration.dotloop_sync`, `integration.mls_status_changed` |
+**Known drift to fix (do not add more):**
+- `lifecycle_events.event_type` is written in **both** vocabularies; the `marketing-trigger-engine`
+  cron matches it against underscore `trigger_value`, so it silently misses dotted rows. (The kernel
+  reactor does not have this bug — it matches the `KernelEvent` value directly.)
+- Three UI trigger pickers (`automations-client`, `workflow-builder`, `SequenceBuilder`) hardcode
+  ad-hoc values; only `SequencesListClient` uses the canonical `WORKFLOW_TRIGGERS` catalog.
 
 ---
 
-## EVENT SEMANTICS
+## 3. EVENT → REACTION: TWO INTENTIONAL INITIATION MODELS
 
-### Event Categories by Impact
+Reactions to lifecycle events run through **two deliberately separate** paths. They are NOT one spine
+and must not be naively merged.
 
-**ADVANCE Events** - Move journey forward:
-- `buyer.financial_verification_submitted`
-- `buyer.search_configured`
-- `seller.presentation_delivered`
-- `seller.decision_list`
-- `listing.stage_changed` (to higher stage)
-- `transaction.closed`
+### 3a. System reactor (no session) — `processKernelEvent` → `dispatchKernelEvent`
+- Fires automatically on every state-machine transition.
+- Does: (1) human **notifications** (`notification-engine`), (2) **marketing enrollment** via the
+  shared `processOneLifecycleEvent` (the same path the safety-net `marketing-trigger-engine` cron
+  uses — cooldown-idempotent, so the two never double-enroll).
+- Reaction is **enroll/notify only**; actual sends stay behind the channel adapters' compliance gates.
 
-**FREEZE Events** - Pause journey progression:
-- `journey.freeze`
-- `compliance.freeze`
-- `transaction.created` (freezes buyer/seller journey at `*_UNDER_CONTRACT`)
+### 3b. Agent-initiated chains (session-bound) — `triggerChainsForEvent` → `lib/workflow-orchestrator`
+- Multi-step "revolutionizing" automations, **triggered by an agent action** through a server action
+  (session-scoped via `getAgentContext`; tenant-ownership verified per referenced row).
+- Registered chains (`triggerEvent`):
+  - **`listing.appointment_set` → `listing-appt-prep`**: CMA → listing presentation → per-chapter
+    avatar videos (DID + cloned voice) → enroll each as a **pre-appointment drip** timed before the
+    appointment. *(This is the flagship "sell the seller before you set foot in the home" flow.)*
+  - `compliance.listing_agreement_passed` → auto-create the listing record.
+  - `compliance.executed_offer_passed` → auto-create the transaction.
+- CMA + presentation steps may be **human-gated** if the brokerage opts in; chain runs are recorded in
+  `workflow_runs`.
 
-**ROLLBACK Events** - Move journey backward:
-- `journey.rollback`
-- `offer.rejected`
-- `offer.withdrawn`
-- `transaction.terminated`
-- `financial.verification_expired`
-- `repair.failed`
-- `listing.cancelled`
-- `listing.expired`
-
-**BLOCK Events** - Prevent progression without rollback:
-- `compliance.freeze`
-- `financial.verification_required`
-- Gate validation failures (computed, not stored)
-
-**ESCALATION Events** - Trigger human review:
-- `automation.sla_breach`
-- `journey.stuck`
-- `compliance.review_required`
-- `repair.failed`
-
-**EVIDENCE Events** - Provide proof of completion:
-- `document.uploaded`
-- `document.signed`
-- `tour.completed`
-- `conversation.buyer_qualified`
+**Why separate:** chains spend real money (AVM calls, video renders) and encode agent intent (booking
+the appointment). The system reactor must not auto-fire them without an agent in the loop. Bridging
+3a→3b requires (i) a system-context trigger that bypasses `getAgentContext` with a resolved brokerage,
+(ii) chain-run **idempotency** keyed on (chain, entity, trigger), and (iii) a `KernelEvent → dotted
+trigger` map — all three are prerequisites and a **broker/admin decision**, not a silent change.
 
 ---
 
-## EVENT TAXONOMY (COMPREHENSIVE)
+## 4. BUSINESS-PROCESS DEFINITIONS (THE RULES THAT GATE EVERYTHING)
 
-### Buyer Journey Events
+### Raw lead → lead → contact
+- `raw_scraped_leads` — raw, platform-owned (RLS: platform admin + per-brokerage AI-ISA system actor).
+- `leads` — produced by the enrichment pipeline (`lib/lead-pipeline`).
+- `contacts` — created by `promoteLeadToContactService` (`validatePromotionEligibility →
+  createContactFromLead → deactivateLead`). **A "contact" = a promoted lead that passed eligibility**;
+  the source lead is deactivated. The contact then carries `status` (CRM) + `buyer_stage` (journey).
 
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `buyer.contact_created` | Advance | Buyer contact created | `contact_id`, `source` |
-| `buyer.financial_verification_required` | Block | Gate triggered | `reason` |
-| `buyer.financial_verification_submitted` | Advance | Pre-approval or POF uploaded | `document_id`, `verification_type`, `expiration_date` |
-| `buyer.financially_verified` | Advance | Verification confirmed valid | `verified_by`, `valid_until` |
-| `buyer.search_configured` | Advance | Search preferences set | `price_min`, `price_max`, `bedrooms`, `location` |
-| `buyer.search_executed` | Evidence | Search performed | `result_count`, `search_criteria` |
-| `buyer.tour_scheduled` | Evidence | Tour scheduled | `listing_id`, `tour_date` |
-| `buyer.tour_completed` | Evidence | Tour completed | `listing_id`, `feedback` |
-| `buyer.offer_submitted` | Advance | Offer submitted | `offer_id`, `listing_id`, `offer_amount` |
-| `buyer.under_contract` | Freeze | Offer accepted | `transaction_id`, `offer_id` |
-| `buyer.closed` | Advance | Transaction closed | `transaction_id`, `close_date` |
-| `buyer.disengaged` | Rollback | Buyer no longer active | `reason` |
+### When the AI-ISA may act, and on whom
+Every outbound SMS/call passes the **fail-closed TCPA gate** (`lib/communication/tcpa-gate.ts`):
+- requires `contacts.tcpa_consent` (express written) — except `transactional` notices may bypass
+  *marketing* consent;
+- blocks on `dnc_status`, opt-out, quiet hours, and stale/invalid/reassigned phone (90-day RND safe
+  harbor); **DNC + quiet hours apply even to transactional**;
+- plus `isa_reengage_allowed` for re-engagement. Decisions are logged to
+  `outbound_message_compliance_log` for audit. **The ISA may only reach contacts that pass this gate.**
 
-### Seller Journey Events
+### What constitutes a listing / when it's "active"
+A `listings` row with a `lifecycle_stage`. Created after the compliance gate
+(`compliance.listing_agreement_passed`). **"Active listing" = `lifecycle_stage = MLS_ACTIVE`** (emits
+`LISTING_PUBLISHED`); earlier stages are coming-soon / prep.
 
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `seller.contact_created` | Advance | Seller contact created | `contact_id`, `source` |
-| `seller.equity_confirmed` | Advance | Positive equity verified | `estimated_value`, `mortgage_balance` |
-| `seller.prep_plan_created` | Advance | Repair/staging plan created | `plan_id`, `estimated_cost`, `timeline` |
-| `seller.prep_completed` | Advance | Repairs/staging finished | `actual_cost`, `completion_date` |
-| `seller.presentation_ready` | Advance | CMA + net sheet assembled | `cma_id`, `net_sheet_id` |
-| `seller.presentation_delivered` | Advance | Presentation given to seller | `delivery_date`, `delivery_method` |
-| `seller.decision_list` | Advance | Seller decides to list | `decision_date`, `listing_agreement_id` |
-| `seller.decision_wait` | Block | Seller decides to wait | `reason`, `follow_up_date` |
-| `seller.decision_decline` | Rollback | Seller declines to list | `reason` |
-| `seller.listing_prep` | Advance | Preparing for MLS | `listing_id`, `target_live_date` |
-| `seller.coming_soon` | Advance | Pre-MLS marketing | `listing_id`, `coming_soon_start` |
-| `seller.active_listing` | Advance | Live on MLS | `listing_id`, `mls_number`, `list_price` |
-| `seller.offer_received` | Advance | Offer received | `offer_id`, `listing_id` |
-| `seller.under_contract` | Freeze | Offer accepted | `transaction_id`, `offer_id` |
-| `seller.closed` | Advance | Transaction closed | `transaction_id`, `close_date` |
-| `seller.disengaged` | Rollback | Seller no longer active | `reason` |
+### When an offer/listing becomes a transaction
+On `compliance.executed_offer_passed` → a `transactions` row is created (`transactions.stage` machine),
+and the listing reaches `UNDER_CONTRACT`. Per §1, `transaction.created` **freezes** the buyer & seller
+journeys at `*_UNDER_CONTRACT` until close or termination.
 
-### Rollback Events
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `journey.rollback` | Rollback | Journey rolled back | `journey_type`, `from_stage`, `to_stage`, `reason` |
-| `offer.rejected` | Rollback | Offer rejected by seller | `offer_id`, `reason` |
-| `offer.withdrawn` | Rollback | Offer withdrawn by buyer | `offer_id`, `reason` |
-| `transaction.terminated` | Rollback | Contract cancelled | `transaction_id`, `termination_reason` |
-| `financial.verification_expired` | Rollback | Verification no longer valid | `document_id`, `expired_date` |
-| `repair.failed` | Rollback | Repair plan failed | `repair_type`, `failure_stage`, `reason` |
-| `listing.cancelled` | Rollback | Listing cancelled by seller | `listing_id`, `reason` |
-| `listing.expired` | Rollback | Listing expired without sale | `listing_id`, `expiration_date` |
-
-### Repair Events (Explicit)
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `repair.plan_created` | Evidence | Repair plan created | `repair_type: pre_listing | under_contract`, `estimated_cost` |
-| `repair.plan_approved` | Evidence | Plan approved | `approved_by`, `approval_date` |
-| `repair.in_progress` | Evidence | Repairs underway | `contractor_id`, `start_date` |
-| `repair.completed` | Evidence | Repairs finished | `completion_date`, `actual_cost` |
-| `repair.failed` | Rollback | Repair plan failed | `failure_stage: pre_listing | under_contract`, `reason` |
-
-**Repair Failure Distinction:**
-- `repair.failed` with `failure_stage: pre_listing` → Rollback to `SELLER_DECISION_PENDING`
-- `repair.failed` with `failure_stage: under_contract` → Rollback to `SELLER_ACTIVE_LISTING`
-
-### Compliance Events
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `compliance.freeze` | Freeze | Journey frozen by compliance | `freeze_reason`, `compliance_manager_id` |
-| `compliance.cleared` | Unfreeze | Compliance issue resolved | `cleared_by`, `resolution_notes` |
-| `compliance.review_required` | Escalation | Requires manual compliance review | `review_reason`, `priority` |
-
-### Voice Assistant Events
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `voice.intent.search_properties` | Evidence | Voice search request | `search_criteria`, `actor_role` |
-| `voice.intent.schedule_tour` | Evidence | Voice tour request | `listing_id`, `preferred_date` |
-| `voice.intent.check_progress` | Evidence | Voice progress inquiry | `journey_type` |
-| `voice.intent.explain_blocker` | Evidence | Voice blocker explanation | `stage`, `blocker_reason` |
-
-### Integration Events
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `integration.dotloop_sync` | Evidence | Dotloop data synced | `dotloop_loop_id`, `sync_type` |
-| `integration.mls_status_changed` | Advance/Rollback | MLS status changed | `listing_id`, `old_status`, `new_status` |
-| `integration.media_vendor_delivered` | Evidence | Photos/video delivered | `vendor`, `asset_type`, `asset_ids` |
-| `integration.lender_verification` | Evidence | Lender confirmed verification | `lender_id`, `verification_type` |
-
-### Automation Events
-
-| Event Type | Semantic | Description | Metadata Requirements |
-|------------|----------|-------------|----------------------|
-| `automation.drip_sent` | Evidence | Automated email sent | `drip_sequence_id`, `email_template` |
-| `automation.sla_breach` | Escalation | SLA deadline missed | `sla_type`, `deadline`, `overdue_hours` |
-| `automation.reminder_sent` | Evidence | Reminder sent | `reminder_type`, `recipient_role` |
+### What happens when a seller listing appointment is booked
+The agent schedules it → `listing.appointment_set` → the `listing-appt-prep` chain runs (§3b):
+CMA → presentation → chapter videos → pre-appointment drip. The `listing-presentation-prep` **cron**
+also pre-builds the presentation for any appointment in the next 24h as a safety net (idempotent on an
+existing `listing_presentations` row).
 
 ---
 
-## ROLLBACK EVENTS (EXPLICIT RULES)
+## 5. INVARIANTS (UNCHANGED FROM v1, STILL BINDING)
 
-### Rollback Event Requirements
-
-Every rollback event MUST include:
-
-```json
-{
-  "event_type": "journey.rollback",
-  "metadata": {
-    "journey_type": "buyer | seller",
-    "from_stage": "STAGE_NAME",
-    "to_stage": "STAGE_NAME",
-    "reason": "offer_rejected | verification_expired | repair_failed | etc.",
-    "trigger_event_id": "uuid of event that triggered rollback",
-    "relocked_education": ["education_id_1", "education_id_2"],
-    "actor_role": "agent | broker | admin | system",
-    "actor_id": "uuid"
-  }
-}
-```
-
-### Rollback Scenarios
-
-**Buyer Rollbacks:**
-
-1. **Offer Rejected**
-   - Trigger: `offer.rejected` event
-   - From: `BUYER_OFFER_SUBMITTED`
-   - To: `BUYER_OFFER_ELIGIBLE`
-   - Reason: `offer_rejected`
-
-2. **Offer Withdrawn**
-   - Trigger: `offer.withdrawn` event
-   - From: `BUYER_OFFER_SUBMITTED`
-   - To: `BUYER_OFFER_ELIGIBLE`
-   - Reason: `offer_withdrawn`
-
-3. **Contract Terminated**
-   - Trigger: `transaction.terminated` event
-   - From: `BUYER_UNDER_CONTRACT`
-   - To: `BUYER_SEARCHING` or `BUYER_DISENGAGED`
-   - Reason: `contract_terminated`
-
-4. **Financing Failed**
-   - Trigger: `financial.verification_expired` or `transaction.terminated` with `reason: financing_failed`
-   - From: `BUYER_UNDER_CONTRACT`
-   - To: `BUYER_FINANCIAL_VERIFICATION_REQUIRED`
-   - Reason: `financing_failed`
-
-5. **Verification Expired**
-   - Trigger: `financial.verification_expired` event (system-generated)
-   - From: Any stage
-   - To: `BUYER_FINANCIAL_VERIFICATION_REQUIRED`
-   - Reason: `verification_expired`
-
-**Seller Rollbacks:**
-
-1. **Pre-Listing Repair Failure**
-   - Trigger: `repair.failed` with `failure_stage: pre_listing`
-   - From: `SELLER_PREP` or `SELLER_COMING_SOON_PREP`
-   - To: `SELLER_DECISION_PENDING`
-   - Reason: `repair_plan_failed`
-
-2. **Under-Contract Repair Failure**
-   - Trigger: `repair.failed` with `failure_stage: under_contract`
-   - From: `SELLER_UNDER_CONTRACT`
-   - To: `SELLER_ACTIVE_LISTING`
-   - Reason: `repair_negotiation_failed`
-
-3. **List Decision Reversed**
-   - Trigger: `seller.decision_reversed` event
-   - From: `SELLER_LISTING_PREP`
-   - To: `SELLER_DECISION_PENDING`
-   - Reason: `decision_changed`
-
-4. **Listing Cancelled**
-   - Trigger: `listing.cancelled` event
-   - From: `SELLER_ACTIVE_LISTING`
-   - To: `SELLER_DISENGAGED`
-   - Reason: `listing_cancelled`
-
-5. **Listing Expired**
-   - Trigger: `listing.expired` event (system-generated)
-   - From: `SELLER_ACTIVE_LISTING`
-   - To: `SELLER_DECISION_PENDING`
-   - Reason: `listing_expired`
-
-6. **Contract Terminated**
-   - Trigger: `transaction.terminated` event
-   - From: `SELLER_UNDER_CONTRACT`
-   - To: `SELLER_ACTIVE_LISTING`
-   - Reason: `contract_terminated`
-
-### Rollback Behavior
-
-Every rollback MUST:
-
-1. ✅ Emit `journey.rollback` event with full metadata
-2. ✅ Preserve ALL historical events (never delete)
-3. ✅ Identify stages to re-lock (education, checklists)
-4. ✅ Include reason and trigger event reference
-5. ✅ Log actor who approved rollback (if manual)
+- **Append-only audit**: events in `activities` are immutable; corrections emit new events.
+- **Tenant isolation**: every event/reaction is scoped by `brokerage_id`; the reactor's matching is
+  brokerage-isolated (no cross-tenant trigger leak).
+- **Dedup**: window-based (60s) + optional idempotency key; marketing enrollment is cooldown-idempotent.
+- **Gating**: no autonomous send without passing compliance/TCPA/brand gates; mutating MCP/agent
+  actions return a confirmation plan, never auto-fire.
 
 ---
 
-## DEDUPLICATION RULES
+## 6. CONSOLIDATION BACKLOG (REQUIRES BROKER/ADMIN SIGN-OFF PER §3)
 
-### Deduplication Logic
+1. Normalize `lifecycle_events.event_type` writes to `KernelEvent` values + add a dotted→KernelEvent
+   compatibility map so the marketing cron stops missing dotted rows.
+2. Point the three ad-hoc UI trigger pickers at the canonical `WORKFLOW_TRIGGERS` catalog.
+   *(DONE for the two `campaign_sequences`-backed pickers: `workflow-builder`, `SequenceBuilder`.
+   `automations-client` feeds a separate `workflow_automations` system — pending its own migration.)*
+3. Decide chain initiation: keep agent-initiated, OR add a system-context, idempotent
+   `KernelEvent → chain` bridge so the reactor can drive selected chains.
+   *(Chain-run idempotency landed — `lib/workflow-orchestrator/run-dedupe.ts` — so the bridge is now
+   safe to add once approved.)*
+4. Fold the 9 dotted `lib/events` sites + the `lib/orchestrator` dispatcher onto the canonical spine
+   (keep the orchestrator's chain engine; feed it from one emit path).
 
-Events are considered duplicates if ALL conditions match:
+### 6a. DISPATCHER FRAGMENTATION (HIGH PRIORITY — investigated 2026-05-29)
 
-```
-same event_type
-AND same contact_id
-AND same related_entity_id (if present)
-AND within deduplication_window (typically 60 seconds)
-```
+`fanOutKernelEvent` (`lib/kernel/event-fanout.ts`) is the **canonical** "what happens when a kernel
+event fires" router — it runs THREE channels: (1) staff notifications via `processKernelEvent`,
+(2) `campaign_sequences` auto-enrollment (`enrollMatchingSequences`), (3) **client portal updates**
+(`transparency_updates` + `client_portal_messages` + contact notifications).
 
-### Deduplication Strategy
+**The drift:** only **~10 of ~98 emitters call `fanOutKernelEvent`**; the other **88 call
+`processKernelEvent` directly**, so they notify staff but **skip `campaign_sequences` enrollment AND
+the client portal**. This violates the business invariant "every meaningful state change reaches the
+contact's portal so the client always knows where the deal stands."
 
-**Window-Based:**
-- Check for identical events within 60-second window
-- If found, ignore duplicate
-- Log `duplicate_event_ignored` in system logs
+**Recommended resolution (the canonical model):**
+- `fanOutKernelEvent` is THE single dispatcher. Migrate the 88 direct `processKernelEvent` callers to
+  it (or move its three channels into `processKernelEvent` and make `fanOut` a thin context-forwarder),
+  resolving the contact via the shared `resolveContactFromEvent` so the portal + enrollment fan out
+  uniformly. `enrollMatchingSequences` is already idempotent (checks `sequence_enrollments`); add
+  portal-write idempotency before broadening coverage.
+- This is behavior-broadening for 88 sites (more sequence enrollments + portal writes) — intended, but
+  must be staged + tested, not flipped blind.
 
-**Idempotency Key (Optional):**
-- External integrations may provide `idempotency_key` in metadata
-- If key matches existing event, ignore duplicate
+### 6b. TWO CAMPAIGN-ENROLLMENT SYSTEMS (DECISION REQUIRED — investigated 2026-05-29)
 
-### Events Exempt from Deduplication
+| System | Tables | Enrolled by | Sent by | Footprint |
+|---|---|---|---|---|
+| **A — Sequences** (canonical) | `campaign_sequences` / `sequence_enrollments` | `fanOutKernelEvent → enrollMatchingSequences` (matches `trigger_event = KernelEvent`) | `campaign-sequence-steps` cron | 14 sites |
+| **B — Marketing triggers** | `marketing_campaign_triggers` / `marketing_campaign_touchpoints` | `marketing-trigger-engine` cron + the Phase-1 kernel reactor | `marketing-campaign-scheduler` / `marketing-attribution-engine` | 3 sites |
 
-These events are NEVER deduplicated:
-- `voice.intent.*` (each voice command is distinct)
-- `automation.drip_sent` (each email is distinct)
-- `journey.rollback` (rollbacks must always be recorded)
-- `compliance.freeze` (each freeze must be audited)
-
-### Deduplication Examples
-
-**Duplicate (Ignored):**
-```json
-// Event 1 at 10:00:00
-{"event_type": "buyer.search_executed", "contact_id": "uuid-1", "created_at": "10:00:00"}
-
-// Event 2 at 10:00:30 (within 60s window)
-{"event_type": "buyer.search_executed", "contact_id": "uuid-1", "created_at": "10:00:30"}
-// Result: IGNORED
-```
-
-**Not Duplicate (Both Recorded):**
-```json
-// Event 1 at 10:00:00
-{"event_type": "buyer.search_executed", "contact_id": "uuid-1", "created_at": "10:00:00"}
-
-// Event 2 at 10:02:00 (outside 60s window)
-{"event_type": "buyer.search_executed", "contact_id": "uuid-1", "created_at": "10:02:00"}
-// Result: BOTH RECORDED
-```
+Both auto-enroll a contact into a multi-touch campaign on a lifecycle event — overlapping purpose.
+**Decision needed (keep one / merge):** recommendation is **A (`campaign_sequences`) is canonical**
+(richer, documented, 14 sites, drives the portal). Either fold B into A (migrate the 3 trigger rows +
+retire the cron) or keep B strictly for *paid-ad* campaigns and rename to avoid the overlap. Until
+this is decided, the Phase-1 reactor enrolls B; it should be re-pointed at A (or removed) once chosen.
+This is destructive to live drips, so it requires explicit broker/admin sign-off.
 
 ---
 
-## INTEGRATION SIGNAL NORMALIZATION
-
-External systems emit signals that must be normalized to canonical events.
-
-### Dotloop Integration
-
-| Dotloop Signal | Canonical Event | Metadata Mapping |
-|----------------|-----------------|------------------|
-| Loop Created | `transaction.created` | `dotloop_loop_id`, `listing_id`, `buyer_contact_id` |
-| Document Uploaded | `document.uploaded` | `dotloop_document_id`, `document_type` |
-| Document Signed | `document.signed` | `dotloop_document_id`, `signer_role` |
-| Loop Closed | `transaction.closed` | `dotloop_loop_id`, `close_date` |
-| Loop Cancelled | `transaction.terminated` | `dotloop_loop_id`, `termination_reason` |
-
-### MLS Integration
-
-| MLS Signal | Canonical Event | Metadata Mapping |
-|------------|-----------------|------------------|
-| Status: Active | `listing.stage_changed` | `listing_id`, `old_status`, `new_status: active` |
-| Status: Pending | `seller.under_contract` | `listing_id`, `pending_date` |
-| Status: Sold | `seller.closed` | `listing_id`, `sold_date`, `sold_price` |
-| Status: Withdrawn | `listing.cancelled` | `listing_id`, `withdrawn_date` |
-| Status: Expired | `listing.expired` | `listing_id`, `expiration_date` |
-
-### Media Vendor Integration
-
-| Vendor Signal | Canonical Event | Metadata Mapping |
-|---------------|-----------------|------------------|
-| Photos Delivered | `integration.media_vendor_delivered` | `vendor`, `asset_type: photos`, `listing_id`, `asset_ids` |
-| Video Delivered | `integration.media_vendor_delivered` | `vendor`, `asset_type: video`, `listing_id`, `asset_ids` |
-| 3D Tour Delivered | `integration.media_vendor_delivered` | `vendor`, `asset_type: 3d_tour`, `listing_id`, `asset_url` |
-
-### Lender Integration
-
-| Lender Signal | Canonical Event | Metadata Mapping |
-|---------------|-----------------|------------------|
-| Pre-Approval Issued | `buyer.financial_verification_submitted` | `lender_id`, `verification_type: preapproval`, `loan_amount`, `expiration_date` |
-| Clear to Close | `financial.clear_to_close` | `lender_id`, `transaction_id` |
-| Financing Denied | `financial.verification_failed` | `lender_id`, `denial_reason` |
-
-### Voice Assistant Integration
-
-| Voice Command | Canonical Event | Metadata Mapping |
-|---------------|-----------------|------------------|
-| "Search for homes" | `voice.intent.search_properties` | `actor_role`, `search_criteria` |
-| "Schedule a tour" | `voice.intent.schedule_tour` | `actor_role`, `listing_id`, `preferred_date` |
-| "Check my progress" | `voice.intent.check_progress` | `actor_role`, `journey_type` |
-
----
-
-## SLA & ESCALATION SUPPORT
-
-### SLA Event Types
-
-| SLA Type | Event Trigger | Metadata Requirements |
-|----------|---------------|----------------------|
-| Response Time | `automation.sla_breach` | `sla_type: response_time`, `expected_hours`, `actual_hours` |
-| Document Upload | `automation.sla_breach` | `sla_type: document_upload`, `document_type`, `deadline`, `overdue_days` |
-| Tour Follow-Up | `automation.sla_breach` | `sla_type: tour_followup`, `tour_id`, `deadline` |
-| Offer Response | `automation.sla_breach` | `sla_type: offer_response`, `offer_id`, `deadline` |
-| Repair Timeline | `automation.sla_breach` | `sla_type: repair_timeline`, `repair_id`, `deadline` |
-| Contract Execution | `automation.sla_breach` | `sla_type: contract_execution`, `transaction_id`, `deadline` |
-
-### Escalation Events
-
-| Event Type | Purpose | Metadata Requirements |
-|------------|---------|----------------------|
-| `automation.sla_breach` | SLA deadline missed | `sla_type`, `deadline`, `overdue_hours`, `severity` |
-| `journey.stuck` | No progress in X days | `journey_type`, `current_stage`, `stuck_days` |
-| `compliance.review_required` | Manual compliance review needed | `review_reason`, `priority`, `assigned_to` |
-| `repair.failed` | Repair plan failed | `failure_stage`, `reason`, `escalate_to` |
-
-### Escalation Workflow
-
-1. **SLA Breach Detection** (System-Generated):
-   - System monitors deadlines
-   - Emits `automation.sla_breach` event when deadline passed
-   - Includes severity: `low`, `medium`, `high`, `critical`
-
-2. **Notification** (System Action):
-   - System reads `automation.sla_breach` events
-   - Sends notifications to appropriate roles
-   - Example: Broker notified of high-severity SLA breaches
-
-3. **Manual Review** (Human Action):
-   - Broker/admin reviews escalation
-   - Takes corrective action
-   - Emits resolution event (e.g., `journey.admin_override` to unblock)
-
----
-
-## SYSTEM BEHAVIOR RULES
-
-### Event Ordering
-
-- Events are processed in `created_at` order
-- Concurrent events (same timestamp) are processed in order of receipt
-- Rollback events take precedence over advance events
-
-### State Computation
-
-- Current journey stage is ALWAYS computed from event sequence
-- State is NEVER stored directly
-- Query pattern:
-  ```sql
-  SELECT * FROM activities
-  WHERE contact_id = $1
-    AND event_type LIKE 'buyer.%'
-  ORDER BY created_at DESC
-  ```
-
-### Event Immutability
-
-- Events in `activities` table are IMMUTABLE
-- Corrections emit new events (e.g., `journey.rollback`)
-- Historical events are NEVER deleted or modified
-
-### System-Generated Events
-
-System may auto-generate these events:
-- `financial.verification_expired` (when expiration date passes)
-- `listing.expired` (when MLS expiration date passes)
-- `automation.sla_breach` (when deadline passes)
-- `journey.stuck` (when no progress for X days)
-
----
-
-## ACCEPTANCE CRITERIA
-
-This contract MUST:
-
-✅ Eliminate ambiguous state by defining clear event semantics  
-✅ Prevent double execution through deduplication rules  
-✅ Support rollback with explicit rollback events and behavior  
-✅ Enable integration normalization with signal mapping tables  
-✅ Support SLA monitoring with escalation event types  
-✅ Work with existing `activities` table schema  
-✅ Distinguish pre-listing vs. under-contract repair failures  
-✅ Define voice assistant event intents  
-✅ Support multi-role authority with actor tracking  
-✅ Enable audit trails through immutable event history  
-
----
-
-## COMPLIANCE STATEMENT
-
-All systems emitting or consuming lifecycle events MUST comply with this contract. Any deviation requires explicit documentation and broker/admin approval.
-
-**Constitutional Status:** This contract is binding on all current and future systems.
-
----
+**Constitutional status:** binding on all current and future systems. Deviations require documented
+broker/admin approval.
 
 **END OF CONTRACT**

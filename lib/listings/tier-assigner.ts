@@ -1,9 +1,15 @@
+"use server"
+
 /**
  * lib/listings/tier-assigner.ts
  * Layer 9.10 - Listing Marketing Tier System
  *
  * Assigns marketing tiers to listings based on price ranges configured by brokerages.
  * This is INFORMATIONAL ONLY - does NOT auto-create marketing_campaigns.
+ *
+ * Next 16 — file is marked "use server" so it can be safely imported by
+ * client components (marketing-tier-client.tsx). Every export is an async
+ * function returning serializable data; Server Action contract holds.
  */
 
 import { createClient } from "@/lib/supabase/server"

@@ -36,7 +36,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck } from "lucide-react"
+import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck, Upload } from "lucide-react"
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
@@ -408,6 +408,8 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               state={state}
               update={update}
               myForms={myForms}
+              agentUserId={agentUserId}
+              onUploaded={(f) => setMyForms(prev => [...prev, f])}
               providerInfo={providerInfo}
               providerForms={providerForms}
               providerFormsLoading={providerFormsLoading}
@@ -593,11 +595,13 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
 
 // ─── Step 2 — Form Selection ─────────────────────────────────────────────────
 
-function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms }: {
+function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms }: {
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
   myForms: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]
+  agentUserId: string
+  onUploaded: (f: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }) => void
   providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
@@ -605,6 +609,8 @@ function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms,
   onLoadProviderForms: () => void
 }) {
   const selected = state.selectedForms
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   function toggleMyForm(f: typeof myForms[0]) {
     const exists = selected.find(s => s.formRef === f.path && s.source === "my_forms")
@@ -612,6 +618,29 @@ function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms,
       update("selectedForms", selected.filter(s => !(s.formRef === f.path && s.source === "my_forms")))
     } else {
       update("selectedForms", [...selected, { source: "my_forms", formRef: f.path, name: f.name, scope: f.scope }])
+    }
+  }
+
+  async function handleUpload(file: File) {
+    setUploadError(null)
+    if (!/\.(pdf|docx)$/i.test(file.name)) { setUploadError("Only PDF or DOCX files are supported."); return }
+    setUploading(true)
+    try {
+      const supabase = createClient()
+      const storagePath = `agents/${agentUserId}/uploads/${Date.now()}-${file.name.replace(/[^\w.\-]/g, "_")}`
+      const { error: upErr } = await supabase.storage.from("brokerage-forms").upload(storagePath, file, { upsert: false })
+      if (upErr) { setUploadError(upErr.message); return }
+      const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(storagePath)
+      const url = urlData.publicUrl
+      // Use the public URL as the form ref so it opens for review and dispatches to
+      // the e-sign provider exactly like a library form.
+      const entry = { name: file.name, url, scope: "agent" as const, path: url }
+      onUploaded(entry)
+      update("selectedForms", [...state.selectedForms, { source: "my_forms" as const, formRef: url, name: file.name, scope: "agent" as const }])
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Upload failed")
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -648,6 +677,7 @@ function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms,
         <TabsList className="w-full">
           <TabsTrigger value="my-forms" className="flex-1">My Forms</TabsTrigger>
           <TabsTrigger value="provider" className="flex-1">Transaction Provider</TabsTrigger>
+          <TabsTrigger value="upload" className="flex-1">Upload</TabsTrigger>
         </TabsList>
 
         <TabsContent value="my-forms" className="mt-3">
@@ -753,6 +783,38 @@ function Step2Forms({ mode, state, update, myForms, providerInfo, providerForms,
               )}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="upload" className="mt-3">
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Upload a {mode === "offer" ? "contract / addendum" : "listing"} document from your computer (PDF or DOCX).
+              It is added to your forms and sent for signature with the rest of the package.
+            </p>
+            <label className="flex flex-col items-center justify-center gap-2 p-6 border border-dashed rounded-lg cursor-pointer hover:bg-muted/50">
+              {uploading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              ) : (
+                <Upload className="h-5 w-5 text-muted-foreground" />
+              )}
+              <span className="text-sm">{uploading ? "Uploading…" : "Choose a file to upload"}</span>
+              <span className="text-xs text-muted-foreground">PDF or DOCX</span>
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); e.target.value = "" }}
+              />
+            </label>
+            {uploadError && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{uploadError}</AlertDescription>
+              </Alert>
+            )}
+            <p className="text-xs text-muted-foreground">Uploaded files appear in the “My Forms” tab as agent-scoped forms.</p>
+          </div>
         </TabsContent>
       </Tabs>
 

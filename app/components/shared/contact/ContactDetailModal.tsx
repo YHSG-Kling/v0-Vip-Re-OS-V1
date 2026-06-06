@@ -70,7 +70,7 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
       const { error } = await supabase.from("activities").insert({
         entity_type: "contact",
         entity_id: contact.id,
-        user_id: user?.id ?? agentId,
+        agent_user_id: user?.id ?? agentId,
         activity_type: "note",
         status: "completed",
         metadata: { note: note.trim(), source: "contact_detail_modal" },

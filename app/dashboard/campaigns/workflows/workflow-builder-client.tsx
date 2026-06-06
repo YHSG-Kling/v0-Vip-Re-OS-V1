@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Select,
@@ -61,16 +62,10 @@ const STEP_TYPES = [
   { value: "remove_from_campaign",  label: "Remove from Campaign", icon: UserMinus,     color: "bg-red-100 text-red-600" },
 ] as const
 
-const TRIGGER_EVENTS = [
-  { value: "contact_created",         label: "Contact Created" },
-  { value: "listing_appointment_set", label: "Listing Appointment Scheduled" },
-  { value: "showing_completed",       label: "Showing Completed" },
-  { value: "offer_submitted",         label: "Offer Submitted" },
-  { value: "under_contract",          label: "Under Contract" },
-  { value: "transaction_closed",      label: "Transaction Closed" },
-  { value: "manual",                  label: "Manual Enrollment" },
-  { value: "open_house_attended",     label: "Open House Attended" },
-]
+// Canonical trigger catalog (KernelEvent-derived WORKFLOW_TRIGGERS) — only triggers that an emitted
+// event actually matches. Previously a hardcoded list with values like "showing_completed" /
+// "open_house_attended" that no event ever emits, so those selections were silently dead.
+const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
 
 type StepChannel = typeof STEP_TYPES[number]["value"]
 

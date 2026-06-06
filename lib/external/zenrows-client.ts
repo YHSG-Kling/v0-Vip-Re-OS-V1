@@ -70,32 +70,35 @@ export async function scrapeWithZenRows(
     jsRender?: boolean
   } = {}
 ): Promise<ZenRowsResponse> {
-  const params = new URLSearchParams({
+  const query: Record<string, string> = {
     url,
-    apikey: ZENROWS_API_KEY,
     js_render: options.jsRender !== false ? 'true' : 'false',
     wait_for: options.loadingWait || 'networkidle',
     premium_proxy: options.premiumProxy ? 'true' : 'false',
+  }
+  if (options.customHeaders) query.custom_headers = 'true'
+
+  // Single egress: route through the connector-gateway (one way in/out). ZenRows returns
+  // raw HTML, so we request a text response (no JSON parse / shape adaptation).
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<string>({
+    connector: "zenrows",
+    baseUrl: ZENROWS_API_URL,
+    path: "",
+    method: "GET",
+    query,
+    auth: { style: "query", name: "apikey", value: ZENROWS_API_KEY },
+    headers: options.customHeaders || undefined,
+    responseType: "text",
   })
 
-  if (options.customHeaders) {
-    params.append('custom_headers', 'true')
+  if (!res.ok) {
+    throw new Error(`ZenRows API error: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
   }
-
-  const response = await fetch(`${ZENROWS_API_URL}?${params}`, {
-    method: 'GET',
-    headers: options.customHeaders || {},
-  })
-
-  if (!response.ok) {
-    throw new Error(`ZenRows API error: ${response.status} ${response.statusText}`)
-  }
-
-  const body = await response.text()
 
   return {
-    statusCode: response.status,
-    body,
+    statusCode: res.status ?? 200,
+    body: res.data ?? "",
     cost: 0.01,
   }
 }

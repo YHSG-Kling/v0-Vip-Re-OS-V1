@@ -2,9 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
-
-const anthropic = new Anthropic()
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 
 // ============================================================================
 // Types
@@ -67,6 +65,11 @@ interface ShowingRequestInput {
   notes?: string
   sessionToken?: string
   tcpaConsent?: boolean
+  /** NAR Code of Ethics Article 16 disclosure. Captured on the public form; persisted on
+   *  the contact's `enrichment_profile.representation_disclosure` JSONB so the conversion
+   *  gate (app/actions/convert-outside-inquiry.ts) can refuse promotion when the buyer
+   *  has self-disclosed they're already working with another agent. */
+  representationStatus?: "unrepresented" | "represented" | "prefer_not_to_say"
 }
 
 // ============================================================================
@@ -215,13 +218,14 @@ export async function getNeighborhoodData(listingId: string): Promise<Neighborho
   if (!listing) return null
 
   try {
-    const msg = await anthropic.messages.create({
-      model: "claude-opus-4-20250514",
-      max_tokens: 600,
+    // Routed through Vercel AI Gateway — single egress, metered, key-rotation safe.
+    // Use gatewayChatJSON so a ```json-fenced response (a real artifact of the gateway's OpenAI→
+    // Anthropic translation, even with "ONLY valid JSON" instructions) doesn't break the parse.
+    const result = await gatewayChatJSON<Record<string, any>>({
+      model:     "anthropic/claude-opus-4-20250514",
+      maxTokens: 600,
       messages: [
-        {
-          role: "user",
-          content: `You are a real estate data assistant. Based on the property location below, provide a realistic neighborhood summary. Return ONLY valid JSON — no markdown, no explanation.
+        { role: "user", content: `You are a real estate data assistant. Based on the property location below, provide a realistic neighborhood summary. Return ONLY valid JSON — no markdown, no explanation.
 
 Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
 
@@ -234,13 +238,11 @@ Return this exact JSON structure:
   "crime_index": number (1-10, lower is safer),
   "ai_summary": string (2-3 sentences about the neighborhood for a buyer),
   "data_source": "AI-estimated"
-}`,
-        },
+}` },
       ],
     })
-
-    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
-    const parsed = JSON.parse(raw)
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON from AI")
+    const parsed = result.data
 
     // Cache the AI result so subsequent loads are instant
     await supabase.from("neighborhood_reports").upsert(
@@ -451,6 +453,22 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
     const consentGiven = input.tcpaConsent === true
     const consentNow = new Date().toISOString()
 
+    // Persist the representation disclosure (NAR Article 16) on enrichment_profile so
+    // downstream gates (convert-outside-inquiry) can refuse promotion of a buyer who
+    // self-disclosed they're already represented by another agent. We DO NOT block lead
+    // creation here — the inquiry is still valuable to the listing agent for facilitation
+    // and to the seller for visibility into who's interested.
+    const repStatus = input.representationStatus ?? null
+    const enrichmentProfile = repStatus
+      ? {
+          representation_disclosure: {
+            status:     repStatus,
+            disclosed_at: consentNow,
+            source:     "listing_landing_page",
+          },
+        }
+      : null
+
     const { data: newContact, error: contactError } = await supabase
       .from("contacts")
       .insert({
@@ -462,7 +480,11 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
         source: "listing_landing_page",
         contact_type: "buyer",
         brokerage_id: listing?.brokerage_id,
-        agent_id: listing?.agent_id,
+        // Only auto-assign the listing agent when the buyer disclosed they're unrepresented.
+        // When the buyer says they have another agent, we DO NOT make the listing agent
+        // their owning agent — we'd be silently auto-poaching. Inquiry still routes for
+        // facilitation (see step 2 below); ownership stays null until handled manually.
+        agent_id: repStatus === "represented" ? null : (listing?.agent_id ?? null),
         tcpa_consent: consentGiven,
         tcpa_consent_at: consentGiven ? consentNow : null,
         tcpa_consent_date: consentGiven ? consentNow : null,
@@ -470,6 +492,7 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
         tcpa_consent_text: consentGiven
           ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
           : null,
+        ...(enrichmentProfile ? { enrichment_profile: enrichmentProfile } : {}),
       })
       .select("id")
       .single()

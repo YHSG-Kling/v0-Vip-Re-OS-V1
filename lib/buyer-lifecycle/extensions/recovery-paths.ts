@@ -194,10 +194,10 @@ export async function emitRecoveryEvent(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.lifecycle.recovery",
+      activity_type: "buyer.lifecycle.recovery",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         from_state: fromState,
         to_state: toState,
@@ -235,10 +235,10 @@ export async function emitReengagementEvent(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      type: "buyer.lifecycle.reengaged",
+      activity_type: "buyer.lifecycle.reengaged",
       entity_type: "contact",
       entity_id: contactId,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         trigger,
         source,

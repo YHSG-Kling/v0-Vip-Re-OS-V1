@@ -20,6 +20,8 @@
  */
 
 import "server-only"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { sendViaTwilio } from "@/lib/providers/messaging/sms-adapters"
 
 /**
  * Channels:
@@ -97,14 +99,15 @@ export interface DispatchResult {
 // ─── ShowingTime ─────────────────────────────────────────────────────────────
 
 /**
- * Calls the ShowingTime API to schedule a showing. Requires a brokerage-level
- * ShowingTime API key on the brokerage_credentials table. Returns the
- * ShowingTime appointment ID on success.
+ * Calls the ShowingTime API to schedule a showing. The api key is resolved by the caller
+ * through the unified ownership cascade (resolveScopedConnection: agent → team → brokerage →
+ * platform), so a ShowingTime key connected in the Connection Center is what's used here.
+ * Egress goes through the connector-gateway (callConnector) like every other provider — never a
+ * bespoke fetch. Returns the ShowingTime appointment ID on success.
  *
- * NOTE: ShowingTime's public API is partner-only. This implementation uses
- * the published REST shape (POST /v2/appointments). When the brokerage has
- * no credentials we still return a stable draft so the agent can manually
- * create the request inside ShowingTime's web UI.
+ * NOTE: ShowingTime's public API is partner-only. This implementation uses the published REST
+ * shape (POST /v2/appointments). When no credential is connected we still return a stable draft
+ * so the agent can manually create the request inside ShowingTime's web UI.
  */
 export async function dispatchViaShowingTime(
   ctx: DispatchContext,
@@ -121,45 +124,37 @@ export async function dispatchViaShowingTime(
     return { providerRef: null, draft, sent: false }
   }
 
-  try {
-    const res = await fetch("https://api.showingtime.com/v2/appointments", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+  const res = await callConnector<{ id?: string }>({
+    connector: "showingtime",
+    baseUrl:   "https://api.showingtime.com",
+    path:      "/v2/appointments",
+    method:    "POST",
+    auth:      { style: "bearer", token: apiKey },
+    body: {
+      property: {
+        address: ctx.stop.property_address,
+        city:    ctx.stop.city,
+        state:   ctx.stop.state,
+        zip:     ctx.stop.zip,
       },
-      body: JSON.stringify({
-        property: {
-          address: ctx.stop.property_address,
-          city:    ctx.stop.city,
-          state:   ctx.stop.state,
-          zip:     ctx.stop.zip,
-        },
-        requested_at:        ctx.tour.tour_date && ctx.stop.suggested_time
-          ? `${ctx.tour.tour_date}T${ctx.stop.suggested_time}`
-          : null,
-        duration_minutes:    ctx.stop.suggested_duration_minutes ?? 30,
-        buyer_agent_name:    ctx.buyerAgent.fullName,
-        buyer_agent_phone:   ctx.buyerAgent.phone,
-        buyer_agent_email:   ctx.buyerAgent.email,
-        buyer_agent_license: ctx.buyerAgent.licenseNumber,
-        buyer_brokerage:     ctx.buyerAgent.brokerageName,
-        notes:               draftBody,
-      }),
-    })
-    if (!res.ok) {
-      // Fall back to draft on any non-200; agent can complete manually
-      return { providerRef: null, draft, sent: false }
-    }
-    const data = await res.json().catch(() => null) as { id?: string } | null
-    return {
-      providerRef: data?.id ?? null,
-      draft,
-      sent:        !!data?.id,
-    }
-  } catch {
+      requested_at:        ctx.tour.tour_date && ctx.stop.suggested_time
+        ? `${ctx.tour.tour_date}T${ctx.stop.suggested_time}`
+        : null,
+      duration_minutes:    ctx.stop.suggested_duration_minutes ?? 30,
+      buyer_agent_name:    ctx.buyerAgent.fullName,
+      buyer_agent_phone:   ctx.buyerAgent.phone,
+      buyer_agent_email:   ctx.buyerAgent.email,
+      buyer_agent_license: ctx.buyerAgent.licenseNumber,
+      buyer_brokerage:     ctx.buyerAgent.brokerageName,
+      notes:               draftBody,
+    },
+  })
+
+  // Fall back to draft on any non-200; agent can complete manually.
+  if (!res.ok || !res.data?.id) {
     return { providerRef: null, draft, sent: false }
   }
+  return { providerRef: res.data.id, draft, sent: true }
 }
 
 // ─── SMS ─────────────────────────────────────────────────────────────────────
@@ -218,36 +213,21 @@ export async function dispatchViaSms(
     return { providerRef: null, draft, sent: false, deepLink, via: null }
   }
 
-  // Twilio path — automated send. Recipient still gets it from the
-  // brokerage's Twilio number; replies route to the agent via Twilio's
-  // forwarding rules (configured per brokerage).
-  try {
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${twilio.accountSid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Basic ${Buffer.from(`${twilio.accountSid}:${twilio.authToken}`).toString("base64")}`,
-          "Content-Type":  "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          From: twilio.fromNumber,
-          To:   phone,
-          Body: body,
-        }).toString(),
-      },
-    )
-    if (!res.ok) return { providerRef: null, draft, sent: false, deepLink, via: null }
-    const data = await res.json().catch(() => null) as { sid?: string } | null
-    return {
-      providerRef: data?.sid ?? null,
-      draft,
-      sent:        !!data?.sid,
-      deepLink,    // still expose the deep-link in case agent prefers
-      via:         data?.sid ? "twilio" : null,
-    }
-  } catch {
-    return { providerRef: null, draft, sent: false, deepLink, via: null }
+  // Twilio path — automated send. Routed through the canonical sendViaTwilio adapter so the call
+  // goes through the connector-gateway (single egress, healer-observable, never-throws). The
+  // previous bare `fetch(...)` to api.twilio.com bypassed the gateway entirely — egress budgeting,
+  // healing, retry, and probe instrumentation were lost on this path.
+  const sms = await sendViaTwilio(
+    { to: phone, message: body, from: twilio.fromNumber },
+    { apiKey: twilio.accountSid, apiSecret: twilio.authToken, fromNumber: twilio.fromNumber },
+  )
+  if (!sms.success) return { providerRef: null, draft, sent: false, deepLink, via: null }
+  return {
+    providerRef: sms.messageId ?? null,
+    draft,
+    sent:        !!sms.messageId,
+    deepLink,    // still expose the deep-link in case agent prefers
+    via:         sms.messageId ? "twilio" : null,
   }
 }
 
@@ -337,31 +317,29 @@ export async function dispatchViaEmail(
 
   // 2. SendGrid fallback.
   if (sendgridApiKey && ctx.buyerAgent.email) {
-    try {
-      const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${sendgridApiKey}`,
-          "Content-Type":  "application/json",
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: to }] }],
-          from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
-          reply_to:         { email: ctx.buyerAgent.email },
-          subject:          tpl.subject,
-          content:          [{ type: "text/plain", value: tpl.body }],
-        }),
-      })
-      if (res.ok) {
-        return {
-          providerRef: res.headers.get("x-message-id"),
-          draft,
-          sent:        true,
-          via:         "sendgrid",
-          deepLink,
-        }
+    const res = await callConnector({
+      connector: "sendgrid",
+      baseUrl: "https://api.sendgrid.com",
+      path: "/v3/mail/send",
+      method: "POST",
+      auth: { style: "bearer", token: sendgridApiKey },
+      body: {
+        personalizations: [{ to: [{ email: to }] }],
+        from:             { email: ctx.buyerAgent.email, name: ctx.buyerAgent.fullName },
+        reply_to:         { email: ctx.buyerAgent.email },
+        subject:          tpl.subject,
+        content:          [{ type: "text/plain", value: tpl.body }],
+      },
+    })
+    if (res.ok) {
+      return {
+        providerRef: res.headers["x-message-id"] ?? null,
+        draft,
+        sent:        true,
+        via:         "sendgrid",
+        deepLink,
       }
-    } catch { /* fall through */ }
+    }
   }
 
   // 3. mailto: deep link — agent uses their default mail client.

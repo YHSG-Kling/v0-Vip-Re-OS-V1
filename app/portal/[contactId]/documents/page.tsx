@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
+import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
 
 export default async function DocumentsPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -15,6 +16,20 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
 
   if (!contact) {
     redirect("/portal?error=contact_not_found")
+  }
+
+  // Provider sync — pull fresh document state from the brokerage's CONFIGURED transaction
+  // provider (Dotloop / SkySlope / Brokermint / FormSimplicity) into transaction_documents
+  // BEFORE the read below. Without this the portal only ever shows what the legacy Dotloop
+  // sync wrote — brokerages on other providers saw zero documents despite their provider
+  // holding the real data. Never-throws; throttled to once per 5 min via
+  // transactions.last_provider_sync_at; degrades to showing DB cache on provider error.
+  if (contact.brokerage_id) {
+    try {
+      await syncAllForContact({ brokerageId: contact.brokerage_id, contactId })
+    } catch (e) {
+      console.error("[portal-documents] provider sync failed:", e)
+    }
   }
 
   // STEP 1 — Resolve transaction IDs (never use Supabase subquery in .in())

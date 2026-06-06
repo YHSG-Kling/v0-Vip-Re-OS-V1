@@ -23,6 +23,8 @@ interface Props {
   limit?:    number
   /** Compact mode used inside other cards. */
   compact?:  boolean
+  /** When embedded inside another card, render nothing if there are no events. */
+  hideWhenEmpty?: boolean
 }
 
 const SEVERITY_BORDER: Record<string, string> = {
@@ -43,11 +45,12 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString()
 }
 
-export async function PortalLiveFeed({ contactId, limit, compact }: Props) {
+export async function PortalLiveFeed({ contactId, limit, compact, hideWhenEmpty }: Props) {
   const res = await getCustomerPortalFeed({ contactId, limit: limit ?? 20 })
   const rows = res.success ? (res.rows ?? []) : []
 
   if (rows.length === 0) {
+    if (hideWhenEmpty) return null
     return (
       <Card>
         <CardContent className="py-6 text-center">

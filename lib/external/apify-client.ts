@@ -1,3 +1,6 @@
+import { runApifyTask } from './apify-actors'
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
 export class ApifyClient {
   async scrapeZillow(location: string, filters?: { minPrice?: number; maxPrice?: number }) {
@@ -22,7 +25,6 @@ export class ApifyClient {
 }
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!
-const APIFY_API_URL = 'https://api.apify.com/v2'
 
 export async function runApifyActor(
   actorId: string,
@@ -31,54 +33,32 @@ export async function runApifyActor(
   data: any[]
   cost: number
 }> {
-  const runResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
+  // Apify REST paths address actors as `username~actorname` (the public slug uses
+  // a slash). Normalize so e.g. "apify/facebook-posts-scraper" → "apify~facebook-posts-scraper".
+  const id = actorId.replace("/", "~")
+
+  // run-sync-get-dataset-items: starts the actor, waits for it to finish, and
+  // returns the default dataset items in one call — the Apify-recommended pattern
+  // for synchronous scrapes. Avoids manual run polling + dataset-id resolution.
+  const runResponse = await callConnector<any>({
+    connector: "apify",
+    baseUrl: "https://api.apify.com",
+    path: `/v2/acts/${id}/run-sync-get-dataset-items`,
+    method: "POST",
+    auth: { style: "bearer", token: APIFY_API_TOKEN },
+    body: input,
+    timeoutMs: 60_000,
   })
 
+  // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {
-    throw new Error(`Apify actor start error: ${runResponse.status} ${runResponse.statusText}`)
+    throw new Error(`Apify actor run error: ${runResponse.status} ${runResponse.error ?? ""}`)
   }
 
-  const runData = await runResponse.json()
-  const runId = runData.data.id
-
-  let status = 'RUNNING'
-  let attempts = 0
-  const maxAttempts = 40
-
-  while (status === 'RUNNING' && attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 3000))
-
-    const statusResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs/${runId}`, {
-      headers: {
-        'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-      },
-    })
-
-    const statusData = await statusResponse.json()
-    status = statusData.data.status
-    attempts++
-  }
-
-  if (status !== 'SUCCEEDED') {
-    throw new Error(`Apify actor failed with status: ${status}`)
-  }
-
-  const resultsResponse = await fetch(`${APIFY_API_URL}/acts/${actorId}/runs/${runId}/dataset/items`, {
-    headers: {
-      'Authorization': `Bearer ${APIFY_API_TOKEN}`,
-    },
-  })
-
-  const results = await resultsResponse.json()
+  const results = runResponse.data
 
   return {
-    data: results || [],
+    data: Array.isArray(results) ? results : [],
     cost: 0.50,
   }
 }
@@ -91,7 +71,7 @@ export async function scrapeFacebookGroupPosts(params: {
   posts: any[]
   cost: number
 }> {
-  const result = await runApifyActor('apify/facebook-pages-scraper', {
+  const result = await runApifyTask('facebook', {
     startUrls: [{ url: params.groupUrl }],
     maxPosts: params.limit || 100,
     searchKeywords: params.keywords,
@@ -111,7 +91,7 @@ export async function scrapeRedditPosts(params: {
   posts: any[]
   cost: number
 }> {
-  const result = await runApifyActor('trudax/reddit-scraper', {
+  const result = await runApifyTask('reddit', {
     subreddits: params.subreddits,
     searchTerms: params.keywords,
     maxPosts: params.limit || 100,
@@ -121,4 +101,59 @@ export async function scrapeRedditPosts(params: {
     posts: result.data,
     cost: result.cost,
   }
+}
+
+export async function scrapeInstagramPosts(params: {
+  hashtags?: string[]
+  searchTerms?: string[]
+  limit?: number
+}): Promise<{ posts: any[]; cost: number }> {
+  const result = await runApifyTask('instagram', {
+    search: (params.searchTerms ?? params.hashtags ?? []).join(' '),
+    searchType: 'hashtag',
+    resultsLimit: params.limit || 100,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
+export async function scrapeCraigslistPosts(params: {
+  city: string
+  query?: string
+  limit?: number
+  /** Craigslist search section: 'rea' = real estate for sale (seller), 'hhh' = housing (buyer "wanted"/ISO posts live here). */
+  section?: string
+}): Promise<{ posts: any[]; cost: number }> {
+  const section = params.section || 'rea'
+  const result = await runApifyTask('craigslist', {
+    startUrls: [
+      { url: `https://${params.city.toLowerCase().replace(/ /g, '')}.craigslist.org/search/${section}?query=${encodeURIComponent(params.query ?? '')}` },
+    ],
+    maxItems: params.limit || 100,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
+export async function scrapeLinkedInPosts(params: {
+  keywords: string[]
+  location?: string
+  limit?: number
+}): Promise<{ posts: any[]; cost: number }> {
+  const result = await runApifyTask('linkedin', {
+    keywords: params.keywords.join(' '),
+    location: params.location,
+    maxItems: params.limit || 50,
+  })
+  return { posts: result.data, cost: result.cost }
+}
+
+export async function scrapeGoogleSearchResults(params: {
+  queries: string[]
+  resultsPerQuery?: number
+}): Promise<{ results: any[]; cost: number }> {
+  const result = await runApifyTask('google', {
+    queries: params.queries.join('\n'),
+    resultsPerPage: params.resultsPerQuery || 10,
+    maxPagesPerQuery: 1,
+  })
+  return { results: result.data, cost: result.cost }
 }

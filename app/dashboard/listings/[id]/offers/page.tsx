@@ -22,7 +22,7 @@ export default async function OffersPage({
       .single(),
     supabase
       .from("users")
-      .select("brokerage_id, role, platform_role")
+      .select("brokerage_id, user_type, platform_role")
       .eq("id", user.id)
       .single(),
     supabase
@@ -79,7 +79,7 @@ export default async function OffersPage({
         initialOffers={offersWithAgentNames}
         currentUserId={user.id}
         brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
-        userRole={agentRow?.role ?? agentRow?.platform_role ?? "agent"}
+        userRole={agentRow?.user_type ?? agentRow?.platform_role ?? "agent"}
       />
     </>
   )

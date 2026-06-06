@@ -58,8 +58,8 @@ async function requireContactAccess(contactId: string): Promise<
 
   // Otherwise must be an agent/admin in the same brokerage
   const { data: callerRow } = await svc
-    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
   }
 
@@ -291,7 +291,7 @@ export async function getSellerOffers(contactId: string) {
   const { data: offers } = await supabase
     .from("offers")
     .select(`
-      id, listing_id, contact_id, offer_amount, status, offer_date, expiration_date,
+      id, listing_id, contact_id, offer_amount:offer_price, status, offer_date, expiration_date,
       earnest_money, down_payment_percent, contingencies, notes,
       buyer:contacts(id, first_name, last_name, email, phone)
     `)
@@ -453,7 +453,7 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
       contact_id: contactId,
       brokerage_id: access.brokerageId,
       activity_type: "portal_module_viewed",
-      activity_data: { module: moduleName, viewed_at: new Date().toISOString() },
+      metadata: { module: moduleName, viewed_at: new Date().toISOString() },
     }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
   }
 

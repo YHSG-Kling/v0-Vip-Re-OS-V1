@@ -14,6 +14,7 @@ import {
 } from './message-normalizer'
 import { persistMessageWithContext } from './message-persister'
 import { createServiceClient } from '@/lib/supabase/service'
+import { KernelEvent } from '@/lib/kernel/events'
 
 export interface IngestMessageParams {
   contactId: string
@@ -247,7 +248,7 @@ async function pauseActiveSequenceEnrollmentsOnReply(contactId: string): Promise
       brokerage_id:  e.brokerage_id,
       entity_type:   'sequence_enrollment',
       entity_id:     e.id,
-      event_type:    'sequence.paused_on_reply',
+      event_type:    KernelEvent.SEQUENCE_PAUSED_ON_REPLY,
       metadata:      { reason: 'contact_replied', sequence_id: e.sequence_id },
     }).then(() => null, () => null)
   }

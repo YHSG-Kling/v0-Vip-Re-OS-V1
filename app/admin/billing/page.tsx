@@ -29,12 +29,12 @@ export default async function AdminBillingPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role")
+    .select("id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
   // Role gate: superadmin only
-  if (profile?.role !== "superadmin") {
+  if (profile?.user_type !== "superadmin" && profile?.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

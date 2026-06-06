@@ -26,9 +26,13 @@ export default async function BrandSetupPage() {
   }
 
   // Get user and brokerage info
+  // Wave 34 — also pull users.personal_website_url so the brand wizard
+  // can expose it during onboarding (Settings/Profile is the post-
+  // onboarding edit surface). Many brokerages without their own site
+  // still have an agent with a personal real-estate website.
   const { data: userData } = await supabase
     .from("users")
-    .select("id, brokerage_id, first_name, last_name, email")
+    .select("id, brokerage_id, first_name, last_name, email, personal_website_url")
     .eq("id", user.id)
     .single()
 
@@ -55,6 +59,7 @@ export default async function BrandSetupPage() {
       brokerageEmail={brokerage?.email || ""}
       agentName={`${userData.first_name || ""} ${userData.last_name || ""}`.trim()}
       agentEmail={userData.email || ""}
+      agentPersonalWebsite={userData.personal_website_url || ""}
       initialStatus={brandStatus}
     />
   )

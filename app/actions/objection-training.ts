@@ -14,8 +14,7 @@
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
+import { generateTextRouted } from "@/lib/ai/models"
 import { getScenarioByKey, OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 
@@ -313,11 +312,13 @@ Stay in character as the prospect. Don't break role in the prospectReply. Don't 
   const userPrompt = `Conversation so far:\n\n${params.transcript}\n\nScore the agent's last response and continue the conversation as the prospect.`
 
   try {
-    const result = await generateText({
-      model: anthropic(MODEL),
-      system: systemPrompt,
-      prompt: userPrompt,
-      maxOutputTokens: 600,
+    // generateTextRouted: gateway + AI_TASK_ROUTING + auto-fallback + fair-use + cost log.
+    // The constant `MODEL` is kept only for db logging — actual model is chosen by the routing table.
+    const result = await generateTextRouted({
+      feature:     "playbook_response",
+      system:      systemPrompt,
+      prompt:      userPrompt,
+      maxTokens:   600,
       temperature: 0.7,
     })
     const cleaned = result.text.replace(/```json\n?|\n?```/g, "").trim()
@@ -364,10 +365,11 @@ Return ONLY a JSON object with:
 }`
 
   try {
-    const result = await generateText({
-      model: anthropic(MODEL),
+    // generateTextRouted: gateway + AI_TASK_ROUTING + auto-fallback + fair-use + cost log.
+    const result = await generateTextRouted({
+      feature:     "playbook_response",
       prompt,
-      maxOutputTokens: 600,
+      maxTokens:   600,
       temperature: 0.3,
     })
     const cleaned = result.text.replace(/```json\n?|\n?```/g, "").trim()

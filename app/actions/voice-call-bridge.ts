@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
  * Call Whisper Bridge & Vapi Voice Bot System
@@ -108,7 +109,7 @@ export async function initiateWhisperBridge(params: {
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
     await supabase.from("activities").insert({
-      user_id: agentUserId,
+      agent_user_id: agentUserId,
       activity_type: "whisper_bridge_initiated",
       entity_type: "contact",
       entity_id: contactId,
@@ -264,14 +265,14 @@ export async function triggerVapiVoiceBot(params: {
       }
     }
 
-    // Call Vapi.ai API
-    const response = await fetch("https://api.vapi.ai/call/phone", {
+    // Call Vapi.ai API through the connector-gateway
+    const response = await callConnector<{ id?: string; status?: string }>({
+      connector: "vapi",
+      baseUrl: "https://api.vapi.ai",
+      path: "/call/phone",
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${vapiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+      auth: { style: "bearer", token: vapiApiKey },
+      body: {
         phoneNumber: contact.phone,
         assistantId: vapiAssistantId,
         customer: {
@@ -280,35 +281,50 @@ export async function triggerVapiVoiceBot(params: {
         assistantOverrides: {
           firstMessage,
         },
-      }),
+      },
     })
 
-    const callData = await response.json()
-
     if (!response.ok) {
-      throw new Error(callData.message || "Vapi API error")
+      throw new Error(response.error || "Vapi API error")
     }
 
-    // Log Vapi call
+    const callData = response.data ?? {}
+
+    // Log Vapi call. `vapi_voice_calls` carries the billing + provider
+    // pointer; the conversational metadata (trigger_event, initial status)
+    // lives in raw_payload jsonb rather than as dedicated columns.
     const { error: logError } = await supabase.from("vapi_voice_calls").insert({
-      contact_id: contactId,
-      trigger_event: triggerEvent,
       vapi_call_id: callData.id,
-      call_status: "initiated",
+      contact_id: contactId,
+      brokerage_id: contactBroker.brokerage_id,
+      agent_id: ctx.agentId ?? null,
+      raw_payload: {
+        trigger_event: triggerEvent,
+        status: "initiated",
+        first_message: firstMessage,
+        initiated_at: new Date().toISOString(),
+      },
     })
 
     if (logError) {
       console.error("[Vapi Voice] Failed to log call:", logError)
     }
 
-    // Create activity log — Agent task (correct location, no changes) — activity_type: vapi_voice_initiated
-    await supabase.from("activities").insert({
-      user_id: contactId,
-      activity_type: "vapi_voice_initiated",
-      entity_type: "contact",
-      entity_id: contactId,
-      description: `AI voice bot initiated: ${triggerEvent}`,
-    })
+    // Activities row — table requires brokerage_id, agent_id, title NOT NULL.
+    // Notes/metadata carry the trigger context.
+    if (ctx.agentId) {
+      await supabase.from("activities").insert({
+        agent_id: ctx.agentId,
+        brokerage_id: contactBroker.brokerage_id,
+        contact_id: contactId,
+        entity_type: "contact",
+        activity_type: "vapi_voice_initiated",
+        title: `AI voice bot initiated: ${triggerEvent}`,
+        description: `Vapi call ${callData.id} initiated from trigger ${triggerEvent}`,
+        metadata: { vapi_call_id: callData.id, trigger_event: triggerEvent },
+        status: "completed",
+      })
+    }
 
     return {
       success: true,
@@ -366,22 +382,47 @@ export async function updateVapiCallStatus(params: {
       }
     }
 
-    const { error } = await svc
+    // vapi_voice_calls only carries provider/billing fields. The status,
+    // transcript, outcome and sentiment belong on the parent voice_calls
+    // row; look it up via voice_call_id (FK from vapi_voice_calls).
+    const { data: vapiRow } = await svc
+      .from("vapi_voice_calls")
+      .select("id, voice_call_id, raw_payload")
+      .eq("vapi_call_id", params.callId)
+      .maybeSingle()
+
+    const { error: vapiErr } = await svc
       .from("vapi_voice_calls")
       .update({
-        call_status: params.status,
-        conversation_transcript: params.transcript,
-        outcome: params.outcome,
-        sentiment: params.sentiment,
         duration_seconds: params.durationSeconds,
         cost_cents: params.costCents,
-        updated_at: new Date().toISOString(),
+        raw_payload: {
+          ...(vapiRow?.raw_payload ?? {}),
+          status: params.status,
+          last_status_at: new Date().toISOString(),
+        },
       })
       .eq("vapi_call_id", params.callId)
 
-    if (error) {
-      console.error("[Vapi Voice] Failed to update status:", error)
-      return { success: false, error: error.message }
+    if (vapiErr) {
+      console.error("[Vapi Voice] Failed to update vapi_voice_calls:", vapiErr)
+      return { success: false, error: vapiErr.message }
+    }
+
+    if (vapiRow?.voice_call_id) {
+      const voiceUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() }
+      if (params.status === "completed") voiceUpdate.status = "completed"
+      if (params.transcript) voiceUpdate.transcription = params.transcript
+      if (params.outcome) voiceUpdate.outcome = params.outcome
+      if (params.sentiment) voiceUpdate.sentiment = params.sentiment
+
+      const { error: voiceErr } = await svc
+        .from("voice_calls")
+        .update(voiceUpdate)
+        .eq("id", vapiRow.voice_call_id)
+      if (voiceErr) {
+        console.error("[Vapi Voice] Failed to update voice_calls:", voiceErr)
+      }
     }
 
     return { success: true }

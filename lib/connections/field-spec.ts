@@ -1,0 +1,257 @@
+// lib/connections/field-spec.ts
+// PURE (no I/O) spec for how each connectable domain is authorized and, for API-key providers,
+// exactly which fields the connect UI collects and how they map onto a platform_credentials row.
+// This is the bridge between the per-tier UI (selectableConnectionsForScope) and the shapes the
+// dispatch RESOLVERS already read — so a credential connected in the UI is immediately usable by
+// dispatch with no per-provider glue scattered around. Unit-tested in the simulator.
+
+import { domainsForScope, type ConnectionScope, type ConnectorDomain } from "./scope"
+
+/** External-partner roles — vendor-type actors (landscapers, lenders, title, etc.). Leaf scope:
+ *  they may only own calendar/social/financial (their own scheduling/presence/payout). */
+const EXTERNAL_PARTNER_ROLES = new Set(["vendor", "lender", "title", "inspector", "photographer", "contractor"])
+
+/** Brokerage STAFF (transaction coordinators, ISAs, compliance, assistants). They operate on the
+ *  brokerage's connections for everything EXCEPT their own email/calendar — so they self-connect
+ *  ONLY email + calendar; phone/CRM/transaction/etc. are consumed from the brokerage via cascade. */
+const STAFF_ROLES = new Set(["tc", "isa", "compliance", "compliance_officer", "staff", "assistant"])
+const STAFF_SELF_CONNECT: ConnectorDomain[] = ["email", "calendar"]
+
+export type AuthMethod = "oauth" | "api_key"
+
+export interface CredentialField {
+  /** Form field key (also the value key callers pass back). */
+  key: string
+  label: string
+  /** Rendered as a password input when true (tokens / secrets). */
+  secret?: boolean
+  required?: boolean
+  placeholder?: string
+}
+
+/** How a domain is connected + (for api_key) the fields collected. OAuth domains start a redirect
+ *  flow instead of collecting fields. */
+export interface DomainAuthSpec {
+  method: AuthMethod
+  fields: CredentialField[]
+  /** OAuth start path template; {provider} is replaced with the canonical provider id. */
+  oauthStartPath?: string
+}
+
+/**
+ * The platform_credentials write payload (column + config-key shape) for an API-key connection.
+ * Mirrors what each domain's resolver reads:
+ *   - phone (resolve-sms-provider): api_key=SID, config.auth_token, config.from_number
+ *   - esign/transaction (resolve-esign / resolve-transaction): api_key, config.profile_id, config.base_uri?
+ *   - listing/idx (idxbroker-client): api_key
+ *   - financial/stripe: api_key (secret key)
+ */
+export interface PlatformCredentialWrite {
+  api_key: string | null
+  account_id: string | null
+  config: Record<string, unknown>
+}
+
+export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
+  email:    { method: "oauth", fields: [], oauthStartPath: "/api/integrations/oauth/{provider}" },
+  calendar: { method: "oauth", fields: [], oauthStartPath: "/api/integrations/oauth/{provider}" },
+  social:   { method: "oauth", fields: [], oauthStartPath: "/api/social/oauth/{provider}" },
+  phone: {
+    method: "api_key",
+    fields: [
+      { key: "accountSid", label: "Account SID", required: true },
+      { key: "authToken",  label: "Auth Token",  required: true, secret: true },
+      { key: "fromNumber", label: "From Number",  required: true, placeholder: "+15551234567" },
+    ],
+  },
+  crm: {
+    method: "api_key",
+    fields: [
+      { key: "apiKey",    label: "API Key",     required: true, secret: true },
+      { key: "accountId", label: "Account / Location ID", required: false },
+    ],
+  },
+  financial: {
+    // Both financial providers are OAuth/Connect — NEVER a pasted secret key. Per Stripe Apps API
+    // auth (platform key / OAuth / restricted key), our platform uses the PLATFORM-KEY model for
+    // charging (env STRIPE_SECRET_KEY) and Stripe CONNECT account onboarding for per-actor payouts
+    // (initiateStripeConnectOnboarding → /settings/payments). QuickBooks is OAuth 2.0.
+    method: "oauth",
+    fields: [],
+  },
+  listing: {
+    method: "api_key",
+    fields: [{ key: "apiKey", label: "API Key", required: true, secret: true }],
+  },
+  transaction: {
+    method: "api_key",
+    fields: [
+      { key: "apiKey",    label: "API Key",    required: true, secret: true },
+      { key: "profileId", label: "Profile / Account ID", required: false },
+    ],
+  },
+  esign: {
+    method: "api_key",
+    fields: [
+      { key: "apiKey",    label: "API Key",    required: true, secret: true },
+      { key: "profileId", label: "Profile / Account ID", required: false },
+    ],
+  },
+  showing: {
+    method: "api_key",
+    fields: [{ key: "apiKey", label: "API Key", required: true, secret: true }],
+  },
+  podcast: {
+    method: "api_key",
+    fields: [
+      { key: "apiKey", label: "API Key", required: true, secret: true },
+      { key: "showId", label: "Show ID", required: true, placeholder: "Transistor show id" },
+    ],
+  },
+  documents: { method: "api_key", fields: [] },
+  marketing: { method: "api_key", fields: [] },
+}
+
+/** Pure: is this (domain, provider) connected via OAuth/Connect redirect rather than an API-key
+ *  form? Financial (Stripe Connect + QuickBooks OAuth) is always redirect-based. */
+export function isOAuthConnection(domain: ConnectorDomain, _canonicalProviderId: string): boolean {
+  return DOMAIN_AUTH[domain].method === "oauth"
+}
+
+/** Pure: the OAuth/Connect start path for a redirect-based provider. QuickBooks → the integrations
+ *  OAuth route; Stripe → the Stripe Connect onboarding surface (initiateStripeConnectOnboarding);
+ *  email/calendar/social → their OAuth routes. */
+export function oauthStartPath(domain: ConnectorDomain, canonicalProviderId: string): string | null {
+  if (domain === "financial") {
+    if (canonicalProviderId === "quickbooks") return "/api/integrations/oauth/quickbooks"
+    if (canonicalProviderId === "stripe") return "/vendor/earnings" // Stripe Connect onboarding surface
+    return null
+  }
+  // email/calendar canonical providers are gmail/outlook, but the OAuth route's PROVIDER_METADATA
+  // keys them as google_calendar/outlook_calendar — map to the route param so the flow initiates.
+  if (domain === "email" || domain === "calendar") {
+    const routeProvider = canonicalProviderId === "gmail" ? "google_calendar"
+      : canonicalProviderId === "outlook" ? "outlook_calendar"
+      : canonicalProviderId
+    return `/api/integrations/oauth/${routeProvider}`
+  }
+  const tmpl = DOMAIN_AUTH[domain].oauthStartPath
+  return tmpl ? tmpl.replace("{provider}", canonicalProviderId) : null
+}
+
+/** Pure: collected form fields → the platform_credentials row shape each resolver reads. Returns
+ *  null when a required field is missing (caller surfaces the error). */
+export function buildCredentialWrite(
+  domain: ConnectorDomain,
+  fields: Record<string, string>,
+): PlatformCredentialWrite | null {
+  const trim = (k: string) => (fields[k] ?? "").trim()
+  const has = (k: string) => trim(k).length > 0
+
+  switch (domain) {
+    case "phone":
+      if (!has("accountSid") || !has("authToken") || !has("fromNumber")) return null
+      return {
+        api_key: trim("accountSid"),
+        account_id: null,
+        config: { auth_token: trim("authToken"), from_number: trim("fromNumber") },
+      }
+    case "crm":
+      if (!has("apiKey")) return null
+      return { api_key: trim("apiKey"), account_id: has("accountId") ? trim("accountId") : null, config: {} }
+    // financial is OAuth/Connect (no api-key write) — handled by the redirect flow, not here.
+    case "listing":
+    case "showing":
+      if (!has("apiKey")) return null
+      return { api_key: trim("apiKey"), account_id: null, config: {} }
+    case "transaction":
+    case "esign":
+      if (!has("apiKey")) return null
+      return {
+        api_key: trim("apiKey"),
+        account_id: has("profileId") ? trim("profileId") : null,
+        config: has("profileId") ? { profile_id: trim("profileId") } : {},
+      }
+    case "podcast":
+      // Distributor (Transistor): API key + the show id episodes publish into.
+      if (!has("apiKey") || !has("showId")) return null
+      return { api_key: trim("apiKey"), account_id: trim("showId"), config: { show_id: trim("showId") } }
+    default:
+      return null
+  }
+}
+
+/** Actor capabilities that determine whether a connect FLOW is wired for the current scope. */
+export interface ConnectCaps {
+  /** We can persist an owner-scoped credential (owner id resolves). */
+  canOwn: boolean
+  /** The actor has an agents.id — required for personal email/calendar OAuth (agent_api_credentials). */
+  hasAgentId: boolean
+  /** The actor manages brokerage-level connections (broker/admin) — required for brokerage OAuth. */
+  isBrokerageManager: boolean
+  /** The actor has a brokerage anchor — platform_credentials.brokerage_id is NOT NULL, so an
+   *  api-key write is impossible without it (e.g. a superadmin/platform actor with no brokerage). */
+  hasBrokerage: boolean
+}
+
+/**
+ * Pure: is the CONNECT flow for a (domain, provider) actually wired for an actor with these caps?
+ * Keeps the UI honest — providers whose flow isn't available at this scope are shown disabled with
+ * a reason instead of a button that silently no-ops. Mirrors where each flow stores tokens:
+ *   - api_key  → owner-scoped platform_credentials (any actor that canOwn)
+ *   - social   → social_media_accounts keyed by user_id (any authenticated user)
+ *   - email/calendar OAuth → agent_api_credentials keyed by agentId (needs hasAgentId)
+ *   - QuickBooks OAuth → brokerage-scoped callback (needs isBrokerageManager)
+ */
+export function isConnectSupported(
+  domain: ConnectorDomain,
+  canonicalProviderId: string,
+  caps: ConnectCaps,
+): { available: boolean; reason?: string } {
+  if (!caps.canOwn) return { available: false, reason: "Not available for your account type." }
+  if (!isOAuthConnection(domain, canonicalProviderId)) {
+    // api_key → owner-scoped platform_credentials write, which requires a brokerage anchor
+    // (brokerage_id is NOT NULL). A platform/superadmin actor without a brokerage can't store it here.
+    return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
+  }
+  if (domain === "social") return { available: true } // stored by user_id — any signed-in user
+  if (domain === "financial") {
+    // QuickBooks OAuth is brokerage-scoped; Stripe is Connect onboarding (any actor can onboard a
+    // payout account via the platform key — no per-actor brokerage anchor needed).
+    if (canonicalProviderId === "quickbooks") {
+      return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }
+    }
+    return { available: true } // stripe → Connect onboarding
+  }
+  // email / calendar OAuth — the OAuth callback stores tokens owner-scoped (platform_credentials),
+  // so any actor with a brokerage anchor (agent/team/brokerage/staff/vendor/contact) can connect
+  // their own mailbox. Needs the brokerage anchor (brokerage_id is NOT NULL on the stored row).
+  return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
+}
+
+/** Pure: map an app userType to its connection ownership scope + whether it manages brokerage-level
+ *  connections. External partners (vendor/lender/title/…) are leaf actors; brokers/admins manage the
+ *  brokerage; team leads own team-level; superadmin owns platform defaults; STAFF and solo/team
+ *  agents are agent-scoped for ownership (staff's self-connect surface is narrowed separately). */
+export function connectionScopeForUserType(
+  userType: string,
+): { scope: ConnectionScope; isBrokerageManager: boolean } {
+  const t = (userType ?? "").toLowerCase()
+  if (EXTERNAL_PARTNER_ROLES.has(t)) return { scope: "vendor", isBrokerageManager: false }
+  if (t === "contact") return { scope: "contact", isBrokerageManager: false }
+  if (t === "superadmin" || t === "system") return { scope: "platform", isBrokerageManager: false }
+  if (["broker", "broker_owner", "admin"].includes(t)) return { scope: "brokerage", isBrokerageManager: true }
+  if (["team_lead", "team_leader"].includes(t)) return { scope: "team", isBrokerageManager: false }
+  return { scope: "agent", isBrokerageManager: false } // staff + agents own at agent scope
+}
+
+/** Pure: the domains a user may SELF-CONNECT in the Connection Center, given their role + scope.
+ *  Staff connect only their own email/calendar (the rest is the brokerage's); everyone else gets the
+ *  full provider-backed set their scope allows (vendor/contact already limited by domainsForScope). */
+export function selfConnectableDomains(userType: string, scope: ConnectionScope): ConnectorDomain[] {
+  const allowed = domainsForScope(scope)
+  if (STAFF_ROLES.has((userType ?? "").toLowerCase())) {
+    return allowed.filter((d) => STAFF_SELF_CONNECT.includes(d))
+  }
+  return allowed
+}

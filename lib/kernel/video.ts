@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -296,7 +297,7 @@ export async function submitVideoGenerationJob(
   const supabase = await createClient()
 
   if (!input.avatarId) {
-    throw new Error("avatarId is required for HeyGen video generation. Select an avatar from the library.")
+    throw new Error("avatarId is required for video generation. Select an avatar from the library.")
   }
 
   // Fetch project to get tenant attribution for dispatch
@@ -313,11 +314,17 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
-  // Atomically claim the project slot by updating ONLY when not already in-progress.
-  // The WHERE clause ensures a concurrent second call fails rather than proceeding.
+  // Atomically claim the project slot. provider_status is the canonical column;
+  // we keep heygen_status synced for legacy readers (the poll-heygen-videos
+  // cron and the dashboard UI still consume it).
   const { data: reserved, error: preMarkError } = await supabase
     .from("ai_video_projects")
-    .update({ status: "generating", heygen_status: "submitting", updated_at: new Date().toISOString() })
+    .update({
+      status:          "generating",
+      provider_status: "submitting",
+      heygen_status:   "submitting",
+      updated_at:      new Date().toISOString(),
+    })
     .eq("id", input.projectId)
     .neq("status", "generating")
     .neq("status", "submitting")
@@ -329,45 +336,54 @@ export async function submitVideoGenerationJob(
     throw new Error("Video generation is already in progress for this project")
   }
 
-  // Call HeyGen API via dispatch
-  let heygenJobId: string
+  // Submit via the platform vendor selector — dispatchVideo picks D-ID or
+  // HeyGen per getPlatformVideoProvider(), so the kernel no longer hard-codes
+  // a vendor. Returns the provider's job id regardless of which one rendered.
+  let providerJobId: string
   try {
-    heygenJobId = await submitToHeyGen({
-      script: input.scriptText,
-      voiceProfileId: input.voiceProfileId,
-      avatarId: input.avatarId,
+    providerJobId = await submitViaPlatformVendor({
+      script:                 input.scriptText,
+      voiceProfileId:         input.voiceProfileId,
+      avatarId:               input.avatarId,
       estimatedDurationSeconds: input.estimatedDurationSeconds,
       brokerageId,
     })
   } catch (dispatchErr) {
-    // Roll back to setup status so the user can retry
     await supabase
       .from("ai_video_projects")
-      .update({ status: "setup", heygen_status: null, updated_at: new Date().toISOString() })
+      .update({
+        status:          "setup",
+        provider_status: null,
+        heygen_status:   null,
+        updated_at:      new Date().toISOString(),
+      })
       .eq("id", input.projectId)
     throw dispatchErr
   }
 
-  // Persist job ID — log clearly if this fails (job is already submitted to HeyGen)
+  // Persist on the canonical columns; keep heygen_* synced for legacy callers.
+  // The video_provider column is the source of truth for which vendor rendered.
   const { error } = await supabase
     .from("ai_video_projects")
     .update({
-      heygen_job_id: heygenJobId,
-      heygen_status: "queued",
-      status: "generating",
-      updated_at: new Date().toISOString(),
+      provider_job_id: providerJobId,
+      provider_status: "queued",
+      heygen_video_id: providerJobId,
+      heygen_status:   "queued",
+      status:          "generating",
+      updated_at:      new Date().toISOString(),
     })
     .eq("id", input.projectId)
 
   if (error) {
-    console.error(`[VideoKernel] ORPHANED HeyGen job ${heygenJobId} — DB update failed:`, error.message)
+    console.error(`[VideoKernel] ORPHANED provider job ${providerJobId} — DB update failed:`, error.message)
     throw new Error(`Failed to persist video job: ${error.message}`)
   }
 
   return {
     projectId: input.projectId,
-    jobId: heygenJobId,
-    status: "queued",
+    jobId:     providerJobId,
+    status:    "queued",
     estimatedCompletionMinutes: Math.ceil(input.estimatedDurationSeconds / 6),
   }
 }
@@ -491,32 +507,35 @@ export async function distributeVideoProject(
         continue
       }
 
-      // Publish to platform via dispatch
-      const publishUrl = await publishToChannel({
-        platform: channel,
-        videoUrl: project.video_url,
-        title: input.title,
-        description: input.description,
-        tags: input.tags,
-        accountId: account.id,
-      })
-
-      // Record social post
-      await supabase.from("social_posts").insert({
+      // Schedule the post for the real publisher cron (publish-social-posts),
+      // which performs the actual platform publish via lib/social/publisher.ts
+      // and records external_post_id + published_at. We do NOT fabricate a
+      // published URL — the post goes out as 'scheduled'/'approved' and the cron
+      // owns the live publish + URL.
+      const { error: postError } = await supabase.from("social_posts").insert({
+        brokerage_id: project.brokerage_id,
         agent_id: project.agent_id,
+        social_account_id: account.id,
         platform: channel,
+        post_type: "custom",
         content: input.description,
-        media_url: project.video_url,
-        published_url: publishUrl,
-        status: "published",
+        media_urls: [project.video_url],
+        hashtags: input.tags ?? [],
+        listing_id: project.listing_id ?? null,
+        status: "scheduled",
+        approval_status: "approved",
+        scheduled_for: new Date().toISOString(),
+        ai_generated: true,
         created_at: new Date().toISOString(),
       })
 
-      distributions.push({
-        channel,
-        status: "published",
-        url: publishUrl,
-      })
+      if (postError) {
+        distributions.push({ channel, status: "failed", error: postError.message })
+        continue
+      }
+
+      // Queued for the publisher cron — not yet live on the platform.
+      distributions.push({ channel, status: "pending" })
     } catch (err) {
       distributions.push({
         channel,
@@ -526,12 +545,11 @@ export async function distributeVideoProject(
     }
   }
 
-  // Update project status
+  // Mark the project distributed (posts now carry their own publish lifecycle).
   await supabase
     .from("ai_video_projects")
     .update({
-      status: "published",
-      distribution_channels: input.channels,
+      status: "distributed",
       updated_at: new Date().toISOString(),
     })
     .eq("id", input.projectId)
@@ -549,44 +567,14 @@ export async function distributeVideoProject(
  * Database: UPDATE ai_video_projects with repurposed URLs
  */
 export async function repurposeVideoOutput(
-  input: RepurposeVideoOutputInput
+  _input: RepurposeVideoOutputInput
 ): Promise<RepurposeVideoOutputOutput> {
-  const supabase = await createClient()
-
-  const { data: project, error } = await supabase
-    .from("ai_video_projects")
-    .select("*")
-    .eq("id", input.projectId)
-    .maybeSingle()
-
-  if (error || !project || !project.video_url) {
-    throw new Error(`Video not found: ${input.projectId}`)
-  }
-
-  const artifacts = []
-
-  for (const format of input.formats) {
-    const url = await generateArtifact(project.video_url, format)
-    artifacts.push({
-      format,
-      url,
-      duration: format === "shorts" ? 15 : format === "clips" ? 30 : undefined,
-    })
-  }
-
-  // Store artifact URLs
-  await supabase
-    .from("ai_video_projects")
-    .update({
-      repurposed_artifacts: artifacts,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.projectId)
-
-  return {
-    projectId: input.projectId,
-    artifacts,
-  }
+  // No video-processing backend (shorts/clips/thumbnail generation) is wired
+  // yet. The prior implementation fabricated artifact URLs by appending
+  // ?format=… to the source video, which would surface "clips" that don't
+  // exist. Fail honestly until a real processor (e.g. an ffmpeg/Shotstack
+  // worker) is connected, rather than returning fake artifacts.
+  throw new Error("Video repurposing (shorts/clips/thumbnails) is not yet available")
 }
 
 /**
@@ -610,11 +598,13 @@ export async function loadVideoPerformance(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
-  // Aggregate analytics from social posts
+  // Aggregate analytics from social posts. social_posts stores media as a
+  // media_urls array and metrics in engagement_data (there is no media_url /
+  // engagement_metrics column).
   const { data: posts } = await supabase
     .from("social_posts")
-    .select("engagement_metrics")
-    .eq("media_url", project.video_url)
+    .select("engagement_data")
+    .contains("media_urls", [project.video_url])
 
   let totalViews = 0
   let totalEngagement = 0
@@ -622,7 +612,7 @@ export async function loadVideoPerformance(
   let totalShares = 0
 
   for (const post of posts || []) {
-    const metrics = post.engagement_metrics || {}
+    const metrics = (post.engagement_data || {}) as Record<string, number>
     totalViews += metrics.views || 0
     totalEngagement += metrics.engagement || 0
     totalComments += metrics.comments || 0
@@ -697,7 +687,17 @@ function parseSceneBreakpoints(
   return scenes
 }
 
-async function submitToHeyGen(params: {
+/**
+ * Submit a render job via the platform vendor selector. dispatchVideo() reads
+ * getPlatformVideoProvider() and routes to D-ID (default) or HeyGen (super-
+ * admin override). Returns the provider's job id regardless of which vendor
+ * rendered — the caller persists it to provider_job_id.
+ *
+ * Previously this function was named submitToHeyGen() which falsely implied
+ * a HeyGen-only path even though it has gone through dispatchVideo since the
+ * D-ID-first refactor. Renamed for clarity.
+ */
+async function submitViaPlatformVendor(params: {
   script: string
   voiceProfileId: string
   avatarId: string
@@ -705,22 +705,22 @@ async function submitToHeyGen(params: {
   brokerageId: string
 }): Promise<string> {
   if (!params.avatarId || params.avatarId.trim().length < 1) {
-    throw new Error("avatarId is required to submit a HeyGen video job")
+    throw new Error("avatarId is required to submit a video render job")
   }
   const result = await dispatchVideo({
-    brokerageId: params.brokerageId,
-    templateId: params.avatarId,
+    brokerageId:    params.brokerageId,
+    templateId:     params.avatarId,
     recipientEmail: "system@internal",
     scriptVars: {
-      script: params.script,
+      script:           params.script,
       voice_profile_id: params.voiceProfileId,
       duration_seconds: String(params.estimatedDurationSeconds),
     },
     systemSource: "video_kernel",
   })
-  if (!result.success) throw new Error(result.error ?? "HeyGen video submission failed")
+  if (!result.success) throw new Error(result.error ?? "Video provider submission failed")
   const jobId = result.messageId
-  if (!jobId) throw new Error("HeyGen returned no video_id — cannot track job")
+  if (!jobId) throw new Error("Video provider returned no job id — cannot track job")
   return jobId
 }
 
@@ -731,40 +731,21 @@ async function checkHeyGenJobStatus(jobId: string): Promise<{
   const apiKey = process.env.HEYGEN_API_KEY
   if (!apiKey) return { status: "unknown" }
 
-  try {
-    const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(jobId)}`, {
-      headers: { "X-Api-Key": apiKey },
-    })
-    if (!res.ok) return { status: "unknown" }
+  const res = await callConnector<{ data?: { status?: string; video_url?: string } }>({
+    connector: "heygen",
+    baseUrl: "https://api.heygen.com",
+    path: "/v1/video_status.get",
+    method: "GET",
+    query: { video_id: jobId },
+    auth: { style: "header", name: "X-Api-Key", value: apiKey },
+  })
+  if (!res.ok) return { status: "unknown" }
 
-    const data = await res.json()
-    // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
-    // data.data.video_url when completed
-    return {
-      status: data.data?.status ?? "unknown",
-      videoUrl: data.data?.video_url ?? undefined,
-    }
-  } catch {
-    return { status: "unknown" }
+  // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
+  // data.data.video_url when completed
+  return {
+    status: res.data?.data?.status ?? "unknown",
+    videoUrl: res.data?.data?.video_url ?? undefined,
   }
 }
 
-async function publishToChannel(params: {
-  platform: string
-  videoUrl: string
-  title: string
-  description: string
-  tags?: string[]
-  accountId: string
-}): Promise<string> {
-  // Publish to YouTube/LinkedIn/TikTok - would use actual dispatch provider
-  return `https://${params.platform}.com/watch?v=${Date.now()}`
-}
-
-async function generateArtifact(
-  videoUrl: string,
-  format: string
-): Promise<string> {
-  // Generate shorts/clips/thumbnail - would use actual video processing
-  return `${videoUrl}?format=${format}`
-}

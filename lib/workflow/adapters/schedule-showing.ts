@@ -19,6 +19,8 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 
 export const scheduleShowingAdapter: ChannelAdapter = {
   channel: "schedule_showing",
@@ -52,38 +54,48 @@ export const scheduleShowingAdapter: ChannelAdapter = {
         return { status: "error", providerKey: "showings", error: "In-house listing not found" }
       }
 
-      const { data: integration } = await supabase
-        .from("brokerage_integrations")
-        .select("metadata, status")
-        .eq("brokerage_id", brokerageId)
-        .eq("provider_type", "showingtime")
-        .eq("status", "active")
-        .maybeSingle()
-
-      const integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key
+      // Resolve the ShowingTime key through the unified ownership cascade (the same primary the
+      // tour-stop dispatcher uses), falling back to the legacy brokerage_integrations metadata key.
+      const scoped = await resolveScopedConnection("showingtime", {
+        agentUserId: agentId ?? null,
+        teamId: null,
+        brokerageId,
+      }).catch(() => null)
+      let integrationApiKey = scoped?.apiKey ?? null
+      if (!integrationApiKey) {
+        const { data: integration } = await supabase
+          .from("brokerage_integrations")
+          .select("metadata, status")
+          .eq("brokerage_id", brokerageId)
+          .eq("provider_type", "showingtime")
+          .eq("status", "active")
+          .maybeSingle()
+        integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key ?? null
+      }
 
       if (integrationApiKey) {
-        try {
-          const stRes = await fetch("https://api.showingtime.com/v1/showings", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${integrationApiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              listingId: inHousePropertyId,
-              requestedDateTime: requestedDate,
-              duration: step.showing_duration_minutes,
-              agentNotes: step.showing_notes,
-            }),
-          })
-          if (stRes.ok) {
-            const data = await stRes.json()
-            return {
-              status: "sent",
-              providerKey: "showingtime",
-              messageId: data?.id,
-              output: { showing_id: data?.id, property_address: property.address, scheduled_at: requestedDate },
-            }
+        const stRes = await callConnector<{ id?: string }>({
+          connector: "showingtime",
+          baseUrl: "https://api.showingtime.com",
+          path: "/v1/showings",
+          method: "POST",
+          auth: { style: "bearer", token: integrationApiKey },
+          body: {
+            listingId: inHousePropertyId,
+            requestedDateTime: requestedDate,
+            duration: step.showing_duration_minutes,
+            agentNotes: step.showing_notes,
+          },
+        })
+        if (stRes.ok) {
+          const data = stRes.data ?? {}
+          return {
+            status: "sent",
+            providerKey: "showingtime",
+            messageId: data?.id,
+            output: { showing_id: data?.id, property_address: property.address, scheduled_at: requestedDate },
           }
-        } catch { /* fall through to manual */ }
+        }
       }
 
       const { data: showing, error } = await supabase.from("showings").insert({

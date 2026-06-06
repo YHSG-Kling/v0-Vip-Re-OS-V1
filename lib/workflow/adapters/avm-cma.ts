@@ -154,13 +154,14 @@ export const avmCmaAdapter: ChannelAdapter = {
         // Skip non-preferred providers when an explicit source is set
         const skipProviders =
           dataSource === "housecannary" ? ["batchdata" as const]
-          : dataSource === "batchdata"  ? ["housecanary" as const]
+          : dataSource === "batchdata"  ? ["rentcast" as const]
           : []
         const avm = await getCurrentAvm({
           address: propertyContext.address,
           city: propertyContext.city ?? null,
           state: propertyContext.state,
           zipCode: propertyContext.zip ?? null,
+          brokerageId,
           usePaidProviders: dataSource !== "perplexity",
           skipProviders,
         } as any)

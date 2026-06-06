@@ -14,7 +14,7 @@ export default async function LenderDocumentsPage() {
 
   const { data: documents } = await supabase
     .from('documents')
-    .select('id, title, document_type, status, created_at')
+    .select('id, title, document_type, status, created_at, storage_url')
     .order('created_at', { ascending: false })
     .limit(30)
 
@@ -44,7 +44,13 @@ export default async function LenderDocumentsPage() {
                     <p className="text-xs text-gray-500">{doc.document_type} · {new Date(doc.created_at).toLocaleDateString()}</p>
                   </div>
                 </div>
-                <Button size="sm" variant="outline">View</Button>
+                {doc.storage_url ? (
+                  <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                    <Button size="sm" variant="outline">View</Button>
+                  </a>
+                ) : (
+                  <Button size="sm" variant="outline" disabled>View</Button>
+                )}
               </CardContent>
             </Card>
           ))}

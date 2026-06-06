@@ -17,6 +17,36 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import type { SellerDecisionState } from "./decision-state-definitions"
 
+// activities live schema has activity_type (not event_type), requires a NOT NULL
+// brokerage_id, and exposes a polymorphic (entity_type, entity_id) pointer plus
+// listing_id. Source brokerage_id from the listing and write real columns here so
+// the governance audit rows actually persist.
+async function insertListingActivities(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  rows: Array<{ activity_type: string; metadata: Record<string, any> }>,
+): Promise<void> {
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing?.brokerage_id) {
+    console.error("[v0] decision-logger: listing/brokerage not found for", listingId)
+    return
+  }
+  await supabase.from("activities").insert(
+    rows.map((r) => ({
+      brokerage_id: listing.brokerage_id,
+      listing_id: listingId,
+      entity_type: "listing",
+      entity_id: listingId,
+      activity_type: r.activity_type,
+      metadata: r.metadata,
+    })),
+  )
+}
+
 export interface DecisionTransitionEvent {
   listing_id: string
   from_state?: SellerDecisionState
@@ -71,9 +101,8 @@ export async function logDecisionTransition(event: DecisionTransitionEvent): Pro
   
   const supabase = await createClient()
   
-  await supabase.from("activities").insert({
-    listing_id: event.listing_id,
-    event_type: "seller.decision.transition",
+  await insertListingActivities(supabase, event.listing_id, [{
+    activity_type: "seller.decision.transition",
     metadata: {
       from_state: event.from_state,
       to_state: event.to_state,
@@ -82,7 +111,7 @@ export async function logDecisionTransition(event: DecisionTransitionEvent): Pro
       override_reason: event.override_reason,
       ...event.metadata,
     },
-  })
+  }])
 }
 
 /**
@@ -96,9 +125,8 @@ export async function logCMAQualityVerified(event: CMAQualityEvent): Promise<voi
   
   const supabase = await createClient()
   
-  await supabase.from("activities").insert({
-    listing_id: event.listing_id,
-    event_type: "seller.cma.quality_verified",
+  await insertListingActivities(supabase, event.listing_id, [{
+    activity_type: "seller.cma.quality_verified",
     metadata: {
       comparable_count: event.comparable_count,
       oldest_comparable_months: event.oldest_comparable_months,
@@ -107,7 +135,7 @@ export async function logCMAQualityVerified(event: CMAQualityEvent): Promise<voi
       approved_by_role: event.approved_by_role,
       ...event.metadata,
     },
-  })
+  }])
 }
 
 /**
@@ -128,15 +156,14 @@ export async function logNetSheetEvent(event: NetSheetEvent): Promise<void> {
     regenerated: "seller.net_sheet.regenerated",
   }
   
-  await supabase.from("activities").insert({
-    listing_id: event.listing_id,
-    event_type: eventTypeMap[event.event_type],
+  await insertListingActivities(supabase, event.listing_id, [{
+    activity_type: eventTypeMap[event.event_type],
     metadata: {
       days_remaining: event.days_remaining,
       validity_days: event.validity_days,
       ...event.metadata,
     },
-  })
+  }])
 }
 
 /**
@@ -157,11 +184,10 @@ export async function logPresentationEvent(event: PresentationEvent): Promise<vo
     drip_paused: "seller.presentation_drip.paused",
   }
   
-  await supabase.from("activities").insert({
-    listing_id: event.listing_id,
-    event_type: eventTypeMap[event.event_type],
+  await insertListingActivities(supabase, event.listing_id, [{
+    activity_type: eventTypeMap[event.event_type],
     metadata: event.metadata || {},
-  })
+  }])
 }
 
 /**
@@ -175,16 +201,15 @@ export async function logDecisionReversal(event: DecisionReversalEvent): Promise
   
   const supabase = await createClient()
   
-  await supabase.from("activities").insert({
-    listing_id: event.listing_id,
-    event_type: "seller.decision.reversed",
+  await insertListingActivities(supabase, event.listing_id, [{
+    activity_type: "seller.decision.reversed",
     metadata: {
       from_state: event.from_state,
       reversal_reason: event.reversal_reason,
       authority_role: event.authority_role,
       ...event.metadata,
     },
-  })
+  }])
 }
 
 /**
@@ -206,13 +231,11 @@ export async function batchLogEvents(
   
   const supabase = await createClient()
   
-  const activities = events.map((event) => ({
-    listing_id: listingId,
-    event_type: event.eventType,
-    metadata: event.metadata || {},
-  }))
-  
-  await supabase.from("activities").insert(activities)
+  await insertListingActivities(
+    supabase,
+    listingId,
+    events.map((event) => ({ activity_type: event.eventType, metadata: event.metadata || {} })),
+  )
 }
 
 /**
@@ -227,10 +250,10 @@ export async function queryDecisionHistory(listingId: string, limit = 50) {
   
   const { data, error } = await supabase
     .from("activities")
-    .select("event_type, metadata, created_at")
+    .select("event_type:activity_type, metadata, created_at")
     .eq("listing_id", listingId)
     .or(
-      "event_type.ilike.seller.decision.%,event_type.ilike.seller.cma.%,event_type.ilike.seller.net_sheet.%,event_type.ilike.seller.presentation%"
+      "activity_type.ilike.seller.decision.%,activity_type.ilike.seller.cma.%,activity_type.ilike.seller.net_sheet.%,activity_type.ilike.seller.presentation%"
     )
     .order("created_at", { ascending: false })
     .limit(limit)

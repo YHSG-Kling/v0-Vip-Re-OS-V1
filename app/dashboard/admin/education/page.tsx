@@ -21,7 +21,7 @@ export default async function AdminEducationPage() {
     .maybeSingle()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
-  if (!["broker", "team_lead", "super_admin"].includes(profile.user_type ?? "")) {
+  if (!["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(profile.user_type ?? "")) {
     redirect("/dashboard")
   }
 

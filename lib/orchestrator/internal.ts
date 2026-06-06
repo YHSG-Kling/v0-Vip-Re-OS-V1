@@ -721,6 +721,20 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
+    // ── 4b. Omnipresence repurposer videos → draft per-channel social posts ──
+    // No-op unless the project carries repurpose distribution intent
+    // (video_metadata.repurpose). Uses the service client (RLS-bypassing) since
+    // there is no user session in the cron context.
+    try {
+      const { distributeRepurposedVideoAsDraft } = await import("@/lib/repurpose/distribute")
+      const dist = await distributeRepurposedVideoAsDraft(svc, video_id)
+      if (dist.success && dist.created > 0) {
+        summary.push(`drafted ${dist.created} repurpose post${dist.created === 1 ? "" : "s"}`)
+      }
+    } catch (repurposeErr) {
+      console.error("[handleVideoGenerated] Repurpose draft distribution failed:", repurposeErr)
+    }
+
     // ── 5. Always notify the agent ──────────────────────────────────────────
     if (agentId) {
       const actionSummary = summary.length ? ` Auto-drafted: ${summary.join(", ")}.` : ""

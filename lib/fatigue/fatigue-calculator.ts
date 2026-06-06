@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText }        from "ai"
+import { KernelEvent }         from "@/lib/kernel/events"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -259,7 +260,7 @@ export async function calculateFatigue(
         brokerage_id:   brokerageId,
         entity_type:    "buyer_lifecycle",
         entity_id:      contactId,
-        event_type:     "buyer.fatigue.detected",
+        event_type:     KernelEvent.BUYER_FATIGUE_DETECTED,
         actor_user_id:  contact?.agent_id ?? null,
         metadata: {
           fatigue_score:   score,

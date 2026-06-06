@@ -83,6 +83,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ─── Vendor budget gate — auto-pause over the monthly platform-vendor ceiling ─
+    {
+      const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+      const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      const bgt = await checkVendorBudget({
+        brokerageId: agentRow.brokerage_id ?? auth.brokerageId,
+        addCost: estimatePlatformVendorCost("did", 1),
+      })
+      if (!bgt.allowed) {
+        return NextResponse.json(
+          { error: "Monthly usage limit reached — avatar creation paused.", budgetExceeded: true },
+          { status: 402 },
+        )
+      }
+    }
+
     // ─── Submit to D-ID /avatars ──────────────────────────────────────────────
     // D-ID creates a reusable avatar from the source video.
     // The response is immediate but the avatar is not ready until status === "done".

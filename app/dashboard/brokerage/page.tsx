@@ -22,8 +22,9 @@ import {
   ArrowRight,
   BarChart3,
 } from "lucide-react"
-import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
@@ -449,6 +450,9 @@ export default async function BrokerageDashboard({
           </Badge>
         )}
       </div>
+
+      {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
+      <BudgetWarningBanner />
 
       {/* Today's Focus — AI Brief synthesizing what matters today */}
       <TodaysFocusCard brief={brokerBrief} />

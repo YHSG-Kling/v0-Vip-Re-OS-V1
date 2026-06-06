@@ -8,7 +8,7 @@
  * if everything else fails.
  *
  * Configured providers (super-admin tier):
- *   - HouseCanary (HOUSECANARY_API_KEY) — best AVM accuracy
+ *   - RentCast (per-brokerage key or RENTCAST_API_KEY) — chosen AVM provider
  *   - BatchData (BATCHDATA_API_KEY) — strong property records + value
  *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
@@ -25,7 +25,7 @@
 
 import "server-only"
 
-export type AvmSource = "housecanary" | "batchdata" | "zenrows_zillow" | "perplexity" | "osint" | "cached" | "market_appreciation_fallback"
+export type AvmSource = "rentcast" | "batchdata" | "zenrows_zillow" | "perplexity" | "osint" | "cached" | "market_appreciation_fallback"
 
 export interface AvmResult {
   value: number
@@ -40,6 +40,8 @@ interface AvmRequest {
   zipCode?: string | null
   city?: string | null
   state?: string | null
+  /** Brokerage whose RentCast credential (or platform key) is used for the AVM pull. */
+  brokerageId?: string | null
   /** Cached AVM if we've fetched recently — used by the cache-hit short circuit */
   cachedValue?: number | null
   cachedAt?: string | null
@@ -48,7 +50,7 @@ interface AvmRequest {
   /** Allow caller to skip certain providers (e.g., for testing) */
   skipProviders?: AvmSource[]
   /**
-   * When true, fall through to PAID providers (HouseCanary, BatchData,
+   * When true, fall through to PAID providers (RentCast, BatchData,
    * ZenRows/Zillow) as Tier 2/3 if Perplexity returns nothing confident.
    * Default false — agents pay only when they explicitly request a Premium
    * CMA before a listing appointment via runAiCma({ mode: 'premium' }).
@@ -98,10 +100,21 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   // Caller must pass usePaidProviders=true to opt into these. The standard
   // entry point for that is runAiCma({ mode: 'premium' }) which sets the
   // flag explicitly. Daily background work never sets it.
-  if (req.usePaidProviders) {
-    if (!skip.has("housecanary") && process.env.HOUSECANARY_API_KEY) {
-      const hc = await tryHouseCanary(req)
-      if (hc && hc.confidence >= 0.6) return hc
+  //
+  // DOWNGRADE LADDER: if the brokerage is over its monthly vendor budget, the paid
+  // tier is skipped — the caller still gets the free Perplexity/OSINT AVM computed
+  // above. The cap throttles cost, not capability.
+  let paidAllowed = !!req.usePaidProviders
+  if (paidAllowed && req.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { resolveVendorAction } = await import("@/lib/vendor-governance/vendor-policy")
+    const budget = await checkVendorBudget({ brokerageId: req.brokerageId })
+    if (resolveVendorAction("rentcast", !budget.allowed) !== "allow") paidAllowed = false
+  }
+  if (paidAllowed) {
+    if (!skip.has("rentcast") && req.brokerageId) {
+      const rc = await tryRentcast(req)
+      if (rc && rc.confidence >= 0.6) return rc
     }
     if (!skip.has("batchdata") && process.env.BATCHDATA_API_KEY) {
       const bd = await tryBatchData(req)
@@ -128,30 +141,21 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 // Each adapter is a no-op stub returning null. Wiring the real API calls is
 // done in a follow-up session. The cascade runs identically once they're real.
 
-async function tryHouseCanary(req: AvmRequest): Promise<AvmResult | null> {
-  if (!req.zipCode) return null
+async function tryRentcast(req: AvmRequest): Promise<AvmResult | null> {
+  if (!req.brokerageId) return null
   try {
-    const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
-    const comps = await fetchHouseCanaryComps({
-      address: req.address,
-      zipCode: req.zipCode,
-      bedrooms: 3,    // sensible default if subject features unknown
-      squareFeet: 1500,
-      maxAgeDays: 180,
-      limit: 10,
-    })
-    if (!comps || comps.length === 0) return null
-    const prices = comps.map((c) => (c as { sale_price?: number }).sale_price ?? 0).filter((p) => p > 0)
-    if (prices.length === 0) return null
-    prices.sort((a, b) => a - b)
-    const median = prices[Math.floor(prices.length / 2)]
-    const confidence = Math.min(0.95, 0.5 + prices.length * 0.05)
+    const { getRentcastAVM } = await import("@/lib/property/rentcast")
+    const avm = await getRentcastAVM({ brokerageId: req.brokerageId, address: req.address })
+    if (!avm.value || avm.value <= 0) return null
+    // Tighter range around the point estimate → higher confidence.
+    const spread = avm.rangeLow && avm.rangeHigh && avm.value > 0 ? (avm.rangeHigh - avm.rangeLow) / avm.value : 0.3
+    const confidence = Math.max(0.6, Math.min(0.92, 0.9 - spread))
     return {
-      value: median,
+      value: avm.value,
       confidence,
-      source: "housecanary",
+      source: "rentcast",
       fetchedAt: new Date().toISOString(),
-      notes: `Median of ${prices.length} HouseCanary sales-history comps`,
+      notes: avm.rangeLow && avm.rangeHigh ? `RentCast AVM (range $${avm.rangeLow.toLocaleString()}–$${avm.rangeHigh.toLocaleString()})` : "RentCast AVM",
     }
   } catch {
     return null

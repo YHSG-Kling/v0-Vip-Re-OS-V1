@@ -15,6 +15,14 @@ export async function GET(request: Request) {
   const motivationType = searchParams.get('motivationType')
   const limit = parseInt(searchParams.get('limit') || '50')
 
+  // Agents do not have direct visibility on `leads` — lead lineage reaches
+  // them via the `contacts` row and the `contact_lead_history` view. Reject
+  // here so we don't return a misleading empty array.
+  const leadVisibleRoles = ['broker', 'broker_owner', 'admin', 'team_lead', 'compliance_officer', 'superadmin']
+  if (!leadVisibleRoles.includes(auth.userType)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
+
   let query = supabase
     .from('leads')
     .select('*')
@@ -22,12 +30,6 @@ export async function GET(request: Request) {
     .eq('is_active', true)
     .order('created_at', { ascending: false })
     .limit(limit)
-
-  // For agent-type users, scope to their own leads.
-  // Brokers/admins see all leads within the brokerage.
-  if (auth.agentId && !['broker', 'admin', 'superadmin'].includes(auth.userType)) {
-    query = query.eq('agent_id', auth.agentId)
-  }
 
   if (leadStage) query = query.eq('lead_stage', leadStage)
   if (motivationType) query = query.eq('motivation_type', motivationType)

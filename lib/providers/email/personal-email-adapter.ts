@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -28,6 +29,9 @@ export interface SendPersonalEmailInput {
   replyToMessageId?: string  // Gmail thread ID or Outlook conversation ID for threading
   cc?: string[]
   bcc?: string[]
+  /** When set, send from this OWNER's connected mailbox (vendor/contact/team/brokerage) instead of
+   *  resolving the agent's personal account by agentUserId. */
+  owner?: EmailOwner
 }
 
 export interface SendPersonalEmailResult {
@@ -60,7 +64,9 @@ export async function sendPersonalEmail(
     return { success: false, reason: "invalid_input", error: "to/subject/htmlBody required" }
   }
 
-  const cred = await loadActivePersonalCred(input.agentUserId)
+  const cred = input.owner
+    ? await loadOwnerEmailCred(input.owner)
+    : await loadActivePersonalCred(input.agentUserId)
   if (!cred) {
     return { success: false, reason: "no_personal_account" }
   }
@@ -83,6 +89,22 @@ export async function sendPersonalEmail(
 
 // ─── Credential lookup ───────────────────────────────────────────────────────
 
+/**
+ * Shared accessor: resolve a FRESH OAuth access token for the agent's connected
+ * Google/Microsoft account (refreshing + persisting if expired). Reused by the
+ * calendar provider so calendar + email share ONE token per provider connection.
+ */
+export async function getFreshPersonalToken(
+  agentUserId: string,
+  owner?: EmailOwner,
+): Promise<{ provider: PersonalProvider; accessToken: string; email: string | null } | null> {
+  const cred = owner ? await loadOwnerEmailCred(owner) : await loadActivePersonalCred(agentUserId)
+  if (!cred) return null
+  const accessToken = await ensureFreshAccessToken(cred)
+  if (!accessToken) return null
+  return { provider: cred.service_name, accessToken, email: cred.email }
+}
+
 interface PersonalCred {
   id: string
   service_name: "gmail" | "outlook"
@@ -90,38 +112,61 @@ interface PersonalCred {
   refresh_token: string | null
   token_expires_at: string | null
   email: string | null
+  /** Which table the cred came from — token refresh writes back to the same place. */
+  source: "agent_api_credentials" | "platform_credentials"
 }
+
+/** An owner scope (vendor/contact/agent/team/brokerage) whose connected mailbox to use. */
+export type EmailOwner = { ownerType: string; ownerId: string }
 
 async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred | null> {
   const svc = createServiceClient()
 
-  // First resolve the agent record (agent_api_credentials uses agent_id, not user_id)
-  const { data: agent } = await svc
-    .from("agents")
-    .select("id")
-    .eq("user_id", agentUserId)
-    .maybeSingle()
-  if (!agent?.id) return null
+  // Agent path: agent_api_credentials uses agent_id, not user_id.
+  const { data: agent } = await svc.from("agents").select("id").eq("user_id", agentUserId).maybeSingle()
+  if (agent?.id) {
+    const { data: creds } = await svc
+      .from("agent_api_credentials")
+      .select("id, service_name, access_token, refresh_token, token_expires_at, config")
+      .eq("agent_id", agent.id)
+      .in("service_name", ["gmail", "outlook"])
+      .eq("is_active", true)
+    if (creds?.length) {
+      const ordered = creds.sort((a: any, b: any) => (a.service_name === "gmail" ? -1 : 1))
+      const c: any = ordered[0]
+      return { id: c.id, service_name: c.service_name, access_token: c.access_token, refresh_token: c.refresh_token, token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+    }
+  }
 
-  const { data: creds } = await svc
-    .from("agent_api_credentials")
-    .select("id, service_name, access_token, refresh_token, token_expires_at, config")
-    .eq("agent_id", agent.id)
-    .in("service_name", ["gmail", "outlook"])
+  // Fallback: owner-scoped mailbox stored in platform_credentials at AGENT scope (owner_id = userId).
+  return loadOwnerEmailCred({ ownerType: "agent", ownerId: agentUserId })
+}
+
+/**
+ * Owner-scoped mailbox loader — reads the connected gmail/outlook from platform_credentials by
+ * (owner_type, owner_id). This is what lets a VENDOR or CONTACT (no agents row) use their OWN
+ * connected mailbox; agent/team/brokerage owner scopes resolve here too.
+ */
+export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
+  const svc = createServiceClient()
+  const { data: rows } = await svc
+    .from("platform_credentials")
+    .select("id, platform, access_token, refresh_token, token_expires_at, config")
+    .eq("owner_type", owner.ownerType)
+    .eq("owner_id", owner.ownerId)
+    .in("platform", ["gmail", "outlook"])
     .eq("is_active", true)
-
-  if (!creds?.length) return null
-
-  // Prefer Gmail when both exist; agent can disable one if they want a specific path
-  const ordered = creds.sort((a: any, b: any) => (a.service_name === "gmail" ? -1 : 1))
+  if (!rows?.length) return null
+  const ordered = rows.sort((a: any, b: any) => (a.platform === "gmail" ? -1 : 1))
   const c: any = ordered[0]
   return {
     id: c.id,
-    service_name: c.service_name,
+    service_name: c.platform,
     access_token: c.access_token,
     refresh_token: c.refresh_token,
     token_expires_at: c.token_expires_at,
-    email: c.config?.email ?? null,
+    email: (c.config?.email as string) ?? null,
+    source: "platform_credentials",
   }
 }
 
@@ -146,10 +191,10 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
       : await refreshMicrosoft(cred.refresh_token)
   if (!refreshed) return null
 
-  // Save back the new token
+  // Save the new token back to whichever table the cred came from.
   const svc = createServiceClient()
   await svc
-    .from("agent_api_credentials")
+    .from(cred.source)
     .update({
       access_token: refreshed.accessToken,
       token_expires_at: new Date(Date.now() + refreshed.expiresInSec * 1000).toISOString(),
@@ -164,23 +209,18 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   if (!clientId || !clientSecret) return null
 
-  try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return { accessToken: data.access_token, expiresInSec: data.expires_in ?? 3600 }
-  } catch {
-    return null
-  }
+  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+    connector: "google-oauth", baseUrl: "https://oauth2.googleapis.com", path: "/token", method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    },
+  })
+  if (!res.ok || !res.data?.access_token) return null
+  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
@@ -188,27 +228,20 @@ async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: st
   const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
   if (!clientId || !clientSecret) return null
 
-  try {
-    const res = await fetch(
-      "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: refreshToken,
-          client_id: clientId,
-          client_secret: clientSecret,
-          scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
-        }),
-      }
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    return { accessToken: data.access_token, expiresInSec: data.expires_in ?? 3600 }
-  } catch {
-    return null
-  }
+  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+    path: "/common/oauth2/v2.0/token", method: "POST",
+    auth: { style: "none" }, bodyType: "form",
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
+    },
+  })
+  if (!res.ok || !res.data?.access_token) return null
+  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
 // ─── Gmail send (RFC 5322 + base64url) ───────────────────────────────────────
@@ -237,37 +270,28 @@ async function sendViaGmail(args: {
   // base64url encode for Gmail API
   const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
 
-  try {
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        raw: encoded,
-        ...(args.replyToMessageId ? { threadId: args.replyToMessageId } : {}),
-      }),
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => "")
-      return {
-        success: false,
-        provider: "gmail",
-        reason: "send_failed",
-        error: `Gmail (${res.status}): ${body}`,
-      }
-    }
-    const data = await res.json()
+  const res = await callConnector<{ id?: string; threadId?: string }>({
+    connector: "gmail", baseUrl: "https://gmail.googleapis.com", path: "/gmail/v1/users/me/messages/send", method: "POST",
+    auth: { style: "bearer", token: args.accessToken },
+    body: {
+      raw: encoded,
+      ...(args.replyToMessageId ? { threadId: args.replyToMessageId } : {}),
+    },
+  })
+  if (!res.ok) {
     return {
-      success: true,
+      success: false,
       provider: "gmail",
-      messageId: data.id,
-      threadId: data.threadId,
-      fromAddress: args.fromAddress ?? undefined,
+      reason: "send_failed",
+      error: `Gmail (${res.status}): ${res.error ?? ""}`,
     }
-  } catch (err: any) {
-    return { success: false, provider: "gmail", reason: "send_failed", error: err?.message ?? "Network error" }
+  }
+  return {
+    success: true,
+    provider: "gmail",
+    messageId: res.data?.id,
+    threadId: res.data?.threadId,
+    fromAddress: args.fromAddress ?? undefined,
   }
 }
 
@@ -292,54 +316,40 @@ async function sendViaOutlook(args: {
     bccRecipients: (args.bcc ?? []).map((a) => ({ emailAddress: { address: a } })),
   }
 
-  try {
-    // For replies, use Graph's reply endpoint to keep threading
-    if (args.replyToMessageId) {
-      const res = await fetch(
-        `https://graph.microsoft.com/v1.0/me/messages/${args.replyToMessageId}/reply`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${args.accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ message, comment: "" }),
-        }
-      )
-      if (!res.ok) {
-        const body = await res.text().catch(() => "")
-        return {
-          success: false,
-          provider: "outlook",
-          reason: "send_failed",
-          error: `Outlook reply (${res.status}): ${body}`,
-        }
-      }
-      return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
-    }
-
-    // Regular send
-    const res = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ message, saveToSentItems: true }),
+  // For replies, use Graph's reply endpoint to keep threading
+  if (args.replyToMessageId) {
+    const res = await callConnector({
+      connector: "outlook", baseUrl: "https://graph.microsoft.com",
+      path: `/v1.0/me/messages/${args.replyToMessageId}/reply`, method: "POST",
+      auth: { style: "bearer", token: args.accessToken },
+      body: { message, comment: "" },
     })
     if (!res.ok) {
-      const body = await res.text().catch(() => "")
       return {
         success: false,
         provider: "outlook",
         reason: "send_failed",
-        error: `Outlook (${res.status}): ${body}`,
+        error: `Outlook reply (${res.status}): ${res.error ?? ""}`,
       }
     }
     return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
-  } catch (err: any) {
-    return { success: false, provider: "outlook", reason: "send_failed", error: err?.message ?? "Network error" }
   }
+
+  // Regular send
+  const res = await callConnector({
+    connector: "outlook", baseUrl: "https://graph.microsoft.com", path: "/v1.0/me/sendMail", method: "POST",
+    auth: { style: "bearer", token: args.accessToken },
+    body: { message, saveToSentItems: true },
+  })
+  if (!res.ok) {
+    return {
+      success: false,
+      provider: "outlook",
+      reason: "send_failed",
+      error: `Outlook (${res.status}): ${res.error ?? ""}`,
+    }
+  }
+  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
 }
 
 // ─── RFC 5322 message builder (used by Gmail) ────────────────────────────────

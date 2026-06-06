@@ -131,7 +131,7 @@ export async function initiateVoiceCall(
         brokerage_id: contact.brokerage_id,
         vapi_call_id: vendorCallId,
         direction: metadata.callType,
-        call_type: 'isa_ai',
+        call_type: 'ai_isa_call',
         status: 'initiated',
         initiated_by: metadata.initiatorRole,
         started_at: new Date().toISOString(),

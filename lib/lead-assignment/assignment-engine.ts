@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -264,14 +265,16 @@ export async function claimLead(params: {
     return { success: false, reason: `Claim update failed: ${updateError.message}` }
   }
 
-  // Step 4: Insert lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead",
-    entity_id: leadId,
-    event_type: KernelEvent.LEAD_CLAIMED,
-    brokerage_id: brokerageId,
-    actor_user_id: agentUserId,
-    created_at: new Date().toISOString(),
+  // Step 4: Emit LEAD_CLAIMED through the canonical emitter (insert + reactor fan-out).
+  // Bare lifecycle_events inserts silently skipped staff notifications / sequence enrollment /
+  // portal updates downstream of a claim — emit() restores all three channels.
+  await emitKernelEvent({
+    event:       KernelEvent.LEAD_CLAIMED,
+    brokerageId,
+    entityType:  "lead",
+    entityId:    leadId,
+    agentUserId,
+    metadata:    { claimed_by: agentUserId },
   })
 
   // Step 5: Return success

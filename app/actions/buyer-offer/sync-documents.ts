@@ -86,7 +86,7 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
     // Emit sync event
     await supabase.from("activities").insert({
       activity_type: "buyer.offer.documents.synced",
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         offer_id: offerId,
         provider: offer.external_provider,

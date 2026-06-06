@@ -5,6 +5,7 @@ import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { openai } from "@ai-sdk/openai"
 import { z } from "zod"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
@@ -312,66 +313,70 @@ Provide:
   }
 }
 
-// Transcribe audio using Vercel AI SDK (OpenAI Whisper)
+// Transcribe audio using the Vercel AI SDK (OpenAI Whisper) and persist
+// the result into call_transcriptions.
+//
+// Schema notes: call_transcriptions is keyed by voice_call_id + brokerage_id
+// (both NOT NULL). It carries full_text, speaker_turns (jsonb), word_count,
+// language and transcribed_at — there is no separate "processing/completed"
+// status column. We therefore fetch the audio, transcribe synchronously, and
+// insert a single row when we have the final text. Failures don't write a row.
 export async function transcribeAudio(params: {
+  voiceCallId: string
   audioUrl: string
-  contactId: string
-  agentId: string
-  callType: "inbound" | "outbound"
+  language?: string
 }) {
   const supabase = await createClient()
 
   try {
-    // Create processing record first so the UI can show progress
-    const { data: transcription, error: insertErr } = await supabase
-      .from("call_transcriptions")
-      .insert({
-        audio_url: params.audioUrl,
-        contact_id: params.contactId,
-        agent_id: params.agentId,
-        call_type: params.callType,
-        status: "processing",
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    // Look up the parent voice_calls row to recover brokerage_id.
+    const { data: voiceCall, error: lookupErr } = await supabase
+      .from("voice_calls")
+      .select("id, brokerage_id")
+      .eq("id", params.voiceCallId)
+      .maybeSingle()
 
-    if (insertErr || !transcription) {
-      return { success: false, error: "Failed to create transcription record" }
+    if (lookupErr || !voiceCall) {
+      return { success: false, error: "voice_call not found" }
     }
 
-    // Fetch audio bytes from the provided URL
-    const audioResponse = await fetch(params.audioUrl)
-    if (!audioResponse.ok) {
-      await supabase.from("call_transcriptions")
-        .update({ status: "failed", error_message: "Could not fetch audio file" })
-        .eq("id", transcription.id)
+    const audioResponse = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: params.audioUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!audioResponse.ok || !audioResponse.data) {
       return { success: false, error: "Could not fetch audio file from URL" }
     }
-    const audioBuffer = await audioResponse.arrayBuffer()
 
-    // Transcribe with OpenAI Whisper via the Vercel AI SDK
     const { experimental_transcribe } = await import("ai")
     const result = await experimental_transcribe({
       model: openai.transcription("whisper-1"),
-      audio: new Uint8Array(audioBuffer),
+      audio: new Uint8Array(audioResponse.data),
     })
     const transcriptText = result.text
 
-    // Persist completed transcript
-    await supabase.from("call_transcriptions")
-      .update({
-        transcript_text: transcriptText,
-        status: "completed",
-        completed_at: new Date().toISOString(),
+    const { data: transcription, error: insertErr } = await supabase
+      .from("call_transcriptions")
+      .insert({
+        voice_call_id: voiceCall.id,
+        brokerage_id: voiceCall.brokerage_id,
+        full_text: transcriptText,
+        speaker_turns: [],
+        word_count: transcriptText.split(/\s+/).filter(Boolean).length,
+        language: params.language ?? null,
+        transcribed_at: new Date().toISOString(),
       })
-      .eq("id", transcription.id)
+      .select("id")
+      .single()
+
+    if (insertErr || !transcription) {
+      return { success: false, error: insertErr?.message ?? "Failed to persist transcription" }
+    }
 
     return {
       success: true,
       transcriptionId: transcription.id,
       transcript: transcriptText,
-      status: "completed",
     }
   } catch (error) {
     return handleError(error, "transcribeAudio")

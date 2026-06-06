@@ -38,6 +38,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { emitKernelEvent }     from "@/lib/kernel/emit"
+import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -898,13 +900,17 @@ export async function calculateDealHealth(params: {
   await supabase.from("deal_health_components").insert(componentRows)
 
   // ─── Emit kernel event if risk level changed ──────────────────────────────
+  // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff
+  // notifications + marketing-trigger enrollment + canonical campaign_sequences enrollment +
+  // client-portal cards). Bare lifecycle_events inserts silently dropped all four channels.
   if (tierChanged) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id:  brokerageId,
-      entity_type:   "transaction",
-      entity_id:     transactionId,
-      event_type:    KernelEvent.DEAL_HEALTH_CHANGED,
-      metadata:      {
+    await emitKernelEvent({
+      event:        KernelEvent.DEAL_HEALTH_CHANGED,
+      brokerageId,
+      entityType:   "transaction",
+      entityId:     transactionId,
+      transactionId,
+      metadata: {
         previous_risk_level: previousRiskLevel,
         new_risk_level:      riskLevel,
         overall_score:       overallScore,
@@ -969,27 +975,18 @@ ${issuesSummary || "No major issues identified."}
 Write a concise, actionable summary for the agent/broker. Focus on what needs attention.`
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 200,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const response = await gatewayChat({
+      model: "anthropic/claude-sonnet-4-20250514",
+      maxTokens: 200,
+      temperature: 0.3,
+      messages: [{ role: "user", content: prompt }],
     })
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status}`)
+      throw new Error(`AI gateway error: ${response.error}`)
     }
 
-    const data = await response.json()
-    const text = data.content?.[0]?.text ?? ""
-    return text.trim()
+    return (response.content ?? "").trim()
   } catch {
     // Fallback narrative
     const topIssue = issueCategories[0]

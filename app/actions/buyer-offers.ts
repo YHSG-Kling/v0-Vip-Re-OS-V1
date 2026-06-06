@@ -3,8 +3,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
+import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 
 // ─── startOfferDraft ─────────────────────────────────────────────────────────
 // Emits lifecycle_event for buyer.offer.draft_started on page mount.
@@ -281,21 +283,13 @@ Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": nu
 
   let parsed: any
   try {
-    const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key":         process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-        "content-type":      "application/json",
-      },
-      body: JSON.stringify({
-        model:      "claude-opus-4-5",
-        max_tokens: 1024,
-        messages:   [{ role: "user", content: prompt }],
-      }),
+    const aiRes = await gatewayChat({
+      model: "anthropic/claude-opus-4-5",
+      maxTokens: 1024,
+      temperature: 0.2,
+      messages: [{ role: "user", content: prompt }],
     })
-    const raw  = await aiRes.json()
-    const text = raw?.content?.[0]?.text ?? ""
+    const text = aiRes.content ?? ""
     const match = text.match(/\{[\s\S]*\}/)
     parsed = match ? JSON.parse(match[0]) : null
   } catch {
@@ -381,6 +375,12 @@ export async function createOffer(
 
   const supabase = createServiceClient()
 
+  // offers.agent_id / listings.agent_id are FKs to agents.id (NOT users.id).
+  // agentUserId is the session user id — resolve it to the agents.id. Null is
+  // acceptable (e.g. broker/admin without an agent profile); never fall back to
+  // the user id, which would write a wrong/invalid FK value.
+  const agentId = await resolveAgentId(supabase, agentUserId)
+
   // ── Financial verification gate (System J3.1 — buyer cannot make offers
   //    until verified or explicitly bypassed by the agent). Previously this
   //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
@@ -400,38 +400,20 @@ export async function createOffer(
     }
   }
 
-  // Resolve listing_id — required by NOT NULL constraint on offers.listing_id
-  let resolvedListingId = form.listing_id
-  if (!resolvedListingId) {
-    // Create a synthetic listing row for external properties
-    const { data: syntheticListing, error: lErr } = await supabase
-      .from("listings")
-      .insert({
-        address:       form.property_address,
-        city:          form.property_city ?? "",
-        state:         form.property_state ?? "",
-        zip:           form.property_zip ?? "",
-        brokerage_id:  brokerageId,
-        agent_id:      agentUserId,
-        list_price:    form.offer_price,
-        status:        "external",
-        lifecycle_stage: "LEAD",
-      })
-      .select("id")
-      .single()
-
-    if (lErr || !syntheticListing) {
-      return { success: false, error: "Could not resolve listing for offer" }
-    }
-    resolvedListingId = syntheticListing.id
-  }
+  // listing_id is nullable on offers. It points to a seller-owned `listings`
+  // row ONLY when the buyer is offering on one of our own listings. For
+  // external/IDX/off-platform properties (the common buyer case) it stays NULL
+  // — the property is identified by `property_address`. We never fabricate a
+  // synthetic seller listing for a buyer's external target; listings belong to
+  // sellers and the two domains stay separate.
+  const resolvedListingId = form.listing_id ?? null
 
   const { data: offer, error: offerError } = await supabase
     .from("offers")
     .insert({
       contact_id:                  contactId,
       brokerage_id:                brokerageId,
-      agent_id:                    agentUserId,
+      agent_id:                    agentId,
       listing_id:                  resolvedListingId,
       property_address:            form.property_address,
       property_address_ai_filled:  form.property_address_ai_filled ?? false,

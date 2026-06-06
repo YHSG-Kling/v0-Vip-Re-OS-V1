@@ -41,8 +41,8 @@ async function requireContactAccess(contactId: string): Promise<
   }
 
   const { data: callerRow } = await svc
-    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
   }
 
@@ -178,7 +178,12 @@ export async function submitReferral(data: {
 
   const supabase = createServiceClient()
 
-  // Get contact's agent
+  // Get contact's agent. Note: agent_id can legitimately be NULL when the contact came
+  // through the public listing page disclosing they're already represented by another
+  // agent (NAR Article 16 — we don't auto-poach). Distinguish "contact missing" (real
+  // error) from "contact exists but has no in-house agent" (legitimate state — referral
+  // is recorded but routed to the brokerage's referral queue instead of a specific
+  // agent).
   const { data: contact } = await supabase
     .from("contacts")
     .select("agent_id, brokerage_id")
@@ -186,7 +191,7 @@ export async function submitReferral(data: {
     .eq("brokerage_id", access.brokerageId)
     .maybeSingle()
 
-  if (!contact?.agent_id) throw new Error("Contact not found")
+  if (!contact) throw new Error("Contact not found")
 
   // Create referral record using actual referrals schema columns
   const { data: referral, error: referralError } = await supabase
@@ -205,33 +210,38 @@ export async function submitReferral(data: {
 
   if (referralError) throw referralError
 
-  // Send notification message to agent via portal messages
-  await supabase.from("client_portal_messages").insert({
-    contact_id: data.contactId,
-    agent_id: contact.agent_id,
-    brokerage_id: contact.brokerage_id,
-    direction: "client_to_agent",
-    channel: "portal",
-    read: false,
-    body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
-  })
-
-  // Emit kernel event - resolve agent via kernel identity function
-  const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: agentData?.brokerage_id,
-    event_type: KernelEvent.MESSAGE_FROM_CONTACT,
-    entity_type: "contact",
-    entity_id: data.contactId,
-    actor_user_id: contact.agent_id,
-    metadata: {
+  // Skip the agent-side notification when the contact has no assigned in-house agent
+  // (represented buyer case). The referral row is still recorded for the brokerage to
+  // route from its referrals queue; the portal message to a specific agent would have
+  // no valid recipient.
+  if (contact.agent_id) {
+    await supabase.from("client_portal_messages").insert({
       contact_id: data.contactId,
-      referred_name: data.referredName,
       agent_id: contact.agent_id,
-      referral_id: referral?.id,
-      type: "referral_submitted",
-    },
-  })
+      brokerage_id: contact.brokerage_id,
+      direction: "client_to_agent",
+      channel: "portal",
+      read: false,
+      body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
+    })
+
+    // Emit kernel event - resolve agent via kernel identity function
+    const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id: agentData?.brokerage_id,
+      event_type: KernelEvent.MESSAGE_FROM_CONTACT,
+      entity_type: "contact",
+      entity_id: data.contactId,
+      actor_user_id: contact.agent_id,
+      metadata: {
+        contact_id: data.contactId,
+        referred_name: data.referredName,
+        agent_id: contact.agent_id,
+        referral_id: referral?.id,
+        type: "referral_submitted",
+      },
+    })
+  }
 
   return referral
 }
@@ -247,12 +257,11 @@ export async function getReferralHistory(contactId: string) {
     .from("referrals")
     .select(`
       id,
-      referred_name,
-      referred_contact,
-      relationship,
-      referral_status,
-      created_at,
-      referred_contacts:referred_contact_id(id, first_name, last_name, buyer_stage)
+      referred_name:referral_name,
+      referred_contact:source_contact_name,
+      referral_status:status,
+      notes,
+      created_at
     `)
     .eq("referred_by", contactId)
     .eq("brokerage_id", access.brokerageId)
@@ -284,8 +293,8 @@ export async function getTransactionHistory(contactId: string) {
         id,
         milestone_name,
         status,
-        completed_date,
-        due_date
+        completed_at,
+        target_date
       )
     `)
     .eq("contact_id", contactId)

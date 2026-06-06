@@ -98,18 +98,41 @@ export async function createTransaction(transactionData: {
   client_email?: string
   client_phone?: string
   agent_id?: string
+  brokerage_id?: string
+  contact_id?: string
   close_date?: string
   notes?: string
   commissionPercentage?: number
 }) {
   const supabase = await createClient()
 
+  // Map the UI/legacy input contract onto live schema columns. The old code
+  // spread the input directly, which wrote columns that don't exist
+  // (transaction_type, contract_price, client_email, listing_price, notes),
+  // used an invalid status ("new"), and omitted the NOT NULL deal_name — so the
+  // insert always failed. deal_type CHECK is {buyer,seller,dual}.
+  const DEAL_TYPE_MAP: Record<string, "buyer" | "seller" | "dual"> = {
+    purchase: "buyer",
+    sale: "seller",
+    lease: "dual",
+    dual: "dual",
+  }
   const { data, error } = await supabase
     .from("transactions")
     .insert({
-      ...transactionData,
-      property_zip: normalizeZip(transactionData.property_zip),
-      status: transactionData.status || "new",
+      brokerage_id:          transactionData.brokerage_id ?? null,
+      agent_id:              transactionData.agent_id ?? null,
+      contact_id:            transactionData.contact_id ?? null,  // primary client (hangs off a contact)
+      deal_name:             transactionData.property_address, // NOT NULL
+      deal_type:             DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
+      status:                transactionData.status || "active",
+      property_address:      transactionData.property_address,
+      property_city:         transactionData.property_city ?? null,
+      property_state:        transactionData.property_state ?? null,
+      property_zip:          normalizeZip(transactionData.property_zip),
+      purchase_price:        transactionData.contract_price ?? transactionData.listing_price ?? null,
+      close_date:            transactionData.close_date ?? null,
+      client_name:           transactionData.client_name ?? null,
       commission_percentage: transactionData.commissionPercentage ?? null,
     })
     .select()
@@ -1287,78 +1310,6 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
   )
 }
 
-// ============================================
-// TRANSPARENT TRANSACTION MANAGEMENT
-// ============================================
-
-export async function createTransparentTransaction(data: {
-  property_address: string
-  transaction_type: "buyer_side" | "seller_side" | "dual"
-  primary_client_id: string
-  agent_id: string
-  purchase_price?: number
-  financing_type?: string
-  close_date?: string
-}) {
-  const supabase = await createClient()
-
-  const { data: transaction, error } = await supabase
-    .from("transactions")
-    .insert({
-      property_address: data.property_address,
-      transaction_type: data.transaction_type,
-      primary_client_id: data.primary_client_id,
-      agent_id: data.agent_id,
-      contract_price: data.purchase_price,
-      financing_type: data.financing_type,
-      close_date: data.close_date,
-      current_stage: "offer",
-      transparency_score: 100,
-      health_score: 100,
-      health_status: "healthy",
-      status: "new",
-    })
-    .select()
-    .single()
-
-  if (error || !transaction) {
-    return { success: false, error: error?.message }
-  }
-
-  const welcomePrompt = `Create a warm welcome message for a ${data.transaction_type === "buyer_side" ? "buyer" : "seller"}:
-
-Property: ${data.property_address}
-
-Include:
-1. Congratulations
-2. Clear next steps (3-4 steps)
-3. Timeline expectations
-4. Communication plan
-5. Their role vs our role
-6. One immediate action
-7. Reassurance
-
-Tone: Professional, warm, confident, educational
-Length: 3-4 paragraphs`
-
-    const welcome = JSON.parse(await runPipelineSimple(welcomePrompt, { feature: "transaction_welcome" }))
-
-  await supabase.from("client_friendly_updates").insert({
-    transaction_id: transaction.id,
-    update_text: welcome.data?.message || "Welcome to your transaction journey!",
-    update_type: "educational",
-    ai_generated: true,
-    tone: "reassuring",
-    sent_via: "portal",
-  })
-
-  await generateClientTimeline(transaction.id, data.transaction_type, data.financing_type || "conventional")
-  await generateSmartChecklist(transaction.id, "offer")
-
-  revalidatePath("/transactions")
-  return { success: true, transaction, welcomeMessage: welcome.data?.message }
-}
-
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
   const supabase = await createClient()
   const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
@@ -2176,19 +2127,23 @@ export async function loadAgentDashboard() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id, not users.id. For non-agent users there is no agent
+  // row → return empty rather than filtering by a users.id (which never matches).
+  const agentId = agent?.id ?? null
   const brokerageId = agent?.profiles?.brokerage_id
   if (!brokerageId) throw new Error("Agent brokerage not found")
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   const pipeline = await calculatePipeline(transactions || [], brokerageId)
   const atRiskDeals = identifyAtRiskDeals(transactions || [])
-  const upcomingMilestones = await getUpcomingMilestones(agentId)
+  const upcomingMilestones = agentId ? await getUpcomingMilestones(agentId) : []
 
   return { agentId, pipeline, atRiskDeals, upcomingMilestones, transactions: transactions || [] }
 }
@@ -2199,14 +2154,17 @@ export async function getAgentTransactionKanban() {
   if (!user) throw new Error("Not authenticated")
 
   const { data: agent } = await supabase.from("agents").select("*").eq("user_id", user.id).maybeSingle()
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id; non-agent users have no agent row → empty board.
+  const agentId = agent?.id ?? null
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .neq("status", "closed")
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .neq("status", "closed")
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   return {
     lead: { title: "Leads", deals: transactions?.filter((t) => t.status === "lead" || !t.status) || [], color: "gray" },

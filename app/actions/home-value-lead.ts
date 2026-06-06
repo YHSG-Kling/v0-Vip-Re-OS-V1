@@ -86,6 +86,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     brokerage_id: input.brokerageId,
     agent_user_id: input.agentUserId,
     activity_type: "home_value_lead_captured",
+    title: "Home value lead captured",
     description: `Homeowner requested an estimate for ${input.property.address}, ${input.property.city}${
       input.property.estimatedValue ? ` — AVM: $${input.property.estimatedValue.toLocaleString()}` : ""
     }`,

@@ -170,7 +170,7 @@ Return a JSON object:
       extraction_method: "ai_claude",
       extracted_fields: extracted,
       confidence_score: confidence,
-      processing_status: "processed",
+      processing_status: "completed",
       processed_at: new Date().toISOString(),
     })
 

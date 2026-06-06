@@ -4,6 +4,7 @@
 // Every dispatch path (email, SMS, voice, DM, mail) gates through this
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,8 +70,8 @@ const RESTRICTED_STATES = new Set([
   "DC", // Washington DC
 ])
 
-const HARD_BLOCKS = ["dnc", "call_stop_flag", "email_opt_out", "sms_opt_out", "opt_out_channel", "restricted_state_no_consent"]
-const SOFT_WARNS = ["no_tcpa_consent", "lifecycle_stage_inactive"]
+const HARD_BLOCKS = ["dnc", "call_stop_flag", "email_opt_out", "sms_opt_out", "opt_out_channel", "restricted_state_no_consent", "no_tcpa_consent"]
+const SOFT_WARNS = ["lifecycle_stage_inactive"]
 
 /**
  * KERNEL MASTER FUNCTION: Evaluate outbound eligibility
@@ -138,11 +139,25 @@ export async function evaluateOutboundCompliance(
       })
     }
 
-    // ─── RULE 6: Restricted State Without TCPA Consent ─────────────────────
-    if (
-      RESTRICTED_STATES.has(contact.state ?? "") &&
-      contact.tcpa_consent !== true
-    ) {
+    // Implied consent: an explicit tcpa_consent flag, OR an active representation
+    // relationship (open transaction / signed buyer-broker or listing agreement /
+    // live offer). Agreements carry consent and the client is actively in a deal,
+    // so the servicing team must always be able to reach them. Only queried on the
+    // consent-gated path (sms/phone or restricted state) — email/direct_mail to an
+    // unconsented lead never triggers the lookup.
+    const needsConsentCheck =
+      channel === "sms" ||
+      channel === "phone" ||
+      channel === "voicemail" ||
+      RESTRICTED_STATES.has(contact.state ?? "")
+    const consentGiven =
+      contact.tcpa_consent === true ||
+      (needsConsentCheck
+        ? await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId)
+        : false)
+
+    // ─── RULE 6: Restricted State Without Consent ──────────────────────────
+    if (RESTRICTED_STATES.has(contact.state ?? "") && !consentGiven) {
       violations.push({
         code: "restricted_state_no_consent",
         message: `No TCPA consent in restricted state (${contact.state})`,
@@ -150,15 +165,21 @@ export async function evaluateOutboundCompliance(
       })
     }
 
-    // ─── RULE 7: TCPA Consent for Phone Calls (SOFT WARN) ──────────────────
+    // ─── RULE 7: TCPA Consent for SMS / Phone (HARD BLOCK) ─────────────────
+    // SMS, phone, and voicemail are consent-gated by TCPA. Email and
+    // direct_mail are intentionally NOT gated here — unconsented leads may
+    // receive email/direct-mail outreach (the ISA allowance); only live
+    // telephony/text requires prior express consent. This mirrors the kernel
+    // content gate (lib/kernel/compliance.ts Gate 2) so the physical-dispatch
+    // "final straggler" gate cannot pass a send the content gate would block.
     if (
-      (channel === "phone" || channel === "voicemail") &&
-      contact.tcpa_consent !== true
+      (channel === "sms" || channel === "phone" || channel === "voicemail") &&
+      !consentGiven
     ) {
       violations.push({
         code: "no_tcpa_consent",
-        message: "No TCPA consent on file for phone communication",
-        severity: "soft_warn",
+        message: "No TCPA consent on file for SMS/phone communication",
+        severity: "hard_block",
       })
     }
 
@@ -188,10 +209,24 @@ export async function evaluateOutboundCompliance(
       timestamp: new Date().toISOString(),
     }
 
-    // Write audit log asynchronously (non-blocking)
+    // Write the eval decision to compliance_events (the canonical compliance
+    // audit table — gate_name/allowed/violations/blocked_reason all map cleanly,
+    // and it is brokerage-scoped). communication_audit_log is for actual sends,
+    // not eval decisions, and lacks columns for this shape. Non-blocking.
     void (async () => {
       try {
-        await supabase.from("communication_audit_log").insert(auditLogEntry)
+        await supabase.from("compliance_events").insert({
+          brokerage_id: actorContext.brokerageId,
+          actor_user_id: actorContext.userId ?? null,
+          actor_role: actorContext.actorType,
+          entity_type: "contact",
+          entity_id: contact.id,
+          message_type: channel,
+          gate_name: "outbound_suppression",
+          allowed,
+          violations,
+          blocked_reason: allowed ? null : primaryReason,
+        })
       } catch (err) {
         console.error("[Compliance] Failed to write audit log:", err)
       }
@@ -232,6 +267,10 @@ export async function evaluateOutboundCompliance(
  * HELPER: Check if contact is eligible for ANY outbound
  * (Used for quick checks before queuing work)
  */
+// Client components: import the pure versions from
+// @/lib/kernel/communication-compliance-helpers — this file pulls in
+// createServiceClient and Turbopack walks the graph into server-only
+// modules.
 export function isEligibleForOutbound(contact: ContactData): boolean {
   if (contact.dnc_status || contact.call_stop_flag) return false
   if (contact.email_opt_out || contact.sms_opt_out) return false

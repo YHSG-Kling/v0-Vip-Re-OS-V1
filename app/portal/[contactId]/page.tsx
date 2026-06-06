@@ -138,7 +138,7 @@ export default async function PortalHomePage({
     // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, scheduled_at, status, listing:listings(address, property_address)")
+      .select("id, listing_id, scheduled_at, status, listing:listings(address)")
       .eq("contact_id", contactId)
       .order("scheduled_at", { ascending: true })
       .limit(5),
@@ -439,7 +439,7 @@ export default async function PortalHomePage({
             </div>
             {/* Live event stream — every translated kernel event for this
                  contact. Surfaces on every persona's portal automatically. */}
-            <PortalLiveFeed contactId={contactId} limit={10} compact />
+            <PortalLiveFeed contactId={contactId} limit={10} compact hideWhenEmpty />
 
             {activeTransaction && milestones.length > 0 && (
               <div className="border-t pt-3">

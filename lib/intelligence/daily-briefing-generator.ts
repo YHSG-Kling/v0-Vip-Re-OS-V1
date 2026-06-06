@@ -14,8 +14,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
+import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -326,11 +325,14 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   }
 
   try {
-    const result = await generateText({
-      model: anthropic(AI_MODEL),
-      system: systemPrompt,
-      prompt: userPrompt,
-      maxOutputTokens: MAX_TOKENS,
+    // generateTextRouted goes through the gateway + AI_TASK_ROUTING + auto-fallback + fair-use +
+    // cost accounting. AI_MODEL is left as a label for `ai_model_used` below; the actual model is
+    // chosen by AI_TASK_ROUTING['coaching_insight'].
+    const result = await generateTextRouted({
+      feature:     "coaching_insight",
+      system:      systemPrompt,
+      prompt:      userPrompt,
+      maxTokens:   MAX_TOKENS,
       temperature: 0.3,
     })
 

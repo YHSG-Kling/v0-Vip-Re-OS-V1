@@ -102,10 +102,10 @@ export default async function SettingsControlOSPage() {
   const userStats = {
     totalUsers: users.length,
     activeUsers: users.length, // All fetched users are active (no deleted_at filter)
-    adminCount: users.filter((u) => u.role === "admin").length,
-    brokerCount: users.filter((u) => u.role === "broker").length,
-    agentCount: users.filter((u) => u.role === "agent" || u.user_type === "agent").length,
-    coordinatorCount: users.filter((u) => u.role === "coordinator" || u.user_type === "coordinator").length,
+    adminCount: users.filter((u) => u.user_type === "admin").length,
+    brokerCount: users.filter((u) => u.user_type === "broker").length,
+    agentCount: users.filter((u) => u.user_type === "agent").length,
+    coordinatorCount: users.filter((u) => u.user_type === "coordinator" || u.user_type === "tc").length,
   }
 
   // Calculate setup completeness

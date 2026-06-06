@@ -16,7 +16,7 @@
  */
 
 import "server-only"
-import Anthropic from "@anthropic-ai/sdk"
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import type { NegotiationContext } from "./analyzer"
 
 export interface NegotiationStrategyDraft {
@@ -69,31 +69,21 @@ Output schema:
 export async function draftNegotiationStrategy(
   ctx: NegotiationContext,
 ): Promise<NegotiationStrategyDraft> {
-  const anthropic = new Anthropic()
-
+  // Routed through Vercel AI Gateway via gatewayChatJSON — single egress, metered, fence-safe parse.
   const userPrompt = buildUserPrompt(ctx)
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 2400,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userPrompt }],
+  const result = await gatewayChatJSON<Record<string, unknown>>({
+    model:     "anthropic/claude-sonnet-4-6",
+    maxTokens: 2400,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user",   content: userPrompt },
+    ],
   })
-
-  const textBlock = response.content.find((c) => c.type === "text")
-  if (!textBlock || textBlock.type !== "text") {
-    throw new Error("No text content in Claude response")
+  if (!result.ok || !result.data) {
+    throw new Error(result.error ?? "No JSON content in Claude response")
   }
-
-  const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error("No JSON found in Claude response")
-
-  let parsed: Record<string, unknown>
-  try {
-    parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>
-  } catch (err) {
-    throw new Error(`Failed to parse Claude JSON: ${err instanceof Error ? err.message : String(err)}`)
-  }
+  const parsed = result.data
 
   const action = parsed.recommended_action as string
   const allowed = ["accept", "counter", "reject", "walk", "request_inspection_credit", "wait"]

@@ -1,19 +1,24 @@
-import { createClient } from "@/lib/supabase/server"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { getTransactionProvider, type TransactionProvider } from "@/lib/brokerage/get-brokerage-settings"
+import { getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
 
 export interface ResolvedTransactionProvider {
   provider: TransactionProvider
   credentialsId?: string
 }
 
-const TRANSACTION_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokermint"] as const
+// Derived from the provider catalog: only IMPLEMENTED transaction-form providers
+// are resolvable (previously a hardcoded list that excluded docusign/authentisign
+// and included unimplemented formsimplicity/brokermint, which crash the factory).
+const TRANSACTION_PLATFORMS = getTransactionFormProviders()
 
 /**
- * Resolves the transaction provider for a given agent with fallback:
- *   1. Agent-scoped platform_credentials
- *   2. Team-scoped platform_credentials (if teamId provided)
- *   3. Brokerage-scoped platform_credentials
- *   4. global_settings.additional_settings.transaction_provider (existing brokerage setting)
+ * Resolves the transaction provider for an actor through the unified ownership cascade
+ * (resolveScopedConnection: agent → team → brokerage → platform, with the legacy
+ * connection-manager fallback), then the brokerage's global_settings default.
+ *
+ * This replaces the old per-column read (agent_user_id / brokerage_id only) — so an
+ * owner-scoped connection from the Connection Center, including TEAM scope, now resolves.
  */
 export async function resolveTransactionProvider(params: {
   agentUserId: string
@@ -21,53 +26,19 @@ export async function resolveTransactionProvider(params: {
   brokerageId: string
 }): Promise<ResolvedTransactionProvider | null> {
   const { agentUserId, teamId, brokerageId } = params
-  const supabase = await createClient()
 
-  const { data: agentCreds } = await supabase
-    .from("platform_credentials")
-    .select("id, platform")
-    .in("platform", TRANSACTION_PLATFORMS)
-    .eq("scope", "agent")
-    .eq("owner_id", agentUserId)
-    .limit(1)
-    .maybeSingle()
-
-  if (agentCreds) {
-    return { provider: agentCreds.platform as TransactionProvider, credentialsId: agentCreds.id }
-  }
-
-  if (teamId) {
-    const { data: teamCreds } = await supabase
-      .from("platform_credentials")
-      .select("id, platform")
-      .in("platform", TRANSACTION_PLATFORMS)
-      .eq("scope", "team")
-      .eq("owner_id", teamId)
-      .limit(1)
-      .maybeSingle()
-
-    if (teamCreds) {
-      return { provider: teamCreds.platform as TransactionProvider, credentialsId: teamCreds.id }
+  for (const platform of TRANSACTION_PLATFORMS) {
+    const conn = await resolveScopedConnection(platform, { agentUserId, teamId: teamId ?? null, brokerageId })
+    if (conn) {
+      return { provider: conn.provider as TransactionProvider, credentialsId: conn.credentialId }
     }
   }
 
-  const { data: brokerageCreds } = await supabase
-    .from("platform_credentials")
-    .select("id, platform")
-    .in("platform", TRANSACTION_PLATFORMS)
-    .eq("scope", "brokerage")
-    .eq("owner_id", brokerageId)
-    .limit(1)
-    .maybeSingle()
-
-  if (brokerageCreds) {
-    return { provider: brokerageCreds.platform as TransactionProvider, credentialsId: brokerageCreds.id }
-  }
-
-  // Final fallback: global_settings.additional_settings.transaction_provider
+  // Final fallback: global_settings.additional_settings.transaction_provider.
+  // Returns null (not a silent dotloop default) when nothing is configured.
   try {
     const provider = await getTransactionProvider(brokerageId)
-    return { provider }
+    return provider ? { provider } : null
   } catch {
     return null
   }

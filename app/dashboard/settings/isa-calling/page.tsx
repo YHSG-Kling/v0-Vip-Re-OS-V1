@@ -27,7 +27,7 @@ async function IsaCallingContent() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role")
+    .select("id, brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -68,7 +68,7 @@ async function IsaCallingContent() {
       brokerageId={profile.brokerage_id}
       phoneNumbers={phoneNumbers}
       dutyAgent={dutyAgent ?? null}
-      currentUserRole={profile.role ?? null}
+      currentUserRole={profile.user_type ?? null}
       capabilityCatalog={ISA_CAPABILITY_CATALOG}
       enabledCapabilities={enabledCapabilities}
     />

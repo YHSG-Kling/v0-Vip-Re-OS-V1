@@ -1,5 +1,6 @@
 // Alert engine — orchestrates search → score → dedup → deliver → log
 import { createServiceClient } from "@/lib/supabase/service"
+import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { searchIDXForAlert } from "./idx-alert-search"
 import { scorePropertyForAlert } from "./alert-matcher"
 import { deliverAlertResults } from "./alert-notifier"
@@ -146,14 +147,18 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
   })
 
   // ── 9. Lifecycle sub-event ────────────────────────────────────────────────
+  // emitKernelEvent does INSERT + reactor fan-out (staff notifications + sequence enrollment +
+  // client portal card). A bare lifecycle_events INSERT silently skipped all three downstream
+  // channels — buyers never saw the matched-property card on their portal.
   if (propertiesMatched > 0) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type:  "buyer_lifecycle",
-      entity_id:    alert.contact_id,
-      event_type:   "property.alert.matched",
-      actor_user_id: alert.agent_user_id,
-      metadata: { alert_id: alertId, properties_matched: propertiesMatched, batch_id: batchId },
+    await emitKernelEvent({
+      event:       "property.alert.matched",
+      brokerageId,
+      entityType:  "buyer_lifecycle",
+      entityId:    alert.contact_id,
+      contactId:   alert.contact_id,
+      agentUserId: alert.agent_user_id,
+      metadata:    { alert_id: alertId, properties_matched: propertiesMatched, batch_id: batchId },
     })
   }
 

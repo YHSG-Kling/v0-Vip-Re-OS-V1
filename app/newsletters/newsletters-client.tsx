@@ -122,6 +122,12 @@ interface WizardData {
   subjectVariants: string[]
   wordCount: number | null
   estimatedReadTime: number | null
+  /** Wave 20.1 — content_topic_bank IDs that seeded the generated sections.
+   *  Threaded through the create-campaign call so the performance loop
+   *  captures which topics produced this issue AND so the newsletter video
+   *  render reads the same threads back for cohesion (sections + video lead
+   *  with the same content). */
+  seedTopicIds: string[]
   // Step 5 – Timing
   sendOptimization: {
     recommendedDay: string
@@ -142,6 +148,7 @@ const INITIAL_WIZARD: WizardData = {
   topic: "",
   sections: ["Market Update", "Home Tips"],
   generatedSections: [],
+  seedTopicIds: [],
   subjectLine: "",
   subjectVariants: [],
   wordCount: null,
@@ -525,6 +532,12 @@ export function NewslettersClient({
       if (result.success && result.sections) {
         updateWizard({
           generatedSections: result.sections as GeneratedSection[],
+          // Wave 20.1 — capture seed topic IDs so handleSubmit can thread them
+          // into createNewsletterCampaign. Without this the cohesion + Wave 19
+          // performance loop never fire on this path.
+          seedTopicIds: Array.isArray((result as { seedTopicIds?: string[] }).seedTopicIds)
+            ? (result as { seedTopicIds?: string[] }).seedTopicIds ?? []
+            : [],
           wordCount: result.wordCount ?? null,
           estimatedReadTime: result.estimatedReadTime ?? null,
         })
@@ -594,6 +607,11 @@ export function NewslettersClient({
         content: wizard.generatedSections as any,
         audienceSegment: wizard.audienceSegment,
         scheduledAt: wizard.sendMode === "scheduled" && wizard.scheduleDate ? wizard.scheduleDate : undefined,
+        // Wave 20.1 — thread the topic IDs that anchored the generated
+        // sections so the Wave 19 content_topic_uses ledger captures
+        // newsletter_campaign-asset uses AND the video render reads them
+        // back for cohesion with the section content.
+        seedTopicIds: wizard.seedTopicIds,
       })
       if (result.success && result.newsletter) {
         const newCampaign: Campaign = {

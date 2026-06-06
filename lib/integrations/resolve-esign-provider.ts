@@ -15,6 +15,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import type { ITransactionProvider } from "@/lib/integrations/providers/transaction-provider.interface"
 
@@ -54,24 +55,6 @@ async function readOverride(
   return (data?.provider_key as string | null) ?? null
 }
 
-async function readCredential(params: {
-  scopeColumn: "agent_user_id" | "brokerage_id"
-  scopeId: string
-  preferredPlatform: string | null
-}) {
-  const svc = createServiceClient()
-  let q = svc
-    .from("platform_credentials")
-    .select("id, platform, api_key, account_id, config")
-    .eq(params.scopeColumn, params.scopeId)
-    .eq("is_active", true)
-    .in("platform", params.preferredPlatform ? [params.preferredPlatform] : SUPPORTED_PLATFORMS)
-    .order("last_tested_at", { ascending: false, nullsFirst: false })
-    .limit(1)
-  const { data } = await q.maybeSingle()
-  return data
-}
-
 export async function resolveESignProviderForActor(
   ctx: ResolveESignContext,
 ): Promise<ResolvedESignProvider> {
@@ -79,42 +62,35 @@ export async function resolveESignProviderForActor(
     throw new Error("brokerageId required to resolve e-sign provider")
   }
 
-  // 1. User override → user credential
-  if (ctx.userId) {
-    const userPick = await readOverride("user", ctx.userId)
-    const userCred = await readCredential({
-      scopeColumn:       "agent_user_id",
-      scopeId:           ctx.userId,
-      preferredPlatform: userPick,
-    })
-    if (userCred && userCred.api_key) {
-      return buildResolved(userCred, "user")
+  // Provider SELECTION via provider_overrides (most-specific scope first). The CREDENTIAL read
+  // goes through the unified ownership cascade (resolveScopedConnection: agent → team →
+  // brokerage → platform, legacy fallback preserved), so per-tier scoping — including TEAM,
+  // which the old per-column read skipped — resolves in one place.
+  const userPick      = ctx.userId ? await readOverride("user", ctx.userId)           : null
+  const teamPick      = ctx.teamId ? await readOverride("team", ctx.teamId)           : null
+  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
+  const preferredPlatform = userPick ?? teamPick ?? brokeragePick ?? null
+
+  const scopeCtx = { agentUserId: ctx.userId ?? null, teamId: ctx.teamId ?? null, brokerageId: ctx.brokerageId }
+  const ownerToScope = (o: string): "user" | "team" | "brokerage" =>
+    o === "agent" ? "user" : o === "team" ? "team" : "brokerage"
+
+  const providersToTry = preferredPlatform ? [preferredPlatform] : SUPPORTED_PLATFORMS
+  for (const provider of providersToTry) {
+    const conn = await resolveScopedConnection(provider, scopeCtx)
+    if (conn && conn.apiKey && SUPPORTED_PLATFORMS.includes(conn.provider)) {
+      return buildResolved(
+        { id: conn.credentialId, platform: conn.provider, api_key: conn.apiKey, account_id: conn.accountId, config: conn.config },
+        ownerToScope(conn.ownerType),
+      )
     }
   }
 
-  // 2. Team / 3. Brokerage overrides
-  let teamPick: string | null = null
-  if (ctx.teamId) teamPick = await readOverride("team", ctx.teamId)
-  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
-  const preferredPlatform = teamPick ?? brokeragePick
-
-  // 5. Brokerage credential (or matched against override)
-  const brokCred = await readCredential({
-    scopeColumn:       "brokerage_id",
-    scopeId:           ctx.brokerageId,
-    preferredPlatform,
-  })
-  if (!brokCred) {
-    throw new Error(
-      preferredPlatform
-        ? `Selected '${preferredPlatform}' as e-sign provider but no active credentials are configured. Add credentials in Settings → Integrations.`
-        : "No e-sign provider configured for this brokerage. Add credentials in Settings → Integrations.",
-    )
-  }
-  if (!brokCred.api_key) {
-    throw new Error(`E-sign provider '${brokCred.platform}' credentials are missing an API key. Re-authorize in Settings → Integrations.`)
-  }
-  return buildResolved(brokCred, teamPick ? "team" : "brokerage")
+  throw new Error(
+    preferredPlatform
+      ? `Selected '${preferredPlatform}' as e-sign provider but no active credentials are configured. Add credentials in Settings → Integrations.`
+      : "No e-sign provider configured for this brokerage. Add credentials in Settings → Integrations.",
+  )
 }
 
 function buildResolved(

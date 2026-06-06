@@ -37,8 +37,8 @@ export default function LeadInsightsPanel({ lead }: { lead: any }) {
               Last Contact
             </span>
             <span className="font-medium text-foreground">
-              {lead.last_contact_date
-                ? formatDistanceToNow(new Date(lead.last_contact_date), { addSuffix: true })
+              {lead.last_contacted_at
+                ? formatDistanceToNow(new Date(lead.last_contacted_at), { addSuffix: true })
                 : "Never"}
             </span>
           </div>
@@ -151,7 +151,7 @@ export default function LeadInsightsPanel({ lead }: { lead: any }) {
             {intelligence?.timeline === "immediate" && (
               <p className="text-blue-600">✓ Ready to move - schedule showing</p>
             )}
-            {!lead.last_contact_date && <p className="text-gray-600">• First contact - use introduction template</p>}
+            {!lead.last_contacted_at && <p className="text-gray-600">• First contact - use introduction template</p>}
           </div>
         </div>
       </CardContent>

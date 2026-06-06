@@ -48,8 +48,8 @@ async function requireContactAccess(contactId: string): Promise<
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
   }
   const { data: callerRow } = await svc
-    .from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id) {
+    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
+  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
   }
   return { ok: false, error: "Forbidden" }

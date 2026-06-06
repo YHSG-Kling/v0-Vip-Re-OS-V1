@@ -14,6 +14,8 @@ import {
 } from "@/app/actions/superadmin/platform-overview"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
+import { BudgetWarningToggle } from "./budget-warning-toggle"
 
 export const dynamic = "force-dynamic"
 
@@ -80,10 +82,11 @@ export default async function SuperadminPlatformPage() {
     return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
   }
 
-  const [overviewRes, cronRes, safetyRes] = await Promise.all([
+  const [overviewRes, cronRes, safetyRes, budgetWarningEnabled] = await Promise.all([
     getPlatformOverviewAction(),
     getCronHealthAction(),
     getTenantSafetyFeedAction(15),
+    getBrokerageBudgetWarningEnabled(),
   ])
 
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
@@ -106,11 +109,17 @@ export default async function SuperadminPlatformPage() {
           <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/brokerages">Manage all</Link>
           </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/connectors">Connectors</Link>
+          </Button>
           <Button asChild size="sm">
             <Link href="/dashboard/superadmin/brokerages/new">+ Add subscriber</Link>
           </Button>
         </div>
       </div>
+
+      {/* Vendor-spend governance — brokerage warning visibility control */}
+      <BudgetWarningToggle initialEnabled={budgetWarningEnabled} />
 
       {/* Hero row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

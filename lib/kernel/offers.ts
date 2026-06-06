@@ -18,7 +18,6 @@
 import { createClient }          from "@/lib/supabase/server"
 import { createServiceClient }   from "@/lib/supabase/service"
 import { KernelEvent }           from "@/lib/kernel/events"
-import { processKernelEvent }    from "@/lib/kernel/notification-engine"
 import { isValidUUID }           from "@/lib/validations"
 import { calcNetToSeller }       from "@/lib/offers/offer-analyzer"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
@@ -52,11 +51,46 @@ async function emitOfferEvent(params: {
     metadata:      metadata ?? {},
   }).throwOnError()
 
-  await processKernelEvent({
+  // Resolve buyer (offer.contact_id) + seller (listing.seller_contact_id) so the
+  // canonical fan-out can reach both sides' portals. Only events with a portal
+  // template (e.g. OFFER_OS_SUBMITTED) produce a client card; others stay
+  // staff-only (fanOutKernelEvent still runs processKernelEvent internally).
+  let buyerContactId: string | undefined
+  let sellerContactId: string | undefined
+  let listingId: string | undefined
+  let transactionId: string | undefined
+  try {
+    const { data: o } = await supabase
+      .from("offers")
+      .select("contact_id, listing_id, transaction_id")
+      .eq("id", entityId)
+      .maybeSingle()
+    buyerContactId = o?.contact_id ?? undefined
+    listingId      = o?.listing_id ?? undefined
+    transactionId  = o?.transaction_id ?? undefined
+    if (listingId) {
+      const { data: l } = await supabase
+        .from("listings")
+        .select("seller_contact_id")
+        .eq("id", listingId)
+        .maybeSingle()
+      sellerContactId = l?.seller_contact_id ?? undefined
+    }
+  } catch { /* best-effort enrichment */ }
+
+  const { fanOutKernelEvent } = await import("./event-fanout")
+  await fanOutKernelEvent({
     event,
     brokerageId,
-    entityType: "offer",
+    entityType:      "offer",
     entityId,
+    contactId:       buyerContactId,
+    buyerContactId,
+    sellerContactId,
+    listingId,
+    transactionId,
+    agentUserId:     actorUserId,
+    metadata,
   }).catch(() => {})
 }
 

@@ -1,5 +1,4 @@
-import {
-createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/lifetime-customer-touchpoints"
 import {
   createCronRunContextAction,
@@ -31,7 +30,7 @@ export async function GET(request: Request) {
     console.error("[PastClientTouchpoints] Failed to record cron start:", startRecordResult.error)
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const today = new Date()
   const results = {
     anniversaries: 0,
@@ -44,7 +43,7 @@ export async function GET(request: Request) {
     // Check for home anniversaries
     const { data: anniversaries } = await supabase
       .from("transactions")
-      .select("id, contact_id, actual_close_date, contacts(*)")
+      .select("id, contact_id, agent_id, actual_close_date, contacts(*)")
       .eq("status", "closed")
       .not("actual_close_date", "is", null)
 
@@ -57,7 +56,7 @@ export async function GET(request: Request) {
       ) {
         const yearsAgo = today.getFullYear() - closeDate.getFullYear()
         try {
-          await sendAnniversaryMessage(txn.contact_id, yearsAgo)
+          await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
           results.anniversaries++
         } catch (error: any) {
           results.errors.push(`Anniversary error: ${error.message}`)
@@ -68,7 +67,7 @@ export async function GET(request: Request) {
     // Check for birthdays
     const { data: contacts } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, birthday")
+      .select("id, first_name, last_name, birthday, agent_id")
       .not("birthday", "is", null)
 
     for (const contact of contacts || []) {
@@ -76,7 +75,7 @@ export async function GET(request: Request) {
         const birthday = new Date(contact.birthday)
         if (birthday.getMonth() === today.getMonth() && birthday.getDate() === today.getDate()) {
           try {
-            await sendBirthdayMessage(contact.id)
+            await sendBirthdayMessage(contact.id, { agentId: contact.agent_id, client: supabase })
             results.birthdays++
           } catch (error: any) {
             results.errors.push(`Birthday error: ${error.message}`)
@@ -93,13 +92,13 @@ export async function GET(request: Request) {
 
     const { data: recentCloses } = await supabase
       .from("transactions")
-      .select("id, contact_id, actual_close_date")
+      .select("id, contact_id, agent_id, actual_close_date")
       .eq("status", "closed")
       .in("actual_close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
 
     for (const txn of recentCloses || []) {
       try {
-        await sendReferralRequest(txn.contact_id)
+        await sendReferralRequest(txn.contact_id, { agentId: txn.agent_id, client: supabase })
         results.referralRequests++
       } catch (error: any) {
         results.errors.push(`Referral request error: ${error.message}`)

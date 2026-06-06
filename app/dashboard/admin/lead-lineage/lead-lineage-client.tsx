@@ -26,7 +26,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { governLead } from '@/app/actions/lead-governance/govern-lead'
-import { handleLeadAssigned } from '@/lib/kernel/lead-acquisition-handlers'
+import { handleLeadAssigned } from '@/app/actions/lead-acquisition'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

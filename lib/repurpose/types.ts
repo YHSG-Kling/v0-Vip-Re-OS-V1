@@ -1,13 +1,14 @@
 // lib/repurpose/types.ts
 // Type definitions for Layer 9.11 Omnipresence Repurposer
 
-export type SourceType = 
-  | "video_project" 
-  | "blog_post" 
-  | "podcast_episode" 
+export type SourceType =
+  | "video_project"
+  | "blog_post"
+  | "podcast_episode"
   | "social_post"
   | "script"
   | "newsletter"
+  | "video_url"
 
 export type OutputFormat = 
   | "instagram_reels"
@@ -21,6 +22,7 @@ export type OutputFormat =
   | "email_snippet"
   | "blog_excerpt"
   | "quote_graphic"
+  | "google_business_post"
 
 export interface PipelineConfig {
   id?: string
@@ -47,7 +49,7 @@ export interface RepurposedOutput {
   outputRefId: string
   platform: string
   contentPreview: string
-  status: "pending" | "approved" | "rejected" | "published"
+  status: "pending" | "approved" | "rejected" | "published" | "scheduled" | "skipped" | "failed"
 }
 
 export interface ExecutePipelineResult {
@@ -138,9 +140,15 @@ export const OUTPUT_FORMAT_CONFIG: Record<OutputFormat, {
     maxLength: 2000,
     outputTable: "blog_posts"
   },
-  quote_graphic: { 
-    displayName: "Quote Graphic", 
+  quote_graphic: {
+    displayName: "Quote Graphic",
     platform: "social",
     outputTable: "graphics"
+  },
+  google_business_post: {
+    displayName: "Google Business",
+    platform: "google_business",
+    maxLength: 1500,
+    outputTable: "social_posts"
   }
 }

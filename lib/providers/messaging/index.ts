@@ -18,6 +18,7 @@
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
 import { resolveSMSProviderForActor } from "./resolve-sms-provider"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
@@ -158,32 +159,24 @@ export async function placeCall(params: PlaceCallParams): Promise<PlaceCallResul
     }
   }
 
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        To: params.to,
-        From: fromNumber,
-        Url: params.twimlUrl,
-      }),
-    }
-  )
-
-  const data = await response.json()
+  const response = await callConnector<{ sid?: string; status?: string }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${accountSid}/Calls.json`,
+    method: "POST",
+    auth: { style: "basic", username: accountSid, password: authToken },
+    bodyType: "form",
+    body: { To: params.to, From: fromNumber, Url: params.twimlUrl },
+  })
 
   if (!response.ok) {
-    throw new Error(data.message || "Twilio Calls API error")
+    throw new Error(response.error || "Twilio Calls API error")
   }
 
   return {
     success: true,
-    callSid: data.sid,
-    status: data.status,
+    callSid: response.data?.sid,
+    status: response.data?.status,
   }
 }
 
@@ -218,20 +211,19 @@ export async function lookupPhone(params: LookupPhoneParams): Promise<LookupPhon
     }
   }
 
-  const response = await fetch(
-    `https://lookups.twilio.com/v2/PhoneNumbers/${encodeURIComponent(params.phoneNumber)}?Fields=line_type_intelligence`,
-    {
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-      },
-    }
-  )
-
-  const data = await response.json()
+  const response = await callConnector<any>({
+    connector: "twilio",
+    baseUrl: "https://lookups.twilio.com",
+    path: `/v2/PhoneNumbers/${encodeURIComponent(params.phoneNumber)}`,
+    method: "GET",
+    query: { Fields: "line_type_intelligence" },
+    auth: { style: "basic", username: accountSid, password: authToken },
+  })
 
   if (!response.ok) {
-    throw new Error(data.message || "Twilio Lookups API error")
+    throw new Error(response.error || "Twilio Lookups API error")
   }
+  const data = response.data ?? {}
 
   return {
     success: true,
@@ -308,13 +300,13 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     }
   }
 
-  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+  const response = await callConnector({
+    connector: "sendgrid",
+    baseUrl: "https://api.sendgrid.com",
+    path: "/v3/mail/send",
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+    auth: { style: "bearer", token: apiKey },
+    body: {
       personalizations: [{ to: [{ email: params.to }] }],
       from: { email: params.from || defaultFrom },
       subject: params.subject,
@@ -322,12 +314,11 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
         { type: "text/html", value: params.html },
       ],
-    }),
+    },
   })
 
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(error || "SendGrid API error")
+    throw new Error(response.error || "SendGrid API error")
   }
 
   return { success: true, status: "sent", provider: "sendgrid" }

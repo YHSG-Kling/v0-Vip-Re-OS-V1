@@ -180,6 +180,9 @@ export async function checkSpecificChannelReadiness(
   targetChannel: ExecutionChannel,
   options?: {
     log_to_activities?: boolean
+    /** Required if log_to_activities=true — activities row needs both. */
+    brokerage_id?: string
+    agent_id?: string
   }
 ): Promise<{
   success: boolean
@@ -198,14 +201,15 @@ export async function checkSpecificChannelReadiness(
 
     const result = checkChannelReadiness(input, targetChannel)
 
-    // Log to activities if requested
+    // Log to activities if requested (skipped silently if brokerage/agent missing).
     let activity_id: string | undefined
-    if (options?.log_to_activities && input.content_id) {
+    if (options?.log_to_activities && input.content_id && options.brokerage_id && options.agent_id) {
       const logResult = await logChannelReadinessCheck(
         input.content_id,
         targetChannel,
         result.is_ready,
-        result.reason
+        result.reason,
+        { brokerageId: options.brokerage_id, agentId: options.agent_id }
       )
       if (logResult.success) {
         activity_id = logResult.activity_id
@@ -238,7 +242,7 @@ export async function fetchReadinessHistory(
   evaluations?: Array<{
     id: string
     activity_type: string
-    payload: Record<string, unknown>
+    metadata: Record<string, unknown>
     created_at: string
   }>
   error?: string

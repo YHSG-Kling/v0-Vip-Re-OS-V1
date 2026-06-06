@@ -134,16 +134,18 @@ export async function generateAIResponse(params: {
 
   // Log the AI response
   const { agentId } = await getAgentContext()
+  // messages live cols: conversation_id, contact_id, agent_id, type, direction,
+  // subject, body, status, compliance_checked. No content/channel/is_ai_generated/
+  // sent_at/compliance_approved fields. ai_auto provenance lives in `type`.
   await supabase.from("messages").insert({
     conversation_id: params.conversationId,
     contact_id: params.contactId,
     agent_id: agentId,
-    content: aiResponse,
+    type: "ai_auto_response",
     direction: "outbound",
-    channel: "ai_auto",
-    is_ai_generated: true,
-    sent_at: new Date().toISOString(),
-    compliance_approved: false,
+    body: aiResponse,
+    status: "queued",
+    compliance_checked: false,
   })
 
   return { success: true, response: aiResponse }

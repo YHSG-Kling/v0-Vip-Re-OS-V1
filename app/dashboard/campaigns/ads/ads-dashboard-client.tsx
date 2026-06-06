@@ -70,16 +70,15 @@ import {
   rejectCreativeVariation,
   launchAdCampaign,
   updateCampaignStatus,
-  type TargetingConfig,
 } from "@/lib/ads/ad-creator"
+import type { TargetingConfig } from "@/lib/ads/ad-creator-types"
 import {
   createAudience,
   syncAudience,
   approveAudience,
   deleteAudience,
-  type AudienceType,
-  type SourceRule,
 } from "@/lib/ads/facebook-audience-sync"
+import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 

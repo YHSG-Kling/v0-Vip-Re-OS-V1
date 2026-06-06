@@ -16,7 +16,6 @@ interface ActionPlanCardProps {
     contact_id?: string | null
     relatedLeadName?: string
   }
-  onViewLead?: (contactId: string) => void
 }
 
 const priorityColors = {
@@ -25,7 +24,7 @@ const priorityColors = {
   low: 'bg-green-100 text-green-800',
 }
 
-export function ActionPlanCard({ plan, onViewLead }: ActionPlanCardProps) {
+export function ActionPlanCard({ plan }: ActionPlanCardProps) {
   const truncatedDescription = plan.description?.slice(0, 120) + (plan.description && plan.description.length > 120 ? '...' : '')
   const priorityColor = plan.priority ? priorityColors[plan.priority.toLowerCase() as keyof typeof priorityColors] || 'bg-gray-100 text-gray-800' : null
 
@@ -43,15 +42,12 @@ export function ActionPlanCard({ plan, onViewLead }: ActionPlanCardProps) {
         {truncatedDescription && <p className="text-sm text-muted-foreground">{truncatedDescription}</p>}
 
         {plan.contact_id && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onViewLead?.(plan.contact_id!)}
-            className="w-full"
-          >
-            <ExternalLink className="h-4 w-4 mr-2" />
-            View Lead
-          </Button>
+          <Link href={`/crm/contacts/${plan.contact_id}`}>
+            <Button size="sm" variant="outline" className="w-full">
+              <ExternalLink className="h-4 w-4 mr-2" />
+              View Lead
+            </Button>
+          </Link>
         )}
 
         {!plan.contact_id && (

@@ -318,8 +318,8 @@ export default async function TransactionsPage() {
                               Create from Contact
                             </Button>
                           </Link>
-                          {/* /dashboard/offers does not exist — offers live under buyers/[id]/offers */}
-                          <Link href="/dashboard/buyers">
+                          {/* offers live under /crm/contacts/[id]/offers */}
+                          <Link href="/crm?contact_type=buyer">
                             <Button variant="outline">
                               Convert from Offer
                             </Button>

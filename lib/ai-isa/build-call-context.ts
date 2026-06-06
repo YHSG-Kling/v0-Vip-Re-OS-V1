@@ -4,6 +4,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { resolveProvider } from '@/lib/kernel/providers'
 
 export interface CallContext {
   blocked: boolean
@@ -123,8 +124,7 @@ export async function buildCallContext(params: {
       .select(
         'scope_type, scope_id, assistant_name, persona_label, tone, formality_level, ' +
           'faq_knowledge, objection_library, escalation_rules, prohibited_language, ' +
-          'voice_provider, voice_mode, elevenlabs_voice_id, vapi_assistant_id, ' +
-          'voice_stability, voice_similarity_boost'
+          'voice_provider, voice_mode, elevenlabs_voice_id, vapi_assistant_id'
       )
       .eq('brokerage_id', params.brokerageId)
       .eq('active', true)
@@ -264,6 +264,15 @@ export async function buildCallContext(params: {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+  // Voice VENDOR is platform-tier (system-only) — resolved once for the whole
+  // app (superadmin override or the 'elevenlabs' default), never per-tenant. The
+  // per-agent voice ASSET (elevenlabs_voice_id / agents.voice_id /
+  // default_isa_voice_id) remains tenant-scoped below.
+  const { providerKey: voiceVendor } = await resolveProvider({
+    providerType: 'voice_clone',
+    actorContext: { userId: '', brokerageId: params.brokerageId },
+  })
+
   return {
     blocked: false,
     assistantName,
@@ -294,21 +303,21 @@ export async function buildCallContext(params: {
     //   4. undefined → VAPI uses its default voice (last resort)
     voiceConfig: identity?.elevenlabs_voice_id
       ? {
-          provider: identity.voice_provider ?? 'elevenlabs',
+          provider: voiceVendor,
           voiceId: identity.elevenlabs_voice_id,
-          stability: identity.voice_stability ?? 0.7,
-          similarityBoost: identity.voice_similarity_boost ?? 0.8,
+          stability: 0.7,
+          similarityBoost: 0.8,
         }
       : !isPreAssignment && (agentRow as any)?.voice_id
       ? {
-          provider: 'elevenlabs' as const,
+          provider: voiceVendor,
           voiceId: (agentRow as any).voice_id as string,
           stability: 0.7,
           similarityBoost: 0.8,
         }
       : (brokerageRow as any)?.default_isa_voice_id
       ? {
-          provider: 'elevenlabs' as const,
+          provider: voiceVendor,
           voiceId: (brokerageRow as any).default_isa_voice_id as string,
           stability: 0.7,
           similarityBoost: 0.8,

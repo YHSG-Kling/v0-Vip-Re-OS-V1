@@ -21,7 +21,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // ── Step 1: Fetch QR code ──────────────────────────────────────────────────
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, scan_count, purpose')
+      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type')
       .eq('slug', slug)
       .eq('is_active', true)
       .single()
@@ -68,12 +68,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // anonymous (no contact_id) so portal-update fan-out is a no-op here —
     // when the agent connects the scan to a contact via landing-page intake,
     // the contact-creation event will auto-enroll the right sequence.
+    // Wave 36 — include destination_type in the event metadata so any
+    // downstream listener (analytics aggregator, marketing-agent
+    // snapshot) can bucket scans by their semantic destination without
+    // joining back to qr_codes.
+    const eventMeta = {
+      slug,
+      campaign_id:      campaignId,
+      destination_type: qr.destination_type ?? null,
+      purpose:          qr.purpose ?? null,
+    }
     await supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'qr_scan',
       entity_id: qr.id,
       event_type: KernelEvent.QR_SCAN_RECEIVED,
-      metadata: { slug, campaign_id: campaignId },
+      metadata: eventMeta,
     })
     try {
       const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
@@ -82,7 +92,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         brokerageId: qr.brokerage_id,
         entityType:  'qr_scan',
         entityId:    qr.id,
-        metadata:    { slug, campaign_id: campaignId },
+        metadata:    eventMeta,
       })
     } catch { /* non-blocking */ }
 

@@ -171,50 +171,13 @@ export async function emitTransactionEvent(params: {
     metadata:      metadata ?? {},
   })
 
-  // ── Enrich the event with contact + transaction + listing context so
-  //    fanOutKernelEvent can fire portal updates and sequence enrollment
-  //    for both buyer and seller without each call site re-resolving.
-  let contactId: string | undefined
-  let buyerContactId: string | undefined
-  let sellerContactId: string | undefined
-  let transactionId: string | undefined
-  let listingId: string | undefined
-
-  try {
-    if (entityType === "transaction") {
-      transactionId = entityId
-      const { data: tx } = await supabase
-        .from("transactions")
-        .select("buyer_contact_id, seller_contact_id, contact_id, listing_id")
-        .eq("id", entityId)
-        .maybeSingle()
-      buyerContactId  = tx?.buyer_contact_id  ?? undefined
-      sellerContactId = tx?.seller_contact_id ?? undefined
-      contactId       = tx?.contact_id        ?? undefined
-      listingId       = tx?.listing_id        ?? undefined
-    } else if (entityType === "offer") {
-      const { data: o } = await supabase
-        .from("offers")
-        .select("contact_id, listing_id, transaction_id")
-        .eq("id", entityId)
-        .maybeSingle()
-      buyerContactId = o?.contact_id ?? undefined
-      contactId      = o?.contact_id ?? undefined
-      listingId      = o?.listing_id ?? undefined
-      transactionId  = o?.transaction_id ?? undefined
-      if (listingId) {
-        const { data: l } = await supabase
-          .from("listings").select("seller_contact_id").eq("id", listingId).maybeSingle()
-        sellerContactId = l?.seller_contact_id ?? undefined
-      }
-    } else if (entityType === "listing") {
-      listingId = entityId
-      const { data: l } = await supabase
-        .from("listings").select("seller_contact_id").eq("id", entityId).maybeSingle()
-      sellerContactId = l?.seller_contact_id ?? undefined
-      contactId       = l?.seller_contact_id ?? undefined
-    }
-  } catch { /* enrichment is best-effort */ }
+  // ── Enrich the event with contact + transaction + listing context (shared resolver — the SAME
+  //    logic the kernel reactor uses for bare processKernelEvent callers, so there's one resolution
+  //    path, no drift) so fanOutKernelEvent can fire portal updates + sequence enrollment for both
+  //    buyer and seller without each call site re-resolving.
+  const { resolveEventContacts } = await import("./resolve-event-contacts")
+  const { contactId, buyerContactId, sellerContactId, listingId, transactionId } =
+    await resolveEventContacts(supabase, entityType, entityId)
 
   // Single canonical fan-out (replaces direct processKernelEvent call) —
   // notifications + sequence auto-enroll + portal update happen here.
@@ -568,35 +531,6 @@ export async function linkOfferToTransaction(params: {
   return { success: true, data: { linked: true } }
 }
 
-// ─── 6. EMIT OFFER ACCEPTED EVENT ────────────────────────────────────────────
-/**
- * Emits OFFER_ACCEPTED lifecycle event + kernel notification.
- * Called after offer status is written to 'accepted'.
- */
-export async function emitOfferAcceptedEvent(params: {
-  offerId:      string
-  listingId:    string
-  brokerageId:  string
-  agentId:      string
-  offerPrice:   number
-}): Promise<KernelTxResult<void>> {
-  const { offerId, listingId, brokerageId, agentId, offerPrice } = params
-
-  try {
-    await emitTransactionEvent({
-      event:       KernelEvent.OFFER_ACCEPTED,
-      entityType:  "offer",
-      brokerageId,
-      entityId:    offerId,
-      actorUserId: agentId,
-      metadata:    { listing_id: listingId, offer_price: offerPrice },
-    })
-    return { success: true }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
 // ─── 7. EMIT TRANSACTION INITIATED EVENT ─────────────────────────────────────
 /**
  * Emits TRANSACTION_CREATED (or LISTING_UNDER_CONTRACT) lifecycle event.
@@ -744,7 +678,7 @@ export async function createManualTransaction(
         purchase_price:   input.purchasePrice ?? null,
         contact_id:       input.contactId     ?? null,
         close_date:       input.closeDate     ?? null,
-        deal_name:        input.dealName      ?? null,
+        deal_name:        input.dealName?.trim() || input.propertyAddress.trim(),
         commission_percentage: input.commissionPct ?? null,
         status:           "active",
         stage:            "UNDER_CONTRACT",
@@ -1171,7 +1105,7 @@ export async function closeTransactionCommand(params: {
       } catch {}
       await supabase
         .from("listings")
-        .update({ status: "closed", updated_at: nowIso })
+        .update({ status: "sold", updated_at: nowIso })
         .eq("id", txBefore.listing_id)
         .then(() => null, () => null)
     }
@@ -1269,18 +1203,19 @@ export async function closeTransactionCommand(params: {
       }
     } catch {}
 
-    // Schedule review request 5 days post-close (J8.1)
+    // Schedule review request post-close (J8.1). review_requests is contact-keyed
+    // (no transaction_id/send_after columns); link via the deal's contact.
     try {
-      const sendAfter = new Date()
-      sendAfter.setDate(sendAfter.getDate() + 5)
-      await supabase.from("review_requests").insert({
-        brokerage_id:   params.brokerageId,
-        agent_user_id:  params.agentId,
-        transaction_id: params.transactionId,
-        status:         "scheduled",
-        send_after:     sendAfter.toISOString(),
-        created_at:     nowIso,
-      }).then(() => null, () => null)
+      const reviewContactId = txBefore?.buyer_contact_id ?? txBefore?.contact_id ?? null
+      if (reviewContactId) {
+        await supabase.from("review_requests").insert({
+          brokerage_id: params.brokerageId,
+          agent_id:     params.agentId,
+          contact_id:   reviewContactId,
+          status:       "scheduled",
+          created_at:   nowIso,
+        }).then(() => null, () => null)
+      }
     } catch {
       // Non-critical — close success is not dependent on review scheduling
     }

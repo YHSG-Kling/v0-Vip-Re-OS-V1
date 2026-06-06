@@ -212,13 +212,23 @@ Additional notes: ${additionalNotes || "none"}`,
           )
       }
 
-      // 7. Kernel event
+      // 7. Kernel event — canonical fan-out. Staff (listing agent via the
+      //    listing_stage_machine resolver) AND the seller's portal both get
+      //    "Showing feedback received". Seller is resolved from the listing.
       if (fbReq.brokerage_id) {
-        await processKernelEvent({
-          event:       KernelEvent.SHOWING_FEEDBACK_RECEIVED,
-          brokerageId: fbReq.brokerage_id,
-          entityType:  "listing_stage_machine",
-          entityId:    listing.listing_id,
+        const { data: fbListing } = await supabase
+          .from("listings")
+          .select("seller_contact_id")
+          .eq("id", listing.listing_id)
+          .maybeSingle()
+        const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+        await fanOutKernelEvent({
+          event:           KernelEvent.SHOWING_FEEDBACK_RECEIVED,
+          brokerageId:     fbReq.brokerage_id,
+          entityType:      "listing_stage_machine",
+          entityId:        listing.listing_id,
+          sellerContactId: fbListing?.seller_contact_id ?? undefined,
+          listingId:       listing.listing_id,
         }).catch(() => {})
       }
     }

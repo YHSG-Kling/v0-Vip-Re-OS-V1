@@ -77,7 +77,7 @@ export async function handleLeadCaptured(params: {
     status: 'pending',
     enrichment_type: 'skip_trace',
     trigger_type: 'lead_captured',
-    created_at: new Date().toISOString(),
+    queued_at: new Date().toISOString(),
   })
 
   const targetAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
@@ -96,6 +96,13 @@ export async function handleLeadCaptured(params: {
     entityType: 'lead',
     entityId: leadId,
   })
+
+  // Wave 38 CORRECTION: lead-stage FB audience push REMOVED. Per Meta's
+  // Custom Audiences policy, recipients must be consented; leads on this
+  // platform are explicitly unconsented (lifecycle_state='unconsented' at
+  // capture time). The audience push happens in handleLeadAssigned (where
+  // the lead has converted to a CONTACT with tcpa_consent verified before
+  // staging).
 }
 
 // ─── HANDLER 2: handleLeadScored ─────────────────────────────────────────────
@@ -509,6 +516,20 @@ export async function handleLeadAssigned(params: {
     entityId: leadId,
   })
 
+  // Wave 38 — promote audience membership to the AGENT's FB
+  // retargeting audience too (brokerage row stays). Non-blocking.
+  try {
+    const { onLeadConvertedForAudience } = await import('@/lib/audiences/audience-sync')
+    void onLeadConvertedForAudience({
+      contactId:   contact.id,
+      leadId,
+      brokerageId,
+      agentUserId,
+    }).catch((e) => {
+      console.error('[lead-acquisition] FB audience promote failed:', e)
+    })
+  } catch { /* best-effort */ }
+
   // ── Post-conversion side-effects ──────────────────────────────────────
   // 1. Queue scoring + enrichment so the new contact has fresh data.
   // 2. Send portal invite for buyer/seller/investor contact types so they
@@ -528,13 +549,14 @@ export async function handleLeadAssigned(params: {
 
   if (contactType === 'buyer' || contactType === 'seller' || contactType === 'investor') {
     try {
-      const { createPortalInviteForContact } = await import(
-        '@/app/actions/portal-invites'
-      )
-      await createPortalInviteForContact({
-        contactId: contact.id,
-        brokerageId,
-        invitedByUserId: agentUserId,
+      // System path (server-only, not a client action): createPortalInviteForContact required a
+      // logged-in session and silently failed here in the background assignment context.
+      // createSystemPortalInvite authorizes via the assigned agent's user id; the core
+      // compliance-gates the email on opt-out / unsubscribe.
+      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
+      await createSystemPortalInvite({
+        contactId:   contact.id,
+        agentUserId: agentUserId,
         sendMagicLink: true,
       })
     } catch {
