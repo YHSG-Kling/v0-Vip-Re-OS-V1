@@ -11,6 +11,8 @@ import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
+import { JustSoldReelSquare } from "./JustSoldReelSquare"
+import { AgentTalkingHeadReel } from "./AgentTalkingHeadReel"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
@@ -81,6 +83,62 @@ export const RemotionRoot: React.FC = () => {
             primaryColor: "#0F172A",
             accentColor:  "#F59E0B",
             showEhoMark:  true,
+          },
+        }}
+      />
+      {/* Wave 39 — Just Sold square variant. Social-proof companion
+          to JustListedReelSquare. Shows SOLD treatment + sold price +
+          days-on-market + optional "ABOVE ASKING" badge. 1080×1080 +
+          12s @ 30fps. */}
+      <Composition
+        id="JustSoldReelSquare"
+        component={JustSoldReelSquare as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={360}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          address:       "123 Main Street",
+          cityState:     "Miami, FL",
+          soldPrice:     "$640,000",
+          listPrice:     "$625,000",
+          daysOnMarket:  7,
+          imageUrls:     [],
+          ctaLabel:      "List your home with me",
+          brand: {
+            primaryColor: "#0F172A",
+            accentColor:  "#F59E0B",
+            showEhoMark:  true,
+          },
+        }}
+      />
+      {/* Wave 39 — D-ID + ElevenLabs differentiator. Frames an
+          agent's talking-head avatar video with brokerage chrome
+          (intro card + caption strip + outro CTA). The avatar mp4
+          is rendered upstream via lib/did/index.ts + the
+          poll-did-videos cron (already ships a logo-composited
+          version). When no avatar is available, the composition
+          gracefully falls back to a static agent-photo card. The
+          single composition no competitor in the space ships today. */}
+      <Composition
+        id="AgentTalkingHeadReel"
+        component={AgentTalkingHeadReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={420}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          hook:           "MEET YOUR AGENT",
+          agentName:      "Your Agent",
+          caption:        "Three things every first-time buyer should ask before bidding.",
+          ctaLabel:       "Book a free 15-min consult",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
           },
         }}
       />
