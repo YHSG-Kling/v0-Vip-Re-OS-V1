@@ -114,6 +114,35 @@ interface AssetSnapshot {
    *  still NULL despite the agent having a voice clone — the
    *  letter-audio-renderer cron didn't catch them. */
   lettersMissingTtsAudio: number
+
+  // ─── Wave 39 composition library surfaces ────────────────────────
+  // The remotion_compositions table is the source of truth for the
+  // library; the Asset Manager surfaces health signals so the
+  // broker can deprecate stale formats + see which compositions are
+  // pulling weight.
+  /** Total active compositions registered for this brokerage's tier
+   *  (computed via canAccessComposition against the brokerage's
+   *  subscription tier). */
+  compositionsAvailable: number
+  /** Compositions the brokerage IS allowed to use but has NEVER
+   *  rendered. Either dead inventory or a discoverability problem
+   *  (the agent doesn't know the format exists). */
+  compositionsNeverRendered: number
+  /** Compositions last rendered > 90d ago AND have at least one
+   *  prior successful render. Stale signals — format may be losing
+   *  relevance. */
+  compositionsStale90d: number
+  /** Top 3 compositions by render count over the last 28d. Drives
+   *  the "what's working" panel of the Asset Manager's report. */
+  compositionsTop3LastMonth: Array<{
+    composition_id: string
+    display_name:   string
+    render_count:   number
+  }>
+  /** Compositions that failed > 2 renders in the last 7d. Renderer
+   *  pipeline signal — usually a missing brand asset, a bad Lob
+   *  template, or an upstream provider quota issue. */
+  compositionsFailingLast7d: number
 }
 
 async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
@@ -150,6 +179,11 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     bundlesZeroLeadRate: 0,
     agentsWithVoicedropButNoVoice: 0,
     lettersMissingTtsAudio: 0,
+    compositionsAvailable:     0,
+    compositionsNeverRendered: 0,
+    compositionsStale90d:      0,
+    compositionsTop3LastMonth: [],
+    compositionsFailingLast7d: 0,
   }
 
   try {
@@ -363,6 +397,82 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       if (voiceByAgent.get(l.agent_id)) lettersMissing++
     }
     snap.lettersMissingTtsAudio = lettersMissing
+
+    // ─── Wave 39: composition library health ──────────────────────────
+    // The brokerage's subscription tier determines which compositions
+    // are reachable. Resolve the tier from the brokerages row, then
+    // walk the registry against it.
+    const { data: brokerageTierRow } = await svc.from("brokerages")
+      .select("subscription_tier")
+      .eq("id", brokerageId)
+      .maybeSingle()
+    const subscriptionTier = ((brokerageTierRow as { subscription_tier: string | null } | null)
+      ?.subscription_tier ?? "solo_agent") as
+      "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
+
+    const { listCompositionsForTier } = await import("@/lib/remotion/registry")
+    const available = await listCompositionsForTier(subscriptionTier)
+    snap.compositionsAvailable = available.length
+
+    // Pull the brokerage's render history (last 90d window covers
+    // both the freshness check and the top-3 monthly leaderboard).
+    // since28d + since7d are already in scope from the W37 setup.
+    const since90d = new Date(Date.now() - 90 * 86_400_000).toISOString()
+    const { data: renders90d } = await svc.from("remotion_composition_renders")
+      .select("composition_id, render_status, created_at")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", since90d)
+
+    const rendersByComp = new Map<string, Array<{ status: string; created_at: string }>>()
+    for (const r of (renders90d ?? []) as Array<{
+      composition_id: string; render_status: string; created_at: string
+    }>) {
+      const arr = rendersByComp.get(r.composition_id) ?? []
+      arr.push({ status: r.render_status, created_at: r.created_at })
+      rendersByComp.set(r.composition_id, arr)
+    }
+
+    // Never-rendered = registered + accessible to this tier, zero renders
+    // in the brokerage's history.
+    snap.compositionsNeverRendered = available.filter(
+      (c) => !rendersByComp.has(c.composition_id),
+    ).length
+
+    // Stale 90d = composition HAS been rendered ever, but no
+    // successful render in the 90d window. We check the registry's
+    // last_rendered_at (cross-tenant freshness) AND the brokerage's
+    // own history; either signal flags it.
+    snap.compositionsStale90d = available.filter((c) => {
+      const myRecent = rendersByComp.get(c.composition_id)?.some(
+        (r) => r.status === "succeeded",
+      )
+      return c.last_rendered_at !== null && !myRecent
+    }).length
+
+    // Top 3 by 28d count.
+    const counts28d = new Map<string, number>()
+    for (const [id, rs] of rendersByComp.entries()) {
+      const recent = rs.filter((r) => r.created_at >= since28d).length
+      if (recent > 0) counts28d.set(id, recent)
+    }
+    const compositionNameById = new Map(available.map((c) => [c.composition_id, c.display_name]))
+    snap.compositionsTop3LastMonth = [...counts28d.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([id, n]) => ({
+        composition_id: id,
+        display_name:   compositionNameById.get(id) ?? id,
+        render_count:   n,
+      }))
+
+    // Failing 7d — count compositions where >= 2 failed renders
+    // landed in the last week.
+    const failByComp = new Map<string, number>()
+    for (const [id, rs] of rendersByComp.entries()) {
+      const fails = rs.filter((r) => r.status === "failed" && r.created_at >= since7d).length
+      if (fails >= 2) failByComp.set(id, fails)
+    }
+    snap.compositionsFailingLast7d = failByComp.size
   } catch (e) {
     console.error(`[asset-manager] snapshot build failed for ${brokerageId}:`, (e as Error).message)
   }
@@ -431,6 +541,26 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
     "",
     `Direct-mail letters > 24h old without TTS audio: ${snap.lettersMissingTtsAudio}`,
     "  ← flag_asset_for_review with reason='tts_audio_renderer_lag'. The letter-audio-renderer cron should have caught these; > 0 means either ElevenLabs is quota-paused for the brokerage or the cron is failing. Broker reviews and unblocks.",
+    "",
+    "──── WAVE 39 COMPOSITION LIBRARY (remotion_compositions registry) ────",
+    "The Asset Manager OWNS the composition library — register / deprecate / promote / track-usage are your levers. The W40 ad creator + content engine consult this library to pick formats.",
+    "",
+    `Compositions reachable at this brokerage's subscription tier: ${snap.compositionsAvailable}`,
+    `Compositions registered + reachable BUT never rendered for this brokerage: ${snap.compositionsNeverRendered}`,
+    "  ← flag_asset_for_review with reason='composition_never_used'. Either the brokerage doesn't know the format exists (discoverability surface job) or it's dead inventory. Surface so the broker decides.",
+    "",
+    `Compositions with last-render > 90d (cross-tenant stale): ${snap.compositionsStale90d}`,
+    "  ← deprecate_asset with reason='composition_stale_90d'. The format isn't pulling weight anywhere in the platform; lower its tier_access or mark inactive.",
+    "",
+    `Compositions failing >= 2 renders in last 7d: ${snap.compositionsFailingLast7d}`,
+    "  ← flag_asset_for_review with reason='composition_renderer_failure'. Renderer pipeline signal — usually a missing brand asset, a bad Lob template, or an upstream provider quota issue.",
+    "",
+    snap.compositionsTop3LastMonth.length === 0
+      ? "Top compositions last 28d: (no renders yet — onboarding-fresh brokerage)"
+      : "Top compositions last 28d (the 'what's working' panel):\n" +
+        snap.compositionsTop3LastMonth.map((c) =>
+          `  · ${c.display_name} — ${c.render_count} renders ← these are the formats to PROMOTE in the next content engine cycle`
+        ).join("\n"),
     "",
     "──── RESOLUTION ACTIONS YOU CAN EMIT ────",
     "Append a top-level `resolutions[]` array to your JSON output. Each:",

@@ -93,6 +93,22 @@ const REASON_BADGES: Record<string, { label: string; color: string; tooltip: str
     color:   "bg-orange-50 text-orange-800 border border-orange-200",
     tooltip: "Asset content drifts from current brand voice.",
   },
+  // Wave 39 — composition library reasons
+  composition_never_used: {
+    label:   "composition unused",
+    color:   "bg-purple-50 text-purple-700 border border-purple-200",
+    tooltip: "This composition is registered and reachable at the brokerage's tier but has never been rendered. Either dead inventory or a discoverability problem.",
+  },
+  composition_stale_90d: {
+    label:   "composition stale > 90d",
+    color:   "bg-gray-100 text-gray-700 border border-gray-200",
+    tooltip: "No successful render of this composition for 90+ days. Format may be losing relevance — consider deprecating or lowering the tier_access.",
+  },
+  composition_renderer_failure: {
+    label:   "render failures × 2+",
+    color:   "bg-red-50 text-red-700 border border-red-200",
+    tooltip: "This composition failed 2+ renders in the last 7 days. Usually a missing brand asset, bad Lob template, or upstream provider quota issue.",
+  },
 }
 
 function reasonOf(action: { action_input: Record<string, unknown> }): string | null {

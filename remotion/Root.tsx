@@ -21,6 +21,9 @@ import { TestimonialReel } from "./TestimonialReel"
 import { NeighborhoodSpotlightReel } from "./NeighborhoodSpotlightReel"
 import { MarketUpdateReel } from "./MarketUpdateReel"
 import { ListingPresentationSlide } from "./ListingPresentationSlide"
+import { BuyerConsultationSlide } from "./BuyerConsultationSlide"
+import { AffordabilitySnapshotReel } from "./AffordabilitySnapshotReel"
+import { VideoCoverThumb } from "./VideoCoverThumb"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
@@ -394,6 +397,115 @@ export const RemotionRoot: React.FC = () => {
             accentColor:  "#F59E0B",
             showEhoMark:  true,
           },
+        }}
+      />
+      {/* Wave 39 — buyer-side counterpart to ListingPresentationSlide.
+          Same composer pattern: one slide of an N-slide narrated
+          presentation video with avatar PIP bottom-right. Slide
+          kinds: title / loan / search / offer_strategy / timeline /
+          closing. The "search" kind is the killer — renders 3
+          example listings with photo + price inside the narrated
+          video so the lead sees what their budget buys live.
+          1920×1080 / per-slide duration set by composer. */}
+      <Composition
+        id="BuyerConsultationSlide"
+        component={BuyerConsultationSlide as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={180}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          kind:        "title" as const,
+          slideNumber: 1,
+          totalSlides: 8,
+          title:       "Your buy, step by step.",
+          body: [
+            "I put together a personalized walkthrough of what your search looks like this week, what pre-approval gets you, and how we'd structure your first offer.",
+            "We'll cover loan options, current inventory, offer strategy, and the closing timeline.",
+          ],
+          searchExamples:  [],
+          timelineLabels:  [],
+          heroImageUrl:    null,
+          bodyContent:     null,
+          avatarVideoUrl:  null,
+          avatarStartFrame: 0,
+          avatarEndFrame:   180,
+          agentPhotoUrl:    null,
+          agentName:        "Your Agent",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            surfaceColor:  "#FFFFFF",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — buyer-side reel. Shows what a target monthly
+          payment buys in the lead's market THIS WEEK. Three real
+          listings; data freshness drives engagement. 1080×1080 + 15s.
+          The "monthly payment" framing (vs sticker price) is the
+          conversion trick — first-time buyers think in monthly
+          budget, not list price. */}
+      <Composition
+        id="AffordabilitySnapshotReel"
+        component={AffordabilitySnapshotReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={450}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          monthlyHeadline: "What $3,200/mo buys here",
+          areaName:        "Brickell",
+          period:          "This week",
+          examples: [
+            { address: "1245 Bay Rd",   cityState: "Brickell, FL", price: "$485,000", bedrooms: "2", bathrooms: "2", photoUrl: null },
+            { address: "501 N Riverwalk", cityState: "Brickell, FL", price: "$525,000", bedrooms: "2", bathrooms: "2", photoUrl: null },
+            { address: "210 SE 8th St",  cityState: "Brickell, FL", price: "$540,000", bedrooms: "2", bathrooms: "2", photoUrl: null },
+          ],
+          ratesAssumption: "Estimated at 6.5% / 30yr / 20% down · actual rate varies",
+          ctaLabel:   "Want a real list?",
+          agentName:  "Your Agent",
+          agentPhone: "(555) 555-1212",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — universal 1200×630 thumbnail composition. EVERY
+          video in the library uses this for og:image / share-card /
+          AI-search-discoverable preview. Kind parameter drives the
+          treatment (listing / explainer / presentation / market_update
+          / testimonial / open_house / coming_soon / neighborhood /
+          affordability / agent_avatar). Generated alongside every
+          video render so the AI-search ecosystem (ChatGPT browse /
+          Perplexity / Claude / Google AI Overviews) can read what the
+          video is about even though they don't index video. */}
+      <Composition
+        id="VideoCoverThumb"
+        component={VideoCoverThumb as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1200}
+        height={630}
+        defaultProps={{
+          kind:           "listing" as const,
+          title:          "Just Listed — 123 Main Street",
+          subtitle:       "$625K · 3 bd · 2 ba · Brickell, FL",
+          eyebrow:        "JUST LISTED",
+          heroImageUrl:   null,
+          agentPhotoUrl:  null,
+          agentName:      "Your Agent",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+          seoHint:        "Just-listed home in Brickell, FL — see photos and details inside.",
         }}
       />
       {/* Wave 39 — 1200×630 Open-Graph lead-magnet card. Used by the
