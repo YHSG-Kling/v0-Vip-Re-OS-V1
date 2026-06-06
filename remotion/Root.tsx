@@ -11,9 +11,14 @@ import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
+import { JustListedReelHorizontal } from "./JustListedReelHorizontal"
 import { JustSoldReelSquare } from "./JustSoldReelSquare"
+import { ComingSoonReel } from "./ComingSoonReel"
+import { OpenHouseAnnounceReel } from "./OpenHouseAnnounceReel"
 import { AgentTalkingHeadReel } from "./AgentTalkingHeadReel"
 import { AgentExplainerReel } from "./AgentExplainerReel"
+import { TestimonialReel } from "./TestimonialReel"
+import { NeighborhoodSpotlightReel } from "./NeighborhoodSpotlightReel"
 import { MarketUpdateReel } from "./MarketUpdateReel"
 import { ListingPresentationSlide } from "./ListingPresentationSlide"
 import { LeadMagnetCard } from "./LeadMagnetCard"
@@ -245,6 +250,149 @@ export const RemotionRoot: React.FC = () => {
             surfaceColor:  "#FFFFFF",
             brokerageName: "Your Brokerage",
             showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — pre-listing teaser. "Coming soon" before the MLS
+          listing goes live. Cheap Remotion-only render by default;
+          optional D-ID avatar PIP if the brokerage opts in. 1080×1080
+          + 12s + B-roll support + content-bank context cues. */}
+      <Composition
+        id="ComingSoonReel"
+        component={ComingSoonReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={360}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          address:        "Coming this week",
+          cityState:      "Brickell, FL",
+          teaser:         "3 BD · rooftop deck",
+          heroImageUrl:   null,
+          whenString:     "This Friday",
+          ctaLabel:       "DM me to be first in line",
+          brollClips:     [],
+          contextCues:    [],
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          agentName:      "Your Agent",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — open house event reel. Date / time / address get
+          the visual headline. 1080×1080 + 12s. */}
+      <Composition
+        id="OpenHouseAnnounceReel"
+        component={OpenHouseAnnounceReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={360}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          address:    "185 Berry Street",
+          cityState:  "Brickell, FL",
+          dateLabel:  "This Saturday",
+          timeLabel:  "12:00 - 2:00 PM",
+          imageUrls:  [],
+          bodyLine:   "Modern 3-bed with rooftop deck — RSVP not required.",
+          ctaLabel:   "Save the date",
+          agentName:  "Your Agent",
+          agentPhone: "(555) 555-1212",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — testimonial reel. 5-star quote + attribution +
+          optional agent reaction PIP. Pure Remotion when no avatar
+          supplied. 1080×1080 + 14s. */}
+      <Composition
+        id="TestimonialReel"
+        component={TestimonialReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={420}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          quote:         "She listened, she was honest, and she got us the home we'd been chasing for six months. Couldn't recommend more.",
+          clientName:    "Jamie, Brickell",
+          clientRole:    "Buyer",
+          closingLabel:  "Closed Oct 2026",
+          stars:         5,
+          ctaLabel:      "Read more reviews",
+          agentName:     "Your Agent",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — neighborhood spotlight. Heaviest user of the
+          B-roll layer. Lifestyle clips under data highlights +
+          agent narration. 1080×1080 + 16s. */}
+      <Composition
+        id="NeighborhoodSpotlightReel"
+        component={NeighborhoodSpotlightReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={480}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          neighborhood: "Brickell",
+          tagline:      "Where rooftops meet the bay.",
+          highlights: [
+            { label: "MEDIAN PRICE",  value: "$675K" },
+            { label: "WALK SCORE",    value: "92" },
+          ],
+          brollClips:   [],
+          ctaLabel:     "Want a private tour?",
+          agentName:    "Your Agent",
+          agentPhone:   "(555) 555-1212",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — horizontal 16:9 variant of JustListed for
+          YouTube ads + FB in-stream + CTV/OTT placements. 1920×1080
+          + 20s. Voiceover-on by default since CTV viewers aren't
+          muted-feed. */}
+      <Composition
+        id="JustListedReelHorizontal"
+        component={JustListedReelHorizontal as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={600}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          hook:      "Just Listed",
+          address:   "123 Main Street",
+          cityState: "Miami, FL",
+          price:     "$625,000",
+          bedrooms:  "3",
+          bathrooms: "2",
+          sqft:      "1,850",
+          imageUrls: [],
+          ctaLabel:  "Tour this listing",
+          brand: {
+            primaryColor: "#0F172A",
+            accentColor:  "#F59E0B",
+            showEhoMark:  true,
           },
         }}
       />
