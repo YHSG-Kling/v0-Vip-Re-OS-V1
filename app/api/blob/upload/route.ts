@@ -22,7 +22,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       body,
       request,
       onBeforeGenerateToken: async (pathname) => ({
-        allowedContentTypes: ["image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/quicktime"],
+        allowedContentTypes: [
+          "image/jpeg", "image/png", "image/webp", "image/gif",
+          "video/mp4", "video/quicktime", "video/webm",
+          // Wave 39: audio for stock-library music uploads.
+          "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/aac", "audio/x-m4a",
+        ],
         maximumSizeInBytes: 50 * 1024 * 1024, // 50 MB
         tokenPayload: JSON.stringify({ userId: user.id, pathname }),
       }),

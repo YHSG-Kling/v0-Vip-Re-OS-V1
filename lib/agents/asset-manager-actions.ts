@@ -27,6 +27,8 @@ export type AssetManagerActionType =
   | "request_agent_headshot"
   | "rerender_persona_variants"
   | "sync_asset_to_listing"
+  | "start_render"
+  | "restart_failed_render"
 
 export interface ProposedAssetAction {
   action_type: AssetManagerActionType
@@ -260,6 +262,90 @@ async function runHandler(
         .eq("brokerage_id", brokerageId)
       if (error) return { status: "failed", result: { error: error.message } }
       return { status: "succeeded", result: { asset_id: assetId, listing_id: listingId } }
+    }
+
+    case "start_render": {
+      // Wave 39 — queue a fresh Remotion render of a registered
+      // composition. The actual @remotion/renderer invocation lives
+      // in the per-composition endpoint; this handler claims the
+      // remotion_composition_renders row and stamps the queued state
+      // so the cron / endpoint picks it up.
+      const compositionId = String(input.composition_id ?? "")
+      const scopeType     = String(input.scope_type ?? "brokerage") as "agent" | "team" | "brokerage"
+      const scopeId       = String(input.scope_id ?? "") || brokerageId
+      const agentUserId   = (input.agent_user_id as string | null) ?? null
+      const entityType    = (input.entity_type as string | null) ?? null
+      const entityId      = (input.entity_id as string | null) ?? null
+      if (!compositionId) return { status: "failed", result: { error: "composition_id required" } }
+
+      const { getComposition, recordRenderQueued } = await import("@/lib/remotion/registry")
+      const composition = await getComposition(compositionId)
+      if (!composition) return { status: "failed", result: { error: "composition_not_registered" } }
+      if (!composition.is_active) return { status: "skipped", result: { reason: "composition_inactive" } }
+
+      const queued = await recordRenderQueued({
+        brokerageId, compositionId,
+        agentUserId, entityType, entityId,
+        usedDidAvatar: composition.requires_did_avatar,
+        usedVoiceover: composition.requires_voiceover,
+      })
+      if (!queued.ok) return { status: "failed", result: { error: queued.error ?? "queue failed" } }
+      return {
+        status: "succeeded",
+        result: {
+          composition_id: compositionId,
+          render_id:      queued.renderId,
+          scope:          { type: scopeType, id: scopeId },
+          note:           "Render row claimed; per-composition endpoint will pick it up on the next tick.",
+        },
+      }
+    }
+
+    case "restart_failed_render": {
+      // Wave 39 — re-queue a previously-failed render row. Reads the
+      // original composition_id + entity refs, then claims a fresh
+      // remotion_composition_renders row so the failure history is
+      // preserved (the original row stays 'failed') and the new attempt
+      // has its own audit lineage.
+      const renderId = String(input.render_id ?? "")
+      if (!renderId) return { status: "failed", result: { error: "render_id required" } }
+      const svc = createServiceClient()
+      const { data: original } = await svc.from("remotion_composition_renders")
+        .select("composition_id, agent_user_id, entity_type, entity_id, render_status, brokerage_id")
+        .eq("id", renderId)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      const o = original as {
+        composition_id: string; agent_user_id: string | null;
+        entity_type: string | null; entity_id: string | null;
+        render_status: string; brokerage_id: string
+      } | null
+      if (!o) return { status: "skipped", result: { reason: "render row not found or tenant mismatch" } }
+      if (o.render_status !== "failed") {
+        return { status: "skipped", result: { reason: `original render is ${o.render_status}, not failed` } }
+      }
+      const { getComposition, recordRenderQueued } = await import("@/lib/remotion/registry")
+      const composition = await getComposition(o.composition_id)
+      if (!composition) return { status: "failed", result: { error: "composition_not_registered" } }
+
+      const queued = await recordRenderQueued({
+        brokerageId,
+        compositionId: o.composition_id,
+        agentUserId:   o.agent_user_id,
+        entityType:    o.entity_type,
+        entityId:      o.entity_id,
+        usedDidAvatar: composition.requires_did_avatar,
+        usedVoiceover: composition.requires_voiceover,
+      })
+      if (!queued.ok) return { status: "failed", result: { error: queued.error ?? "queue failed" } }
+      return {
+        status: "succeeded",
+        result: {
+          composition_id:     o.composition_id,
+          original_render_id: renderId,
+          new_render_id:      queued.renderId,
+        },
+      }
     }
 
     default: {

@@ -42,6 +42,16 @@ const ACTION_LABELS: Record<string, { label: string; color: string; explain: str
     color:   "cyan",
     explain: "Backfills the marketing_assets.listing_id link so the asset is formally attached to the listing.",
   },
+  start_render: {
+    label:   "Start Composition Render",
+    color:   "emerald",
+    explain: "Claims a fresh remotion_composition_renders row for the named composition + scope. The per-composition endpoint picks it up on the next tick — bookends + music + audit run through the canonical render coordinator.",
+  },
+  restart_failed_render: {
+    label:   "Restart Failed Render",
+    color:   "blue",
+    explain: "Re-queues a previously-failed render row (the original stays 'failed' for audit). New attempt has its own lineage and runs through the same coordinator.",
+  },
 }
 
 const STATUS_BADGE: Record<string, string> = {

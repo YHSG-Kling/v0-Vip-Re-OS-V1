@@ -53,6 +53,11 @@ export default function SettingsDashboard() {
             <p className="text-gray-600">Locked creative for every bundle channel</p>
           </SettingsCard>
         </Link>
+        <Link href="/dashboard/settings/stock-library">
+          <SettingsCard title="Stock Library" description="Intros / outros / B-roll / music">
+            <p className="text-gray-600">Upload assets the render coordinator stitches into your videos</p>
+          </SettingsCard>
+        </Link>
       </div>
     </div>
   );
