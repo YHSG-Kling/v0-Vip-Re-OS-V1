@@ -13,6 +13,9 @@ import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
 import { JustSoldReelSquare } from "./JustSoldReelSquare"
 import { AgentTalkingHeadReel } from "./AgentTalkingHeadReel"
+import { AgentExplainerReel } from "./AgentExplainerReel"
+import { MarketUpdateReel } from "./MarketUpdateReel"
+import { ListingPresentationSlide } from "./ListingPresentationSlide"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
@@ -137,6 +140,109 @@ export const RemotionRoot: React.FC = () => {
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — generic explainer reel with three bullets and
+          persistent avatar PIP. Reusable across the highest-engagement
+          educational formats: "3 things to know before bidding",
+          "what closing costs actually cover", etc. 1080×1080 + 18s. */}
+      <Composition
+        id="AgentExplainerReel"
+        component={AgentExplainerReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={540}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          eyebrow:    "FIRST-TIME BUYER",
+          title:      "Three things to know before you bid",
+          bullets: [
+            "A pre-approval letter expires — yours needs to be dated within 60 days.",
+            "Escalation clauses can win the bid but cap your downside; ask me how.",
+            "The inspection contingency is the lever, not the price.",
+          ],
+          ctaLabel:   "Book a 15-min consult",
+          agentName:  "Your Agent",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — monthly/weekly market-update reel with three big
+          stat cards + avatar narration. Fires automatically from
+          the market-data-refresh cron. 1080×1080 + 16s. */}
+      <Composition
+        id="MarketUpdateReel"
+        component={MarketUpdateReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={480}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          areaName: "Brickell",
+          period:   "October 2026",
+          stats: [
+            { value: "$675K", label: "MEDIAN SALE PRICE", delta: "+3.2% MoM", direction: "up_good" as const },
+            { value: "12 days", label: "AVG DAYS ON MARKET", delta: "-3 days vs Sept", direction: "down_good" as const },
+            { value: "84",     label: "ACTIVE LISTINGS",    delta: "+8 vs Sept",       direction: "up_bad" as const },
+          ],
+          ctaLabel:  "Want my take on your block?",
+          agentName: "Your Agent",
+          agentPhone: "(555) 555-1212",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — the listing-presentation differentiator. ONE slide
+          of an N-slide narrated video presentation; the composer
+          chains 5-12 of these with the avatar narrating each. PIP
+          stays bottom-right on every slide so the homeowner watches
+          the agent walk them through. 1920×1080 horizontal so a
+          tablet or TV viewing experience reads correctly. The slide
+          duration is set per-slide by the composer at chain time —
+          this Composition registers at a 6s default purely so the
+          studio preview renders without zero-frame errors. */}
+      <Composition
+        id="ListingPresentationSlide"
+        component={ListingPresentationSlide as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={180}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          kind:        "image" as const,
+          slideNumber: 1,
+          totalSlides: 8,
+          title:       "Your home, the market, the strategy.",
+          body: [
+            "I've prepared a tailored walkthrough of what this market is rewarding right now and how we'd position your home.",
+            "We'll cover comparable sales, pricing strategy, our launch plan, and the buyer profile most likely to make an offer.",
+          ],
+          heroImageUrl:     null,
+          bodyContent:      null,
+          avatarVideoUrl:   null,
+          avatarStartFrame: 0,
+          avatarEndFrame:   180,
+          agentPhotoUrl:    null,
+          agentName:        "Your Agent",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            surfaceColor:  "#FFFFFF",
             brokerageName: "Your Brokerage",
             showEhoMark:   true,
           },
