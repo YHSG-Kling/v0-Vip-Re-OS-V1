@@ -1,6 +1,22 @@
 /**
  * AGENT REGISTRY
- * Defines the 4 AI agent types and their capabilities for the multi-agent coordination system.
+ * Defines the AI agent types and their capabilities for the multi-agent
+ * CONVERSATION-ROUTING plane.
+ *
+ * ── Two distinct agent planes (do not cross-wire) ───────────────────────────
+ *  1. Conversation-routing plane (THIS file): who holds a conversation turn for
+ *     a lead/contact/transaction, with handoffs between them. Persisted in
+ *     agent_coordination_log / agent_handoffs / agent_state_machine. Vocabulary
+ *     is VALID_AGENT_TYPES below.
+ *  2. Managed-agent runtime plane (lib/agents/*): the autonomous per-entity
+ *     "manager" agents (deal_coordinator, shopping_agent, listing_concierge,
+ *     sphere_of_influence, campaign_orchestrator, marketing_agent, asset_manager)
+ *     persisted in managed_agents / managed_agent_sessions. SEPARATE vocabulary.
+ *
+ * The two planes are intentionally separate and never join. The canonical
+ * conversation-routing vocabulary is unified across all three tables by
+ * migration m178 and asserted by scripts/agent-governance-simulator.ts so it
+ * cannot drift again.
  */
 
 export const AGENT_REGISTRY = {
@@ -86,4 +102,20 @@ export function getAgentDisplayName(agentType: AgentType): string {
   return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
 }
 
-export const VALID_AGENT_TYPES = ['isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'human'] as const
+/**
+ * Canonical conversation-routing agent vocabulary — the SINGLE source of truth,
+ * unified across agent_coordination_log / agent_handoffs / agent_state_machine
+ * by migration m178. Keep in lockstep with those constraints (the governance
+ * simulator asserts equality).
+ *
+ *   isa_agent      — AI inside-sales agent: follows up + qualifies leads
+ *   tc_agent       — AI transaction-coordinator assistant (aids the human TC)
+ *   coaching_agent — AI role-play / coaching
+ *   content_agent  — AI content generation
+ *   router         — the dispatcher itself
+ *   human          — a human real-estate agent (handoff target)
+ *   none           — unassigned
+ */
+export const VALID_AGENT_TYPES = [
+  'isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'router', 'human', 'none',
+] as const

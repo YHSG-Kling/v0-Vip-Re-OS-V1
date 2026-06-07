@@ -28,6 +28,7 @@
  */
 import { hasScope, authorizedActions, ALL_SCOPES } from "../lib/agentic-os/agent-scopes"
 import { normalizeManagedSessionStatus, MANAGED_SESSION_STATUSES } from "../lib/agents/session-status"
+import { VALID_AGENT_TYPES, AGENT_REGISTRY } from "../lib/intelligence/agent-registry"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -88,6 +89,26 @@ function testSessionStatusRobustness() {
   const sweep = ["running","idle","idled","terminated","completed","ended","done","error","failed","active","in_progress","", null, undefined, "WEIRD"]
   check("EVERY normalized output is a valid constraint value",
     sweep.every((s) => (MANAGED_SESSION_STATUSES as readonly string[]).includes(normalizeManagedSessionStatus(s as any))))
+}
+
+function testAgentVocabularyDrift() {
+  console.log("\n[Layer 1 · vocabulary drift guard — conversation-routing plane]")
+  // The canonical conversation-routing vocabulary, unified across
+  // agent_coordination_log / agent_handoffs / agent_state_machine by m178.
+  // If the DB constraints OR this constant drift, this guard fails.
+  const CANONICAL = ["isa_agent", "tc_agent", "coaching_agent", "content_agent", "router", "human", "none"]
+  check("VALID_AGENT_TYPES equals the canonical 7 (matches m178 constraints)",
+    VALID_AGENT_TYPES.length === CANONICAL.length && CANONICAL.every((v) => (VALID_AGENT_TYPES as readonly string[]).includes(v)))
+  // Every defined AI agent in the registry is part of the canonical vocabulary.
+  check("every AGENT_REGISTRY kind is a canonical agent type",
+    Object.keys(AGENT_REGISTRY).every((k) => (VALID_AGENT_TYPES as readonly string[]).includes(k)))
+  // The routing sentinels exist (handoff to a human RE agent / unassigned / dispatcher).
+  check("routing sentinels present (human, none, router)",
+    ["human", "none", "router"].every((s) => (VALID_AGENT_TYPES as readonly string[]).includes(s)))
+  // The two planes stay disjoint — no managed-agent runtime kind leaked in.
+  const MANAGED = ["deal_coordinator", "shopping_agent", "listing_concierge", "sphere_of_influence", "campaign_orchestrator", "marketing_agent", "asset_manager"]
+  check("no managed-agent runtime kind leaked into the routing vocabulary",
+    !MANAGED.some((m) => (VALID_AGENT_TYPES as readonly string[]).includes(m)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +191,7 @@ async function main() {
   console.log(" Agent governance simulator (multi-manager command center)")
   console.log("══════════════════════════════════════════════════")
   console.log(` Manager kinds under governance: ${AGENT_KINDS.join(", ")}`)
-  testScopeGuardrail(); testSessionStatusRobustness()
+  testScopeGuardrail(); testSessionStatusRobustness(); testAgentVocabularyDrift()
   await testLiveGovernance()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
