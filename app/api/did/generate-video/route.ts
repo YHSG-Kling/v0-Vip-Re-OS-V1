@@ -77,6 +77,12 @@ export async function POST(request: NextRequest) {
       intro_video_url,
       outro_video_url,
       b_roll_urls,
+      // Optional: request the full avatar→Remotion chain. When target_composition_id
+      // is set, the poll-did-videos cron hands the finished D-ID video off to that
+      // Remotion composition (avatar URL wired into input_props) on completion.
+      target_composition_id,
+      composition_voiceover_url,
+      composition_input_props,
     } = body
 
     if (!video_project_id || !script || !elevenlabs_voice_id) {
@@ -328,6 +334,12 @@ export async function POST(request: NextRequest) {
           talk_id: did_talk_id,
           source_type: isVideoSource ? "video" : "photo",
           used_avatar_id: resolvedAvatarId ?? null,
+          // Avatar→Remotion chain request (consumed by poll-did-videos handoff).
+          ...(target_composition_id ? {
+            target_composition_id,
+            voiceover_url: composition_voiceover_url ?? null,
+            input_props: composition_input_props ?? {},
+          } : {}),
         },
         error_message: null,
       })

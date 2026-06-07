@@ -70,14 +70,65 @@ function testBuilder() {
   check("no HOA → donut omits HOA segment", !bare.affordability.segments.some((s: any) => s.label === "HOA"))
 }
 
-function main() {
+async function testLiveEnqueue() {
+  console.log("\n[Layer 2 · live CMAReel enqueue (data → chart → render queue)]")
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      !(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)) {
+    console.log("  ⏭  Skipped — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set (pure layer ran).")
+    return
+  }
+  const { createServiceClient } = await import("../lib/supabase/service")
+  const { enqueueCmaReelRender } = await import("../lib/video/cma-reel-orchestrator")
+  const svc = createServiceClient()
+  let renderId: string | null = null
+  try {
+    const { data: brk } = await svc.from("brokerages").select("id").limit(1).single()
+    const { data: usr } = await svc.from("users").select("id").limit(1).single()
+    if (!brk || !usr) { console.log("  ⏭  Skipped — need a brokerage + user."); return }
+
+    const res = await enqueueCmaReelRender({
+      brokerageId: (brk as any).id, agentUserId: (usr as any).id,
+      subject: { address: "742 Evergreen Ter", areaName: "Brickell, FL", estimatedPrice: 675000 },
+      comparables: [
+        { address: "501 N Riverwalk", adjusted_price: 640000, days_on_market: 18 },
+        { address: "1245 Bay Rd", sale_price: 658000, days_on_market: 12 },
+      ],
+      priceHistory: [
+        { price: 645000, recorded_at: "2025-08-15" },
+        { price: 689000, recorded_at: "2025-10-15" },
+      ],
+      brand: { brokerageName: "Acme Realty", agentName: "Jane Doe" },
+    }, svc)
+    check("enqueue returns a render id", res.ok === true, res.ok ? "" : res.error)
+    if (!res.ok) throw new Error(res.error)
+    renderId = res.renderId
+
+    const { data: render } = await svc.from("remotion_composition_renders")
+      .select("composition_id, render_status, used_did_avatar, input_props").eq("id", renderId).single()
+    const props = (render as any)?.input_props ?? {}
+    check("render targets CMAReel", (render as any)?.composition_id === "CMAReel")
+    check("render is queued for the drain cron", (render as any)?.render_status === "queued")
+    check("not a DID-avatar render", (render as any)?.used_did_avatar === false)
+    check("input_props carry the comps bar (subject highlighted)", Array.isArray(props.comps) && props.comps[0]?.isSubject === true)
+    check("input_props carry the affordability donut total", typeof props.affordability?.centerValue === "string")
+    check("input_props carry the price trend", Array.isArray(props.priceTrend?.values) && props.priceTrend.values.length >= 2)
+
+    const guard = await enqueueCmaReelRender({ brokerageId: (brk as any).id, subject: { address: "x", areaName: "y", estimatedPrice: 0 }, comparables: [] }, svc)
+    check("guard: zero estimatedPrice → rejected (no spurious render)", guard.ok === false)
+  } finally {
+    if (renderId) { try { await svc.from("remotion_composition_renders").delete().eq("id", renderId) } catch { /* noop */ } }
+  }
+}
+
+async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" CMA data→chart bridge simulator")
   console.log("══════════════════════════════════════════════════")
   testPayment(); testBuilder()
+  await testLiveEnqueue()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ CMA data bridge verified (real comps → valid CMAReel inputProps)")
+  console.log(" ✅ CMA data bridge verified (real comps → CMAReel inputProps → queued render)")
 }
-main()
+main().catch((e) => { console.error(e); process.exit(1) })
