@@ -126,14 +126,17 @@ async function runHandler(
         return { status: "succeeded", result: { kind: "video", asset_id: assetId, queued_for: "remotion_pending" } }
       }
       if (kind === "image" || kind === "composition") {
-        // marketing_assets generic regenerate flag
+        // m174 — queue the image for regeneration. The marketing-image-regen
+        // cron drains regen_status='requested' and re-runs generateImage from
+        // metadata.original_prompt. (Pre-m174 this wrote a non-existent
+        // `status` column and silently errored — a dead flag.)
         const { error, count } = await svc.from("marketing_assets")
-          .update({ status: "pending_regenerate" } as Record<string, unknown>, { count: "exact" })
+          .update({ regen_status: "requested" } as Record<string, unknown>, { count: "exact" })
           .eq("id", assetId)
           .eq("brokerage_id", brokerageId)
         if (error) return { status: "failed", result: { error: error.message } }
         if ((count ?? 0) === 0) return { status: "skipped", result: { reason: "marketing asset not found or tenant mismatch" } }
-        return { status: "succeeded", result: { kind, asset_id: assetId, queued_for: "pending_regenerate" } }
+        return { status: "succeeded", result: { kind, asset_id: assetId, queued_for: "image_regen" } }
       }
       return { status: "failed", result: { error: `unknown kind: ${kind}` } }
     }

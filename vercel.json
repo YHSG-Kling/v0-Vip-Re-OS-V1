@@ -338,6 +338,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/marketing-image-regen",
+      "schedule": "*/10 * * * *"
+    },
+    {
       "path": "/api/cron/podcast-weekly-auto",
       "schedule": "0 10 * * 3"
     },

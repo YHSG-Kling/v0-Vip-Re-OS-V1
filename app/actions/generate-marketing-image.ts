@@ -26,6 +26,30 @@ import {
   type ImageStyle,
 } from "@/lib/ai/image-generation"
 
+/**
+ * Map an image purpose to a VALID marketing_assets.asset_type. The table's
+ * CHECK constraint allows video/snippet/script/graphic/template/social_post/
+ * newsletter/blog/podcast/mailer/ad_creative/qr — NOT "ai_image". Writing
+ * "ai_image" (the pre-fix value) violated the constraint, so the library
+ * insert threw and AI images never persisted (the agentic-overseen library
+ * had zero AI images). The "this is an AI image" identity is preserved via
+ * source_table='ai_image_generation' + metadata.asset_kind.
+ */
+function purposeToAssetType(purpose: ImagePurpose): string {
+  switch (purpose) {
+    case "social_post":     return "social_post"
+    case "ad_creative":     return "ad_creative"
+    case "blog_hero":       return "blog"
+    case "newsletter_hero": return "newsletter"
+    case "postcard":        return "mailer"
+    case "podcast_cover":   return "podcast"
+    case "listing_visual":
+    case "event_banner":
+    case "generic":
+    default:                return "graphic"
+  }
+}
+
 export interface GenerateMarketingImageInput {
   prompt: string
   purpose: ImagePurpose
@@ -214,15 +238,16 @@ export async function generateMarketingImage(
       created_by: ctx.userId ?? null,
       visibility_scope: "agent",
       campaign_id: input.campaignId ?? null,
-      asset_type: "ai_image",
+      asset_type: purposeToAssetType(input.purpose),
       asset_name: assetName,
       source_table: "ai_image_generation",
       asset_url: genResult.imageUrl,
       thumbnail_url: genResult.thumbnailUrl ?? genResult.imageUrl,
       preview_text: genResult.revisedPrompt?.slice(0, 280) ?? input.prompt.slice(0, 280),
       tags: input.tags ?? [input.purpose],
-      approval_status: "draft",
+      approval_status: "pending",
       metadata: {
+        asset_kind: "ai_image",
         purpose: input.purpose,
         original_prompt: input.prompt,
         revised_prompt: genResult.revisedPrompt,

@@ -64,3 +64,22 @@ export async function publishVideoLanding(args: {
 
   return { ok: true, slug }
 }
+
+/** Unpublish — hide the public page. Keeps public_slug so a later
+ *  re-publish reuses the same URL (link stability). The /v page query
+ *  filters on is_published, so the page 404s while hidden. */
+export async function unpublishVideoLanding(args: {
+  renderId:    string
+  brokerageId: string
+}): Promise<PublishResult> {
+  const svc = createServiceClient()
+  const { data, error } = await svc.from("remotion_composition_renders")
+    .update({ is_published: false })
+    .eq("id", args.renderId)
+    .eq("brokerage_id", args.brokerageId)
+    .select("public_slug")
+    .maybeSingle()
+  if (error) return { ok: false, reason: error.message }
+  if (!data) return { ok: false, reason: "render not found or tenant mismatch" }
+  return { ok: true, slug: (data as { public_slug: string | null }).public_slug ?? undefined }
+}
