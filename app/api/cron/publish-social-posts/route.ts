@@ -162,6 +162,59 @@ export async function GET(request: Request) {
           }
         }
 
+        // platform='all' → fan out to EVERY active connected account for the
+        // brokerage (the "post to every platform" selection). One source row,
+        // N platform publishes, per-platform logging. Content is already
+        // compliance-checked above.
+        if (post.platform === "all") {
+          const { data: accounts } = await supabase
+            .from("social_media_accounts")
+            .select("platform, access_token, account_id")
+            .eq("brokerage_id", post.brokerage_id)
+            .eq("is_active", true)
+          const targets = (accounts ?? []) as Array<{ platform: string; access_token: string; account_id: string }>
+          if (targets.length === 0) {
+            await supabase.from("social_posts").update({
+              status: "failed", error_message: "platform=all but no connected social accounts", updated_at: new Date().toISOString(),
+            }).eq("id", post.id)
+            results.push({ postId: post.id, status: "failed", platform: "all", error: "no connected accounts" })
+            continue
+          }
+          const fanDisclosures = await assembleSocialDisclosures(supabase, { brokerageId: post.brokerage_id, userId: post.user_id })
+          const fanContent = appendDisclosures(post.content, fanDisclosures)
+          let anyOk = false
+          for (const acct of targets) {
+            try {
+              const pr = await publishToSocialPlatform(acct.platform, {
+                content: fanContent, mediaUrls: post.media_urls || [],
+                accessToken: acct.access_token, accountId: acct.account_id, hashtags: post.hashtags || [],
+              })
+              await supabase.from("social_publish_log").insert({
+                social_post_id: post.id, brokerage_id: post.brokerage_id, platform: acct.platform,
+                publish_status: pr.success ? "published" : "failed",
+                external_post_id: pr.success ? (pr.externalPostId ?? null) : null,
+                error_message: pr.success ? null : (pr.error ?? "publish failed"),
+                published_at: pr.success ? new Date().toISOString() : null,
+                created_at: new Date().toISOString(),
+              })
+              if (pr.success) anyOk = true
+            } catch (fanErr) {
+              await supabase.from("social_publish_log").insert({
+                social_post_id: post.id, brokerage_id: post.brokerage_id, platform: acct.platform,
+                publish_status: "failed", error_message: (fanErr as Error).message, created_at: new Date().toISOString(),
+              })
+            }
+          }
+          await supabase.from("social_posts").update({
+            status: anyOk ? "published" : "failed",
+            published_at: anyOk ? new Date().toISOString() : null,
+            error_message: anyOk ? null : "platform=all fan-out failed on every connected platform",
+            updated_at: new Date().toISOString(),
+          }).eq("id", post.id)
+          results.push({ postId: post.id, status: anyOk ? "published" : "failed", platform: "all" })
+          continue
+        }
+
         // Step 3: SELECT social_media_accounts WHERE id = post.social_account_id
         const { data: account, error: accountError } = await supabase
           .from("social_media_accounts")

@@ -343,7 +343,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
         start_date: startDate || null,
         end_date: endDate || null,
         targeting_config: targetingConfig as any,
-        visibility_scope: "private",
+        visibility_scope: "agent",
       })
       .select("id, campaign_name, platform, status, created_at")
       .maybeSingle()
