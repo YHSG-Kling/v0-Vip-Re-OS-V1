@@ -448,7 +448,7 @@ async function fanOutToChannel(
           brokerage_id: mod.brokerage_id,
           user_id:      mod.authored_by ?? authorUserId,
           platform:     "facebook",       // platform-agnostic draft; broker picks before approving
-          post_type:    "education",
+          post_type:    "custom",
           content:      truncateForSocial(mod.summary ?? mod.title),
           status:       "draft",
           ai_generated: false,

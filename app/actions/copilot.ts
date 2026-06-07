@@ -677,7 +677,7 @@ async function postVideoContent(videoId: string, platforms: string[]) {
       agent_id: video.agent_id,
       video_id: videoId,
       platform,
-      post_type: "video",
+      post_type: "custom",
       content: video.title,
       media_urls: [video.video_url],
       thumbnail_url: video.thumbnail_url,
