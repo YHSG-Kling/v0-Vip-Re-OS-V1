@@ -3,11 +3,12 @@ import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
 import {
   LayoutGrid, Brain, Users, FileText, BookOpen, CheckSquare, DollarSign,
-  BarChart3, Shield, Workflow, CreditCard, Activity, HeartPulse, Eye, Sparkles, AlertTriangle, Settings
+  BarChart3, Shield, Workflow, CreditCard, Activity, HeartPulse, Eye, Sparkles, AlertTriangle, Settings, Bot
 } from 'lucide-react'
 
 const ADMIN_FULL_NAV = [
   { label: 'AI Briefing', href: '/dashboard/briefing', icon: Sparkles },
+  { label: 'Command Center', href: '/dashboard/admin/command-center', icon: Bot },
   { label: 'Admin Dashboard', href: '/dashboard/admin', icon: LayoutGrid },
   { label: 'Lead Intelligence', href: '/leads', icon: Brain },
   { label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: Users },

@@ -1,0 +1,126 @@
+/**
+ * lib/kernel/command-center.ts
+ *
+ * Kernel load command for the Agent Command Center — the single operator
+ * surface over the multi-manager runtime. Returns, as one normalized contract:
+ *   1. Live managed-agent sessions (which manager is running on which entity,
+ *      status, last event) — the "what are my agents doing right now" view.
+ *   2. The agent-action APPROVAL QUEUE — proposed marketing_agent_actions +
+ *      asset_manager_actions awaiting a human approver (the governance gate:
+ *      proposed → approved/executing requires approved_by).
+ *   3. Summary counts for the header.
+ *
+ * Service-role read (admin surface, gated at the page). NOT server-only by
+ * convention so the simulator can drive it end-to-end against real rows; never
+ * import from a client component. Zero mock data.
+ */
+import { createServiceClient } from "@/lib/supabase/service"
+
+export type ManagerSessionStatus = "running" | "idle" | "terminated" | "error"
+
+export interface CommandCenterSession {
+  id:          string
+  agentKind:   string | null
+  entityType:  string
+  entityId:    string
+  status:      string
+  createdAt:   string
+  lastEventAt: string | null
+  endedAt:     string | null
+}
+
+export interface CommandCenterAction {
+  id:         string
+  queue:      "marketing" | "asset"
+  brokerageId: string
+  actionType: string
+  rationale:  string | null
+  actionInput: Record<string, unknown>
+  status:     string
+  proposedAt: string | null
+}
+
+export interface CommandCenterData {
+  sessions:        CommandCenterSession[]
+  pendingActions:  CommandCenterAction[]
+  summary: {
+    activeSessions:   number
+    idleSessions:     number
+    erroredSessions:  number
+    pendingApprovals: number
+  }
+}
+
+export interface CommandCenterParams {
+  /** Scope to one brokerage; omit (superadmin) for platform-wide. */
+  brokerageId?: string
+  limit?:       number
+}
+
+export async function loadCommandCenter(params: CommandCenterParams = {}): Promise<CommandCenterData> {
+  const supabase = createServiceClient()
+  const limit = params.limit ?? 50
+
+  const sessionsQuery = supabase
+    .from("managed_agent_sessions")
+    .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
+    .order("created_at", { ascending: false })
+    .limit(limit)
+  if (params.brokerageId) sessionsQuery.eq("brokerage_id", params.brokerageId)
+
+  const marketingQuery = supabase
+    .from("marketing_agent_actions")
+    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at")
+    .eq("status", "proposed")
+    .order("proposed_at", { ascending: true })
+    .limit(limit)
+  if (params.brokerageId) marketingQuery.eq("brokerage_id", params.brokerageId)
+
+  const assetQuery = supabase
+    .from("asset_manager_actions")
+    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at")
+    .eq("status", "proposed")
+    .order("proposed_at", { ascending: true })
+    .limit(limit)
+  if (params.brokerageId) assetQuery.eq("brokerage_id", params.brokerageId)
+
+  const [sessionsRes, marketingRes, assetRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery])
+
+  const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
+    id:          s.id,
+    agentKind:   s.managed_agents?.agent_kind ?? null,
+    entityType:  s.entity_type,
+    entityId:    s.entity_id,
+    status:      s.status,
+    createdAt:   s.created_at,
+    lastEventAt: s.last_event_at ?? null,
+    endedAt:     s.ended_at ?? null,
+  }))
+
+  const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => ({
+    id:          a.id,
+    queue,
+    brokerageId: a.brokerage_id,
+    actionType:  a.action_type,
+    rationale:   a.rationale ?? null,
+    actionInput: (a.action_input ?? {}) as Record<string, unknown>,
+    status:      a.status,
+    proposedAt:  a.proposed_at ?? null,
+  })
+
+  const pendingActions: CommandCenterAction[] = [
+    ...(marketingRes.data ?? []).map(mapAction("marketing")),
+    ...(assetRes.data ?? []).map(mapAction("asset")),
+  ].sort((a, b) => (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
+
+  return {
+    sessions,
+    pendingActions,
+    summary: {
+      activeSessions:   sessions.filter((s) => s.status === "running").length,
+      idleSessions:     sessions.filter((s) => s.status === "idle").length,
+      erroredSessions:  sessions.filter((s) => s.status === "error").length,
+      pendingApprovals: pendingActions.length,
+    },
+  }
+}
