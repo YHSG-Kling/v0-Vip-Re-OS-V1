@@ -319,6 +319,20 @@ export async function GET(request: NextRequest) {
             })
             .eq("id", video.id)
 
+          // ─── Avatar → Remotion handoff ──────────────────────────────────
+          // If this D-ID video was requested as the avatar track for a Remotion
+          // composition (provider_metadata.target_composition_id), enqueue that
+          // composition render now with the avatar URL wired into input_props.
+          // Closes the D-ID → Remotion link; the composition-render-queue cron
+          // renders it. Best-effort — a handoff failure must not fail polling.
+          try {
+            const { enqueueAvatarCompositionForProject } = await import("@/lib/video/avatar-render-orchestrator")
+            const handoff = await enqueueAvatarCompositionForProject(video.id, supabase)
+            if (handoff.ok) console.log(`[poll-did-videos] avatar→remotion render queued: ${handoff.renderId}`)
+          } catch (e) {
+            console.error("[poll-did-videos] avatar→remotion handoff failed:", (e as Error).message)
+          }
+
           await supabase
             .from("video_render_log")
             .update({ render_duration_seconds: duration ?? null })

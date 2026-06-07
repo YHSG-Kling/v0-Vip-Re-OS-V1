@@ -20,6 +20,7 @@
     "test:agent-governance": "tsx scripts/agent-governance-simulator.ts",
     "test:spend-governance": "tsx scripts/spend-governance-simulator.ts",
     "test:command-center": "tsx scripts/command-center-simulator.ts",
+    "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
