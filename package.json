@@ -22,6 +22,7 @@
     "test:command-center": "tsx scripts/command-center-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",
     "test:cma-data": "tsx scripts/cma-data-simulator.ts",
+    "test:cma-compliance": "tsx scripts/cma-compliance-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

@@ -35,6 +35,7 @@ function testPayment() {
 function testBuilder() {
   console.log("\n[buildCmaReelInputProps]")
   const props: any = buildCmaReelInputProps({
+    audience: "agent",
     subject: { address: "742 Evergreen Ter, Miami, FL", areaName: "Brickell, FL", estimatedPrice: 675000 },
     comparables: [
       { address: "501 N Riverwalk, Miami, FL", adjusted_price: 640000, sale_price: 635000, days_on_market: 18 },
@@ -65,7 +66,7 @@ function testBuilder() {
   check("brand carried through", props.brand.brokerageName === "Acme Realty" && props.brand.showEhoMark === true)
 
   // Degenerate: no history + no comps → priceTrend falls back to comps (subject only).
-  const bare: any = buildCmaReelInputProps({ subject: { address: "1 A St", areaName: "X", estimatedPrice: 400000 }, comparables: [] })
+  const bare: any = buildCmaReelInputProps({ audience: "agent", subject: { address: "1 A St", areaName: "X", estimatedPrice: 400000 }, comparables: [] })
   check("no comps/history → still valid props (subject-only trend)", bare.comps.length === 1 && bare.priceTrend.values.length >= 1)
   check("no HOA → donut omits HOA segment", !bare.affordability.segments.some((s: any) => s.label === "HOA"))
 }
@@ -109,7 +110,8 @@ async function testLiveEnqueue() {
     check("render targets CMAReel", (render as any)?.composition_id === "CMAReel")
     check("render is queued for the drain cron", (render as any)?.render_status === "queued")
     check("not a DID-avatar render", (render as any)?.used_did_avatar === false)
-    check("input_props carry the comps bar (subject highlighted)", Array.isArray(props.comps) && props.comps[0]?.isSubject === true)
+    check("input_props carry market comps WITHOUT the subject value (seller-safe default)", Array.isArray(props.comps) && props.comps.every((c: any) => c.isSubject !== true))
+    check("enqueued reel flags priceWithheld (compliance default)", props.priceWithheld === true)
     check("input_props carry the affordability donut total", typeof props.affordability?.centerValue === "string")
     check("input_props carry the price trend", Array.isArray(props.priceTrend?.values) && props.priceTrend.values.length >= 2)
 

@@ -66,9 +66,21 @@ export interface BuildCmaReelInput {
   brand?:        CmaBrand
   affordability?: AffordabilityAssumptions
   maxComps?:     number
+  /**
+   * Who the reel is for. 'customer' (default) is the SELLER-SAFE view: the
+   * subject's valuation is NEVER shown (business rule — a suggested list price
+   * is withheld until the appointment), and affordability is computed from the
+   * MARKET MEDIAN, not the subject's estimate. 'agent' is the internal prep view
+   * that includes the subject valuation.
+   */
+  audience?:     "agent" | "customer"
+  /** Market median sale price (public market data) — used for customer-facing
+   *  affordability so the subject's value is never revealed. */
+  marketMedianPrice?: number
 }
 
 export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string, unknown> {
+  const audience = input.audience ?? "customer"
   const maxComps = input.maxComps ?? 4
   const brand = {
     primaryColor:  input.brand?.primaryColor  ?? "#0F172A",
@@ -81,14 +93,16 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
   const compPrice = (c: CmaComp): number =>
     Number(c.adjusted_price ?? c.sale_price ?? c.list_price ?? 0)
 
-  // Comps bar — subject first (highlighted), then comparables with a usable price.
+  // Comps bar — comparables that have a usable price. The SUBJECT's value bar is
+  // included ONLY for the agent view; customer-facing reels show market context
+  // (what other homes sold for), never a valuation of the seller's own home.
   const usableComps = input.comparables.filter((c) => compPrice(c) > 0).slice(0, maxComps)
-  const comps = [
-    { label: "Subject", value: Math.max(0, Math.round(input.subject.estimatedPrice)), isSubject: true },
-    ...usableComps.map((c) => ({ label: shortAddress(c.address), value: Math.round(compPrice(c)), isSubject: false })),
-  ]
+  const compBars = usableComps.map((c) => ({ label: shortAddress(c.address), value: Math.round(compPrice(c)), isSubject: false }))
+  const comps = audience === "agent"
+    ? [{ label: "Subject", value: Math.max(0, Math.round(input.subject.estimatedPrice)), isSubject: true }, ...compBars]
+    : compBars
 
-  // Price trend — chronological price history (fallback: derive from comps mean).
+  // Price trend — market price history (public). Falls back to comps for shape.
   const trend = (input.priceHistory ?? [])
     .filter((p) => Number(p.price) > 0 && p.recorded_at)
     .sort((x, y) => x.recorded_at.localeCompare(y.recorded_at))
@@ -104,8 +118,16 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
     labels: domComps.map((c) => shortAddress(c.address)),
   }
 
-  // Affordability donut — monthly payment split for the subject's estimate.
-  const pay = monthlyPaymentBreakdown(input.subject.estimatedPrice, input.affordability)
+  // Affordability donut — for the AGENT view, the subject's estimate; for the
+  // CUSTOMER view, the MARKET MEDIAN (never the subject's valuation), so the
+  // donut shows a typical payment for the area without revealing a price.
+  const marketBase = input.marketMedianPrice
+    ?? (trend.length ? trend[trend.length - 1].price : 0)
+    ?? 0
+  const affordabilityBase = audience === "agent"
+    ? input.subject.estimatedPrice
+    : (marketBase > 0 ? marketBase : meanOf(compBars.map((c) => c.value)))
+  const pay = monthlyPaymentBreakdown(affordabilityBase, input.affordability)
   const affordability = {
     segments: [
       { label: "P&I",       value: pay.pi,        color: brand.accentColor },
@@ -119,17 +141,25 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
   return {
     subjectAddress: input.subject.address,
     areaName:       input.subject.areaName,
+    audience,
+    priceWithheld:  audience === "customer",
     priceTrend,
     comps,
     daysOnMarket,
     affordability,
-    ctaLabel:       "Want this analysis for your home?",
+    ctaLabel:       audience === "customer"
+      ? "Your home's value — revealed at our meeting."
+      : "Want this analysis for your home?",
     brand,
   }
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function clamp01(v: number): number { return Math.min(1, Math.max(0, v)) }
+function meanOf(values: number[]): number {
+  const nums = values.filter((v) => Number.isFinite(v) && v > 0)
+  return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : 0
+}
 function shortAddress(addr: string): string {
   const first = (addr ?? "").split(",")[0].trim()
   return first.length > 22 ? first.slice(0, 21) + "…" : first || "—"
