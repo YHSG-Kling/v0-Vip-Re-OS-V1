@@ -26,6 +26,8 @@ import {
   shouldApplyBookends,
   buildRenderIntent,
   resolveInputProps,
+  needsThumbnailPass,
+  resolveThumbnailProps,
   type QueuedRenderRow,
 } from "../lib/remotion/render-decision"
 import type { RemotionCompositionRow } from "../lib/remotion/registry"
@@ -175,6 +177,29 @@ function testProps() {
   check("populated props pass through", !!r && r.address === "123 Main" && r.price === "$625,000")
 }
 
+// ── 6. Companion thumbnail pass (share/OG/AI-search discoverability) ─────────
+function testThumbnailPass() {
+  console.log("\n[Companion thumbnail — moving with declared thumb only]")
+  check("moving + thumbnail_composition_id → thumbnail pass ON",
+    needsThumbnailPass(row({ duration_frames: 360, thumbnail_composition_id: "VideoCoverThumb" })))
+  check("moving + no thumbnail declared → pass OFF",
+    !needsThumbnailPass(row({ duration_frames: 360, thumbnail_composition_id: null })))
+  // A still IS the image — never gets a separate thumbnail render even if a
+  // thumbnail_composition_id is (incorrectly) declared on it.
+  check("still → thumbnail pass FORCED OFF",
+    !needsThumbnailPass(row({ duration_frames: 1, thumbnail_composition_id: "VideoCoverThumb" })))
+
+  // Thumbnail props travel under input_props.thumbnail_props; video props
+  // are NOT reused (cover card has its own shape).
+  check("thumbnail_props present → resolved", (() => {
+    const r = resolveThumbnailProps({ address: "123 Main", thumbnail_props: { title: "Just Listed", kind: "listing" } })
+    return !!r && r.title === "Just Listed" && r.kind === "listing"
+  })())
+  check("no thumbnail_props → undefined (use thumb defaults)", resolveThumbnailProps({ address: "123 Main" }) === undefined)
+  check("empty thumbnail_props → undefined", resolveThumbnailProps({ thumbnail_props: {} }) === undefined)
+  check("null input_props → undefined", resolveThumbnailProps(null) === undefined)
+}
+
 function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Composition-render dispatch simulator (m172)")
@@ -184,6 +209,7 @@ function main() {
   testBookends()
   testIntent()
   testProps()
+  testThumbnailPass()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

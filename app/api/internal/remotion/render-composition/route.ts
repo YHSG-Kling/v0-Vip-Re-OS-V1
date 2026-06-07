@@ -42,6 +42,8 @@ import {
   isStillComposition,
   buildRenderIntent,
   resolveInputProps,
+  needsThumbnailPass,
+  resolveThumbnailProps,
   type QueuedRenderRow,
 } from "@/lib/remotion/render-decision"
 import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
@@ -101,33 +103,17 @@ export async function POST(req: NextRequest) {
     }
     const callerTier = await resolveBrokerageTier(svc, row.brokerage_id)
 
-    // 3. Bundle + select with the caller's props (or registry defaults).
+    // 3. Bundle once (module-cached) + resolve Chromium.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
     const bundleLocation = await getBundle(entryPoint)
     const inputProps = resolveInputProps(row.input_props)
-    const selected = await selectComposition({
-      serveUrl: bundleLocation,
-      id:       row.composition_id,
-      inputProps: inputProps ?? {},
-    })
-
     const executablePath = await resolveChromium()
     const isStill = isStillComposition(composition.duration_frames)
 
     if (isStill) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
       //     have no audio to mix or bookends to concat).
-      const outPath = path.join(tmpdir(), `composition-${row.id}.png`)
-      await renderStill({
-        composition: selected,
-        serveUrl:    bundleLocation,
-        output:      outPath,
-        inputProps:  inputProps ?? {},
-        chromiumOptions: { headless: true, gl: "swangle" },
-        ...(executablePath ? { browserExecutable: executablePath } : {}),
-      })
-      const bytes = await fs.readFile(outPath)
-      await fs.unlink(outPath).catch(() => {})
+      const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
       const uploaded = await put(
         `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.png`,
         bytes,
@@ -142,6 +128,11 @@ export async function POST(req: NextRequest) {
 
     // 4b. MOVING — renderMedia → MP4 buffer → coordinator finalize
     //     (bookends + music + audit + blob upload).
+    const selected = await selectComposition({
+      serveUrl: bundleLocation,
+      id:       row.composition_id,
+      inputProps: inputProps ?? {},
+    })
     const outPath = path.join(tmpdir(), `composition-${row.id}.mp4`)
     await renderMedia({
       composition: selected,
@@ -162,8 +153,37 @@ export async function POST(req: NextRequest) {
       // finalize already marked the row failed.
       return NextResponse.json({ ok: false, render_id: row.id, error: result.error }, { status: 500 })
     }
+
+    // 4c. Companion thumbnail — every moving composition declares a
+    //     thumbnail_composition_id (VideoCoverThumb / NewsletterDigestThumb)
+    //     so the video is share-card + og:image + AI-search discoverable
+    //     (ChatGPT browse / Perplexity / Google AI Overviews read the card
+    //     since they don't index video). Best-effort: the video already
+    //     succeeded, so a thumbnail failure must NOT fail the render.
+    let thumbnailUrl: string | null = null
+    if (needsThumbnailPass(composition)) {
+      try {
+        const thumbProps = resolveThumbnailProps(row.input_props)
+        const thumbBytes = await renderStillToBuffer(
+          bundleLocation, composition.thumbnail_composition_id!, thumbProps, executablePath, `${row.id}-thumb`,
+        )
+        const up = await put(
+          `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`,
+          thumbBytes,
+          { access: "public", contentType: "image/png" },
+        )
+        thumbnailUrl = up.url
+        await svc.from("remotion_composition_renders")
+          .update({ thumbnail_url: thumbnailUrl })
+          .eq("id", row.id)
+      } catch (e) {
+        console.warn("[render-composition] thumbnail pass failed; video kept:", (e as Error).message)
+      }
+    }
+
     return NextResponse.json({
       ok: true, render_id: row.id, kind: "video", output_url: result.outputUrl,
+      thumbnail_url: thumbnailUrl,
       used_intro_asset_id: result.introAssetId,
       used_outro_asset_id: result.outroAssetId,
       used_music_asset_id: result.musicAssetId,
@@ -179,6 +199,35 @@ export async function POST(req: NextRequest) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/** Select a still composition by id + render it to a PNG Buffer. Shared by
+ *  the still branch (the composition itself) and the moving branch's
+ *  companion-thumbnail pass (the registry thumbnail_composition_id). */
+async function renderStillToBuffer(
+  bundleLocation: string,
+  compositionId:  string,
+  props:          Record<string, unknown> | undefined,
+  executablePath: string | undefined,
+  tag:            string,
+): Promise<Buffer> {
+  const selected = await selectComposition({
+    serveUrl: bundleLocation,
+    id:       compositionId,
+    inputProps: props ?? {},
+  })
+  const outPath = path.join(tmpdir(), `composition-${tag}.png`)
+  await renderStill({
+    composition: selected,
+    serveUrl:    bundleLocation,
+    output:      outPath,
+    inputProps:  props ?? {},
+    chromiumOptions: { headless: true, gl: "swangle" },
+    ...(executablePath ? { browserExecutable: executablePath } : {}),
+  })
+  const bytes = await fs.readFile(outPath)
+  await fs.unlink(outPath).catch(() => {})
+  return bytes
+}
 
 async function resolveBrokerageTier(
   svc: ReturnType<typeof createServiceClient>,

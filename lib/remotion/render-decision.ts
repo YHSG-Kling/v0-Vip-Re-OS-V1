@@ -88,3 +88,26 @@ export function resolveInputProps(
   if (!inputProps || Object.keys(inputProps).length === 0) return undefined
   return inputProps
 }
+
+/** A moving render gets a companion share/OG/AI-search thumbnail when the
+ *  registry declares one (thumbnail_composition_id, e.g. VideoCoverThumb).
+ *  Stills ARE the image — they never get a separate thumbnail pass. */
+export function needsThumbnailPass(composition: RemotionCompositionRow): boolean {
+  if (isStillComposition(composition.duration_frames)) return false
+  return !!composition.thumbnail_composition_id
+}
+
+/** Thumbnail props are carried under input_props.thumbnail_props so a
+ *  caller (W40 ad creator, Asset Manager) can brand the card; absent →
+ *  undefined → the thumbnail composition's registry defaultProps. The
+ *  video's own props are NOT reused — the cover card has a different
+ *  shape (kind / title / subtitle / eyebrow / seoHint). */
+export function resolveThumbnailProps(
+  inputProps: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | undefined {
+  const tp = inputProps?.thumbnail_props
+  if (tp && typeof tp === "object" && Object.keys(tp as object).length > 0) {
+    return tp as Record<string, unknown>
+  }
+  return undefined
+}
