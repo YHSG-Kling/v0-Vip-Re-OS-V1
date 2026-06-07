@@ -17,6 +17,7 @@
     "test:geo": "tsx scripts/geo-landing-simulator.ts",
     "test:charts": "tsx scripts/chart-geometry-simulator.ts",
     "test:lead-pipeline": "tsx scripts/lead-pipeline-simulator.ts",
+    "test:agent-governance": "tsx scripts/agent-governance-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

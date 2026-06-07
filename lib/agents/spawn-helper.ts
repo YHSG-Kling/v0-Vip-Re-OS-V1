@@ -28,6 +28,12 @@ export type AgentKind =
   | "asset_manager"
 export type EntityType = "transaction" | "contact" | "listing" | "brokerage"
 
+// Boundary normalization for the Anthropic session status lives in a pure
+// (non-server-only) module so it stays unit-testable; re-exported here for
+// existing importers.
+export { normalizeManagedSessionStatus, type ManagedSessionStatus } from "./session-status"
+import { normalizeManagedSessionStatus } from "./session-status"
+
 const KIND_LABEL: Record<AgentKind, string> = {
   deal_coordinator:      "Deal Coordinator",
   shopping_agent:        "Buyer Concierge",
@@ -199,7 +205,7 @@ export async function spawnManagedAgentSession(
     anthropic_session_id: session.session.id,
     entity_type:          input.entityType,
     entity_id:            input.entityId,
-    status:               session.session.status ?? "running",
+    status:               normalizeManagedSessionStatus(session.session.status),
   })
   if (insErr) {
     // 23505 = unique_violation — race lost cleanly.
