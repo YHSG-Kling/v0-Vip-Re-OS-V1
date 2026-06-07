@@ -81,7 +81,7 @@ export async function getPlatformVendorSpendOverview(): Promise<
   const svc = createServiceClient()
   const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
   const [{ data: usage }, { data: brokerages }] = await Promise.all([
-    svc.from("vendor_usage_tracking").select("brokerage_id, estimated_cost").gte("created_at", startOfMonth),
+    svc.from("vendor_usage_tracking").select("brokerage_id, total_cost").gte("created_at", startOfMonth),
     svc.from("brokerages").select("id, name, plan_tier"),
   ])
   return { ok: true, rows: aggregateBrokerageSpend(usage ?? [], brokerages ?? []) }

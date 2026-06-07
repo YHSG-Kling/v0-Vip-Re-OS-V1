@@ -46,7 +46,7 @@ export async function checkVendorBudget(params: {
 
   const { data: rows, error } = await supabase
     .from("vendor_usage_tracking")
-    .select("estimated_cost")
+    .select("total_cost")
     .eq("brokerage_id", params.brokerageId)
     .gte("created_at", startOfMonthIso())
 
@@ -55,7 +55,7 @@ export async function checkVendorBudget(params: {
     return { allowed: true, spent: 0, budget, percent: 0, softWarning: false, planTier }
   }
 
-  const spent = (rows ?? []).reduce((s, r: any) => s + (Number(r.estimated_cost) || 0), 0)
+  const spent = (rows ?? []).reduce((s, r: any) => s + (Number(r.total_cost) || 0), 0)
   return { ...evaluateVendorBudget(spent, budget, params.addCost ?? 0), planTier }
 }
 
@@ -89,12 +89,12 @@ export async function getVendorSpendBreakdown(brokerageId: string): Promise<Arra
     const supabase = createServiceClient()
     const { data } = await supabase
       .from("vendor_usage_tracking")
-      .select("vendor_name, estimated_cost")
+      .select("vendor_name, total_cost")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startOfMonthIso())
     const byVendor = new Map<string, number>()
     for (const r of (data ?? []) as any[]) {
-      byVendor.set(r.vendor_name, (byVendor.get(r.vendor_name) ?? 0) + (Number(r.estimated_cost) || 0))
+      byVendor.set(r.vendor_name, (byVendor.get(r.vendor_name) ?? 0) + (Number(r.total_cost) || 0))
     }
     return [...byVendor.entries()]
       .map(([vendor, spent]) => ({ vendor, spent: Math.round(spent * 100) / 100 }))

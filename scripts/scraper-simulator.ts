@@ -561,10 +561,10 @@ async function testVendorGateway() {
   // ── Support-console overview aggregation (multi-tier: solo / team / brokerage) ──
   const overview = aggregateBrokerageSpend(
     [
-      { brokerage_id: "solo1", estimated_cost: 48 },   // near solo $50 ceiling
-      { brokerage_id: "solo1", estimated_cost: 3 },     // → 51 over → paused
-      { brokerage_id: "team1", estimated_cost: 170 },   // 85% of team $200 → approaching
-      { brokerage_id: "brok1", estimated_cost: 100 },   // well under brokerage $750 → ok
+      { brokerage_id: "solo1", total_cost: 48 },   // near solo $50 ceiling
+      { brokerage_id: "solo1", total_cost: 3 },     // → 51 over → paused
+      { brokerage_id: "team1", total_cost: 170 },   // 85% of team $200 → approaching
+      { brokerage_id: "brok1", total_cost: 100 },   // well under brokerage $750 → ok
     ],
     [
       { id: "solo1", name: "Solo Co", plan_tier: "solo_agent" },

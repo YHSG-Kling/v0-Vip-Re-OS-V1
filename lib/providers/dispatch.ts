@@ -601,6 +601,24 @@ export async function dispatchDirectMail(
   // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
   const COST: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
 
+  // Budget gate — Lob is the priciest platform-paid vendor. Apply the SAME
+  // month-to-date vendor-spend ceiling that already protects D-ID / ElevenLabs /
+  // Vapi BEFORE incurring spend, so a runaway agent or bulk mail send can't blow
+  // past the brokerage's plan-tier budget on the most expensive channel. addCost
+  // matches the figure metered into vendor_usage_tracking below. Fail-open: a
+  // budget read error returns allowed:true and never blocks a real send.
+  if (params.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const budget = await checkVendorBudget({ brokerageId: params.brokerageId, addCost: COST[pieceType] })
+    if (!budget.allowed) {
+      return {
+        success: false,
+        providerKey,
+        error: `Vendor budget paused: month-to-date platform-vendor spend ($${budget.spent}) would exceed the $${budget.budget} monthly ceiling — direct-mail send skipped`,
+      }
+    }
+  }
+
   let data: { id?: string }
   try {
     if (pieceType === "postcard") {

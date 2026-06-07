@@ -62,13 +62,13 @@ export interface BrokerageSpendRow {
  * Sorted by percent-of-budget descending (closest-to-limit first).
  */
 export function aggregateBrokerageSpend(
-  usageRows: Array<{ brokerage_id: string | null; estimated_cost: number | string | null }>,
+  usageRows: Array<{ brokerage_id: string | null; total_cost: number | string | null }>,
   brokerages: Array<{ id: string; name: string | null; plan_tier: string | null }>,
 ): BrokerageSpendRow[] {
   const spentByBrokerage = new Map<string, number>()
   for (const r of usageRows) {
     if (!r.brokerage_id) continue
-    spentByBrokerage.set(r.brokerage_id, (spentByBrokerage.get(r.brokerage_id) ?? 0) + (Number(r.estimated_cost) || 0))
+    spentByBrokerage.set(r.brokerage_id, (spentByBrokerage.get(r.brokerage_id) ?? 0) + (Number(r.total_cost) || 0))
   }
   return brokerages
     .map((b) => {
