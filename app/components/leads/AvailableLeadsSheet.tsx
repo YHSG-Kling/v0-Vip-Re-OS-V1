@@ -94,8 +94,11 @@ export function AvailableLeadsSheet({
   }
 
   function getTemperatureBadge(urgency: string | null) {
-    if (urgency === "high") return { label: "Hot", className: "bg-red-100 text-red-800" }
-    if (urgency === "medium") return { label: "Warm", className: "bg-orange-100 text-orange-800" }
+    // leads.urgency_level is the temperature vocabulary (hot/warm/cool/cold),
+    // matching leads_urgency_level_check and the promotion writer.
+    if (urgency === "hot") return { label: "Hot", className: "bg-red-100 text-red-800" }
+    if (urgency === "warm") return { label: "Warm", className: "bg-orange-100 text-orange-800" }
+    if (urgency === "cool") return { label: "Cool", className: "bg-sky-100 text-sky-700" }
     return { label: "Cold", className: "bg-blue-100 text-blue-700" }
   }
 

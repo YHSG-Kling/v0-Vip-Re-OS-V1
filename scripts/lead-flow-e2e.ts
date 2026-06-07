@@ -250,9 +250,10 @@ function stageScoring(records: NormalizedScrapedRecord[]) {
     const inRange = score >= sem.scoreRange[0] && score <= sem.scoreRange[1]
     check(`score for ${r.source} within [${sem.scoreRange[0]},${sem.scoreRange[1]}] (=${score}, ${urgency})`, inRange)
   }
-  // OSINT probate should land high/medium urgency.
+  // OSINT probate should land hot/warm lead temperature (leads.urgency_level
+  // uses the hot/warm/cool/cold vocabulary enforced by leads_urgency_level_check).
   const osintScore = calculateSourceScore("osint_signal", ["probate", "distressed"])
-  check("osint distress → high/medium urgency", ["high", "medium"].includes(scoreToUrgencyLevel(osintScore)))
+  check("osint distress → hot/warm temperature", ["hot", "warm"].includes(scoreToUrgencyLevel(osintScore)))
 }
 
 // ── STAGE 7 — Promotion eligibility ──────────────────────────────────────────

@@ -516,10 +516,20 @@ export function expandEnabledSources(raw: readonly string[] | null | undefined):
  * Derives urgency_level from a numeric motivation score.
  * Maps directly to the leads.urgency_level column values.
  */
-export function scoreToUrgencyLevel(score: number): 'high' | 'medium' | 'low' {
-  if (score >= 70) return 'high'
-  if (score >= 45) return 'medium'
-  return 'low'
+// leads.urgency_level uses the real-estate lead-TEMPERATURE vocabulary
+// (hot/warm/cool/cold) — enforced by leads_urgency_level_check and read by
+// app/actions/leads.ts (.eq "hot") and AvailableLeadsSheet. Map the 0–100
+// source score onto those four buckets.
+//
+// NOTE: this previously returned high/medium/low, which violated the leads
+// constraint and made every scrape→lead promotion throw "Failed to create
+// lead" (the leads table was empty, so it had never surfaced). The sole caller
+// is the promotion insert in pipeline-processor.ts.
+export function scoreToUrgencyLevel(score: number): 'hot' | 'warm' | 'cool' | 'cold' {
+  if (score >= 70) return 'hot'
+  if (score >= 45) return 'warm'
+  if (score >= 25) return 'cool'
+  return 'cold'
 }
 
 // ─── buildTerritoryPhrases ─────────────────────────────────────────────────────
