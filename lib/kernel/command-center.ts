@@ -29,6 +29,8 @@ export interface CommandCenterSession {
   endedAt:     string | null
 }
 
+export type ApprovalSlaLevel = "ok" | "due" | "breached"
+
 export interface CommandCenterAction {
   id:         string
   queue:      "marketing" | "asset"
@@ -38,16 +40,39 @@ export interface CommandCenterAction {
   actionInput: Record<string, unknown>
   status:     string
   proposedAt: string | null
+  ageHours:   number
+  slaLevel:   ApprovalSlaLevel
+}
+
+/**
+ * Pure approval-SLA evaluation (eval-skill: stalled approvals must escalate).
+ * A proposed agent action that sits unactioned past the breach window is
+ * surfaced as 'breached' so a human escalates instead of it silently rotting.
+ * Defaults: due at 12h, breached at 24h.
+ */
+export function evaluateApprovalSla(
+  proposedAt: string | null,
+  now: Date = new Date(),
+  opts: { dueHours?: number; breachHours?: number } = {},
+): { ageHours: number; level: ApprovalSlaLevel } {
+  const dueHours = opts.dueHours ?? 12
+  const breachHours = opts.breachHours ?? 24
+  if (!proposedAt) return { ageHours: 0, level: "ok" }
+  const ageMs = now.getTime() - new Date(proposedAt).getTime()
+  const ageHours = Math.max(0, Math.round((ageMs / 3_600_000) * 10) / 10)
+  const level: ApprovalSlaLevel = ageHours >= breachHours ? "breached" : ageHours >= dueHours ? "due" : "ok"
+  return { ageHours, level }
 }
 
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
   summary: {
-    activeSessions:   number
-    idleSessions:     number
-    erroredSessions:  number
-    pendingApprovals: number
+    activeSessions:    number
+    idleSessions:      number
+    erroredSessions:   number
+    pendingApprovals:  number
+    breachedApprovals: number
   }
 }
 
@@ -97,30 +122,39 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     endedAt:     s.ended_at ?? null,
   }))
 
-  const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => ({
-    id:          a.id,
-    queue,
-    brokerageId: a.brokerage_id,
-    actionType:  a.action_type,
-    rationale:   a.rationale ?? null,
-    actionInput: (a.action_input ?? {}) as Record<string, unknown>,
-    status:      a.status,
-    proposedAt:  a.proposed_at ?? null,
-  })
+  const now = new Date()
+  const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => {
+    const sla = evaluateApprovalSla(a.proposed_at ?? null, now)
+    return {
+      id:          a.id,
+      queue,
+      brokerageId: a.brokerage_id,
+      actionType:  a.action_type,
+      rationale:   a.rationale ?? null,
+      actionInput: (a.action_input ?? {}) as Record<string, unknown>,
+      status:      a.status,
+      proposedAt:  a.proposed_at ?? null,
+      ageHours:    sla.ageHours,
+      slaLevel:    sla.level,
+    }
+  }
 
+  // SLA-breached approvals escalate to the top; then oldest-first.
+  const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
   const pendingActions: CommandCenterAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
-  ].sort((a, b) => (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
+  ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 
   return {
     sessions,
     pendingActions,
     summary: {
-      activeSessions:   sessions.filter((s) => s.status === "running").length,
-      idleSessions:     sessions.filter((s) => s.status === "idle").length,
-      erroredSessions:  sessions.filter((s) => s.status === "error").length,
-      pendingApprovals: pendingActions.length,
+      activeSessions:    sessions.filter((s) => s.status === "running").length,
+      idleSessions:      sessions.filter((s) => s.status === "idle").length,
+      erroredSessions:   sessions.filter((s) => s.status === "error").length,
+      pendingApprovals:  pendingActions.length,
+      breachedApprovals: pendingActions.filter((a) => a.slaLevel === "breached").length,
     },
   }
 }

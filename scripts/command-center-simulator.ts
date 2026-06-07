@@ -21,7 +21,7 @@
  *
  * Run:  npx tsx scripts/command-center-simulator.ts   (npm run test:command-center)
  */
-import { loadCommandCenter } from "../lib/kernel/command-center"
+import { loadCommandCenter, evaluateApprovalSla } from "../lib/kernel/command-center"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -29,16 +29,34 @@ function check(name: string, cond: boolean, detail?: string) {
   if (cond) { passed++; console.log(`  ✓ ${name}`) }
   else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
+function report() {
+  console.log("\n──────────────────────────────────────────────────")
+  console.log(` RESULT: ${passed} passed, ${failed} failed`)
+  if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
+  console.log(" ✅ Command Center verified (SLA + load + reject)")
+}
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Agent Command Center simulator")
   console.log("══════════════════════════════════════════════════")
 
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      !(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)) {
-    console.log("  ⏭  Skipped — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set.")
-    console.log("\n RESULT: 0 passed, 0 failed (skipped — no DB credentials)")
+  // Pure SLA evaluation (escalation: stalled approvals must surface) — always runs.
+  console.log("\n[Layer 1 · evaluateApprovalSla]")
+  const now = new Date("2026-01-02T00:00:00Z")
+  check("fresh action → ok", evaluateApprovalSla("2026-01-01T20:00:00Z", now).level === "ok")          // 4h
+  check("past due window → due", evaluateApprovalSla("2026-01-01T08:00:00Z", now).level === "due")      // 16h
+  check("past breach window → breached", evaluateApprovalSla("2025-12-31T20:00:00Z", now).level === "breached") // 28h
+  check("age reported in hours", evaluateApprovalSla("2026-01-01T12:00:00Z", now).ageHours === 12)
+  check("null proposedAt → ok (no false escalation)", evaluateApprovalSla(null, now).level === "ok")
+  check("custom breach window honored", evaluateApprovalSla("2026-01-01T18:00:00Z", now, { breachHours: 4 }).level === "breached") // 6h ≥ 4h
+
+  const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
+  if (!hasCreds) {
+    console.log("\n[Layer 2 · live round-trip]")
+    console.log("  ⏭  Skipped — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set (pure SLA layer ran).")
+    report()
     return
   }
 
@@ -69,9 +87,12 @@ async function main() {
     if (!session) throw new Error("session seed failed")
     cleanup.push({ table: "managed_agent_sessions", id: (session as any).id })
 
+    // Aged 30h → should surface as SLA-breached.
+    const agedProposedAt = new Date(Date.now() - 30 * 3_600_000).toISOString()
     const { data: mAction } = await svc.from("marketing_agent_actions").insert({
       brokerage_id: brokerageId, managed_agent_session_id: (session as any).id,
       action_type: "mark_topic_used", action_input: {}, rationale: `${TAG} marketing`, status: "proposed",
+      proposed_at: agedProposedAt,
     }).select("id").single()
     if (!mAction) throw new Error("marketing action seed failed")
     cleanup.push({ table: "marketing_agent_actions", id: (mAction as any).id })
@@ -99,6 +120,9 @@ async function main() {
     check("load: pendingApprovals count covers both", data.summary.pendingApprovals >= 2)
     const mInQueue = data.pendingActions.find((a) => a.id === (mAction as any).id)
     check("load: action carries type + rationale", mInQueue?.actionType === "mark_topic_used" && (mInQueue?.rationale ?? "").includes(TAG))
+    check("sla: aged action surfaces as breached", mInQueue?.slaLevel === "breached")
+    check("sla: summary counts the breached approval", data.summary.breachedApprovals >= 1)
+    check("sla: breached action sorts ahead of fresh one", data.pendingActions.findIndex((a) => a.id === (mAction as any).id) < data.pendingActions.findIndex((a) => a.id === (aAction as any).id))
 
     // Reject contract — the exact mutation rejectAgentAction performs.
     const { error: rejErr } = await svc.from("marketing_agent_actions")
@@ -117,9 +141,6 @@ async function main() {
     check("cleanup verified — 0 seeded agents remain", (count ?? 0) === 0)
   }
 
-  console.log("\n──────────────────────────────────────────────────")
-  console.log(` RESULT: ${passed} passed, ${failed} failed`)
-  if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Command Center verified end-to-end (load + reject, test rows cleaned up)")
+  report()
 }
 main().catch((e) => { console.error(e); process.exit(1) })

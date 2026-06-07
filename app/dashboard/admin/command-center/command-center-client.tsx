@@ -58,11 +58,12 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
       </header>
 
       {/* Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Stat label="Running" value={summary.activeSessions} accent="text-green-700" />
         <Stat label="Idle" value={summary.idleSessions} accent="text-amber-700" />
         <Stat label="Errored" value={summary.erroredSessions} accent="text-red-700" />
         <Stat label="Pending approvals" value={summary.pendingApprovals} accent="text-blue-700" />
+        <Stat label="SLA breached" value={summary.breachedApprovals} accent={summary.breachedApprovals > 0 ? "text-red-700" : "text-slate-500"} />
       </div>
 
       {/* Approval queue */}
@@ -135,6 +136,12 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
               {action.queue === "marketing" ? "Marketing Agent" : "Asset Manager"}
             </Badge>
             <span className="font-medium">{action.actionType.replace(/_/g, " ")}</span>
+            {action.slaLevel === "breached" && (
+              <Badge className="bg-red-100 text-red-800">SLA breached · {Math.round(action.ageHours)}h</Badge>
+            )}
+            {action.slaLevel === "due" && (
+              <Badge className="bg-amber-100 text-amber-800">SLA due · {Math.round(action.ageHours)}h</Badge>
+            )}
           </div>
           {action.rationale && <p className="text-sm text-muted-foreground mt-1">{action.rationale}</p>}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
