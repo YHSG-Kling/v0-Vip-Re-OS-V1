@@ -15,6 +15,7 @@
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",
+    "test:charts": "tsx scripts/chart-geometry-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

@@ -23,6 +23,7 @@ import { MarketUpdateReel } from "./MarketUpdateReel"
 import { ListingPresentationSlide } from "./ListingPresentationSlide"
 import { BuyerConsultationSlide } from "./BuyerConsultationSlide"
 import { AffordabilitySnapshotReel } from "./AffordabilitySnapshotReel"
+import { CMAReel } from "./CMAReel"
 import { VideoCoverThumb } from "./VideoCoverThumb"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
@@ -471,6 +472,55 @@ export const RemotionRoot: React.FC = () => {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — Comparative Market Analysis reel. The chart-layer
+          flagship: a narrated, data-driven CMA video (price trend +
+          comps + days-on-market + monthly-payment donut) instead of a
+          static PDF. 1080×1080 + 24s. Charts are deterministic SVG
+          (lib/charts/geometry); data arrives via inputProps from the
+          caller's RentCast/comps payload. */}
+      <Composition
+        id="CMAReel"
+        component={CMAReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={720}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          subjectAddress: "123 Main Street",
+          areaName:       "Brickell, FL",
+          priceTrend: {
+            values: [612000, 628000, 631000, 645000, 662000, 689000],
+            labels: ["May", "Jun", "Jul", "Aug", "Sep", "Oct"],
+          },
+          comps: [
+            { label: "Subject", value: 675000, isSubject: true },
+            { label: "501 N Riverwalk", value: 640000 },
+            { label: "1245 Bay Rd", value: 658000 },
+            { label: "210 SE 8th St", value: 612000 },
+          ],
+          daysOnMarket: {
+            values: [21, 18, 14, 12, 11, 9],
+            labels: ["May", "Jun", "Jul", "Aug", "Sep", "Oct"],
+          },
+          affordability: {
+            segments: [
+              { label: "P&I",       value: 3200, color: "#F59E0B" },
+              { label: "Taxes",     value: 720,  color: "#60A5FA" },
+              { label: "Insurance", value: 240,  color: "#34D399" },
+              { label: "HOA",       value: 180,  color: "#A78BFA" },
+            ],
+            centerValue: "$4,340",
+          },
+          ctaLabel:  "Want this analysis for your home?",
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            agentName:     "Your Agent",
             showEhoMark:   true,
           },
         }}
