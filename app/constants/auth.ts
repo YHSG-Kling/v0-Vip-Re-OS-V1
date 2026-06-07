@@ -49,6 +49,11 @@ export const PUBLIC_ROUTES = [
   '/listing',
   '/qr',
   '/forms',
+  // ── Wave 39 GEO — public video landing pages + AI-search discovery ──
+  '/v',
+  '/llms.txt',
+  '/robots.txt',
+  '/sitemap.xml',
 ];
 
 export const PROTECTED_ROUTES = [

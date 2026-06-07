@@ -1,0 +1,237 @@
+/**
+ * app/v/[slug]/page.tsx
+ *
+ * Wave 39 GEO — the public, AI-search-citable video landing page. SSR so
+ * AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended) read the
+ * full content + JSON-LD. One page per published render
+ * (remotion_composition_renders.is_published).
+ *
+ * Carries: the video (output_url) + poster (thumbnail_url), title +
+ * description from the registry SEO fields, listing/market facts, agent
+ * attribution, Fair-Housing / license / EHO disclosures, and schema.org
+ * VideoObject + RealEstateListing + BreadcrumbList JSON-LD.
+ */
+import type { Metadata } from "next"
+import { notFound } from "next/navigation"
+import { createServiceClient } from "@/lib/supabase/service"
+import { assembleSocialDisclosures } from "@/lib/social/assemble-disclosures"
+import {
+  buildVideoObjectJsonLd,
+  buildRealEstateListingJsonLd,
+  buildBreadcrumbJsonLd,
+  serializeJsonLd,
+  framesToSeconds,
+} from "@/lib/geo/video-landing"
+
+export const dynamic = "force-dynamic"
+export const revalidate = 300
+
+const SITE_NAME = "VIP Real Estate OS"
+
+function siteUrl(): string {
+  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
+}
+
+interface RenderRow {
+  id:             string
+  brokerage_id:   string
+  composition_id: string
+  agent_user_id:  string | null
+  entity_type:    string | null
+  entity_id:      string | null
+  output_url:     string | null
+  thumbnail_url:  string | null
+  published_at:   string | null
+}
+
+interface CompositionRow {
+  display_name:    string
+  category:        string
+  seo_title:       string | null
+  seo_description: string | null
+  duration_frames: number
+  fps:             number
+}
+
+interface PageData {
+  render:      RenderRow
+  composition: CompositionRow
+  title:       string
+  description: string
+  agentName:   string | null
+  agentPhoto:  string | null
+  brokerageName: string | null
+  listing:     {
+    address: string | null; city: string | null; state: string | null;
+    price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null
+  } | null
+  disclosures: string
+}
+
+async function loadPage(slug: string): Promise<PageData | null> {
+  const svc = createServiceClient()
+  const { data: r } = await svc.from("remotion_composition_renders")
+    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, output_url, thumbnail_url, published_at")
+    .eq("public_slug", slug)
+    .eq("is_published", true)
+    .maybeSingle()
+  const render = r as RenderRow | null
+  if (!render || !render.output_url) return null
+
+  const { data: c } = await svc.from("remotion_compositions")
+    .select("display_name, category, seo_title, seo_description, duration_frames, fps")
+    .eq("composition_id", render.composition_id)
+    .maybeSingle()
+  const composition = c as CompositionRow | null
+  if (!composition) return null
+
+  // Agent attribution.
+  let agentName: string | null = null
+  let agentPhoto: string | null = null
+  if (render.agent_user_id) {
+    const [{ data: u }, { data: a }] = await Promise.all([
+      svc.from("users").select("first_name, last_name").eq("id", render.agent_user_id).maybeSingle(),
+      svc.from("agents").select("photo_url").eq("user_id", render.agent_user_id).eq("brokerage_id", render.brokerage_id).maybeSingle(),
+    ])
+    const ur = u as { first_name: string | null; last_name: string | null } | null
+    agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    agentPhoto = (a as { photo_url: string | null } | null)?.photo_url ?? null
+  }
+
+  const { data: b } = await svc.from("brokerages").select("name").eq("id", render.brokerage_id).maybeSingle()
+  const brokerageName = (b as { name: string | null } | null)?.name ?? null
+
+  // Listing facts (when the render is for a listing entity).
+  let listing: PageData["listing"] = null
+  if (render.entity_type === "listing" && render.entity_id) {
+    const { data: l } = await svc.from("listings")
+      .select("address, city, state, list_price, bedrooms, bathrooms, sqft")
+      .eq("id", render.entity_id)
+      .eq("brokerage_id", render.brokerage_id)
+      .maybeSingle()
+    const lr = l as { address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null } | null
+    if (lr) listing = { address: lr.address, city: lr.city, state: lr.state, price: lr.list_price, bedrooms: lr.bedrooms, bathrooms: lr.bathrooms, sqft: lr.sqft }
+  }
+
+  const title = composition.seo_title || composition.display_name
+  const descBase = composition.seo_description || `${composition.display_name} produced by ${brokerageName ?? SITE_NAME}.`
+  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+
+  const disclosures = await assembleSocialDisclosures(svc as never, {
+    brokerageId: render.brokerage_id,
+    userId:      render.agent_user_id,
+  })
+
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
+  const { slug } = await params
+  const data = await loadPage(slug)
+  if (!data) return { title: "Video not found", robots: { index: false } }
+  const url = `${siteUrl()}/v/${slug}`
+  const images = data.render.thumbnail_url ? [{ url: data.render.thumbnail_url }] : []
+  return {
+    title:       data.title,
+    description: data.description,
+    alternates:  { canonical: url },
+    openGraph: {
+      title: data.title, description: data.description, url, type: "video.other",
+      images, videos: data.render.output_url ? [{ url: data.render.output_url }] : [],
+    },
+    twitter: { card: "player", title: data.title, description: data.description, images },
+    robots: { index: true, follow: true },
+  }
+}
+
+function usd(n: number | null): string | null {
+  return n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : null
+}
+
+export default async function VideoLandingPage({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const data = await loadPage(slug)
+  if (!data) notFound()
+
+  const url = `${siteUrl()}/v/${slug}`
+  const priceStr = data.listing ? usd(data.listing.price) : null
+
+  const videoLd = buildVideoObjectJsonLd({
+    name:          data.title,
+    description:   data.description,
+    thumbnailUrl:  data.render.thumbnail_url,
+    contentUrl:    data.render.output_url!,
+    uploadDate:    data.render.published_at ?? new Date().toISOString(),
+    durationSec:   framesToSeconds(data.composition.duration_frames, data.composition.fps),
+    publisherName: data.brokerageName,
+    pageUrl:       url,
+  })
+  const listingLd = data.listing
+    ? buildRealEstateListingJsonLd({
+        name: data.title, description: data.description, url,
+        imageUrl: data.render.thumbnail_url,
+        streetAddress: data.listing.address, city: data.listing.city, state: data.listing.state,
+        price: data.listing.price, bedrooms: data.listing.bedrooms, bathrooms: data.listing.bathrooms,
+      })
+    : null
+  const breadcrumbLd = buildBreadcrumbJsonLd({
+    siteName: SITE_NAME, siteUrl: siteUrl(), agentName: data.agentName, pageUrl: url, pageName: data.title,
+  })
+
+  const facts: string[] = []
+  if (data.listing?.address) facts.push([data.listing.address, data.listing.city, data.listing.state].filter(Boolean).join(", "))
+  if (priceStr) facts.push(priceStr)
+  if (data.listing?.bedrooms != null) facts.push(`${data.listing.bedrooms} bd`)
+  if (data.listing?.bathrooms != null) facts.push(`${data.listing.bathrooms} ba`)
+  if (data.listing?.sqft != null) facts.push(`${data.listing.sqft.toLocaleString("en-US")} sqft`)
+
+  return (
+    <main style={{ maxWidth: 880, margin: "0 auto", padding: "24px 16px", fontFamily: "system-ui, sans-serif" }}>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(videoLd) }} />
+      {listingLd && <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(listingLd) }} />}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(breadcrumbLd) }} />
+
+      <article>
+        <h1 style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.2, margin: "0 0 12px" }}>{data.title}</h1>
+        <div style={{ borderRadius: 12, overflow: "hidden", background: "#000", aspectRatio: "16 / 9" }}>
+          <video
+            controls
+            playsInline
+            poster={data.render.thumbnail_url ?? undefined}
+            src={data.render.output_url!}
+            style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }}
+          />
+        </div>
+
+        <p style={{ fontSize: 17, color: "#1f2937", margin: "16px 0" }}>{data.description}</p>
+
+        {facts.length > 0 && (
+          <ul style={{ display: "flex", flexWrap: "wrap", gap: 8, listStyle: "none", padding: 0, margin: "0 0 16px" }}>
+            {facts.map((f) => (
+              <li key={f} style={{ background: "#f1f5f9", borderRadius: 999, padding: "4px 12px", fontSize: 14, color: "#0f172a" }}>{f}</li>
+            ))}
+          </ul>
+        )}
+
+        {(data.agentName || data.brokerageName) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: "1px solid #e5e7eb" }}>
+            {data.agentPhoto && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={data.agentPhoto} alt={data.agentName ?? "Agent"} width={48} height={48} style={{ borderRadius: 999, objectFit: "cover" }} />
+            )}
+            <div>
+              {data.agentName && <div style={{ fontWeight: 600 }}>{data.agentName}</div>}
+              {data.brokerageName && <div style={{ color: "#6b7280", fontSize: 14 }}>{data.brokerageName}</div>}
+            </div>
+          </div>
+        )}
+
+        {data.disclosures && (
+          <footer style={{ marginTop: 20, paddingTop: 12, borderTop: "1px solid #e5e7eb", color: "#6b7280", fontSize: 12 }}>
+            {data.disclosures}
+          </footer>
+        )}
+      </article>
+    </main>
+  )
+}

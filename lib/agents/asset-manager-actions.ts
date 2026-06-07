@@ -29,6 +29,7 @@ export type AssetManagerActionType =
   | "sync_asset_to_listing"
   | "start_render"
   | "restart_failed_render"
+  | "publish_video_page"
 
 export interface ProposedAssetAction {
   action_type: AssetManagerActionType
@@ -363,6 +364,20 @@ async function runHandler(
           new_render_id:      queued.renderId,
         },
       }
+    }
+
+    case "publish_video_page": {
+      // Wave 39 GEO — publish a successful render as a public, AI-search-
+      // citable /v/[slug] page. Broker-approved (this action flows through
+      // the standard proposed → approved → executing queue) because a
+      // public page is broadcast advertising that must carry Fair-Housing /
+      // license / EHO disclosures.
+      const renderId = String(input.render_id ?? "")
+      if (!renderId) return { status: "failed", result: { error: "render_id required" } }
+      const { publishVideoLanding } = await import("@/lib/geo/publish-video-landing")
+      const res = await publishVideoLanding({ renderId, brokerageId })
+      if (!res.ok) return { status: "skipped", result: { reason: res.reason ?? "not publishable" } }
+      return { status: "succeeded", result: { render_id: renderId, public_slug: res.slug, url: `/v/${res.slug}` } }
     }
 
     default: {
