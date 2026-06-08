@@ -486,14 +486,17 @@ export async function buildListingPresentation(
       return { success: false, error: presErr?.message ?? "Could not save presentation" }
     }
 
-    // 7b. Materialize the seller-facing pre-listing DRIP — split the presentation
-    // into ordered, seller-safe sections (CMA mixed in, price withheld) scheduled
-    // across the window before the appointment. Best-effort: a drip-scheduling
-    // failure must not fail the presentation build (the agent's copy is saved).
+    // 7b. Close the agentic loop — the marketing manager PROPOSES the seller-facing
+    // pre-listing drip (CMA chart sections + branded slides + narrated avatar) into
+    // the Command Center rather than auto-firing it. A human approves once; approval
+    // runs the start_prelisting_drip handler (materializePresentationSections →
+    // renders → narration → schedule → portal/email). Nothing reaches the seller
+    // without a human in the loop. Best-effort: a proposal failure must not fail the
+    // presentation build (the agent's copy is saved; they can re-propose).
     try {
-      const { materializePresentationSections } = await import("@/lib/listing-presentation/section-drip")
-      await materializePresentationSections(pres.id, svc)
-    } catch { /* drip scheduling is best-effort */ }
+      const { proposePrelistingDrip } = await import("@/lib/listing-presentation/propose-prelisting-drip")
+      await proposePrelistingDrip({ presentationId: pres.id, brokerageId: input.brokerageId }, svc)
+    } catch { /* proposing the drip is best-effort */ }
 
     // 8. Notify agent
     if (input.agentUserId) {
