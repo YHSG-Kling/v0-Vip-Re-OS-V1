@@ -31,7 +31,15 @@ export interface AdsActorContext {
   userId: string
 }
 
-export type AudienceType = "contact_list" | "website_visitors" | "engagement" | "lookalike" | "custom"
+// Union of the two audience-type vocabularies that drifted apart: the generic
+// funnel types (used by fb-audience-templates + the UI) and the real-estate
+// segment types (the original DB CHECK). m187 widens the DB CHECK to this same
+// set. NOTE: still two overlapping vocabularies — flagged for a follow-up
+// single-vocabulary consolidation (website_visitors≈listing_visitors, etc.).
+// Lookalike is the lookalike_seed_audience_id relationship, not a sync routing key.
+export type AudienceType =
+  | "contact_list" | "website_visitors" | "engagement" | "lookalike" | "custom"
+  | "listing_visitors" | "video_viewers" | "newsletter_openers" | "portal_visitors" | "persona_segment"
 
 export type AdPlatform = "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
 
@@ -577,11 +585,62 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
 
     const recordsAttempted = contacts?.length || 0
 
-    // Simulate sync (real implementation would call Facebook Graph API here)
-    // For now, record sync run with simulated success
-    const syncStatus = recordsAttempted > 0 ? "success" : "error"
-    const recordsSynced = recordsAttempted
-    const recordsRejected = 0
+    // ── REAL provider sync via the connector for this audience's platform ──────
+    // Routes by audience_type: custom/Customer-Match (upload hashed consented
+    // contacts), lookalike (seed from a synced custom audience), or platform-native
+    // (website_visitors/engagement — created on-platform, no CRM upload). Raw PII is
+    // SHA-256 hashed before it leaves our server.
+    const platform = (audience.target_platform as string) ?? "facebook"
+    const audienceType = (audience.audience_type as string) ?? "custom"
+    const { getConnector, loadConnectorCredential } = await import("@/lib/ads/connectors/registry")
+    const { hashAudienceMembers } = await import("@/lib/ads/connectors/pii")
+    const connector = getConnector(platform)
+
+    let syncStatus: "success" | "error" = "error"
+    let recordsSynced = 0
+    let recordsRejected = 0
+    let providerResponse: Record<string, unknown> = {}
+    let errorMessage: string | null = null
+    let externalAudienceId: string | null = (audience.external_audience_id as string | null) ?? null
+
+    if (!connector) {
+      errorMessage = `No connector for platform '${platform}'`
+    } else {
+      const cred = await loadConnectorCredential(ctx.brokerageId, platform, supabase)
+      if (!cred) {
+        errorMessage = `${platform} account not connected`
+        providerResponse = { not_connected: true, contacts_found: recordsAttempted }
+      } else if (audience.lookalike_seed_audience_id) {
+        // LOOKALIKE / similar (cold prospecting) — seeded from a synced custom audience.
+        const { data: seed } = await supabase.from("facebook_custom_audiences")
+          .select("external_audience_id").eq("id", audience.lookalike_seed_audience_id).maybeSingle()
+        const seedExternalId = (seed as { external_audience_id?: string | null } | null)?.external_audience_id ?? null
+        if (!seedExternalId) {
+          errorMessage = "lookalike seed audience has not synced yet"
+        } else {
+          const res = await connector.createLookalike({
+            audienceName: audience.audience_name, seedExternalId,
+            country: sourceRule?.filters?.seed_country ?? "US", sizePct: sourceRule?.filters?.seed_lookalike_size_pct ?? 1, cred,
+          })
+          syncStatus = res.ok ? "success" : "error"
+          externalAudienceId = res.externalAudienceId ?? externalAudienceId
+          errorMessage = res.error ?? null
+          providerResponse = { type: "lookalike", ...res }
+        }
+      } else {
+        // CUSTOM / Customer Match — every live audience_type (listing_visitors,
+        // video_viewers, persona_segment, custom, …) is a CRM segment, uploaded as
+        // hashed consented contacts.
+        const { hashed, rejected } = hashAudienceMembers((contacts ?? []).map((c: any) => ({ email: c.email, phone: c.phone })))
+        const res = await connector.pushCustomAudience({ audienceName: audience.audience_name, externalAudienceId, members: hashed, cred })
+        syncStatus = res.ok ? "success" : "error"
+        recordsSynced = res.recordsSynced
+        recordsRejected = res.recordsRejected + rejected
+        externalAudienceId = res.externalAudienceId ?? externalAudienceId
+        errorMessage = res.error ?? null
+        providerResponse = { type: "custom", platform, audience_type: audienceType, ...res }
+      }
+    }
 
     const { data: syncRun, error: syncError } = await supabase
       .from("audience_sync_runs")
@@ -592,8 +651,8 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
         records_attempted: recordsAttempted,
         records_synced: recordsSynced,
         records_rejected: recordsRejected,
-        provider_response: { simulated: true, contacts_found: recordsAttempted },
-        error_message: recordsAttempted === 0 ? "No contacts found matching audience criteria" : null,
+        provider_response: providerResponse,
+        error_message: errorMessage,
         completed_at: new Date().toISOString(),
       })
       .select()
@@ -601,10 +660,14 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
 
     if (syncError) throw syncError
 
-    // Update audience last_synced_at
+    // Persist the provider audience id + status so retargeting/lookalike can reference it.
     await supabase
       .from("facebook_custom_audiences")
-      .update({ last_synced_at: new Date().toISOString(), status: syncStatus === "success" ? "synced" : "error" })
+      .update({
+        last_synced_at: new Date().toISOString(),
+        status: syncStatus === "success" ? "synced" : "error",
+        ...(externalAudienceId ? { external_audience_id: externalAudienceId } : {}),
+      })
       .eq("id", audienceId)
 
     return { success: true, syncRunId: syncRun!.id, syncRun }

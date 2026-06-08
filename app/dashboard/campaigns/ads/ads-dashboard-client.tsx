@@ -240,7 +240,7 @@ export function AdsDashboardClient({
   const [isCreateAudienceOpen, setIsCreateAudienceOpen] = useState(false)
   const [newAudience, setNewAudience] = useState({
     audienceName: "",
-    audienceType: "contact_list" as AudienceType,
+    audienceType: "custom" as AudienceType,
     sourceRuleType: "contact_list" as "website_visitors" | "contact_list" | "engagement",
     daysLookback: 30,
     contactTags: "",
@@ -432,7 +432,7 @@ export function AdsDashboardClient({
       setIsCreateAudienceOpen(false)
       setNewAudience({
         audienceName: "",
-        audienceType: "contact_list",
+        audienceType: "custom",
         sourceRuleType: "contact_list",
         daysLookback: 30,
         contactTags: "",
@@ -1321,21 +1321,20 @@ export function AdsDashboardClient({
               </div>
 
               <div>
-                <Label>Audience Type</Label>
+                <Label>Source</Label>
                 <Select
-                  value={newAudience.audienceType}
+                  value={newAudience.sourceRuleType}
                   onValueChange={(v) =>
-                    setNewAudience({ ...newAudience, audienceType: v as AudienceType, sourceRuleType: v as any })
+                    setNewAudience({ ...newAudience, sourceRuleType: v as "website_visitors" | "contact_list" | "engagement" })
                   }
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="contact_list">Contact List</SelectItem>
+                    <SelectItem value="contact_list">Contact List (CRM)</SelectItem>
                     <SelectItem value="website_visitors">Website Visitors</SelectItem>
                     <SelectItem value="engagement">Engaged Contacts</SelectItem>
-                    <SelectItem value="lookalike">Lookalike Audience</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
