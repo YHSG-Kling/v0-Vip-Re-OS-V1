@@ -141,7 +141,12 @@ export async function materializePresentationSections(
   try {
     const { renderSectionsForPresentation } = await import("./section-render")
     await renderSectionsForPresentation(presentationId, supabase)
-  } catch { /* section render is best-effort */ }
+    // Then narrate: the agent's cloned voice (+ avatar when available) over each
+    // section. Degrades gracefully — no clone → on-screen copy only; the video
+    // still renders. Best-effort; never blocks materialization.
+    const { narratePresentationSections } = await import("./section-narration-orchestrator")
+    await narratePresentationSections(presentationId, supabase)
+  } catch { /* section render + narration are best-effort */ }
 
   return { ok: true, inserted: inserted?.length ?? 0 }
 }

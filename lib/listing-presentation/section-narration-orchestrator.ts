@@ -1,0 +1,141 @@
+/**
+ * lib/listing-presentation/section-narration-orchestrator.ts
+ *
+ * Wave 39 — turns each section's AI script into the agent's spoken voice (and,
+ * when available, their D-ID talking-head avatar) — then drops the result into
+ * the queued section render so the dripped video narrates itself.
+ *
+ * GRACEFUL DEGRADATION is the whole point: a brokerage may have NO voice clone
+ * and NO avatar yet. The pipeline must still produce a valid, branded video:
+ *
+ *   voice clone + avatar → avatar_narrated  (talking head + cloned voiceover)
+ *   voice clone, no avatar → voice_only      (cloned voiceover + static-photo PIP)
+ *   neither                → on_screen_only   (on-screen copy + static-photo PIP)
+ *
+ * planSectionNarrationJob() is pure (unit-tested — proves all three paths).
+ * narratePresentationSections() executes it best-effort: ElevenLabs voice via
+ * the metered gateway, audio uploaded to Blob and wired into the queued render's
+ * input_props.voiceoverUrl; the avatar is requested via the existing D-ID →
+ * Remotion handoff (target_composition_id). Never throws.
+ */
+import { createServiceClient } from "@/lib/supabase/service"
+
+export type NarrationMode = "avatar_narrated" | "voice_only" | "on_screen_only"
+export interface NarrationPlan { voiceover: boolean; avatar: boolean; mode: NarrationMode }
+
+/**
+ * Pure: decide what a section's narration job should produce given what the
+ * agent actually has. No script → nothing to say (on-screen only); no clone →
+ * no voiceover; no avatar source → no talking head.
+ */
+export function planSectionNarrationJob(opts: {
+  hasScript:       boolean
+  hasVoiceClone:   boolean
+  hasAvatarSource: boolean
+}): NarrationPlan {
+  const voiceover = opts.hasScript && opts.hasVoiceClone
+  // An avatar talking head needs something to say — the cloned voiceover, or at
+  // minimum the script (D-ID can voice it). No avatar source → static-photo PIP.
+  const avatar = opts.hasAvatarSource && opts.hasScript
+  const mode: NarrationMode = avatar ? "avatar_narrated" : voiceover ? "voice_only" : "on_screen_only"
+  return { voiceover, avatar, mode }
+}
+
+export interface NarrateResult {
+  sections:      number
+  avatarNarrated: number
+  voiceOnly:     number
+  onScreenOnly:  number
+  hasVoiceClone: boolean
+  hasAvatarSource: boolean
+}
+
+/**
+ * Synthesize voice (and request avatar) for every queued section render of a
+ * presentation. Best-effort: a missing clone/avatar, missing keys, or a vendor
+ * failure degrades the section to a lower mode — the video still renders.
+ */
+export async function narratePresentationSections(
+  presentationId: string,
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<NarrateResult> {
+  const supabase = client ?? createServiceClient()
+  const empty: NarrateResult = { sections: 0, avatarNarrated: 0, voiceOnly: 0, onScreenOnly: 0, hasVoiceClone: false, hasAvatarSource: false }
+
+  const { data: pres } = await supabase
+    .from("listing_presentations")
+    .select("brokerage_id, agent_user_id")
+    .eq("id", presentationId)
+    .maybeSingle()
+  if (!pres?.brokerage_id) return empty
+
+  // Resolve the agent's voice clone + avatar source (both optional).
+  let voiceId: string | null = null
+  let avatarSource: string | null = null
+  if (pres.agent_user_id) {
+    const { data: vp } = await supabase.from("agent_voice_profiles")
+      .select("elevenlabs_voice_id").eq("agent_id", pres.agent_user_id).maybeSingle()
+    voiceId = (vp as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null
+    const { data: av } = await supabase.from("agent_avatar_assets")
+      .select("did_avatar_id").eq("agent_id", pres.agent_user_id).eq("status", "ready").eq("is_default", true).maybeSingle()
+    avatarSource = (av as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null
+  }
+
+  // Queued section renders carry the narration script in input_props.
+  const { data: renders } = await supabase
+    .from("remotion_composition_renders")
+    .select("id, composition_id, agent_user_id, input_props")
+    .eq("entity_type", "listing_presentation")
+    .eq("entity_id", presentationId)
+    .eq("render_status", "queued")
+  const list = (renders ?? []) as Array<{ id: string; composition_id: string; agent_user_id: string | null; input_props: Record<string, unknown> | null }>
+
+  const result: NarrateResult = { ...empty, sections: list.length, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource }
+
+  for (const r of list) {
+    const props = (r.input_props ?? {}) as Record<string, unknown>
+    const script = (props.narrationScript as string | undefined)?.trim() ?? ""
+    const plan = planSectionNarrationJob({ hasScript: !!script, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource })
+
+    let voiceoverUrl: string | null = null
+    if (plan.voiceover && voiceId) {
+      try {
+        const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+        const tts = await synthesizeSpeech({ text: script, voiceId, brokerageId: pres.brokerage_id })
+        if (tts.success && tts.audioBuffer) {
+          const { put } = await import("@vercel/blob")
+          const up = await put(`narration/${pres.brokerage_id}/${r.id}.mp3`, tts.audioBuffer, { access: "public", contentType: "audio/mpeg" })
+          voiceoverUrl = up.url
+          await supabase.from("remotion_composition_renders")
+            .update({ input_props: { ...props, voiceoverUrl }, used_voiceover: true })
+            .eq("id", r.id)
+        }
+      } catch { /* voice synth is best-effort → falls back to on-screen */ }
+    }
+
+    if (plan.avatar && avatarSource) {
+      // Request the D-ID talking head via the existing handoff: a project whose
+      // provider_metadata.target_composition_id routes the finished avatar into
+      // THIS render's input_props on completion. Best-effort.
+      try {
+        await supabase.from("ai_video_projects").insert({
+          agent_id:    r.agent_user_id ?? pres.agent_user_id,
+          brokerage_id: pres.brokerage_id,
+          title:       `Section narration ${r.composition_id}`,
+          status:      "pending",
+          provider_metadata: {
+            provider: "did", target_composition_id: r.composition_id,
+            target_render_id: r.id, voiceover_url: voiceoverUrl, voice_id: voiceId,
+            narration_script: script, did_avatar_id: avatarSource,
+          },
+        })
+      } catch { /* avatar request best-effort → voice_only / on_screen */ }
+    }
+
+    if (plan.mode === "avatar_narrated") result.avatarNarrated++
+    else if (plan.mode === "voice_only") result.voiceOnly++
+    else result.onScreenOnly++
+  }
+
+  return result
+}
