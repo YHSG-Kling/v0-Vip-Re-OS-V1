@@ -561,6 +561,10 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
       .select("id, email, phone, first_name, last_name")
       .eq("brokerage_id", ctx.brokerageId)
       .not("email", "is", null)
+      // CONSENT GATE: an ad-platform custom audience may only contain contacts who
+      // gave marketing consent (e.g. via an ad lead form). m165 already blocks
+      // unconsented leads; this is the per-contact enforcement the policy requires.
+      .eq("tcpa_consent", true)
 
     if (sourceRule?.type === "contact_list" && sourceRule.filters.contact_tags) {
       // Filter by tags if specified

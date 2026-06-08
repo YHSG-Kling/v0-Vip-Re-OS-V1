@@ -33,6 +33,7 @@
     "test:social-approval": "tsx scripts/social-approval-gate-simulator.ts",
     "test:content-approval": "tsx scripts/content-approval-registry-simulator.ts",
     "test:ads-manager": "tsx scripts/ads-manager-simulator.ts",
+    "test:ad-creative-consent": "tsx scripts/ad-creative-consent-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
