@@ -13,6 +13,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { enqueueCmaReelRender } from "@/lib/video/cma-reel-orchestrator"
+import { buildSectionNarrationScript } from "@/lib/listing-presentation/section-narration"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
 export type SectionRenderResult =
@@ -94,18 +95,6 @@ export async function renderCmaSectionForPresentation(
   return { ok: true, renderId: enq.renderId }
 }
 
-// "Why this brokerage/agent/team over any other local agent" — the conversion
-// copy for each non-CMA section. (A future ElevenLabs-narrated script can
-// override these per brokerage; these are the safe defaults.)
-const SECTION_COPY: Record<string, { title: string; bullets: string[] }> = {
-  intro:       { title: "Meet Your Listing Team",   bullets: ["A marketing system no other local agent runs.", "Here's exactly how we'll sell your home — before we even meet."] },
-  credibility: { title: "Why Sellers Choose Us",    bullets: ["Proven results in your neighborhood.", "A team behind you, not a single busy agent."] },
-  marketing:   { title: "How We Sell Your Home",    bullets: ["Cinematic video, animated market data, and omnipresent digital reach.", "Your home, marketed like a brand — not a flyer."] },
-  process:     { title: "What To Expect",           bullets: ["A clear, stress-free path from listing to closing.", "You and your agent on the same page, every step."] },
-  closing:     { title: "Let's Talk Strategy",      bullets: ["Bring your questions — we'll bring the plan.", "See you at our meeting."] },
-  market:      { title: "Your Market Right Now",    bullets: ["Recent comparable sales and where the market is heading.", "Real local data — your home's value, discussed in person."] },
-}
-
 export interface RenderSectionsResult { rendered: number; skipped: number }
 
 /**
@@ -133,6 +122,15 @@ export async function renderSectionsForPresentation(
     .maybeSingle()
   if (!pres?.brokerage_id) return { rendered, skipped }
 
+  // Resolve the agent's display name (for the narration + name plate).
+  let agentName = "Your Agent"
+  if (pres.agent_user_id) {
+    const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", pres.agent_user_id).maybeSingle()
+    const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+    if (full) agentName = full
+  }
+  const areaName = (pres.property_address ?? "").split(",").slice(1).join(",").trim() || null
+
   const { data: brk } = await supabase
     .from("brokerages")
     .select("name, logo_url, license_number, license_state")
@@ -158,12 +156,20 @@ export async function renderSectionsForPresentation(
   for (const s of list) {
     if (s.section_key === "cma") continue           // already handled above
     if (s.render_id) { continue }                   // already rendered
-    const copy = SECTION_COPY[s.section_key] ?? { title: s.title ?? "Your Listing Plan", bullets: [] }
+    // The narration script drives the on-screen bullets AND the avatar/voice
+    // clone's words (TTS reads narration.script); seller-safe by construction.
+    const narration = buildSectionNarrationScript({
+      sectionKey:    s.section_key,
+      brokerageName: brand.brokerageName,
+      agentName,
+      areaName,
+    })
     const inputProps: Record<string, unknown> = {
-      sectionKey:  s.section_key,
-      title:       s.title ?? copy.title,
-      bullets:     copy.bullets,
-      agentName:   "Your Agent",
+      sectionKey:      s.section_key,
+      title:           s.title ?? "Your Listing Plan",
+      bullets:         narration.bullets,
+      narrationScript: narration.script,
+      agentName,
       avatarVideoUrl: null,
       voiceoverUrl:   null,
       totalSlides: total,

@@ -25,6 +25,7 @@
     "test:cma-compliance": "tsx scripts/cma-compliance-simulator.ts",
     "test:presentation-drip": "tsx scripts/presentation-drip-simulator.ts",
     "test:section-render": "tsx scripts/section-render-simulator.ts",
+    "test:section-narration": "tsx scripts/section-narration-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
