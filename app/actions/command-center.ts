@@ -15,8 +15,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { executeAction } from "@/lib/agents/marketing-agent-actions"
 import { executeAssetManagerAction } from "@/lib/agents/asset-manager-actions"
+import { approveContentSource, rejectContentSource, type ContentQueue } from "@/lib/kernel/approval-sources"
 
-type Queue = "marketing" | "asset" | "social"
+type Queue = "marketing" | "asset" | ContentQueue
 type AgentQueue = "marketing" | "asset"
 const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions"> = {
   marketing: "marketing_agent_actions",
@@ -63,6 +64,12 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: res.success ? "approved" : "failed", error: res.error }
   }
+  // Newsletter + direct-mail release through the content-approval registry.
+  if (params.queue === "newsletter" || params.queue === "direct_mail") {
+    const res = await approveContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: res.ok, status: res.status, error: res.error }
+  }
 
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)
   if ("error" in scope) return { ok: false, error: scope.error }
@@ -84,6 +91,11 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     const res = await rejectSocialPost(params.actionId, undefined, "Rejected in Command Center")
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: "rejected" as const, error: res.error }
+  }
+  if (params.queue === "newsletter" || params.queue === "direct_mail") {
+    const res = await rejectContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: res.ok, status: "rejected" as const, error: res.error }
   }
 
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)

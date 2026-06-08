@@ -332,6 +332,10 @@ export async function createSocialPost(params: {
   generatedByAi?: boolean
   aiPrompt?: string
   userId?: string  // ignored — kept for backward compat
+  /** Force human review (approval_status='pending') regardless of the compliance
+   *  gate — used by AUTONOMOUS posters (e.g. GBP auto-posts) so nothing reaches a
+   *  public feed without passing the Command Center release gate. */
+  forceApprovalPending?: boolean
 }) {
   const caller = await resolveCaller()
   if (!caller.ok) throw new Error("Unauthorized")
@@ -395,7 +399,7 @@ export async function createSocialPost(params: {
       post_brief: params.aiPrompt ?? null,
       status: "scheduled",
       brand_compliance_passed: true,
-      approval_status: gate.requiresHumanReview ? "pending" : "approved",
+      approval_status: params.forceApprovalPending || gate.requiresHumanReview ? "pending" : "approved",
     })
     .select()
     .maybeSingle()

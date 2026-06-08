@@ -14,14 +14,18 @@ const SESSION_BADGE: Record<string, string> = {
   error:      "bg-red-100 text-red-800",
 }
 const QUEUE_BADGE: Record<string, string> = {
-  marketing: "bg-purple-100 text-purple-800",
-  asset:     "bg-orange-100 text-orange-800",
-  social:    "bg-sky-100 text-sky-800",
+  marketing:   "bg-purple-100 text-purple-800",
+  asset:       "bg-orange-100 text-orange-800",
+  social:      "bg-sky-100 text-sky-800",
+  newsletter:  "bg-emerald-100 text-emerald-800",
+  direct_mail: "bg-amber-100 text-amber-900",
 }
 const QUEUE_LABEL: Record<string, string> = {
-  marketing: "Marketing Agent",
-  asset:     "Asset Manager",
-  social:    "Social Post",
+  marketing:   "Marketing Agent",
+  asset:       "Asset Manager",
+  social:      "Social Post",
+  newsletter:  "Newsletter",
+  direct_mail: "Direct Mail",
 }
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
@@ -214,6 +218,47 @@ function SocialPreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+/** Newsletter preview: the subject + body the operator is releasing to subscribers. */
+function NewsletterPreview({ input }: { input: Record<string, unknown> }) {
+  const subject = (input.subject_line as string | null) ?? ""
+  const body = (input.content_preview as string | null) ?? ""
+  const sendDate = input.send_date as string | null
+  const ai = !!input.is_ai_generated
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Review before emailing subscribers</span>
+        {ai && <Badge className="bg-emerald-100 text-emerald-800">AI-drafted</Badge>}
+      </div>
+      {subject && <div className="text-sm font-medium">Subject: {subject}</div>}
+      {body && <p className="text-sm whitespace-pre-wrap max-h-48 overflow-auto">{body}</p>}
+      {sendDate && <div className="text-[11px] text-muted-foreground">Scheduled to send: {new Date(sendDate).toLocaleString()}</div>}
+    </div>
+  )
+}
+
+/** Direct-mail preview: the rendered design + copy for the whole campaign (one approval per campaign). */
+function DirectMailPreview({ input }: { input: Record<string, unknown> }) {
+  const design = (input.design_url as string | null) ?? null
+  const copy = (input.copy_text as string | null) ?? ""
+  const pieceType = (input.piece_type as string | null) ?? "mail"
+  const quantity = input.quantity as number | null
+  const audience = (input.target_audience as string | null) ?? null
+  const mailingDate = input.mailing_date as string | null
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Review before it prints + mails</span>
+        <Badge className="bg-amber-100 text-amber-900">{pieceType}{quantity ? ` · ${quantity} pieces` : ""}</Badge>
+      </div>
+      {design && <a href={design} target="_blank" rel="noreferrer"><img src={design} alt="mail design" className="w-56 rounded border" /></a>}
+      {copy && <p className="text-sm whitespace-pre-wrap">{copy}</p>}
+      {audience && <div className="text-[11px] text-muted-foreground">Audience: {audience}</div>}
+      {mailingDate && <div className="text-[11px] text-muted-foreground">Mailing date: {new Date(mailingDate).toLocaleString()}</div>}
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -248,6 +293,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.rationale && <p className="text-sm text-muted-foreground mt-1">{action.rationale}</p>}
           {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
           {action.queue === "social" && <SocialPreview input={action.actionInput} />}
+          {action.queue === "newsletter" && <NewsletterPreview input={action.actionInput} />}
+          {action.queue === "direct_mail" && <DirectMailPreview input={action.actionInput} />}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>

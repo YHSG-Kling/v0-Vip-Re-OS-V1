@@ -118,6 +118,9 @@ async function autoPost(listing: ListingPayload, trigger: Trigger, userId: strin
     generatedByAi: false,
     aiPrompt: `auto:${trigger}`,
     userId,
+    // Autonomous public post → never auto-publish; hold for human release in the
+    // Command Center (it surfaces in the Social approval queue).
+    forceApprovalPending: true,
   })
 
   return { success: true as const, post }

@@ -15,6 +15,12 @@
  * import from a client component. Zero mock data.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
+import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
+
+// Re-export so existing importers (simulators, server actions) keep working.
+export { evaluateApprovalSla }
+export type { ApprovalSlaLevel }
 
 export type ManagerSessionStatus = "running" | "idle" | "terminated" | "error"
 
@@ -29,11 +35,9 @@ export interface CommandCenterSession {
   endedAt:     string | null
 }
 
-export type ApprovalSlaLevel = "ok" | "due" | "breached"
-
 export interface CommandCenterAction {
   id:         string
-  queue:      "marketing" | "asset" | "social"
+  queue:      "marketing" | "asset" | ContentQueue
   brokerageId: string
   actionType: string
   rationale:  string | null
@@ -42,39 +46,6 @@ export interface CommandCenterAction {
   proposedAt: string | null
   ageHours:   number
   slaLevel:   ApprovalSlaLevel
-}
-
-/**
- * Pure approval-SLA evaluation (eval-skill: stalled approvals must escalate).
- * A proposed agent action that sits unactioned past the breach window is
- * surfaced as 'breached' so a human escalates instead of it silently rotting.
- * Defaults: due at 12h, breached at 24h.
- */
-export function evaluateApprovalSla(
-  proposedAt: string | null,
-  now: Date = new Date(),
-  opts: { dueHours?: number; breachHours?: number; deadlineIso?: string | null; dueBeforeHours?: number; breachBeforeHours?: number } = {},
-): { ageHours: number; level: ApprovalSlaLevel } {
-  const dueHours = opts.dueHours ?? 12
-  const breachHours = opts.breachHours ?? 24
-  if (!proposedAt) return { ageHours: 0, level: "ok" }
-  const ageMs = now.getTime() - new Date(proposedAt).getTime()
-  const ageHours = Math.max(0, Math.round((ageMs / 3_600_000) * 10) / 10)
-  let level: ApprovalSlaLevel = ageHours >= breachHours ? "breached" : ageHours >= dueHours ? "due" : "ok"
-
-  // Deadline-aware escalation (gate-2 release vs the seller's appointment): as the
-  // appointment nears, escalate LOUDER even if the proposal is young — but we still
-  // only HOLD; nothing auto-releases. Takes the more urgent of age-based vs
-  // deadline-based level.
-  if (opts.deadlineIso) {
-    const hoursToDeadline = (new Date(opts.deadlineIso).getTime() - now.getTime()) / 3_600_000
-    const breachBefore = opts.breachBeforeHours ?? 24
-    const dueBefore = opts.dueBeforeHours ?? 48
-    const dl: ApprovalSlaLevel = hoursToDeadline <= breachBefore ? "breached" : hoursToDeadline <= dueBefore ? "due" : "ok"
-    const rank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
-    if (rank[dl] < rank[level]) level = dl
-  }
-  return { ageHours, level }
 }
 
 export interface CommandCenterData {
@@ -122,21 +93,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .limit(limit)
   if (params.brokerageId) assetQuery.eq("brokerage_id", params.brokerageId)
 
-  // Customer-facing content awaiting human RELEASE — social posts (incl. the
-  // agent's avatar/listing reels) staged 'pending' by the autonomous reactors.
-  // Pulled into the ONE Command Center so every public-facing approval lives in
-  // one governed surface, not a separate dashboard. The publish cron only sends
-  // approval_status='approved', so a pending row cannot reach a public feed.
-  const socialQuery = supabase
-    .from("social_posts")
-    .select("id, brokerage_id, content, media_urls, hashtags, platform, post_type, scheduled_for, listing_id, ai_generated, created_at")
-    .eq("approval_status", "pending")
-    .not("status", "in", "(published,cancelled,failed)")
-    .order("created_at", { ascending: true })
-    .limit(limit)
-  if (params.brokerageId) socialQuery.eq("brokerage_id", params.brokerageId)
+  // Customer-facing content awaiting human RELEASE — social posts (incl. avatar/
+  // listing reels + GBP), email newsletters, direct-mail campaigns. Loaded via
+  // the content-approval source REGISTRY so every public-facing approval lives in
+  // the ONE Command Center, not a separate per-channel dashboard. Each channel's
+  // send/publish cron only ships the 'approved' value, so a pending row cannot
+  // reach a consumer.
+  const now = new Date()
+  const contentPromise = loadContentApprovalActions(supabase, { brokerageId: params.brokerageId, limit, now })
 
-  const [sessionsRes, marketingRes, assetRes, socialRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, socialQuery])
+  const [sessionsRes, marketingRes, assetRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, contentPromise])
 
   const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
     id:          s.id,
@@ -149,7 +115,6 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     endedAt:     s.ended_at ?? null,
   }))
 
-  const now = new Date()
   const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => {
     // Release approvals escalate against the seller's appointment, not just age.
     const deadlineIso = a.action_type === "approve_prelisting_delivery"
@@ -170,41 +135,12 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     }
   }
 
-  // Social posts map into the SAME action contract so the queue + UI are uniform.
-  // Their "pending" signal is approval_status='pending' (not a 'proposed' row),
-  // and they escalate against the scheduled publish time, not proposal age.
-  const mapSocial = (s: any): CommandCenterAction => {
-    const sla = evaluateApprovalSla(s.created_at ?? null, now, { deadlineIso: (s.scheduled_for as string | null) ?? null })
-    const platform = String(s.platform ?? "social")
-    return {
-      id:          s.id,
-      queue:       "social",
-      brokerageId: s.brokerage_id,
-      actionType:  "approve_social_post",
-      rationale:   `${s.ai_generated ? "AI-drafted" : "Drafted"} ${platform === "all" ? "multi-platform" : platform} post${s.listing_id ? " for a listing" : ""} — review the creative + caption before it posts to a public feed.`,
-      actionInput: {
-        content:       s.content ?? null,
-        media_urls:    Array.isArray(s.media_urls) ? s.media_urls : [],
-        hashtags:      Array.isArray(s.hashtags) ? s.hashtags : [],
-        platform,
-        post_type:     s.post_type ?? null,
-        scheduled_for: s.scheduled_for ?? null,
-        listing_id:    s.listing_id ?? null,
-        ai_generated:  !!s.ai_generated,
-      },
-      status:      "proposed",
-      proposedAt:  s.created_at ?? null,
-      ageHours:    sla.ageHours,
-      slaLevel:    sla.level,
-    }
-  }
-
   // SLA-breached approvals escalate to the top; then oldest-first.
   const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
   const pendingActions: CommandCenterAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
-    ...(socialRes.data ?? []).map(mapSocial),
+    ...contentActions,
   ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 
   return {
