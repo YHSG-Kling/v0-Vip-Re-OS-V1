@@ -29,7 +29,7 @@
     "test:asset-capture": "tsx scripts/asset-capture-simulator.ts",
     "test:stock-scope": "tsx scripts/stock-scope-simulator.ts",
     "test:narration-orchestrator": "tsx scripts/narration-orchestrator-simulator.ts",
-    "test:agentic-loop": "tsx scripts/agentic-loop-simulator.ts",
+    "test:prelisting-release": "tsx scripts/prelisting-release-gate-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

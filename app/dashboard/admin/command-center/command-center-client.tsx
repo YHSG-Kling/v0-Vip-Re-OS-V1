@@ -112,6 +112,63 @@ function SessionRow({ session }: { session: CommandCenterSession }) {
   )
 }
 
+/**
+ * Gate-2 preview: the ACTUAL finished product the human is releasing — the
+ * rendered section videos + the announcement email — so "Approve" means
+ * "release this real thing", not "approve an intent".
+ */
+function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
+  const [showEmail, setShowEmail] = useState(false)
+  const videos = Array.isArray(input.video_renders) ? (input.video_renders as Array<{ section_key: string; title: string; output_url: string; thumbnail_url: string | null }>) : []
+  const email = (input.email ?? {}) as { subject?: string; preview_text?: string; preview_html?: string }
+  const appt = input.appointment_at as string | null
+
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the seller</div>
+
+      {videos.length > 0 && (
+        <div>
+          <div className="text-xs font-medium mb-1">{videos.length} finished video{videos.length === 1 ? "" : "s"}</div>
+          <div className="flex flex-wrap gap-2">
+            {videos.map((v) => (
+              <a key={v.section_key} href={v.output_url} target="_blank" rel="noreferrer"
+                 className="block w-32 rounded border overflow-hidden hover:ring-2 hover:ring-amber-400">
+                {v.thumbnail_url
+                  ? <img src={v.thumbnail_url} alt={v.title} className="w-full h-20 object-cover" />
+                  : <div className="w-full h-20 bg-slate-200 flex items-center justify-center text-xs text-slate-500">▶ video</div>}
+                <div className="px-1.5 py-1 text-[11px] truncate">{v.title}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {email.subject && (
+        <div>
+          <div className="text-xs font-medium">Announcement email</div>
+          <div className="text-sm">{email.subject}</div>
+          {email.preview_text && <div className="text-xs text-muted-foreground">{email.preview_text}</div>}
+          {email.preview_html && (
+            <>
+              <button type="button" onClick={() => setShowEmail((s) => !s)}
+                      className="text-xs text-blue-600 hover:underline mt-1">
+                {showEmail ? "Hide email preview" : "Preview email"}
+              </button>
+              {showEmail && (
+                <iframe title="email preview" sandbox="" srcDoc={email.preview_html}
+                        className="mt-2 w-full h-56 rounded border bg-white" />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {appt && <div className="text-[11px] text-muted-foreground">Seller appointment: {new Date(appt).toLocaleString()}</div>}
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -144,12 +201,13 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
             )}
           </div>
           {action.rationale && <p className="text-sm text-muted-foreground mt-1">{action.rationale}</p>}
+          {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
         <div className="flex gap-2 shrink-0">
           <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>Reject</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : "Approve"}</Button>
+          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : "Approve"}</Button>
         </div>
       </div>
     </Card>

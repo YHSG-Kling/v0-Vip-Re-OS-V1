@@ -53,14 +53,27 @@ export interface CommandCenterAction {
 export function evaluateApprovalSla(
   proposedAt: string | null,
   now: Date = new Date(),
-  opts: { dueHours?: number; breachHours?: number } = {},
+  opts: { dueHours?: number; breachHours?: number; deadlineIso?: string | null; dueBeforeHours?: number; breachBeforeHours?: number } = {},
 ): { ageHours: number; level: ApprovalSlaLevel } {
   const dueHours = opts.dueHours ?? 12
   const breachHours = opts.breachHours ?? 24
   if (!proposedAt) return { ageHours: 0, level: "ok" }
   const ageMs = now.getTime() - new Date(proposedAt).getTime()
   const ageHours = Math.max(0, Math.round((ageMs / 3_600_000) * 10) / 10)
-  const level: ApprovalSlaLevel = ageHours >= breachHours ? "breached" : ageHours >= dueHours ? "due" : "ok"
+  let level: ApprovalSlaLevel = ageHours >= breachHours ? "breached" : ageHours >= dueHours ? "due" : "ok"
+
+  // Deadline-aware escalation (gate-2 release vs the seller's appointment): as the
+  // appointment nears, escalate LOUDER even if the proposal is young — but we still
+  // only HOLD; nothing auto-releases. Takes the more urgent of age-based vs
+  // deadline-based level.
+  if (opts.deadlineIso) {
+    const hoursToDeadline = (new Date(opts.deadlineIso).getTime() - now.getTime()) / 3_600_000
+    const breachBefore = opts.breachBeforeHours ?? 24
+    const dueBefore = opts.dueBeforeHours ?? 48
+    const dl: ApprovalSlaLevel = hoursToDeadline <= breachBefore ? "breached" : hoursToDeadline <= dueBefore ? "due" : "ok"
+    const rank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
+    if (rank[dl] < rank[level]) level = dl
+  }
   return { ageHours, level }
 }
 
@@ -124,7 +137,11 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const now = new Date()
   const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => {
-    const sla = evaluateApprovalSla(a.proposed_at ?? null, now)
+    // Release approvals escalate against the seller's appointment, not just age.
+    const deadlineIso = a.action_type === "approve_prelisting_delivery"
+      ? (a.action_input?.appointment_at as string | null) ?? null
+      : null
+    const sla = evaluateApprovalSla(a.proposed_at ?? null, now, { deadlineIso })
     return {
       id:          a.id,
       queue,

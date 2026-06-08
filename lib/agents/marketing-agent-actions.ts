@@ -37,6 +37,8 @@ export type MarketingActionType =
   | "omnipresence_topic_fanout"
   // Wave 39 — start the seller-facing pre-listing presentation drip on demand.
   | "start_prelisting_drip"
+  // Wave 39 gate 2 — review the finished product + RELEASE it to the seller.
+  | "approve_prelisting_delivery"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -102,7 +104,7 @@ export async function executeAction(actionId: string, approverUserId: string): P
 
   let outcome: ActionHandlerResult
   try {
-    outcome = await runHandler(row.action_type, row.brokerage_id, row.action_input)
+    outcome = await runHandler(row.action_type, row.brokerage_id, row.action_input, approverUserId)
   } catch (e) {
     outcome = { status: "failed", result: { error: (e as Error).message } }
   }
@@ -116,6 +118,7 @@ async function runHandler(
   action: MarketingActionType,
   brokerageId: string,
   input: Record<string, unknown>,
+  approverUserId?: string,
 ): Promise<ActionHandlerResult> {
   switch (action) {
     case "retry_listing_promo_render": {
@@ -673,6 +676,38 @@ async function runHandler(
       return res.ok
         ? { status: "succeeded", result: { presentation_id: presentationId, sections_scheduled: res.inserted } }
         : { status: "failed", result: { error: res.error ?? "drip materialization failed" } }
+    }
+
+    case "approve_prelisting_delivery": {
+      // GATE 2 (RELEASE). A human reviewed the finished videos + announcement
+      // email in the Command Center and is releasing the presentation to the
+      // seller. Stamp delivery_approved_at (un-gates the drip) + delivery_approved_by
+      // (audit trail), then send the announcement email best-effort. Idempotent.
+      const presentationId = String(input.presentation_id ?? "")
+      if (!presentationId) return { status: "failed", result: { error: "presentation_id required" } }
+      const svc = createServiceClient()
+      const { data: pres } = await svc.from("listing_presentations")
+        .select("id, brokerage_id, delivery_approved_at").eq("id", presentationId).maybeSingle()
+      const p = pres as { id: string; brokerage_id: string | null; delivery_approved_at: string | null } | null
+      if (!p) return { status: "failed", result: { error: "presentation not found" } }
+      if (p.brokerage_id && p.brokerage_id !== brokerageId) {
+        return { status: "failed", result: { error: "presentation outside brokerage" } }
+      }
+      if (p.delivery_approved_at) return { status: "skipped", result: { reason: "already released" } }
+
+      await svc.from("listing_presentations")
+        .update({ delivery_approved_at: new Date().toISOString(), delivery_approved_by: approverUserId ?? null })
+        .eq("id", presentationId)
+
+      // Send the announcement email now (the drip then reveals the portal
+      // sections on schedule). Best-effort — a send failure must not un-release.
+      let emailSent = false
+      try {
+        const { sendPrelistingAnnouncementEmail } = await import("@/lib/listing-presentation/prelisting-delivery")
+        const sent = await sendPrelistingAnnouncementEmail(presentationId, svc)
+        emailSent = sent.sent
+      } catch { /* announcement email is best-effort */ }
+      return { status: "succeeded", result: { presentation_id: presentationId, released: true, email_sent: emailSent } }
     }
 
     default: {

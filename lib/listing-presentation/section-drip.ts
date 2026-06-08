@@ -168,11 +168,15 @@ export async function deliverDueSections(
   const supabase = client ?? createServiceClient()
   const nowIso = (opts.now ?? new Date()).toISOString()
 
+  // GATE 2: a section is delivered only after a human RELEASED its presentation
+  // (listing_presentations.delivery_approved_at). An inner join + not-null filter
+  // keeps held (un-reviewed) presentations out of the drip entirely.
   const { data: due } = await supabase
     .from("presentation_sections")
-    .select("id, presentation_id, brokerage_id, contact_id, title")
+    .select("id, presentation_id, brokerage_id, contact_id, title, listing_presentations!inner(delivery_approved_at)")
     .eq("status", "scheduled")
     .lte("scheduled_for", nowIso)
+    .not("listing_presentations.delivery_approved_at", "is", null)
     .order("scheduled_for", { ascending: true })
     .limit(opts.limit ?? 25)
 
