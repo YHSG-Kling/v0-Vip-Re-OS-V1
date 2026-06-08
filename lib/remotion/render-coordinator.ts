@@ -277,7 +277,7 @@ async function pickStockAsset(
   music_volume_pct:  number | null
   music_loop:        boolean | null
 } | null> {
-  const tryScope = async (scopeType: "agent" | "team" | "brokerage", scopeId: string) => {
+  const tryScope = async (scopeType: string, scopeId: string) => {
     const { data } = await svc.from("video_assets")
       .select("id, video_url, music_volume_pct, music_loop")
       .eq("brokerage_id", intent.brokerageId)
@@ -290,13 +290,19 @@ async function pickStockAsset(
       .maybeSingle()
     return data as { id: string; video_url: string; music_volume_pct: number | null; music_loop: boolean | null } | null
   }
-  // 1. Caller's exact scope.
-  const exact = await tryScope(intent.scopeType, intent.scopeId)
-  if (exact) return exact
-  // 2. Brokerage fallback (when caller is at agent / team scope).
-  if (intent.scopeType !== "brokerage") {
-    const fallback = await tryScope("brokerage", intent.brokerageId)
-    if (fallback) return fallback
+
+  // Resolve the agent's team so agent renders also inherit team-uploaded stock.
+  let teamId: string | null = null
+  if (intent.scopeType === "agent") {
+    const { data: agentRow } = await svc.from("agents").select("team_id").eq("id", intent.scopeId).maybeSingle()
+    teamId = (agentRow as { team_id?: string | null } | null)?.team_id ?? null
+  }
+
+  // Walk the agent → team → brokerage cascade; most specific available wins.
+  const { resolveStockScopeOrder } = await import("./stock-scope")
+  for (const ref of resolveStockScopeOrder(intent, teamId)) {
+    const hit = await tryScope(ref.scopeType, ref.scopeId)
+    if (hit) return hit
   }
   return null
 }
