@@ -486,6 +486,15 @@ export async function buildListingPresentation(
       return { success: false, error: presErr?.message ?? "Could not save presentation" }
     }
 
+    // 7b. Materialize the seller-facing pre-listing DRIP — split the presentation
+    // into ordered, seller-safe sections (CMA mixed in, price withheld) scheduled
+    // across the window before the appointment. Best-effort: a drip-scheduling
+    // failure must not fail the presentation build (the agent's copy is saved).
+    try {
+      const { materializePresentationSections } = await import("@/lib/listing-presentation/section-drip")
+      await materializePresentationSections(pres.id, svc)
+    } catch { /* drip scheduling is best-effort */ }
+
     // 8. Notify agent
     if (input.agentUserId) {
       void Promise.resolve(svc.from("notifications").insert({

@@ -583,4 +583,6 @@ export enum KernelEvent {
   ESIGN_PACKET_SIGNED                = 'esign_packet_signed',
   LISTING_STAGE_TRANSITION_FAILED    = 'listing_stage_transition_failed',
   BUYER_BROKER_AGREEMENT_SIGNED      = 'buyer_broker_agreement_signed',
+  // Pre-listing drip: a seller-safe presentation section was delivered to the seller.
+  PRESENTATION_SECTION_DELIVERED     = 'presentation_section_delivered',
 }

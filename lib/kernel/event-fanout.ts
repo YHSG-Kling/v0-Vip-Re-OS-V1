@@ -186,6 +186,16 @@ interface PortalUpdateTemplate {
 }
 
 const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>> = {
+  // Pre-listing drip — a presentation section dropped for the seller before the
+  // appointment. Seller-only; the home's value is NEVER shown (deferred to the
+  // meeting), so copy stays about the market + the team, never a price.
+  [KernelEvent.PRESENTATION_SECTION_DELIVERED]: {
+    audience: "seller",
+    title: "New from your listing team: {section_title}",
+    plainLanguageSummary:
+      "We've added a new section of your custom listing plan — see how we'll position and market your home in today's market.",
+    nextStep: "Open your portal to watch it before our meeting.",
+  },
   [KernelEvent.OFFER_ACCEPTED]: {
     title: "You're under contract!",
     plainLanguageSummary:

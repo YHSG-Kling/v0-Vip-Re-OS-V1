@@ -135,3 +135,62 @@ export async function materializePresentationSections(
   if (insErr) return { ok: false, inserted: 0, error: insErr.message }
   return { ok: true, inserted: inserted?.length ?? 0 }
 }
+
+export interface DeliverResult { delivered: number; considered: number }
+
+/**
+ * Deliver every section whose scheduled_for has arrived: post a seller-facing
+ * portal card (writePortalUpdate, PRESENTATION_SECTION_DELIVERED) and advance
+ * the section scheduled → delivered. The portal write is best-effort — a
+ * delivery-channel failure must not strand the section in 'scheduled'. The
+ * drip cron is a thin wrapper over this. Atomic per row (the status guard in
+ * the update prevents a double-send across overlapping cron ticks).
+ */
+export async function deliverDueSections(
+  opts: { now?: Date; limit?: number } = {},
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<DeliverResult> {
+  const supabase = client ?? createServiceClient()
+  const nowIso = (opts.now ?? new Date()).toISOString()
+
+  const { data: due } = await supabase
+    .from("presentation_sections")
+    .select("id, presentation_id, brokerage_id, contact_id, title")
+    .eq("status", "scheduled")
+    .lte("scheduled_for", nowIso)
+    .order("scheduled_for", { ascending: true })
+    .limit(opts.limit ?? 25)
+
+  const rows = due ?? []
+  let delivered = 0
+  for (const s of rows as Array<{ id: string; presentation_id: string; brokerage_id: string; contact_id: string | null; title: string | null }>) {
+    // Claim the row first (scheduled → delivered) so an overlapping tick can't double-send.
+    const { data: claimed } = await supabase
+      .from("presentation_sections")
+      .update({ status: "delivered", delivered_at: new Date().toISOString() })
+      .eq("id", s.id)
+      .eq("status", "scheduled")
+      .select("id")
+      .maybeSingle()
+    if (!claimed) continue
+    delivered++
+
+    if (s.contact_id) {
+      try {
+        const { writePortalUpdate } = await import("@/lib/kernel/event-fanout")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await writePortalUpdate(
+          {
+            event:       KernelEvent.PRESENTATION_SECTION_DELIVERED,
+            brokerageId: s.brokerage_id,
+            entityType:  "listing_presentation",
+            entityId:    s.presentation_id,
+            metadata:    { section_title: s.title ?? "Your listing plan" },
+          } as Parameters<typeof writePortalUpdate>[0],
+          [s.contact_id],
+        )
+      } catch { /* portal delivery is best-effort; the section is already delivered */ }
+    }
+  }
+  return { delivered, considered: rows.length }
+}

@@ -97,12 +97,20 @@ async function testLive() {
     const again = await materializePresentationSections(presId!, svc)
     check("re-materialize is idempotent (0 new rows)", again.ok && again.inserted === 0)
 
-    // Deliver one section.
-    const first = (list[0] as any).section_key
-    const { error: dErr } = await svc.from("presentation_sections")
-      .update({ status: "delivered", delivered_at: new Date().toISOString() })
-      .eq("presentation_id", presId!).eq("section_key", first)
-    check("a due section advances scheduled → delivered", !dErr, dErr?.message)
+    // Drip delivery — force the first section due, then run the real cron core.
+    const { deliverDueSections } = await import("../lib/listing-presentation/section-drip")
+    const firstKey = (list[0] as any).section_key
+    await svc.from("presentation_sections")
+      .update({ scheduled_for: new Date(Date.now() - 60_000).toISOString() })
+      .eq("presentation_id", presId!).eq("section_key", firstKey)
+    const delivery = await deliverDueSections({ now: new Date() }, svc)
+    check("deliverDueSections delivers the due section", delivery.delivered >= 1)
+    const { data: deliveredRow } = await svc.from("presentation_sections")
+      .select("status, delivered_at").eq("presentation_id", presId!).eq("section_key", firstKey).single()
+    check("due section advanced scheduled → delivered + stamped", (deliveredRow as any)?.status === "delivered" && !!(deliveredRow as any)?.delivered_at)
+    const { count: stillScheduled } = await svc.from("presentation_sections")
+      .select("id", { count: "exact", head: true }).eq("presentation_id", presId!).eq("status", "scheduled")
+    check("future sections stay scheduled (only due ones deliver)", (stillScheduled ?? 0) === SECTION_SEQUENCE.length - 1)
   } finally {
     // Cascade: deleting the presentation removes its sections (FK on delete cascade).
     if (presId) { try { await svc.from("listing_presentations").delete().eq("id", presId) } catch { /* noop */ } }

@@ -338,6 +338,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/presentation-section-drip",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/cron/marketing-image-regen",
       "schedule": "*/10 * * * *"
     },
