@@ -89,3 +89,83 @@ export function buildSectionNarrationScript(input: NarrationInput): SectionNarra
 }
 
 export const NARRATABLE_SECTION_KEYS = ["intro", "credibility", "marketing", "process", "closing", "market", "cma"] as const
+
+// ── AI narration (the WOW differentiator) ───────────────────────────────────
+// Per-section creative brief that steers the AI toward a compelling, specific,
+// seller-safe script — not generic filler. The deterministic builder above is
+// the fallback when the AI is unavailable.
+const SECTION_BRIEF: Record<string, string> = {
+  intro:       "Warmly introduce yourself and build anticipation that what follows is a marketing system unlike any other local agent's.",
+  credibility: "Establish why this team wins listings — results, the team behind the seller, deep local expertise — so the seller feels they're in the best possible hands.",
+  marketing:   "Showcase the marketing machine (cinematic listing video, animated market-data reels, the agent's AI avatar, omnipresent social + portal reach, AI-search-optimized property pages) and contrast it with the tired flyer-and-MLS approach other agents still use.",
+  process:     "Reassure the seller the path from listing to closing is clear and stress-free, and that they and the agent stay on the same page the whole way — reduce their anxiety.",
+  closing:     "Invite them to the meeting where you'll reveal their home's value and the full strategy; create momentum to choose you.",
+  market:      "Walk through the local market with confidence — direction, comparable activity, how fast homes are selling — WITHOUT revealing their home's value.",
+  cma:         "Frame the analysis as proof of your data-driven approach and show the market context, while explicitly deferring the home's specific number to the in-person meeting.",
+}
+
+/** A concise description of THIS platform's marketing system, woven into the
+ *  narration so the seller hears exactly what they're getting. */
+export const DEFAULT_MARKETING_SYSTEM =
+  "Cinematic listing video, animated market-data reels, a personal AI-avatar video series, omnipresent reach across every social and portal channel buyers use, AI-search-optimized property pages, and a coordinated direct-mail + email campaign — all produced and orchestrated for you, not bolted on."
+
+export interface AINarrationInput extends NarrationInput {
+  /** The agent's own angle / proof points (users.presentation_take). */
+  agentTake?:       string | null
+  /** Description of the brokerage marketing system to sell. */
+  marketingSystem?: string | null
+  /** Background market context (never a price): e.g. "rising", "balanced". */
+  marketTrend?:     string | null
+  avgDaysOnMarket?: number | null
+}
+
+/**
+ * Generate a compelling, personalized, SELLER-SAFE narration script for one
+ * section using the platform's metered AI gateway. Weaves the brokerage
+ * marketing system, the agent's own take, and market context into 3–5 spoken
+ * sentences. Falls back to the deterministic builder on any AI failure, and
+ * scrubs any dollar figure the model emits (the no-price rule is absolute).
+ */
+export async function generateSectionNarration(input: AINarrationInput): Promise<SectionNarration> {
+  const fallback = buildSectionNarrationScript(input)
+  const brief = SECTION_BRIEF[input.sectionKey]
+  if (!brief) return fallback
+
+  const agent = (input.agentName || "your agent").trim()
+  const brokerage = (input.brokerageName || "our brokerage").trim()
+  const us = input.teamName?.trim() ? `${input.teamName.trim()} at ${brokerage}` : brokerage
+  const where = input.areaName?.trim() || "your neighborhood"
+
+  const prompt = [
+    `You are writing the spoken narration for ${agent}, a real estate agent at ${us}, that their AI avatar will speak in ${agent}'s own cloned voice over ONE section of a pre-listing presentation video sent to a home seller in ${where} BEFORE the listing appointment.`,
+    ``,
+    `SECTION GOAL: ${brief}`,
+    `OVERALL GOAL: Wow the seller and prove why they should list with ${us} over any other local agent — sell the marketing system and the relationship.`,
+    input.agentTake?.trim() ? `\nTHE AGENT'S OWN ANGLE (weave in naturally, first person):\n${input.agentTake.trim()}` : ``,
+    `\nTHE MARKETING SYSTEM TO SELL:\n${(input.marketingSystem ?? DEFAULT_MARKETING_SYSTEM)}`,
+    input.marketTrend?.trim() ? `\nMARKET BACKGROUND (context only — never quote a price): the market is ${input.marketTrend.trim()}${input.avgDaysOnMarket ? `, homes averaging about ${input.avgDaysOnMarket} days on market` : ``}.` : ``,
+    ``,
+    `HARD RULES:`,
+    `- NEVER state the seller's home value, a suggested list price, or ANY dollar figure. Defer all pricing to the in-person meeting.`,
+    `- First person ("I", "my team", "we"), warm, confident, specific to ${where} — not generic.`,
+    `- 3 to 5 sentences. Conversational, meant to be spoken aloud. No bullet points, no markdown, no stage directions, no salutations.`,
+    `- This is ${agent} speaking directly to the homeowner.`,
+    ``,
+    `Write only the narration text.`,
+  ].filter(Boolean).join("\n")
+
+  try {
+    const { generateAIText } = await import("@/lib/ai/generate")
+    const { text } = await generateAIText(prompt, { maxTokens: 320, temperature: 0.8, feature: "listing_presentation_narration" })
+    let script = (text ?? "").trim().replace(/^["“]|["”]$/g, "")
+    if (!script || script.length < 40) return fallback
+    // Absolute no-price rule — scrub any dollar figure or leaked valuation.
+    if (/\$\s?\d/.test(script) || findSuggestedPriceLeaks({ script }).length > 0) {
+      script = script.replace(/\$\s?[\d,]+(?:\.\d+)?/g, "the right price")
+    }
+    // Bullets stay deterministic (concise, seller-safe on-screen text).
+    return { sectionKey: input.sectionKey, script, bullets: fallback.bullets }
+  } catch {
+    return fallback
+  }
+}

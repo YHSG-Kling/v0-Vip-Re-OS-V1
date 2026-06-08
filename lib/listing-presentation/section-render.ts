@@ -13,7 +13,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { enqueueCmaReelRender } from "@/lib/video/cma-reel-orchestrator"
-import { buildSectionNarrationScript } from "@/lib/listing-presentation/section-narration"
+import { generateSectionNarration } from "@/lib/listing-presentation/section-narration"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
 export type SectionRenderResult =
@@ -122,12 +122,14 @@ export async function renderSectionsForPresentation(
     .maybeSingle()
   if (!pres?.brokerage_id) return { rendered, skipped }
 
-  // Resolve the agent's display name (for the narration + name plate).
+  // Resolve the agent's display name + their own "take" (for the narration).
   let agentName = "Your Agent"
+  let agentTake: string | null = null
   if (pres.agent_user_id) {
-    const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", pres.agent_user_id).maybeSingle()
+    const { data: u } = await supabase.from("users").select("first_name, last_name, presentation_take").eq("id", pres.agent_user_id).maybeSingle()
     const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
     if (full) agentName = full
+    agentTake = (u as any)?.presentation_take ?? null
   }
   const areaName = (pres.property_address ?? "").split(",").slice(1).join(",").trim() || null
 
@@ -157,12 +159,15 @@ export async function renderSectionsForPresentation(
     if (s.section_key === "cma") continue           // already handled above
     if (s.render_id) { continue }                   // already rendered
     // The narration script drives the on-screen bullets AND the avatar/voice
-    // clone's words (TTS reads narration.script); seller-safe by construction.
-    const narration = buildSectionNarrationScript({
+    // clone's words (TTS reads narration.script). AI-generated (weaving the
+    // marketing system + the agent's own take), seller-safe, with a
+    // deterministic fallback if the AI is unavailable.
+    const narration = await generateSectionNarration({
       sectionKey:    s.section_key,
       brokerageName: brand.brokerageName,
       agentName,
       areaName,
+      agentTake,
     })
     const inputProps: Record<string, unknown> = {
       sectionKey:      s.section_key,

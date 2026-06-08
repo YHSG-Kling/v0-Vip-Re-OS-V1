@@ -9,7 +9,7 @@
  *
  * Run:  npx tsx scripts/section-narration-simulator.ts   (npm run test:section-narration)
  */
-import { buildSectionNarrationScript, NARRATABLE_SECTION_KEYS } from "../lib/listing-presentation/section-narration"
+import { buildSectionNarrationScript, generateSectionNarration, NARRATABLE_SECTION_KEYS } from "../lib/listing-presentation/section-narration"
 import { findSuggestedPriceLeaks } from "../lib/cma/customer-facing-guard"
 
 let passed = 0, failed = 0
@@ -21,7 +21,18 @@ function check(name: string, cond: boolean, detail?: string) {
 
 const BASE = { brokerageName: "Summit Realty", agentName: "Jane Doe", areaName: "Brickell" }
 
-function main() {
+async function testAiFallback() {
+  console.log("\n[generateSectionNarration — safe fallback when AI is unavailable]")
+  // No AI gateway/keys in CI → generateSectionNarration must degrade to the
+  // deterministic builder and stay seller-safe (never throw, never leak a price).
+  const n = await generateSectionNarration({ sectionKey: "marketing", ...BASE, agentTake: "I've sold 40 homes in this zip in 3 years." })
+  check("returns a usable script even without AI", typeof n.script === "string" && n.script.length > 20)
+  check("fallback narration is seller-safe (no price leak)", findSuggestedPriceLeaks({ script: n.script, bullets: n.bullets }).length === 0)
+  check("fallback narration carries no dollar figure", !/\$\s?\d/.test(n.script))
+  check("on-screen bullets present", Array.isArray(n.bullets) && n.bullets.length > 0)
+}
+
+async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Section narration simulator (avatar/voice script)")
   console.log("══════════════════════════════════════════════════")
@@ -57,9 +68,11 @@ function main() {
   const noArea = buildSectionNarrationScript({ sectionKey: "intro", brokerageName: "X", agentName: "Y" })
   check("missing area falls back gracefully (no 'undefined')", !/undefined|null/.test(noArea.script))
 
+  await testAiFallback()
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log(" ✅ Narration verified — sells the system, seller-safe, never a price")
 }
-main()
+main().catch((e) => { console.error(e); process.exit(1) })
