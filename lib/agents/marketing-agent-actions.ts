@@ -35,6 +35,8 @@ export type MarketingActionType =
   | "flag_design_for_review"
   // Wave 36 self-learning capstone — omnipresence fanout.
   | "omnipresence_topic_fanout"
+  // Wave 39 — start the seller-facing pre-listing presentation drip on demand.
+  | "start_prelisting_drip"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -649,6 +651,28 @@ async function runHandler(
         status: anyOk ? "succeeded" : "failed",
         result: { topic_id: topicId, fanout },
       }
+    }
+
+    case "start_prelisting_drip": {
+      // Materialize (or refresh) the seller-facing pre-listing section drip for
+      // a presentation — splits it into seller-safe sections scheduled before
+      // the appointment + renders the animated CMA section. The drip cron then
+      // delivers each section to the seller's portal. Idempotent.
+      const presentationId = String(input.presentation_id ?? "")
+      if (!presentationId) return { status: "failed", result: { error: "presentation_id required" } }
+      const svc = createServiceClient()
+      const { data: pres } = await svc.from("listing_presentations")
+        .select("id, brokerage_id").eq("id", presentationId).maybeSingle()
+      const p = pres as { id: string; brokerage_id: string | null } | null
+      if (!p) return { status: "failed", result: { error: "presentation not found" } }
+      if (p.brokerage_id && p.brokerage_id !== brokerageId) {
+        return { status: "failed", result: { error: "presentation outside brokerage" } }
+      }
+      const { materializePresentationSections } = await import("@/lib/listing-presentation/section-drip")
+      const res = await materializePresentationSections(presentationId, svc)
+      return res.ok
+        ? { status: "succeeded", result: { presentation_id: presentationId, sections_scheduled: res.inserted } }
+        : { status: "failed", result: { error: res.error ?? "drip materialization failed" } }
     }
 
     default: {

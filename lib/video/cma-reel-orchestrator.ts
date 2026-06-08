@@ -27,6 +27,10 @@ export interface EnqueueCmaReelParams {
   priceHistory?:  CmaPricePoint[]
   brand?:         CmaBrand
   affordability?: AffordabilityAssumptions
+  /** Seller-safe market median (drives customer-facing affordability). */
+  marketMedianPrice?: number
+  /** 'customer' (default, seller-safe) omits the subject value; 'agent' includes it. */
+  audience?:      "agent" | "customer"
   /** Optional voiceover track (e.g. ElevenLabs narration of the CMA). */
   voiceoverUrl?:  string | null
   entityType?:    string | null
@@ -49,11 +53,13 @@ export async function enqueueCmaReelRender(
   }
 
   const inputProps = buildCmaReelInputProps({
-    subject:       params.subject,
-    comparables:   params.comparables ?? [],
-    priceHistory:  params.priceHistory,
-    brand:         params.brand,
-    affordability: params.affordability,
+    subject:           params.subject,
+    comparables:       params.comparables ?? [],
+    priceHistory:      params.priceHistory,
+    brand:             params.brand,
+    affordability:     params.affordability,
+    marketMedianPrice: params.marketMedianPrice,
+    audience:          params.audience,
   })
   const voiceoverUrl = params.voiceoverUrl ?? null
 

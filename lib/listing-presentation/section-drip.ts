@@ -133,6 +133,15 @@ export async function materializePresentationSections(
     .upsert(planned, { onConflict: "presentation_id,section_key", ignoreDuplicates: true })
     .select("id")
   if (insErr) return { ok: false, inserted: 0, error: insErr.message }
+
+  // Best-effort: render the CMA section as an animated seller-safe CMAReel video
+  // (graphics that sell the market + team before the appointment). A render
+  // failure must not fail section materialization — the section still drips.
+  try {
+    const { renderCmaSectionForPresentation } = await import("./section-render")
+    await renderCmaSectionForPresentation(presentationId, supabase)
+  } catch { /* section render is best-effort */ }
+
   return { ok: true, inserted: inserted?.length ?? 0 }
 }
 
