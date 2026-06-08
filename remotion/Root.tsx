@@ -24,6 +24,7 @@ import { ListingPresentationSlide } from "./ListingPresentationSlide"
 import { BuyerConsultationSlide } from "./BuyerConsultationSlide"
 import { AffordabilitySnapshotReel } from "./AffordabilitySnapshotReel"
 import { CMAReel } from "./CMAReel"
+import { ListingSectionReel } from "./ListingSectionReel"
 import { VideoCoverThumb } from "./VideoCoverThumb"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
@@ -521,6 +522,35 @@ export const RemotionRoot: React.FC = () => {
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
             agentName:     "Your Agent",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — one pre-listing presentation SECTION as a branded,
+          narratable animated slide (intro / credibility / marketing / process /
+          closing). The CMA/market section uses CMAReel; every other dripped
+          section uses this. Avatar PIP + ElevenLabs narration optional. */}
+      <Composition
+        id="ListingSectionReel"
+        component={ListingSectionReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={300}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          sectionKey: "intro",
+          title:      "Meet Your Listing Team",
+          bullets:    ["A marketing system no other local agent runs.", "Here's exactly how we'll sell your home."],
+          agentName:  "Your Agent",
+          agentPhotoUrl: null,
+          avatarVideoUrl: null,
+          voiceoverUrl:   null,
+          slideNumber: 1,
+          totalSlides: 5,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
             showEhoMark:   true,
           },
         }}

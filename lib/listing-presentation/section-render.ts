@@ -93,3 +93,107 @@ export async function renderCmaSectionForPresentation(
 
   return { ok: true, renderId: enq.renderId }
 }
+
+// "Why this brokerage/agent/team over any other local agent" — the conversion
+// copy for each non-CMA section. (A future ElevenLabs-narrated script can
+// override these per brokerage; these are the safe defaults.)
+const SECTION_COPY: Record<string, { title: string; bullets: string[] }> = {
+  intro:       { title: "Meet Your Listing Team",   bullets: ["A marketing system no other local agent runs.", "Here's exactly how we'll sell your home — before we even meet."] },
+  credibility: { title: "Why Sellers Choose Us",    bullets: ["Proven results in your neighborhood.", "A team behind you, not a single busy agent."] },
+  marketing:   { title: "How We Sell Your Home",    bullets: ["Cinematic video, animated market data, and omnipresent digital reach.", "Your home, marketed like a brand — not a flyer."] },
+  process:     { title: "What To Expect",           bullets: ["A clear, stress-free path from listing to closing.", "You and your agent on the same page, every step."] },
+  closing:     { title: "Let's Talk Strategy",      bullets: ["Bring your questions — we'll bring the plan.", "See you at our meeting."] },
+  market:      { title: "Your Market Right Now",    bullets: ["Recent comparable sales and where the market is heading.", "Real local data — your home's value, discussed in person."] },
+}
+
+export interface RenderSectionsResult { rendered: number; skipped: number }
+
+/**
+ * Render EVERY section of a presentation: the CMA section as a CMAReel data
+ * video (seller-safe), and the others (intro/credibility/marketing/process/
+ * closing/market) as branded ListingSectionReel slides. Each render's id is
+ * attached to its section so the drip delivers an animated video, not text.
+ * Idempotent-ish: a section that already has a render_id is left alone.
+ */
+export async function renderSectionsForPresentation(
+  presentationId: string,
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<RenderSectionsResult> {
+  const supabase = client ?? createServiceClient()
+
+  // CMA section → data-chart reel (handles its own comps fetch + seller-safety).
+  const cmaRes = await renderCmaSectionForPresentation(presentationId, supabase)
+  let rendered = cmaRes.ok ? 1 : 0
+  let skipped = cmaRes.ok ? 0 : 1
+
+  const { data: pres } = await supabase
+    .from("listing_presentations")
+    .select("brokerage_id, agent_user_id, property_address")
+    .eq("id", presentationId)
+    .maybeSingle()
+  if (!pres?.brokerage_id) return { rendered, skipped }
+
+  const { data: brk } = await supabase
+    .from("brokerages")
+    .select("name, logo_url, license_number, license_state")
+    .eq("id", pres.brokerage_id)
+    .maybeSingle()
+  const brand = {
+    primaryColor:  "#0F172A",
+    accentColor:   "#F59E0B",
+    brokerageName: (brk as any)?.name ?? "Your Brokerage",
+    logoUrl:       (brk as any)?.logo_url ?? undefined,
+    licenseLine:   [(brk as any)?.license_number, (brk as any)?.license_state].filter(Boolean).join(" · ") || undefined,
+    showEhoMark:   true,
+  }
+
+  const { data: sections } = await supabase
+    .from("presentation_sections")
+    .select("section_key, title, render_id")
+    .eq("presentation_id", presentationId)
+    .order("section_order")
+  const list = (sections ?? []) as Array<{ section_key: string; title: string | null; render_id: string | null }>
+  const total = list.length
+
+  for (const s of list) {
+    if (s.section_key === "cma") continue           // already handled above
+    if (s.render_id) { continue }                   // already rendered
+    const copy = SECTION_COPY[s.section_key] ?? { title: s.title ?? "Your Listing Plan", bullets: [] }
+    const inputProps: Record<string, unknown> = {
+      sectionKey:  s.section_key,
+      title:       s.title ?? copy.title,
+      bullets:     copy.bullets,
+      agentName:   "Your Agent",
+      avatarVideoUrl: null,
+      voiceoverUrl:   null,
+      totalSlides: total,
+      brand,
+    }
+    const { data: render, error } = await supabase
+      .from("remotion_composition_renders")
+      .insert({
+        brokerage_id:    pres.brokerage_id,
+        composition_id:  "ListingSectionReel",
+        agent_user_id:   pres.agent_user_id ?? null,
+        entity_type:     "listing_presentation",
+        entity_id:       presentationId,
+        used_did_avatar: false,
+        used_voiceover:  false,
+        render_status:   "queued",
+        input_props:     inputProps,
+        scope_type:      "agent",
+        scope_id:        pres.agent_user_id ?? null,
+        requested_via:   "cron",
+        is_published:    false,
+      })
+      .select("id")
+      .single()
+    if (error || !render) { skipped++; continue }
+    await supabase.from("presentation_sections")
+      .update({ render_id: (render as { id: string }).id })
+      .eq("presentation_id", presentationId).eq("section_key", s.section_key)
+    rendered++
+  }
+
+  return { rendered, skipped }
+}

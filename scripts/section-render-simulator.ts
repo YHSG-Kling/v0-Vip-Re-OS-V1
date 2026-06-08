@@ -75,18 +75,34 @@ async function main() {
     const mat = await materializePresentationSections(presId, svc)
     check("materialize schedules the sections", mat.ok && mat.inserted > 0, mat.error)
 
-    const { data: cmaSection } = await svc.from("presentation_sections")
-      .select("render_id").eq("presentation_id", presId).eq("section_key", "cma").maybeSingle()
-    check("CMA section got an animated render attached", !!(cmaSection as any)?.render_id)
-    renderId = (cmaSection as any)?.render_id ?? null
+    // Every section should now carry an animated render.
+    const { data: allSections } = await svc.from("presentation_sections")
+      .select("section_key, render_id").eq("presentation_id", presId)
+    const secs = (allSections ?? []) as Array<{ section_key: string; render_id: string | null }>
+    const withRender = secs.filter((s) => !!s.render_id)
+    check("most sections got an animated render attached", withRender.length >= 5, `${withRender.length}/${secs.length}`)
+    for (const s of withRender) cleanup.push({ table: "remotion_composition_renders", col: "id", val: s.render_id! })
 
+    // CMA section → seller-safe CMAReel.
+    const cmaSection = secs.find((s) => s.section_key === "cma")
+    check("CMA section rendered", !!cmaSection?.render_id)
+    renderId = cmaSection?.render_id ?? null
     if (renderId) {
       const { data: render } = await svc.from("remotion_composition_renders")
         .select("composition_id, render_status, input_props").eq("id", renderId).single()
-      check("section render targets CMAReel + queued", (render as any)?.composition_id === "CMAReel" && (render as any)?.render_status === "queued")
+      check("CMA section render targets CMAReel + queued", (render as any)?.composition_id === "CMAReel" && (render as any)?.render_status === "queued")
       const props = (render as any)?.input_props ?? {}
-      check("section render input_props are SELLER-SAFE (no price leak)", findSuggestedPriceLeaks(props).length === 0, JSON.stringify(findSuggestedPriceLeaks(props)))
-      check("section render omits the subject value bar", Array.isArray(props.comps) && props.comps.every((c: any) => c.isSubject !== true))
+      check("CMA section render is SELLER-SAFE (no price leak)", findSuggestedPriceLeaks(props).length === 0, JSON.stringify(findSuggestedPriceLeaks(props)))
+      check("CMA section render omits the subject value bar", Array.isArray(props.comps) && props.comps.every((c: any) => c.isSubject !== true))
+    }
+
+    // A non-CMA section → branded ListingSectionReel.
+    const introSection = secs.find((s) => s.section_key === "intro")
+    if (introSection?.render_id) {
+      const { data: introRender } = await svc.from("remotion_composition_renders")
+        .select("composition_id, input_props").eq("id", introSection.render_id).single()
+      check("intro section render targets ListingSectionReel", (introRender as any)?.composition_id === "ListingSectionReel")
+      check("intro section carries 'why us' brand copy", Array.isArray((introRender as any)?.input_props?.bullets) && (introRender as any).input_props.bullets.length > 0)
     }
 
     // #4 — the Command-Center on-demand trigger action type is accepted.

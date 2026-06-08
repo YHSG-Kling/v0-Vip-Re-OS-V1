@@ -134,12 +134,13 @@ export async function materializePresentationSections(
     .select("id")
   if (insErr) return { ok: false, inserted: 0, error: insErr.message }
 
-  // Best-effort: render the CMA section as an animated seller-safe CMAReel video
-  // (graphics that sell the market + team before the appointment). A render
-  // failure must not fail section materialization — the section still drips.
+  // Best-effort: render EVERY section as an animated video — the CMA section as
+  // a seller-safe CMAReel data video, the others as branded ListingSectionReel
+  // slides ("why this brokerage/agent/team"). A render failure must not fail
+  // section materialization — the section still drips (as a card until rendered).
   try {
-    const { renderCmaSectionForPresentation } = await import("./section-render")
-    await renderCmaSectionForPresentation(presentationId, supabase)
+    const { renderSectionsForPresentation } = await import("./section-render")
+    await renderSectionsForPresentation(presentationId, supabase)
   } catch { /* section render is best-effort */ }
 
   return { ok: true, inserted: inserted?.length ?? 0 }
