@@ -32,6 +32,7 @@
     "test:prelisting-release": "tsx scripts/prelisting-release-gate-simulator.ts",
     "test:social-approval": "tsx scripts/social-approval-gate-simulator.ts",
     "test:content-approval": "tsx scripts/content-approval-registry-simulator.ts",
+    "test:ads-manager": "tsx scripts/ads-manager-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

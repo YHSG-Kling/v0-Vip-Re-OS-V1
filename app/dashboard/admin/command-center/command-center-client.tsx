@@ -19,6 +19,8 @@ const QUEUE_BADGE: Record<string, string> = {
   social:      "bg-sky-100 text-sky-800",
   newsletter:  "bg-emerald-100 text-emerald-800",
   direct_mail: "bg-amber-100 text-amber-900",
+  ads:         "bg-rose-100 text-rose-800",
+  ad_creative: "bg-pink-100 text-pink-800",
 }
 const QUEUE_LABEL: Record<string, string> = {
   marketing:   "Marketing Agent",
@@ -26,6 +28,8 @@ const QUEUE_LABEL: Record<string, string> = {
   social:      "Social Post",
   newsletter:  "Newsletter",
   direct_mail: "Direct Mail",
+  ads:         "Ads Manager",
+  ad_creative: "Ad Creative",
 }
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
@@ -259,6 +263,46 @@ function DirectMailPreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+/** Ads Manager action: the spend move the operator is authorizing (launch/pause/budget). */
+function AdActionPreview({ input, actionType }: { input: Record<string, unknown>; actionType: string }) {
+  const newBudget = input.new_daily_budget as number | null
+  const label: Record<string, string> = {
+    launch_ad_campaign: "Launch campaign", pause_ad_campaign: "Pause campaign",
+    shift_ad_budget: "Shift daily budget", scale_ad_creative: "Scale winning campaign",
+  }
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Authorize this ad-spend action</span>
+        <Badge className="bg-rose-100 text-rose-800">{label[actionType] ?? actionType}</Badge>
+      </div>
+      {newBudget != null && <div className="text-sm font-medium">New daily budget: ${newBudget}/day</div>}
+      <div className="text-[11px] text-muted-foreground">Spend moves only on your approval, and the server caps it.</div>
+    </div>
+  )
+}
+
+/** Ad creative: the headline/copy/CTA that will run as a paid ad. */
+function AdCreativePreview({ input }: { input: Record<string, unknown> }) {
+  const headline = (input.headline as string | null) ?? ""
+  const primary = (input.primary_text as string | null) ?? ""
+  const cta = (input.call_to_action as string | null) ?? ""
+  const media = (input.media_asset_url as string | null) ?? null
+  const dest = (input.destination_url as string | null) ?? null
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before it runs as a paid ad</div>
+      {media && <a href={media} target="_blank" rel="noreferrer"><img src={media} alt="ad creative" className="w-56 rounded border" /></a>}
+      {headline && <div className="text-sm font-semibold">{headline}</div>}
+      {primary && <p className="text-sm whitespace-pre-wrap">{primary}</p>}
+      <div className="flex items-center gap-2 text-xs">
+        {cta && <Badge className="bg-pink-100 text-pink-800">{cta}</Badge>}
+        {dest && <a href={dest} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate max-w-xs">{dest}</a>}
+      </div>
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -295,6 +339,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "social" && <SocialPreview input={action.actionInput} />}
           {action.queue === "newsletter" && <NewsletterPreview input={action.actionInput} />}
           {action.queue === "direct_mail" && <DirectMailPreview input={action.actionInput} />}
+          {action.queue === "ads" && <AdActionPreview input={action.actionInput} actionType={action.actionType} />}
+          {action.queue === "ad_creative" && <AdCreativePreview input={action.actionInput} />}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>

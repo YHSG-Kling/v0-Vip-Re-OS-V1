@@ -15,13 +15,15 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { executeAction } from "@/lib/agents/marketing-agent-actions"
 import { executeAssetManagerAction } from "@/lib/agents/asset-manager-actions"
+import { executeAdManagerAction } from "@/lib/ads/ad-manager"
 import { approveContentSource, rejectContentSource, type ContentQueue } from "@/lib/kernel/approval-sources"
 
-type Queue = "marketing" | "asset" | ContentQueue
-type AgentQueue = "marketing" | "asset"
-const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions"> = {
+type Queue = "marketing" | "asset" | "ads" | ContentQueue
+type AgentQueue = "marketing" | "asset" | "ads"
+const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions" | "ad_manager_actions"> = {
   marketing: "marketing_agent_actions",
   asset:     "asset_manager_actions",
+  ads:       "ad_manager_actions",
 }
 
 /** Resolve the acting user and confirm they may approve agent actions. */
@@ -64,8 +66,8 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: res.success ? "approved" : "failed", error: res.error }
   }
-  // Newsletter + direct-mail release through the content-approval registry.
-  if (params.queue === "newsletter" || params.queue === "direct_mail") {
+  // Newsletter + direct-mail + ad-creative release through the content registry.
+  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative") {
     const res = await approveContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: res.status, error: res.error }
@@ -76,6 +78,8 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
 
   const result = params.queue === "marketing"
     ? await executeAction(params.actionId, actor.userId)
+    : params.queue === "ads"
+    ? await executeAdManagerAction(params.actionId, actor.userId)
     : await executeAssetManagerAction(params.actionId, actor.userId)
 
   revalidatePath("/dashboard/admin/command-center")
@@ -92,7 +96,7 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: "rejected" as const, error: res.error }
   }
-  if (params.queue === "newsletter" || params.queue === "direct_mail") {
+  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative") {
     const res = await rejectContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: "rejected" as const, error: res.error }

@@ -21,7 +21,7 @@ import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type ContentQueue = "social" | "newsletter" | "direct_mail"
+export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative"
 
 /** Mirrors CommandCenterAction (kept structural to avoid a circular import). */
 export interface ContentApprovalAction {
@@ -39,7 +39,7 @@ export interface ContentApprovalAction {
 
 interface ContentSource {
   queue:     ContentQueue
-  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns"
+  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations"
   select:    string
   /** Apply the "awaiting a human" filter for this table. */
   pending:   (q: any) => any
@@ -127,6 +127,30 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     },
     approve: () => ({ status: "approved", approval_status: "approved" }),
     approveGuard: (q) => q.eq("status", "planning"),
+    reject: () => ({ approval_status: "rejected" }),
+  },
+
+  // ── Paid-ad creatives (review the headline/copy/CTA before any spend) ───────
+  ad_creative: {
+    queue: "ad_creative",
+    table: "ad_creative_variations",
+    select: "id, brokerage_id, ad_campaign_id, variation_name, headline, primary_text, description, call_to_action, media_asset_url, destination_url, created_at",
+    pending: (q) => q.in("approval_status", ["draft", "pending_review"]),
+    toAction: (c, now) => {
+      const sla = evaluateApprovalSla(c.created_at ?? null, now)
+      return {
+        id: c.id, queue: "ad_creative", brokerageId: c.brokerage_id, actionType: "approve_ad_creative",
+        rationale: `Paid-ad creative "${c.variation_name ?? c.headline ?? "Untitled"}" — review the headline + copy + CTA before it can run as a paid ad.`,
+        actionInput: {
+          ad_campaign_id: c.ad_campaign_id ?? null, variation_name: c.variation_name ?? null,
+          headline: c.headline ?? null, primary_text: c.primary_text ?? null, description: c.description ?? null,
+          call_to_action: c.call_to_action ?? null, media_asset_url: c.media_asset_url ?? null, destination_url: c.destination_url ?? null,
+        },
+        status: "proposed", proposedAt: c.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      }
+    },
+    approve: () => ({ approval_status: "approved" }),
+    approveGuard: (q) => q.in("approval_status", ["draft", "pending_review"]),
     reject: () => ({ approval_status: "rejected" }),
   },
 }

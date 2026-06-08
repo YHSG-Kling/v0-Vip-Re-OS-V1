@@ -37,7 +37,7 @@ export interface CommandCenterSession {
 
 export interface CommandCenterAction {
   id:         string
-  queue:      "marketing" | "asset" | ContentQueue
+  queue:      "marketing" | "asset" | "ads" | ContentQueue
   brokerageId: string
   actionType: string
   rationale:  string | null
@@ -93,6 +93,15 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .limit(limit)
   if (params.brokerageId) assetQuery.eq("brokerage_id", params.brokerageId)
 
+  // Ads Manager — paid-ad spend actions awaiting a human (launch/pause/budget/scale).
+  const adsQuery = supabase
+    .from("ad_manager_actions")
+    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at")
+    .eq("status", "proposed")
+    .order("proposed_at", { ascending: true })
+    .limit(limit)
+  if (params.brokerageId) adsQuery.eq("brokerage_id", params.brokerageId)
+
   // Customer-facing content awaiting human RELEASE — social posts (incl. avatar/
   // listing reels + GBP), email newsletters, direct-mail campaigns. Loaded via
   // the content-approval source REGISTRY so every public-facing approval lives in
@@ -102,7 +111,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const now = new Date()
   const contentPromise = loadContentApprovalActions(supabase, { brokerageId: params.brokerageId, limit, now })
 
-  const [sessionsRes, marketingRes, assetRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, contentPromise])
+  const [sessionsRes, marketingRes, assetRes, adsRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, contentPromise])
 
   const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
     id:          s.id,
@@ -115,7 +124,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     endedAt:     s.ended_at ?? null,
   }))
 
-  const mapAction = (queue: "marketing" | "asset") => (a: any): CommandCenterAction => {
+  const mapAction = (queue: "marketing" | "asset" | "ads") => (a: any): CommandCenterAction => {
     // Release approvals escalate against the seller's appointment, not just age.
     const deadlineIso = a.action_type === "approve_prelisting_delivery"
       ? (a.action_input?.appointment_at as string | null) ?? null
@@ -140,6 +149,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const pendingActions: CommandCenterAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
+    ...(adsRes.data ?? []).map(mapAction("ads")),
     ...contentActions,
   ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 
