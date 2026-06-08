@@ -26,6 +26,7 @@
     "test:presentation-drip": "tsx scripts/presentation-drip-simulator.ts",
     "test:section-render": "tsx scripts/section-render-simulator.ts",
     "test:section-narration": "tsx scripts/section-narration-simulator.ts",
+    "test:asset-capture": "tsx scripts/asset-capture-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

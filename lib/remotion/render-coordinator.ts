@@ -234,6 +234,15 @@ export async function finalizeCoordinatedRender(
       .update({ last_rendered_at: new Date().toISOString() })
       .eq("composition_id", composition.composition_id)
 
+    // Capture the finished render into the reusable marketing_assets library so
+    // every chart reel / section video / avatar clip / b-roll can be repurposed
+    // across social, email, listing promo, and ads. Best-effort + idempotent —
+    // a capture failure must not fail the render.
+    try {
+      const { captureRenderAsMarketingAsset } = await import("@/lib/marketing/capture-render-asset")
+      await captureRenderAsMarketingAsset(renderId, svc)
+    } catch { /* asset capture is best-effort */ }
+
     return {
       ok: true,
       outputUrl:    uploaded.url,
