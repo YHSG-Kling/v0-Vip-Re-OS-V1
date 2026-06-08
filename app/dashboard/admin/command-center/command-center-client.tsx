@@ -13,6 +13,16 @@ const SESSION_BADGE: Record<string, string> = {
   terminated: "bg-slate-100 text-slate-700",
   error:      "bg-red-100 text-red-800",
 }
+const QUEUE_BADGE: Record<string, string> = {
+  marketing: "bg-purple-100 text-purple-800",
+  asset:     "bg-orange-100 text-orange-800",
+  social:    "bg-sky-100 text-sky-800",
+}
+const QUEUE_LABEL: Record<string, string> = {
+  marketing: "Marketing Agent",
+  asset:     "Asset Manager",
+  social:    "Social Post",
+}
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
   shopping_agent:        "Shopping Agent",
@@ -169,6 +179,41 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+/**
+ * Social preview: the ACTUAL creative + caption that will post to a public feed.
+ * Approving here is "publish this to the public", so the operator sees the media
+ * and copy, not just an action name.
+ */
+function SocialPreview({ input }: { input: Record<string, unknown> }) {
+  const content = (input.content as string | null) ?? ""
+  const media = Array.isArray(input.media_urls) ? (input.media_urls as string[]) : []
+  const hashtags = Array.isArray(input.hashtags) ? (input.hashtags as string[]) : []
+  const platform = String(input.platform ?? "social")
+  const scheduledFor = input.scheduled_for as string | null
+  const isVideo = (u: string) => /\.(mp4|mov|webm)(\?|$)/i.test(u)
+
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Review before posting publicly</span>
+        <Badge className="bg-sky-100 text-sky-800">{platform === "all" ? "every connected platform" : platform}</Badge>
+      </div>
+      {media.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {media.map((u, i) => (
+            isVideo(u)
+              ? <video key={i} src={u} controls className="w-40 h-24 rounded border object-cover bg-black" />
+              : <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" className="w-40 h-24 rounded border object-cover" /></a>
+          ))}
+        </div>
+      )}
+      {content && <p className="text-sm whitespace-pre-wrap">{content}</p>}
+      {hashtags.length > 0 && <p className="text-xs text-sky-700">{hashtags.map((h) => (h.startsWith("#") ? h : `#${h}`)).join(" ")}</p>}
+      {scheduledFor && <div className="text-[11px] text-muted-foreground">Scheduled to post: {new Date(scheduledFor).toLocaleString()}</div>}
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -189,8 +234,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <Badge className={action.queue === "marketing" ? "bg-purple-100 text-purple-800" : "bg-orange-100 text-orange-800"}>
-              {action.queue === "marketing" ? "Marketing Agent" : "Asset Manager"}
+            <Badge className={QUEUE_BADGE[action.queue] ?? "bg-slate-100 text-slate-700"}>
+              {QUEUE_LABEL[action.queue] ?? action.queue}
             </Badge>
             <span className="font-medium">{action.actionType.replace(/_/g, " ")}</span>
             {action.slaLevel === "breached" && (
@@ -202,6 +247,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           </div>
           {action.rationale && <p className="text-sm text-muted-foreground mt-1">{action.rationale}</p>}
           {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
+          {action.queue === "social" && <SocialPreview input={action.actionInput} />}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>

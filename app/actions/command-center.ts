@@ -16,8 +16,9 @@ import { revalidatePath } from "next/cache"
 import { executeAction } from "@/lib/agents/marketing-agent-actions"
 import { executeAssetManagerAction } from "@/lib/agents/asset-manager-actions"
 
-type Queue = "marketing" | "asset"
-const TABLE: Record<Queue, "marketing_agent_actions" | "asset_manager_actions"> = {
+type Queue = "marketing" | "asset" | "social"
+type AgentQueue = "marketing" | "asset"
+const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions"> = {
   marketing: "marketing_agent_actions",
   asset:     "asset_manager_actions",
 }
@@ -38,7 +39,7 @@ async function requireApprover(): Promise<{ userId: string; brokerageId: string 
 }
 
 /** Confirm the action exists, is still proposed, and is in the approver's scope. */
-async function loadScopedAction(queue: Queue, actionId: string, brokerageId: string | null, isSuperadmin: boolean) {
+async function loadScopedAction(queue: AgentQueue, actionId: string, brokerageId: string | null, isSuperadmin: boolean) {
   const svc = createServiceClient()
   const { data } = await svc.from(TABLE[queue])
     .select("id, brokerage_id, status")
@@ -53,6 +54,16 @@ async function loadScopedAction(queue: Queue, actionId: string, brokerageId: str
 export async function approveAgentAction(params: { queue: Queue; actionId: string }) {
   const actor = await requireApprover()
   if ("error" in actor) return { ok: false, error: actor.error }
+
+  // Social posts approve through the existing, self-scoping social action — the
+  // Command Center is just a second (unified) surface onto the SAME write.
+  if (params.queue === "social") {
+    const { approveSocialPost } = await import("@/app/actions/social-media-automation")
+    const res = await approveSocialPost(params.actionId)
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: !!res.success, status: res.success ? "approved" : "failed", error: res.error }
+  }
+
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)
   if ("error" in scope) return { ok: false, error: scope.error }
 
@@ -67,6 +78,14 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
 export async function rejectAgentAction(params: { queue: Queue; actionId: string }) {
   const actor = await requireApprover()
   if ("error" in actor) return { ok: false, error: actor.error }
+
+  if (params.queue === "social") {
+    const { rejectSocialPost } = await import("@/app/actions/social-media-automation")
+    const res = await rejectSocialPost(params.actionId, undefined, "Rejected in Command Center")
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: !!res.success, status: "rejected" as const, error: res.error }
+  }
+
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)
   if ("error" in scope) return { ok: false, error: scope.error }
 

@@ -33,7 +33,7 @@ export type ApprovalSlaLevel = "ok" | "due" | "breached"
 
 export interface CommandCenterAction {
   id:         string
-  queue:      "marketing" | "asset"
+  queue:      "marketing" | "asset" | "social"
   brokerageId: string
   actionType: string
   rationale:  string | null
@@ -122,7 +122,21 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .limit(limit)
   if (params.brokerageId) assetQuery.eq("brokerage_id", params.brokerageId)
 
-  const [sessionsRes, marketingRes, assetRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery])
+  // Customer-facing content awaiting human RELEASE — social posts (incl. the
+  // agent's avatar/listing reels) staged 'pending' by the autonomous reactors.
+  // Pulled into the ONE Command Center so every public-facing approval lives in
+  // one governed surface, not a separate dashboard. The publish cron only sends
+  // approval_status='approved', so a pending row cannot reach a public feed.
+  const socialQuery = supabase
+    .from("social_posts")
+    .select("id, brokerage_id, content, media_urls, hashtags, platform, post_type, scheduled_for, listing_id, ai_generated, created_at")
+    .eq("approval_status", "pending")
+    .not("status", "in", "(published,cancelled,failed)")
+    .order("created_at", { ascending: true })
+    .limit(limit)
+  if (params.brokerageId) socialQuery.eq("brokerage_id", params.brokerageId)
+
+  const [sessionsRes, marketingRes, assetRes, socialRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, socialQuery])
 
   const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
     id:          s.id,
@@ -156,11 +170,41 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     }
   }
 
+  // Social posts map into the SAME action contract so the queue + UI are uniform.
+  // Their "pending" signal is approval_status='pending' (not a 'proposed' row),
+  // and they escalate against the scheduled publish time, not proposal age.
+  const mapSocial = (s: any): CommandCenterAction => {
+    const sla = evaluateApprovalSla(s.created_at ?? null, now, { deadlineIso: (s.scheduled_for as string | null) ?? null })
+    const platform = String(s.platform ?? "social")
+    return {
+      id:          s.id,
+      queue:       "social",
+      brokerageId: s.brokerage_id,
+      actionType:  "approve_social_post",
+      rationale:   `${s.ai_generated ? "AI-drafted" : "Drafted"} ${platform === "all" ? "multi-platform" : platform} post${s.listing_id ? " for a listing" : ""} — review the creative + caption before it posts to a public feed.`,
+      actionInput: {
+        content:       s.content ?? null,
+        media_urls:    Array.isArray(s.media_urls) ? s.media_urls : [],
+        hashtags:      Array.isArray(s.hashtags) ? s.hashtags : [],
+        platform,
+        post_type:     s.post_type ?? null,
+        scheduled_for: s.scheduled_for ?? null,
+        listing_id:    s.listing_id ?? null,
+        ai_generated:  !!s.ai_generated,
+      },
+      status:      "proposed",
+      proposedAt:  s.created_at ?? null,
+      ageHours:    sla.ageHours,
+      slaLevel:    sla.level,
+    }
+  }
+
   // SLA-breached approvals escalate to the top; then oldest-first.
   const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
   const pendingActions: CommandCenterAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
+    ...(socialRes.data ?? []).map(mapSocial),
   ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 
   return {

@@ -30,6 +30,7 @@
     "test:stock-scope": "tsx scripts/stock-scope-simulator.ts",
     "test:narration-orchestrator": "tsx scripts/narration-orchestrator-simulator.ts",
     "test:prelisting-release": "tsx scripts/prelisting-release-gate-simulator.ts",
+    "test:social-approval": "tsx scripts/social-approval-gate-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
