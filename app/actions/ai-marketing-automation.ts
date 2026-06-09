@@ -453,16 +453,16 @@ export async function createAIListing(params: ListingCreationParams): Promise<Li
     // Get comparable sales for pricing
     const { data: comps } = await supabase
       .from("listings")
-      .select("price, sqft, bedrooms, bathrooms, sold_price, sold_date")
+      // listings has no sold_price/sold_date/price columns — use list_price + go_live_date.
+      .select("list_price, sqft, bedrooms, bathrooms")
       .eq("city", propertyData.city)
       .eq("status", "sold")
-      .gte("sold_date", new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString())
-      .order("sold_date", { ascending: false })
+      .order("go_live_date", { ascending: false })
       .limit(10)
 
     // Calculate price per sqft from comps
     const pricePerSqft = comps?.length
-      ? comps.reduce((sum: number, c: any) => sum + (c.sold_price || c.price) / c.sqft, 0) / comps.length
+      ? comps.reduce((sum: number, c: any) => sum + (c.list_price || 0) / (c.sqft || 1), 0) / comps.length
       : 250
 
     const prompt = `You are a real estate listing expert. Create comprehensive listing content and analysis.
@@ -521,18 +521,32 @@ Return JSON:
       return { success: false, error: "Failed to parse listing content" }
     }
 
-    // Create the listing in database
+    // brokerage_id is NOT NULL on listings — resolve it from the agent (Marketing Manager's listing).
+    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }
+
+    // Create the listing with ONLY valid columns. The MLS description is the public remarks;
+    // the marketing analysis (description/strategy/personas/suggested price) is AI-generated
+    // CONTENT and lives in listing_marketing_content, not as listings columns (the old insert
+    // wrote 5 phantom columns + spread propertyData's price/propertyType/etc. + omitted
+    // brokerage_id, so it always failed and no listing was ever created).
     const { data: listing, error: listingError } = await supabase
       .from("listings")
       .insert({
         agent_id: params.agentId,
-        seller_id: params.sellerId,
-        ...propertyData,
-        mls_description: aiContent.mlsDescription,
-        marketing_description: aiContent.marketingDescription,
-        ai_suggested_price: aiContent.suggestedPrice,
-        target_personas: aiContent.targetBuyerPersonas,
-        marketing_strategy: aiContent.marketingStrategy,
+        brokerage_id: brokerageId,
+        seller_contact_id: params.sellerId ?? null,
+        address: propertyData.address,
+        city: propertyData.city,
+        state: propertyData.state,
+        zip: propertyData.zip,
+        list_price: propertyData.price,
+        property_type: propertyData.propertyType,
+        bedrooms: propertyData.bedrooms,
+        bathrooms: propertyData.bathrooms,
+        sqft: propertyData.sqft,
+        public_remarks: aiContent.mlsDescription,
         status: "draft",
       })
       .select()
@@ -540,12 +554,19 @@ Return JSON:
 
     if (listingError) throw listingError
 
-    // Save social media content
-    await supabase.from("listing_marketing_content").insert({
-      listing_id: listing.id,
-      content_type: "social_posts",
-      content: aiContent.socialMediaPosts,
-    })
+    // Save the AI marketing analysis + social content (content_type rows, brokerage-scoped).
+    await supabase.from("listing_marketing_content").insert([
+      {
+        listing_id: listing.id, brokerage_id: brokerageId, content_type: "ai_marketing",
+        content: {
+          marketingDescription: aiContent.marketingDescription,
+          suggestedPrice:       aiContent.suggestedPrice,
+          targetPersonas:       aiContent.targetBuyerPersonas,
+          marketingStrategy:    aiContent.marketingStrategy,
+        },
+      },
+      { listing_id: listing.id, brokerage_id: brokerageId, content_type: "social_posts", content: aiContent.socialMediaPosts },
+    ])
 
     revalidatePath("/dashboard/listings")
 
