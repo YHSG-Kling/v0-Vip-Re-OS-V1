@@ -526,28 +526,33 @@ async function initiateCall(contactId: string, agentId: string) {
 async function sendPropertyMatches(contactId: string) {
   const supabase = await createClient()
   
-  // Get contact preferences
+  // Criteria live in property_preferences (NOT contacts) — read via the single normalized
+  // reader. The old code selected preferred_* columns off contacts (non-existent) and
+  // filtered listings by `price` (the column is list_price), so it matched nothing.
   const { data: contact } = await supabase
     .from("contacts")
-    .select("*, agent_id, preferred_price_min, preferred_price_max, preferred_bedrooms, preferred_areas")
+    .select("id, agent_id, brokerage_id")
     .eq("id", contactId)
     .single()
-  
+
   if (!contact) {
     return { success: false, error: "Contact not found" }
   }
-  
+
+  const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+  const criteria = await loadBuyerCriteria(supabase as unknown as Parameters<typeof loadBuyerCriteria>[0], contactId)
+
   // Find matching properties based on preferences
   let query = supabase.from("listings").select("*").eq("status", "active")
-  
-  if (contact.preferred_price_min) {
-    query = query.gte("price", contact.preferred_price_min)
+
+  if (criteria?.minPrice) {
+    query = query.gte("list_price", criteria.minPrice)
   }
-  if (contact.preferred_price_max) {
-    query = query.lte("price", contact.preferred_price_max)
+  if (criteria?.maxPrice) {
+    query = query.lte("list_price", criteria.maxPrice)
   }
-  if (contact.preferred_bedrooms) {
-    query = query.gte("bedrooms", contact.preferred_bedrooms)
+  if (criteria?.minBeds) {
+    query = query.gte("bedrooms", criteria.minBeds)
   }
   
   const { data: matches } = await query.limit(10)

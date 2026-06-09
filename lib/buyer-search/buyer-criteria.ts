@@ -26,12 +26,20 @@ export interface BuyerCriteria {
 const num = (v: any): number | null => (typeof v === "number" && !Number.isNaN(v)) ? v : null
 const arr = (v: any): string[] => Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.trim()) : []
 
+/**
+ * The canonical property_preferences criteria column list — the ONE place it's defined.
+ * Any consumer that reads buyer criteria selects via this (or calls loadBuyerCriteria) so a
+ * column rename/typo can't silently diverge across the matcher / watch / brief / insights.
+ */
+export const BUYER_CRITERIA_SELECT =
+  "preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_cities, inferred_zip_codes, inferred_property_types, inferred_must_have_features, inferred_deal_breakers, confidence_score"
+
 /** Read + normalize one buyer's criteria from property_preferences (explicit > inferred). */
 export async function loadBuyerCriteria(
   supabase: ReturnType<typeof createServiceClient>, contactId: string,
 ): Promise<BuyerCriteria | null> {
   const { data } = await supabase.from("property_preferences")
-    .select("preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_cities, inferred_zip_codes, inferred_property_types, inferred_must_have_features, inferred_deal_breakers, confidence_score")
+    .select(BUYER_CRITERIA_SELECT)
     .eq("contact_id", contactId).maybeSingle()
   if (!data) return null
   const p = data as Record<string, any>

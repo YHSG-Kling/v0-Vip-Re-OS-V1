@@ -100,7 +100,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("first_name, last_name, phone, lead_score, stage, last_property_viewed, preferred_areas, brokerage_id, agent_id")
+    .select("first_name, last_name, phone, lead_score, stage, last_property_viewed, brokerage_id, agent_id")
     .eq("id", contactId)
     .single()
 
@@ -160,7 +160,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
       brokerage_name:        (agent.brokerage as any)?.name ?? "your brokerage",
       lead_stage:            contact.stage            ?? "prospect",
       last_viewed_property:  contact.last_property_viewed ?? "properties in your area",
-      preferred_areas:       contact.preferred_areas  ?? "your preferred areas",
+      preferred_areas:       "your preferred areas",  // criteria live in property_preferences, not contacts
     },
   }
 

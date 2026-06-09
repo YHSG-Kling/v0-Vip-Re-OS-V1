@@ -231,22 +231,21 @@ export async function analyzePropertyForBuyer(params: {
       return { success: false, error: "Forbidden" }
     }
 
-    const [{ data: contact }, { data: property }, { data: buyerPrefs }] = await Promise.all([
+    // Criteria via the single normalized reader (fixes the legacy `preferred_features` /
+    // `preferred_price_max`-only read that selected a non-existent column and errored).
+    const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+    const [{ data: contact }, { data: property }, criteria] = await Promise.all([
       supabase.from("contacts").select("*").eq("id", params.contactId).eq("brokerage_id", ctx.brokerageId).single(),
       supabase.from("listings").select("*").eq("id", params.propertyId).eq("brokerage_id", ctx.brokerageId).single(),
-      supabase
-        .from("property_preferences")
-        .select("preferred_price_max, preferred_features, inferred_max_price")
-        .eq("contact_id", params.contactId)
-        .maybeSingle(),
+      loadBuyerCriteria(supabase, params.contactId),
     ])
 
     if (!contact || !property) {
       return { success: false, error: "Contact or property not found" }
     }
 
-    const maxBudget = buyerPrefs?.preferred_price_max ?? buyerPrefs?.inferred_max_price
-    const preferredFeatures = buyerPrefs?.preferred_features ?? []
+    const maxBudget = criteria?.maxPrice ?? null
+    const preferredFeatures = criteria?.mustHaveFeatures ?? []
 
     const { text: analysis } = await generateText({
       model: resolveModel("openai/gpt-4o"),

@@ -2,6 +2,7 @@
 
 import { createClient }       from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BUYER_CRITERIA_SELECT } from "@/lib/buyer-search/buyer-criteria"
 import { generateBuyerPredictions } from "@/lib/behavior-learning/prediction-engine"
 import { updateBuyerPreferences }   from "@/lib/behavior-learning/preference-updater"
 
@@ -82,12 +83,9 @@ export async function getBuyerInsights(
   const [prefsRes, predRes, signalRes] = await Promise.all([
     svc
       .from("property_preferences")
-      .select(
-        "inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, " +
-        "inferred_property_types, inferred_cities, inferred_zip_codes, " +
-        "preferred_price_min, preferred_price_max, " +
-        "confidence_score, signals_processed, last_calculated_at"
-      )
+      // Criteria columns come from the ONE canonical list (no per-consumer drift); the two
+      // metadata columns are this display surface's own.
+      .select(`${BUYER_CRITERIA_SELECT}, signals_processed, last_calculated_at`)
       .eq("contact_id", contactId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle(),

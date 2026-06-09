@@ -150,19 +150,19 @@ export async function updatePreferencesFromSignal(
       {
         contact_id:              contactId,
         brokerage_id:            brokerageId,
+        // Explicit price band (these columns exist). The behavior-INFERRED criteria go into
+        // the inferred_* columns — the live table has NO preferred_bedrooms/bathrooms/cities/
+        // features columns, so writing them errored the ENTIRE upsert and the learned
+        // preferences were never persisted (the root cause of the matcher having no data).
         preferred_price_min:     preferred_price_min,
         preferred_price_max:     preferred_price_max,
-        preferred_bedrooms:      avgBeds  > 0 ? avgBeds  : null,
-        preferred_bathrooms:     avgBaths > 0 ? avgBaths : null,
-        preferred_cities:        preferred_cities,
-        preferred_features:      preferred_features,
-        // also keep inferred_* in sync for the insights panel
         inferred_min_price:      preferred_price_min,
         inferred_max_price:      preferred_price_max,
         inferred_beds_min:       avgBeds  > 0 ? avgBeds  : null,
         inferred_baths_min:      avgBaths > 0 ? avgBaths : null,
         inferred_cities:         preferred_cities,
         inferred_property_types: topN(typeMap, 3),
+        inferred_must_have_features: preferred_features,
         confidence_score:        confidenceScore,
         signals_processed:       signalsProcessed,
         last_calculated_at:      new Date().toISOString(),
