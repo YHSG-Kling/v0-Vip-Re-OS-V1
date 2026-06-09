@@ -53,7 +53,8 @@
     "test:market-watch": "tsx scripts/market-watch-simulator.ts",
     "test:external-match": "tsx scripts/external-match-simulator.ts",
     "test:buyer-reel-delivery": "tsx scripts/buyer-reel-delivery-simulator.ts",
-    "test:schema-drift": "tsx scripts/schema-drift-guard.ts"
+    "test:schema-drift": "tsx scripts/schema-drift-guard.ts",
+    "test:data-steward": "tsx scripts/data-steward-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

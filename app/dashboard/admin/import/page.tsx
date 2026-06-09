@@ -21,12 +21,23 @@ type ImportRecord = {
   completed_at: string | null
 }
 
-// Known target fields
+// Known target fields — the Data Steward canonical set (identity + physical address +
+// mailing breakdown + independently-gated secondary phone). Columns left unmapped are
+// NOT dropped: the import routes them into the contact's notes.
 const TARGET_FIELDS = [
   { value: 'first_name', label: 'First Name' },
   { value: 'last_name', label: 'Last Name' },
   { value: 'email', label: 'Email' },
   { value: 'phone', label: 'Phone' },
+  { value: 'phone_secondary', label: 'Secondary Phone' },
+  { value: 'address', label: 'Street Address' },
+  { value: 'city', label: 'City' },
+  { value: 'state', label: 'State' },
+  { value: 'zip_code', label: 'Zip Code' },
+  { value: 'mailing_address', label: 'Mailing Address' },
+  { value: 'mailing_city', label: 'Mailing City' },
+  { value: 'mailing_state', label: 'Mailing State' },
+  { value: 'mailing_zip', label: 'Mailing Zip' },
   { value: 'tcpa_consent', label: 'TCPA Consent' },
 ]
 
@@ -52,7 +63,13 @@ function autoDetectMapping(headers: string[]): Record<string, string> {
     firstname: 'first_name', fname: 'first_name',
     lastname: 'last_name', lname: 'last_name', surname: 'last_name',
     email: 'email', emailaddress: 'email',
-    phone: 'phone', mobile: 'phone', phonenumber: 'phone', cell: 'phone',
+    phone: 'phone', mobile: 'phone', phonenumber: 'phone', cell: 'phone', mobilephone: 'phone', cellphone: 'phone',
+    secondaryphone: 'phone_secondary', homephone: 'phone_secondary', workphone: 'phone_secondary', phone2: 'phone_secondary',
+    address: 'address', streetaddress: 'address', address1: 'address', street: 'address',
+    city: 'city', state: 'state', province: 'state',
+    zip: 'zip_code', zipcode: 'zip_code', postalcode: 'zip_code', postal: 'zip_code',
+    mailingaddress: 'mailing_address', mailingcity: 'mailing_city',
+    mailingstate: 'mailing_state', mailingzip: 'mailing_zip', mailingpostalcode: 'mailing_zip',
     tcpaconsent: 'tcpa_consent', consent: 'tcpa_consent', optins: 'tcpa_consent',
   }
   for (const h of headers) {

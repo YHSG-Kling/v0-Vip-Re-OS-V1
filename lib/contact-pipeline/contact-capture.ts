@@ -10,6 +10,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
+import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,21 @@ export interface CaptureContactParams {
   last_name?: string | null
   email?: string | null
   phone?: string | null
+  /** Secondary line — independently gateable (m202); conserved through capture/merge. */
+  phone_secondary?: string | null
+  // Canonical physical + mailing address (Data Steward field set — m198/m199/m200).
+  // A contact can own a property but not live there, so mailing stays distinct.
+  address?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
+  mailing_address?: string | null
+  mailing_city?: string | null
+  mailing_state?: string | null
+  mailing_zip?: string | null
+  /** Free-text notes; on merge these are APPENDED, never overwritten. The CSV import
+   *  path routes every unmapped source column here (Data Steward: nothing dropped). */
+  notes?: string | null
   preferred_channel?: 'phone' | 'email' | 'sms' | null
   tcpa_consent: boolean
   tcpa_consent_date?: string | null
@@ -143,6 +159,15 @@ export async function captureContact(
         last_name: params.last_name ?? null,
         email: params.email ?? null,
         phone: params.phone ?? null,
+        phone_secondary: params.phone_secondary ?? null,
+        address: params.address ?? null,
+        city: params.city ?? null,
+        state: params.state ?? null,
+        zip_code: params.zip_code ?? null,
+        mailing_address: params.mailing_address ?? null,
+        mailing_city: params.mailing_city ?? null,
+        mailing_state: params.mailing_state ?? null,
+        mailing_zip: params.mailing_zip ?? null,
         preferred_channel: params.preferred_channel ?? 'email',
         source: params.source,
         tcpa_consent: params.tcpa_consent,
@@ -151,7 +176,8 @@ export async function captureContact(
           : null,
         isa_reengage_allowed: true,
         dnc_status: false,
-        notes: params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : undefined,
+        notes: [params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : null, params.notes ?? null]
+          .filter(Boolean).join('\n') || undefined,
       })
       .select('id')
       .single()
@@ -228,14 +254,43 @@ export async function captureContact(
       mergeAgentId = assignment.agentId
     }
 
+    // Data Steward lossless merge over the canonical identity/address fields:
+    // existing (the surviving row) keeps its non-empty values, empties are filled
+    // from the incoming capture, and a REAL conflict (both present, different) is
+    // preserved as a notes line — never silently dropped (the old `existing || incoming`
+    // merge discarded the incoming value whenever the column was already set).
+    const { merged: stewardMerged, conflicts } = mergeIdentityFields(
+      {
+        first_name: existing?.first_name, last_name: existing?.last_name,
+        email: existing?.email, phone: existing?.phone,
+        phone_secondary: existing?.phone_secondary,
+        address: existing?.address, city: existing?.city,
+        state: existing?.state, zip_code: existing?.zip_code,
+        mailing_address: existing?.mailing_address, mailing_city: existing?.mailing_city,
+        mailing_state: existing?.mailing_state, mailing_zip: existing?.mailing_zip,
+      },
+      {
+        first_name: params.first_name, last_name: params.last_name,
+        email: params.email, phone: params.phone,
+        phone_secondary: params.phone_secondary,
+        address: params.address, city: params.city,
+        state: params.state, zip_code: params.zip_code,
+        mailing_address: params.mailing_address, mailing_city: params.mailing_city,
+        mailing_state: params.mailing_state, mailing_zip: params.mailing_zip,
+      },
+    )
+    const noteAdditions = [
+      ...(conflicts.length ? [`[merge ${new Date().toISOString().slice(0, 10)} via ${params.source}] ${conflicts.join('; ')}`] : []),
+      ...(params.notes ? [params.notes] : []),
+    ]
+    const mergedNotes = [existing?.notes, ...noteAdditions].filter(Boolean).join('\n')
+
     await supabase
       .from('contacts')
       .update({
-        first_name: existing?.first_name || params.first_name,
-        last_name: existing?.last_name || params.last_name,
-        email: existing?.email || params.email,
-        phone: existing?.phone || params.phone,
+        ...stewardMerged,
         source: existing?.source || params.source,
+        ...(mergedNotes ? { notes: mergedNotes } : {}),
         // Assign agent if not already set
         ...(mergeAgentId && !existing?.agent_id ? { agent_id: mergeAgentId } : {}),
         // Only upgrade preferred_channel if consent was just given
@@ -297,6 +352,16 @@ export async function captureContact(
       last_name: params.last_name ?? null,
       email: params.email ?? null,
       phone: params.phone ?? null,
+      phone_secondary: params.phone_secondary ?? null,
+      address: params.address ?? null,
+      city: params.city ?? null,
+      state: params.state ?? null,
+      zip_code: params.zip_code ?? null,
+      mailing_address: params.mailing_address ?? null,
+      mailing_city: params.mailing_city ?? null,
+      mailing_state: params.mailing_state ?? null,
+      mailing_zip: params.mailing_zip ?? null,
+      ...(params.notes ? { notes: params.notes } : {}),
       preferred_channel: params.preferred_channel ?? (params.tcpa_consent ? 'phone' : 'email'),
       source: params.source,
       tcpa_consent: params.tcpa_consent,
