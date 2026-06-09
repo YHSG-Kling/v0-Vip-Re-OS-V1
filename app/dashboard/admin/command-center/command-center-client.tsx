@@ -438,6 +438,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
               <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 <span>Review/edit before it reaches the {String(action.actionInput.audience ?? "client")}</span>
                 <Badge className="bg-indigo-100 text-indigo-800">{String(action.actionInput.audience ?? "client")}</Badge>
+                <Badge className="bg-slate-100 text-slate-700">via {String(action.actionInput.channel ?? "portal").replace("_", " ")}</Badge>
               </div>
               {!!action.actionInput.subject && <div className="text-sm font-medium">{String(action.actionInput.subject)}</div>}
               <textarea className="w-full text-sm rounded border p-2 min-h-[120px] bg-white" value={editedBody} onChange={(e) => setEditedBody(e.target.value)} />

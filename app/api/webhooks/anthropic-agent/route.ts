@@ -221,7 +221,7 @@ export async function POST(request: NextRequest) {
             const drafts = extractClientMessages(parsed)
             if (drafts.length > 0) {
               for (const d of drafts) {
-                await proposeClientMessage({ ...base, audience: d.audience, body: d.body, subject: d.subject ?? null, recipientContactId: d.recipientContactId ?? sessionRecipient })
+                await proposeClientMessage({ ...base, audience: d.audience, body: d.body, subject: d.subject ?? null, recipientContactId: d.recipientContactId ?? sessionRecipient, channel: (d.channel as "portal" | "portal_push" | "email" | "sms" | "voice_drop" | null) ?? "portal" })
               }
             } else if (!parsed) {
               // Plain (non-JSON) message → propose as-is.

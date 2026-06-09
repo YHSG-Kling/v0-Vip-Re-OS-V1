@@ -115,7 +115,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // human approval — nothing reaches a client until released here.
   const clientMsgQuery = supabase
     .from("agent_client_messages")
-    .select("id, brokerage_id, agent_kind, entity_type, audience, subject, body, rationale, recipient_contact_id, proposed_at")
+    .select("id, brokerage_id, agent_kind, entity_type, audience, subject, body, rationale, recipient_contact_id, channel, proposed_at")
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
@@ -160,8 +160,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     const sla = evaluateApprovalSla(m.proposed_at ?? null, now)
     return {
       id: m.id, queue: "client_message", brokerageId: m.brokerage_id, actionType: "approve_client_message",
-      rationale: `${(m.agent_kind ?? "agent").replace(/_/g, " ")} drafted a ${m.audience} update — review/edit before it reaches the client.`,
-      actionInput: { agent_kind: m.agent_kind, entity_type: m.entity_type, audience: m.audience, subject: m.subject, body: m.body, briefing: m.rationale, recipient_contact_id: m.recipient_contact_id },
+      rationale: `${(m.agent_kind ?? "agent").replace(/_/g, " ")} drafted a ${m.audience} update via ${m.channel ?? "portal"} — review/edit before it reaches the client.`,
+      actionInput: { agent_kind: m.agent_kind, entity_type: m.entity_type, audience: m.audience, subject: m.subject, body: m.body, briefing: m.rationale, recipient_contact_id: m.recipient_contact_id, channel: m.channel ?? "portal" },
       status: "proposed", proposedAt: m.proposed_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
     }
   }
