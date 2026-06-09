@@ -24,6 +24,7 @@ const QUEUE_BADGE: Record<string, string> = {
   client_message:"bg-indigo-100 text-indigo-800",
   predictive_listing:"bg-teal-100 text-teal-800",
   transaction_task:  "bg-red-100 text-red-800",
+  transaction_smart_task: "bg-red-50 text-red-700",
   agent_followup:    "bg-cyan-100 text-cyan-800",
   blog:              "bg-lime-100 text-lime-800",
   podcast:           "bg-fuchsia-100 text-fuchsia-800",
@@ -38,7 +39,8 @@ const QUEUE_LABEL: Record<string, string> = {
   ad_creative:   "Ad Creative",
   client_message:"Client Update",
   predictive_listing:"Predicted Seller",
-  transaction_task:  "Deal Task",
+  transaction_task:  "At-Risk Deal",
+  transaction_smart_task: "Deal Task",
   agent_followup:    "Follow-up",
   blog:              "Blog Post",
   podcast:           "Podcast",
@@ -362,6 +364,25 @@ function FollowupPreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+function SmartTaskPreview({ input }: { input: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Open deal to-do</span>
+        {!!input.priority && <Badge className="bg-red-50 text-red-700">{String(input.priority)}</Badge>}
+        {!!input.ai_generated && <Badge className="bg-purple-100 text-purple-800">AI-suggested</Badge>}
+      </div>
+      {!!input.title && <div className="text-sm font-medium">{String(input.title)}</div>}
+      {!!input.description && <p className="text-sm whitespace-pre-wrap">{String(input.description)}</p>}
+      <div className="text-[11px] text-muted-foreground">
+        {!!input.category && <>{String(input.category)} · </>}
+        {!!input.assigned_to && <>Assigned: {String(input.assigned_to)} · </>}
+        {!!input.due_date && <>Due {new Date(String(input.due_date)).toLocaleDateString()}</>}
+      </div>
+    </div>
+  )
+}
+
 /** Blog post: the SEO article copy reviewed before it publishes to the site. */
 function BlogPreview({ input }: { input: Record<string, unknown> }) {
   const img = (input.featured_image_url as string | null) ?? null
@@ -430,6 +451,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "ad_creative" && <AdCreativePreview input={action.actionInput} />}
           {action.queue === "predictive_listing" && <PredictiveTouchPreview input={action.actionInput} />}
           {action.queue === "transaction_task" && <TransactionTaskPreview input={action.actionInput} />}
+          {action.queue === "transaction_smart_task" && <SmartTaskPreview input={action.actionInput} />}
           {action.queue === "agent_followup" && <FollowupPreview input={action.actionInput} />}
           {action.queue === "blog" && <BlogPreview input={action.actionInput} />}
           {action.queue === "podcast" && <PodcastPreview input={action.actionInput} />}
@@ -449,8 +471,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
         <div className="flex gap-2 shrink-0">
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : action.queue === "agent_followup" ? "Skip" : "Reject"}</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "agent_followup" ? "Done" : action.queue === "predictive_listing" ? "Approve & Queue" : action.queue === "blog" ? "Approve & Publish" : action.queue === "podcast" ? "Approve & Distribute" : "Approve"}</Button>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : action.queue === "transaction_smart_task" ? "Cancel" : action.queue === "agent_followup" ? "Skip" : "Reject"}</Button>
+          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "transaction_smart_task" ? "Done" : action.queue === "agent_followup" ? "Done" : action.queue === "predictive_listing" ? "Approve & Queue" : action.queue === "blog" ? "Approve & Publish" : action.queue === "podcast" ? "Approve & Distribute" : "Approve"}</Button>
         </div>
       </div>
     </Card>

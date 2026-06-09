@@ -21,7 +21,7 @@ import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task" | "agent_followup" | "blog" | "podcast"
+export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task" | "transaction_smart_task" | "agent_followup" | "blog" | "podcast"
 
 /** Mirrors CommandCenterAction (kept structural to avoid a circular import). */
 export interface ContentApprovalAction {
@@ -39,7 +39,7 @@ export interface ContentApprovalAction {
 
 interface ContentSource {
   queue:     ContentQueue
-  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions" | "ai_autopilot_actions" | "blog_posts" | "podcast_episodes"
+  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions" | "transaction_tasks" | "ai_autopilot_actions" | "blog_posts" | "podcast_episodes"
   select:    string
   /** Apply the "awaiting a human" filter for this table. */
   pending:   (q: any) => any
@@ -181,8 +181,11 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     reject: (userId) => ({ status: "cancelled", cancelled_by_user_id: userId, cancelled_at: nowIso(), cancel_reason: "rejected in Command Center" }),
   },
 
-  // ── Transaction at-risk TASKS (closing concierge) — surfaced as a task queue.
-  // Not approve-to-send: it's a deal to-do. Approve = "Resolved"; reject = "Dismiss".
+  // ── Transaction AT-RISK alerts (closing-orchestration cron) — table
+  // `transaction_pending_actions`. System-detected deal risks (appraisal not
+  // ordered, deadline closing). Approve = "Resolved"; reject = "Dismiss".
+  // NOTE: distinct from `transaction_smart_task` below (the agent to-do list,
+  // table `transaction_tasks`) — kept separate by design; orthogonal subsystems.
   transaction_task: {
     queue: "transaction_task",
     table: "transaction_pending_actions",
@@ -205,6 +208,38 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     approve: (userId) => ({ status: "resolved", resolved_by: userId, resolved_at: nowIso() }),
     approveGuard: (q) => q.eq("status", "open"),
     reject: (userId) => ({ status: "dismissed", resolved_by: userId, resolved_at: nowIso() }),
+  },
+
+  // ── Transaction SMART TASKS (deal to-do list) — table `transaction_tasks`.
+  // The human-agent to-do list: stage-templated + AI-suggested + contract-review
+  // tasks an agent works through a deal. Surfaced here so the ONE Command Center
+  // is the single place an agent sees their open deal work, alongside the at-risk
+  // alerts above. Approve = "Done" (→ completed); reject = "Cancel" (→ cancelled).
+  // Its native UIs (transaction detail, coordinator panel, /overdue) still work —
+  // this unifies the action surface, it does not replace them.
+  transaction_smart_task: {
+    queue: "transaction_smart_task",
+    table: "transaction_tasks",
+    select: "id, brokerage_id, transaction_id, title, description, priority, category, due_date, assigned_to, ai_generated, status, created_at",
+    pending: (q) => q.eq("status", "pending"),
+    toAction: (r, now) => {
+      const sla = evaluateApprovalSla(r.created_at ?? null, now, { deadlineIso: (r.due_date as string | null) ?? null })
+      // Priority escalates urgency: critical/high jump the queue.
+      const level = (r.priority === "critical" || r.priority === "high") ? "breached" : sla.level
+      return {
+        id: r.id, queue: "transaction_smart_task", brokerageId: r.brokerage_id, actionType: "complete_transaction_task",
+        rationale: `${r.title ?? "Deal task"}${r.priority ? ` · ${r.priority}` : ""}${r.ai_generated ? " · AI-suggested" : ""} — open to-do on a transaction.`,
+        actionInput: {
+          transaction_id: r.transaction_id ?? null, title: r.title ?? null, description: r.description ?? null,
+          priority: r.priority ?? null, category: r.category ?? null, due_date: r.due_date ?? null,
+          assigned_to: r.assigned_to ?? null, ai_generated: !!r.ai_generated,
+        },
+        status: "proposed", proposedAt: r.created_at ?? null, ageHours: sla.ageHours, slaLevel: level as ApprovalSlaLevel,
+      }
+    },
+    approve: (userId) => ({ status: "completed", completed_by: userId, completed_at: nowIso(), updated_at: nowIso() }),
+    approveGuard: (q) => q.eq("status", "pending"),
+    reject: () => ({ status: "cancelled", updated_at: nowIso() }),
   },
 
   // ── Autopilot follow-ups (open-house etc.) — surfaced as a follow-up task queue.

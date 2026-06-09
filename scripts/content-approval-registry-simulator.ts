@@ -51,6 +51,18 @@ function testPure() {
   check("direct-mail → approve_direct_mail + design in preview", da.actionType === "approve_direct_mail" && da.actionInput.design_url === "https://x/card.png")
   check("direct-mail approve → status+approval approved (one approval per campaign)", d.approve("u1").status === "approved" && d.approve("u1").approval_status === "approved")
   check("direct-mail reject → approval rejected (held, never prints)", d.reject("u1").approval_status === "rejected")
+
+  console.log("\n[Layer 1 · transaction_smart_task source — the agent deal to-do list]")
+  const t = CONTENT_SOURCES.transaction_smart_task
+  check("targets the transaction_tasks table (NOT transaction_pending_actions)", t.table === "transaction_tasks")
+  check("distinct from the at-risk queue", CONTENT_SOURCES.transaction_task.table === "transaction_pending_actions" && t.queue !== CONTENT_SOURCES.transaction_task.queue)
+  const ta = t.toAction({ id: "tt1", brokerage_id: "b1", transaction_id: "x1", title: "Order home inspection", description: "Within the option period", priority: "high", category: "inspection", due_date: now.toISOString(), assigned_to: "Agent", ai_generated: true, status: "pending", created_at: now.toISOString() }, now)
+  check("smart task → complete_transaction_task + title/priority in actionInput", ta.actionType === "complete_transaction_task" && ta.actionInput.title === "Order home inspection" && ta.actionInput.ai_generated === true)
+  check("high-priority task escalates to breached", ta.slaLevel === "breached")
+  check("approve → completed (+ completed_by/at)", t.approve("u1").status === "completed" && t.approve("u1").completed_by === "u1" && !!t.approve("u1").completed_at)
+  check("reject → cancelled (held, not deleted)", t.reject("u1").status === "cancelled")
+  const taLow = t.toAction({ id: "tt2", brokerage_id: "b1", title: "Send welcome packet", priority: "low", status: "pending", created_at: now.toISOString() }, now)
+  check("low-priority task does NOT force-escalate", taLow.slaLevel !== "breached")
 }
 
 async function testLive() {
@@ -66,6 +78,7 @@ async function testLive() {
   const svc = createServiceClient()
   const TAG = `__crsim_${Date.now()}__`
   const nlIds: string[] = []; const dmIds: string[] = []
+  const taskIds: string[] = []; let txnId: string | null = null
   const pastIso = new Date(Date.now() - 60_000).toISOString()
   try {
     const { data: brk } = await svc.from("brokerages").select("id").limit(1).single()
@@ -131,12 +144,51 @@ async function testLive() {
         check("rejected direct-mail is NOT print-eligible", !(await dmPrintEligible(dmReject)))
       }
     }
+
+    // ── Transaction smart task (agent deal to-do list) ──
+    const { data: txn } = await svc.from("transactions").insert({
+      brokerage_id: brokerageId, deal_name: `${TAG} deal`,
+    }).select("id").maybeSingle()
+    txnId = (txn as { id: string } | null)?.id ?? null
+    if (txnId) {
+      async function seedTask(name: string): Promise<string | null> {
+        const { data, error } = await svc.from("transaction_tasks").insert({
+          brokerage_id: brokerageId, transaction_id: txnId, title: `${TAG} ${name}`,
+          priority: "high", status: "pending", ai_generated: true,
+        }).select("id").maybeSingle()
+        if (error) { console.log(`  ⏭  task seed failed (${error.message})`); return null }
+        const id = (data as { id: string }).id; taskIds.push(id); return id
+      }
+      const taskPending = await seedTask("Order inspection")
+      if (taskPending) {
+        const cct = await loadCommandCenter({ brokerageId })
+        check("Command Center surfaces the pending deal task", !!cct.pendingActions.find((a) => a.id === taskPending && a.queue === "transaction_smart_task"))
+        const tApprove = await approveContentSource("transaction_smart_task", taskPending, ctx)
+        check("approve (Done) deal task via registry", tApprove.ok === true, tApprove.error)
+        const { data: doneRow } = await svc.from("transaction_tasks").select("status, completed_by").eq("id", taskPending).maybeSingle()
+        check("approved task → completed (+ completed_by stamped)", (doneRow as any)?.status === "completed" && !!(doneRow as any)?.completed_by)
+        const cct2 = await loadCommandCenter({ brokerageId })
+        check("completed task leaves the queue", !cct2.pendingActions.find((a) => a.id === taskPending))
+        const taskReject = await seedTask("Cancel me")
+        if (taskReject) {
+          await rejectContentSource("transaction_smart_task", taskReject, ctx)
+          const { data: cancelledRow } = await svc.from("transaction_tasks").select("status").eq("id", taskReject).maybeSingle()
+          check("rejected task → cancelled (held, not deleted)", (cancelledRow as any)?.status === "cancelled")
+        }
+        // Idempotency — re-approving a completed task is a no-op (guard on pending).
+        const reAppr = await approveContentSource("transaction_smart_task", taskPending, ctx)
+        check("re-approving a completed task is a no-op (guarded)", reAppr.ok === false)
+      }
+    }
   } finally {
+    for (const id of taskIds) { try { await svc.from("transaction_tasks").delete().eq("id", id) } catch {} }
+    if (txnId) { try { await svc.from("transactions").delete().eq("id", txnId) } catch {} }
     for (const id of nlIds) { try { await svc.from("newsletter_campaigns").delete().eq("id", id) } catch {} }
     for (const id of dmIds) { try { await svc.from("direct_mail_campaigns").delete().eq("id", id) } catch {} }
     const { count: nlLeft } = await svc.from("newsletter_campaigns").select("id", { count: "exact", head: true }).like("campaign_name", `${TAG}%`)
     const { count: dmLeft } = await svc.from("direct_mail_campaigns").select("id", { count: "exact", head: true }).like("campaign_name", `${TAG}%`)
-    check("cleanup verified — 0 test rows remain", (nlLeft ?? 0) === 0 && (dmLeft ?? 0) === 0)
+    const { count: tkLeft } = await svc.from("transaction_tasks").select("id", { count: "exact", head: true }).like("title", `${TAG}%`)
+    check("cleanup verified — 0 test rows remain", (nlLeft ?? 0) === 0 && (dmLeft ?? 0) === 0 && (tkLeft ?? 0) === 0)
   }
 }
 
