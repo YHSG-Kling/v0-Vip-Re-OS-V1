@@ -20,7 +20,7 @@ export async function launchAIISACampaignService(params: {
   // Get contacts matching segment
   let query = supabase
     .from("contacts")
-    .select("id, first_name, last_name, phone, lead_score, stage")
+    .select("id, first_name, last_name, phone, lead_score, stage:buyer_stage")
     .eq("agent_id", loginId)
 
   if (campaignType === "new_lead_follow_up") {
@@ -30,9 +30,9 @@ export async function launchAIISACampaignService(params: {
   } else if (campaignType === "dormant_reactivation") {
     query = query
       .eq("status", "nurture")
-      .lte("last_contact_date", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
+      .lte("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
   } else if (campaignType === "showing_feedback") {
-    query = query.eq("stage", "toured")
+    query = query.eq("buyer_stage", "toured")
   }
 
   const { data: contacts } = await query
@@ -100,7 +100,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("first_name, last_name, phone, lead_score, stage, last_property_viewed, brokerage_id, agent_id")
+    .select("first_name, last_name, phone, lead_score, stage:status, brokerage_id, agent_id")
     .eq("id", contactId)
     .single()
 
@@ -159,7 +159,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
       agent_full_name:       `${agent.first_name} ${agent.last_name}`,
       brokerage_name:        (agent.brokerage as any)?.name ?? "your brokerage",
       lead_stage:            contact.stage            ?? "prospect",
-      last_viewed_property:  contact.last_property_viewed ?? "properties in your area",
+      last_viewed_property:  "properties in your area",  // no last_property_viewed column on contacts
       preferred_areas:       "your preferred areas",  // criteria live in property_preferences, not contacts
     },
   }

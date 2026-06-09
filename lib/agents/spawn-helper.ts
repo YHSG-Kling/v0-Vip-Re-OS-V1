@@ -27,6 +27,7 @@ export type AgentKind =
   | "marketing_agent"
   | "asset_manager"
   | "ads_manager"
+  | "ai_isa"
 export type EntityType = "transaction" | "contact" | "listing" | "brokerage"
 
 // Boundary normalization for the Anthropic session status lives in a pure
@@ -44,6 +45,7 @@ const KIND_LABEL: Record<AgentKind, string> = {
   marketing_agent:       "Marketing Agent",
   asset_manager:         "Asset Manager",
   ads_manager:           "Ads Manager",
+  ai_isa:                "AI ISA",
 }
 
 /**

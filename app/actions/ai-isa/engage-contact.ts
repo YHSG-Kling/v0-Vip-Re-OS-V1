@@ -93,7 +93,7 @@ export async function engageContact(
          isa_reengage_allowed, ai_outreach_paused,
          preferred_channel, social_handles,
          brokerage_id, team_id, agent_id,
-         mailing_address, mailing_city, mailing_state, mailing_zip,
+         mailing_address, mailing_city:city, mailing_state:state, mailing_zip:zip_code,
          last_contacted_at`
       )
       .eq('id', contactId)

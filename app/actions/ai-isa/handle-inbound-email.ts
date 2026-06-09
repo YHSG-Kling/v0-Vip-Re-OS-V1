@@ -132,7 +132,7 @@ export async function processInboundEmail(params: {
         .from('contacts')
         .select(
           `id, first_name, last_name, email, phone,
-           contact_type, persona, buyer_stage, seller_stage,
+           contact_type, persona:contact_persona, buyer_stage,
            lifecycle_state, status, tcpa_consent, tcpa_consent_date,
            isa_reengage_allowed, dnc_status, brokerage_id, team_id, agent_id`
         )

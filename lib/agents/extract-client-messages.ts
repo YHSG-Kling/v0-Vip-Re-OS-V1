@@ -31,7 +31,7 @@ const isAudience = (v: unknown): v is ClientAudience => v === "seller" || v === 
 
 /** Managers whose output reaches a client and must pass the human gate. */
 export const GATED_CLIENT_MANAGERS = new Set<string>([
-  "listing_concierge", "deal_coordinator", "shopping_agent", "sphere_of_influence", "campaign_orchestrator",
+  "listing_concierge", "deal_coordinator", "shopping_agent", "sphere_of_influence", "campaign_orchestrator", "ai_isa",
 ])
 
 /** Pure: extract all client-facing message drafts from a manager's parsed output. */

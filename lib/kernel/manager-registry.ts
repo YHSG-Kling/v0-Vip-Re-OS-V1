@@ -11,10 +11,8 @@
  * Command Center UI (client) share ONE source of truth for manager identity + labels —
  * no drift between a server map and a hand-kept client KIND_LABEL.
  *
- * The 7 Anthropic-backed managers mirror managed_agents.agent_kind (lib/agents/
- * spawn-helper.ts AgentKind). "ads_manager" is the programmatic Ads Manager — it owns
- * paid-ad spend actions on the egress but is not an Anthropic agent_kind, so it lives
- * here (the ownership concept) without a managed_agents row.
+ * All 9 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
+ * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture).
  */
 
 export type ManagerKey =
@@ -26,6 +24,7 @@ export type ManagerKey =
   | "marketing_agent"
   | "asset_manager"
   | "ads_manager"
+  | "ai_isa"
 
 export interface ManagerInfo {
   key:    ManagerKey
@@ -43,6 +42,7 @@ export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
   marketing_agent:       { key: "marketing_agent",       label: "Marketing Manager",     domain: "Brand & promotion" },
   asset_manager:         { key: "asset_manager",         label: "Asset Manager",         domain: "Media & brand library" },
   ads_manager:           { key: "ads_manager",           label: "Ads Manager",           domain: "Paid advertising" },
+  ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement" },
 }
 
 /**
