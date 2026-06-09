@@ -234,6 +234,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (D-bis) Wave 55 — buyer tour-completed AUTO-handoff (deliverable-gated). Reaching the
+  // `tour_completed` journey stage emits TOUR_COMPLETED but spawned/produced nothing before;
+  // propose a concrete next-steps follow-up to the buyer into the client_message gate.
+  if (params.brokerageId && params.entityType === "contact" && params.event === KernelEvent.TOUR_COMPLETED) {
+    try {
+      const { produceTourFollowUp } = await import("@/lib/agents/tour-followup-producer")
+      void produceTourFollowUp(params.brokerageId, params.entityId, svc)
+    } catch { /* auto-producer is best-effort */ }
+  }
+
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
   // (the canonical assignment moment per the app rule: raw_leads → platform,
   // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID

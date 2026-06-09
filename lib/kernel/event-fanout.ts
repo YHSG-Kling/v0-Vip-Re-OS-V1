@@ -450,6 +450,15 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "See you at the tour.",
     chatBody: "Your tour is set — details are in your portal. Looking forward to it!",
   },
+  [KernelEvent.TOUR_COMPLETED]: {
+    title: "How were the homes you toured?",
+    plainLanguageSummary:
+      "Thanks for touring! Your agent will follow up with next steps — revisit a favorite, line up more tours, or talk strategy on an offer.",
+    responsibleParty: "agent",
+    audience: "buyer",  // touring is the buyer side
+    nextStep: "Tell your agent which homes stood out.",
+    chatBody: "Hope the tour was helpful! I'll follow up with next steps — let me know which homes stood out.",
+  },
   // SHOWING_SCHEDULED is the SELLER side — a buyer's agent booked a showing on OUR listing. (Buyer-side
   // property visits are TOUR_SCHEDULED above.)
   [KernelEvent.SHOWING_SCHEDULED]: {
