@@ -67,16 +67,21 @@ export async function getRecommendedProperties(params: {
   const supabase = await createClient()
   
   try {
-    // Get contact preferences
+    // Budget lives on contacts; beds/cities criteria live in property_preferences. The old
+    // code selected desired_neighborhoods/bedrooms_min/etc. off contacts (phantom columns) →
+    // the query errored and the portal returned no matches.
     const { data: contact } = await supabase
       .from("contacts")
-      .select("budget_min, budget_max, desired_neighborhoods, property_type, bedrooms_min, bathrooms_min")
+      .select("budget_min, budget_max")
       .eq("id", params.contactId)
       .single()
 
     if (!contact) {
       return { success: true, properties: [] }
     }
+
+    const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+    const criteria = await loadBuyerCriteria(supabase as unknown as Parameters<typeof loadBuyerCriteria>[0], params.contactId)
 
     // Build query based on preferences
     let query = supabase
@@ -86,15 +91,16 @@ export async function getRecommendedProperties(params: {
       .order("created_at", { ascending: false })
       .limit(params.limit || 10)
 
-    // Apply budget filters if set
-    if (contact.budget_min) {
-      query = query.gte("list_price", contact.budget_min)
+    const minPrice = contact.budget_min ?? criteria?.minPrice ?? null
+    const maxPrice = contact.budget_max ?? criteria?.maxPrice ?? null
+    if (minPrice) {
+      query = query.gte("list_price", minPrice)
     }
-    if (contact.budget_max) {
-      query = query.lte("list_price", contact.budget_max)
+    if (maxPrice) {
+      query = query.lte("list_price", maxPrice)
     }
-    if (contact.bedrooms_min) {
-      query = query.gte("bedrooms", contact.bedrooms_min)
+    if (criteria?.minBeds) {
+      query = query.gte("bedrooms", criteria.minBeds)
     }
 
     const { data: listings, error } = await query
