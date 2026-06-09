@@ -338,13 +338,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   // per (agent → team → brokerage → platform default), so this block is
   // safe to fan out: opted-out events return status='skipped' without
   // staging any render or spending render dollars.
+  // NOTE: LISTING_PRICE_REDUCED is deliberately NOT auto-handled here. Advertising a
+  // price drop is sensitive — many agents don't want it broadcast automatically — and
+  // per the Lifecycle Event Contract §3 money-spending marketing must be AGENT-INITIATED,
+  // not auto-fired by the system reactor. Price-reduction marketing is launched manually
+  // via launchPriceReductionCampaign() (deliverable-gated in the ad_creative queue).
   if (
     params.brokerageId &&
     params.entityType === "listing" &&
     (
       params.event === KernelEvent.LISTING_STAGE_CHANGED ||
-      params.event === KernelEvent.LISTING_UNDER_CONTRACT ||
-      params.event === KernelEvent.LISTING_PRICE_REDUCED
+      params.event === KernelEvent.LISTING_UNDER_CONTRACT
     )
   ) {
     try {
@@ -367,9 +371,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         const meta = params.metadata as { new_stage?: string } | null | undefined
         const newStage = meta?.new_stage ?? null
         let eventType: import("@/lib/video/listing-promo-reactor").ListingPromoEventType | null = null
-        if (params.event === KernelEvent.LISTING_PRICE_REDUCED) {
-          eventType = "price_reduction"
-        } else if (params.event === KernelEvent.LISTING_UNDER_CONTRACT) {
+        if (params.event === KernelEvent.LISTING_UNDER_CONTRACT) {
           eventType = "under_contract"
         } else if (params.event === KernelEvent.LISTING_STAGE_CHANGED) {
           if (newStage === "coming_soon")    eventType = "coming_soon"

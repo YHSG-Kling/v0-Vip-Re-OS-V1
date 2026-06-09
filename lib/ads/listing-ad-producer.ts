@@ -12,7 +12,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 
-export type ListingAdKind = "just_listed" | "just_sold"
+export type ListingAdKind = "just_listed" | "just_sold" | "price_reduction"
 
 export interface ListingFacts {
   address?: string | null; city?: string | null; state?: string | null
@@ -34,6 +34,17 @@ export function buildListingCreative(facts: ListingFacts, kind: ListingAdKind): 
       headline:      "Just Sold!",
       primaryText:   `Another home ${where} just sold${specs ? ` (${specs})` : ""}. Curious what yours could sell for? Let's talk.`,
       description:   "Local results",
+      callToAction:  "LEARN_MORE",
+    }
+  }
+  if (kind === "price_reduction") {
+    // Positive, industry-standard framing ("improved" not "reduced/desperate");
+    // no protected-class language, no suggested value — just the new opportunity.
+    return {
+      variationName: "Price Improved — agent-initiated",
+      headline:      "Price Improved!",
+      primaryText:   `New price on this home ${where}${specs ? ` — ${specs}` : ""}. A fresh opportunity to tour or make it yours. Ask for details today.`,
+      description:   "New price",
       callToAction:  "LEARN_MORE",
     }
   }
@@ -89,7 +100,8 @@ export async function produceListingAdCampaign(
     agentUserId = await resolveAgentRecordToUserId(listing.agent_id)
   }
 
-  const campaignName = `${kind === "just_sold" ? "Just Sold" : "Just Listed"} — ${listing.address ?? listing.city ?? "Listing"}`
+  const kindLabel = kind === "just_sold" ? "Just Sold" : kind === "price_reduction" ? "Price Improved" : "Just Listed"
+  const campaignName = `${kindLabel} — ${listing.address ?? listing.city ?? "Listing"}`
   const { data: campaign, error: cErr } = await supabase.from("ad_campaigns").insert({
     brokerage_id: brokerageId, agent_user_id: agentUserId, campaign_name: campaignName,
     platform: "facebook", objective: "leads", status: "draft", daily_budget: 0,

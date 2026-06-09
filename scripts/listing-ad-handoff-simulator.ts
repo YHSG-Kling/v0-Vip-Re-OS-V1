@@ -31,9 +31,11 @@ function testPure() {
   check("just-listed headline + specs woven in", jl.headline === "Just Listed!" && /4 bed, 3 bath/.test(jl.primaryText) && /Maple Grove/.test(jl.primaryText))
   const js = buildListingCreative({ city: "Maple Grove" }, "just_sold")
   check("just-sold headline + 'what yours could sell for'", js.headline === "Just Sold!" && /sell for/i.test(js.primaryText))
+  const pr = buildListingCreative({ city: "Maple Grove", bedrooms: 3, bathrooms: 2 }, "price_reduction")
+  check("price-reduction → positive 'Price Improved!' framing (not 'reduced/desperate')", pr.headline === "Price Improved!" && !/reduced|desperate|must sell|slashed/i.test(pr.primaryText) && /new price/i.test(pr.primaryText))
   check("valid CTA", ["LEARN_MORE", "SIGN_UP", "CONTACT_US", "GET_OFFER"].includes(jl.callToAction))
-  check("Fair-Housing clean — no protected-class / 'should live' language", !/(family|families|safe neighborhood|good schools|christian|no kids|adults only|perfect for)/i.test(jl.primaryText + js.primaryText))
-  check("seller-safe — no suggested price leaked", findSuggestedPriceLeaks({ a: jl.primaryText, b: js.primaryText }).length === 0)
+  check("Fair-Housing clean — no protected-class / 'should live' language", !/(family|families|safe neighborhood|good schools|christian|no kids|adults only|perfect for)/i.test(jl.primaryText + js.primaryText + pr.primaryText))
+  check("seller-safe — no suggested price leaked", findSuggestedPriceLeaks({ a: jl.primaryText, b: js.primaryText, c: pr.primaryText }).length === 0)
 }
 
 async function testLive() {
@@ -48,6 +50,7 @@ async function testLive() {
   const svc = createServiceClient()
   const TAG = `__lah_${Date.now()}__`
   let listingId: string | null = null; let campaignId: string | null = null; let creativeId: string | null = null
+  let prCampaignId: string | null = null; let prCreativeId: string | null = null
   try {
     const { data: brk } = await svc.from("brokerages").select("id").limit(1).single()
     if (!brk) { console.log("  ⏭  Skipped — no brokerage."); return }
@@ -77,7 +80,19 @@ async function testLive() {
     // Idempotent — re-firing the handoff does not duplicate.
     const r2 = await produceListingAdCampaign(brokerageId, listingId, "just_listed", svc)
     check("auto-handoff is idempotent (one campaign per listing/kind)", r2.produced === false && r2.campaignId === campaignId)
+
+    // MANUAL price-reduction (agent-initiated) — same producer, distinct kind →
+    // its own campaign + a 'Price Improved' creative in the same deliverable gate.
+    const pr = await produceListingAdCampaign(brokerageId, listingId, "price_reduction", svc)
+    check("manual price-reduction produces its OWN draft campaign + creative", pr.produced === true && !!pr.creativeId && pr.campaignId !== campaignId, pr.reason)
+    prCampaignId = pr.campaignId ?? null; prCreativeId = pr.creativeId ?? null
+    const { data: prCr } = await svc.from("ad_creative_variations").select("headline, approval_status").eq("id", prCreativeId!).single()
+    check("price-reduction creative is 'Price Improved!' + DRAFT (human-gated)", (prCr as any).headline === "Price Improved!" && (prCr as any).approval_status === "draft")
+    const ccPr = await loadCommandCenter({ brokerageId })
+    check("price-reduction creative surfaces in the ad_creative deliverable queue", !!ccPr.pendingActions.find((a) => a.id === prCreativeId && a.queue === "ad_creative"))
   } finally {
+    if (prCreativeId) { try { await svc.from("ad_creative_variations").delete().eq("id", prCreativeId) } catch {} }
+    if (prCampaignId) { try { await svc.from("ad_campaigns").delete().eq("id", prCampaignId) } catch {} }
     if (creativeId) { try { await svc.from("ad_creative_variations").delete().eq("id", creativeId) } catch {} }
     if (campaignId) { try { await svc.from("ad_campaigns").delete().eq("id", campaignId) } catch {} }
     if (listingId) { try { await svc.from("listings").delete().eq("id", listingId) } catch {} }

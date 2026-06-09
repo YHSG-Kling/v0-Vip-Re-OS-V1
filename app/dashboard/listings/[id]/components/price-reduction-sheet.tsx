@@ -14,10 +14,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { TrendingDown, Loader2, Sparkles, Mail } from "lucide-react"
+import { TrendingDown, Loader2, Sparkles, Mail, Megaphone } from "lucide-react"
 import { toast } from "sonner"
 import { handlePriceReduction } from "@/app/actions/listing-lifecycle"
 import { createDirectMailCampaign } from "@/app/actions/ai-direct-mail"
+import { launchPriceReductionCampaign } from "@/app/actions/price-reduction-campaign"
 
 interface Props {
   listingId: string
@@ -41,6 +42,10 @@ export function PriceReductionSheet({
   const [note, setNote] = useState("")
   const [isPending, startTransition] = useTransition()
   const [launchMailCampaign, setLaunchMailCampaign] = useState(true)
+  // Public-facing ad + promo video is OPT-IN (default off): advertising a price drop
+  // is sensitive and not every agent/seller wants it broadcast. When on, the creative
+  // lands in the Command Center approval queue — nothing runs without a human release.
+  const [launchAdCampaign, setLaunchAdCampaign] = useState(false)
 
   if (status !== "active") return null
 
@@ -85,6 +90,16 @@ export function PriceReductionSheet({
           toast.success("Price reduction direct mail campaign launched")
         } catch {
           toast.error("Mail campaign failed — price still reduced")
+        }
+      }
+
+      if (launchAdCampaign) {
+        try {
+          const ad = await launchPriceReductionCampaign(listingId)
+          if (ad.ok) toast.success("Price-improved ad + video sent to your approval queue")
+          else toast.error(ad.error ?? "Ad campaign failed — price still reduced")
+        } catch {
+          toast.error("Ad campaign failed — price still reduced")
         }
       }
 
@@ -165,6 +180,25 @@ export function PriceReductionSheet({
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Notifies local buyers &amp; investors with the new price
+                </p>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={launchAdCampaign}
+                onChange={(e) => setLaunchAdCampaign(e.target.checked)}
+              />
+              <div>
+                <p className="text-sm font-medium flex items-center gap-1.5">
+                  <Megaphone className="h-3.5 w-3.5 text-purple-500" />
+                  Create a &quot;Price Improved&quot; ad + promo video
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Off by default. Drafts a paid-ad creative + avatar video that land in
+                  your Command Center approval queue — nothing goes public until you release it.
                 </p>
               </div>
             </label>
