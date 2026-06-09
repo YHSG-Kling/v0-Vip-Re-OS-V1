@@ -55,6 +55,15 @@ export async function promoteRawRecordToLead(
     const propertyZipCode =
       rawData.property_zip_code || rawData.zip_code || rawData.zip || null
     const mailingZip = rawData.mailing_zip || null
+    // Full address fidelity — the automated path (pipeline-processor) carries these; the manual
+    // broker-triggered promotion was dropping them, so a hand-promoted lead lost its physical
+    // address + mailing breakdown. Keep both paths lossless to the same canonical column set.
+    const address      = rawData.address ?? rawData.property_address ?? null
+    const city         = rawData.city ?? null
+    const state        = rawData.state ?? null
+    const zipCode      = rawData.zip_code ?? rawData.zip ?? propertyZipCode
+    const mailingCity  = rawData.mailing_city ?? null
+    const mailingState = rawData.mailing_state ?? null
 
     // Platform-origin leads have NO brokerage until Engine 1 distributes them.
     // Brokerage-origin leads keep the brokerage that initiated the scrape.
@@ -74,6 +83,13 @@ export async function promoteRawRecordToLead(
         source_origin: sourceOrigin,
         property_zip_code: propertyZipCode,
         mailing_zip: mailingZip,
+        // Canonical physical-address + mailing-breakdown columns (parity with pipeline-processor).
+        address: address,
+        city: city,
+        state: state,
+        zip_code: zipCode,
+        mailing_city: mailingCity,
+        mailing_state: mailingState,
         lead_stage: 'new',
         lead_type: motivationType,
         property_interest: propertyInterest,

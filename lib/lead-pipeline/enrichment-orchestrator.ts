@@ -241,9 +241,10 @@ export async function processEnrichmentQueue(
           // household_income, home_owner_status, occupation, education_level, social URLs,
           // life_events, peopledata_id, enriched_at, enrichment_source) so the data is queryable
           // by scorers / segmenters / AI-ISA — not just stranded in enrichment_profile jsonb.
-          // NOTE: contacts has NO phone_secondary column (leads-only); the second phone is
-          // conserved in enrichment_profile.phones, so we do NOT write phone_secondary here
-          // (doing so PGRST204-errored the whole update whenever PDL returned a 2nd phone).
+          // The SECONDARY phone is conserved as a first-class, independently-gateable number
+          // (m202): one line may be on the DNC while the other is reachable, so the voice/SMS
+          // resolver can fall back instead of suppressing the contact. The full phone list also
+          // stays in enrichment_profile.phones for audit.
           const enrichedAt = new Date().toISOString()
           const contactEnrichmentColumns = peopleDataProfileToContactColumns(profile, { enrichedAt })
           await supabase
@@ -251,6 +252,7 @@ export async function processEnrichmentQueue(
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...(primaryPhone && { phone: primaryPhone }),
+              ...(secondaryPhone && { phone_secondary: secondaryPhone }),
               ...contactEnrichmentColumns,
               last_enriched_at: enrichedAt,
               enrichment_confidence: enriched.enrichmentConfidence,

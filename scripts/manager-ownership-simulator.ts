@@ -60,7 +60,7 @@ check("every content-approval source has a manager owner", unownedContent.length
 
 console.log("\n[4 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
-check("all 9 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa)", keys.length === 9)
+check("all 10 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward)", keys.length === 10)
 for (const k of keys) {
   const m = MANAGERS[k]
   check(`${k} has label + domain + matching key`, m.key === k && m.label.length > 0 && m.domain.length > 0)

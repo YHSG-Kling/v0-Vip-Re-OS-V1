@@ -11,8 +11,9 @@
  * Command Center UI (client) share ONE source of truth for manager identity + labels —
  * no drift between a server map and a hand-kept client KIND_LABEL.
  *
- * All 9 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
- * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture).
+ * All 10 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
+ * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture) +
+ * Data Steward (m203, data integrity / identity / field stewardship across the lead spine).
  */
 
 export type ManagerKey =
@@ -25,6 +26,7 @@ export type ManagerKey =
   | "asset_manager"
   | "ads_manager"
   | "ai_isa"
+  | "data_steward"
 
 export interface ManagerInfo {
   key:    ManagerKey
@@ -43,6 +45,7 @@ export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
   asset_manager:         { key: "asset_manager",         label: "Asset Manager",         domain: "Media & brand library" },
   ads_manager:           { key: "ads_manager",           label: "Ads Manager",           domain: "Paid advertising" },
   ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement" },
+  data_steward:          { key: "data_steward",          label: "Data Steward",          domain: "Data integrity, identity & field stewardship" },
 }
 
 /**

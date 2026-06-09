@@ -31,6 +31,9 @@ export async function createContactFromLead(
       last_name: data.lead.last_name,
       email: data.lead.email,
       phone: data.lead.phone,
+      // Carry the secondary phone upward (leads -> contacts). Independently gateable so a
+      // DNC/opt-out on one line never silently drops the other reachable number.
+      phone_secondary: data.lead.phone_secondary ?? null,
 
       // Attribution
       source: data.lead.source || 'lead_promotion',

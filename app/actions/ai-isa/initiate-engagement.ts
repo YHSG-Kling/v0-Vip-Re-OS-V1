@@ -37,6 +37,7 @@ import {
 import { handleISAQualificationStarted } from '@/lib/kernel/lead-acquisition-handlers'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
+import { hasReachablePhone } from '@/lib/communication/phone-reachability'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
@@ -108,7 +109,10 @@ export async function initiateAIISAEngagement(
            contact_type, persona:contact_persona, buyer_stage,
            lifecycle_state, status, tcpa_consent, tcpa_consent_date,
            isa_reengage_allowed, dnc_status, brokerage_id, team_id, agent_id,
-           preferred_channel, social_handles, call_stop_flag`
+           preferred_channel, social_handles, call_stop_flag,
+           phone_opt_out, phone_status, sms_unsubscribed, email_opt_out,
+           mailing_address, mailing_city, mailing_state,
+           phone_secondary, phone_secondary_dnc_status, phone_secondary_opt_out, phone_secondary_status`
         )
         .eq('id', lead.contact_id)
         .maybeSingle()
@@ -171,7 +175,10 @@ export async function initiateAIISAEngagement(
       // Post-conversion contact: follow stored preferences + opt-out state
       if (contactRow?.id) {
         const ch = (contactRow.preferred_channel ?? 'email') as string
-        if (contactRow.call_stop_flag && ch === 'phone') return 'email'
+        // Voice is a per-NUMBER permission: if the primary line is blocked but a clean secondary
+        // line exists, keep the phone channel (the dialer uses pickReachablePhone to select it).
+        // Only downgrade to email when NEITHER line is voice-reachable. (SMS stays person-level.)
+        if (ch === 'phone' && !hasReachablePhone(contactRow)) return 'email'
         if (contactRow.sms_unsubscribed && ch === 'sms') return 'email'
         if (contactRow.email_opt_out && ch === 'email') {
           const hasAddr = !!(
