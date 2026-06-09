@@ -52,7 +52,7 @@ export async function matchBuyersForListing(params: {
     // 1. Fetch listing data
     const { data: listing, error: listingError } = await supabase
       .from('listings')
-      .select('id, price, bedrooms, bathrooms, square_feet, property_type, city, state, zip, features, status, created_at')
+      .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('id', listingId)
       .single()
 
@@ -173,7 +173,7 @@ export async function scoreSingleBuyerForListing(params: {
     // Fetch listing
     const { data: listing, error: listingError } = await supabase
       .from('listings')
-      .select('id, price, bedrooms, bathrooms, square_feet, property_type, city, state, zip, features, status, created_at')
+      .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('id', listingId)
       .single()
 

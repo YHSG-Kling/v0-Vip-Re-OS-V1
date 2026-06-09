@@ -120,7 +120,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     const filters = intentToFilters(enrichedIntent)
     let q = supabase
       .from('listings')
-      .select('id, price, bedrooms, bathrooms, square_feet, property_type, city, state, zip, features, status, created_at')
+      .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('status', 'active')
       .not('deleted_at', 'is', null)
 
@@ -241,7 +241,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         city: listing.city,
         state: listing.state,
         property_type: listing.property_type,
-        features: listing.features,
+        features: null,  // listings has no features column
         internal_match_score: matchScore,
         internal_confidence: confidence,
         source: isExternal ? ((listing as any).__source as 'rentcast' | 'idx') : 'platform',
@@ -304,7 +304,7 @@ export async function explainPropertyMatchCore(params: {
     const supabase = createServiceClient()
 
     const [{ data: listing, error: lErr }, { data: contact, error: cErr }] = await Promise.all([
-      supabase.from('listings').select('id, price, bedrooms, bathrooms, square_feet, property_type, city, state, zip, features, status, created_at').eq('id', listingId).single(),
+      supabase.from('listings').select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at').eq('id', listingId).single(),
       supabase.from('contacts').select('id, first_name, last_name, notes, created_at').eq('id', contactId).single(),
     ])
 

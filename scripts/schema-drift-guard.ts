@@ -38,10 +38,11 @@ const GUARDED = new Set(Object.keys(SCHEMA_SNAPSHOT))
 /** Join concatenated string literals (\"a\" + \"b\" + `c`), stripping ${...} interpolations
  *  (those resolve to validated SELECT constants we can't statically expand). */
 export function collectSelectArg(src: string, fromIdx: number): string | null {
-  // find the `.select(` that chains off this from(), before any next `.from(`
+  // find the `.select(` that chains off this from(), before the NEXT `.from(` (skip the
+  // current one at index 0 — otherwise the window collapses / spills into another query).
   const rest = src.slice(fromIdx)
-  const nextFrom = rest.search(/\.from\(/)
-  const window = nextFrom > 0 ? rest.slice(0, nextFrom + 1) : rest
+  const nf = rest.slice(1).search(/\.from\(/)
+  const window = nf >= 0 ? rest.slice(0, nf + 1) : rest
   const sel = window.search(/\.select\s*\(/)
   if (sel < 0) return null
   // capture from after `(` to the matching `)`
@@ -73,45 +74,49 @@ function firstArg(s: string): string {
   return s
 }
 
-/** Columns referenced by a select() string: drop *, embeds table(...), aliases, count() etc. */
+/** Columns referenced by a PostgREST select() string. Handles: *, embeds (incl. an
+ *  `alias:rel(...)` prefix), renames (`alias:real_column` → the REAL column after the
+ *  colon), casts (`col::type`), json paths (`col->>x`), and hints (`col!inner`). */
 export function parseSelectColumns(literal: string): string[] {
   const cols: string[] = []
-  // remove embedded relations like  listings(a, b)  and  foo:bar(...)
-  const noEmbeds = literal.replace(/[a-z_]+\s*\([^)]*\)/gi, " ")
-  for (let part of noEmbeds.split(",")) {
+  // strip embedded relations, including any `alias:` and `!hint` before the `(...)`.
+  const cleaned = literal.replace(/([a-z_][a-z0-9_]*\s*:\s*)?[a-z_][a-z0-9_]*\s*(![a-z_]+)?\s*\([^)]*\)/gi, " ")
+  for (let part of cleaned.split(",")) {
     part = part.trim()
     if (!part || part === "*") continue
-    part = part.split(":")[0].trim()          // alias `col:renamed` → col (PostgREST rename is `new:old`; old is the real col, but the first token is what's selected — guard the bare identifier)
-    part = part.replace(/!.*$/, "").trim()      // hint syntax col!inner etc.
+    part = part.replace(/::[a-z_]+/gi, "")          // ::cast
+    part = part.split("->")[0].trim()                // json path col->>'x'
+    if (part.includes(":")) part = part.split(":").pop()!.trim()  // alias:real_column → real_column
+    part = part.replace(/!.*$/, "").trim()           // col!inner
     const id = part.match(/^[a-z_][a-z0-9_]*$/i)
     if (id) cols.push(id[0])
   }
   return cols
 }
 
-/** Top-level keys of an object literal `{ a: 1, b: foo({..}), c }` at brace depth 1. */
+/** Top-level keys of an object literal `{ a: 1, b: foo({..}), c }` at brace depth 1.
+ *  A key only counts when it directly follows `{` or `,` (depth 1) — so a ternary branch
+ *  `cond ? ident : null` is NOT mistaken for an `ident:` key. Skips strings. */
 export function parseObjectTopLevelKeys(objText: string): string[] {
   const keys: string[] = []
-  let depth = 0
-  const re = /([{}()[\]])|(^|[,{])\s*([a-z_][a-z0-9_]*)\s*:/gim
-  // simpler: walk char by char tracking depth, capture `ident:` at depth 1
-  let i = 0
   const s = objText
   const stack: string[] = []
+  let lastSig = ""        // last significant (non-ws) char at the current scope
+  let q: string | null = null
+  let i = 0
   while (i < s.length) {
     const ch = s[i]
-    if (ch === "{" || ch === "(" || ch === "[") stack.push(ch)
-    else if (ch === "}" || ch === ")" || ch === "]") stack.pop()
-    else if (stack.length === 1) {
-      // at top level of the object — match `ident:`
+    if (q) { if (ch === q && s[i - 1] !== "\\") q = null; i++; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; lastSig = ch; i++; continue }
+    if (ch === "{" || ch === "(" || ch === "[") { stack.push(ch); lastSig = ch; i++; continue }
+    if (ch === "}" || ch === ")" || ch === "]") { stack.pop(); lastSig = ch; i++; continue }
+    if (stack.length === 1 && /[a-z_]/i.test(ch) && (lastSig === "{" || lastSig === ",")) {
       const m = s.slice(i).match(/^([a-z_][a-z0-9_]*)\s*:/i)
-      if (m && (i === 0 || /[,{\s]/.test(s[i - 1]))) {
-        keys.push(m[1]); i += m[0].length; continue
-      }
+      if (m) { keys.push(m[1]); lastSig = ":"; i += m[0].length; continue }
     }
+    if (!/\s/.test(ch)) lastSig = ch
     i++
   }
-  void re
   return keys
 }
 
@@ -137,6 +142,9 @@ function testPure() {
   console.log("\n[Layer 1 · parsers]")
   check("parseSelectColumns: plain list", JSON.stringify(parseSelectColumns("a, b, c")) === JSON.stringify(["a", "b", "c"]))
   check("parseSelectColumns: ignores * and embeds", JSON.stringify(parseSelectColumns("*, listings(address, city), id")) === JSON.stringify(["id"]))
+  check("parseSelectColumns: embed with alias (seller:seller_contact_id(...)) is skipped", JSON.stringify(parseSelectColumns("id, seller:seller_contact_id(id, first_name), agent:agent_id(id)")) === JSON.stringify(["id"]))
+  check("parseSelectColumns: rename alias checks the REAL column (price:list_price → list_price)", JSON.stringify(parseSelectColumns("price:list_price, sqft:sqft")) === JSON.stringify(["list_price", "sqft"]))
+  check("parseObjectTopLevelKeys: ternary branch is NOT a key", JSON.stringify(parseObjectTopLevelKeys("{ inferred_beds_min: avgBeds > 0 ? avgBeds : null, x: 1 }")) === JSON.stringify(["inferred_beds_min", "x"]))
   check("parseSelectColumns: strips interpolation residue", parseSelectColumns("  , signals_processed, last_calculated_at").join() === "signals_processed,last_calculated_at")
   check("parseObjectTopLevelKeys: flat", JSON.stringify(parseObjectTopLevelKeys("{ contact_id: x, brokerage_id: y }")) === JSON.stringify(["contact_id", "brokerage_id"]))
   check("parseObjectTopLevelKeys: ignores nested", JSON.stringify(parseObjectTopLevelKeys("{ a: 1, meta: { z: 2 }, b: 3 }")) === JSON.stringify(["a", "meta", "b"]))
