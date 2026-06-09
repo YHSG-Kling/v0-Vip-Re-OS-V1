@@ -55,8 +55,13 @@ export interface ProviderPerformanceRow {
   revenue:     number
 }
 
+export interface PublishResult { ok: boolean; externalCampaignId?: string; error?: string }
+export interface PublishArgs { structure: Record<string, unknown>; cred: ConnectorCredential }
+
 export interface AdConnector {
   platform: string
+  /** Create the campaign on the platform (PAUSED) from an assembled structure. */
+  publishCampaign(args: PublishArgs): Promise<PublishResult>
   /** Upload/replace a Customer-Match / Custom Audience from hashed CRM members. */
   pushCustomAudience(args: AudiencePushArgs): Promise<AudienceSyncResult>
   /** Create a lookalike/similar audience seeded from an existing custom audience. */

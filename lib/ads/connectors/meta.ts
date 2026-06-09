@@ -43,6 +43,30 @@ async function graph(path: string, init: RequestInit & { token: string }): Promi
 export const metaConnector: AdConnector = {
   platform: "facebook",
 
+  async publishCampaign(args): Promise<{ ok: boolean; externalCampaignId?: string; error?: string }> {
+    const { cred } = args
+    if (!cred.accessToken || !cred.accountId) return { ok: false, error: "meta credential not connected" }
+    const s = args.structure as { campaign?: Record<string, unknown>; adSet?: Record<string, unknown>; adCreative?: Record<string, unknown>; ad?: Record<string, unknown> }
+    if (!s.campaign || !s.adSet || !s.adCreative || !s.ad) return { ok: false, error: "incomplete ad structure" }
+    const acct = `act_${cred.accountId}`
+    const post = (path: string, body: Record<string, unknown>) =>
+      graph(path, { method: "POST", token: cred.accessToken, headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    try {
+      const camp = await post(`${acct}/campaigns`, s.campaign)
+      if (!camp.ok || !camp.json?.id) return { ok: false, error: camp.json?.error?.message ?? `campaign create failed (${camp.status})` }
+      const campaignId = String(camp.json.id)
+      const set = await post(`${acct}/adsets`, { ...s.adSet, campaign_id: campaignId })
+      if (!set.ok || !set.json?.id) return { ok: false, externalCampaignId: campaignId, error: set.json?.error?.message ?? "ad set create failed" }
+      const creative = await post(`${acct}/adcreatives`, s.adCreative)
+      if (!creative.ok || !creative.json?.id) return { ok: false, externalCampaignId: campaignId, error: creative.json?.error?.message ?? "creative create failed" }
+      const ad = await post(`${acct}/ads`, { ...s.ad, adset_id: set.json.id, creative: { creative_id: creative.json.id } })
+      if (!ad.ok || !ad.json?.id) return { ok: false, externalCampaignId: campaignId, error: ad.json?.error?.message ?? "ad create failed" }
+      return { ok: true, externalCampaignId: campaignId }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+
   async pushCustomAudience(args: AudiencePushArgs): Promise<AudienceSyncResult> {
     if (!args.cred.accessToken || !args.cred.accountId) return { ok: false, recordsSynced: 0, recordsRejected: args.members.length, error: "meta credential not connected" }
     try {

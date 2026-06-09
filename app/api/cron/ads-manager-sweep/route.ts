@@ -3,6 +3,7 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { proposeAdOptimizations } from "@/lib/ads/ad-manager"
 import { proposeCompetitorInspiredCreative } from "@/lib/ads/ad-creative-engine"
+import { publishLaunchingCampaigns } from "@/lib/ads/launch-assembler"
 
 /**
  * app/api/cron/ads-manager-sweep/route.ts
@@ -30,16 +31,19 @@ export async function GET(request: Request) {
     const optimizeIds = Array.from(new Set((live ?? []).map((r: { brokerage_id: string }) => r.brokerage_id)))
     const createIds = Array.from(new Set((competitors ?? []).map((r: { brokerage_id: string }) => r.brokerage_id)))
 
-    let scanned = 0, proposed = 0, creativesProposed = 0
+    let scanned = 0, proposed = 0, creativesProposed = 0, published = 0
     for (const bid of optimizeIds) {
       const res = await proposeAdOptimizations(bid, svc)
       scanned += res.scanned; proposed += res.proposed
+      // Publish approved+validated 'launching' campaigns to the platform (real create).
+      const pub = await publishLaunchingCampaigns(bid, svc)
+      published += pub.published
     }
     for (const bid of createIds) {
       const res = await proposeCompetitorInspiredCreative(bid, svc)
       creativesProposed += res.proposed
     }
-    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed })
+    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed, published })
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
   }

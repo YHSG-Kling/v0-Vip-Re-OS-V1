@@ -169,8 +169,8 @@ async function runAdHandler(
 ): Promise<AdActionResult> {
   const campaignId = String(input.campaign_id ?? "")
   if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
-  const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget, platform").eq("id", campaignId).maybeSingle()
-  const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null; platform: string } | null
+  const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget, platform, targeting_config").eq("id", campaignId).maybeSingle()
+  const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null; platform: string; targeting_config: Record<string, unknown> | null } | null
   if (!campaign) return { status: "failed", result: { error: "campaign not found" } }
   if (campaign.brokerage_id !== brokerageId) return { status: "failed", result: { error: "campaign outside brokerage" } }
   const currentDaily = Number(campaign.daily_budget ?? 0)
@@ -189,9 +189,21 @@ async function runAdHandler(
       if (!conn.connected) return { status: "skipped", result: { reason: conn.reason ?? "ad platform not connected" } }
       // Hard cap: never launch a campaign whose daily budget exceeds the ceiling.
       if (currentDaily > MAX_AD_DAILY_BUDGET_USD) return { status: "failed", result: { error: `daily budget $${currentDaily} exceeds cap $${MAX_AD_DAILY_BUDGET_USD}` } }
-      await svc.from("ad_campaigns").update({ status: "launching" }).eq("id", campaignId)
+      // Assemble the EXACT provider payload + validate every required param and the
+      // Fair Housing rules BEFORE anything reaches the platform. Missing params or a
+      // Housing violation blocks the launch with the specific reason.
+      const { assembleAdFromCampaign } = await import("@/lib/ads/launch-assembler")
+      const { validateAdReadiness, assembleAd } = await import("@/lib/ads/connectors/ad-payload")
+      const asm = await assembleAdFromCampaign(campaignId, svc)
+      if (!asm.ok || !asm.input) return { status: "skipped", result: { reason: asm.error ?? "could not assemble ad" } }
+      const readiness = validateAdReadiness(asm.input)
+      if (!readiness.ready) return { status: "skipped", result: { reason: "ad not ready to publish", missing: readiness.missing, violations: readiness.violations } }
+      // Store the assembled provider structure; flip to 'launching'. The publisher
+      // (ad-publish, async) makes the real Meta/Google create calls and flips to live.
+      const assembled = assembleAd(asm.input)
+      await svc.from("ad_campaigns").update({ status: "launching", targeting_config: { ...(campaign.targeting_config ?? {}), assembled_ad: assembled.meta ?? assembled.google } }).eq("id", campaignId)
       await svc.from("lifecycle_events").insert({ brokerage_id: brokerageId, entity_type: "ad_campaign", entity_id: campaignId, event_type: "ad_campaign_launched", actor_user_id: null, metadata: { via: "ads_manager" } })
-      return { status: "succeeded", result: { campaign_id: campaignId, status: "launching" } }
+      return { status: "succeeded", result: { campaign_id: campaignId, status: "launching", validated: true } }
     }
     case "pause_ad_campaign": {
       if (!["live", "launching"].includes(campaign.status)) return { status: "skipped", result: { reason: `campaign is ${campaign.status}, nothing to pause` } }

@@ -86,10 +86,12 @@ async function testLive() {
     if (!userId) { console.log("  ⏭  Skipped — no approver user."); return }
     const ctx = { userId, brokerageId, isSuperadmin: false }
 
-    async function seedCampaign(status: string, daily: number, name: string): Promise<string> {
+    async function seedCampaign(status: string, daily: number, name: string, targeting?: Record<string, unknown>): Promise<string> {
       const { data, error } = await svc.from("ad_campaigns").insert({
         brokerage_id: brokerageId, campaign_name: `${TAG} ${name}`, platform: "facebook", objective: "leads",
         status, daily_budget: daily,
+        // Lead ads need a page + lead form + locations for the launch readiness gate.
+        targeting_config: targeting ?? { locations: [{ city: "Maple Grove", state: "MN" }], page_id: "PAGE_1", lead_form_id: "FORM_1" },
       }).select("id").single()
       if (error) throw new Error("campaign seed: " + error.message)
       const id = (data as { id: string }).id; campaignIds.push(id); return id
@@ -97,7 +99,8 @@ async function testLive() {
     async function seedCreative(campaignId: string, approval: string): Promise<string> {
       const { data, error } = await svc.from("ad_creative_variations").insert({
         brokerage_id: brokerageId, ad_campaign_id: campaignId, variation_name: `${TAG} v1`,
-        headline: "Thinking of selling?", primary_text: "Get your home's value.", call_to_action: "LEARN_MORE", approval_status: approval,
+        headline: "Thinking of selling?", primary_text: "Get your home's value.", call_to_action: "LEARN_MORE",
+        media_asset_url: "https://blob/reel.mp4", approval_status: approval,
       }).select("id").single()
       if (error) throw new Error("creative seed: " + error.message)
       const id = (data as { id: string }).id; creativeIds.push(id); return id
@@ -136,12 +139,27 @@ async function testLive() {
       access_token: "test-token", account_id: `${TAG}act_123`, is_active: true,
     }).select("id").maybeSingle()
     connId = (conn as { id: string } | null)?.id ?? null
+
+    // ── Launch is BLOCKED when a required provider param is missing (no lead form) ──
+    const campNoForm = await seedCampaign("approved", 100, "NoForm", { locations: [{ city: "Maple Grove", state: "MN" }], page_id: "PAGE_1" })
+    await seedCreative(campNoForm, "approved")
+    const launchNoForm = await propose("launch_ad_campaign", { campaign_id: campNoForm })
+    const rNoForm = await executeAdManagerAction(launchNoForm, userId)
+    check("launch BLOCKED when a provider param is missing (lead form)", rNoForm.status === "skipped" && (rNoForm.result as any).missing?.includes("leadFormId"))
+
+    // ── Fully assembled + valid → launch validates + queues (status launching) ──
     const launch = await propose("launch_ad_campaign", { campaign_id: camp })
     const r2 = await executeAdManagerAction(launch, userId)
-    check("launch succeeds once the ad account is connected", r2.status === "succeeded", JSON.stringify(r2.result))
-    const { data: c2 } = await svc.from("ad_campaigns").select("status").eq("id", camp).single()
-    check("campaign flipped to launching", (c2 as { status: string }).status === "launching")
+    check("launch validates + queues when the ad is complete + compliant", r2.status === "succeeded" && (r2.result as any).validated === true, JSON.stringify(r2.result))
+    const { data: launched } = await svc.from("ad_campaigns").select("status, targeting_config").eq("id", camp).single()
+    check("campaign flipped to launching with the assembled provider payload stored", (launched as any).status === "launching" && !!(launched as any).targeting_config?.assembled_ad?.campaign)
 
+    // ── Publisher: real provider create is ATTEMPTED — a test token can't fake 'live' ──
+    const { publishLaunchingCampaigns } = await import("../lib/ads/launch-assembler")
+    await publishLaunchingCampaigns(brokerageId, svc)
+    const { data: pubd } = await svc.from("ad_campaigns").select("status, targeting_config").eq("id", camp).single()
+    check("publisher attempts the real create; no fake 'live' with a test token (error recorded, stays launching)",
+      (pubd as any).status === "launching" && !!(pubd as any).targeting_config?.last_publish_error)
     // ── HARD CAP: an over-budget shift is clamped at execution ──
     const shift = await propose("shift_ad_budget", { campaign_id: camp, new_daily_budget: 99999 })
     const r3 = await executeAdManagerAction(shift, userId)

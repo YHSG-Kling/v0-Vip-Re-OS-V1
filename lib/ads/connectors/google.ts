@@ -39,6 +39,30 @@ function headers(cred: { accessToken: string; config: Record<string, unknown> })
 export const googleConnector: AdConnector = {
   platform: "google",
 
+  async publishCampaign(args): Promise<{ ok: boolean; externalCampaignId?: string; error?: string }> {
+    const cred = args.cred
+    if (!cred.accessToken || !cred.accountId || !cred.config?.developer_token) return { ok: false, error: "google credential not connected" }
+    const customerId = String(cred.accountId).replace(/-/g, "")
+    const s = args.structure as { budget?: Record<string, unknown>; campaign?: Record<string, unknown>; adGroup?: Record<string, unknown>; ad?: Record<string, unknown> }
+    if (!s.budget || !s.campaign) return { ok: false, error: "incomplete ad structure" }
+    try {
+      // Atomic mutate: budget + campaign in one request (temp resource ids).
+      const res = await fetch(`${ADS_API}/customers/${customerId}/googleAds:mutate`, {
+        method: "POST", headers: headers(cred),
+        body: JSON.stringify({ mutateOperations: [
+          { campaignBudgetOperation: { create: { ...s.budget, resourceName: `customers/${customerId}/campaignBudgets/-1` } } },
+          { campaignOperation: { create: { ...s.campaign, campaignBudget: `customers/${customerId}/campaignBudgets/-1` } } },
+        ] }),
+      })
+      const json: any = await res.json().catch(() => null)
+      if (!res.ok) return { ok: false, error: json?.error?.message ?? `campaign create failed (${res.status})` }
+      const campRn = json?.mutateOperationResponses?.find((r: any) => r.campaignResult)?.campaignResult?.resourceName
+      return { ok: true, externalCampaignId: campRn ? String(campRn).split("/").pop() : undefined }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+
   async pushCustomAudience(args: AudiencePushArgs): Promise<AudienceSyncResult> {
     const cred = args.cred
     if (!cred.accessToken || !cred.accountId || !cred.config?.developer_token) {
