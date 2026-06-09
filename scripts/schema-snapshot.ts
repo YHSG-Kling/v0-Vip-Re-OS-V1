@@ -15,7 +15,9 @@
  */
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   contacts: [
-    "age_range", "agent_id", "ai_autopilot_level", "ai_isa_enabled", "ai_outreach_paused",
+    "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",
+    "ai_isa_enabled", "ai_outreach_paused", "ai_predicted_close_date", "nurture_status",
+    "referral_approach", "referral_score",
     "brokerage_id", "budget_max", "budget_min", "buyer_stage", "call_stop_flag",
     "campaign_attribution_id", "city", "compliance_officer_id", "confidence_score", "contact_id",
     "contact_persona", "contact_type", "contact_user_id", "cost_per_record", "court_records",
@@ -29,7 +31,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "isa_qualification_score", "isa_reengage_allowed", "isa_reengage_marked_by",
     "isa_reengage_set_at", "last_contacted_at", "last_enriched_at", "last_life_change_check",
     "last_life_event_detected", "last_name", "last_pls_scored_at",
-    "last_scored_at", "lead_temperature", "legal_first_name", "legal_last_name",
+    "last_scored_at", "lead_score", "lead_temperature", "legal_first_name", "legal_last_name",
     "legal_middle_name", "legal_name_source", "legal_name_verified_at", "lender_status",
     "length_of_residence", "life_events", "lifecycle_state", "linkedin_url", "mailing_address",
     "mailing_address_source", "mailing_address_verified", "mailing_address_verified_at",

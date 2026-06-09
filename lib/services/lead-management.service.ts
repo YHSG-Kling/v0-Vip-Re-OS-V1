@@ -139,7 +139,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .update({
           lead_score: totalScore,
           lead_temperature: temperature,
-          last_score_calculation: new Date().toISOString(),
+          last_scored_at: new Date().toISOString(),
         })
         .eq("id", params.id)
 

@@ -974,7 +974,7 @@ Provide ACTIONABLE coaching. Respond with JSON:
         .from("leads")
         .update({
           lead_temperature: leadTemperature,
-          last_contact_date: new Date().toISOString(),
+          last_contacted_at: new Date().toISOString(),
         })
         .eq("id", data.leadId)
     } catch (e) {
@@ -982,7 +982,7 @@ Provide ACTIONABLE coaching. Respond with JSON:
       await supabase
         .from("contacts")
         .update({
-          last_contact_date: new Date().toISOString(),
+          last_contacted_at: new Date().toISOString(),
         })
         .eq("id", data.leadId)
     }
