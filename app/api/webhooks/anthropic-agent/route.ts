@@ -201,28 +201,32 @@ export async function POST(request: NextRequest) {
       if (text && complianceAllowed) {
         const agentEmbedEarly = (sessionRow as unknown as { agent?: { agent_kind?: string } | Array<{ agent_kind?: string }> | null }).agent
         const agentKindEarly = Array.isArray(agentEmbedEarly) ? agentEmbedEarly[0]?.agent_kind : agentEmbedEarly?.agent_kind
-        const GATED_CLIENT_MANAGERS = new Set(["listing_concierge", "deal_coordinator"])
+        const { GATED_CLIENT_MANAGERS, extractClientMessages } = await import("@/lib/agents/extract-client-messages")
 
         if (agentKindEarly && GATED_CLIENT_MANAGERS.has(agentKindEarly)) {
-          // GOVERNED: deal-critical managers PROPOSE their seller/buyer updates into
-          // the Command Center instead of auto-sending. Nothing reaches the client
-          // until a human approves it. (Wave 45)
+          // GOVERNED: every client-facing manager (listing concierge, deal coordinator,
+          // shopping agent, sphere, campaign orchestrator) PROPOSES its client message(s)
+          // into the Command Center instead of auto-sending. Nothing reaches a client
+          // until a human approves it. (Wave 45/47)
           try {
             const parsed = tryParseJsonObject(text)
             const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
             const entityType = sessionRow.entity_type as string
-            const recipient = entityType === "contact" ? (sessionRow.entity_id as string) : null
+            const sessionRecipient = entityType === "contact" ? (sessionRow.entity_id as string) : null
             const rationale = typeof parsed?.agent_briefing === "string" ? parsed.agent_briefing : null
             const base = {
               brokerageId: sessionRow.brokerage_id as string, managedAgentSessionId: sessionRow.id as string,
-              agentKind: agentKindEarly, entityType, entityId: sessionRow.entity_id as string,
-              recipientContactId: recipient, rationale,
+              agentKind: agentKindEarly, entityType, entityId: sessionRow.entity_id as string, rationale,
             }
-            const seller = parsed?.seller_update, buyer = parsed?.buyer_update
-            if (typeof seller === "string" && seller.trim()) await proposeClientMessage({ ...base, audience: "seller", body: seller })
-            if (typeof buyer === "string" && buyer.trim()) await proposeClientMessage({ ...base, audience: "buyer", body: buyer })
-            // If the model returned a plain (non-JSON) message, propose it as-is.
-            if (!parsed) await proposeClientMessage({ ...base, audience: entityType === "transaction" ? "buyer" : "seller", body: text })
+            const drafts = extractClientMessages(parsed)
+            if (drafts.length > 0) {
+              for (const d of drafts) {
+                await proposeClientMessage({ ...base, audience: d.audience, body: d.body, subject: d.subject ?? null, recipientContactId: d.recipientContactId ?? sessionRecipient })
+              }
+            } else if (!parsed) {
+              // Plain (non-JSON) message → propose as-is.
+              await proposeClientMessage({ ...base, audience: entityType === "transaction" ? "buyer" : "seller", body: text, recipientContactId: sessionRecipient })
+            }
           } catch (e) {
             console.error("[anthropic-webhook] client-message propose failed:", (e as Error).message)
           }
