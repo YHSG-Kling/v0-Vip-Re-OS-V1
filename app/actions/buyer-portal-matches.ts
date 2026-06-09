@@ -75,35 +75,42 @@ export async function getBuyerPortalMatches(contactId: string, limit = 12): Prom
     return { success: true, matches: [] }
   }
 
+  // Resolve via the UNIFIED resolver so the portal shows matches from BOTH our listings
+  // AND external MLS (RentCast/IDX) references — the old listings-only join silently
+  // dropped every external match. sqft + go-live (DOM) are enriched from listings when ours.
+  const { resolvePropertyFacts } = await import("@/lib/property/resolve-property-facts")
+  const factsMap = await resolvePropertyFacts(supabase, callerRow.brokerage_id, propertyIds)
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, go_live_date")
+    .select("id, sqft, status, go_live_date")
+    .eq("brokerage_id", callerRow.brokerage_id)
     .in("id", propertyIds)
-
-  const byId = new Map<string, any>()
-  for (const l of listings ?? []) byId.set(l.id, l)
+  const ours = new Map<string, any>()
+  for (const l of listings ?? []) ours.set(l.id, l)
 
   const matches: BuyerPortalMatch[] = matchRows
     .map((m: any) => {
-      const l = byId.get(m.property_id)
-      if (!l) return null
+      const f = factsMap.get(m.property_id)
+      if (!f) return null
+      const l = ours.get(m.property_id)
       return {
         id: m.id as string,
         property_id: m.property_id as string,
         match_score: m.match_score as number,
         match_reasons: (m.match_reasons ?? []) as string[],
         potential_concerns: (m.potential_concerns ?? []) as string[],
-        address: l.address ?? null,
-        city: l.city ?? null,
-        state: l.state ?? null,
-        list_price: l.list_price ?? null,
-        bedrooms: l.bedrooms ?? null,
-        bathrooms: l.bathrooms ?? null,
-        sqft: l.sqft ?? null,
-        status: l.status ?? null,
-        // DOM is computed from go_live_date — listings has no DOM column.
-        days_on_market: computeDaysOnMarket(l.go_live_date),
-        primary_photo_url: null,
+        address: f.address,
+        city: f.city,
+        state: f.state,
+        list_price: f.price,
+        bedrooms: f.bedrooms,
+        bathrooms: f.bathrooms,
+        sqft: l?.sqft ?? null,
+        status: l?.status ?? (f.source === "listing" ? null : "external"),
+        // DOM from go_live_date (our listings only — external has none).
+        days_on_market: l ? computeDaysOnMarket(l.go_live_date) : null,
+        // Compliant: external (market_watch) references store NO photo (re-fetched elsewhere).
+        primary_photo_url: f.photoUrl,
       } as BuyerPortalMatch
     })
     .filter((x): x is BuyerPortalMatch => x !== null)
