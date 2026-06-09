@@ -9,6 +9,7 @@ import {
 const ADMIN_FULL_NAV = [
   { label: 'AI Briefing', href: '/dashboard/briefing', icon: Sparkles },
   { label: 'Command Center', href: '/dashboard/admin/command-center', icon: Bot },
+  { label: 'Manager Compliance Eval', href: '/dashboard/admin/compliance-eval', icon: Shield },
   { label: 'Admin Dashboard', href: '/dashboard/admin', icon: LayoutGrid },
   { label: 'Lead Intelligence', href: '/leads', icon: Brain },
   { label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: Users },

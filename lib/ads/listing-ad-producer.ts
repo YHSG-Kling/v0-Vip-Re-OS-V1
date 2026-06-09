@@ -11,6 +11,7 @@
  * buildListingCreative() is pure (unit-tested); the producer uses the service client.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { sanitizeClientFacingField } from "@/lib/compliance/client-text-guard"
 
 export type ListingAdKind = "just_listed" | "just_sold" | "price_reduction"
 
@@ -26,7 +27,10 @@ export interface ListingCreative { variationName: string; headline: string; prim
  * "should" live somewhere or any protected class — only the home + the market.
  */
 export function buildListingCreative(facts: ListingFacts, kind: ListingAdKind): ListingCreative {
-  const where = facts.city ? `in ${facts.city}` : "in your area"
+  // Sanitize the one untrusted field we weave in: city can be scraped/typo'd/poisoned,
+  // so a steering term or injected directive in it must never reach client copy.
+  const safeCity = sanitizeClientFacingField(facts.city, 48)
+  const where = safeCity ? `in ${safeCity}` : "in your area"
   const specs = [facts.bedrooms ? `${facts.bedrooms} bed` : null, facts.bathrooms ? `${facts.bathrooms} bath` : null].filter(Boolean).join(", ")
   if (kind === "just_sold") {
     return {

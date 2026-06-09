@@ -11,15 +11,18 @@
  * as the just-sold social post + ad creative (both gated); this adds the testimonial.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { sanitizeClientFacingField } from "@/lib/compliance/client-text-guard"
 
 export interface ClosingResult { proposed: number }
 
 /** Pure: the seller-/buyer-safe review request copy. */
 export function buildTestimonialMessage(audience: "buyer" | "seller", agentName: string): { subject: string; body: string } {
   const what = audience === "buyer" ? "finding your new home" : "selling your home"
+  // agentName is a display field (user-controlled) — sanitize before it reaches the client.
+  const safeName = sanitizeClientFacingField(agentName, 60) ?? "Your Agent"
   return {
     subject: "A quick favor — would you share your experience?",
-    body: `Congratulations again on ${what}! It was a privilege to work with you. If you have 60 seconds, a short review would mean the world and helps other ${audience === "buyer" ? "buyers" : "sellers"} find great help. Thank you! — ${agentName}`,
+    body: `Congratulations again on ${what}! It was a privilege to work with you. If you have 60 seconds, a short review would mean the world and helps other ${audience === "buyer" ? "buyers" : "sellers"} find great help. Thank you! — ${safeName}`,
   }
 }
 
