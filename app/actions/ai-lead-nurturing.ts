@@ -508,7 +508,7 @@ export async function aiBatchReengagement(params: {
       .select("*")
       .eq("agent_id", params.agentId)
       .eq("brokerage_id", auth.brokerageId)
-      .lt("last_contact_date", inactiveDate)
+      .lt("last_contacted_at", inactiveDate)
       .in("status", ["contacted", "qualified", "nurturing"])
       .limit(maxLeads)
 

@@ -465,7 +465,7 @@ export async function suggestNextActions(agentId: string) {
     .eq("agent_id", agentId)
     .eq("brokerage_id", profile.brokerage_id)
     .in("stage", ["active_client", "hot_lead"])
-    .lt("last_contact_date", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
+    .lt("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
     .limit(5)
 
   if (staleContacts && staleContacts.length > 0) {

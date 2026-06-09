@@ -192,6 +192,14 @@ function scanFile(file: string, src: string): Violation[] {
         for (const k of parseObjectTopLevelKeys(obj)) if (!set.has(k)) v.push({ file, table, op: opM[1], column: k })
       }
     }
+    // FILTER / order column args (the first string arg is a real column). A filter on a
+    // phantom column errors the query the same way a select does. Skip embed paths (col
+    // with a `.`) and the .or()/.filter() string DSL (column names live inside a string).
+    for (const fm of chain.matchAll(/\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|order|not)\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_.]*)["'`]/g)) {
+      const col = fm[2]
+      if (col.includes(".")) continue
+      if (!set.has(col)) v.push({ file, table, op: fm[1], column: col })
+    }
   }
   return v
 }

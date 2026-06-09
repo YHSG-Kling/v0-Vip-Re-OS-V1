@@ -44,7 +44,7 @@ export async function generateMarketReport(params: {
       .from("listings")
       .select("*")
       .eq("status", "sold")
-      .order("sold_date", { ascending: false })
+      .order("go_live_date", { ascending: false })
       .limit(50)
 
     // Generate AI market analysis
@@ -167,11 +167,11 @@ export async function predictPropertyPrice(params: {
     const { data: comps } = await supabase
       .from("listings")
       .select("*")
-      .eq("zip_code", params.propertyData.zipCode)
+      .eq("zip", params.propertyData.zipCode)
       .eq("status", "sold")
       .gte("bedrooms", params.propertyData.bedrooms - 1)
       .lte("bedrooms", params.propertyData.bedrooms + 1)
-      .order("sold_date", { ascending: false })
+      .order("go_live_date", { ascending: false })
       .limit(20)
 
     const { object: prediction } = await generateObject({

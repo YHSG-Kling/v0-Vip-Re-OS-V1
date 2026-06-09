@@ -84,16 +84,16 @@ export async function generateListingPresentation(params: {
     const { data: comps } = await supabase
       .from("listings")
       .select("*")
-      .eq("zip_code", params.propertyData.zipCode)
+      .eq("zip", params.propertyData.zipCode)
       .eq("status", "sold")
-      .order("sold_date", { ascending: false })
+      .order("go_live_date", { ascending: false })
       .limit(10)
 
     // Get market data
     const { data: marketData } = await supabase
       .from("market_data")
       .select("*")
-      .eq("zip_code", params.propertyData.zipCode)
+      .eq("zip", params.propertyData.zipCode)
       .order("data_date", { ascending: false })
       .limit(5)
 
