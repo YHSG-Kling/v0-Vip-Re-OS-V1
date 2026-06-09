@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-center"
 import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
+import { MANAGERS } from "@/lib/kernel/manager-registry"
 
 const SESSION_BADGE: Record<string, string> = {
   running:    "bg-green-100 text-green-800",
@@ -45,14 +46,11 @@ const QUEUE_LABEL: Record<string, string> = {
   blog:              "Blog Post",
   podcast:           "Podcast",
 }
-const KIND_LABEL: Record<string, string> = {
-  deal_coordinator:      "Deal Coordinator",
-  shopping_agent:        "Shopping Agent",
-  listing_concierge:     "Listing Concierge",
-  sphere_of_influence:   "Sphere of Influence",
-  campaign_orchestrator: "Campaign Orchestrator",
-  marketing_agent:       "Marketing Agent",
-  asset_manager:         "Asset Manager",
+// Manager display labels come from the canonical registry (single source of truth) —
+// no hand-kept map to drift from MANAGERS.
+function managerLabelForKind(kind: string | null): string {
+  if (kind && kind in MANAGERS) return MANAGERS[kind as keyof typeof MANAGERS].label
+  return kind ?? "Unknown agent"
 }
 
 function timeAgo(iso: string | null): string {
@@ -98,6 +96,23 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         <Stat label="SLA breached" value={summary.breachedApprovals} accent={summary.breachedApprovals > 0 ? "text-red-700" : "text-slate-500"} />
       </div>
 
+      {/* Managers on duty — every pending activity is owned by an accountable manager */}
+      {data.managerBreakdown.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Managers on duty</h2>
+          <div className="flex flex-wrap gap-2">
+            {data.managerBreakdown.map((m) => (
+              <Card key={m.key} className="px-3 py-2 flex items-center gap-2" title={MANAGERS[m.key]?.domain ?? ""}>
+                <Badge className="bg-slate-900 text-white">{m.label}</Badge>
+                <span className="text-sm font-semibold">{m.count}</span>
+                <span className="text-xs text-muted-foreground">pending</span>
+                {m.breached > 0 && <Badge className="bg-red-100 text-red-800">{m.breached} breached</Badge>}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Approval queue */}
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Approval queue</h2>
@@ -134,7 +149,7 @@ function SessionRow({ session }: { session: CommandCenterSession }) {
   return (
     <Card className="p-4 flex items-center justify-between">
       <div>
-        <div className="font-medium">{KIND_LABEL[session.agentKind ?? ""] ?? session.agentKind ?? "Unknown agent"}</div>
+        <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
         <div className="text-xs text-muted-foreground">
           {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
         </div>
@@ -430,7 +445,10 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
     <Card className="p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge className="bg-slate-900 text-white" title="The Claude manager accountable for this activity">
+              {action.managerLabel}
+            </Badge>
             <Badge className={QUEUE_BADGE[action.queue] ?? "bg-slate-100 text-slate-700"}>
               {QUEUE_LABEL[action.queue] ?? action.queue}
             </Badge>

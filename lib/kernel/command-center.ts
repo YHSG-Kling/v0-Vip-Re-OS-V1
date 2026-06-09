@@ -17,6 +17,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
+import { resolveActionManager, type ManagerKey } from "./manager-registry"
 
 // Re-export so existing importers (simulators, server actions) keep working.
 export { evaluateApprovalSla }
@@ -46,11 +47,25 @@ export interface CommandCenterAction {
   proposedAt: string | null
   ageHours:   number
   slaLevel:   ApprovalSlaLevel
+  /** The Claude manager accountable for this activity on the egress (zero orphans). */
+  managerKey:   ManagerKey
+  managerLabel: string
+}
+
+export interface ManagerBreakdownEntry {
+  key:      ManagerKey
+  label:    string
+  /** Pending activities this manager is accountable for on the egress. */
+  count:    number
+  /** Of which, SLA-breached. */
+  breached: number
 }
 
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
+  /** Per-manager pending load — proves every activity has an accountable owner. */
+  managerBreakdown: ManagerBreakdownEntry[]
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -134,7 +149,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     endedAt:     s.ended_at ?? null,
   }))
 
-  const mapAction = (queue: "marketing" | "asset" | "ads") => (a: any): CommandCenterAction => {
+  // Built without the manager fields; resolveActionManager attaches them in one pass below.
+  type RawAction = Omit<CommandCenterAction, "managerKey" | "managerLabel">
+  const mapAction = (queue: "marketing" | "asset" | "ads") => (a: any): RawAction => {
     // Release approvals escalate against the seller's appointment, not just age.
     const deadlineIso = a.action_type === "approve_prelisting_delivery"
       ? (a.action_input?.appointment_at as string | null) ?? null
@@ -156,7 +173,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   // Map a proposed client message → the unified action contract (preview = the
   // actual seller/buyer message the human is releasing).
-  const mapClientMsg = (m: any): CommandCenterAction => {
+  const mapClientMsg = (m: any): RawAction => {
     const sla = evaluateApprovalSla(m.proposed_at ?? null, now)
     return {
       id: m.id, queue: "client_message", brokerageId: m.brokerage_id, actionType: "approve_client_message",
@@ -166,19 +183,38 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     }
   }
 
-  // SLA-breached approvals escalate to the top; then oldest-first.
+  // SLA-breached approvals escalate to the top; then oldest-first. Every action is
+  // stamped with its owning manager (zero orphans) — client_message resolves per-row
+  // from agent_kind; every other queue from the static QUEUE_MANAGER map.
   const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
-  const pendingActions: CommandCenterAction[] = [
+  const rawActions: RawAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
     ...(adsRes.data ?? []).map(mapAction("ads")),
     ...(clientMsgRes.data ?? []).map(mapClientMsg),
     ...contentActions,
-  ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
+  ]
+  const pendingActions: CommandCenterAction[] = rawActions
+    .map((a): CommandCenterAction => {
+      const mgr = resolveActionManager(a.queue, (a.actionInput?.agent_kind as string | null) ?? null)
+      return { ...a, managerKey: mgr.key, managerLabel: mgr.label }
+    })
+    .sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
+
+  // Per-manager pending load (preserves MANAGERS order; only managers with work appear).
+  const breakdownMap = new Map<ManagerKey, ManagerBreakdownEntry>()
+  for (const a of pendingActions) {
+    const e = breakdownMap.get(a.managerKey) ?? { key: a.managerKey, label: a.managerLabel, count: 0, breached: 0 }
+    e.count += 1
+    if (a.slaLevel === "breached") e.breached += 1
+    breakdownMap.set(a.managerKey, e)
+  }
+  const managerBreakdown = Array.from(breakdownMap.values()).sort((a, b) => b.count - a.count)
 
   return {
     sessions,
     pendingActions,
+    managerBreakdown,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,
