@@ -39,6 +39,9 @@ export type MarketingActionType =
   | "start_prelisting_drip"
   // Wave 39 gate 2 — review the finished product + RELEASE it to the seller.
   | "approve_prelisting_delivery"
+  // Wave 48 — cross-manager handoff (listing active / deal closed → coordinated push).
+  | "promote_new_listing"
+  | "just_sold_campaign"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -708,6 +711,31 @@ async function runHandler(
         emailSent = sent.sent
       } catch { /* announcement email is best-effort */ }
       return { status: "succeeded", result: { presentation_id: presentationId, released: true, email_sent: emailSent } }
+    }
+
+    case "promote_new_listing":
+    case "just_sold_campaign": {
+      // Cross-manager handoff (human-approved): the Listing/Deal manager handed off
+      // to Marketing — kick the coordinated promo for the listing. Idempotent via
+      // the promo reactor's cooldown.
+      const listingId = String(input.listing_id ?? "")
+      if (!listingId) return { status: "failed", result: { error: "listing_id required" } }
+      const svc = createServiceClient()
+      const { data: listing } = await svc.from("listings").select("agent_id, brokerage_id").eq("id", listingId).maybeSingle()
+      const l = listing as { agent_id: string | null; brokerage_id: string | null } | null
+      if (!l || l.brokerage_id !== brokerageId) return { status: "failed", result: { error: "listing not found or tenant mismatch" } }
+      if (!l.agent_id) return { status: "failed", result: { error: "listing has no assigned agent" } }
+      const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+      const agentUserId = await resolveAgentRecordToUserId(l.agent_id)
+      if (!agentUserId) return { status: "failed", result: { error: "agent user id unresolved" } }
+      const eventType = action === "promote_new_listing" ? "just_listed" : "just_sold"
+      const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+      const r = await dispatchListingPromoVideo({
+        brokerageId, listingId, agentUserId,
+        eventType: eventType as Parameters<typeof dispatchListingPromoVideo>[0]["eventType"],
+        bypassPolicy: true,
+      })
+      return { status: r.ok ? "succeeded" : "failed", result: { listing_id: listingId, promo: eventType, dispatch_status: r.status, reason: r.reason ?? null } }
     }
 
     default: {

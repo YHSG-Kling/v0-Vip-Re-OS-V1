@@ -320,6 +320,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           eventType:   "just_listed",
         })
       }
+      // Wave 48 — cross-manager HANDOFF: surface the coordinated new-listing push as
+      // a governed proposal in the Command Center (visible + human-approved), not just
+      // an invisible autonomous dispatch.
+      try {
+        const { proposeListingHandoff } = await import("@/lib/agents/manager-handoff")
+        void proposeListingHandoff(params.brokerageId, params.entityId, svc)
+      } catch { /* handoff proposal is best-effort */ }
     } catch (err) {
       console.error("[event-reactor] listing-promo dispatch failed:", err)
     }
@@ -386,6 +393,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             agentUserId,
             eventType,
           })
+          // Wave 48 — cross-manager HANDOFF on close: propose the just-sold campaign.
+          if (eventType === "just_sold" && params.brokerageId) {
+            try {
+              const { proposeClosingHandoff } = await import("@/lib/agents/manager-handoff")
+              void proposeClosingHandoff(params.brokerageId, params.entityId, svc)
+            } catch { /* handoff proposal is best-effort */ }
+          }
         }
       }
     } catch (err) {
