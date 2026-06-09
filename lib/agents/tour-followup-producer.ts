@@ -33,18 +33,19 @@ export async function produceTourFollowUp(
   const supabase = client ?? createServiceClient()
   if (!brokerageId || !contactId) return { proposed: 0 }
 
-  // Confirm the contact belongs to this brokerage + resolve the agent display name.
+  // Confirm the contact belongs to this brokerage + resolve the agent identity + recipient name.
   const { data: c } = await supabase
-    .from("contacts").select("id, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
-  const contact = c as { id: string; brokerage_id: string | null; agent_id: string | null } | null
+    .from("contacts").select("id, brokerage_id, agent_id, first_name").eq("id", contactId).maybeSingle()
+  const contact = c as { id: string; brokerage_id: string | null; agent_id: string | null; first_name: string | null } | null
   if (!contact || contact.brokerage_id !== brokerageId) return { proposed: 0 }
 
   let agentName = "Your Agent"
+  let agentUserId: string | null = null
   if (contact.agent_id) {
     const { data: a } = await supabase.from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
-    const uid = (a as { user_id: string | null } | null)?.user_id ?? null
-    if (uid) {
-      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+    agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
+    if (agentUserId) {
+      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", agentUserId).maybeSingle()
       const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
       if (full) agentName = full
     }
@@ -57,7 +58,15 @@ export async function produceTourFollowUp(
     .in("status", ["proposed", "approved", "sent"]).maybeSingle()
   if (existing) return { proposed: 0 }
 
-  const msg = buildTourFollowUpMessage(agentName)
+  // AI-generated, brand-voiced copy (THEM-FIRST, compliance-gated); deterministic fallback only if the gateway is down.
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const msg = await generateClientMessage({
+    brokerageId, agentUserId, audience: "buyer",
+    purpose: "Follow up warmly after the buyer finished touring homes, and offer concrete next steps to keep their search moving.",
+    recipientFirstName: contact.first_name,
+    ctas: ["Revisit a favorite home", "Line up a few more tours", "Pull comparable sales and talk offer strategy"],
+    fallback: buildTourFollowUpMessage(agentName),
+  })
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const r = await proposeClientMessage({
     brokerageId, agentKind: "shopping_agent", entityType: "tour_followup", entityId: contactId,

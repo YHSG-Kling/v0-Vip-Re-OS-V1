@@ -46,6 +46,7 @@
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",
+    "test:buyer-welcome": "tsx scripts/buyer-welcome-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

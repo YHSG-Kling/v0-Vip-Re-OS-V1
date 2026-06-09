@@ -116,6 +116,14 @@ export async function finalizeVoiceCockpitPacket(
       source:       "webhook",
       dedupe_key:   `bba-signed-${matchedBBA.id}`,
     } as any)
+
+    // Wave 58 — buyer "go-live" AUTO-handoff: propose an AI-generated welcome into the
+    // client_message gate. Called here at the authoritative source because BBA-signed
+    // flows the orchestrator path, not the kernel reactor. Best-effort + idempotent.
+    try {
+      const { produceBuyerWelcome } = await import("@/lib/agents/buyer-welcome-producer")
+      void produceBuyerWelcome(matchedBBA.brokerage_id as string, matchedBBA.buyer_contact_id as string)
+    } catch { /* auto-producer is best-effort */ }
   }
 
   // ── Offers (convergence with the legacy post-signed chain) ────────────────

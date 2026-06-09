@@ -44,19 +44,21 @@ export async function produceClosingTestimonials(
   const t = txn as { id: string; buyer_contact_id: string | null; seller_contact_id: string | null; agent_id: string | null } | null
   if (!t) return { proposed: 0 }
 
-  // Agent display name for the signature.
+  // Agent identity for the signature + brand voice (resolve the users.id once).
   let agentName = "Your Agent"
+  let agentUserId: string | null = null
   if (t.agent_id) {
     const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
-    const uid = await resolveAgentRecordToUserId(t.agent_id)
-    if (uid) {
-      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+    agentUserId = await resolveAgentRecordToUserId(t.agent_id)
+    if (agentUserId) {
+      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", agentUserId).maybeSingle()
       const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
       if (full) agentName = full
     }
   }
 
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
   const parties: Array<{ audience: "buyer" | "seller"; contactId: string | null }> = [
     { audience: "buyer", contactId: t.buyer_contact_id },
     { audience: "seller", contactId: t.seller_contact_id },
@@ -70,7 +72,15 @@ export async function produceClosingTestimonials(
       .eq("entity_id", listingId).eq("recipient_contact_id", p.contactId)
       .in("status", ["proposed", "approved", "sent"]).maybeSingle()
     if (existing) continue
-    const msg = buildTestimonialMessage(p.audience, agentName)
+    const { data: rc } = await supabase.from("contacts").select("first_name").eq("id", p.contactId).maybeSingle()
+    // AI-generated, brand-voiced copy (THEM-FIRST, compliance-gated); deterministic fallback only if the gateway is down.
+    const msg = await generateClientMessage({
+      brokerageId, agentUserId, audience: p.audience,
+      purpose: `Warmly congratulate the ${p.audience} now that their deal has closed, and ask for a short review/testimonial while the experience is fresh.`,
+      recipientFirstName: (rc as { first_name?: string | null } | null)?.first_name ?? null,
+      ctas: ["Share a 60-second review", "Reply if you'd refer a friend or family member who's thinking of moving"],
+      fallback: buildTestimonialMessage(p.audience, agentName),
+    })
     const r = await proposeClientMessage({
       brokerageId, agentKind: "deal_coordinator", entityType: "testimonial_request", entityId: listingId,
       recipientContactId: p.contactId, audience: p.audience, subject: msg.subject, body: msg.body,

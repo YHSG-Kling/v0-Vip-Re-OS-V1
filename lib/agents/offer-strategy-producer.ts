@@ -34,16 +34,17 @@ export async function produceOfferStrategyBrief(
   if (!brokerageId || !contactId) return { proposed: 0 }
 
   const { data: c } = await supabase
-    .from("contacts").select("id, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
-  const contact = c as { id: string; brokerage_id: string | null; agent_id: string | null } | null
+    .from("contacts").select("id, brokerage_id, agent_id, first_name").eq("id", contactId).maybeSingle()
+  const contact = c as { id: string; brokerage_id: string | null; agent_id: string | null; first_name: string | null } | null
   if (!contact || contact.brokerage_id !== brokerageId) return { proposed: 0 }
 
   let agentName = "Your Agent"
+  let agentUserId: string | null = null
   if (contact.agent_id) {
     const { data: a } = await supabase.from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
-    const uid = (a as { user_id: string | null } | null)?.user_id ?? null
-    if (uid) {
-      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+    agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
+    if (agentUserId) {
+      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", agentUserId).maybeSingle()
       const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
       if (full) agentName = full
     }
@@ -56,7 +57,17 @@ export async function produceOfferStrategyBrief(
     .in("status", ["proposed", "approved", "sent"]).maybeSingle()
   if (existing) return { proposed: 0 }
 
-  const msg = buildOfferStrategyMessage(agentName)
+  // AI-generated, brand-voiced copy (THEM-FIRST, compliance-gated, NO fabricated price);
+  // deterministic fallback only if the gateway is down.
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const msg = await generateClientMessage({
+    brokerageId, agentUserId, audience: "buyer",
+    purpose: "The buyer is ready to write an offer. Lay out the game plan — grounding their number in recent comparable sales and setting price + terms (timeline, contingencies, earnest money) — and invite them to finalize the plan together.",
+    recipientFirstName: contact.first_name,
+    allowNumbers: false,
+    ctas: ["Review recent comparable sales together", "Set your price and terms", "Map how we respond if it's competitive"],
+    fallback: buildOfferStrategyMessage(agentName),
+  })
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const r = await proposeClientMessage({
     brokerageId, agentKind: "shopping_agent", entityType: "offer_strategy_brief", entityId: contactId,
