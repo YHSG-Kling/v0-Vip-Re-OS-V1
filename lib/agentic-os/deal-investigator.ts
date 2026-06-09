@@ -47,7 +47,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const svc = createServiceClient()
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, email, phone, mailing_address, mailing_city:city, mailing_state:state, mailing_zip:zip_code, enrichment_profile")
+    .select("id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
     .eq("id", params.contactId)
     .maybeSingle()
   if (!contact) {

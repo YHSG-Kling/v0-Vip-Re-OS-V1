@@ -59,7 +59,7 @@ export async function assertCanActOnContact(contactId: string): Promise<ContactA
   const svc = createServiceClient()
   const [contactRes, profileRes] = await Promise.all([
     svc.from("contacts")
-      .select("id, brokerage_id, agent_id, email, mailing_address, mailing_city:city, mailing_state:state, mailing_zip:zip_code")
+      .select("id, brokerage_id, agent_id, email, mailing_address, mailing_city, mailing_state, mailing_zip")
       .eq("id", contactId).maybeSingle(),
     svc.from("users")
       .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle(),

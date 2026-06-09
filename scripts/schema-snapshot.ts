@@ -15,7 +15,7 @@
  */
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   contacts: [
-    "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",
+    "address", "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",
     "ai_isa_enabled", "ai_outreach_paused", "ai_predicted_close_date", "nurture_status",
     "referral_approach", "referral_score",
     "brokerage_id", "budget_max", "budget_min", "buyer_stage", "call_stop_flag",
@@ -35,6 +35,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "legal_middle_name", "legal_name_source", "legal_name_verified_at", "lender_status",
     "length_of_residence", "life_events", "lifecycle_state", "linkedin_url", "mailing_address",
     "mailing_address_source", "mailing_address_verified", "mailing_address_verified_at",
+    "mailing_city", "mailing_state", "mailing_zip",
     "marital_status", "metadata", "motivation_confidence", "motivation_type", "notes",
     "occupation", "opt_out_channels", "opt_out_reason", "opt_out_source", "opted_out_at",
     "peopledata_id", "phone", "phone_digits", "phone_opt_out", "phone_status", "phone_type",

@@ -45,6 +45,16 @@ export async function createContactFromLead(
       timeline: data.lead.timeline,
       intent_score: data.lead.intent_score,
 
+      // Address — carry the lead's MAILING address upward faithfully (a scraped lead is
+      // mailing-centric; a contact can own a property but not live there, so the mailing
+      // breakdown is kept distinct from the physical `address`, which is filled later).
+      mailing_address:          data.lead.mailing_address ?? null,
+      mailing_address_source:   data.lead.mailing_address_source ?? null,
+      mailing_address_verified: data.lead.mailing_address_verified ?? null,
+      mailing_city:             data.lead.mailing_city ?? null,
+      mailing_state:            data.lead.mailing_state ?? null,
+      mailing_zip:              data.lead.mailing_zip ?? null,
+
       // Consent provenance — carry over what was captured during the lead phase. Faithful (no
       // fabricated consent) — converted contacts inherit exactly the consent state on the lead, so
       // downstream phone/SMS gates evaluate against real captured consent (TCPA-safe).
