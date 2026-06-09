@@ -92,7 +92,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
       bedrooms,
       bathrooms,
       sqft,
-      description,
+      public_remarks,
       status,
       listing_date,
       go_live_date,
@@ -173,7 +173,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     beds: listing.bedrooms,
     baths: listing.bathrooms,
     sqft: listing.sqft,
-    description: listing.description,
+    description: (listing as { public_remarks?: string | null }).public_remarks ?? null,  // MLS public remarks
     status: listing.status,
     listing_date: listing.listing_date,
     go_live_date: listing.go_live_date,

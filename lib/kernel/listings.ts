@@ -388,7 +388,7 @@ export async function saveListingDraft(input: {
  * Output: { ready: boolean, blockers: string[] }
  * Reads: listings, listing_media
  * Blockers: no seller contact, no list price, fewer than 5 photos
- * NOTE: public_remarks does NOT exist in schema — that check is intentionally omitted.
+ * NOTE: public_remarks exists (m194); this check is intentionally omitted here.
  */
 export async function validateListingLaunchReadiness(input: {
   listingId: string

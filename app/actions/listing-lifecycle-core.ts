@@ -205,7 +205,7 @@ async function evaluateLaunchBlockers(
     blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
   }
 
-  // public_remarks does not exist in the listings schema.
+  // public_remarks exists (m194); intentionally not set here.
   // Description readiness is handled via showing_instructions or AI generation.
   // The 3 real blockers above (seller contact, list price, photos) are enforced.
 

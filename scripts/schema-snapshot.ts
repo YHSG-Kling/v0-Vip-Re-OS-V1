@@ -58,7 +58,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "go_live_confirmed_at", "go_live_date", "id", "lifecycle_stage", "list_price",
     "listing_agent_email", "listing_agent_name", "listing_date", "marketing_budget",
     "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date",
-    "open_house_marketing_date", "property_type", "seller_contact_id", "showing_count",
+    "open_house_marketing_date", "property_type", "public_remarks", "seller_contact_id", "showing_count",
     "showing_instructions", "sqft", "stage_entered_at", "stage_updated_at", "state", "status",
     "team_id", "transaction_provider_ref", "updated_at", "zip",
   ],
