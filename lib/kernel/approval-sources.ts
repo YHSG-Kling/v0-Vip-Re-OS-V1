@@ -21,7 +21,7 @@ import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task" | "agent_followup"
+export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task" | "agent_followup" | "blog" | "podcast"
 
 /** Mirrors CommandCenterAction (kept structural to avoid a circular import). */
 export interface ContentApprovalAction {
@@ -39,7 +39,7 @@ export interface ContentApprovalAction {
 
 interface ContentSource {
   queue:     ContentQueue
-  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions" | "ai_autopilot_actions"
+  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions" | "ai_autopilot_actions" | "blog_posts" | "podcast_episodes"
   select:    string
   /** Apply the "awaiting a human" filter for this table. */
   pending:   (q: any) => any
@@ -229,6 +229,49 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     approve: () => ({ status: "executed", executed_at: nowIso() }),
     approveGuard: (q) => q.eq("status", "pending"),
     reject: () => ({ status: "skipped", executed_at: nowIso() }),
+  },
+
+  // ── Blog posts — auto-drafted SEO content, deliverable-gated before publish.
+  // The publish cron only ships publish_status='approved', so a draft can't go live.
+  blog: {
+    queue: "blog",
+    table: "blog_posts",
+    select: "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, created_at",
+    pending: (q) => q.eq("publish_status", "pending_review"),
+    toAction: (b, now) => {
+      const sla = evaluateApprovalSla(b.created_at ?? null, now)
+      const body = String(b.content ?? b.excerpt ?? "")
+      return {
+        id: b.id, queue: "blog", brokerageId: b.brokerage_id, actionType: "approve_blog_post",
+        rationale: `Blog post "${b.title ?? "Untitled"}" — review the copy before it publishes to your site.`,
+        actionInput: { title: b.title ?? null, excerpt: b.excerpt ?? null, content_preview: body.length > 1200 ? body.slice(0, 1200) + "…" : body, featured_image_url: b.featured_image_url ?? null },
+        status: "proposed", proposedAt: b.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      }
+    },
+    approve: () => ({ publish_status: "approved" }),
+    approveGuard: (q) => q.eq("publish_status", "pending_review"),
+    reject: () => ({ publish_status: "archived" }),
+  },
+
+  // ── Podcast episodes — generated, then deliverable-gated before distribution.
+  // Approve → 'scheduled' (the Transistor distributor ships it); reject → 'draft'.
+  podcast: {
+    queue: "podcast",
+    table: "podcast_episodes",
+    select: "id, brokerage_id, title, description, audio_url, status, created_at",
+    pending: (q) => q.eq("status", "completed"),
+    toAction: (p, now) => {
+      const sla = evaluateApprovalSla(p.created_at ?? null, now)
+      return {
+        id: p.id, queue: "podcast", brokerageId: p.brokerage_id, actionType: "approve_podcast_episode",
+        rationale: `Podcast episode "${p.title ?? "Untitled"}" is generated — review before it distributes to Spotify/Apple/etc.`,
+        actionInput: { title: p.title ?? null, description: p.description ?? null, audio_url: p.audio_url ?? null },
+        status: "proposed", proposedAt: p.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      }
+    },
+    approve: () => ({ status: "scheduled" }),
+    approveGuard: (q) => q.eq("status", "completed"),
+    reject: () => ({ status: "draft" }),
   },
 }
 

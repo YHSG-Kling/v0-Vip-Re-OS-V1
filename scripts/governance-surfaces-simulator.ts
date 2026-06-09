@@ -49,6 +49,16 @@ function testPure() {
   check("followup → complete_followup + preview", aa.actionType === "complete_followup" && aa.actionInput.title === "Follow up: Sarah")
   check("approve = Done (executed)", (af.approve("u") as any).status === "executed")
   check("reject = Skip (skipped)", (af.reject("u") as any).status === "skipped")
+
+  console.log("\n[Layer 1 · blog + podcast sources]")
+  const bl = CONTENT_SOURCES.blog
+  const ba = bl.toAction({ id: "b1", brokerage_id: "b", title: "Spring market in Maple Grove", excerpt: "What's happening", content: "x".repeat(2000), created_at: now.toISOString() }, now)
+  check("blog → approve_blog_post + truncated preview", ba.actionType === "approve_blog_post" && String(ba.actionInput.content_preview).endsWith("…"))
+  check("blog approve → approved (publish), reject → archived", (bl.approve("u") as any).publish_status === "approved" && (bl.reject("u") as any).publish_status === "archived")
+  const pc = CONTENT_SOURCES.podcast
+  const poa = pc.toAction({ id: "p1", brokerage_id: "b", title: "Episode 7", description: "Market chat", audio_url: "https://x/ep7.mp3", created_at: now.toISOString() }, now)
+  check("podcast → approve_podcast_episode + audio in preview", poa.actionType === "approve_podcast_episode" && poa.actionInput.audio_url === "https://x/ep7.mp3")
+  check("podcast pending=completed; approve→scheduled, reject→draft", (pc.approve("u") as any).status === "scheduled" && (pc.reject("u") as any).status === "draft")
 }
 
 async function testLive() {

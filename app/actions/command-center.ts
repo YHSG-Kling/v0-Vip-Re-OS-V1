@@ -68,7 +68,7 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
   }
   // Newsletter + direct-mail + ad-creative + predictive-touch + transaction-task
   // all release through the content-approval registry.
-  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "agent_followup") {
+  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "agent_followup" || params.queue === "blog" || params.queue === "podcast") {
     const res = await approveContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: res.status, error: res.error }
@@ -104,7 +104,7 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: "rejected" as const, error: res.error }
   }
-  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "agent_followup") {
+  if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "agent_followup" || params.queue === "blog" || params.queue === "podcast") {
     const res = await rejectContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: "rejected" as const, error: res.error }
