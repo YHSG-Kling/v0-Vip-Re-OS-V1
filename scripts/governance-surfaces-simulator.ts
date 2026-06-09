@@ -42,6 +42,13 @@ function testPure() {
   check("urgent/high severity escalates to breached", ta.slaLevel === "breached")
   check("approve = Resolved", (tt.approve("u") as any).status === "resolved" && (tt.approve("u") as any).resolved_by === "u")
   check("reject = Dismissed", (tt.reject("u") as any).status === "dismissed")
+
+  console.log("\n[Layer 1 · agent_followup source]")
+  const af = CONTENT_SOURCES.agent_followup
+  const aa = af.toAction({ id: "f1", brokerage_id: "b", action_type: "open_house_follow_up", title: "Follow up: Sarah", description: "Open-house check-in", priority: "high", scheduled_for: now.toISOString(), created_at: now.toISOString() }, now)
+  check("followup → complete_followup + preview", aa.actionType === "complete_followup" && aa.actionInput.title === "Follow up: Sarah")
+  check("approve = Done (executed)", (af.approve("u") as any).status === "executed")
+  check("reject = Skip (skipped)", (af.reject("u") as any).status === "skipped")
 }
 
 async function testLive() {

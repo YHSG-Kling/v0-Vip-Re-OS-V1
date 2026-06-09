@@ -24,6 +24,7 @@ const QUEUE_BADGE: Record<string, string> = {
   client_message:"bg-indigo-100 text-indigo-800",
   predictive_listing:"bg-teal-100 text-teal-800",
   transaction_task:  "bg-red-100 text-red-800",
+  agent_followup:    "bg-cyan-100 text-cyan-800",
 }
 const QUEUE_LABEL: Record<string, string> = {
   marketing:     "Marketing Agent",
@@ -36,6 +37,7 @@ const QUEUE_LABEL: Record<string, string> = {
   client_message:"Client Update",
   predictive_listing:"Predicted Seller",
   transaction_task:  "Deal Task",
+  agent_followup:    "Follow-up",
 }
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
@@ -341,6 +343,21 @@ function TransactionTaskPreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+/** Autopilot follow-up: a scheduled reminder (e.g. open-house check-in) the agent does or skips. */
+function FollowupPreview({ input }: { input: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Scheduled follow-up</span>
+        {!!input.priority && <Badge className="bg-cyan-100 text-cyan-800">{String(input.priority)}</Badge>}
+      </div>
+      {!!input.title && <div className="text-sm font-medium">{String(input.title)}</div>}
+      {!!input.description && <p className="text-sm whitespace-pre-wrap">{String(input.description)}</p>}
+      {!!input.scheduled_for && <div className="text-[11px] text-muted-foreground">Due {new Date(String(input.scheduled_for)).toLocaleString()}</div>}
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -383,6 +400,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "ad_creative" && <AdCreativePreview input={action.actionInput} />}
           {action.queue === "predictive_listing" && <PredictiveTouchPreview input={action.actionInput} />}
           {action.queue === "transaction_task" && <TransactionTaskPreview input={action.actionInput} />}
+          {action.queue === "agent_followup" && <FollowupPreview input={action.actionInput} />}
           {isClientMsg && (
             <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
               <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -398,8 +416,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
         <div className="flex gap-2 shrink-0">
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : "Reject"}</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "predictive_listing" ? "Approve & Queue" : "Approve"}</Button>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : action.queue === "agent_followup" ? "Skip" : "Reject"}</Button>
+          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "agent_followup" ? "Done" : action.queue === "predictive_listing" ? "Approve & Queue" : "Approve"}</Button>
         </div>
       </div>
     </Card>

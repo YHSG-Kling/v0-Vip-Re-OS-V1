@@ -21,7 +21,7 @@ import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task"
+export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task" | "agent_followup"
 
 /** Mirrors CommandCenterAction (kept structural to avoid a circular import). */
 export interface ContentApprovalAction {
@@ -39,7 +39,7 @@ export interface ContentApprovalAction {
 
 interface ContentSource {
   queue:     ContentQueue
-  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions"
+  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions" | "ai_autopilot_actions"
   select:    string
   /** Apply the "awaiting a human" filter for this table. */
   pending:   (q: any) => any
@@ -205,6 +205,30 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     approve: (userId) => ({ status: "resolved", resolved_by: userId, resolved_at: nowIso() }),
     approveGuard: (q) => q.eq("status", "open"),
     reject: (userId) => ({ status: "dismissed", resolved_by: userId, resolved_at: nowIso() }),
+  },
+
+  // ── Autopilot follow-ups (open-house etc.) — surfaced as a follow-up task queue.
+  // Internal reminders that previously had NO UI. Approve = "Done", reject = "Skip".
+  agent_followup: {
+    queue: "agent_followup",
+    table: "ai_autopilot_actions",
+    select: "id, brokerage_id, entity_type, entity_id, action_type, title, description, priority, scheduled_for, status, created_at",
+    pending: (q) => q.eq("status", "pending"),
+    toAction: (r, now) => {
+      const sla = evaluateApprovalSla(r.created_at ?? null, now, { deadlineIso: (r.scheduled_for as string | null) ?? null })
+      return {
+        id: r.id, queue: "agent_followup", brokerageId: r.brokerage_id, actionType: "complete_followup",
+        rationale: `${r.title ?? r.action_type ?? "Follow-up"} — a scheduled follow-up reminder.`,
+        actionInput: {
+          title: r.title ?? null, description: r.description ?? null, action_type: r.action_type ?? null,
+          priority: r.priority ?? null, scheduled_for: r.scheduled_for ?? null, entity_type: r.entity_type ?? null,
+        },
+        status: "proposed", proposedAt: r.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      }
+    },
+    approve: () => ({ status: "executed", executed_at: nowIso() }),
+    approveGuard: (q) => q.eq("status", "pending"),
+    reject: () => ({ status: "skipped", executed_at: nowIso() }),
   },
 }
 
