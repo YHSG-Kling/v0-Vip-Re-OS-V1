@@ -69,9 +69,10 @@ export async function generatePropertyMatches(params: {
         .single(),
       supabase
         .from("property_preferences")
+        // Correct live columns only — the table has no preferred_bedrooms/bathrooms/cities/
+        // features columns; selecting them errored the whole query (returning null prefs).
         .select(
-          "preferred_price_min, preferred_price_max, preferred_bedrooms, preferred_bathrooms, " +
-          "preferred_cities, preferred_features, inferred_min_price, inferred_max_price, " +
+          "preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, " +
           "inferred_beds_min, inferred_baths_min, inferred_cities, inferred_property_types"
         )
         .eq("contact_id", params.contactId)
@@ -88,11 +89,11 @@ export async function generatePropertyMatches(params: {
     const prefs = {
       min_price:      preferences?.preferred_price_min ?? preferences?.inferred_min_price ?? null,
       max_price:      preferences?.preferred_price_max ?? preferences?.inferred_max_price ?? null,
-      min_beds:       preferences?.preferred_bedrooms  ?? preferences?.inferred_beds_min  ?? null,
-      min_baths:      preferences?.preferred_bathrooms ?? preferences?.inferred_baths_min ?? null,
-      cities:         preferences?.preferred_cities    ?? preferences?.inferred_cities    ?? [],
+      min_beds:       preferences?.inferred_beds_min  ?? null,
+      min_baths:      preferences?.inferred_baths_min ?? null,
+      cities:         preferences?.inferred_cities    ?? [],
       property_types: preferences?.inferred_property_types ?? [],
-      features:       preferences?.preferred_features ?? [],
+      features:       [],
     }
 
     // Get buyer's viewing history and saved properties
@@ -117,11 +118,13 @@ export async function generatePropertyMatches(params: {
       .eq("status", "active")
       .eq("brokerage_id", ctx.brokerageId)
 
+    // Live column is list_price (not price) — the old `price` filter errored the query,
+    // silently returning zero matches for any buyer with a budget.
     if (prefs.min_price) {
-      listingsQuery = listingsQuery.gte("price", prefs.min_price)
+      listingsQuery = listingsQuery.gte("list_price", prefs.min_price)
     }
     if (prefs.max_price) {
-      listingsQuery = listingsQuery.lte("price", prefs.max_price)
+      listingsQuery = listingsQuery.lte("list_price", prefs.max_price)
     }
     if (prefs.min_beds) {
       listingsQuery = listingsQuery.gte("bedrooms", prefs.min_beds)

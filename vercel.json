@@ -326,6 +326,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/buyer-market-watch",
+      "schedule": "0 8 * * *"
+    },
+    {
       "path": "/api/cron/listing-promo-hybrid-composite",
       "schedule": "*/2 * * * *"
     },
