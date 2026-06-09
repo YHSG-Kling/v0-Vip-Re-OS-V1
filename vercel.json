@@ -330,6 +330,10 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/cron/buyer-reel-deliver",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/cron/listing-promo-hybrid-composite",
       "schedule": "*/2 * * * *"
     },
