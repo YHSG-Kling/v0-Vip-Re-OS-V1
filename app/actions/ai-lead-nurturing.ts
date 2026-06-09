@@ -367,119 +367,14 @@ Consider the relationship stage and avoid being too pushy.`,
   }
 }
 
-/**
- * Smart lead distribution based on agent strengths
+/*
+ * CONSOLIDATED (Data Steward audit): aiDistributeLead was removed — zero callers, wrote
+ * phantom columns (leads.ai_assigned / ai_assignment_reason don't exist → the whole update
+ * PGRST204-failed), and it let an LLM assign an agent directly on the lead, bypassing the
+ * canonical business process: AI-ISA qualifies first, then the assignment engine
+ * (lib/lead-assignment/assignment-engine evaluateAndAssignLead) assigns per tier rules
+ * (solo → the solo agent) and converts the lead to a contact via handleLeadAssigned.
  */
-export async function aiDistributeLead(params: {
-  leadId: string
-  teamId: string
-}): Promise<{ success: boolean; assignedTo?: string; reason?: string; error?: string }> {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.leadId) || !isValidUUID(params.teamId)) {
-    return { success: false, error: "Invalid IDs provided" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Scope lead lookup to caller's brokerage
-    const { data: lead } = await supabase
-      .from("leads")
-      .select("*")
-      .eq("id", params.leadId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-
-    // Get team agents
-    const { data: agents } = await supabase
-      .from("team_members")
-      .select("*, agents(*)")
-      .eq("team_id", params.teamId)
-      .eq("status", "active")
-
-    if (!lead || !agents?.length) {
-      return { success: false, error: "Lead or team agents not found" }
-    }
-
-    // Get agent performance metrics
-    const agentMetrics = await Promise.all(
-      agents.map(async (agent) => {
-        const { data: closedDeals } = await supabase
-          .from("transactions")
-          .select("id")
-          .eq("agent_id", agent.user_id)
-          .eq("status", "closed")
-          .gte("close_date", new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString())
-
-        const { data: activeLeads } = await supabase
-          .from("contacts")
-          .select("id")
-          .eq("agent_id", agent.user_id)
-          .in("status", ["new", "contacted", "qualified"])
-
-        return {
-          ...agent,
-          closedDeals: closedDeals?.length || 0,
-          activeLeads: activeLeads?.length || 0,
-        }
-      })
-    )
-
-    // AI determines best match
-    const { object: assignment } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
-        assignedAgentId: z.string(),
-        matchScore: z.number().min(0).max(100),
-        reason: z.string(),
-        alternativeAgent: z.string().optional(),
-      }),
-      prompt: `Match this lead to the best agent on the team:
-
-LEAD:
-- Source: ${lead.source}
-- Type: ${lead.lead_type}
-- Location: ${lead.city}, ${lead.state}
-- Price Range: ${lead.price_range}
-- Timeline: ${lead.timeline}
-
-AVAILABLE AGENTS:
-${agentMetrics.map((a) => `
-- ID: ${a.user_id}
-- Name: ${a.agents?.first_name} ${a.agents?.last_name}
-- Specialties: ${a.agents?.specialties?.join(", ") || "General"}
-- Areas: ${a.agents?.service_areas?.join(", ") || "All areas"}
-- Closed Deals (12mo): ${a.closedDeals}
-- Active Leads: ${a.activeLeads}
-`).join("\n")}
-
-Consider: agent expertise, workload balance, location match, and lead type fit.`,
-    })
-
-    // Assign lead — scoped to caller's brokerage
-    await supabase
-      .from("leads")
-      .update({
-        agent_id: assignment.assignedAgentId,
-        ai_assigned: true,
-        ai_assignment_reason: assignment.reason,
-      })
-      .eq("id", params.leadId)
-      .eq("brokerage_id", auth.brokerageId)
-
-    revalidatePath("/leads")
-    return {
-      success: true,
-      assignedTo: assignment.assignedAgentId,
-      reason: assignment.reason,
-    }
-  } catch (error) {
-    console.error("[v0] AI lead distribution error:", error)
-    return handleError(error, "aiDistributeLead")
-  }
-}
 
 /**
  * Batch re-engagement for cold leads

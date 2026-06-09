@@ -206,9 +206,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       } else {
         // 2. Check leads
+        // NOTE: leads has NO dnc_status column (that's contacts) — selecting it errored the
+        // whole lookup, so every inbound call from a known lead "missed", fell through to the
+        // create-contact branch, and minted a DUPLICATE contact with fabricated tcpa_consent.
+        // leads' voice-block flags are call_stop_flag + phone_opt_out.
         const { data: existingLead } = await supabase
           .from("leads")
-          .select("id, contact_id, call_stop_flag, dnc_status")
+          .select("id, contact_id, call_stop_flag, phone_opt_out")
           .eq("phone_digits", digits)
           .eq("brokerage_id", brokerageId)
           .maybeSingle()
@@ -221,8 +225,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             resolvedLeadId = existingLead.id
           }
 
-          // Block if lead has DNC / call_stop_flag
-          if (existingLead.call_stop_flag || existingLead.dnc_status) {
+          // Block if lead has call-stop / phone opt-out
+          if (existingLead.call_stop_flag || existingLead.phone_opt_out) {
             await supabase.from("voice_calls").insert({
               brokerage_id: brokerageId,
               vapi_call_id: callId,

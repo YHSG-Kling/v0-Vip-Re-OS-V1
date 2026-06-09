@@ -209,9 +209,13 @@ export async function claimStaleLead(leadId: string): Promise<{ success: boolean
     return { success: false, error: "Only brokers / admins can assign leads" }
   }
 
+  // leads has NO assigned_at column — writing it PGRST204-failed the whole update, so
+  // claiming a stale lead silently never assigned it. Stamp last_activity_at instead
+  // (which is also what the stale scan keys on).
+  const now = new Date().toISOString()
   const { error } = await svc
     .from("leads")
-    .update({ agent_id: agentRow.id, assigned_at: new Date().toISOString() })
+    .update({ agent_id: agentRow.id, last_activity_at: now, updated_at: now })
     .eq("id", leadId)
     .eq("brokerage_id", agentRow.brokerage_id)
     .is("agent_id", null)

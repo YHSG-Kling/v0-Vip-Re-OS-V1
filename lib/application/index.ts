@@ -33,24 +33,16 @@ export {
 // ─── LEAD APPLICATION SERVICE ─────────────────────────────────────────────────
 export type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "./lead-application-service"
 export {
-  // scraped_leads pipeline
+  // Admin lead view + Lane B import (the canonical service surface).
+  // The former "leads-wide" block (serviceCreateLead/serviceScrape*Leads/
+  // serviceAssignLead/…) was removed — dead code on a phantom schema that
+  // bypassed raw_scraped_leads ingestion and the assignment engine's
+  // AI-ISA qualification gate. See lead-application-service.ts footer.
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
   serviceRejectLead,
   serviceImportLeads,
-  // leads table (external scraped, not yet in system)
-  serviceCreateLead,
-  serviceGetLeadsFull,
-  serviceUpdateLead,
-  serviceAssignLead,
-  serviceScrapeZillowLeads,
-  serviceScrapeNextdoorLeads,
-  serviceScrapeBatchDataLeads,
-  serviceScrapeFacebookGroupLeads,
-  serviceScrapeCraigslistLeads,
-  serviceEnrichLeadFull,
-  serviceGetLeadsDashboardStats,
 } from "./lead-application-service"
 
 // ─── LISTING LIFECYCLE ────────────────────────────────────────────────────────

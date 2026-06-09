@@ -149,12 +149,13 @@ export default async function BrokerageDashboard({
       .in("stage", ["active", "pending", "contingent"]),
     // Provider health status
     getSystemProviderStatus().catch(() => ({ directMailEnabled: true, videoEnabled: true })),
-    // Unassigned leads count
+    // Unassigned leads count — leads' assignment column is agent_id (assigned_agent_id
+    // doesn't exist; filtering on it errored the query and the count silently read 0).
     supabase
       .from("leads")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .is("assigned_agent_id", null)
+      .is("agent_id", null)
       .eq("is_active", true),
     // Pending brokerage commission distributions
     supabase
