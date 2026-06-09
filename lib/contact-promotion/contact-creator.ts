@@ -45,9 +45,13 @@ export async function createContactFromLead(
       timeline: data.lead.timeline,
       intent_score: data.lead.intent_score,
 
-      // Address — carry the lead's MAILING address upward faithfully (a scraped lead is
-      // mailing-centric; a contact can own a property but not live there, so the mailing
-      // breakdown is kept distinct from the physical `address`, which is filled later).
+      // Address — carry BOTH the physical address and the MAILING address upward, faithfully.
+      // A contact can own a property but not live there, so the mailing breakdown is kept
+      // distinct from the physical address (raw/leads/contacts now share the same field set).
+      address:                  data.lead.address ?? null,
+      city:                     data.lead.city ?? null,
+      state:                    data.lead.state ?? null,
+      zip_code:                 data.lead.zip_code ?? null,
       mailing_address:          data.lead.mailing_address ?? null,
       mailing_address_source:   data.lead.mailing_address_source ?? null,
       mailing_address_verified: data.lead.mailing_address_verified ?? null,

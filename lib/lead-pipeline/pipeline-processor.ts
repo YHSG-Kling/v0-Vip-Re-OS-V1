@@ -44,6 +44,16 @@ interface RawRecord {
   source_record_id: string | null
   processing_status: ProcessingStatus
   raw_data: Record<string, unknown> | null
+  // First-class identity + physical-address columns (parity with leads/contacts).
+  // Mirror normalized_preview; preferred when resolving so the raw row maps column-to-column.
+  first_name?: string | null
+  last_name?: string | null
+  email?: string | null
+  phone?: string | null
+  address?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
   normalized_preview: {
     firstName?: string | null
     lastName?: string | null
@@ -51,14 +61,25 @@ interface RawRecord {
     phone?: string | null
     city?: string | null
     state?: string | null
+    zip?: string | null
     intentType?: string
     behaviorType?: string
     motivationScore?: number | null
     intentSignals?: string[]
     propertyAddress?: string | null
+    mailingAddress?: string | null
     sourceUrl?: string | null
     leadIdentityKey?: string | null
   } | null
+  // First-class mailing breakdown columns on raw_scraped_leads (populated at
+  // ingestion / enrichment). Kept distinct from the physical address because a
+  // contact can own a property but not live there.
+  mailing_address?: string | null
+  mailing_address_source?: string | null
+  mailing_address_verified?: boolean | null
+  mailing_city?: string | null
+  mailing_state?: string | null
+  mailing_zip?: string | null
   lead_id: string | null
   error_message: string | null
 }
@@ -111,13 +132,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
 
   const rec = rawRecord as RawRecord
 
-  // ── STEP 3: Resolve fields from normalized_preview with raw_data fallback ──
-  const firstName  = rec.normalized_preview?.firstName  ?? (rec.raw_data?.firstName  as string | undefined) ?? null
-  const lastName   = rec.normalized_preview?.lastName   ?? (rec.raw_data?.lastName   as string | undefined) ?? null
-  const email      = rec.normalized_preview?.email      ?? (rec.raw_data?.email      as string | undefined) ?? null
-  const phone      = rec.normalized_preview?.phone      ?? (rec.raw_data?.phone      as string | undefined) ?? null
-  const city       = rec.normalized_preview?.city       ?? (rec.raw_data?.city       as string | undefined) ?? null
-  const state      = rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
+  // ── STEP 3: Resolve fields — first-class raw column → normalized_preview → raw_data ──
+  const firstName  = rec.first_name ?? rec.normalized_preview?.firstName  ?? (rec.raw_data?.firstName  as string | undefined) ?? null
+  const lastName   = rec.last_name  ?? rec.normalized_preview?.lastName   ?? (rec.raw_data?.lastName   as string | undefined) ?? null
+  const email      = rec.email      ?? rec.normalized_preview?.email      ?? (rec.raw_data?.email      as string | undefined) ?? null
+  const phone      = rec.phone      ?? rec.normalized_preview?.phone      ?? (rec.raw_data?.phone      as string | undefined) ?? null
+  const city       = rec.city       ?? rec.normalized_preview?.city       ?? (rec.raw_data?.city       as string | undefined) ?? null
+  const state      = rec.state      ?? rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
@@ -392,8 +413,20 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       mailing_address_verified: true,
       // Propagate the actual address (not just the flag) so the AI-ISA direct_mail channel has
       // something to send to — the resolver requires `lead.mailing_address && verified`.
-      mailing_address:       (enriched as any).mailing_address       ?? (rec.raw_data as any)?.mailing_address       ?? null,
-      mailing_address_source:(enriched as any).mailing_address_source?? (rec.raw_data as any)?.mailing_address_source?? null,
+      // Resolution order for every mailing field: enrichment result → raw first-class
+      // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
+      // columns, so they must be in the fallback chain or the breakdown is silently lost.
+      mailing_address:       (enriched as any).mailing_address        ?? rec.mailing_address        ?? rec.normalized_preview?.mailingAddress ?? (rec.raw_data as any)?.mailing_address        ?? null,
+      mailing_address_source:(enriched as any).mailing_address_source ?? rec.mailing_address_source ?? (rec.raw_data as any)?.mailing_address_source ?? null,
+      // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
+      // incomplete and they never reached the contact): physical address + mailing breakdown.
+      address:               rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null,
+      city:                  city,
+      state:                 state,
+      zip_code:              rec.zip_code ?? rec.normalized_preview?.zip ?? (rec.raw_data?.zip as string | null) ?? null,
+      mailing_city:          (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null,
+      mailing_state:         (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null,
+      mailing_zip:           (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null,
       email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
     })

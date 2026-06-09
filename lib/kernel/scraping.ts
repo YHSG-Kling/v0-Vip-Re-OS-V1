@@ -459,6 +459,22 @@ export async function ingestRawSourceBatch(
           source_subtype:       params.sourceSubtype ?? null,
           source_record_id:     record.sourceRecordId,
           raw_data:             record.rawPayload ?? null,
+          // First-class identity + address columns (parity with leads/contacts). These mirror
+          // what's in normalized_preview so the raw row is queryable/mappable without digging
+          // into jsonb, and the upward flow raw -> leads -> contacts is a column-to-column copy.
+          // normalized_preview below is retained as the verbatim audit copy.
+          first_name:           record.firstName      ?? null,
+          last_name:            record.lastName       ?? null,
+          email:                record.email          ?? null,
+          phone:                record.phone          ?? null,
+          address:              record.propertyAddress ?? null,
+          city:                 record.city           ?? null,
+          state:                record.state          ?? null,
+          zip_code:             record.zip            ?? null,
+          // Populate the first-class mailing_address column at ingestion when the source
+          // provided one, so the raw row's column agrees with its normalized_preview and the
+          // mailing address survives upward even before enrichment fills the breakdown.
+          mailing_address:      record.mailingAddress ?? null,
           normalized_preview: {
             firstName:       record.firstName       ?? null,
             lastName:        record.lastName        ?? null,
