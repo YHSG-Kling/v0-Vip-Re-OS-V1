@@ -52,7 +52,8 @@
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib",
     "test:market-watch": "tsx scripts/market-watch-simulator.ts",
     "test:external-match": "tsx scripts/external-match-simulator.ts",
-    "test:buyer-reel-delivery": "tsx scripts/buyer-reel-delivery-simulator.ts"
+    "test:buyer-reel-delivery": "tsx scripts/buyer-reel-delivery-simulator.ts",
+    "test:schema-drift": "tsx scripts/schema-drift-guard.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
