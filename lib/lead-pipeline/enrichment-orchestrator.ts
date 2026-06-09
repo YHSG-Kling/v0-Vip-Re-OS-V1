@@ -5,6 +5,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
+import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import {
   handleLeadScored,
@@ -139,6 +140,7 @@ export async function processEnrichmentQueue(
         // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
         const profile: Record<string, any> = {
           provider: 'peopledata',
+          peopledata_id: (enriched as any).peopledataId,
           captured_at: new Date().toISOString(),
           confidence: enriched.enrichmentConfidence,
           full_name: enriched.fullName,
@@ -235,13 +237,22 @@ export async function processEnrichmentQueue(
             console.warn('[enrichment-orchestrator] raw_scraped_leads back-fill skipped:', e)
           }
         } else {
+          // Promote the rich PDL payload into the contacts FIRST-CLASS columns (age_range,
+          // household_income, home_owner_status, occupation, education_level, social URLs,
+          // life_events, peopledata_id, enriched_at, enrichment_source) so the data is queryable
+          // by scorers / segmenters / AI-ISA — not just stranded in enrichment_profile jsonb.
+          // NOTE: contacts has NO phone_secondary column (leads-only); the second phone is
+          // conserved in enrichment_profile.phones, so we do NOT write phone_secondary here
+          // (doing so PGRST204-errored the whole update whenever PDL returned a 2nd phone).
+          const enrichedAt = new Date().toISOString()
+          const contactEnrichmentColumns = peopleDataProfileToContactColumns(profile, { enrichedAt })
           await supabase
             .from('contacts')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...(primaryPhone && { phone: primaryPhone }),
-              ...(secondaryPhone && { phone_secondary: secondaryPhone }),
-              last_enriched_at: new Date().toISOString(),
+              ...contactEnrichmentColumns,
+              last_enriched_at: enrichedAt,
               enrichment_confidence: enriched.enrichmentConfidence,
               email_verified: emailFlagVerified,
               enrichment_profile: profile,

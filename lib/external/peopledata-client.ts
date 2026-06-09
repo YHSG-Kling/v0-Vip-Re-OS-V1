@@ -16,6 +16,8 @@ const PEOPLEDATA_API_KEY = process.env.PEOPLEDATA_API_KEY!
 const PEOPLEDATA_API_URL = 'https://api.peopledatalabs.com/v5'
 
 export interface PeopleDataEnrichment {
+  /** PDL person id (person.id) — stable provider key so we can re-pull / de-dupe without a new match. */
+  peopledataId?: string
   fullName: string
   firstName: string
   lastName: string
@@ -158,6 +160,7 @@ export async function skipTraceWithPeopleData(params: {
   const mailingAddressVerified = likelihood >= 6 && hasStructuredAddress
 
   const enrichment: PeopleDataEnrichment = {
+    peopledataId: person.id ?? undefined,
     fullName: person.full_name || params.name || '',
     firstName: person.first_name || '',
     lastName: person.last_name || '',

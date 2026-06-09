@@ -8,6 +8,8 @@
  * - Contacts represent active relationships
  */
 
+import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+
 export interface ContactCreationData {
   leadId: string
   lead: any
@@ -74,6 +76,21 @@ export async function createContactFromLead(
       phone_opt_out:        data.lead.phone_opt_out        ?? false,
       direct_mail_opt_out:  data.lead.direct_mail_opt_out  ?? false,
       opted_out_at:         data.lead.opted_out_at         ?? null,
+
+      // Enrichment — conserve everything PeopleData gave the lead so promotion is LOSSLESS.
+      // The full payload travels as enrichment_profile (jsonb), and the demographic / financial /
+      // social fields are ALSO promoted into the contacts first-class columns (age_range,
+      // household_income, home_owner_status, occupation, education_level, social URLs, life_events,
+      // peopledata_id, enriched_at, enrichment_source) so they're queryable on the contact, not
+      // stranded in jsonb. Without this, an enriched lead lost its whole profile at promotion.
+      ...peopleDataProfileToContactColumns(data.lead.enrichment_profile, {
+        enrichedAt: data.lead.last_enriched_at ?? undefined,
+      }),
+      enrichment_profile:    data.lead.enrichment_profile ?? null,
+      enrichment_confidence: data.lead.enrichment_confidence ?? null,
+      last_enriched_at:      data.lead.last_enriched_at ?? null,
+      equity_estimate:       data.lead.equity_estimate ?? null,
+      email_verified:        data.lead.email_verified ?? null,
 
       // Status
       status: 'active',

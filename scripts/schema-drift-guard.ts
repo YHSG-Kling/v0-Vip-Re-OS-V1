@@ -117,6 +117,39 @@ export function parseObjectTopLevelKeys(objText: string): string[] {
     if (!/\s/.test(ch)) lastSig = ch
     i++
   }
+  // Conditional/ternary spreads — `...(cond && { col: v })` / `...(c ? {a:1} : {b:2})` — write
+  // real columns whose keys live 2+ braces deep, so the depth-1 loop above misses them. This is
+  // exactly the blind spot that let a phantom `phone_secondary` write reach contacts. Extract the
+  // inner object-literal keys from any `...( … )` spread. Plain nested values (`meta: { z }`) and
+  // function-call spreads (`...fn(args)`) are left alone — only `...` IMMEDIATELY before `(` counts.
+  for (const k of extractConditionalSpreadKeys(s)) if (!keys.includes(k)) keys.push(k)
+  return keys
+}
+
+function extractConditionalSpreadKeys(s: string): string[] {
+  const keys: string[] = []
+  let i = 0
+  while (i < s.length) {
+    const sp = s.indexOf("...", i)
+    if (sp === -1) break
+    let j = sp + 3
+    while (j < s.length && /\s/.test(s[j])) j++
+    if (s[j] !== "(") { i = sp + 3; continue } // not a parenthesised spread (e.g. ...obj, ...fn())
+    const close = matchParen(s, j)
+    if (close === -1) break
+    const inner = s.slice(j + 1, close)
+    // Every object literal inside the spread expression contributes column-write keys.
+    let k = 0
+    while (k < inner.length) {
+      if (inner[k] === "{") {
+        const bclose = matchBrace(inner, k)
+        if (bclose === -1) break
+        for (const key of parseObjectTopLevelKeys(inner.slice(k, bclose + 1))) keys.push(key)
+        k = bclose + 1
+      } else k++
+    }
+    i = close + 1
+  }
   return keys
 }
 
@@ -148,6 +181,14 @@ function testPure() {
   check("parseSelectColumns: strips interpolation residue", parseSelectColumns("  , signals_processed, last_calculated_at").join() === "signals_processed,last_calculated_at")
   check("parseObjectTopLevelKeys: flat", JSON.stringify(parseObjectTopLevelKeys("{ contact_id: x, brokerage_id: y }")) === JSON.stringify(["contact_id", "brokerage_id"]))
   check("parseObjectTopLevelKeys: ignores nested", JSON.stringify(parseObjectTopLevelKeys("{ a: 1, meta: { z: 2 }, b: 3 }")) === JSON.stringify(["a", "meta", "b"]))
+  check("parseObjectTopLevelKeys: catches conditional-spread keys (...(cond && {col:v}))",
+    JSON.stringify(parseObjectTopLevelKeys("{ email: x, ...(p && { phone_secondary: p }), id: y }")) === JSON.stringify(["email", "id", "phone_secondary"]))
+  check("parseObjectTopLevelKeys: catches BOTH ternary-spread branches",
+    JSON.stringify(parseObjectTopLevelKeys("{ a: 1, ...(c ? { left_col: 1 } : { right_col: 2 }) }")) === JSON.stringify(["a", "left_col", "right_col"]))
+  check("parseObjectTopLevelKeys: function-call spread args are NOT columns (...fn(profile, {opt}))",
+    JSON.stringify(parseObjectTopLevelKeys("{ a: 1, ...mapCols(profile, { enrichedAt: t }), b: 2 }")) === JSON.stringify(["a", "b"]))
+  check("parseObjectTopLevelKeys: nested value object inside conditional spread value is not double-counted",
+    JSON.stringify(parseObjectTopLevelKeys("{ ...(c && { col: { deep: 1 } }) }")) === JSON.stringify(["col"]))
   // The exact bug we fixed must be caught:
   const badSel = parseSelectColumns("preferred_price_max, preferred_features, inferred_max_price")
   check("catches the legacy phantom column (preferred_features ∉ property_preferences)",
