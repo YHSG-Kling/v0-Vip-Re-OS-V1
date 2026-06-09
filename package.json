@@ -45,6 +45,7 @@
     "test:manager-ownership": "tsx scripts/manager-ownership-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
+    "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

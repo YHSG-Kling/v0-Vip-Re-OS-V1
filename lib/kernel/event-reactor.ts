@@ -244,6 +244,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     } catch { /* auto-producer is best-effort */ }
   }
 
+  // (D-ter) Wave 57 — buyer offer-strategy AUTO-handoff (deliverable-gated). Reaching the
+  // `offer_strategy` stage emits OFFER_STRATEGY_RECOMMENDED but reacted to nothing; propose
+  // the offer game-plan to the buyer into the client_message gate before they write.
+  if (params.brokerageId && params.entityType === "contact" && params.event === KernelEvent.OFFER_STRATEGY_RECOMMENDED) {
+    try {
+      const { produceOfferStrategyBrief } = await import("@/lib/agents/offer-strategy-producer")
+      void produceOfferStrategyBrief(params.brokerageId, params.entityId, svc)
+    } catch { /* auto-producer is best-effort */ }
+  }
+
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
   // (the canonical assignment moment per the app rule: raw_leads → platform,
   // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID

@@ -459,6 +459,15 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Tell your agent which homes stood out.",
     chatBody: "Hope the tour was helpful! I'll follow up with next steps — let me know which homes stood out.",
   },
+  [KernelEvent.OFFER_STRATEGY_RECOMMENDED]: {
+    title: "You're ready to make an offer",
+    plainLanguageSummary:
+      "You're in a strong position to write an offer. Your agent will help you ground your number in recent comparable sales and set your price + terms before you submit.",
+    responsibleParty: "agent",
+    audience: "buyer",  // pre-offer strategy is the buyer side
+    nextStep: "Review comps + set your price and terms with your agent.",
+    chatBody: "You're ready to make an offer! Let's set up your strategy — comps, price, and terms — so we move from strength.",
+  },
   // SHOWING_SCHEDULED is the SELLER side — a buyer's agent booked a showing on OUR listing. (Buyer-side
   // property visits are TOUR_SCHEDULED above.)
   [KernelEvent.SHOWING_SCHEDULED]: {
