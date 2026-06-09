@@ -1,32 +1,26 @@
--- m105 — DB-level idempotency for transparency_updates fan-out writer.
+-- m105 — RETIRED / NO-OP (consolidated onto m1093).
 --
--- WHY: Audit caught that lib/kernel/event-fanout.ts dedupes via SELECT-then-INSERT
--- (PORTAL_DEDUPE_WINDOW_MS) — racy under concurrent emits. Two parallel fan-outs of the same
--- KernelEvent can both miss the SELECT and both INSERT, producing duplicate client portal cards.
+-- ORIGINAL INTENT: add a `dedupe_key TEXT` column + a UNIQUE(contact_id, dedupe_key) index, and have
+-- lib/kernel/event-fanout.ts writePortalUpdate() insert with ON CONFLICT on that key.
 --
--- FIX: Add a `dedupe_key TEXT` column and a partial UNIQUE index on (contact_id, dedupe_key) WHERE
--- dedupe_key IS NOT NULL. The fan-out writer computes a dedupe_key from
--- (update_type, title, 10-minute time bucket) and inserts with ON CONFLICT DO NOTHING — Postgres
--- enforces the invariant under concurrency.
+-- WHAT ACTUALLY SHIPPED: the project chose the *no-app-change* idempotency design instead —
+-- migration `1093-transparency-updates-dedupe-index` (applied as schema_migrations
+-- 20260529193050 `transparency_updates_dedupe_index`), a partial unique index
+--     transparency_updates_dedupe_idx (contact_id, update_type, md5(title), date_trunc('minute', created_at))
+-- A truly-concurrent duplicate card hits that unique violation, which the writer's swallowing insert
+-- absorbs. m105 was therefore NEVER applied (the live table has no dedupe_key column).
 --
--- Non-fan-out writers (vendor-quote-workflow, transaction-transparency action handlers, net-sheet
--- calculator, lib/application/transactions) intentionally bypass this column (NULL dedupe_key) —
--- they're writing workflow-specific cards that aren't natural dedupe candidates; their idempotency
--- comes from the upstream workflow step (one milestone → one card by construction).
+-- THE DRIFT THIS FIXES: the fan-out writer still TARGETED the m105 dedupe_key column + onConflict, so
+-- every portal-card insert silently failed (PostgREST: column does not exist) and NO transparency
+-- card was ever written — breaking the client-portal "always know where your deal stands" promise.
+-- writePortalUpdate now inserts plainly and relies on the deployed m1093 index + the app-layer SELECT.
+--
+-- This migration is intentionally a NO-OP so it can never re-introduce the competing dedupe_key column
+-- and re-break the writer. Do NOT restore the DDL below; idempotency lives in m1093.
+--
+-- (former DDL, retained for history only — do not re-enable):
+--   ALTER TABLE transparency_updates ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+--   CREATE UNIQUE INDEX transparency_updates_contact_dedupe_key_uniq
+--     ON transparency_updates(contact_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 
-ALTER TABLE transparency_updates
-  ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
-
--- Partial unique index — only rows where dedupe_key IS NOT NULL participate. This lets non-fan-out
--- writers keep inserting without breaking the constraint, while the fan-out path is hard-protected.
-CREATE UNIQUE INDEX IF NOT EXISTS transparency_updates_contact_dedupe_key_uniq
-  ON transparency_updates(contact_id, dedupe_key)
-  WHERE dedupe_key IS NOT NULL;
-
--- Index for the existing dedupe-window query path (covers the legacy SELECT until all writers
--- migrate to the new dedupe_key approach — keeps the fallback fast).
-CREATE INDEX IF NOT EXISTS transparency_updates_contact_event_created_idx
-  ON transparency_updates(contact_id, update_type, created_at DESC);
-
-COMMENT ON COLUMN transparency_updates.dedupe_key IS
-  'Set by lib/kernel/event-fanout writePortalUpdate(); format: ${update_type}:${title_hash}:${10min_bucket}. NULL for non-fan-out writers (workflow-specific cards).';
+SELECT 1;  -- no-op

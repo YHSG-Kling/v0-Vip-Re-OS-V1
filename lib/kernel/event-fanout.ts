@@ -140,25 +140,11 @@ export async function enrollMatchingSequences(
 // ─── 3. Portal update writer ─────────────────────────────────────────────────
 
 // Idempotency window: a card identical in (contact + event + title) inside this span is treated as a
-// duplicate and skipped. Sized to absorb the reactor/fanOut overlap, retries, and rapid double-emits
-// while still allowing genuinely distinct later milestones of the same event type to post.
+// duplicate and skipped by the app-layer SELECT. Sized to absorb the reactor/fanOut overlap, retries,
+// and rapid double-emits while still allowing genuinely distinct later milestones of the same event
+// type to post. The DEPLOYED unique index transparency_updates_dedupe_idx (contact_id, update_type,
+// md5(title), minute) is the atomic backstop for truly-concurrent emits that both pass the SELECT.
 const PORTAL_DEDUPE_WINDOW_MS = 10 * 60 * 1000
-const PORTAL_DEDUPE_BUCKET_MS = PORTAL_DEDUPE_WINDOW_MS  // 10 min buckets match the window
-
-// Compute a stable dedupe key for the migration m105 partial unique index. Two emits with the same
-// (contact_id, dedupe_key) hit the unique index → ON CONFLICT DO NOTHING → idempotent under
-// concurrency (the SELECT-then-INSERT pattern below is racy on its own). The 10-min bucket means
-// genuinely-distinct later events still post (next bucket → different key).
-function computePortalDedupeKey(event: string, title: string, atMs: number): string {
-  const bucket = Math.floor(atMs / PORTAL_DEDUPE_BUCKET_MS)
-  // Cheap, deterministic title fingerprint — full title can be long; key column is TEXT but we want
-  // a bounded representation that's safe in an index.
-  let h = 0
-  for (let i = 0; i < title.length; i++) {
-    h = ((h << 5) - h + title.charCodeAt(i)) | 0
-  }
-  return `${event}:${(h >>> 0).toString(36)}:${bucket}`
-}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -582,10 +568,11 @@ export async function writePortalUpdate(
     const chatAgentId: string | null = chatAgentRow?.agent_id ?? null
 
     // Idempotency — TWO layers:
-    //   1. App-layer dedupe SELECT (legacy, fast-path skip without a DB write). Skips when an
-    //      identical (contact, event, title) card already exists in the window.
-    //   2. DB-level partial unique index on (contact_id, dedupe_key) — m105. Guarantees no
-    //      duplicate even under concurrent emits that both miss the SELECT.
+    //   1. App-layer dedupe SELECT (fast-path skip without a DB write). Skips when an identical
+    //      (contact, event, title) card already exists in the 10-minute window.
+    //   2. DB-level partial unique index transparency_updates_dedupe_idx
+    //      (contact_id, update_type, md5(title), date_trunc('minute', created_at)) — the DEPLOYED
+    //      backstop. Guarantees no duplicate even under concurrent emits that both miss the SELECT.
     const sinceIso = new Date(Date.now() - PORTAL_DEDUPE_WINDOW_MS).toISOString()
     const { data: dupe } = await supabase
       .from("transparency_updates")
@@ -600,12 +587,14 @@ export async function writePortalUpdate(
 
     wrote = true
 
-    const dedupeKey = computePortalDedupeKey(ctx.event, title, Date.now())
-
-    // 3a. transparency_update — the canonical "what happened on my deal" card. Uses upsert with
-    // onConflict on the partial unique index so a concurrent emit silently no-ops instead of
-    // duplicating. ignoreDuplicates avoids fetching the row back when there's a conflict.
-    await supabase.from("transparency_updates").upsert(
+    // 3a. transparency_update — the canonical "what happened on my deal" card. Idempotency is two
+    // layers: the app-layer SELECT above (10-min window) collapses the common case, and the DEPLOYED
+    // partial unique index `transparency_updates_dedupe_idx` (contact_id, update_type, md5(title),
+    // date_trunc('minute', created_at)) makes a truly-concurrent duplicate atomic — the unique
+    // violation is absorbed by the swallowing `.then(ok, ignore)`. (The earlier code targeted a
+    // dedupe_key column + onConflict that was never deployed, so this write silently failed and NO
+    // portal card was ever written — the bug this restores.)
+    await supabase.from("transparency_updates").insert(
       {
         brokerage_id:             ctx.brokerageId,
         contact_id:               contactId,
@@ -624,10 +613,8 @@ export async function writePortalUpdate(
         message:                  summary,
         is_visible_to_client:     true,
         metadata:                 ctx.metadata ?? {},
-        dedupe_key:               dedupeKey,
         created_at:               new Date().toISOString(),
       },
-      { onConflict: "contact_id,dedupe_key", ignoreDuplicates: true },
     ).then(() => null, () => null)
 
     // 3a-bis. Embed into contact_memory so the per-buyer/seller Managed Agents AND the

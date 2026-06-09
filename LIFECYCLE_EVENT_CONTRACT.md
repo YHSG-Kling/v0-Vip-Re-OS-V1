@@ -148,26 +148,41 @@ existing `listing_presentations` row).
 4. Fold the 9 dotted `lib/events` sites + the `lib/orchestrator` dispatcher onto the canonical spine
    (keep the orchestrator's chain engine; feed it from one emit path).
 
-### 6a. DISPATCHER FRAGMENTATION (HIGH PRIORITY — investigated 2026-05-29)
+### 6a. DISPATCHER FRAGMENTATION — ✅ RESOLVED (investigated 2026-05-29; resolved + verified 2026-06-09)
 
-`fanOutKernelEvent` (`lib/kernel/event-fanout.ts`) is the **canonical** "what happens when a kernel
-event fires" router — it runs THREE channels: (1) staff notifications via `processKernelEvent`,
-(2) `campaign_sequences` auto-enrollment (`enrollMatchingSequences`), (3) **client portal updates**
-(`transparency_updates` + `client_portal_messages` + contact notifications).
+`fanOutKernelEvent` (`lib/kernel/event-fanout.ts`) was the original "what happens when a kernel event
+fires" router, running THREE channels: (1) staff notifications, (2) `campaign_sequences` enrollment
+(`enrollMatchingSequences`), (3) **client portal updates** (`transparency_updates` +
+`client_portal_messages` + contact notifications). The 2026-05-29 drift was that only ~10 of ~98
+emitters called it; the rest called `processKernelEvent` directly and skipped enrollment + portal.
 
-**The drift:** only **~10 of ~98 emitters call `fanOutKernelEvent`**; the other **88 call
-`processKernelEvent` directly**, so they notify staff but **skip `campaign_sequences` enrollment AND
-the client portal**. This violates the business invariant "every meaningful state change reaches the
-contact's portal so the client always knows where the deal stands."
+**Resolution shipped (the "thin context-forwarder" option):** all three channels now live BEHIND the
+reactor, so every path converges:
 
-**Recommended resolution (the canonical model):**
-- `fanOutKernelEvent` is THE single dispatcher. Migrate the 88 direct `processKernelEvent` callers to
-  it (or move its three channels into `processKernelEvent` and make `fanOut` a thin context-forwarder),
-  resolving the contact via the shared `resolveContactFromEvent` so the portal + enrollment fan out
-  uniformly. `enrollMatchingSequences` is already idempotent (checks `sequence_enrollments`); add
-  portal-write idempotency before broadening coverage.
-- This is behavior-broadening for 88 sites (more sequence enrollments + portal writes) — intended, but
-  must be staged + tested, not flipped blind.
+```
+emit.ts ──► fanOutKernelEvent ──► processKernelEvent ──► dispatchKernelEvent
+~79 direct processKernelEvent callers ───────────────────┘        │
+                                                                  ├─ resolveEventContacts  (bare-caller resolution)
+                                                                  ├─ enrollMatchingSequences (drip)
+                                                                  └─ writePortalUpdate       (portal card + bell)
+```
+
+- `dispatchKernelEvent` (`lib/kernel/event-reactor.ts`) resolves the contact(s) from the entity via
+  the shared `resolveEventContacts` (`lib/kernel/resolve-event-contacts.ts` — transaction/offer/
+  listing/contact, returning BOTH represented sides) when the emitter didn't pass them, then fans out
+  enrollment + portal for EVERY known event. `fanOutKernelEvent` is now a thin forwarder.
+- Idempotency: `enrollMatchingSequences` skips active enrollments; `writePortalUpdate` uses the
+  app-layer SELECT (10-min window) + the DEPLOYED partial unique index `transparency_updates_dedupe_idx`
+  (`contact_id, update_type, md5(title), date_trunc('minute', created_at)`).
+- Regression-locked by `scripts/portal-fanout-simulator.ts` (`npm run test:portal-fanout`) +
+  live MCP verification (bare transaction emit → buyer + seller cards, idempotent).
+
+**Dedupe consolidation (2026-06-09):** two competing idempotency designs existed — `m105`
+(`dedupe_key` column + `(contact_id, dedupe_key)` index, which the writer targeted) and `1093`
+(the md5/minute index above). Only `1093` was ever deployed, so the writer's `dedupe_key`/`onConflict`
+upsert **failed silently and NO portal card was ever written**. Resolved by aligning the writer to a
+plain insert on the deployed `1093` index and **retiring `m105` to a no-op** so it can't reintroduce
+the column. `1093` is canonical; `m105` is dead.
 
 ### 6b. TWO CAMPAIGN-ENROLLMENT SYSTEMS (DECISION REQUIRED — investigated 2026-05-29)
 
