@@ -38,6 +38,13 @@ const TARGET_FIELDS = [
   { value: 'mailing_city', label: 'Mailing City' },
   { value: 'mailing_state', label: 'Mailing State' },
   { value: 'mailing_zip', label: 'Mailing Zip' },
+  // Classification columns — imported VALUES are auto-normalized to our canonical
+  // vocabulary (synonyms first, then one batched AI match); anything that can't be
+  // confidently matched is preserved in the contact's notes, never guessed.
+  { value: 'contact_type', label: 'Contact Type' },
+  { value: 'lead_temperature', label: 'Lead Temperature' },
+  { value: 'lender_status', label: 'Lender / Financing Status' },
+  { value: 'preferred_channel', label: 'Preferred Contact Method' },
   { value: 'tcpa_consent', label: 'TCPA Consent' },
 ]
 
@@ -70,6 +77,10 @@ function autoDetectMapping(headers: string[]): Record<string, string> {
     zip: 'zip_code', zipcode: 'zip_code', postalcode: 'zip_code', postal: 'zip_code',
     mailingaddress: 'mailing_address', mailingcity: 'mailing_city',
     mailingstate: 'mailing_state', mailingzip: 'mailing_zip', mailingpostalcode: 'mailing_zip',
+    contacttype: 'contact_type', leadtype: 'contact_type', type: 'contact_type', category: 'contact_type',
+    temperature: 'lead_temperature', leadtemperature: 'lead_temperature', rating: 'lead_temperature',
+    lenderstatus: 'lender_status', financing: 'lender_status', preapproval: 'lender_status',
+    preferredcontact: 'preferred_channel', preferredcontactmethod: 'preferred_channel', contactmethod: 'preferred_channel',
     tcpaconsent: 'tcpa_consent', consent: 'tcpa_consent', optins: 'tcpa_consent',
   }
   for (const h of headers) {

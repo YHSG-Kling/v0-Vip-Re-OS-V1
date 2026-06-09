@@ -85,6 +85,13 @@ export interface CaptureContactParams {
   /** Free-text notes; on merge these are APPENDED, never overwritten. The CSV import
    *  path routes every unmapped source column here (Data Steward: nothing dropped). */
   notes?: string | null
+  // Classification fields — values MUST already be canonical (the import path runs
+  // them through the Data Steward value normalizer; sanitizeEnumValue gates AI
+  // proposals so a hallucinated value can never arrive here). On merge these
+  // fill-if-empty only — an import never overwrites an existing classification.
+  contact_type?: string | null
+  lead_temperature?: string | null
+  lender_status?: string | null
   preferred_channel?: 'phone' | 'email' | 'sms' | null
   tcpa_consent: boolean
   tcpa_consent_date?: string | null
@@ -168,6 +175,9 @@ export async function captureContact(
         mailing_city: params.mailing_city ?? null,
         mailing_state: params.mailing_state ?? null,
         mailing_zip: params.mailing_zip ?? null,
+        ...(params.contact_type ? { contact_type: params.contact_type } : {}),
+        ...(params.lead_temperature ? { lead_temperature: params.lead_temperature } : {}),
+        ...(params.lender_status ? { lender_status: params.lender_status } : {}),
         preferred_channel: params.preferred_channel ?? 'email',
         source: params.source,
         tcpa_consent: params.tcpa_consent,
@@ -259,6 +269,14 @@ export async function captureContact(
     // from the incoming capture, and a REAL conflict (both present, different) is
     // preserved as a notes line — never silently dropped (the old `existing || incoming`
     // merge discarded the incoming value whenever the column was already set).
+    const MERGE_FIELDS = [
+      'first_name', 'last_name', 'email', 'phone', 'phone_secondary',
+      'address', 'city', 'state', 'zip_code',
+      'mailing_address', 'mailing_city', 'mailing_state', 'mailing_zip',
+      // Classification fields ride the same lossless semantics: fill-if-empty,
+      // conflicting imported classification preserved in notes, never overwritten.
+      'contact_type', 'lead_temperature', 'lender_status',
+    ] as const
     const { merged: stewardMerged, conflicts } = mergeIdentityFields(
       {
         first_name: existing?.first_name, last_name: existing?.last_name,
@@ -268,6 +286,8 @@ export async function captureContact(
         state: existing?.state, zip_code: existing?.zip_code,
         mailing_address: existing?.mailing_address, mailing_city: existing?.mailing_city,
         mailing_state: existing?.mailing_state, mailing_zip: existing?.mailing_zip,
+        contact_type: existing?.contact_type, lead_temperature: existing?.lead_temperature,
+        lender_status: existing?.lender_status,
       },
       {
         first_name: params.first_name, last_name: params.last_name,
@@ -277,7 +297,10 @@ export async function captureContact(
         state: params.state, zip_code: params.zip_code,
         mailing_address: params.mailing_address, mailing_city: params.mailing_city,
         mailing_state: params.mailing_state, mailing_zip: params.mailing_zip,
+        contact_type: params.contact_type, lead_temperature: params.lead_temperature,
+        lender_status: params.lender_status,
       },
+      MERGE_FIELDS,
     )
     const noteAdditions = [
       ...(conflicts.length ? [`[merge ${new Date().toISOString().slice(0, 10)} via ${params.source}] ${conflicts.join('; ')}`] : []),
@@ -362,6 +385,9 @@ export async function captureContact(
       mailing_state: params.mailing_state ?? null,
       mailing_zip: params.mailing_zip ?? null,
       ...(params.notes ? { notes: params.notes } : {}),
+      ...(params.contact_type ? { contact_type: params.contact_type } : {}),
+      ...(params.lead_temperature ? { lead_temperature: params.lead_temperature } : {}),
+      ...(params.lender_status ? { lender_status: params.lender_status } : {}),
       preferred_channel: params.preferred_channel ?? (params.tcpa_consent ? 'phone' : 'email'),
       source: params.source,
       tcpa_consent: params.tcpa_consent,

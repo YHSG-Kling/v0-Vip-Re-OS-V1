@@ -3,7 +3,9 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
-import { routeUnknownToNotes } from '@/lib/data-steward/field-steward'
+import { routeUnknownToNotes, CANONICAL_CONTACT_FIELDS } from '@/lib/data-steward/field-steward'
+import { normalizeRowEnums, NORMALIZABLE_ENUM_FIELDS } from '@/lib/data-steward/value-normalizer'
+import { aiMatchEnumValues, aiMatchKey } from '@/lib/data-steward/ai-value-matcher'
 import { KernelEvent } from '@/lib/kernel/events'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -23,6 +25,17 @@ const IMPORT_FIELD_ALIASES: Record<string, string> = {
   Zip: 'zip_code', zip: 'zip_code', 'Zip Code': 'zip_code', 'Postal Code': 'zip_code', postal_code: 'zip_code',
   'Mailing Address': 'mailing_address', 'Mailing City': 'mailing_city',
   'Mailing State': 'mailing_state', 'Mailing Zip': 'mailing_zip', 'Mailing Postal Code': 'mailing_zip',
+  // Enum-ish classification columns — VALUES are normalized to our canonical
+  // vocabulary by the Data Steward (tier-1 synonyms, then one batched AI match).
+  'Type': 'contact_type', 'Contact Type': 'contact_type', 'Lead Type': 'contact_type',
+  'Category': 'contact_type', contact_type: 'contact_type',
+  'Temperature': 'lead_temperature', 'Lead Temperature': 'lead_temperature',
+  'Rating': 'lead_temperature', 'Priority': 'lead_temperature', lead_temperature: 'lead_temperature',
+  'Financing': 'lender_status', 'Lender Status': 'lender_status',
+  'Pre-Approval': 'lender_status', 'Pre Approval Status': 'lender_status', lender_status: 'lender_status',
+  'Preferred Contact': 'preferred_channel', 'Preferred Contact Method': 'preferred_channel',
+  'Contact Method': 'preferred_channel', 'Best Way to Reach': 'preferred_channel',
+  preferred_channel: 'preferred_channel',
 }
 
 // ─── processImportRows ────────────────────────────────────────────────────────
@@ -62,23 +75,58 @@ export async function processImportRows(params: {
   let failed = 0
   const errorDetails: { row: number; error: string }[] = []
 
-  for (let i = 0; i < params.rows.length; i++) {
-    const r = params.rows[i]
+  // ── Pre-pass (Data Steward) ────────────────────────────────────────────────
+  // Per row: known/aliased canonical fields map to columns, EVERY unmapped source
+  // column is preserved in notes, and enum-ish values (contact_type, temperature,
+  // lender_status, preferred_channel) run tier-1 normalization (exact + synonyms).
+  // Whatever tier 1 can't resolve is collected across the WHOLE import for ONE
+  // batched AI match — never a call per row.
+  const prepared = params.rows.map((r) => {
+    const { tcpa_consent: _handledConsent, ...routable } = r
+    const { mapped, notes } = routeUnknownToNotes(routable, {
+      fields: [...CANONICAL_CONTACT_FIELDS, ...NORMALIZABLE_ENUM_FIELDS],
+      aliases: IMPORT_FIELD_ALIASES,
+    })
+    const enums = normalizeRowEnums(mapped)
+    return { r, mapped, notes, enums }
+  })
+
+  const allUnresolved = prepared.flatMap((p) => p.enums.unresolved)
+  // Tier 2 — one batched, vocabulary-validated AI call for the values tier 1 missed.
+  // Best-effort: on any failure this returns {} and the import proceeds (raw values
+  // stay preserved in notes — nothing blocks, nothing is guessed into a column).
+  const aiResolved = await aiMatchEnumValues(allUnresolved, {
+    brokerageId,
+    userId: agentUserId ?? undefined,
+  })
+
+  for (let i = 0; i < prepared.length; i++) {
+    const { r, mapped, notes, enums } = prepared[i]
     try {
-      // Data Steward ingress rule: known canonical fields map straight to columns,
-      // and EVERY unmapped source column is preserved in notes — an import (CSV from
-      // another CRM, portal export, …) may never drop a field on the floor. The
-      // previous version forwarded only name/email/phone and discarded the rest.
-      const { tcpa_consent: _handledConsent, ...routable } = r
-      const { mapped, notes } = routeUnknownToNotes(routable, {
-        aliases: IMPORT_FIELD_ALIASES,
-      })
       const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null)
       // CSV values are STRINGS — `!!"false"` is true, which would FABRICATE TCPA consent
       // for any non-empty cell. Only an explicit affirmative counts as imported consent.
       const importedConsent = typeof r.tcpa_consent === 'boolean'
         ? r.tcpa_consent
         : ['true', 'yes', 'y', '1'].includes(`${r.tcpa_consent ?? ''}`.trim().toLowerCase())
+
+      // Assemble this row's canonical enum values: tier-1 + tier-2(AI). Each
+      // transformed value gets an audit line; each still-unresolved value is kept
+      // in notes so future reporting/automation never silently loses it.
+      const enumValues: Record<string, string> = { ...enums.resolved }
+      const auditLines: string[] = [...enums.transforms]
+      for (const u of enums.unresolved) {
+        const ai = aiResolved[aiMatchKey(u.field, u.raw)]
+        if (ai) {
+          enumValues[u.field] = ai
+          auditLines.push(`${u.field}: imported "${u.raw}" → "${ai}" (AI-matched)`)
+        } else {
+          auditLines.push(`${u.field}: imported value "${u.raw}" did not match our definitions (preserved here)`)
+        }
+      }
+      const combinedNotes = [notes, ...auditLines].filter(Boolean).join('\n')
+      const channel = enumValues.preferred_channel as 'phone' | 'email' | 'sms' | undefined
+
       const { action } = await captureContact({
         brokerageId: brokerageId,
         ownerAgentId: importerAgentId,
@@ -96,7 +144,11 @@ export async function processImportRows(params: {
         mailing_city: str(mapped.mailing_city),
         mailing_state: str(mapped.mailing_state),
         mailing_zip: str(mapped.mailing_zip),
-        notes: notes || null,
+        contact_type: enumValues.contact_type ?? null,
+        lead_temperature: enumValues.lead_temperature ?? null,
+        lender_status: enumValues.lender_status ?? null,
+        preferred_channel: channel ?? null,
+        notes: combinedNotes || null,
         tcpa_consent: importedConsent,
         tcpa_consent_date: importedConsent ? new Date().toISOString() : null,
         rawPayload: r,

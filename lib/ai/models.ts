@@ -122,6 +122,7 @@ export const AI_TASK_ROUTING: Record<string, {
   compliance_check:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Quick fair housing / Them-First flag detection" },
   sentiment_analysis:        { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Score inbound message sentiment — runs on every reply" },
   tag_classification:        { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Auto-tag contacts from conversation — fast, high volume" },
+  import_value_normalization:{ model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Data Steward: map imported CRM values to canonical vocabulary — one batched call per import" },
   deal_health_check:         { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Transaction health score — runs every 4 hours on all deals" },
   onboarding_step_suggest:   { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Next onboarding action recommendation — internal only" },
   coaching_insight:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Agent performance nudge — internal, runs nightly" },

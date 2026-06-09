@@ -29,6 +29,12 @@ import {
   mergeIdentityFields,
   routeUnknownToNotes,
 } from "../lib/data-steward/field-steward"
+import {
+  ENUM_VOCABULARIES,
+  normalizeEnumValue,
+  normalizeRowEnums,
+  sanitizeEnumValue,
+} from "../lib/data-steward/value-normalizer"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let passed = 0, failed = 0
@@ -99,6 +105,55 @@ function testIngressRouting() {
   check("unmapped kv also returned structured", r.unmapped["Favorite Color"] === "teal")
   check("fully-mapped payload → empty notes", routeUnknownToNotes({ email: "a@x.com" }).notes === "")
   check("empty values are skipped, not noted", !routeUnknownToNotes({ junk: "" }).notes.includes("junk"))
+}
+
+function testValueNormalization() {
+  console.log("\n[Layer 1 · value normalization — imported values → canonical vocabulary]")
+
+  // Vocabulary integrity: the normalizer's canonical lists must be EXACTLY what the
+  // live check constraints allow (copied from pg_constraint on 2026-06-09). If a
+  // migration changes a constraint, this fails before imports start writing
+  // values the DB rejects — or worse, values reporting doesn't recognize.
+  const LIVE_CONSTRAINTS: Record<string, string[]> = {
+    contact_type: ['lead', 'prospect', 'client', 'lifetime', 'lifetime_customer', 'past_client',
+      'sphere', 'vendor', 'referral_partner', 'investor', 'buyer', 'seller', 'both', 'other'],
+    lead_temperature: ['hot', 'warm', 'cold'],
+    lender_status: ['cash', 'pre_approved', 'needs_pre_approval', 'unknown'],
+    preferred_channel: ['phone', 'email', 'sms'], // TS contract (captureContact)
+  }
+  for (const [field, allowed] of Object.entries(LIVE_CONSTRAINTS)) {
+    const vocab = ENUM_VOCABULARIES[field]
+    const outOfBounds = vocab.canonical.filter((v) => !allowed.includes(v))
+    check(`${field}: vocabulary ⊆ live constraint`, outOfBounds.length === 0, outOfBounds.join(", "))
+    const synTargetsOk = Object.values(vocab.synonyms).every((t) => vocab.canonical.includes(t))
+    check(`${field}: every synonym maps to a canonical value`, synTargetsOk)
+  }
+
+  // Tier-1 behavior — the messy values another CRM actually exports.
+  check('"SELLER" → seller (case)', normalizeEnumValue("contact_type", "SELLER").value === "seller")
+  check('"Hot Lead!" → hot (synonym + punctuation)', normalizeEnumValue("lead_temperature", "Hot Lead!").value === "hot")
+  check('"B" → warm (letter grading)', normalizeEnumValue("lead_temperature", "B").value === "warm")
+  check('"Txt Only" → sms', normalizeEnumValue("preferred_channel", "Txt Only").value === "sms")
+  check('"Pre-Approved" → pre_approved', normalizeEnumValue("lender_status", "Pre-Approved").value === "pre_approved")
+  check('"SOI" → sphere', normalizeEnumValue("contact_type", "SOI").value === "sphere")
+  check('nonsense → unresolved (never guesses)', normalizeEnumValue("contact_type", "Galactic Overlord").value === null)
+  check('empty → unresolved', normalizeEnumValue("contact_type", "  ").value === null)
+
+  // AI-output gate — a hallucinated value can never reach a column.
+  check("sanitize accepts literal canonical", sanitizeEnumValue("lead_temperature", "hot") === "hot")
+  check("sanitize rejects off-vocabulary AI proposal", sanitizeEnumValue("lead_temperature", "scorching") === null)
+  check("sanitize rejects non-string", sanitizeEnumValue("lead_temperature", 42 as any) === null)
+
+  // Row-level partitioning: resolved vs transform-audit vs unresolved.
+  const row = normalizeRowEnums({
+    contact_type: "Home Buyer", lead_temperature: "hot",
+    lender_status: "Mystery Money", preferred_channel: "text",
+  })
+  check("row: synonyms resolved", row.resolved.contact_type === "buyer" && row.resolved.preferred_channel === "sms")
+  check("row: exact match has NO transform line", !row.transforms.some((t) => t.startsWith("lead_temperature")))
+  check("row: transformed values get audit lines", row.transforms.some((t) => t.includes('"Home Buyer" → "buyer"')))
+  check("row: unresolved collected for the batched AI pass",
+    row.unresolved.length === 1 && row.unresolved[0].field === "lender_status")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +251,7 @@ async function main() {
   testCanonicalFieldSet()
   testLosslessMerge()
   testIngressRouting()
+  testValueNormalization()
   await testLiveImportAndMerge()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
