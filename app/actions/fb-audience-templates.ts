@@ -36,7 +36,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Qualified Leads — Retargeting",
     description: "Contacts the AI ISA has qualified but who haven't yet booked an appointment. Reach them where they live online with a soft re-engagement ad.",
     category: "remarketing",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "qualified_leads",
       filters: { days_lookback: 60 },
@@ -50,7 +50,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Active Buyers in Pipeline",
     description: "Buyers in your CRM who have engaged in the last 30 days but haven't gone under contract. Show them new listings before they hit their inbox.",
     category: "remarketing",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "active_buyers",
       filters: { days_lookback: 30 },
@@ -64,7 +64,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Open House Attendees",
     description: "Everyone who checked in at one of your open houses. Perfect for similar-property promotion and reactivation.",
     category: "remarketing",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "open_house_attendees",
       filters: { days_lookback: 90 },
@@ -110,7 +110,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Exclude — Active Pipeline",
     description: "USE AS EXCLUSION on every retargeting/lookalike campaign. Prevents your ads from spending budget on contacts you're already in conversation with.",
     category: "exclusion",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "exclusion_active_pipeline",
       filters: {},
@@ -124,7 +124,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Exclude — Lifetime Customers",
     description: "USE AS EXCLUSION on prospecting ads — your past clients shouldn't see ads asking them to 'find an agent.' Suppresses them from cold-acquisition campaigns.",
     category: "exclusion",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "lifetime_customers",
       filters: {},
@@ -140,7 +140,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Lifetime Customers — Direct",
     description: "Reach your past clients with anniversary content, market updates, and referral asks. They've already converted; this is relationship-keeping.",
     category: "lifecycle",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "lifetime_customers",
       filters: { min_purchase_age_months: 0 },
@@ -154,7 +154,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "High-Engagement Contacts",
     description: "Contacts whose engagement score is 70+. They're paying attention — invest your warmest content here.",
     category: "lifecycle",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "high_engagement_contacts",
       filters: { min_engagement_score: 70 },
@@ -168,7 +168,7 @@ const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     name: "Investors",
     description: "Investor-type contacts only. ROI-focused content, multi-family deals, off-market opportunities.",
     category: "lifecycle",
-    audienceType: "contact_list",
+    audienceType: "custom",
     sourceRule: {
       type: "investor_contacts",
       filters: {},

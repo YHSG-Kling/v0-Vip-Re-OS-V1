@@ -30,6 +30,8 @@ export type ProviderName =
   | "zillow"
   | "realtor_com"
   | "opcity"
+  | "meta_ads"
+  | "google_ads"
 
 // ─── MAIN TEST FUNCTION ───────────────────────────────────────────────────────
 
@@ -466,8 +468,22 @@ export const PROVIDER_METADATA: Record<ProviderName, {
     options?: Array<{ value: string; label: string }>
   }>
   isOAuth?: boolean
-  oauthProvider?: "google" | "microsoft" | "docusign" | "quickbooks" | "xero"
+  oauthProvider?: "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "meta_ads" | "google_ads"
 }> = {
+  meta_ads: {
+    displayName: "Meta Ads (Facebook & Instagram)",
+    providerType: "ads",
+    credentialFields: [],
+    isOAuth: true,
+    oauthProvider: "meta_ads",
+  },
+  google_ads: {
+    displayName: "Google Ads",
+    providerType: "ads",
+    credentialFields: [],
+    isOAuth: true,
+    oauthProvider: "google_ads",
+  },
   twilio: {
     displayName: "Twilio",
     providerType: "sms",

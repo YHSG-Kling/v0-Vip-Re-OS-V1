@@ -76,7 +76,7 @@ async function testLive() {
   const { approveContentSource } = await import("../lib/kernel/approval-sources")
   const svc = createServiceClient()
   const TAG = `__adsim_${Date.now()}__`
-  const campaignIds: string[] = []; const actionIds: string[] = []; const creativeIds: string[] = []
+  const campaignIds: string[] = []; const actionIds: string[] = []; const creativeIds: string[] = []; let connId: string | null = null
   try {
     const { data: brk } = await svc.from("brokerages").select("id").limit(1).single()
     if (!brk) { console.log("  ⏭  Skipped — no brokerage."); return }
@@ -116,12 +116,29 @@ async function testLive() {
     const r1 = await executeAdManagerAction(launchNoCreative, userId)
     check("launch REFUSED with no approved creative", r1.status === "skipped")
 
-    // ── Launch succeeds with an approved creative ──
+    // ── Launch is REFUSED when the ad platform isn't connected ──
     const camp = await seedCampaign("approved", 100, "Launchable")
     await seedCreative(camp, "approved")
+    // ensure no stray test connection, then prove launch is blocked
+    await svc.from("platform_credentials").delete().eq("brokerage_id", brokerageId).eq("platform", "facebook").like("account_id", `${TAG}%`)
+    const { data: existingFb } = await svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("platform", "facebook").eq("is_active", true).maybeSingle()
+    if (!existingFb) {
+      const launchUnconnected = await propose("launch_ad_campaign", { campaign_id: camp })
+      const r0 = await executeAdManagerAction(launchUnconnected, userId)
+      check("launch REFUSED when ad account not connected", r0.status === "skipped")
+    } else {
+      check("launch REFUSED when ad account not connected (skipped — brokerage already connected)", true)
+    }
+
+    // ── Connect the ad account, then launch succeeds ──
+    const { data: conn } = await svc.from("platform_credentials").insert({
+      brokerage_id: brokerageId, owner_type: "brokerage", owner_id: brokerageId, platform: "facebook",
+      access_token: "test-token", account_id: `${TAG}act_123`, is_active: true,
+    }).select("id").maybeSingle()
+    connId = (conn as { id: string } | null)?.id ?? null
     const launch = await propose("launch_ad_campaign", { campaign_id: camp })
     const r2 = await executeAdManagerAction(launch, userId)
-    check("launch succeeds with an approved creative", r2.status === "succeeded")
+    check("launch succeeds once the ad account is connected", r2.status === "succeeded", JSON.stringify(r2.result))
     const { data: c2 } = await svc.from("ad_campaigns").select("status").eq("id", camp).single()
     check("campaign flipped to launching", (c2 as { status: string }).status === "launching")
 
@@ -171,6 +188,7 @@ async function testLive() {
     const { data: dc } = await svc.from("ad_creative_variations").select("approval_status").eq("id", draftCreative).single()
     check("creative now approved", (dc as { approval_status: string }).approval_status === "approved")
   } finally {
+    if (connId) { try { await svc.from("platform_credentials").delete().eq("id", connId) } catch {} }
     for (const id of actionIds) { try { await svc.from("ad_manager_actions").delete().eq("id", id) } catch {} }
     for (const id of creativeIds) { try { await svc.from("ad_creative_variations").delete().eq("id", id) } catch {} }
     for (const id of campaignIds) { try { await svc.from("ad_performance").delete().eq("ad_campaign_id", id) } catch {}; try { await svc.from("ad_campaigns").delete().eq("id", id) } catch {} }

@@ -18,7 +18,7 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "linkedin"
+type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "linkedin" | "meta_ads" | "google_ads"
 
 interface OAuthConfig {
   clientIdEnv: string
@@ -94,6 +94,26 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
     // w_member_social: publish posts; r_basicprofile + r_emailaddress: identity
     scopes: ["r_basicprofile", "r_emailaddress", "w_member_social"],
+  },
+  // Meta ADS — reuses the Facebook app; ads scopes let the connector manage Custom
+  // Audiences + read Insights. Distinct from the social 'meta' (page posting) flow,
+  // and stored under platform='facebook' (what the ad connector loads).
+  meta_ads: {
+    clientIdEnv: "FACEBOOK_APP_ID",
+    clientSecretEnv: "FACEBOOK_APP_SECRET",
+    authUrl: "https://www.facebook.com/v19.0/dialog/oauth",
+    tokenUrl: "https://graph.facebook.com/v19.0/oauth/access_token",
+    scopes: ["business_management", "ads_management", "ads_read"],
+  },
+  // Google ADS — Customer Match + reporting. Needs GOOGLE_ADS_DEVELOPER_TOKEN (env,
+  // injected into config below). Stored under platform='google'.
+  google_ads: {
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+    authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    scopes: ["https://www.googleapis.com/auth/adwords"],
+    additionalParams: { access_type: "offline", prompt: "consent" },
   },
 }
 
@@ -240,7 +260,25 @@ export async function GET(
       const storedPlatform =
         oauthProvider === "google" ? "gmail"
         : oauthProvider === "microsoft" ? "outlook"
+        : oauthProvider === "meta_ads" ? "facebook"     // what the ad connector loads
+        : oauthProvider === "google_ads" ? "google"
         : provider
+
+      // Ad-account connections: resolve the ad account id (Meta) + carry the Google
+      // Ads developer token so loadConnectorCredential returns a usable credential.
+      let adAccountId: string | null = null
+      let adConfigExtra: Record<string, unknown> = {}
+      if (oauthProvider === "meta_ads") {
+        try {
+          const aa = await callConnector<{ data?: Array<{ account_id?: string }> }>({
+            connector: "meta-adaccounts", baseUrl: "https://graph.facebook.com", path: "/v19.0/me/adaccounts?fields=account_id",
+            method: "GET", auth: { style: "bearer", token: tokens.access_token },
+          })
+          if (aa.ok) adAccountId = aa.data?.data?.[0]?.account_id ?? null
+        } catch {}
+      } else if (oauthProvider === "google_ads") {
+        adConfigExtra = { developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? null }
+      }
 
       // For Google/Microsoft, resolve the connected mailbox address up front so it is stored on the
       // owner-scoped row (used as the From address) AND mirrored to the agent row below.
@@ -278,6 +316,7 @@ export async function GET(
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
+        ...(adAccountId ? { account_id: adAccountId } : {}),
         config: {
           access_token: tokens.access_token,
           refresh_token: tokens.refresh_token,
@@ -286,6 +325,7 @@ export async function GET(
           ...(connectedEmail ? { email: connectedEmail } : {}),
           ...(tokens.realmId && { realm_id: tokens.realmId }),
           ...(tokens.x_refresh_token_expires_in && { refresh_token_expires_in: tokens.x_refresh_token_expires_in }),
+          ...adConfigExtra,
         },
         token_expires_at: expiresAt,
         is_active: true,

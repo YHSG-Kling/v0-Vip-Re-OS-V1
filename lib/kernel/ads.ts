@@ -31,14 +31,11 @@ export interface AdsActorContext {
   userId: string
 }
 
-// Union of the two audience-type vocabularies that drifted apart: the generic
-// funnel types (used by fb-audience-templates + the UI) and the real-estate
-// segment types (the original DB CHECK). m187 widens the DB CHECK to this same
-// set. NOTE: still two overlapping vocabularies — flagged for a follow-up
-// single-vocabulary consolidation (website_visitors≈listing_visitors, etc.).
-// Lookalike is the lookalike_seed_audience_id relationship, not a sync routing key.
+// Single consolidated audience_type vocabulary (m188). 'contact_list' was a
+// duplicate of 'custom' and was merged away. Lookalike is a type AND a relationship
+// (lookalike_seed_audience_id); the sync routing keys off the column, not this.
 export type AudienceType =
-  | "contact_list" | "website_visitors" | "engagement" | "lookalike" | "custom"
+  | "custom" | "lookalike" | "website_visitors" | "engagement"
   | "listing_visitors" | "video_viewers" | "newsletter_openers" | "portal_visitors" | "persona_segment"
 
 export type AdPlatform = "facebook" | "instagram" | "google" | "linkedin" | "tiktok"

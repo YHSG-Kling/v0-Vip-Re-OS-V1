@@ -169,8 +169,8 @@ async function runAdHandler(
 ): Promise<AdActionResult> {
   const campaignId = String(input.campaign_id ?? "")
   if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
-  const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget").eq("id", campaignId).maybeSingle()
-  const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null } | null
+  const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget, platform").eq("id", campaignId).maybeSingle()
+  const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null; platform: string } | null
   if (!campaign) return { status: "failed", result: { error: "campaign not found" } }
   if (campaign.brokerage_id !== brokerageId) return { status: "failed", result: { error: "campaign outside brokerage" } }
   const currentDaily = Number(campaign.daily_budget ?? 0)
@@ -182,6 +182,11 @@ async function runAdHandler(
       const { count } = await svc.from("ad_creative_variations").select("id", { count: "exact", head: true })
         .eq("ad_campaign_id", campaignId).eq("approval_status", "approved")
       if ((count ?? 0) === 0) return { status: "skipped", result: { reason: "no approved creative — cannot launch" } }
+      // Provider connection required before spend (business rule #9): no fake launch
+      // on a platform with no connected ad account.
+      const { isAdPlatformConnected } = await import("@/lib/ads/connection-status")
+      const conn = await isAdPlatformConnected(brokerageId, campaign.platform, svc)
+      if (!conn.connected) return { status: "skipped", result: { reason: conn.reason ?? "ad platform not connected" } }
       // Hard cap: never launch a campaign whose daily budget exceeds the ceiling.
       if (currentDaily > MAX_AD_DAILY_BUDGET_USD) return { status: "failed", result: { error: `daily budget $${currentDaily} exceeds cap $${MAX_AD_DAILY_BUDGET_USD}` } }
       await svc.from("ad_campaigns").update({ status: "launching" }).eq("id", campaignId)
