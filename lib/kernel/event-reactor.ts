@@ -400,6 +400,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
               const { produceListingAdCampaign } = await import("@/lib/ads/listing-ad-producer")
               void produceListingAdCampaign(params.brokerageId, params.entityId, "just_sold", svc)
             } catch { /* auto-producer is best-effort */ }
+            // Wave 50 — deal-closed AUTO-handoff: propose a review/testimonial request to
+            // the buyer + seller into the client_message gate (consent-enforced on send).
+            try {
+              const { produceClosingTestimonials } = await import("@/lib/agents/closing-testimonial-producer")
+              void produceClosingTestimonials(params.brokerageId, params.entityId, svc)
+            } catch { /* auto-producer is best-effort */ }
           }
         }
       }
