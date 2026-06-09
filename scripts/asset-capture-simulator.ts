@@ -93,3 +93,5 @@ async function main() {
   console.log(" ✅ Render → reusable marketing asset verified (idempotent, cleaned up)")
 }
 main().catch((e) => { console.error(e); process.exit(1) })
+
+export {}

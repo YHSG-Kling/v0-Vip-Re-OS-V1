@@ -22,6 +22,8 @@ const QUEUE_BADGE: Record<string, string> = {
   ads:           "bg-rose-100 text-rose-800",
   ad_creative:   "bg-pink-100 text-pink-800",
   client_message:"bg-indigo-100 text-indigo-800",
+  predictive_listing:"bg-teal-100 text-teal-800",
+  transaction_task:  "bg-red-100 text-red-800",
 }
 const QUEUE_LABEL: Record<string, string> = {
   marketing:     "Marketing Agent",
@@ -32,6 +34,8 @@ const QUEUE_LABEL: Record<string, string> = {
   ads:           "Ads Manager",
   ad_creative:   "Ad Creative",
   client_message:"Client Update",
+  predictive_listing:"Predicted Seller",
+  transaction_task:  "Deal Task",
 }
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
@@ -305,6 +309,38 @@ function AdCreativePreview({ input }: { input: Record<string, unknown> }) {
   )
 }
 
+/** Predicted-seller auto-touch: the outreach to a likely-to-list homeowner. */
+function PredictiveTouchPreview({ input }: { input: Record<string, unknown> }) {
+  const subject = input.subject as string | null, body = input.body as string | null
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Review before it reaches the homeowner</span>
+        <Badge className="bg-teal-100 text-teal-800">{String(input.channel ?? "outreach")} · PLS {String(input.pls_score ?? "?")}</Badge>
+      </div>
+      {!!subject && <div className="text-sm font-medium">{subject}</div>}
+      {!!body ? <p className="text-sm whitespace-pre-wrap">{body}</p> : <p className="text-xs text-muted-foreground italic">Message is AI-drafted at send time; approving queues it (compliance-checked before it goes out).</p>}
+    </div>
+  )
+}
+/** Deal at-risk task: an item the agent must resolve to keep the transaction on track. */
+function TransactionTaskPreview({ input }: { input: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-1">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>At-risk on a transaction</span>
+        {!!input.severity && <Badge className="bg-red-100 text-red-800">{String(input.severity)}</Badge>}
+      </div>
+      {!!input.headline && <div className="text-sm font-medium">{String(input.headline)}</div>}
+      {!!input.detail && <p className="text-sm whitespace-pre-wrap">{String(input.detail)}</p>}
+      <div className="text-[11px] text-muted-foreground">
+        {!!input.suggested_recipient && <>Recipient: {String(input.suggested_recipient)} · </>}
+        {!!input.due_date && <>Due {new Date(String(input.due_date)).toLocaleDateString()}</>}
+      </div>
+    </div>
+  )
+}
+
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -345,6 +381,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "direct_mail" && <DirectMailPreview input={action.actionInput} />}
           {action.queue === "ads" && <AdActionPreview input={action.actionInput} actionType={action.actionType} />}
           {action.queue === "ad_creative" && <AdCreativePreview input={action.actionInput} />}
+          {action.queue === "predictive_listing" && <PredictiveTouchPreview input={action.actionInput} />}
+          {action.queue === "transaction_task" && <TransactionTaskPreview input={action.actionInput} />}
           {isClientMsg && (
             <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
               <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -360,8 +398,8 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
         <div className="flex gap-2 shrink-0">
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>Reject</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : "Approve"}</Button>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : "Reject"}</Button>
+          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "predictive_listing" ? "Approve & Queue" : "Approve"}</Button>
         </div>
       </div>
     </Card>

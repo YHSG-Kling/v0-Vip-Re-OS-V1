@@ -21,7 +21,7 @@ import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative"
+export type ContentQueue = "social" | "newsletter" | "direct_mail" | "ad_creative" | "predictive_listing" | "transaction_task"
 
 /** Mirrors CommandCenterAction (kept structural to avoid a circular import). */
 export interface ContentApprovalAction {
@@ -39,7 +39,7 @@ export interface ContentApprovalAction {
 
 interface ContentSource {
   queue:     ContentQueue
-  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations"
+  table:     "social_posts" | "newsletter_campaigns" | "direct_mail_campaigns" | "ad_creative_variations" | "predictive_listing_actions" | "transaction_pending_actions"
   select:    string
   /** Apply the "awaiting a human" filter for this table. */
   pending:   (q: any) => any
@@ -152,6 +152,59 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     approve: () => ({ approval_status: "approved" }),
     approveGuard: (q) => q.in("approval_status", ["draft", "pending_review"]),
     reject: () => ({ approval_status: "rejected" }),
+  },
+
+  // ── Predictive-seller auto-touch (PLS) — surfaced into the ONE Command Center.
+  // Distinct subsystem (system-generated likely-to-list outreach), but its review
+  // belongs on the same surface as every other client-facing approval. Approve →
+  // 'queued' (the predictive-listing send cron ships it under compliance);
+  // reject → 'cancelled'. (Its own card UI still works; this unifies the review.)
+  predictive_listing: {
+    queue: "predictive_listing",
+    table: "predictive_listing_actions",
+    select: "id, brokerage_id, contact_id, action_type, channel, triggering_pls_score, message_subject, message_body, scheduled_send_at, status, created_at",
+    pending: (q) => q.eq("status", "pending_review"),
+    toAction: (r, now) => {
+      const sla = evaluateApprovalSla(r.created_at ?? null, now, { deadlineIso: (r.scheduled_send_at as string | null) ?? null })
+      return {
+        id: r.id, queue: "predictive_listing", brokerageId: r.brokerage_id, actionType: "approve_predictive_touch",
+        rationale: `Predicted-seller ${r.channel ?? "outreach"} (PLS ${r.triggering_pls_score ?? "?"}) — review before it reaches the homeowner.`,
+        actionInput: {
+          contact_id: r.contact_id ?? null, channel: r.channel ?? null, pls_score: r.triggering_pls_score ?? null,
+          subject: r.message_subject ?? null, body: r.message_body ?? null, scheduled_send_at: r.scheduled_send_at ?? null,
+        },
+        status: "proposed", proposedAt: r.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      }
+    },
+    approve: (userId) => ({ status: "queued", reviewed_by_user_id: userId, reviewed_at: nowIso() }),
+    approveGuard: (q) => q.eq("status", "pending_review"),
+    reject: (userId) => ({ status: "cancelled", cancelled_by_user_id: userId, cancelled_at: nowIso(), cancel_reason: "rejected in Command Center" }),
+  },
+
+  // ── Transaction at-risk TASKS (closing concierge) — surfaced as a task queue.
+  // Not approve-to-send: it's a deal to-do. Approve = "Resolved"; reject = "Dismiss".
+  transaction_task: {
+    queue: "transaction_task",
+    table: "transaction_pending_actions",
+    select: "id, brokerage_id, transaction_id, action_type, severity, due_date, headline, detail, suggested_recipient, status, created_at",
+    pending: (q) => q.eq("status", "open"),
+    toAction: (r, now) => {
+      const sla = evaluateApprovalSla(r.created_at ?? null, now, { deadlineIso: (r.due_date as string | null) ?? null })
+      // Severity drives urgency too — urgent/high escalate immediately.
+      const level = (r.severity === "urgent" || r.severity === "high") ? "breached" : sla.level
+      return {
+        id: r.id, queue: "transaction_task", brokerageId: r.brokerage_id, actionType: "resolve_transaction_task",
+        rationale: `${r.headline ?? r.action_type ?? "Deal task"}${r.severity ? ` · ${r.severity}` : ""} — at-risk item on a transaction.`,
+        actionInput: {
+          transaction_id: r.transaction_id ?? null, action_type: r.action_type ?? null, severity: r.severity ?? null,
+          headline: r.headline ?? null, detail: r.detail ?? null, suggested_recipient: r.suggested_recipient ?? null, due_date: r.due_date ?? null,
+        },
+        status: "proposed", proposedAt: r.created_at ?? null, ageHours: sla.ageHours, slaLevel: level as ApprovalSlaLevel,
+      }
+    },
+    approve: (userId) => ({ status: "resolved", resolved_by: userId, resolved_at: nowIso() }),
+    approveGuard: (q) => q.eq("status", "open"),
+    reject: (userId) => ({ status: "dismissed", resolved_by: userId, resolved_at: nowIso() }),
   },
 }
 

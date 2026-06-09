@@ -91,3 +91,5 @@ async function main() {
   console.log(" ✅ Deal-critical managers governed — no client update sends without human approval")
 }
 main().catch((e) => { console.error(e); process.exit(1) })
+
+export {}
