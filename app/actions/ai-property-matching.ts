@@ -347,6 +347,15 @@ export async function notifyNewMatches(params: {
       metadata: { match_count: newMatches.length, threshold },
     })
 
+    // Wave 59 — buyer property-match reel AUTO-handoff (deliverable-gated): produce a
+    // personalized "homes matching your search" video into the render queue. Best-effort
+    // + idempotent (one reel per buyer per week); the finished reel is captured to the
+    // marketing library for the agent to send.
+    try {
+      const { produceBuyerMatchReel } = await import("@/lib/agents/buyer-match-reel-producer")
+      void produceBuyerMatchReel(ctx.brokerageId, params.contactId, supabase)
+    } catch { /* auto-producer is best-effort */ }
+
     return { success: true, notified: true, matchCount: newMatches.length, notification }
   } catch (error) {
     return handleError(error, "notifyNewMatches")
