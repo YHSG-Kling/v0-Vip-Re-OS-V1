@@ -10,13 +10,13 @@
  * consent-enforced per channel). Zero agent effort; idempotent per buyer.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { sanitizeClientFacingField } from "@/lib/compliance/client-text-guard"
+import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 
 export interface TourFollowUpResult { proposed: number }
 
 /** Pure: the buyer-safe "you've toured — here's what's next" copy. Fair-Housing clean. */
 export function buildTourFollowUpMessage(agentName: string): { subject: string; body: string } {
-  const safeName = sanitizeClientFacingField(agentName, 60) ?? "Your Agent"
+  const safeName = sanitizeProperNoun(agentName, 60) ?? "Your Agent"
   return {
     subject: "Now that you've toured — your next steps",
     body: `Great seeing the homes with you! When you're ready, here's what we can do next: revisit a favorite, line up a few more tours, or pull comparable sales and talk strategy on an offer. Just reply with what feels right and I'll set it up. — ${safeName}`,
