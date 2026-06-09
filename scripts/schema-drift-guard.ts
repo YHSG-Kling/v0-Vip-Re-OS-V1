@@ -183,7 +183,7 @@ function scanFile(file: string, src: string): Violation[] {
     const after = src.slice(m.index)
     const nextFrom = after.slice(1).search(/\.from\(/)
     const chain = nextFrom >= 0 ? after.slice(0, nextFrom + 1) : after
-    const opM = chain.match(/\.(insert|upsert)\(\s*\{/)
+    const opM = chain.match(/\.(insert|upsert|update)\(\s*\{/)
     if (opM && opM.index != null) {
       const braceOpen = m.index + (opM.index + opM[0].length - 1)
       const braceClose = matchBrace(src, braceOpen)
