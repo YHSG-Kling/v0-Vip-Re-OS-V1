@@ -25,22 +25,23 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 function testPure() {
-  console.log("\n[Layer 1 · buildBuyerMatchReelProps]")
+  console.log("\n[Layer 1 · buildBuyerMatchReelProps — resolved facts from EITHER source]")
   const props = buildBuyerMatchReelProps(
     [
-      { property_id: "1", match_score: 95, listings: { address: "12 Oak St", city: "Maple Grove", state: "MN", list_price: 485000, bedrooms: 3, bathrooms: 2 } },
-      { property_id: "2", match_score: 90, listings: { address: "9 Elm Ave", city: "Maple Grove", state: "MN", list_price: 525000, bedrooms: 4, bathrooms: 3 } },
+      { id: "1", address: "12 Oak St", city: "Maple Grove", state: "MN", price: 485000, bedrooms: 3, bathrooms: 2, photoUrl: "https://cdn/x.jpg", source: "listing" },
+      { id: "2", address: "9 Elm Ave", city: "Maple Grove", state: "MN", price: 525000, bedrooms: 4, bathrooms: 3, photoUrl: null, source: "idx" },
     ],
     { agentName: "Dana Kling", agentPhone: "(555) 555-1212", brokerageName: "Kling Realty" },
   ) as any
-  check("builds props with one card per match", Array.isArray(props?.examples) && props.examples.length === 2)
+  check("builds props with one card per resolved property", Array.isArray(props?.examples) && props.examples.length === 2)
   check("formats price as currency", props.examples[0].price === "$485,000")
-  check("weaves the area from the listing city", props.areaName === "Maple Grove")
+  check("carries the photo when present (external MLS snapshot)", props.examples[0].photoUrl === "https://cdn/x.jpg")
+  check("weaves the area from the property city", props.areaName === "Maple Grove")
   check("buyer-match framing headline (not a generic affordability band)", /matching your search/i.test(props.monthlyHeadline))
   check("carries agent + brokerage for the footer", props.agentName === "Dana Kling" && props.brand.brokerageName === "Kling Realty")
   check("Fair-Housing clean labels", !/famil|kids|perfect for|safe neighborhood/i.test(JSON.stringify(props)))
-  const none = buildBuyerMatchReelProps([{ property_id: null, match_score: 90, listings: null }], { agentName: "X", agentPhone: "", brokerageName: "Y" })
-  check("no renderable matches → null (no empty reel)", none === null)
+  const none = buildBuyerMatchReelProps([{ id: "x", address: null, city: null, state: null, price: null, bedrooms: null, bathrooms: null, photoUrl: null, source: "saved" }], { agentName: "X", agentPhone: "", brokerageName: "Y" })
+  check("no renderable facts → null (no empty reel)", none === null)
 }
 
 async function testLive() {
@@ -53,7 +54,7 @@ async function testLive() {
   const { produceBuyerMatchReel } = await import("../lib/agents/buyer-match-reel-producer")
   const svc = createServiceClient()
   const TAG = `__bmr_${Date.now()}__`
-  let buyerId: string | null = null, listingId: string | null = null
+  let buyerId: string | null = null, listingId: string | null = null, savedId: string | null = null
   try {
     const { data: brk } = await svc.from("brokerages").select("id").limit(1).single()
     if (!brk) { console.log("  ⏭  Skipped — no brokerage."); return }
@@ -73,6 +74,20 @@ async function testLive() {
     await svc.from("property_matches").insert({
       brokerage_id: brokerageId, contact_id: buyerId, property_id: listingId, match_score: 95, ai_generated: true,
     })
+    // An EXTERNAL MLS (RentCast/IDX) match — cached in saved_properties, referenced by its uuid.
+    const { data: anyUser } = await svc.from("users").select("id").limit(1).maybeSingle()
+    const userId = (anyUser as { id: string } | null)?.id ?? null
+    const { data: sp } = userId ? await svc.from("saved_properties").insert({
+      brokerage_id: brokerageId, contact_id: buyerId, user_id: userId, source: "idx", external_property_id: `${TAG}MLS1`,
+      property_address: `${TAG} 9 Elm Ave`, city: "Maple Grove", state: "MN", list_price: 525000,
+      bedrooms: 4, bathrooms: 3, primary_photo_url: "https://cdn.example/elm.jpg",
+    }).select("id").maybeSingle() : { data: null }
+    savedId = (sp as { id: string } | null)?.id ?? null
+    if (savedId) {
+      await svc.from("property_matches").insert({
+        brokerage_id: brokerageId, contact_id: buyerId, property_id: savedId, match_score: 92, ai_generated: true,
+      })
+    }
 
     const r = await produceBuyerMatchReel(brokerageId, buyerId, svc)
     check("fresh matches → enqueues a reel render", r.queued === true && !!r.renderId, r.reason)
@@ -82,7 +97,12 @@ async function testLive() {
       .eq("id", r.renderId!).maybeSingle()
     const rr = render as any
     check("queued render uses AffordabilitySnapshotReel, scoped to the contact", rr?.composition_id === "AffordabilitySnapshotReel" && rr?.render_status === "queued" && rr?.entity_type === "contact" && rr?.entity_id === buyerId)
-    check("inputProps carry the matched listing card", Array.isArray(rr?.input_props?.examples) && rr.input_props.examples.length === 1 && /Oak St/.test(JSON.stringify(rr.input_props.examples)))
+    const examplesJson = JSON.stringify(rr?.input_props?.examples ?? [])
+    check("inputProps carry the OUR-LISTING match card", /Oak St/.test(examplesJson))
+    if (savedId) {
+      check("inputProps ALSO carry the EXTERNAL MLS match (resolved from saved_properties)", /Elm Ave/.test(examplesJson))
+      check("external MLS card carries its photo", /elm\.jpg/.test(examplesJson))
+    }
 
     const r2 = await produceBuyerMatchReel(brokerageId, buyerId, svc)
     check("idempotent within the weekly cooldown (no duplicate reel)", r2.queued === false, r2.reason)
@@ -90,6 +110,7 @@ async function testLive() {
     if (buyerId) {
       try { await svc.from("remotion_composition_renders").delete().eq("entity_id", buyerId).eq("composition_id", "AffordabilitySnapshotReel") } catch {}
       try { await svc.from("property_matches").delete().eq("contact_id", buyerId) } catch {}
+      try { await svc.from("saved_properties").delete().eq("contact_id", buyerId) } catch {}
       try { await svc.from("contacts").delete().eq("id", buyerId) } catch {}
     }
     if (listingId) { try { await svc.from("listings").delete().eq("id", listingId) } catch {} }

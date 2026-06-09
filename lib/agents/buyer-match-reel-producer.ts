@@ -12,6 +12,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import type { PropertyFacts } from "@/lib/property/resolve-property-facts"
 
 export interface BuyerMatchReelResult { queued: boolean; renderId?: string; reason?: string }
 
@@ -20,34 +21,23 @@ const REEL_COOLDOWN_DAYS = 7
 const MATCH_SCORE_THRESHOLD = 85
 const MAX_CARDS = 3
 
-interface MatchRow {
-  property_id: string | null
-  match_score: number | null
-  listings: {
-    address?: string | null; city?: string | null; state?: string | null
-    list_price?: number | null; bedrooms?: number | null; bathrooms?: number | null
-  } | null
-}
-
-/** Pure: build the AffordabilitySnapshotReel inputProps from the buyer's matches. */
+/** Pure: build the AffordabilitySnapshotReel inputProps from resolved property facts
+ *  (works whether the match is our listing OR an external MLS/RentCast/IDX property). */
 export function buildBuyerMatchReelProps(
-  matches: MatchRow[],
+  facts: PropertyFacts[],
   ctx: { agentName: string; agentPhone: string; brokerageName: string },
 ): Record<string, unknown> | null {
-  const examples = matches
-    .filter((m) => m.listings && (m.listings.address || m.listings.city))
+  const examples = facts
+    .filter((f) => f && (f.address || f.city))
     .slice(0, MAX_CARDS)
-    .map((m) => {
-      const l = m.listings!
-      return {
-        address:   sanitizeProperNoun(l.address, 60) ?? "Address on request",
-        cityState: [sanitizeProperNoun(l.city, 40), l.state].filter(Boolean).join(", ") || "Your area",
-        price:     typeof l.list_price === "number" ? `$${Math.round(l.list_price).toLocaleString()}` : "Ask",
-        bedrooms:  l.bedrooms != null ? String(l.bedrooms) : "—",
-        bathrooms: l.bathrooms != null ? String(l.bathrooms) : "—",
-        photoUrl:  null,
-      }
-    })
+    .map((f) => ({
+      address:   sanitizeProperNoun(f.address, 60) ?? "Address on request",
+      cityState: [sanitizeProperNoun(f.city, 40), f.state].filter(Boolean).join(", ") || "Your area",
+      price:     typeof f.price === "number" ? `$${Math.round(f.price).toLocaleString()}` : "Ask",
+      bedrooms:  f.bedrooms != null ? String(f.bedrooms) : "—",
+      bathrooms: f.bathrooms != null ? String(f.bathrooms) : "—",
+      photoUrl:  f.photoUrl ?? null,
+    }))
   if (examples.length === 0) return null
   const areaName = (examples[0].cityState.split(",")[0] || "your area").trim()
   return {
@@ -86,9 +76,9 @@ export async function produceBuyerMatchReel(
     .gte("created_at", sinceIso).limit(1).maybeSingle()
   if (recent) return { queued: false, reason: "reel already produced this week" }
 
-  // Top high-score matches, then resolve their listing facts. property_matches.property_id
-  // references listings.id by convention (no FK), so load + join in JS — never rely on a
-  // PostgREST embed that can't resolve without the relationship.
+  // Top high-score matches → resolve facts from EITHER our listings OR the external/MLS
+  // cache (RentCast / IDX), via the unified resolver. property_matches.property_id is a
+  // uuid (listings.id or saved_properties.id); never relies on a PostgREST embed.
   const { data: pm } = await supabase.from("property_matches")
     .select("property_id, match_score")
     .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
@@ -98,15 +88,11 @@ export async function produceBuyerMatchReel(
   const propertyIds = pmRows.map((r) => r.property_id).filter(Boolean) as string[]
   if (propertyIds.length === 0) return { queued: false, reason: "no high-score matches" }
 
-  const { data: ls } = await supabase.from("listings")
-    .select("id, address, city, state, list_price, bedrooms, bathrooms")
-    .eq("brokerage_id", brokerageId).in("id", propertyIds)
-  const byId = new Map((ls ?? []).map((l: any) => [l.id as string, l]))
-  const matches: MatchRow[] = pmRows.map((r) => ({
-    property_id: r.property_id, match_score: r.match_score,
-    listings: r.property_id ? (byId.get(r.property_id) ?? null) : null,
-  }))
-  if (!matches.some((m) => m.listings)) return { queued: false, reason: "no renderable listings for matches" }
+  const { resolvePropertyFacts } = await import("@/lib/property/resolve-property-facts")
+  const factsMap = await resolvePropertyFacts(supabase, brokerageId, propertyIds)
+  // Preserve match order (highest score first); keep only resolvable properties.
+  const facts = propertyIds.map((id) => factsMap.get(id)).filter(Boolean) as PropertyFacts[]
+  if (facts.length === 0) return { queued: false, reason: "no renderable properties for matches" }
 
   // Agent display name + phone for the card footer.
   let agentName = "Your Agent"; let agentPhone = ""; let agentUserId: string | null = null
@@ -124,7 +110,7 @@ export async function produceBuyerMatchReel(
   const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
 
-  const inputProps = buildBuyerMatchReelProps(matches, { agentName, agentPhone, brokerageName })
+  const inputProps = buildBuyerMatchReelProps(facts, { agentName, agentPhone, brokerageName })
   if (!inputProps) return { queued: false, reason: "no renderable matches" }
 
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
