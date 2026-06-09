@@ -10,6 +10,8 @@ import {
 import {
   getPlatformVideoProvider,
   setPlatformVideoProvider,
+  getVideoCostFallbackConfig,
+  setVideoCostFallbackConfig,
 } from '@/app/actions/settings/global-settings-actions'
 
 // ─── PROVIDER CATALOGUES ──────────────────────────────────────────────────────
@@ -71,17 +73,24 @@ export default function ProviderSettingsPage() {
   const [providerSaving, setProviderSaving] = useState(false)
   const [providerSaved, setProviderSaved] = useState(false)
   const [providerError, setProviderError] = useState<string | null>(null)
+  // Cost-fallback config — D-ID stays default; HeyGen used only when cheaper + enabled.
+  const [costFallbackEnabled, setCostFallbackEnabled] = useState(false)
+  const [didCostPerMin, setDidCostPerMin] = useState('0.30')
+  const [heygenCostPerMin, setHeygenCostPerMin] = useState('0.50')
 
   useEffect(() => {
     void (async () => {
       try {
-        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }, currentProvider] =
-          await Promise.all([getProviderSettings(), getSystemProviderStatus(), getPlatformVideoProvider()])
+        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }, currentProvider, costCfg] =
+          await Promise.all([getProviderSettings(), getSystemProviderStatus(), getPlatformVideoProvider(), getVideoCostFallbackConfig()])
 
         setIsSuperadmin(isSA)
         setDirectMailAllowed(directMailEnabled || isSA)
         setVideoAllowed(videoEnabled || isSA)
         setPlatformProviderState(currentProvider)
+        setCostFallbackEnabled(costCfg.enabled)
+        setDidCostPerMin(String(costCfg.didCostPerMin))
+        setHeygenCostPerMin(String(costCfg.heygenCostPerMin))
 
         setState({
           email:       buildInitial(overrides, 'email'),
@@ -132,6 +141,11 @@ export default function ProviderSettingsPage() {
     setProviderSaved(false)
     try {
       await setPlatformVideoProvider(platformProvider)
+      await setVideoCostFallbackConfig({
+        enabled: costFallbackEnabled,
+        didCostPerMin: parseFloat(didCostPerMin) || 0,
+        heygenCostPerMin: parseFloat(heygenCostPerMin) || 0,
+      })
       setProviderSaved(true)
       setTimeout(() => setProviderSaved(false), 2500)
     } catch (err) {
@@ -207,6 +221,37 @@ export default function ProviderSettingsPage() {
               </div>
             </label>
           </div>
+
+          {/* Cost-gated fallback — D-ID stays the default; HeyGen is used only when it's cheaper. */}
+          <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={costFallbackEnabled} onChange={(e) => setCostFallbackEnabled(e.target.checked)} />
+              <div>
+                <p className="text-sm font-medium text-gray-900">Allow HeyGen as a cost fallback</p>
+                <p className="text-xs text-gray-500">Keeps D-ID as the default. Only switches to HeyGen when its price per minute is strictly lower than D-ID&apos;s.</p>
+              </div>
+            </label>
+            <div className="grid grid-cols-2 gap-3 pl-6">
+              <label className="text-xs text-gray-600">
+                D-ID $/min
+                <input type="number" step="0.01" min="0" value={didCostPerMin} onChange={(e) => setDidCostPerMin(e.target.value)} disabled={!costFallbackEnabled}
+                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100" />
+              </label>
+              <label className="text-xs text-gray-600">
+                HeyGen $/min
+                <input type="number" step="0.01" min="0" value={heygenCostPerMin} onChange={(e) => setHeygenCostPerMin(e.target.value)} disabled={!costFallbackEnabled}
+                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100" />
+              </label>
+            </div>
+            <p className="text-[11px] text-gray-400 pl-6">
+              {costFallbackEnabled
+                ? ((parseFloat(heygenCostPerMin) || 0) < (parseFloat(didCostPerMin) || 0)
+                    ? 'Current prices → HeyGen is cheaper; eligible renders would use HeyGen.'
+                    : 'Current prices → D-ID is cheapest; D-ID stays in use.')
+                : 'Disabled → D-ID is always used (the default differentiator).'}
+            </p>
+          </div>
+
           <div className="flex items-center gap-3 pt-1">
             <button
               type="button"
