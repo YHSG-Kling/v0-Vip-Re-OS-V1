@@ -36,6 +36,7 @@
     "test:ad-creative-consent": "tsx scripts/ad-creative-consent-simulator.ts",
     "test:ad-connector": "tsx scripts/ad-connector-simulator.ts",
     "test:ad-payload": "tsx scripts/ad-payload-simulator.ts",
+    "test:client-message": "tsx scripts/client-message-gate-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

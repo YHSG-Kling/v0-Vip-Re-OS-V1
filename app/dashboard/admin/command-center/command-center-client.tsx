@@ -19,17 +19,19 @@ const QUEUE_BADGE: Record<string, string> = {
   social:      "bg-sky-100 text-sky-800",
   newsletter:  "bg-emerald-100 text-emerald-800",
   direct_mail: "bg-amber-100 text-amber-900",
-  ads:         "bg-rose-100 text-rose-800",
-  ad_creative: "bg-pink-100 text-pink-800",
+  ads:           "bg-rose-100 text-rose-800",
+  ad_creative:   "bg-pink-100 text-pink-800",
+  client_message:"bg-indigo-100 text-indigo-800",
 }
 const QUEUE_LABEL: Record<string, string> = {
-  marketing:   "Marketing Agent",
-  asset:       "Asset Manager",
-  social:      "Social Post",
-  newsletter:  "Newsletter",
-  direct_mail: "Direct Mail",
-  ads:         "Ads Manager",
-  ad_creative: "Ad Creative",
+  marketing:     "Marketing Agent",
+  asset:         "Asset Manager",
+  social:        "Social Post",
+  newsletter:    "Newsletter",
+  direct_mail:   "Direct Mail",
+  ads:           "Ads Manager",
+  ad_creative:   "Ad Creative",
+  client_message:"Client Update",
 }
 const KIND_LABEL: Record<string, string> = {
   deal_coordinator:      "Deal Coordinator",
@@ -306,12 +308,14 @@ function AdCreativePreview({ input }: { input: Record<string, unknown> }) {
 function ActionRow({ action, onResolved }: { action: CommandCenterAction; onResolved: (id: string) => void }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const isClientMsg = action.queue === "client_message"
+  const [editedBody, setEditedBody] = useState<string>(isClientMsg ? String(action.actionInput.body ?? "") : "")
 
   function run(kind: "approve" | "reject") {
     setError(null)
     startTransition(async () => {
       const res = kind === "approve"
-        ? await approveAgentAction({ queue: action.queue, actionId: action.id })
+        ? await approveAgentAction({ queue: action.queue, actionId: action.id, ...(isClientMsg ? { editedBody } : {}) })
         : await rejectAgentAction({ queue: action.queue, actionId: action.id })
       if (res.ok) onResolved(action.id)
       else setError(res.error ?? "Action failed")
@@ -341,12 +345,23 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "direct_mail" && <DirectMailPreview input={action.actionInput} />}
           {action.queue === "ads" && <AdActionPreview input={action.actionInput} actionType={action.actionType} />}
           {action.queue === "ad_creative" && <AdCreativePreview input={action.actionInput} />}
+          {isClientMsg && (
+            <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <span>Review/edit before it reaches the {String(action.actionInput.audience ?? "client")}</span>
+                <Badge className="bg-indigo-100 text-indigo-800">{String(action.actionInput.audience ?? "client")}</Badge>
+              </div>
+              {!!action.actionInput.subject && <div className="text-sm font-medium">{String(action.actionInput.subject)}</div>}
+              <textarea className="w-full text-sm rounded border p-2 min-h-[120px] bg-white" value={editedBody} onChange={(e) => setEditedBody(e.target.value)} />
+              {!!action.actionInput.briefing && <div className="text-[11px] text-muted-foreground">Agent note: {String(action.actionInput.briefing)}</div>}
+            </div>
+          )}
           <div className="text-xs text-muted-foreground mt-1">proposed {timeAgo(action.proposedAt)}</div>
           {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
         <div className="flex gap-2 shrink-0">
           <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>Reject</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : "Approve"}</Button>
+          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : "Approve"}</Button>
         </div>
       </div>
     </Card>

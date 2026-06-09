@@ -37,7 +37,7 @@ export interface CommandCenterSession {
 
 export interface CommandCenterAction {
   id:         string
-  queue:      "marketing" | "asset" | "ads" | ContentQueue
+  queue:      "marketing" | "asset" | "ads" | "client_message" | ContentQueue
   brokerageId: string
   actionType: string
   rationale:  string | null
@@ -111,7 +111,17 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const now = new Date()
   const contentPromise = loadContentApprovalActions(supabase, { brokerageId: params.brokerageId, limit, now })
 
-  const [sessionsRes, marketingRes, assetRes, adsRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, contentPromise])
+  // Deal-critical managers' proposed client messages (seller/buyer updates) awaiting
+  // human approval — nothing reaches a client until released here.
+  const clientMsgQuery = supabase
+    .from("agent_client_messages")
+    .select("id, brokerage_id, agent_kind, entity_type, audience, subject, body, rationale, recipient_contact_id, proposed_at")
+    .eq("status", "proposed")
+    .order("proposed_at", { ascending: true })
+    .limit(limit)
+  if (params.brokerageId) clientMsgQuery.eq("brokerage_id", params.brokerageId)
+
+  const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise])
 
   const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
     id:          s.id,
@@ -144,12 +154,25 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     }
   }
 
+  // Map a proposed client message → the unified action contract (preview = the
+  // actual seller/buyer message the human is releasing).
+  const mapClientMsg = (m: any): CommandCenterAction => {
+    const sla = evaluateApprovalSla(m.proposed_at ?? null, now)
+    return {
+      id: m.id, queue: "client_message", brokerageId: m.brokerage_id, actionType: "approve_client_message",
+      rationale: `${(m.agent_kind ?? "agent").replace(/_/g, " ")} drafted a ${m.audience} update — review/edit before it reaches the client.`,
+      actionInput: { agent_kind: m.agent_kind, entity_type: m.entity_type, audience: m.audience, subject: m.subject, body: m.body, briefing: m.rationale, recipient_contact_id: m.recipient_contact_id },
+      status: "proposed", proposedAt: m.proposed_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+    }
+  }
+
   // SLA-breached approvals escalate to the top; then oldest-first.
   const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
   const pendingActions: CommandCenterAction[] = [
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
     ...(adsRes.data ?? []).map(mapAction("ads")),
+    ...(clientMsgRes.data ?? []).map(mapClientMsg),
     ...contentActions,
   ].sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 

@@ -199,6 +199,35 @@ export async function POST(request: NextRequest) {
 
       // Route through the canonical kernel emitter ONLY when compliance allowed.
       if (text && complianceAllowed) {
+        const agentEmbedEarly = (sessionRow as unknown as { agent?: { agent_kind?: string } | Array<{ agent_kind?: string }> | null }).agent
+        const agentKindEarly = Array.isArray(agentEmbedEarly) ? agentEmbedEarly[0]?.agent_kind : agentEmbedEarly?.agent_kind
+        const GATED_CLIENT_MANAGERS = new Set(["listing_concierge", "deal_coordinator"])
+
+        if (agentKindEarly && GATED_CLIENT_MANAGERS.has(agentKindEarly)) {
+          // GOVERNED: deal-critical managers PROPOSE their seller/buyer updates into
+          // the Command Center instead of auto-sending. Nothing reaches the client
+          // until a human approves it. (Wave 45)
+          try {
+            const parsed = tryParseJsonObject(text)
+            const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+            const entityType = sessionRow.entity_type as string
+            const recipient = entityType === "contact" ? (sessionRow.entity_id as string) : null
+            const rationale = typeof parsed?.agent_briefing === "string" ? parsed.agent_briefing : null
+            const base = {
+              brokerageId: sessionRow.brokerage_id as string, managedAgentSessionId: sessionRow.id as string,
+              agentKind: agentKindEarly, entityType, entityId: sessionRow.entity_id as string,
+              recipientContactId: recipient, rationale,
+            }
+            const seller = parsed?.seller_update, buyer = parsed?.buyer_update
+            if (typeof seller === "string" && seller.trim()) await proposeClientMessage({ ...base, audience: "seller", body: seller })
+            if (typeof buyer === "string" && buyer.trim()) await proposeClientMessage({ ...base, audience: "buyer", body: buyer })
+            // If the model returned a plain (non-JSON) message, propose it as-is.
+            if (!parsed) await proposeClientMessage({ ...base, audience: entityType === "transaction" ? "buyer" : "seller", body: text })
+          } catch (e) {
+            console.error("[anthropic-webhook] client-message propose failed:", (e as Error).message)
+          }
+        } else {
+
         const { emitKernelEvent } = await import("@/lib/kernel/emit")
         await emitKernelEvent({
           event:       "agent_message_received",
@@ -207,7 +236,7 @@ export async function POST(request: NextRequest) {
           entityId:    sessionRow.entity_id as string,
           metadata: {
             anthropic_session_id: sessionId,
-            agent_kind:           "deal_coordinator",
+            agent_kind:           agentKindEarly ?? "unknown",
             message_preview:      text.slice(0, 400),
             compliance_passed:    true,
           },
@@ -262,6 +291,7 @@ export async function POST(request: NextRequest) {
             console.error("[anthropic-webhook] asset-manager resolutions parse failed:", (e as Error).message)
           }
         }
+        } // end non-gated-manager branch
       } else if (text && !complianceAllowed) {
         // Log the block. The agent's next idle can re-draft (the agent will see
         // last_agent_message as null after this update — TODO follow-up: surface

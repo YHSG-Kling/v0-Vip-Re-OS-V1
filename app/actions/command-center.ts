@@ -18,7 +18,7 @@ import { executeAssetManagerAction } from "@/lib/agents/asset-manager-actions"
 import { executeAdManagerAction } from "@/lib/ads/ad-manager"
 import { approveContentSource, rejectContentSource, type ContentQueue } from "@/lib/kernel/approval-sources"
 
-type Queue = "marketing" | "asset" | "ads" | ContentQueue
+type Queue = "marketing" | "asset" | "ads" | "client_message" | ContentQueue
 type AgentQueue = "marketing" | "asset" | "ads"
 const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions" | "ad_manager_actions"> = {
   marketing: "marketing_agent_actions",
@@ -54,7 +54,7 @@ async function loadScopedAction(queue: AgentQueue, actionId: string, brokerageId
   return { ok: true as const }
 }
 
-export async function approveAgentAction(params: { queue: Queue; actionId: string }) {
+export async function approveAgentAction(params: { queue: Queue; actionId: string; editedBody?: string }) {
   const actor = await requireApprover()
   if ("error" in actor) return { ok: false, error: actor.error }
 
@@ -71,6 +71,13 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
     const res = await approveContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: res.status, error: res.error }
+  }
+  // Deal-critical managers' client messages: approving SENDS the seller/buyer update.
+  if (params.queue === "client_message") {
+    const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await approveClientMessage(params.actionId, actor.userId, params.editedBody)
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: res.status === "sent", status: res.status, result: res.result }
   }
 
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)
@@ -100,6 +107,12 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     const res = await rejectContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: "rejected" as const, error: res.error }
+  }
+  if (params.queue === "client_message") {
+    const { rejectClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await rejectClientMessage(params.actionId, actor.userId)
+    revalidatePath("/dashboard/admin/command-center")
+    return { ok: res.ok, status: "rejected" as const }
   }
 
   const scope = await loadScopedAction(params.queue, params.actionId, actor.brokerageId, actor.isSuperadmin)
