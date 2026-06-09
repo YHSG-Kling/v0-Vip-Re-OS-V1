@@ -39,7 +39,7 @@
     "test:client-message": "tsx scripts/client-message-gate-simulator.ts",
     "test:governance-surfaces": "tsx scripts/governance-surfaces-simulator.ts",
     "test:client-extract": "tsx scripts/client-message-extract-simulator.ts",
-    "test:manager-handoff": "tsx scripts/manager-handoff-simulator.ts",
+    "test:listing-ad-handoff": "tsx scripts/listing-ad-handoff-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

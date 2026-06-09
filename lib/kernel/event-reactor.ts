@@ -320,13 +320,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           eventType:   "just_listed",
         })
       }
-      // Wave 48 — cross-manager HANDOFF: surface the coordinated new-listing push as
-      // a governed proposal in the Command Center (visible + human-approved), not just
-      // an invisible autonomous dispatch.
+      // Wave 49 — cross-manager AUTO-handoff (deliverable-gated): auto-produce the
+      // listing's paid-ad campaign + creative. Zero agent effort; the ONLY human gate
+      // is the finished creative in the ad_creative approval queue.
       try {
-        const { proposeListingHandoff } = await import("@/lib/agents/manager-handoff")
-        void proposeListingHandoff(params.brokerageId, params.entityId, svc)
-      } catch { /* handoff proposal is best-effort */ }
+        const { produceListingAdCampaign } = await import("@/lib/ads/listing-ad-producer")
+        void produceListingAdCampaign(params.brokerageId, params.entityId, "just_listed", svc)
+      } catch { /* auto-producer is best-effort */ }
     } catch (err) {
       console.error("[event-reactor] listing-promo dispatch failed:", err)
     }
@@ -393,12 +393,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             agentUserId,
             eventType,
           })
-          // Wave 48 — cross-manager HANDOFF on close: propose the just-sold campaign.
+          // Wave 49 — cross-manager AUTO-handoff on close: auto-produce the just-sold
+          // ad creative (deliverable-gated in the ad_creative queue).
           if (eventType === "just_sold" && params.brokerageId) {
             try {
-              const { proposeClosingHandoff } = await import("@/lib/agents/manager-handoff")
-              void proposeClosingHandoff(params.brokerageId, params.entityId, svc)
-            } catch { /* handoff proposal is best-effort */ }
+              const { produceListingAdCampaign } = await import("@/lib/ads/listing-ad-producer")
+              void produceListingAdCampaign(params.brokerageId, params.entityId, "just_sold", svc)
+            } catch { /* auto-producer is best-effort */ }
           }
         }
       }
