@@ -59,41 +59,30 @@ export async function generatePropertyMatches(params: {
       return { success: false, error: "Forbidden" }
     }
 
-    // Get contact and buyer preferences from property_preferences table (correct schema)
-    const [{ data: contact }, { data: preferencesRaw }] = await Promise.all([
+    // Criteria via the single normalized reader (consolidated — no per-consumer column drift).
+    const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+    const [{ data: contact }, criteria] = await Promise.all([
       supabase
         .from("contacts")
         .select("*")
         .eq("id", params.contactId)
         .eq("brokerage_id", ctx.brokerageId)
         .single(),
-      supabase
-        .from("property_preferences")
-        // Correct live columns only — the table has no preferred_bedrooms/bathrooms/cities/
-        // features columns; selecting them errored the whole query (returning null prefs).
-        .select(
-          "preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, " +
-          "inferred_beds_min, inferred_baths_min, inferred_cities, inferred_property_types"
-        )
-        .eq("contact_id", params.contactId)
-        .maybeSingle(),
+      loadBuyerCriteria(supabase, params.contactId),
     ])
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
 
-    const preferences = preferencesRaw as Record<string, any> | null
-
-    // Merge explicit preferences with inferred ones (explicit takes priority)
     const prefs = {
-      min_price:      preferences?.preferred_price_min ?? preferences?.inferred_min_price ?? null,
-      max_price:      preferences?.preferred_price_max ?? preferences?.inferred_max_price ?? null,
-      min_beds:       preferences?.inferred_beds_min  ?? null,
-      min_baths:      preferences?.inferred_baths_min ?? null,
-      cities:         preferences?.inferred_cities    ?? [],
-      property_types: preferences?.inferred_property_types ?? [],
-      features:       [],
+      min_price:      criteria?.minPrice ?? null,
+      max_price:      criteria?.maxPrice ?? null,
+      min_beds:       criteria?.minBeds ?? null,
+      min_baths:      criteria?.minBaths ?? null,
+      cities:         criteria?.cities ?? [],
+      property_types: criteria?.propertyTypes ?? [],
+      features:       criteria?.mustHaveFeatures ?? [],
     }
 
     // Get buyer's viewing history and saved properties

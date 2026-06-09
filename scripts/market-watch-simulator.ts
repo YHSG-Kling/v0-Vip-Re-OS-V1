@@ -22,7 +22,8 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 
-const crit: BuyerCriteria = { minPrice: 400000, maxPrice: 600000, minBeds: 3, minBaths: 2, cities: ["Maple Grove"], propertyTypes: [] }
+const EMPTY = { zipCodes: [], mustHaveFeatures: [], dealBreakers: [], confidenceScore: null }
+const crit: BuyerCriteria = { minPrice: 400000, maxPrice: 600000, minBeds: 3, minBaths: 2, cities: ["Maple Grove"], propertyTypes: [], ...EMPTY }
 
 function testPure() {
   console.log("\n[Layer 1 · scoreCriteriaFit]")
@@ -36,7 +37,7 @@ function testPure() {
     scoreCriteriaFit(crit, { list_price: 485000, bedrooms: 3, bathrooms: 2, city: "Far Away" }) <
     scoreCriteriaFit(crit, { list_price: 485000, bedrooms: 3, bathrooms: 2, city: "Maple Grove" }))
   check("no criteria at all → neutral-qualifying score",
-    scoreCriteriaFit({ minPrice: null, maxPrice: null, minBeds: null, minBaths: null, cities: [], propertyTypes: [] }, { list_price: 999999 }) >= MATCH_FIT_THRESHOLD)
+    scoreCriteriaFit({ minPrice: null, maxPrice: null, minBeds: null, minBaths: null, cities: [], propertyTypes: [], ...EMPTY }, { list_price: 999999 }) >= MATCH_FIT_THRESHOLD)
 }
 
 async function testLive() {

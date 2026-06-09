@@ -36,6 +36,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+import { loadBuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
 
 export interface MatchupRow {
   criterion:   string
@@ -147,7 +148,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   const [
     { data: listing },
     { data: contact },
-    { data: pref },
+    pref,
     { data: finance },
     { data: prediction },
     { data: behavior },
@@ -161,8 +162,8 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
       ? svc.from("contacts").select("id, first_name, last_name, contact_type, budget_min, budget_max, timeline, notes, email, phone").eq("id", showing.contact_id).maybeSingle()
       : Promise.resolve({ data: null }),
     showing.contact_id
-      ? svc.from("property_preferences").select("preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_cities, inferred_zip_codes, inferred_property_types, inferred_must_have_features, inferred_deal_breakers, confidence_score").eq("contact_id", showing.contact_id).maybeSingle()
-      : Promise.resolve({ data: null }),
+      ? loadBuyerCriteria(svc, showing.contact_id)   // consolidated normalized criteria reader
+      : Promise.resolve(null),
     showing.contact_id
       ? svc.from("buyer_financial_profiles").select("pre_approval_amount, pre_approval_lender, finance_type, is_cash_buyer, down_payment_amount, estimated_monthly_budget").eq("contact_id", showing.contact_id).maybeSingle()
       : Promise.resolve({ data: null }),
@@ -244,8 +245,8 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     contactId:         contact?.id ?? null,
     fullName,
     timeline:          contact?.timeline ?? null,
-    budgetMin:         contact?.budget_min ?? pref?.preferred_price_min ?? pref?.inferred_min_price ?? null,
-    budgetMax:         contact?.budget_max ?? pref?.preferred_price_max ?? pref?.inferred_max_price ?? null,
+    budgetMin:         contact?.budget_min ?? pref?.minPrice ?? null,
+    budgetMax:         contact?.budget_max ?? pref?.maxPrice ?? null,
     preApprovedAmount: finance?.pre_approval_amount ?? null,
     preApprovedLender: finance?.pre_approval_lender ?? null,
     isCashBuyer:       finance?.is_cash_buyer === true,
@@ -302,7 +303,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   }
 
   // Beds
-  const wantBedsMin = pref?.inferred_beds_min ?? null
+  const wantBedsMin = pref?.minBeds ?? null
   if (wantBedsMin && propertyView.bedrooms != null) {
     matchup.push({
       criterion:  "Bedrooms",
@@ -313,7 +314,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   }
 
   // Baths
-  const wantBathsMin = pref?.inferred_baths_min ?? null
+  const wantBathsMin = pref?.minBaths ?? null
   if (wantBathsMin && propertyView.bathrooms != null) {
     matchup.push({
       criterion:  "Bathrooms",
@@ -324,8 +325,8 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   }
 
   // Cities / ZIPs
-  const inferredCities = (pref?.inferred_cities ?? []) as string[]
-  const inferredZips   = (pref?.inferred_zip_codes ?? []) as string[]
+  const inferredCities = (pref?.cities ?? []) as string[]
+  const inferredZips   = (pref?.zipCodes ?? []) as string[]
   if (inferredCities.length && propertyView.city) {
     const m = inferredCities.some(c => c.toLowerCase() === propertyView.city!.toLowerCase())
     matchup.push({
@@ -345,7 +346,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   }
 
   // Must-haves
-  const mustHaves = (pref?.inferred_must_have_features ?? []) as string[]
+  const mustHaves = (pref?.mustHaveFeatures ?? []) as string[]
   if (mustHaves.length) {
     matchup.push({
       criterion:  "Must-haves",
@@ -356,7 +357,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   }
 
   // Deal-breakers
-  const dealBreakers = (pref?.inferred_deal_breakers ?? []) as string[]
+  const dealBreakers = (pref?.dealBreakers ?? []) as string[]
   if (dealBreakers.length) {
     matchup.push({
       criterion:  "Deal-breakers",

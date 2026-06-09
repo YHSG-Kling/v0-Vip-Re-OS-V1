@@ -19,40 +19,15 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 
-export interface BuyerCriteria {
-  minPrice:      number | null
-  maxPrice:      number | null
-  minBeds:       number | null
-  minBaths:      number | null
-  cities:        string[]
-  propertyTypes: string[]
-}
+// Criteria reading consolidated into the single normalized reader (no per-consumer drift).
+import { loadBuyerCriteria, type BuyerCriteria } from "./buyer-criteria"
+export { loadBuyerCriteria, type BuyerCriteria }
 
 export interface ListingFacts {
   list_price?: number | null
   bedrooms?:   number | null
   bathrooms?:  number | null
   city?:       string | null
-}
-
-/** Normalize a buyer's criteria from property_preferences (explicit wins over inferred). */
-export async function loadBuyerCriteria(
-  supabase: ReturnType<typeof createServiceClient>, contactId: string,
-): Promise<BuyerCriteria | null> {
-  const { data } = await supabase.from("property_preferences")
-    .select("preferred_price_min, preferred_price_max, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_cities, inferred_property_types")
-    .eq("contact_id", contactId).maybeSingle()
-  if (!data) return null
-  const p = data as Record<string, any>
-  const arr = (v: any): string[] => Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.trim()) : []
-  return {
-    minPrice: p.preferred_price_min ?? p.inferred_min_price ?? null,
-    maxPrice: p.preferred_price_max ?? p.inferred_max_price ?? null,
-    minBeds:  p.inferred_beds_min ?? null,
-    minBaths: p.inferred_baths_min ?? null,
-    cities:   arr(p.inferred_cities),
-    propertyTypes: arr(p.inferred_property_types),
-  }
 }
 
 /**
