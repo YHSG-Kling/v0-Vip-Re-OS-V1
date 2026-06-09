@@ -151,6 +151,7 @@ interface AdsDashboardClientProps {
   campaigns: AdCampaign[]
   performanceData: AdPerformance[]
   audiences: Audience[]
+  adConnections?: Array<{ platform: string; connected: boolean; accountId: string | null }>
 }
 
 // ─── STATUS CONFIG ────────────────────────────────────────────────────────────
@@ -178,6 +179,46 @@ const PLATFORM_COLORS: Record<string, string> = {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
+/**
+ * Connect-ad-account card. Surfaces which ad platforms are connected and links to
+ * the OAuth initiate route (the existing integrations OAuth framework). The Ads
+ * Manager refuses to launch on a platform that isn't connected here.
+ */
+const AD_PLATFORM_META: Record<string, { label: string; provider: string }> = {
+  facebook: { label: "Meta Ads (Facebook & Instagram)", provider: "meta_ads" },
+  google:   { label: "Google Ads", provider: "google_ads" },
+}
+function AdAccountConnectCard({ connections }: { connections: Array<{ platform: string; connected: boolean; accountId: string | null }> }) {
+  const all = ["facebook", "google"].map((p) => connections.find((c) => c.platform === p) ?? { platform: p, connected: false, accountId: null })
+  return (
+    <Card className="mb-6">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Ad Accounts</CardTitle>
+        <CardDescription>Connect Meta &amp; Google so the Ads Manager can publish, sync audiences, and pull performance. Campaigns can&apos;t launch on a disconnected platform.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap gap-3">
+        {all.map((c) => {
+          const meta = AD_PLATFORM_META[c.platform]
+          return (
+            <div key={c.platform} className="flex items-center gap-3 rounded-md border p-3 min-w-[280px]">
+              <Badge className={c.connected ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-700"}>
+                {c.connected ? "Connected" : "Not connected"}
+              </Badge>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium truncate">{meta.label}</div>
+                {c.connected && c.accountId && <div className="text-[11px] text-muted-foreground truncate">Account {c.accountId}</div>}
+              </div>
+              <a href={`/api/integrations/oauth/${meta.provider}`}>
+                <Button size="sm" variant={c.connected ? "outline" : "default"}>{c.connected ? "Reconnect" : "Connect"}</Button>
+              </a>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function AdsDashboardClient({
   userId,
   brokerageId,
@@ -186,6 +227,7 @@ export function AdsDashboardClient({
   campaigns: initialCampaigns,
   performanceData,
   audiences: initialAudiences,
+  adConnections = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -506,6 +548,7 @@ export function AdsDashboardClient({
   return (
     <TooltipProvider>
       <div className="container mx-auto py-6 px-4 max-w-7xl">
+        <AdAccountConnectCard connections={adConnections} />
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>

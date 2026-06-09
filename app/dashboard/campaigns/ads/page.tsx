@@ -4,6 +4,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AdsDashboardClient } from "./ads-dashboard-client"
+import { getAdConnections } from "@/lib/ads/connection-status"
 
 export const dynamic = "force-dynamic"
 
@@ -81,6 +82,9 @@ export default async function AdsCampaignsPage() {
   // Get agent name for creative generation context
   const agentName = `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
 
+  // Ad-account connection status (drives the Connect card + the launch gate).
+  const adConnections = await getAdConnections(profile.brokerage_id)
+
   return (
     <AdsDashboardClient
       userId={user.id}
@@ -90,6 +94,7 @@ export default async function AdsCampaignsPage() {
       campaigns={campaigns || []}
       performanceData={performanceData}
       audiences={audiences || []}
+      adConnections={adConnections}
     />
   )
 }
