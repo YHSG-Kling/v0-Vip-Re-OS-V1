@@ -47,6 +47,8 @@
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",
     "test:buyer-welcome": "tsx scripts/buyer-welcome-simulator.ts",
+    "test:buyer-match-reel": "tsx scripts/buyer-match-reel-simulator.ts",
+    "test:video-provider-cost": "tsx scripts/video-provider-cost-simulator.ts",
     "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {

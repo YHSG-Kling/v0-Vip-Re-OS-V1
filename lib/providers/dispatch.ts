@@ -718,7 +718,17 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
   const { getPlatformVideoProvider } = await import("@/app/actions/settings/global-settings-actions")
   const platformProvider = await getPlatformVideoProvider().catch(() => "did" as const)
 
-  if (platformProvider === "did") {
+  // Cost-aware choice: D-ID stays the default + differentiator, but if a superadmin enabled
+  // cost-fallback AND HeyGen is cheaper per minute than D-ID, fall back to HeyGen on cost.
+  // Default (flag off) → the configured provider, so behavior is unchanged.
+  let effectiveProvider: "did" | "heygen" = platformProvider
+  try {
+    const { resolveVideoProviderCostConfig, chooseVideoProvider } = await import("@/lib/marketing/video-provider-cost")
+    const cfg = await resolveVideoProviderCostConfig(params.brokerageId)
+    effectiveProvider = chooseVideoProvider({ configured: platformProvider, ...cfg }).provider
+  } catch { /* cost config best-effort — keep the configured provider */ }
+
+  if (effectiveProvider === "did") {
     return dispatchVideoViaDID({ params, providerKey })
   }
 
