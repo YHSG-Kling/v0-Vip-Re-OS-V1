@@ -24,6 +24,7 @@ import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { haltEngagementForNegativeReply } from "./conversation-handler"
+import { signalScore, signalTemperature } from "./qualification-core"
 
 export interface ISAToolContext {
   /** leads.id — for writes that target the lead row */
@@ -91,12 +92,17 @@ export function buildISATools(ctx: ISAToolContext) {
       }),
       execute: async ({ signal, reason }) => {
         const supabase = createServiceClient()
-        // leads table holds the rolling qualification state.
-        const tempScore = signal === "hot" ? 90 : signal === "warm" ? 60 : signal === "cold" ? 30 : 10
+        // leads table holds the rolling qualification state in lead_temperature +
+        // lead_score (qualification-core owns both mappings). The previous write
+        // targeted a phantom qualification_signal column — PGRST204 failed the WHOLE
+        // update, so lead_score never persisted and readinessForAgent (which requires
+        // lead_score >= 50) could never fire for conversation-scored leads: the
+        // qualify→assign chain was starved.
+        const tempScore = signalScore(signal)
         await supabase
           .from("leads")
           .update({
-            qualification_signal: signal,
+            lead_temperature: signalTemperature(signal),
             lead_score: tempScore,
             updated_at: new Date().toISOString(),
           })

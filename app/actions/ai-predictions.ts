@@ -2425,18 +2425,19 @@ Find opportunities:
 export async function mineSphereOfInfluence(agentId: string) {
   const supabase = await createClient()
 
+  // Past clients / lifetime customers live on CONTACTS, not leads (a lead that closed
+  // was converted at assignment; Sphere = lifetime customers per the business process).
+  // The previous query hit leads with a phantom lead_status column — it errored, so the
+  // sphere miner always saw 0 lifetime customers and produced empty referral analyses.
   const { data: pastClients } = await supabase
-    .from("leads")
+    .from("contacts")
     .select(
-      `
-      *,
-      transactions(*),
-      lead_property_ownership(*),
-      lead_people_data(*)
-    `,
+      "id, first_name, last_name, email, phone, contact_type, status, " +
+      "address, city, state, zip_code, home_value_estimate, equity_estimate, " +
+      "life_events, last_contacted_at, created_at",
     )
     .eq("agent_id", agentId)
-    .eq("lead_status", "closed_client")
+    .in("contact_type", ["past_client", "lifetime", "lifetime_customer", "client", "sphere"])
 
   const prompt = `You are an AI sphere of influence miner. Find referral opportunities:
 

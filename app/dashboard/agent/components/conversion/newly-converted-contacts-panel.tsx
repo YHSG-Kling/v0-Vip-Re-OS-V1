@@ -90,9 +90,11 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
         (conversions || []).map(async (c: any) => {
           let sourceLead = null
           if (c.source_lead_id) {
+            // leads' source column is `source` (lead_source doesn't exist — the old
+            // select errored, so the panel never showed where a conversion came from).
             const { data: leadData } = await supabase
               .from("leads")
-              .select("first_name, last_name, lead_source")
+              .select("first_name, last_name, source")
               .eq("id", c.source_lead_id)
               .maybeSingle()
             sourceLead = leadData
@@ -113,7 +115,7 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
             urgency_level: qualification?.urgency_level || "medium",
             next_action: qualification?.next_action || "Initial outreach",
             source_lead_name: sourceLead
-              ? `${sourceLead.first_name || ""} ${sourceLead.last_name || ""}`.trim() || sourceLead.lead_source
+              ? `${sourceLead.first_name || ""} ${sourceLead.last_name || ""}`.trim() || sourceLead.source
               : null,
             converted_at: c.created_at,
             ai_summary: qualification?.qualification_signals?.summary || null,

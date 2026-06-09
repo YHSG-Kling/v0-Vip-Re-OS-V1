@@ -54,7 +54,8 @@
     "test:external-match": "tsx scripts/external-match-simulator.ts",
     "test:buyer-reel-delivery": "tsx scripts/buyer-reel-delivery-simulator.ts",
     "test:schema-drift": "tsx scripts/schema-drift-guard.ts",
-    "test:data-steward": "tsx scripts/data-steward-simulator.ts"
+    "test:data-steward": "tsx scripts/data-steward-simulator.ts",
+    "test:isa-qualification": "tsx scripts/ai-isa-qualification-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

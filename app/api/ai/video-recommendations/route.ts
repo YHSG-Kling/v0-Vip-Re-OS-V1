@@ -32,18 +32,21 @@ export async function GET(request: NextRequest) {
     const now = new Date()
 
     // 1. High activity leads with no recent contact (7+ days)
+    // leads has lead_score + last_contacted_at (engagement_score / last_contact_at
+    // don't exist — the old filters errored the query, so this recommendation type
+    // NEVER fired and high-intent quiet leads got no video nudge).
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
     const { data: highActivityLeads } = await supabase
       .from("leads")
       .select("*")
       .eq("agent_id", agentId)
-      .gte("engagement_score", 50)
-      .or(`last_contact_at.lt.${sevenDaysAgo.toISOString()},last_contact_at.is.null`)
+      .gte("lead_score", 50)
+      .or(`last_contacted_at.lt.${sevenDaysAgo.toISOString()},last_contacted_at.is.null`)
       .limit(5)
 
     for (const lead of highActivityLeads || []) {
-      const daysSinceContact = lead.last_contact_at
-        ? Math.floor((now.getTime() - new Date(lead.last_contact_at).getTime()) / (1000 * 60 * 60 * 24))
+      const daysSinceContact = lead.last_contacted_at
+        ? Math.floor((now.getTime() - new Date(lead.last_contacted_at).getTime()) / (1000 * 60 * 60 * 24))
         : 30
 
       recommendations.push({
@@ -51,10 +54,10 @@ export async function GET(request: NextRequest) {
         video_type: "personalized_buyer",
         target_client_id: lead.id,
         client_name: lead.first_name || lead.name,
-        reason: `Viewed ${lead.properties_viewed || "multiple"} properties but no response in ${daysSinceContact} days`,
+        reason: `High-intent lead (score ${lead.lead_score}) but no response in ${daysSinceContact} days`,
         suggested_content: "Properties matching their search + market update",
         priority_score: 90 - Math.min(daysSinceContact, 30),
-        engagement_score: lead.engagement_score,
+        engagement_score: lead.lead_score,
       })
     }
 

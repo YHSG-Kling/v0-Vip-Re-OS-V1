@@ -2,69 +2,47 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+import {
+  deriveQualificationSignals,
+  qualificationScoreFor,
+  type QualificationSignals,
+} from './qualification-core'
 
-export interface QualificationSignals {
-  confirmedIntent: boolean
-  urgency: 'high' | 'medium' | 'low'
-  readinessForAgent: boolean
-  conversationCount: number
-  engagementLevel: 'high' | 'medium' | 'low'
-}
+export type { QualificationSignals } from './qualification-core'
 
 export async function evaluateLeadQualification(leadId: string): Promise<QualificationSignals> {
   const supabase = createServiceClient()
-  
+
   // Get lead data
   const { data: lead } = await supabase
     .from('leads')
     .select('*')
     .eq('id', leadId)
     .single()
-  
+
   if (!lead) {
     throw new Error(`Lead not found: ${leadId}`)
   }
-  
+
   // Get conversation data
   const { data: messages } = await supabase
     .from('messages')
     .select('*')
     .eq('contact_id', leadId)
     .order('created_at', { ascending: false })
-  
+
   const conversationCount = messages?.length || 0
-  
-  // Analyze message content for qualification signals
   const recentMessages = messages?.slice(0, 5) || []
-  const messageText = recentMessages.map(m => m.body).join(' ').toLowerCase()
-  
-  // Detect confirmed intent
-  const intentKeywords = ['ready', 'interested', 'looking', 'want to', 'need to', 'schedule', 'meet']
-  const confirmedIntent = intentKeywords.some(keyword => messageText.includes(keyword))
-  
-  // Detect urgency
-  const urgencyKeywords = ['asap', 'urgent', 'soon', 'quickly', 'immediately', 'this week', 'this month']
-  const urgency = urgencyKeywords.some(keyword => messageText.includes(keyword)) 
-    ? 'high' 
-    : lead.timeline === 'immediate' ? 'high' : 'medium'
-  
-  // Engagement level based on message frequency and responsiveness
-  const engagementLevel = conversationCount >= 3 ? 'high' : conversationCount >= 1 ? 'medium' : 'low'
-  
-  // Readiness for agent (multiple positive signals)
-  const readinessForAgent = 
-    confirmedIntent && 
-    (urgency === 'high' || urgency === 'medium') && 
-    engagementLevel !== 'low' &&
-    (lead.lead_score || 0) >= 50
-  
-  return {
-    confirmedIntent,
-    urgency,
-    readinessForAgent,
+  const messageText = recentMessages.map(m => m.body).join(' ')
+
+  // Decision logic lives in qualification-core (shared with the ISA conversation
+  // tool + regression simulator) — this function owns only the DB loading.
+  return deriveQualificationSignals({
+    messageText,
     conversationCount,
-    engagementLevel
-  }
+    timeline: lead.timeline,
+    leadScore: lead.lead_score,
+  })
 }
 
 export async function persistQualificationSignals(
@@ -85,13 +63,7 @@ export async function persistQualificationSignals(
     return
   }
 
-  const qualificationScore = signals.readinessForAgent
-    ? 85
-    : signals.confirmedIntent
-    ? 60
-    : signals.urgency === 'high'
-    ? 45
-    : 25
+  const qualificationScore = qualificationScoreFor(signals)
 
   // Insert qualification record
   const { data: qualRecord } = await supabase
