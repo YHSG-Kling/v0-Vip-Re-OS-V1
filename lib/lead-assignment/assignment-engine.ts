@@ -115,10 +115,12 @@ export async function evaluateAndAssignLead(params: {
     }
   }
 
-  // Step 3: Fetch active rules sorted by priority DESC
+  // Step 3: Fetch active rules — team-scoped rules (team tier / multi-location
+  // office) outrank brokerage-wide rules at equal priority. A team rule without
+  // explicit agent_ids routes within the team's active members.
   const { data: rules, error: rulesError } = await supabase
     .from("assignment_rules")
-    .select("id, brokerage_id, name, rule_type, conditions, agent_ids, priority, is_active, times_triggered")
+    .select("id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered")
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
     .order("priority", { ascending: false })
@@ -132,23 +134,40 @@ export async function evaluateAndAssignLead(params: {
   let matchedRuleId: string | null = null
   let matchedMethod = "load_balance"
 
-  // Step 4: Evaluate rules in priority order
-  for (const rule of (rules ?? []) as AssignmentRule[]) {
-    if (!rule.agent_ids || rule.agent_ids.length === 0) continue
-
+  // Step 4: Evaluate rules in priority order (team rules first at equal priority —
+  // canonical precedence: agent → team → brokerage → platform)
+  const orderedRules = ((rules ?? []) as Array<AssignmentRule & { team_id: string | null }>)
+    .sort((a, b) =>
+      b.priority - a.priority !== 0
+        ? b.priority - a.priority
+        : Number(!!b.team_id) - Number(!!a.team_id),
+    )
+  for (const rule of orderedRules) {
     const matched = evaluateRuleConditions(typedLead, rule.conditions ?? {})
     if (!matched) continue
 
+    let pool = rule.agent_ids ?? []
+    if (pool.length === 0 && rule.team_id) {
+      const { data: members } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("team_id", rule.team_id)
+        .eq("is_active", true)
+      pool = (members ?? []).map((m) => m.id)
+    }
+    if (pool.length === 0) continue
+
     // Pick agent based on rule type
     if (rule.rule_type === "round_robin") {
-      matchedAgentId = pickRoundRobinAgent(rule.agent_ids, rule.times_triggered)
+      matchedAgentId = pickRoundRobinAgent(pool, rule.times_triggered)
     } else {
-      // geo_based / specialization / load_balance — use first agent in list as default
-      matchedAgentId = rule.agent_ids[0]
+      // geo_based / specialization / load_balance — use first agent in pool as default
+      matchedAgentId = pool[0]
     }
 
     matchedRuleId = rule.id
-    matchedMethod = rule.rule_type
+    matchedMethod = rule.team_id ? `team_${rule.rule_type}` : rule.rule_type
     break
   }
 

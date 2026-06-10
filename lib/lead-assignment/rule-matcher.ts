@@ -20,6 +20,10 @@ export interface MatchableRule {
   rule_type: RuleType | string
   conditions: Record<string, unknown> | null
   agent_ids: string[] | null
+  /** Team-scoped rule (team tier / multi-location office). When set and agent_ids is
+   *  empty, the rule routes within the team's members; when a contact carries a team
+   *  hint, rules for OTHER teams never fire. */
+  team_id?: string | null
   priority: number
   is_active: boolean
   times_triggered: number | null
@@ -84,6 +88,31 @@ export function pickRoundRobinAgent(agentIds: string[], timesTriggered: number):
   return agentIds[timesTriggered % agentIds.length]
 }
 
+/**
+ * The agents a matched rule may assign to: its explicit agent_ids, else (for a
+ * team-scoped rule) the team's members. A team rule with neither is unroutable.
+ */
+export function effectiveAgentPool(
+  rule: MatchableRule,
+  teamMembers?: Record<string, string[]>,
+): string[] {
+  if (rule.agent_ids?.length) return rule.agent_ids
+  if (rule.team_id && teamMembers?.[rule.team_id]?.length) return teamMembers[rule.team_id]
+  return []
+}
+
+/**
+ * Team-scope gate: a team-scoped rule fires only when the contact has no team
+ * affinity (conditions carry the office's territory, e.g. ZIP farm) or the
+ * affinity matches. A contact captured by one office's form never routes into
+ * another office's team rule even if conditions overlap.
+ */
+export function teamScopeAllows(rule: MatchableRule, teamHint?: string | null): boolean {
+  if (!rule.team_id) return true
+  if (!teamHint) return true
+  return rule.team_id === teamHint
+}
+
 export interface RoutingPreviewResult {
   /** The rule that wins (highest priority, all conditions matched), or null. */
   rule: MatchableRule | null
@@ -96,21 +125,35 @@ export interface RoutingPreviewResult {
 /**
  * Dry-run step 3 of the precedence chain: evaluate active rules in priority order
  * against a sample lead. Pure — safe to run client-side in the settings UI.
+ * Team-scoped rules sort ABOVE brokerage-wide rules of equal priority (the
+ * canonical precedence: agent -> team -> brokerage -> platform).
  */
 export function previewRuleRouting(
   rules: MatchableRule[],
   hints: LeadRoutingHints,
+  opts?: {
+    /** teams.id -> member agents.id, for team-scoped rules without explicit agent_ids. */
+    teamMembers?: Record<string, string[]>
+    /** The contact's team affinity (capture owner's team / team-tagged form). */
+    teamHint?: string | null
+  },
 ): RoutingPreviewResult {
   const ordered = [...rules]
-    .filter((r) => r.is_active && (r.agent_ids?.length ?? 0) > 0)
-    .sort((a, b) => b.priority - a.priority)
+    .filter((r) => r.is_active && effectiveAgentPool(r, opts?.teamMembers).length > 0)
+    .sort((a, b) =>
+      b.priority - a.priority !== 0
+        ? b.priority - a.priority
+        : Number(!!b.team_id) - Number(!!a.team_id),
+    )
 
   for (const rule of ordered) {
+    if (!teamScopeAllows(rule, opts?.teamHint)) continue
     if (!evaluateRuleConditions(hints, rule.conditions ?? {})) continue
+    const pool = effectiveAgentPool(rule, opts?.teamMembers)
     const agentId =
       rule.rule_type === 'round_robin'
-        ? pickRoundRobinAgent(rule.agent_ids as string[], rule.times_triggered ?? 0)
-        : (rule.agent_ids as string[])[0]
+        ? pickRoundRobinAgent(pool, rule.times_triggered ?? 0)
+        : pool[0]
     return { rule, agentId, method: 'rule' }
   }
   return { rule: null, agentId: null, method: 'load_balance' }

@@ -40,9 +40,15 @@ interface AssignmentRule {
   rule_type: RuleType
   conditions: Record<string, unknown>
   agent_ids: string[]
+  team_id: string | null
   priority: number
   is_active: boolean
   times_triggered: number
+}
+
+interface TeamOption {
+  id: string
+  name: string
 }
 
 interface AgentOption {
@@ -87,6 +93,7 @@ const EMPTY_FORM = {
   urgency_levels: "",
   motivation_types: "",
   contact_personas: "",
+  team_id: "" as string,
 }
 
 const EMPTY_PREVIEW = { lead_score: "75", property_zip_code: "", source: "", urgency_level: "" }
@@ -102,6 +109,8 @@ export default function AssignmentRulesPage() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [isPending, startTransition] = useTransition()
   const [planTier, setPlanTier] = useState<string | null>(null)
+  const [teams, setTeams] = useState<TeamOption[]>([])
+  const [teamMembers, setTeamMembers] = useState<Record<string, string[]>>({})
   const [preview, setPreview] = useState(EMPTY_PREVIEW)
 
   useEffect(() => {
@@ -123,15 +132,15 @@ export default function AssignmentRulesPage() {
       if (!profile?.brokerage_id) return
       setBrokerageId(profile.brokerage_id)
 
-      const [{ data: rulesData }, { data: agentsData }, { data: brokerageRow }] = await Promise.all([
+      const [{ data: rulesData }, { data: agentsData }, { data: brokerageRow }, { data: teamsData }] = await Promise.all([
         supabase
           .from("assignment_rules")
-          .select("id, name, rule_type, conditions, agent_ids, priority, is_active, times_triggered")
+          .select("id, name, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered")
           .eq("brokerage_id", profile.brokerage_id)
           .order("priority", { ascending: false }),
         supabase
           .from("agents")
-          .select("id, users!user_id ( first_name, last_name )")
+          .select("id, team_id, users!user_id ( first_name, last_name )")
           .eq("brokerage_id", profile.brokerage_id)
           .eq("is_active", true),
         supabase
@@ -139,11 +148,23 @@ export default function AssignmentRulesPage() {
           .select("plan_tier")
           .eq("id", profile.brokerage_id)
           .maybeSingle(),
+        supabase
+          .from("teams")
+          .select("id, name")
+          .eq("brokerage_id", profile.brokerage_id)
+          .is("deleted_at", null),
       ])
 
       setRules((rulesData ?? []) as AssignmentRule[])
       setAgents((agentsData ?? []) as AgentOption[])
       setPlanTier((brokerageRow as { plan_tier?: string } | null)?.plan_tier ?? null)
+      setTeams((teamsData ?? []) as TeamOption[])
+      // teams.id -> member agents.id, for team-scoped rules without explicit agents
+      const members: Record<string, string[]> = {}
+      for (const a of (agentsData ?? []) as Array<{ id: string; team_id?: string | null }>) {
+        if (a.team_id) (members[a.team_id] ??= []).push(a.id)
+      }
+      setTeamMembers(members)
     } finally {
       setLoading(false)
     }
@@ -176,6 +197,7 @@ export default function AssignmentRulesPage() {
       contact_personas: Array.isArray(cond.contact_personas)
         ? (cond.contact_personas as string[]).join(", ")
         : "",
+      team_id: rule.team_id ?? "",
     })
     setModalOpen(true)
   }
@@ -206,6 +228,7 @@ export default function AssignmentRulesPage() {
         rule_type: form.rule_type,
         conditions: buildConditions(),
         agent_ids: form.agent_ids,
+        team_id: form.team_id || null,
         priority: form.priority,
         is_active: true,
       }
@@ -301,11 +324,18 @@ export default function AssignmentRulesPage() {
               <Badge variant="outline" className="shrink-0">3</Badge>
               <div>
                 <span className="font-medium">Your rules below</span>
-                <span className="text-muted-foreground"> — evaluated highest-priority first; the first rule whose conditions ALL match picks the agent (Round Robin rotates through the list; other types take the first listed agent).</span>
+                <span className="text-muted-foreground"> — evaluated highest-priority first; the first rule whose conditions ALL match picks the agent (Round Robin rotates; other types take the first agent). Team-scoped rules outrank brokerage-wide rules at equal priority, never fire for a contact that belongs to a different team, and route within the team's members when no agents are hand-picked — this is how a team plan or a multi-location brokerage (each office = a team) keeps its leads in-house.</span>
               </div>
             </li>
             <li className="flex gap-3">
               <Badge variant="outline" className="shrink-0">4</Badge>
+              <div>
+                <span className="font-medium">Team fallback</span>
+                <span className="text-muted-foreground"> — a contact with a team affinity (its capture owner's team) load-balances within that team first, then goes to the TEAM LEAD, before ever leaving the team.</span>
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <Badge variant="outline" className="shrink-0">5</Badge>
               <div>
                 <span className="font-medium">Load-balance fallback</span>
                 <span className="text-muted-foreground"> — when nothing above fires, the active agent with the fewest contacts gets the assignment. No lead is ever left unrouted.</span>
@@ -358,15 +388,17 @@ export default function AssignmentRulesPage() {
               property_zip_code: preview.property_zip_code || null,
               source: preview.source || null,
               urgency_level: preview.urgency_level || null,
-            })
+            }, { teamMembers })
             if (result.rule) {
               const agent = agents.find((a) => a.id === result.agentId)
               const agentName = agent
                 ? (agent.full_name ?? [agent.users?.first_name, agent.users?.last_name].filter(Boolean).join(" ")) || result.agentId
                 : result.agentId
+              const ruleTeam = teams.find((t) => t.id === (result.rule as { team_id?: string | null }).team_id)
               return (
                 <p className="text-sm">
                   <Badge>rule: {result.rule.name ?? result.rule.id}</Badge>
+                  {ruleTeam && <Badge variant="secondary" className="ml-1">team: {ruleTeam.name}</Badge>}
                   <span className="ml-2">→ <span className="font-medium">{agentName}</span></span>
                   <span className="text-muted-foreground ml-2">(this exact matcher runs in the assignment engine)</span>
                 </p>
@@ -393,6 +425,7 @@ export default function AssignmentRulesPage() {
                 <TableHead>Priority</TableHead>
                 <TableHead>Rule Name</TableHead>
                 <TableHead>Type</TableHead>
+                <TableHead>Scope</TableHead>
                 <TableHead>Conditions</TableHead>
                 <TableHead>Agents</TableHead>
                 <TableHead>Triggered</TableHead>
@@ -403,7 +436,7 @@ export default function AssignmentRulesPage() {
             <TableBody>
               {rules.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                     No rules yet. Click "+ Add Rule" to create one.
                   </TableCell>
                 </TableRow>
@@ -420,6 +453,15 @@ export default function AssignmentRulesPage() {
                       <Badge variant="secondary">
                         {RULE_TYPE_LABELS[rule.rule_type] ?? rule.rule_type}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {rule.team_id ? (
+                        <Badge variant="outline" className="text-xs">
+                          {teams.find((t) => t.id === rule.team_id)?.name ?? "Team"}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Brokerage-wide</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
                       {conditionsSummary(rule.conditions ?? {})}
@@ -621,8 +663,31 @@ export default function AssignmentRulesPage() {
               </div>
             </div>
 
+            {teams.length > 0 && (
+              <div className="space-y-1">
+                <Label>Team scope</Label>
+                <Select
+                  value={form.team_id || "brokerage_wide"}
+                  onValueChange={(v) => setForm((p) => ({ ...p, team_id: v === "brokerage_wide" ? "" : v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="brokerage_wide">Brokerage-wide</SelectItem>
+                    {teams.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Team-scoped rules route within the team (its members when no agents are picked below) and never fire for another team's contacts.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
-              <Label>Assign to Agents</Label>
+              <Label>Assign to Agents{form.team_id ? " (optional — defaults to the team's members)" : ""}</Label>
               <div className="border rounded-md p-3 max-h-40 overflow-y-auto space-y-2">
                 {agents.length === 0 && (
                   <p className="text-sm text-muted-foreground">No active agents found.</p>

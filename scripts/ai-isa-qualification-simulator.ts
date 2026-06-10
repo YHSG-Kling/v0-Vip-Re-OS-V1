@@ -33,7 +33,10 @@ import {
   engine2GatePasses,
 } from "../lib/ai-isa/qualification-core"
 import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
-import { previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent } from "../lib/lead-assignment/rule-matcher"
+import {
+  previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent,
+  effectiveAgentPool, teamScopeAllows,
+} from "../lib/lead-assignment/rule-matcher"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -168,6 +171,40 @@ function testRuleRouting() {
   check("rotation is deterministic", pickRoundRobinAgent(["a","b","c"], 7) === "b")
 }
 
+function testTeamTierRouting() {
+  console.log("\n[Layer 1 · team tier — team-scoped rules + affinity gate (team / multi-location plans)]")
+  const teamMembers = { T1: ["M1", "M2", "M3"], T2: ["N1"] }
+  const rules = [
+    { id: "r-brok", name: "Brokerage zips", rule_type: "round_robin", priority: 50, is_active: true,
+      times_triggered: 0, agent_ids: ["B1"], team_id: null, conditions: { zip_codes: ["33133"] } },
+    { id: "r-team", name: "Miami office", rule_type: "round_robin", priority: 50, is_active: true,
+      times_triggered: 4, agent_ids: [], team_id: "T1", conditions: { zip_codes: ["33133"] } },
+    { id: "r-team2", name: "Tampa office", rule_type: "specialization", priority: 60, is_active: true,
+      times_triggered: 0, agent_ids: [], team_id: "T2", conditions: { zip_codes: ["33601"] } },
+  ]
+
+  check("team rule without agents routes within the TEAM's members (pool = team)",
+    JSON.stringify(effectiveAgentPool(rules[1] as never, teamMembers)) === JSON.stringify(["M1","M2","M3"]))
+  check("team rule with no members and no agents is unroutable",
+    effectiveAgentPool({ ...rules[1], team_id: "T9" } as never, teamMembers).length === 0)
+
+  // Equal priority: team-scoped rule outranks brokerage-wide (canonical precedence).
+  const sameZip = previewRuleRouting(rules as never, { property_zip_code: "33133" }, { teamMembers })
+  check("equal priority → team-scoped rule outranks brokerage-wide", sameZip.rule?.id === "r-team")
+  check("team round_robin rotates through MEMBERS (4 % 3 → M2)", sameZip.agentId === "M2")
+
+  // Affinity gate: a contact owned by Tampa (T2) must never route into Miami's rule.
+  const wrongTeam = previewRuleRouting(rules as never, { property_zip_code: "33133" }, { teamMembers, teamHint: "T2" })
+  check("another team's contact never enters a team rule (falls to brokerage rule)",
+    wrongTeam.rule?.id === "r-brok")
+  const rightTeam = previewRuleRouting(rules as never, { property_zip_code: "33133" }, { teamMembers, teamHint: "T1" })
+  check("matching affinity routes into its own team rule", rightTeam.rule?.id === "r-team")
+
+  check("teamScopeAllows: brokerage-wide rule always allowed", teamScopeAllows(rules[0] as never, "T2"))
+  check("teamScopeAllows: no affinity → team rules may fire on conditions alone",
+    teamScopeAllows(rules[1] as never, null))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 2 — live DB round-trip (real schema + constraints, full cleanup)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,6 +288,7 @@ async function main() {
   testScoreAndGate()
   testIsaOvernightBriefing()
   testRuleRouting()
+  testTeamTierRouting()
   await testLiveChain()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
