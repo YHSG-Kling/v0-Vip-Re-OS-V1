@@ -250,7 +250,7 @@ export async function isNetSheetValid(listingId: string): Promise<boolean> {
       .from("activities")
       .select("created_at, metadata")
       .eq("listing_id", listingId)
-      .eq("type", "seller.net_sheet.completed")
+      .eq("activity_type", "seller.net_sheet.completed")
       .order("created_at", { ascending: false })
       .limit(1)
 
@@ -440,7 +440,7 @@ export async function getNetSheetExpiration(listingId: string): Promise<{
       .from("activities")
       .select("created_at, metadata")
       .eq("listing_id", listingId)
-      .eq("type", "seller.net_sheet.completed")
+      .eq("activity_type", "seller.net_sheet.completed")
       .order("created_at", { ascending: false })
       .limit(1)
 

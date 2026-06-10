@@ -280,8 +280,8 @@ export async function getRecoveryHistory(
 
   const { data: events, error } = await supabase
     .from("activities")
-    .select("id, created_at, user_id, metadata")
-    .eq("type", "buyer.lifecycle.recovery")
+    .select("id, created_at, agent_user_id, metadata")
+    .eq("activity_type", "buyer.lifecycle.recovery")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
@@ -305,7 +305,7 @@ export async function getRecoveryHistory(
       recoveryPath: metadata.recovery_path as RecoveryPath,
       trigger: metadata.trigger as RecoveryTrigger,
       occurredAt: new Date(event.created_at),
-      userId: event.user_id || "system",
+      userId: event.agent_user_id || "system",
     }
   })
 }
@@ -343,7 +343,7 @@ export async function getBuyersEligibleForRecovery(params: {
       const { data: transitionEvent } = await supabase
         .from("activities")
         .select("created_at")
-        .eq("type", "buyer.lifecycle.transition")
+        .eq("activity_type", "buyer.lifecycle.transition")
         .eq("entity_type", "contact")
         .eq("entity_id", contact.id)
         .order("created_at", { ascending: false })

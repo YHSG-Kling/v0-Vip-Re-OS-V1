@@ -323,7 +323,7 @@ async function scorePrice(supabase: Supa, listingId: string): Promise<ListingCom
 
 async function scoreActivity(supabase: Supa, listingId: string): Promise<ListingComponentScore> {
   // Recent meaningful activity on the listing's contact (price change, new
-  // photos, agent task, etc.). Best-effort via activities.related_listing_id.
+  // photos, agent task, etc.). Best-effort via activities.listing_id.
   const issues: string[] = []
   let score = 100
 
@@ -331,7 +331,7 @@ async function scoreActivity(supabase: Supa, listingId: string): Promise<Listing
   const { count } = await supabase
     .from("activities")
     .select("id", { count: "exact", head: true })
-    .eq("related_listing_id", listingId)
+    .eq("listing_id", listingId)
     .gte("created_at", sevenDaysAgo)
 
   const recent = count ?? 0

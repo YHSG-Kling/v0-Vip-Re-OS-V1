@@ -166,7 +166,7 @@ async function getCurrentBuyerState(contactId: string): Promise<BuyerState | nul
   const { data: event, error } = await supabase
     .from("activities")
     .select("metadata")
-    .eq("type", "buyer.lifecycle.transition")
+    .eq("activity_type", "buyer.lifecycle.transition")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })

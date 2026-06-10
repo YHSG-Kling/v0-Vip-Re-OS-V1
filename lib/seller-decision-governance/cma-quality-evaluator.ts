@@ -163,9 +163,9 @@ export async function deriveCMAQualityFromEvents(listingId: string): Promise<CMA
   // Query activities for CMA-related events
   const { data: events, error } = await supabase
     .from("activities")
-    .select("event_type, metadata, created_at")
+    .select("activity_type, metadata, created_at")
     .eq("listing_id", listingId)
-    .or("event_type.eq.seller.cma.generated,event_type.eq.seller.cma.approved,event_type.eq.seller.cma.quality_verified")
+    .or("activity_type.eq.seller.cma.generated,activity_type.eq.seller.cma.approved,activity_type.eq.seller.cma.quality_verified")
     .order("created_at", { ascending: false })
     .limit(10)
   
@@ -183,13 +183,13 @@ export async function deriveCMAQualityFromEvents(listingId: string): Promise<CMA
   for (const event of events) {
     const meta = event.metadata as any
     
-    if (event.event_type === "seller.cma.generated" && meta) {
+    if (event.activity_type === "seller.cma.generated" && meta) {
       comparableCount = meta.comparable_count || meta.comparableCount
       oldestComparableMonths = meta.oldest_comparable_months || meta.oldestComparableMonths
       maxRadiusMiles = meta.max_radius_miles || meta.maxRadiusMiles
     }
     
-    if (event.event_type === "seller.cma.approved" && meta) {
+    if (event.activity_type === "seller.cma.approved" && meta) {
       if (meta.approved_by_role === "agent" || meta.approvedByRole === "agent") {
         agentApproved = true
       }
@@ -198,7 +198,7 @@ export async function deriveCMAQualityFromEvents(listingId: string): Promise<CMA
       }
     }
     
-    if (event.event_type === "seller.cma.quality_verified") {
+    if (event.activity_type === "seller.cma.quality_verified") {
       agentApproved = true // Quality verification implies agent approval
     }
   }

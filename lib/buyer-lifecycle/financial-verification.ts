@@ -51,10 +51,10 @@ export async function checkFinancialVerification(
   // Query activities for financial verification events
   let query = supabase
     .from("activities")
-    .select("type, created_at, user_id, metadata")
+    .select("activity_type, created_at, agent_user_id, metadata")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
-    .in("type", [
+    .in("activity_type", [
       "buyer.financial.verification",
       "buyer.pre_approval.uploaded",
       "buyer.proof_of_funds.uploaded",
@@ -86,9 +86,9 @@ export async function checkFinancialVerification(
   
   // Map events to signals
   const signals: FinancialVerificationSignal[] = events.map((event) => ({
-    type: event.type,
+    type: event.activity_type,
     occurredAt: new Date(event.created_at),
-    source: event.user_id || "system",
+    source: event.agent_user_id || "system",
     metadata: event.metadata as Record<string, unknown> | undefined,
   }))
   
@@ -97,13 +97,13 @@ export async function checkFinancialVerification(
   
   // Determine verification type
   let verificationType: FinancialVerificationResult["verificationType"]
-  if (mostRecent.type === "buyer.pre_approval.uploaded") {
+  if (mostRecent.activity_type === "buyer.pre_approval.uploaded") {
     verificationType = "pre_approval"
-  } else if (mostRecent.type === "buyer.proof_of_funds.uploaded") {
+  } else if (mostRecent.activity_type === "buyer.proof_of_funds.uploaded") {
     verificationType = "proof_of_funds"
-  } else if (mostRecent.type === "buyer.lender.introduced") {
+  } else if (mostRecent.activity_type === "buyer.lender.introduced") {
     verificationType = "lender_intro"
-  } else if (mostRecent.type === "agent.confirms.buyer.financial") {
+  } else if (mostRecent.activity_type === "agent.confirms.buyer.financial") {
     verificationType = "agent_confirmation"
   } else {
     verificationType = "agent_confirmation" // default
@@ -122,7 +122,7 @@ export async function checkFinancialVerification(
     isVerified: true,
     verificationType,
     verifiedAt: new Date(mostRecent.created_at),
-    verifiedBy: mostRecent.user_id || undefined,
+    verifiedBy: mostRecent.agent_user_id || undefined,
     expiresAt,
     signals,
   }

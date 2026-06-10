@@ -259,7 +259,7 @@ export async function getRollbackHistory(params: {
   const { data: events, error } = await supabase
     .from('activities')
     .select('created_at, metadata')
-    .eq('type', 'journey.rollback')
+    .eq('activity_type', 'journey.rollback')
     .eq('entity_type', 'contact')
     .eq('entity_id', contactId)
     .order('created_at', { ascending: false })
@@ -306,7 +306,7 @@ export async function hasRecentRollbacks(params: {
   const { data: events, error } = await supabase
     .from('activities')
     .select('created_at, metadata')
-    .eq('type', 'journey.rollback')
+    .eq('activity_type', 'journey.rollback')
     .eq('entity_type', 'contact')
     .eq('entity_id', contactId)
     .gte('created_at', windowDate.toISOString())

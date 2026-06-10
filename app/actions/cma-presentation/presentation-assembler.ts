@@ -371,7 +371,7 @@ async function checkCMAExists(listingId: string): Promise<boolean> {
       .from("activities")
       .select("id")
       .eq("listing_id", listingId)
-      .eq("type", "seller.cma.completed")
+      .eq("activity_type", "seller.cma.completed")
       .limit(1)
 
     return (data && data.length > 0) || false
@@ -390,7 +390,7 @@ async function checkNetSheetExists(listingId: string): Promise<boolean> {
       .from("activities")
       .select("id")
       .eq("listing_id", listingId)
-      .eq("type", "seller.net_sheet.completed")
+      .eq("activity_type", "seller.net_sheet.completed")
       .limit(1)
 
     return (data && data.length > 0) || false

@@ -170,10 +170,10 @@ export async function checkFrozenState(
     // Check for under_contract event
     const { data: events, error } = await supabase
       .from("activities")
-      .select("event_metadata")
+      .select("metadata")
       .eq("entity_type", entityType)
       .eq("entity_id", entityId)
-      .eq("event_type", eventType)
+      .eq("activity_type", eventType)
       .order("created_at", { ascending: false })
       .limit(1);
 
@@ -183,7 +183,7 @@ export async function checkFrozenState(
       return { 
         success: true, 
         is_frozen: true,
-        transaction_id: events[0].event_metadata?.transaction_id
+        transaction_id: events[0].metadata?.transaction_id
       };
     }
 

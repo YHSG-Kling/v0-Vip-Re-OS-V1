@@ -74,7 +74,7 @@ export async function queryBuyerOffers(
   const { data: events, error } = await supabase
     .from("activities")
     .select("created_at, metadata")
-    .eq("type", "buyer.offer.lifecycle")
+    .eq("activity_type", "buyer.offer.lifecycle")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })

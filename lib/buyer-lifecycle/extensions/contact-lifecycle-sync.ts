@@ -216,8 +216,8 @@ export async function getContactSyncHistory(
 
   const { data: events, error } = await supabase
     .from("activities")
-    .select("id, created_at, user_id, metadata")
-    .eq("type", "contact.lifecycle.sync")
+    .select("id, created_at, agent_user_id, metadata")
+    .eq("activity_type", "contact.lifecycle.sync")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
@@ -239,7 +239,7 @@ export async function getContactSyncHistory(
       buyerState: metadata.buyer_state as BuyerState,
       contactStage: metadata.contact_stage as string,
       occurredAt: new Date(event.created_at),
-      userId: event.user_id || "system",
+      userId: event.agent_user_id || "system",
     }
   })
 }

@@ -159,10 +159,10 @@ export async function getBuyerJourneyStatus(
     // Query activities for milestone completion dates
     const { data: milestoneEvents } = await supabase
       .from('activities')
-      .select('type, created_at')
+      .select('activity_type, created_at')
       .eq('entity_type', 'contact')
       .eq('entity_id', contactId)
-      .in('type', [
+      .in('activity_type', [
         'buyer.lifecycle.transitioned',
       ])
       .order('created_at', { ascending: true })
@@ -176,7 +176,7 @@ export async function getBuyerJourneyStatus(
       let completedAt: Date | undefined
       if (milestoneEvents) {
         const event = milestoneEvents.find(e => {
-          const metadata = e.type === 'buyer.lifecycle.transitioned' && (e as any).metadata
+          const metadata = e.activity_type === 'buyer.lifecycle.transitioned' && (e as any).metadata
           return metadata && typeof metadata === 'object' && 'to_state' in metadata && metadata.to_state === state
         })
         if (event) {

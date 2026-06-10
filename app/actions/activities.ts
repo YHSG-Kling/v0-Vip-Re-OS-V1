@@ -148,7 +148,7 @@ export async function getPendingFollowups(
       .eq("agent_id", agentId)
       .eq("status", "pending")
       .in("activity_type", ["followup", "callback", "reminder", "task"])
-      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("scheduled_at", { ascending: true, nullsFirst: false })
       .limit(limit)
 
     if (error) {

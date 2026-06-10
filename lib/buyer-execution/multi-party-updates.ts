@@ -302,10 +302,10 @@ export async function getMultiPartyUpdateHistory(params: {
   
   const { data: events, error } = await supabase
     .from('activities')
-    .select('type, user_id, created_at, metadata')
+    .select('activity_type, agent_user_id, created_at, metadata')
     .eq('entity_type', 'contact')
     .eq('entity_id', contactId)
-    .in('type', [
+    .in('activity_type', [
       'buyer.financial.lender_confirmed',
       'buyer.search.agent_configured',
       'buyer.financial.gate_overridden',
@@ -322,8 +322,8 @@ export async function getMultiPartyUpdateHistory(params: {
   }
   
   const updates = events?.map(event => ({
-    eventType: event.type,
-    actorId: event.user_id || 'system',
+    eventType: event.activity_type,
+    actorId: event.agent_user_id || 'system',
     actorRole: (event.metadata as any)?.actor_role || 'unknown',
     timestamp: new Date(event.created_at),
     metadata: event.metadata as Record<string, unknown>,

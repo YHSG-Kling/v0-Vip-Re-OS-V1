@@ -127,8 +127,8 @@ export async function queryFinancialVerificationEvents(
 
   let query = supabase
     .from("activities")
-    .select("id, created_at, user_id, metadata")
-    .eq("type", "buyer.financial.verification")
+    .select("id, created_at, agent_user_id, metadata")
+    .eq("activity_type", "buyer.financial.verification")
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
@@ -154,7 +154,7 @@ export async function queryFinancialVerificationEvents(
     type: "buyer.financial.verification" as const,
     entity_type: "contact" as const,
     entity_id: contactId,
-    user_id: event.user_id || "system",
+    user_id: event.agent_user_id || "system",
     metadata: event.metadata as FinancialVerificationEventMetadata,
     created_at: event.created_at,
     occurred_at: event.created_at,

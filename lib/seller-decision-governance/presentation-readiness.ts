@@ -161,10 +161,10 @@ export async function derivePresentationReadinessFromEvents(
   // Query activities for presentation-related events
   const { data: events, error } = await supabase
     .from("activities")
-    .select("event_type, metadata, created_at")
+    .select("activity_type, metadata, created_at")
     .eq("listing_id", listingId)
     .or(
-      "event_type.eq.seller.presentation.assembled,event_type.eq.seller.presentation_video.ready,event_type.eq.seller.decision.transition"
+      "activity_type.eq.seller.presentation.assembled,activity_type.eq.seller.presentation_video.ready,activity_type.eq.seller.decision.transition"
     )
     .order("created_at", { ascending: false })
     .limit(20)
@@ -178,15 +178,15 @@ export async function derivePresentationReadinessFromEvents(
   let currentDecisionState: SellerDecisionState | undefined
   
   for (const event of events) {
-    if (event.event_type === "seller.presentation.assembled") {
+    if (event.activity_type === "seller.presentation.assembled") {
       presentationAssembled = true
     }
     
-    if (event.event_type === "seller.presentation_video.ready") {
+    if (event.activity_type === "seller.presentation_video.ready") {
       presentationVideoReady = true
     }
     
-    if (event.event_type === "seller.decision.transition") {
+    if (event.activity_type === "seller.decision.transition") {
       const meta = event.metadata as any
       currentDecisionState = meta?.to_state || meta?.toState
       if (currentDecisionState) break // Use most recent state

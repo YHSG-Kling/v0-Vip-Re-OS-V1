@@ -127,9 +127,9 @@ export async function deriveNetSheetValidityFromEvents(
   // Query activities for net sheet generation events
   const { data: events, error } = await supabase
     .from("activities")
-    .select("event_type, metadata, created_at")
+    .select("activity_type, metadata, created_at")
     .eq("listing_id", listingId)
-    .or("event_type.eq.seller.net_sheet.generated,event_type.eq.seller.net_sheet.regenerated")
+    .or("activity_type.eq.seller.net_sheet.generated,activity_type.eq.seller.net_sheet.regenerated")
     .order("created_at", { ascending: false })
     .limit(1)
   
