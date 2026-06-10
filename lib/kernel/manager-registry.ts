@@ -132,6 +132,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   referral_closing_loop:      { manager: "sphere_of_influence", proof: "test:referral-closer", what: "Deal close → matching referral closed, partner lifetime value credited, partner thank-you proposed into the gate" },
   recruiting_outreach_loop:   { manager: "recruiting_manager", proof: "test:recruit-outreach", what: "Recruit stage advance / stale recruit → next recruiting outreach proposed into the gate (talent pipeline kept warm)" },
   vendor_marketplace_loop:    { manager: "deal_coordinator", proof: "test:vendor-loop", what: "Vendor booked → client intro proposed (Deal Coordinator); service completed → client review request proposed (Sphere) — both gated" },
+  education_delivery_loop:    { manager: "shopping_agent", proof: "test:education-delivery", what: "Client at a lifecycle stage → side-appropriate concierge proposes the best-matched lesson into the gate + records the assignment" },
 }
 
 /**

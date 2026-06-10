@@ -210,6 +210,10 @@
       "schedule": "0 13 * * *"
     },
     {
+      "path": "/api/cron/education-delivery",
+      "schedule": "0 14 * * 3"
+    },
+    {
       "path": "/api/cron/referral-asks",
       "schedule": "0 10 * * 2"
     },
