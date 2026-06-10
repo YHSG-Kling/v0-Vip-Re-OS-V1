@@ -15,7 +15,7 @@ export default async function TitleOrdersPage() {
 
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, status, close_date, client_name, transaction_type, contract_price')
+    .select('id, property_address, status, close_date, client_name, transaction_type:deal_type, contract_price:purchase_price')
     .order('close_date', { ascending: true })
     .limit(50)
 

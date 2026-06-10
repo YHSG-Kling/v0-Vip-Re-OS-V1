@@ -14,7 +14,7 @@ export default async function LenderUnderwritingPage() {
 
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, status, client_name, contract_price')
+    .select('id, property_address, status, client_name, contract_price:purchase_price')
     .eq('status', 'under_contract')
     .limit(20)
 

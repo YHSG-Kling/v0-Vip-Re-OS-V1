@@ -696,7 +696,7 @@ export async function assignVendorToTransaction(data: {
 
       const { data: txn } = await supabase
         .from("transactions")
-        .select("id, property_address, city, state, close_date")
+        .select("id, property_address, city:property_city, state:property_state, close_date")
         .eq("id", data.transactionId)
         .maybeSingle()
 
@@ -835,7 +835,7 @@ export async function createVendorBookingWithKernelEvent(data: {
 
       const { data: txn } = await supabase
         .from("transactions")
-        .select("property_address, city, state, close_date")
+        .select("property_address, city:property_city, state:property_state, close_date")
         .eq("id", data.transactionId)
         .maybeSingle()
 

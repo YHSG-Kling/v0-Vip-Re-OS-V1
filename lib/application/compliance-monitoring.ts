@@ -394,7 +394,7 @@ export async function applyDocumentRetentionService(transactionId: string) {
 
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("actual_close_date")
+    .select("actual_close_date:close_date")
     .eq("id", transactionId)
     .single()
 

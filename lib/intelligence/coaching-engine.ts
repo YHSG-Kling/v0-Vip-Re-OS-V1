@@ -67,7 +67,7 @@ export async function generateWeeklyCoachingReport(
       .limit(100),
     supabase
       .from("transactions")
-      .select("id, status, property_address, transaction_type, target_close_date")
+      .select("id, status, property_address, transaction_type:deal_type, target_close_date:estimated_close_date")
       .eq("agent_id", agentId)
       .in("status", ["active", "pending", "under_contract"]),
     supabase

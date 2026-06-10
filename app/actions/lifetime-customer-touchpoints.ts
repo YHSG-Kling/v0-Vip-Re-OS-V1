@@ -230,7 +230,7 @@ export async function getLifetimeCustomerContacts() {
   const contactIds = contacts.map(c => c.id)
   const { data: transactions, error: transError } = await supabase
     .from("transactions")
-    .select("id, contact_id, status, close_date, sale_price")
+    .select("id, contact_id, status, close_date, sale_price:purchase_price")
     .in("contact_id", contactIds)
     .in("status", ["closed", "sold"])
 

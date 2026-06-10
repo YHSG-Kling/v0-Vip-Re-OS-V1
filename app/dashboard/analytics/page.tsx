@@ -50,11 +50,11 @@ export default async function AnalyticsPage() {
     supabase.from("contacts").select("id", { count: "exact", head: true }).eq("agent_id", user.id),
     supabase.from("listings").select("id, status", { count: "exact" }).eq("agent_id", user.id),
     supabase.from("transactions")
-      .select("id, contract_price, status, close_date")
+      .select("id, contract_price:purchase_price, status, close_date")
       .eq("agent_id", user.id)
       .gte("created_at", thirtyDaysAgo),
     supabase.from("transactions")
-      .select("id, contract_price")
+      .select("id, contract_price:purchase_price")
       .eq("agent_id", user.id)
       .gte("created_at", sixtyDaysAgo)
       .lt("created_at", thirtyDaysAgo)

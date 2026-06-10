@@ -291,7 +291,7 @@ async function generateTcLikeBrief(params: {
     supabase
       .from("transactions")
       .select("id, property_address, close_date")
-      .eq("assigned_tc_id", params.userId)
+      .eq("coordinator_id", params.userId)
       .gte("close_date", today)
       .lte("close_date", sevenDaysOut)
       .order("close_date", { ascending: true })
@@ -312,7 +312,7 @@ async function generateTcLikeBrief(params: {
     supabase
       .from("transactions")
       .select("id", { count: "exact", head: true })
-      .eq("assigned_tc_id", params.userId)
+      .eq("coordinator_id", params.userId)
       .not("stage", "in", "(closed,cancelled)"),
   ])
 

@@ -34,7 +34,7 @@ export default async function LenderDashboardPage() {
   // Fetch transactions assigned to this lender via transactions.lender_id
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, status, contract_price, client_name, close_date, transaction_type')
+    .select('id, property_address, status, contract_price:purchase_price, client_name, close_date, transaction_type:deal_type')
     .eq('lender_id', lenderId)
     .order('created_at', { ascending: false })
     .limit(20)

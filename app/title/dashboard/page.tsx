@@ -32,7 +32,7 @@ export default async function TitleDashboardPage() {
 
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, status, close_date, client_name, transaction_type')
+    .select('id, property_address, status, close_date, client_name, transaction_type:deal_type')
     .order('close_date', { ascending: true })
     .limit(20)
 

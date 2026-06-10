@@ -28,7 +28,7 @@ export default async function ContractReviewPage() {
   // Load open transactions so user can pick one
   const { data: transactions } = await supabase
     .from("transactions")
-    .select("id, transaction_type, status, address, close_date, contact_id")
+    .select("id, transaction_type:deal_type, status, address:property_address, close_date, contact_id")
     .eq("brokerage_id", userRow.brokerage_id)
     .not("status", "in", '("closed","cancelled")')
     .order("created_at", { ascending: false })

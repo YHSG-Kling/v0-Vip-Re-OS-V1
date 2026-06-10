@@ -63,7 +63,7 @@ export async function syncTransactionDocumentsFromProvider(
   //    external_provider_transaction_id (m106) and the staleness clock.
   const { data: txn, error: txnErr } = await svc
     .from("transactions")
-    .select("id, brokerage_id, external_provider_source, external_provider_transaction_id, last_provider_sync_at, dotloop_loop_id")
+    .select("id, brokerage_id, external_provider_source, external_provider_transaction_id, last_provider_sync_at")
     .eq("id", input.transactionId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -81,16 +81,13 @@ export async function syncTransactionDocumentsFromProvider(
 
   // 3. Resolve the provider source + external id. Resolution order:
   //      (a) the generic m106 columns on transactions (new path)
-  //      (b) the legacy `dotloop_loop_id` (Dotloop transactions created before m106)
-  //      (c) the linked offer's esign_provider + provider_envelope_id (transactions
+  //      (b) the linked offer's esign_provider + provider_envelope_id (transactions
   //          created from offers BEFORE this commit added inheritance — covers the
   //          install-day-zero case for SkySlope / Brokermint / FormSimplicity)
   // Once any path resolves both fields, we backfill the generic columns on the
   // transactions row so the next sync skips the lookup entirely.
   let providerSource = (txn.external_provider_source as string | null)
-    ?? (txn.dotloop_loop_id ? "dotloop" : null)
   let externalId = (txn.external_provider_transaction_id as string | null)
-    ?? (txn.dotloop_loop_id as string | null)
 
   if (!providerSource || !externalId) {
     const { data: linkedOffer } = await svc

@@ -2206,7 +2206,7 @@ export async function generateAllListingDescriptions(agentId: string) {
 
   const { data: listings } = await supabase
     .from("transactions")
-    .select("property_id")
+    .select("property_id:listing_id")
     .eq("agent_id", agentId)
     .eq("status", "active")
 

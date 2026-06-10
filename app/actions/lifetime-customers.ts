@@ -179,7 +179,7 @@ export async function getLifetimeCustomers({
   const contactIds = filteredContacts.map(c => c.id)
   const { data: transactions, error: transError } = await supabase
     .from("transactions")
-    .select("id, contact_id, actual_close_date, status, property_address, sale_price")
+    .select("id, contact_id, actual_close_date:close_date, status, property_address, sale_price:purchase_price")
     .in("contact_id", contactIds)
     .eq("status", "closed")
 
@@ -373,7 +373,7 @@ export async function getAISuggestedTouchpoint(contactId: string) {
     .select(`
       *,
       client_engagement_scores(engagement_score, last_touchpoint_date),
-      transactions(actual_close_date, property_address)
+      transactions(actual_close_date:close_date, property_address)
     `)
     .eq("id", contactId)
     .single()

@@ -53,7 +53,7 @@ export async function GET(request: Request) {
 
     // Check transactions
     try {
-      const { data, error } = await supabase.from("transactions").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("transactions").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Transactions table: Table does not exist")
@@ -61,7 +61,7 @@ export async function GET(request: Request) {
           results.errors.push(`Transactions table: ${error.message}`)
         }
       } else {
-        results.transactions = data?.[0]?.count || 0
+        results.transactions = count || 0
       }
     } catch (error) {
       results.errors.push(`Transactions table: ${error instanceof Error ? error.message : "Unknown error"}`)

@@ -43,9 +43,9 @@ export async function GET(request: Request) {
     // Check for home anniversaries
     const { data: anniversaries } = await supabase
       .from("transactions")
-      .select("id, contact_id, agent_id, actual_close_date, contacts(*)")
+      .select("id, contact_id, agent_id, actual_close_date:close_date, contacts(*)")
       .eq("status", "closed")
-      .not("actual_close_date", "is", null)
+      .not("close_date", "is", null)
 
     for (const txn of anniversaries || []) {
       const closeDate = new Date(txn.actual_close_date)
@@ -92,9 +92,9 @@ export async function GET(request: Request) {
 
     const { data: recentCloses } = await supabase
       .from("transactions")
-      .select("id, contact_id, agent_id, actual_close_date")
+      .select("id, contact_id, agent_id, actual_close_date:close_date")
       .eq("status", "closed")
-      .in("actual_close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
+      .in("close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
 
     for (const txn of recentCloses || []) {
       try {

@@ -85,8 +85,8 @@ export async function getLifetimeContext(contactId: string) {
       property_address,
       status,
       close_date,
-      sale_price,
-      offer_price,
+      sale_price:purchase_price,
+      offer_price:purchase_price,
       created_at
     `)
     .eq("contact_id", contactId)
@@ -284,9 +284,9 @@ export async function getTransactionHistory(contactId: string) {
       property_address,
       status,
       close_date,
-      sale_price,
-      offer_price,
-      offer_date,
+      sale_price:purchase_price,
+      offer_price:purchase_price,
+      offer_date:contract_date,
       created_at,
       transaction_milestones(
         id,

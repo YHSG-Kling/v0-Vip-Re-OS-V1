@@ -148,7 +148,7 @@ export async function GET(request: NextRequest) {
       .from("transactions")
       .select("*, leads(*)")
       .eq("agent_id", agentId)
-      .eq("transaction_type", "listing")
+      .eq("deal_type", "seller")
       .in("status", ["active", "pending"])
       .limit(5)
 

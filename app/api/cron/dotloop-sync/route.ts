@@ -33,10 +33,10 @@ export async function GET(request: NextRequest) {
 
     const { data: transactions, error: txError } = await supabase
       .from("transactions")
-      .select("id, dotloop_loop_id, buyer_id, seller_id")
+      .select("id, external_provider_transaction_id, buyer_contact_id, seller_contact_id")
       .in("status", ["under_contract", "pending", "contingent"])
-      .eq("dotloop_sync_enabled", true)
-      .not("dotloop_loop_id", "is", null)
+      .eq("external_provider_source", "dotloop")
+      .not("external_provider_transaction_id", "is", null)
 
     if (txError) throw txError
 
@@ -45,8 +45,8 @@ export async function GET(request: NextRequest) {
 
     for (const txn of txList) {
       const result = await syncDotloopDocuments({
-        loopId: txn.dotloop_loop_id,
-        contactId: txn.buyer_id || txn.seller_id,
+        loopId: txn.external_provider_transaction_id,
+        contactId: txn.buyer_contact_id || txn.seller_contact_id,
         transactionId: txn.id,
       })
 

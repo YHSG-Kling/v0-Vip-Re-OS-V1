@@ -123,7 +123,7 @@ export function OffersClient({
     const supabase = (await import("@/lib/supabase/client")).createClient()
     const { data: txn } = await (await supabase)
       .from("transactions")
-      .select("id, contract_price")
+      .select("id, contract_price:purchase_price")
       .eq("contact_id", contactId)
       .ilike("property_address", `%${(offer.property_address ?? "").split(",")[0]}%`)
       .order("created_at", { ascending: false })

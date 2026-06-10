@@ -141,9 +141,9 @@ export async function getContactTransactions(contactId: string) {
   const { data, error } = await supabase
     .from("transactions")
     .select(
-      "id, contact_id, listing_id, agent_id, property_address, city, state, " +
-      "purchase_price, sale_price, list_price, status, contract_date, " +
-      "closing_date, earnest_money, transaction_type, created_at, updated_at"
+      "id, contact_id, listing_id, agent_id, property_address, city:property_city, state:property_state, " +
+      "purchase_price, sale_price:purchase_price, list_price:purchase_price, status, contract_date, " +
+      "closing_date:close_date, earnest_money, transaction_type:deal_type, created_at, updated_at"
     )
     .eq("contact_id", contactId)
     .eq("brokerage_id", gate.brokerageId)

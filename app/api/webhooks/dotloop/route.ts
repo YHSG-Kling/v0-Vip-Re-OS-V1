@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
       await supabase
         .from("transactions")
         .update({ status: mapDotloopStatus(status) })
-        .eq("dotloop_loop_id", loop_id)
+        .eq("external_provider_transaction_id", loop_id)
     }
 
     return NextResponse.json({ received: true })

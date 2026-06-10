@@ -53,9 +53,9 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
     .select(`
       id,
       property_address,
-      sale_price,
+      sale_price:purchase_price,
       status,
-      closing_date,
+      closing_date:close_date,
       commission_splits (
         agent_amount,
         status

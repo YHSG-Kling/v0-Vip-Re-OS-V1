@@ -163,7 +163,7 @@ export async function getAgentTransactions(agentId: string, filters?: {
     }
 
     if (filters?.transactionType) {
-      query = query.eq("transaction_type", filters.transactionType)
+      query = query.eq("deal_type", filters.transactionType)
     }
 
     if (filters?.limit) {
@@ -210,7 +210,7 @@ export async function archiveTransaction(transactionId: string, agentId: string)
       .from("transactions")
       .update({
         status: "archived",
-        archived_at: new Date().toISOString(),
+        deleted_at: new Date().toISOString(),
       })
       .eq("id", transactionId)
 

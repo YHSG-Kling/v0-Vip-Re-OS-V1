@@ -15,7 +15,7 @@ export default async function LenderPipelinePage() {
 
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, status, contract_price, client_name, close_date, transaction_type, created_at')
+    .select('id, property_address, status, contract_price:purchase_price, client_name, close_date, transaction_type:deal_type, created_at')
     .order('close_date', { ascending: true })
     .limit(50)
 

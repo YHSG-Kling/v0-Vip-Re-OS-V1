@@ -115,7 +115,7 @@ export async function recommendActionsForAgent(params: {
   // ── Rule 3: Negotiation close — transactions in offer/negotiation near close ──
   const { data: hotTx } = await svc
     .from("transactions")
-    .select("id, property_address, stage, status, estimated_close_date, purchase_price, commission_total")
+    .select("id, property_address, stage, status, estimated_close_date, purchase_price, commission_amount")
     .eq("agent_id", params.agentId)
     .in("status", ["pending", "active", "under_contract"])
     .not("estimated_close_date", "is", null)
@@ -125,7 +125,7 @@ export async function recommendActionsForAgent(params: {
   for (const tx of hotTx ?? []) {
     const closeDays = (new Date(tx.estimated_close_date).getTime() - now) / 86_400_000
     if (closeDays < -7 || closeDays > 60) continue
-    const expectedGCI = Math.round(Number(tx.commission_total ?? 0) * 100) || 800_000
+    const expectedGCI = Math.round(Number(tx.commission_amount ?? 0) * 100) || 800_000
     candidates.push({
       action_rank: 0,
       action_category: "negotiation_close",
@@ -172,11 +172,11 @@ export async function recommendActionsForAgent(params: {
   const ninetyDaysAgo = new Date(now - 90 * 86_400_000).toISOString()
   const { data: recentCloses } = await svc
     .from("transactions")
-    .select("id, property_address, actual_close_date, commission_total, contact_id")
+    .select("id, property_address, close_date, commission_amount, contact_id")
     .eq("agent_id", params.agentId)
     .in("status", ["closed"])
-    .gte("actual_close_date", ninetyDaysAgo)
-    .order("actual_close_date", { ascending: false })
+    .gte("close_date", ninetyDaysAgo)
+    .order("close_date", { ascending: false })
     .limit(10)
 
   for (const tx of recentCloses ?? []) {

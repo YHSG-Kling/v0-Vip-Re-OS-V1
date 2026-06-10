@@ -50,7 +50,7 @@ export async function getTitleDashboard(titleUserId: string) {
         property_address,
         status,
         close_date,
-        closing_date,
+        closing_date:close_date,
         contract_date,
         purchase_price,
         buyer_contact_id,
@@ -141,7 +141,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
       property_address,
       status,
       close_date,
-      closing_date,
+      closing_date:close_date,
       contract_date,
       purchase_price,
       buyer_contact_id,
@@ -187,7 +187,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
 
   // Calculate days until close
   let daysUntilClose: number | null = null
-  const closeDate = transaction.close_date || transaction.closing_date
+  const closeDate = transaction.close_date
   if (closeDate) {
     const date = new Date(closeDate)
     const today = new Date()

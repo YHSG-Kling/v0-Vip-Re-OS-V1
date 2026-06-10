@@ -62,7 +62,7 @@ export default async function PortalJourneyPage({
   // Get active transaction for this contact
   const { data: transactions } = await supabase
     .from("transactions")
-    .select("id, property_address, status, list_price, offer_price, purchase_price, close_date, contract_date, deal_type")
+    .select("id, property_address, status, list_price:purchase_price, offer_price:purchase_price, purchase_price, close_date, contract_date, deal_type")
     .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })

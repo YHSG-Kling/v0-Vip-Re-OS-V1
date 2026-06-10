@@ -80,7 +80,7 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
     if (data.transactionId) {
       await supabase
         .from("transactions")
-        .update({ last_dotloop_sync: new Date().toISOString() })
+        .update({ last_provider_sync_at: new Date().toISOString() })
         .eq("id", data.transactionId)
         .eq("brokerage_id", ctx.brokerageId)
     }

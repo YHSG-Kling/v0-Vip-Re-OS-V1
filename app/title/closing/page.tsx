@@ -15,7 +15,7 @@ export default async function TitleClosingPage() {
 
   const { data: transactions } = await supabase
     .from('transactions')
-    .select('id, property_address, close_date, client_name, status, contract_price')
+    .select('id, property_address, close_date, client_name, status, contract_price:purchase_price')
     .not('close_date', 'is', null)
     .order('close_date', { ascending: true })
     .limit(30)

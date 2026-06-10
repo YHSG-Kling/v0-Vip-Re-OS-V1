@@ -349,7 +349,7 @@ export async function prefillFormWithContext(input: {
       const { data: tx } = await supabase
         .from("transactions")
         .select(`
-          id, purchase_price, closing_date, status, transaction_type,
+          id, purchase_price, closing_date:close_date, status, transaction_type:deal_type,
           contact_id,
           listing_id,
           contacts!contact_id (
