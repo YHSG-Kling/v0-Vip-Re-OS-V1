@@ -142,7 +142,7 @@ export function CreateCampaignDrawer({
             {/* Video */}
             <ChannelToggle
               icon={<Video className="h-4 w-4 text-purple-500" />}
-              label="Video (HeyGen)"
+              label="Video (D-ID)"
               description={videoEnabled ? "Personalized AI video" : "Requires superadmin activation — contact your platform admin"}
               enabled={videoOn && videoEnabled}
               locked={!videoEnabled}

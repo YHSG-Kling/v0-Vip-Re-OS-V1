@@ -82,18 +82,6 @@ async function testElevenlabs(): Promise<TestResponse> {
   return { ok: true, message: "OK" }
 }
 
-async function testHeygen(): Promise<TestResponse> {
-  const key = process.env.HEYGEN_API_KEY
-  if (!key) return { ok: false, message: "HEYGEN_API_KEY not set" }
-  const res = await callConnector({
-    connector: "heygen", baseUrl: "https://api.heygen.com", path: "/v1/user/remaining_quota", method: "GET",
-    auth: { style: "header", name: "X-Api-Key", value: key },
-  })
-  if (res.status === 401 || res.status === 403) return { ok: false, message: "Auth rejected" }
-  if (!res.ok) return { ok: false, message: `HTTP ${res.status}` }
-  return { ok: true, message: "OK" }
-}
-
 async function testHousecanary(): Promise<TestResponse> {
   const key = process.env.HOUSECANARY_API_KEY
   const secret = process.env.HOUSECANARY_API_SECRET
@@ -114,7 +102,6 @@ const TESTERS: Record<string, () => Promise<TestResponse>> = {
   apify: testApify,
   did: testDid,
   elevenlabs: testElevenlabs,
-  heygen: testHeygen,
   housecanary: testHousecanary,
 }
 

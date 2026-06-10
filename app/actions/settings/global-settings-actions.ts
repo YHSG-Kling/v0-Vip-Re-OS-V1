@@ -54,99 +54,16 @@ export async function updateSettings(
   await updateGlobalSettings({ userId: user.id, updates })
 }
 
-export async function getPlatformVideoProvider(): Promise<"did" | "heygen"> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) return "did"
-
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!userRow?.brokerage_id) return "did"
-
-  const serviceClient = createServiceClient()
-  const { data: gs } = await serviceClient
-    .from("global_settings")
-    .select("additional_settings")
-    .eq("brokerage_id", userRow.brokerage_id)
-    .maybeSingle()
-
-  return (gs?.additional_settings as any)?.platform_video_provider ?? "did"
+// BUSINESS RULE (platform-locked): the avatar/explainer video engine is D-ID +
+// ElevenLabs ONLY. HeyGen is not selectable — this always resolves to "did".
+export async function getPlatformVideoProvider(): Promise<"did"> {
+  return "did"
 }
 
-export async function setPlatformVideoProvider(provider: "did" | "heygen"): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
-
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!userRow?.brokerage_id) throw new Error("Brokerage not found")
-
-  const serviceClient = createServiceClient()
-  const { data: gs } = await serviceClient
-    .from("global_settings")
-    .select("id, additional_settings")
-    .eq("brokerage_id", userRow.brokerage_id)
-    .maybeSingle()
-  if (!gs) throw new Error("Global settings not found")
-
-  const existing = (gs.additional_settings as Record<string, unknown>) ?? {}
-  await serviceClient
-    .from("global_settings")
-    .update({ additional_settings: { ...existing, platform_video_provider: provider } })
-    .eq("id", gs.id)
-}
-
-export interface VideoCostFallbackConfig {
-  enabled:          boolean
-  didCostPerMin:    number
-  heygenCostPerMin: number
-}
-
-/** Read the cost-fallback config (D-ID stays default; HeyGen used only when cheaper + enabled). */
-export async function getVideoCostFallbackConfig(): Promise<VideoCostFallbackConfig> {
-  const { DEFAULT_DID_COST_PER_MIN, DEFAULT_HEYGEN_COST_PER_MIN } = await import("@/lib/marketing/video-provider-cost")
-  const fallback: VideoCostFallbackConfig = { enabled: false, didCostPerMin: DEFAULT_DID_COST_PER_MIN, heygenCostPerMin: DEFAULT_HEYGEN_COST_PER_MIN }
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) return fallback
-  const { data: userRow } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!userRow?.brokerage_id) return fallback
-  const serviceClient = createServiceClient()
-  const { data: gs } = await serviceClient.from("global_settings").select("additional_settings").eq("brokerage_id", userRow.brokerage_id).maybeSingle()
-  const a = (gs?.additional_settings ?? {}) as Record<string, unknown>
-  return {
-    enabled: a.video_cost_fallback_enabled === true,
-    didCostPerMin: typeof a.did_cost_per_min === "number" ? (a.did_cost_per_min as number) : DEFAULT_DID_COST_PER_MIN,
-    heygenCostPerMin: typeof a.heygen_cost_per_min === "number" ? (a.heygen_cost_per_min as number) : DEFAULT_HEYGEN_COST_PER_MIN,
-  }
-}
-
-/** Persist the cost-fallback config (superadmin). Negative prices are clamped to 0. */
-export async function setVideoCostFallbackConfig(cfg: VideoCostFallbackConfig): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
-  const { data: userRow } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!userRow?.brokerage_id) throw new Error("Brokerage not found")
-  const serviceClient = createServiceClient()
-  const { data: gs } = await serviceClient.from("global_settings").select("id, additional_settings").eq("brokerage_id", userRow.brokerage_id).maybeSingle()
-  if (!gs) throw new Error("Global settings not found")
-  const existing = (gs.additional_settings as Record<string, unknown>) ?? {}
-  await serviceClient.from("global_settings").update({
-    additional_settings: {
-      ...existing,
-      video_cost_fallback_enabled: cfg.enabled === true,
-      did_cost_per_min: Math.max(0, Number(cfg.didCostPerMin) || 0),
-      heygen_cost_per_min: Math.max(0, Number(cfg.heygenCostPerMin) || 0),
-    },
-  }).eq("id", gs.id)
+// HeyGen is not a selectable provider. The setter is a no-op kept for call-site
+// compatibility; the platform video engine is permanently D-ID.
+export async function setPlatformVideoProvider(_provider: "did"): Promise<void> {
+  return
 }
 
 export async function fetchWidgetScope(): Promise<WidgetScope | null> {

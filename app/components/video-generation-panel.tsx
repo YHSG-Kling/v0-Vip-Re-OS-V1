@@ -149,10 +149,15 @@ export function VideoGenerationPanel({
     const pollInterval = setInterval(async () => {
       for (const videoId of pollingIds) {
         try {
-          const response = await fetch(`/api/heygen/check-status/${videoId}`)
-          const data = await response.json()
+          // D-ID renders are finalized by the poll-did-videos cron, which writes
+          // status onto the ai_video_projects row. Read the row directly.
+          const { data } = await supabase
+            .from("ai_video_projects")
+            .select("status")
+            .eq("id", videoId)
+            .maybeSingle()
 
-          if (data.status === "completed" || data.status === "failed" || data.preview_ready) {
+          if (data?.status === "completed" || data?.status === "ready" || data?.status === "failed" || data?.status === "preview_ready") {
             setPollingIds((prev) => {
               const next = new Set(prev)
               next.delete(videoId)
@@ -168,7 +173,7 @@ export function VideoGenerationPanel({
     }, 10000) // Poll every 10 seconds
 
     return () => clearInterval(pollInterval)
-  }, [pollingIds, loadProjects])
+  }, [pollingIds, loadProjects, supabase])
 
   // ─── REAL-TIME UPDATES ──────────────────────────────────────────────────────
 
@@ -202,19 +207,20 @@ export function VideoGenerationPanel({
 
   async function handlePublish(project: VideoProject) {
     try {
-      const response = await fetch(`/api/heygen/check-status/${project.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: user?.id,
-          publish_metadata: {
+      const { error } = await supabase
+        .from("ai_video_projects")
+        .update({
+          status: "published",
+          video_metadata: {
+            ...(project.video_metadata ?? {}),
             published_by: user?.id,
             published_at: new Date().toISOString(),
           },
-        }),
-      })
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", project.id)
 
-      if (response.ok) {
+      if (!error) {
         loadProjects()
       }
     } catch (error) {
@@ -246,7 +252,7 @@ export function VideoGenerationPanel({
               AI Video Generation
             </CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
-              Create professional avatar videos with HeyGen AI
+              Create professional avatar videos with D-ID
             </p>
           </div>
           <div className="flex gap-2">

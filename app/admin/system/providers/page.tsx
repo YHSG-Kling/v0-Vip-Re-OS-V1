@@ -32,7 +32,6 @@ export default async function SystemProvidersPage() {
     apify: !!process.env.APIFY_API_KEY,
     did: !!process.env.DID_API_KEY,
     elevenlabs: !!process.env.ELEVENLABS_API_KEY,
-    heygen: !!process.env.HEYGEN_API_KEY,
     housecanary: !!(
       process.env.HOUSECANARY_API_KEY || process.env.HOUSECANARY_API_SECRET
     ),

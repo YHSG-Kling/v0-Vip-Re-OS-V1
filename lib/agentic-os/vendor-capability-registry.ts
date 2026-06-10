@@ -134,8 +134,7 @@ export const VENDOR_CAPABILITY_REGISTRY: Record<VendorCapability, VendorCapabili
     purpose: "Render an AI avatar / talking-head marketing video.",
     inputs: ["script", "brokerageId", "avatar/voice assets"],
     providers: [
-      { vendor: "did", tier: "paid", note: "D-ID talking-head (standard)" },
-      { vendor: "heygen", tier: "paid", note: "HeyGen avatar video (premium)" },
+      { vendor: "did", tier: "paid", note: "D-ID talking-head — the platform video engine (voice via ElevenLabs)" },
     ],
   },
   tts: {

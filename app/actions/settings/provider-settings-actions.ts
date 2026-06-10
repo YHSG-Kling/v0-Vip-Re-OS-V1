@@ -75,7 +75,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   transaction: "dotloop",
   ai:          "anthropic",
   direct_mail: "lob",
-  video:       "heygen",
+  video:       "did",
 }
 
 // ─── READ ─────────────────────────────────────────────────────────────────────

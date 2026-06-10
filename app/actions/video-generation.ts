@@ -1326,32 +1326,23 @@ export async function generateVideoFromScript(params: {
 
     if (scriptError) console.warn("[v0] Script record error:", scriptError)
 
-    // Call HeyGen API to start generation (non-fatal if API key not yet configured)
-    const heygenApiKey = process.env.HEYGEN_API_KEY
-    if (heygenApiKey && params.avatarId && params.voiceId) {
-      const heygenRes = await callConnector<{ data?: { video_id?: string } }>({
-        connector: "heygen",
-        baseUrl: "https://api.heygen.com",
-        path: "/v2/video/generate",
-        method: "POST",
-        auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
-        body: {
-          video_inputs: [{
-            character: { type: "avatar", avatar_id: params.avatarId, avatar_style: "normal" },
-            voice: { type: "text", input_text: params.script, voice_id: params.voiceId },
-          }],
-          dimension: { width: 1920, height: 1080 },
-        },
+    // Kick off generation via the platform engine — D-ID + ElevenLabs (no HeyGen).
+    // Non-fatal: if the provider isn't configured the item stays queued for the
+    // render pipeline. (Was a direct api.heygen.com call — business-rule violation.)
+    if (params.avatarId && params.voiceId) {
+      const { generateHeyGenVideo } = await import("@/app/actions/external-services")
+      const didRes = await generateHeyGenVideo({
+        avatarId: params.avatarId,
+        voiceId: params.voiceId,
+        script: params.script,
+        brokerageId: auth.brokerageId ?? undefined,
       })
-      if (heygenRes.ok) {
-        const heygenVideoId = heygenRes.data?.data?.video_id
-        if (heygenVideoId) {
-          await supabase.from("video_generation_queue")
-            .update({ heygen_video_id: heygenVideoId, status: "generating" })
-            .eq("id", queueRecord.id)
-        }
+      if (didRes.success && (didRes as { videoId?: string }).videoId) {
+        await supabase.from("video_generation_queue")
+          .update({ heygen_video_id: (didRes as { videoId?: string }).videoId, status: "generating" })
+          .eq("id", queueRecord.id)
       } else {
-        console.warn("[v0] HeyGen API call failed, video stays queued:", heygenRes.error)
+        console.warn("[v0] D-ID kick deferred, video stays queued:", (didRes as { error?: string }).error)
       }
     }
 
@@ -1457,48 +1448,24 @@ export async function createAvatarVideo(params: {
   try {
     console.log("[v0] Generating avatar video for script:", params.scriptId)
 
-    const heygenApiKey = process.env.HEYGEN_API_KEY
-    if (!heygenApiKey) {
-      return { success: false, error: "HeyGen API key not configured. Contact your administrator." }
-    }
-
-    const heygenRes = await callConnector<{ data?: { video_id?: string } }>({
-      connector: "heygen",
-      baseUrl: "https://api.heygen.com",
-      path: "/v2/video/generate",
-      method: "POST",
-      auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
-      body: {
-        video_inputs: [{
-          character: {
-            type: "avatar",
-            avatar_id: params.avatarId || "Angela-insuit-20220820",
-            avatar_style: "normal",
-          },
-          voice: {
-            type: "text",
-            input_text: params.script,
-            voice_id: params.voice || "1bd001e7e50f421d891986aad5158bc8",
-          },
-        }],
-        dimension: { width: 1920, height: 1080 },
-      },
+    // Platform engine: D-ID + ElevenLabs (no HeyGen). Delegate to the rewired
+    // generation action (was a direct api.heygen.com call — business-rule violation).
+    const { generateHeyGenVideo } = await import("@/app/actions/external-services")
+    const didRes = await generateHeyGenVideo({
+      avatarId: params.avatarId || "",
+      voiceId: params.voice || "",
+      script: params.script,
+      brokerageId: auth.brokerageId ?? undefined,
     })
-
-    if (!heygenRes.ok) {
-      throw new Error(heygenRes.error || "HeyGen API error")
+    if (!didRes.success) {
+      return { success: false, error: (didRes as { error?: string }).error || "Video provider error (D-ID + ElevenLabs)" }
     }
+    const didVideoId = (didRes as { videoId?: string }).videoId
+    // Provider job tracking belongs on ai_video_projects (provider_job_id/_status);
+    // video_scripts_library has no place to persist it — log so it isn't lost.
+    console.log(`[video-generation] D-ID video_id=${didVideoId} for script ${params.scriptId}`)
 
-    const heygenVideoId = heygenRes.data?.data?.video_id
-
-    // SCHEMA DRIFT: video_scripts_library has no video_status /
-    // video_heygen_id / video_generated_at columns — these inserts are
-    // silently dropped. Provider job tracking belongs on ai_video_projects
-    // (provider_job_id, provider_status, heygen_video_id columns exist
-    // there). Logging the HeyGen video_id to console so it isn't lost.
-    console.log(`[video-generation] HeyGen video_id=${heygenVideoId} for script ${params.scriptId} (drift: no place to persist on video_scripts_library)`)
-
-    return { success: true, videoId: heygenVideoId, status: "generating" }
+    return { success: true, videoId: didVideoId, status: "generating" }
   } catch (error: any) {
     console.error("[v0] Video generation error:", error)
     return { success: false, error: error.message }

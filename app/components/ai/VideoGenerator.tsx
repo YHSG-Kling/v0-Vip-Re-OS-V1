@@ -59,7 +59,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const [progress, setProgress] = useState(0)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [queueId, setQueueId] = useState<string | null>(null)
-  const [heyGenNotConfigured, setHeyGenNotConfigured] = useState(false)
+  const [videoNotConfigured, setVideoNotConfigured] = useState(false)
   const [script, setScript] = useState<string>("")
   const [agentSettings, setAgentSettings] = useState<Agent | null>(null)
   const [statusMessage, setStatusMessage] = useState("")
@@ -88,7 +88,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     setStatusMessage("Drafting AI script...")
 
     try {
-      const prompt = `Act as a high-performance real estate agent. Write a 45-second high-energy script for a personalized HeyGen avatar video.
+      const prompt = `Act as a high-performance real estate agent. Write a 45-second high-energy script for a personalized D-ID avatar video.
             
 PURPOSE: ${purpose}
 RECIPIENT: ${context.name}
@@ -126,18 +126,18 @@ Return ONLY the spoken script text.`
 
   const handleGenerate = async () => {
     if (!agentSettings?.heyGenAvatarId) {
-      setHeyGenNotConfigured(true)
+      setVideoNotConfigured(true)
       return
     }
 
     setIsGenerating(true)
     setProgress(5)
-    setHeyGenNotConfigured(false)
+    setVideoNotConfigured(false)
 
     const generatedScript = await generateScript()
     setScript(generatedScript)
     setProgress(25)
-    setStatusMessage("Queuing video via HeyGen API...")
+    setStatusMessage("Queuing video via D-ID...")
 
     try {
       const queueItem = await queueVideoGeneration({
@@ -173,7 +173,7 @@ Return ONLY the spoken script text.`
 
       // Poll video_generation_queue until status = 'completed' or 'failed'
       const pollInterval = setInterval(async () => {
-        const statusResult = await executeWorkflow("poll-heygen-video", { queueId: queueItemId })
+        const statusResult = await executeWorkflow("poll-did-video", { queueId: queueItemId })
         if (statusResult?.status === "completed" && statusResult?.video_url) {
           clearInterval(pollInterval)
           setVideoUrl(statusResult.video_url)
@@ -194,7 +194,7 @@ Return ONLY the spoken script text.`
     } catch (err) {
       console.error("[v0] queueVideoGeneration error:", err)
       setIsGenerating(false)
-      setStatusMessage("Failed to queue video. Check HeyGen integration settings.")
+      setStatusMessage("Failed to queue video. Check D-ID integration settings.")
       setProgress(0)
     }
   }
@@ -236,18 +236,18 @@ Return ONLY the spoken script text.`
       </div>
 
       <div className="p-8">
-        {heyGenNotConfigured && (
+        {videoNotConfigured && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center mb-6">
             <AlertTriangle className="h-8 w-8 text-amber-500 mx-auto mb-3" />
             <p className="font-medium">Video generation not configured</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Connect HeyGen in your integrations settings to generate real videos.
+              Connect D-ID in your integrations settings to generate real videos.
             </p>
             <button
               className="mt-4 px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-bold hover:bg-black transition-all"
               onClick={() => router.push("/settings/integrations")}
             >
-              Connect HeyGen
+              Connect D-ID
             </button>
           </div>
         )}

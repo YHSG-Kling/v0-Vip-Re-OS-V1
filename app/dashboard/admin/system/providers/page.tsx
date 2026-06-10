@@ -4,7 +4,7 @@
  * Super Admin — System Provider Connection Status
  *
  * Shows each platform-level API integration (ZenRows, BatchData, Apify,
- * D-ID, ElevenLabs, HeyGen, HouseCanary) with a "Test Connection" button.
+ * D-ID, ElevenLabs, HouseCanary) with a "Test Connection" button.
  * Tests POST to /api/admin/system/providers/test.
  *
  * Super admin role only — do not add to agent or broker nav.
@@ -72,13 +72,6 @@ const PROVIDERS = [
     description: "Voice cloning and synthesis. Used for podcast audio generation and AI ISA voice calls.",
     envKey: "ELEVENLABS_API_KEY",
     docsUrl: "https://elevenlabs.io/",
-  },
-  {
-    id: "heygen",
-    label: "HeyGen (AI Video)",
-    description: "AI avatar video creation alternative to D-ID. Used for presentation videos.",
-    envKey: "HEYGEN_API_KEY",
-    docsUrl: "https://www.heygen.com/",
   },
   {
     id: "housecanary",

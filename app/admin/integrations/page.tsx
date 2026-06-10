@@ -11,7 +11,7 @@ import { toCanonicalRoleOrDefault } from '@/lib/security'
 export const dynamic = 'force-dynamic'
 
 const KNOWN_INTEGRATIONS = [
-  { name: 'HeyGen (Video AI)', envKey: 'HEYGEN_API_KEY', category: 'AI', description: 'AI video generation for personalized property videos' },
+  { name: 'D-ID (Video AI)', envKey: 'DID_API_KEY', category: 'AI', description: 'Avatar / talking-head video for personalized property videos (voice via ElevenLabs)' },
   { name: 'Vapi.ai (Voice AI)', envKey: 'VAPI_API_KEY', category: 'AI', description: 'AI voice agent for ISA calling and qualification' },
   { name: 'Supabase', envKey: 'NEXT_PUBLIC_SUPABASE_URL', category: 'Database', description: 'Primary database and authentication' },
   { name: 'GoHighLevel', envKey: 'GHL_API_KEY', category: 'CRM', description: 'CRM and marketing automation bridge' },

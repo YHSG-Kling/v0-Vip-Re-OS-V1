@@ -58,13 +58,6 @@ const PROVIDERS: ProviderRow[] = [
     category: "ai_media",
   },
   {
-    key: "heygen",
-    name: "HeyGen",
-    description: "Avatar video generation; alternative voice synth provider.",
-    envVar: "HEYGEN_API_KEY",
-    category: "ai_media",
-  },
-  {
     key: "housecanary",
     name: "HouseCanary",
     description: "AVM, property valuations, and neighborhood data.",

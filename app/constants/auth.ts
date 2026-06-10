@@ -103,7 +103,7 @@ export const PROTECTED_ROUTES = [
   '/api/behavior',
   '/api/dashboard',
   '/api/forms',
-  '/api/heygen',
+  '/api/did',
   '/api/integrations',
   '/api/intelligence',
   '/api/offers',

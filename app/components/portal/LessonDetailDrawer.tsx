@@ -213,8 +213,8 @@ export function LessonDetailDrawer({
           When format='video', extract a URL from the content (first http(s)
           URL or a markdown image/link) and render an HTML5 <video> when
           it's a direct video file, or an <iframe> for YouTube/Vimeo. Falls
-          back to a "pending" notice when the URL is still 'pending://heygen'
-          (Sprint 7 video fan-out before HeyGen finishes).
+          back to a "pending" notice when the URL is still 'pending://…'
+          (Sprint 7 video fan-out before the D-ID render finishes).
         */}
         {lesson.format === "video" && !loadingContent && (() => {
           const urlMatch = content.match(/https?:\/\/\S+/i)

@@ -69,7 +69,7 @@ export default async function AgentProfilePage() {
       {/* Personal email signature */}
       <AgentSignaturePanel currentSignature={profile.email_signature ?? null} />
 
-      {/* HeyGen avatar + voice IDs */}
+      {/* D-ID avatar + ElevenLabs voice IDs */}
       <VideoSettingsCard
         userId={user.id}
         initialAvatarId={agentSettings.avatarId ?? null}

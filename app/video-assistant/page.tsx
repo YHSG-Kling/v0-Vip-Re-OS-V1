@@ -120,7 +120,7 @@ export default function VideoAssistantPage() {
   }
 
   async function handleGenerateVideo(scriptId: string, script: string, useAvatar: boolean) {
-    toast.info("HeyGen must be configured by your administrator before video generation is available")
+    toast.info("Video generation (D-ID + ElevenLabs) must be configured by your administrator before it is available")
     return
   }
 

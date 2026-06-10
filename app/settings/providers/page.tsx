@@ -8,10 +8,7 @@ import {
   type ProviderOverrideRow,
 } from '@/app/actions/settings/provider-settings-actions'
 import {
-  getPlatformVideoProvider,
   setPlatformVideoProvider,
-  getVideoCostFallbackConfig,
-  setVideoCostFallbackConfig,
 } from '@/app/actions/settings/global-settings-actions'
 
 // ─── PROVIDER CATALOGUES ──────────────────────────────────────────────────────
@@ -25,7 +22,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   sms:         'twilio',
   phone:       'twilio',
   direct_mail: 'lob',
-  video:       'heygen',
+  video:       'did',
 }
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -68,29 +65,20 @@ export default function ProviderSettingsPage() {
   const [savedChannel, setSavedChannel] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
-  // Platform video provider state (superadmin only)
-  const [platformProvider, setPlatformProviderState] = useState<'did' | 'heygen'>('did')
+  // Platform video provider state (superadmin only) — engine is locked to D-ID.
   const [providerSaving, setProviderSaving] = useState(false)
   const [providerSaved, setProviderSaved] = useState(false)
   const [providerError, setProviderError] = useState<string | null>(null)
-  // Cost-fallback config — D-ID stays default; HeyGen used only when cheaper + enabled.
-  const [costFallbackEnabled, setCostFallbackEnabled] = useState(false)
-  const [didCostPerMin, setDidCostPerMin] = useState('0.30')
-  const [heygenCostPerMin, setHeygenCostPerMin] = useState('0.50')
 
   useEffect(() => {
     void (async () => {
       try {
-        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }, currentProvider, costCfg] =
-          await Promise.all([getProviderSettings(), getSystemProviderStatus(), getPlatformVideoProvider(), getVideoCostFallbackConfig()])
+        const [{ overrides, isSuperadmin: isSA }, { directMailEnabled, videoEnabled }] =
+          await Promise.all([getProviderSettings(), getSystemProviderStatus()])
 
         setIsSuperadmin(isSA)
         setDirectMailAllowed(directMailEnabled || isSA)
         setVideoAllowed(videoEnabled || isSA)
-        setPlatformProviderState(currentProvider)
-        setCostFallbackEnabled(costCfg.enabled)
-        setDidCostPerMin(String(costCfg.didCostPerMin))
-        setHeygenCostPerMin(String(costCfg.heygenCostPerMin))
 
         setState({
           email:       buildInitial(overrides, 'email'),
@@ -140,12 +128,8 @@ export default function ProviderSettingsPage() {
     setProviderError(null)
     setProviderSaved(false)
     try {
-      await setPlatformVideoProvider(platformProvider)
-      await setVideoCostFallbackConfig({
-        enabled: costFallbackEnabled,
-        didCostPerMin: parseFloat(didCostPerMin) || 0,
-        heygenCostPerMin: parseFloat(heygenCostPerMin) || 0,
-      })
+      // Platform video engine is permanently D-ID + ElevenLabs.
+      await setPlatformVideoProvider('did')
       setProviderSaved(true)
       setTimeout(() => setProviderSaved(false), 2500)
     } catch (err) {
@@ -190,65 +174,21 @@ export default function ProviderSettingsPage() {
             </p>
           </div>
           <div className="space-y-3">
-            <label className="flex items-start gap-3 p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-              <input
-                type="radio"
-                name="platform_provider"
-                value="did"
-                checked={platformProvider === 'did'}
-                onChange={() => setPlatformProviderState('did')}
-                className="mt-1"
-              />
+            <div className="flex items-start gap-3 p-4 border rounded-lg bg-gray-50">
               <div>
-                <p className="font-medium text-gray-900">D-ID + ElevenLabs <span className="ml-2 text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Default — Recommended</span></p>
+                <p className="font-medium text-gray-900">D-ID + ElevenLabs <span className="ml-2 text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Platform engine</span></p>
                 <p className="text-sm text-gray-500 mt-0.5">Agents use their own face and cloned voice. Cost-effective and personal.</p>
                 <p className="text-xs text-gray-400 mt-1">Requires: DID_API_KEY + ELEVENLABS_API_KEY in environment</p>
               </div>
-            </label>
-            <label className="flex items-start gap-3 p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-              <input
-                type="radio"
-                name="platform_provider"
-                value="heygen"
-                checked={platformProvider === 'heygen'}
-                onChange={() => setPlatformProviderState('heygen')}
-                className="mt-1"
-              />
-              <div>
-                <p className="font-medium text-gray-900">HeyGen Studio</p>
-                <p className="text-sm text-gray-500 mt-0.5">Professional studio avatars and synthetic voices via HeyGen.</p>
-                <p className="text-xs text-gray-400 mt-1">Requires: HeyGen API key configured per brokerage</p>
-              </div>
-            </label>
+            </div>
           </div>
 
-          {/* Cost-gated fallback — D-ID stays the default; HeyGen is used only when it's cheaper. */}
-          <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input type="checkbox" className="mt-0.5" checked={costFallbackEnabled} onChange={(e) => setCostFallbackEnabled(e.target.checked)} />
-              <div>
-                <p className="text-sm font-medium text-gray-900">Allow HeyGen as a cost fallback</p>
-                <p className="text-xs text-gray-500">Keeps D-ID as the default. Only switches to HeyGen when its price per minute is strictly lower than D-ID&apos;s.</p>
-              </div>
-            </label>
-            <div className="grid grid-cols-2 gap-3 pl-6">
-              <label className="text-xs text-gray-600">
-                D-ID $/min
-                <input type="number" step="0.01" min="0" value={didCostPerMin} onChange={(e) => setDidCostPerMin(e.target.value)} disabled={!costFallbackEnabled}
-                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100" />
-              </label>
-              <label className="text-xs text-gray-600">
-                HeyGen $/min
-                <input type="number" step="0.01" min="0" value={heygenCostPerMin} onChange={(e) => setHeygenCostPerMin(e.target.value)} disabled={!costFallbackEnabled}
-                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100" />
-              </label>
-            </div>
-            <p className="text-[11px] text-gray-400 pl-6">
-              {costFallbackEnabled
-                ? ((parseFloat(heygenCostPerMin) || 0) < (parseFloat(didCostPerMin) || 0)
-                    ? 'Current prices → HeyGen is cheaper; eligible renders would use HeyGen.'
-                    : 'Current prices → D-ID is cheapest; D-ID stays in use.')
-                : 'Disabled → D-ID is always used (the default differentiator).'}
+          {/* Platform-locked: D-ID + ElevenLabs is the ONLY avatar/explainer-video
+              engine. HeyGen is not used; there is no provider to choose. */}
+          <div className="rounded-md border border-blue-200 bg-blue-50 p-3">
+            <p className="text-xs text-blue-700">
+              The avatar / explainer-video engine is platform-locked to <strong>D-ID + ElevenLabs</strong> —
+              agents present with their own face and cloned voice. There is no alternate provider to configure.
             </p>
           </div>
 
@@ -336,11 +276,11 @@ export default function ProviderSettingsPage() {
         title="Video"
         description={
           videoAllowed
-            ? 'AI video sending via HeyGen. Enabled by superadmin.'
+            ? 'AI video sending via D-ID + ElevenLabs. Enabled by superadmin.'
             : 'Video sending is not enabled for this brokerage. Contact your superadmin.'
         }
         channel="video"
-        providerOptions={['heygen']}
+        providerOptions={['did']}
         channelState={state.video}
         locked={!videoAllowed}
         isSuperadmin={isSuperadmin}

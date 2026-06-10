@@ -427,8 +427,8 @@ export default function VideoCreatePage() {
             : aiScriptVideoType ?? "custom",
           status: "pending",
           heygen_status: "pending",
-          heygen_avatar_id: platformProvider === "heygen" ? (selectedAvatar || null) : null,
-          heygen_voice_id: platformProvider === "heygen" ? (selectedVoice || null) : null,
+          heygen_avatar_id: null,
+          heygen_voice_id: null,
           video_provider: platformProvider,
           // listing_id is only relevant when the user explicitly selected a listing as the
           // video context. Other context types (contact, homeowner, market, none) do not
@@ -481,50 +481,27 @@ export default function VideoCreatePage() {
       const selectedAssetRow = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
       const resolvedDidAvatarId = selectedAssetRow?.did_avatar_id ?? null
 
-      const body = platformProvider === "did"
-        ? {
-            video_project_id: project.id,
-            script,
-            elevenlabs_voice_id: selectedElevenLabsVoiceId,
-            // Pass avatar_id when available (faster, consistent renders via D-ID avatar library)
-            ...(resolvedDidAvatarId ? { did_avatar_id: resolvedDidAvatarId } : {}),
-            // Source URL fallbacks for photo mode and legacy profiles without avatar_id
-            agent_photo_url: selectedDIDAvatarSource === "photo" ? agentDIDProfile?.did_photo_url : null,
-            agent_video_url:
-              selectedDIDAvatarSource === "video" && !resolvedDidAvatarId
-                ? agentDIDProfile?.did_video_url
-                : null,
-            background: didBackground,
-            // Cinematic touches — picked from the brokerage stock library in
-            // step 3. All optional. The poll cron concatenates intro→main→outro
-            // after the brand overlay.
-            ...(brollSelection.introVideoUrl ? { intro_video_url: brollSelection.introVideoUrl } : {}),
-            ...(brollSelection.outroVideoUrl ? { outro_video_url: brollSelection.outroVideoUrl } : {}),
-            ...(brollSelection.bRollUrls.length > 0 ? { b_roll_urls: brollSelection.bRollUrls } : {}),
-          }
-        : {
-            script,
-            avatar_id: selectedAvatar,
-            voice_id: selectedVoice,
-            video_project_id: project.id,
-            brokerage_id: brokerage.id,
-            user_id: user.id,
-            script_id: scriptSource === "library" ? selectedScript : null,
-            branding_preset_id: brandingPresetId || null,
-            quality_preset: qualityPreset,
-            output_orientation: outputOrientation,
-            aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
-            background: backgroundStyle === "custom" && customBgUrl
-              ? { type: "image", value: customBgUrl }
-              : (() => {
-                  const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
-                  const bgColorValue = bgPreset?.color ?? "#ffffff"
-                  return {
-                    type: bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-                    value: bgColorValue,
-                  }
-                })(),
-          }
+      // D-ID is the only video engine.
+      const body = {
+        video_project_id: project.id,
+        script,
+        elevenlabs_voice_id: selectedElevenLabsVoiceId,
+        // Pass avatar_id when available (faster, consistent renders via D-ID avatar library)
+        ...(resolvedDidAvatarId ? { did_avatar_id: resolvedDidAvatarId } : {}),
+        // Source URL fallbacks for photo mode and legacy profiles without avatar_id
+        agent_photo_url: selectedDIDAvatarSource === "photo" ? agentDIDProfile?.did_photo_url : null,
+        agent_video_url:
+          selectedDIDAvatarSource === "video" && !resolvedDidAvatarId
+            ? agentDIDProfile?.did_video_url
+            : null,
+        background: didBackground,
+        // Cinematic touches — picked from the brokerage stock library in
+        // step 3. All optional. The poll cron concatenates intro→main→outro
+        // after the brand overlay.
+        ...(brollSelection.introVideoUrl ? { intro_video_url: brollSelection.introVideoUrl } : {}),
+        ...(brollSelection.outroVideoUrl ? { outro_video_url: brollSelection.outroVideoUrl } : {}),
+        ...(brollSelection.bRollUrls.length > 0 ? { b_roll_urls: brollSelection.bRollUrls } : {}),
+      }
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -575,18 +552,14 @@ export default function VideoCreatePage() {
         return true
       case 1:
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
-      case 2:
-        if (platformProvider === "did") {
-          const asset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
-          const hasReadyAvatar =
-            (asset?.status === "ready") ||
-            (selectedDidAssetId === "photo" && !!agentDIDProfile?.did_photo_url)
-          return !!(selectedElevenLabsVoiceId && hasReadyAvatar)
-        }
-        // HeyGen: avatar required; voice required only if profiles exist
-        if (!selectedAvatar) return false
-        if (voiceProfiles.length > 0 && !selectedVoice) return false
-        return true
+      case 2: {
+        // D-ID is the only video engine — require a ready avatar + ElevenLabs voice.
+        const asset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
+        const hasReadyAvatar =
+          (asset?.status === "ready") ||
+          (selectedDidAssetId === "photo" && !!agentDIDProfile?.did_photo_url)
+        return !!(selectedElevenLabsVoiceId && hasReadyAvatar)
+      }
       case 3:
         return !!backgroundStyle && !!qualityPreset && !!outputOrientation &&
           (backgroundStyle !== "custom" || !!customBgUrl)
@@ -1428,109 +1401,6 @@ export default function VideoCreatePage() {
                   )
                 })()}
 
-                {/* Avatar Selection — only shown for HeyGen platform */}
-                {platformProvider === "heygen" && (
-                  <>{/* Avatar Selection */}
-                <div className="space-y-3">
-                  <Label>Avatar</Label>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {avatars.map((avatar) => (
-                      <div
-                        key={avatar.id}
-                        onClick={() => setSelectedAvatar(avatar.id)}
-                        className={cn(
-                          "p-4 rounded-lg border-2 cursor-pointer transition-all text-center",
-                          selectedAvatar === avatar.id
-                            ? "border-primary bg-primary/5"
-                            : "border-border hover:border-primary/50"
-                        )}
-                      >
-                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center overflow-hidden">
-                          {avatar.thumbnailUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={avatar.thumbnailUrl}
-                              alt={avatar.name}
-                              className="w-16 h-16 rounded-full object-cover mx-auto"
-                            />
-                          ) : (
-                            <User className="w-8 h-8 mx-auto text-muted-foreground" />
-                          )}
-                        </div>
-                        <p className="font-medium">{avatar.name}</p>
-                        <p className="text-xs text-muted-foreground">{avatar.style}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
-                    <a href="/dashboard/videos/voice" className="underline hover:text-foreground">
-                      + Create your personal avatar
-                    </a>
-                  </p>
-                </div>
-
-                {/* Voice Selection */}
-                <div className="space-y-3">
-                  <Label>Voice</Label>
-                  {voiceProfiles.length > 0 ? (
-                    <div className="space-y-2">
-                      {voiceProfiles.map((voice) => (
-                        <div
-                          key={voice.id}
-                          onClick={() => setSelectedVoice(voice.heygen_voice_clone_id || voice.id)}
-                          className={cn(
-                            "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-center gap-4",
-                            selectedVoice === (voice.heygen_voice_clone_id || voice.id)
-                              ? "border-primary bg-primary/5"
-                              : "border-border hover:border-primary/50"
-                          )}
-                        >
-                          <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center">
-                            <Mic className="h-6 w-6 text-muted-foreground" />
-                          </div>
-                          <div>
-                            <p className="font-medium">{voice.profile_name}</p>
-                            <div className="flex items-center gap-2">
-                              {voice.is_default && (
-                                <Badge variant="secondary" className="text-xs">Default</Badge>
-                              )}
-                              <span className="text-xs text-muted-foreground">
-                                Quality: {(voice.quality_score * 100).toFixed(0)}%
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <Alert>
-                      <Mic className="h-4 w-4" />
-                      <AlertTitle>No Voice Profiles</AlertTitle>
-                      <AlertDescription>
-                        You have not set up any voice profiles yet. Using default HeyGen voices.
-                      </AlertDescription>
-                    </Alert>
-                  )}
-
-                  {/* Default HeyGen voices if no custom profiles */}
-                  {voiceProfiles.length === 0 && (
-                    <Alert>
-                      <Mic className="h-4 w-4" />
-                      <AlertTitle>No Voice Profiles</AlertTitle>
-                      <AlertDescription>
-                        You have not set up any voice profiles yet. Using default HeyGen voices.
-                        <Button
-                          variant="link"
-                          className="p-0 h-auto ml-1"
-                          onClick={() => router.push("/dashboard/videos/voice")}
-                        >
-                          Create Voice Clone
-                        </Button>
-                      </AlertDescription>
-                    </Alert>
-                  )}
-                </div>
-                </>)}
               </div>
             )}
 
@@ -1795,10 +1665,14 @@ export default function VideoCreatePage() {
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm">
-                        <strong>Avatar:</strong> {avatars.find(a => a.id === selectedAvatar)?.name || selectedAvatar}
+                        <strong>Avatar:</strong>{" "}
+                        {selectedDidAssetId === "photo"
+                          ? "Photo avatar"
+                          : didAvatarAssets.find(a => a.id === selectedDidAssetId)?.label || "Selected avatar"}
                       </p>
                       <p className="text-sm">
-                        <strong>Voice:</strong> {voiceProfiles.find(v => v.heygen_voice_clone_id === selectedVoice)?.profile_name || selectedVoice}
+                        <strong>Voice:</strong>{" "}
+                        {voiceProfiles.find(v => v.elevenlabs_voice_id === selectedElevenLabsVoiceId)?.profile_name || "ElevenLabs voice"}
                       </p>
                     </CardContent>
                   </Card>
@@ -1859,7 +1733,7 @@ export default function VideoCreatePage() {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                      Submitting to HeyGen...
+                      Submitting to D-ID...
                     </>
                   ) : (
                     <>

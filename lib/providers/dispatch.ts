@@ -676,14 +676,13 @@ export async function dispatchDirectMail(
 }
 
 // ─── VIDEO (superadmin-controlled, system-only) ───────────────────────────────
-// video is SYSTEM_ONLY. Platform-locked vendor: D-ID + ElevenLabs (per kernel-OS
-// plan FIX 0C.6) — agent's own avatar (did_photo_url / did_video_url) + cloned
-// voice (elevenlabs_voice_id) from agent_voice_profiles. Falls back to HeyGen
-// only when getPlatformVideoProvider() returns 'heygen' (superadmin override).
+// video is SYSTEM_ONLY and the engine is PLATFORM-LOCKED to D-ID + ElevenLabs —
+// agent's own avatar (did_photo_url / did_video_url) + cloned voice
+// (elevenlabs_voice_id) from agent_voice_profiles. HeyGen is NOT a selectable or
+// reachable path: there is no HeyGen branch.
 
 export interface DispatchVideoParams extends DispatchActorContext {
-  /** D-ID path: rendered narration script (the avatar reads this).
-   *  HeyGen path: HeyGen template_id. */
+  /** Rendered narration script (the D-ID avatar reads this). */
   templateId: string
   recipientEmail: string
   recipientName?: string
@@ -714,25 +713,9 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
     },
   })
 
-  // Platform-level video provider preference. Default per kernel-OS plan = "did" (D-ID + ElevenLabs).
-  const { getPlatformVideoProvider } = await import("@/app/actions/settings/global-settings-actions")
-  const platformProvider = await getPlatformVideoProvider().catch(() => "did" as const)
-
-  // Cost-aware choice: D-ID stays the default + differentiator, but if a superadmin enabled
-  // cost-fallback AND HeyGen is cheaper per minute than D-ID, fall back to HeyGen on cost.
-  // Default (flag off) → the configured provider, so behavior is unchanged.
-  let effectiveProvider: "did" | "heygen" = platformProvider
-  try {
-    const { resolveVideoProviderCostConfig, chooseVideoProvider } = await import("@/lib/marketing/video-provider-cost")
-    const cfg = await resolveVideoProviderCostConfig(params.brokerageId)
-    effectiveProvider = chooseVideoProvider({ configured: platformProvider, ...cfg }).provider
-  } catch { /* cost config best-effort — keep the configured provider */ }
-
-  if (effectiveProvider === "did") {
-    return dispatchVideoViaDID({ params, providerKey })
-  }
-
-  return dispatchVideoViaHeyGen({ params, providerKey })
+  // BUSINESS RULE (platform-locked): the avatar/explainer video engine is D-ID +
+  // ElevenLabs ONLY. No provider selection, no HeyGen cost-fallback.
+  return dispatchVideoViaDID({ params, providerKey })
 }
 
 // ─── D-ID + ElevenLabs path (default per plan) ────────────────────────────────
@@ -889,57 +872,4 @@ async function dispatchVideoViaDID({
   })
 
   return { success: true, providerKey: "did", messageId: didData.id }
-}
-
-// ─── HeyGen path (legacy / opt-in) ────────────────────────────────────────────
-async function dispatchVideoViaHeyGen({
-  params,
-  providerKey,
-}: {
-  params: DispatchVideoParams
-  providerKey: string
-}): Promise<DispatchResult> {
-  const heygenApiKey = process.env.HEYGEN_API_KEY
-  if (!heygenApiKey) {
-    return {
-      success: false,
-      providerKey,
-      error: "Video provider (HeyGen) not configured. Add HEYGEN_API_KEY to environment variables.",
-    }
-  }
-
-  const response = await callConnector<{ video_id?: string }>({
-    connector: "heygen",
-    baseUrl: "https://api.heygen.com",
-    path: "/v2/video/generate",
-    method: "POST",
-    auth: { style: "header", name: "X-Api-Key", value: heygenApiKey },
-    body: { template_id: params.templateId, variables: params.scriptVars ?? {} },
-  })
-
-  if (!response.ok) {
-    return { success: false, providerKey, error: `HeyGen API error: ${response.error ?? `HTTP ${response.status}`}` }
-  }
-
-  const data = response.data ?? {}
-
-  void logVendorUsage({
-    vendorName: providerKey,
-    usageType: "video_renders",
-    unitCount: 1,
-    estimatedCost: 0.5,
-    systemSource: params.systemSource ?? "dispatch",
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    leadId: params.leadId,
-    metadata: {
-      heygen_video_id: data.video_id,
-      template_id: params.templateId,
-      recipient_email: params.recipientEmail,
-      provider_key: providerKey,
-      ...(params.metadata ?? {}),
-    },
-  })
-
-  return { success: true, providerKey, messageId: data.video_id }
 }

@@ -164,15 +164,10 @@ export function EngagementFeed({ brokerageId, campaigns, initialItems }: Props) 
                 <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {item.campaign_name && <span>{item.campaign_name}</span>}
                   <span>{relativeTime(item.created_at)}</span>
-                  {item.channel === "video" && item.heygen_video_id && (
-                    <a
-                      href={`https://app.heygen.com/videos/${item.heygen_video_id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-0.5 text-purple-600 hover:underline"
-                    >
-                      View Video <ExternalLink className="h-3 w-3" />
-                    </a>
+                  {item.channel === "video" && item.video_id && (
+                    <span className="inline-flex items-center gap-0.5 rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-700 font-medium">
+                      <Video className="h-3 w-3" /> Video sent
+                    </span>
                   )}
                   {item.channel === "direct_mail" && item.lob_letter_id && (
                     <span className="inline-flex items-center gap-0.5 rounded bg-orange-100 px-1.5 py-0.5 text-xs text-orange-700 font-medium">

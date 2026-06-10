@@ -535,13 +535,13 @@ function parseScriptIntoSegments(script: string) {
   return segments
 }
 
-// Synthesize voice using ElevenLabs or HeyGen voice API based on resolved provider.
+// Synthesize voice using ElevenLabs (the platform voice-clone engine; no HeyGen).
 // Throws on failure so callers surface a real error to the user — never returns an empty buffer.
 async function synthesizeVoice(
   text: string,
   voiceId: string,
   settings: any,
-  providerKey: string = "heygen"
+  providerKey: string = "elevenlabs"
 ): Promise<Buffer> {
   if (!voiceId) {
     throw new Error(
@@ -549,28 +549,9 @@ async function synthesizeVoice(
     )
   }
 
-  if (providerKey === "heygen") {
-    if (!process.env.HEYGEN_API_KEY) {
-      throw new Error("HEYGEN_API_KEY is not configured. Contact your administrator to enable HeyGen voice synthesis.")
-    }
-    const response = await callConnector<Buffer>({
-      connector: "heygen",
-      baseUrl: "https://api.heygen.com",
-      path: "/v1/voice/tts",
-      method: "POST",
-      auth: { style: "header", name: "X-Api-Key", value: process.env.HEYGEN_API_KEY },
-      headers: { Accept: "audio/mpeg" },
-      responseType: "arraybuffer",
-      body: { text, voice_id: voiceId, output_format: "mp3" },
-    })
-
-    if (!response.ok || !response.data) {
-      throw new Error(`HeyGen voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
-    }
-
-    return response.data
-  }
-
+  // Voice synthesis is ElevenLabs ONLY (no HeyGen). The providerKey arg is retained
+  // for caller backward-compat but always resolves to ElevenLabs.
+  void providerKey
   // ElevenLabs
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")

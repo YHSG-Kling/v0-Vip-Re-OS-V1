@@ -25,7 +25,6 @@ export const URL_REGEX = /^https?:\/\/.+/
 // ============================================
 
 export const FEATURES = {
-  HEYGEN_VIDEO: process.env.NEXT_PUBLIC_FEATURE_HEYGEN === "true",
   DOTLOOP_INTEGRATION: process.env.NEXT_PUBLIC_FEATURE_DOTLOOP === "true",
   STRIPE_PAYMENTS: process.env.NEXT_PUBLIC_FEATURE_STRIPE === "true",
   AI_CHAT: process.env.NEXT_PUBLIC_FEATURE_AI_CHAT !== "false", // Enabled by default

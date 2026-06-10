@@ -19,7 +19,6 @@ export type ProviderName =
   | "dotloop"
   | "skyslope"
   | "brokermint"
-  | "heygen"
   | "gohighlevel"
   | "google_calendar"
   | "outlook_calendar"
@@ -51,8 +50,6 @@ export async function testIntegration(
         return await testDocuSign(credentials)
       case "dotloop":
         return await testDotLoop(credentials)
-      case "heygen":
-        return await testHeyGen(credentials)
       case "gohighlevel":
         return await testGoHighLevel(credentials)
       case "google_calendar":
@@ -193,28 +190,6 @@ async function testDotLoop(credentials: Record<string, string>): Promise<TestRes
   }
   
   return { pass: true, detail: "DotLoop credentials verified - profile accessible" }
-}
-
-async function testHeyGen(credentials: Record<string, string>): Promise<TestResult> {
-  const { api_key } = credentials
-  
-  if (!api_key) {
-    return { pass: false, detail: "API Key is required" }
-  }
-  
-  const response = await callConnector({
-    connector: "heygen", baseUrl: "https://api.heygen.com", path: "/v1/avatars", method: "GET",
-    auth: { style: "header", name: "X-Api-Key", value: api_key },
-  })
-
-  if (!response.ok) {
-    return {
-      pass: false,
-      detail: `HeyGen API returned ${response.status} - verify API key`
-    }
-  }
-  
-  return { pass: true, detail: "HeyGen credentials verified - avatars accessible" }
 }
 
 async function testGoHighLevel(credentials: Record<string, string>): Promise<TestResult> {
@@ -551,13 +526,6 @@ export const PROVIDER_METADATA: Record<ProviderName, {
       { key: "office_id", label: "Office ID", type: "text", required: false },
     ],
   },
-  heygen: {
-    displayName: "HeyGen",
-    providerType: "video",
-    credentialFields: [
-      { key: "api_key", label: "API Key", type: "password", required: true },
-    ],
-  },
   gohighlevel: {
     displayName: "GoHighLevel",
     providerType: "crm",
@@ -684,7 +652,7 @@ export const PROVIDER_GROUPS = {
     },
   },
   // Optional = accounting, MLS/IDX, lead portals, direct mail.
-  // Video generation (D-ID + HeyGen) and voice cloning (ElevenLabs) run on
+  // Video generation (D-ID) and voice cloning (ElevenLabs) run on
   // platform-managed infrastructure — subscribers configure their personal
   // avatar/voice in Twin Studio, not by entering API keys here.
   optional: {

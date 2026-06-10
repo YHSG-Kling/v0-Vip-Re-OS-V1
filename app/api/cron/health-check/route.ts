@@ -122,7 +122,6 @@ const SERVICE_CHECKS: Record<
 
 // Integration services that check brokerage_integrations table
 const INTEGRATION_SERVICES = [
-  "heygen",
   "vapi",
   "dotloop",
   "docusign",

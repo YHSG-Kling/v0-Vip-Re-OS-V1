@@ -18,12 +18,12 @@ const SERVICE_DEFAULTS = [
     env_key: "GHL_API_KEY",
   },
   {
-    id: "heygen",
-    name: "HeyGen",
+    id: "did",
+    name: "D-ID",
     type: "AI Video Generation",
-    description: "Generate personalized videos with agent avatar",
+    description: "Generate personalized avatar / talking-head videos (platform engine; voice via ElevenLabs)",
     config_keys: ["api_key", "avatar_id"],
-    env_key: "HEYGEN_API_KEY",
+    env_key: "DID_API_KEY",
   },
   {
     id: "idx_broker",

@@ -51,7 +51,7 @@ export function VideoGenerationPanel({ transactionId, propertyId, agentId }: Vid
           <div>
             <CardTitle>AI Video Generation</CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
-              Automatically create professional property videos with HeyGen AI
+              Automatically create professional property videos with D-ID + ElevenLabs
             </p>
           </div>
           <div className="flex gap-2">
@@ -97,7 +97,9 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
     failed: { icon: XCircle, color: 'text-red-600', label: 'Failed' },
   }
 
-  const config = statusConfig[project.heygen_status || 'pending']
+  // provider_status is canonical (D-ID); fall back to legacy heygen_status for old rows.
+  const providerStatus = project.provider_status || project.heygen_status || 'pending'
+  const config = statusConfig[providerStatus] ?? statusConfig.pending
   const Icon = config.icon
 
   async function handlePublish() {
@@ -160,7 +162,7 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
 
       {/* Actions */}
       <div className="flex flex-col gap-2">
-        {project.heygen_status === 'completed' && (
+        {providerStatus === 'completed' && (
           <>
             {project.video_url && (
               <Button size="sm" variant="outline" asChild>
@@ -179,7 +181,7 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
           </>
         )}
 
-        {project.heygen_status === 'completed' && project.video_url && (
+        {providerStatus === 'completed' && project.video_url && (
           <Button size="sm" variant="outline" asChild>
             <a href={project.video_url} download>
               <Download className="h-4 w-4 mr-1" />
@@ -188,7 +190,7 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
           </Button>
         )}
 
-        {!project.compliance_approved && project.heygen_status === 'pending' && (
+        {!project.compliance_approved && providerStatus === 'pending' && (
           <Button size="sm">
             <CheckCircle className="h-4 w-4 mr-1" />
             Approve Script

@@ -42,7 +42,7 @@ async function VoiceContent() {
   // Fetch voice profiles for this agent
   const voiceProfiles = await getVoiceProfiles(agentData.id)
 
-  const heygenConfigured = !!process.env.HEYGEN_API_KEY
+  const videoConfigured = !!(process.env.DID_API_KEY && process.env.ELEVENLABS_API_KEY)
 
   return (
     <VoiceCloneClient
@@ -50,7 +50,7 @@ async function VoiceContent() {
       brokerageId={agentData.brokerage_id}
       userId={user.id}
       initialProfiles={voiceProfiles}
-      heygenConfigured={heygenConfigured}
+      videoConfigured={videoConfigured}
     />
   )
 }

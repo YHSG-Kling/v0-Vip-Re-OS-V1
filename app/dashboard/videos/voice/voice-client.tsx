@@ -24,7 +24,7 @@ interface VoiceCloneClientProps {
   brokerageId: string
   userId: string
   initialProfiles: any[]
-  heygenConfigured: boolean
+  videoConfigured: boolean
 }
 
 // ─── EXAMPLE VOICE PROMPTS ───────────────────────────────────────────────────
@@ -85,7 +85,7 @@ export function VoiceCloneClient({
   brokerageId: _brokerageId,
   userId: _userId,
   initialProfiles: _initialProfiles,
-  heygenConfigured: _heygenConfigured,
+  videoConfigured: _videoConfigured,
 }: VoiceCloneClientProps) {
   const router = useRouter()
   const [step, setStep] = useState<WizardStep>("intro")

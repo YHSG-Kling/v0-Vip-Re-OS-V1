@@ -92,34 +92,32 @@ export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: V
           Video Generation Settings
         </CardTitle>
         <CardDescription className="text-xs">
-          Your personal HeyGen avatar and voice IDs. These are used when you create AI videos.
-          Find your IDs in the{" "}
+          Your personal D-ID avatar and ElevenLabs voice IDs. These are used when you create AI videos.
+          The easiest way to set these up is in{" "}
           <a
-            href="https://app.heygen.com/avatars"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/dashboard/videos/voice"
             className="underline hover:text-foreground"
           >
-            HeyGen dashboard
+            Voice &amp; Avatar setup
           </a>
           .
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <Label htmlFor="avatarId">HeyGen Avatar ID</Label>
+          <Label htmlFor="avatarId">D-ID Avatar ID</Label>
           <Input
             id="avatarId"
             value={avatarId}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAvatarId(e.target.value)}
-            placeholder="e.g. Angela-inblackskirt-20220820"
+            placeholder="e.g. your D-ID avatar ID"
           />
           <p className="text-xs text-muted-foreground">
-            Copy from HeyGen &rarr; Avatars &rarr; select your avatar &rarr; copy the ID.
+            Set this up in Voice &amp; Avatar, or paste a D-ID avatar ID.
           </p>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="voiceId">HeyGen Voice ID</Label>
+          <Label htmlFor="voiceId">ElevenLabs Voice ID</Label>
           <Input
             id="voiceId"
             value={voiceId}
@@ -127,7 +125,7 @@ export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: V
             placeholder="e.g. 1bd001e7e50f421d891986aad5158bc8"
           />
           <p className="text-xs text-muted-foreground">
-            Copy from HeyGen &rarr; Voice &rarr; select your voice clone &rarr; copy the ID.
+            Set this up in Voice &amp; Avatar, or paste your ElevenLabs voice clone ID.
           </p>
         </div>
         <Button size="sm" onClick={handleSave} disabled={saving}>

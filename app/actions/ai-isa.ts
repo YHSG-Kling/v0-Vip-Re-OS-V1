@@ -416,7 +416,8 @@ export interface EngagementFeedItem {
   campaign_name: string | null
   channel: string
   event_type: string
-  heygen_video_id: string | null
+  /** Provider video job id (D-ID). Legacy rows still store this under metadata.heygen_video_id. */
+  video_id: string | null
   lob_letter_id: string | null
   created_at: string
 }
@@ -469,7 +470,7 @@ export async function getEngagementFeed(params: {
     campaign_name:       row.ai_isa_campaigns?.name ?? null,
     channel:             row.channel,
     event_type:          row.event_type,
-    heygen_video_id:     row.metadata?.heygen_video_id ?? null,
+    video_id:            row.metadata?.did_video_id ?? row.metadata?.heygen_video_id ?? null,
     lob_letter_id:       row.metadata?.lob_letter_id ?? null,
     created_at:          row.created_at,
   }))

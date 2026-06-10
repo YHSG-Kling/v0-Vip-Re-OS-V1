@@ -77,7 +77,7 @@ export function VideoGenerationButtons({
       const settings = await getAgentSettings(userId || "")
 
       if (!settings?.avatarId || !settings?.voiceId) {
-        toast.error("HeyGen not configured — see Admin")
+        toast.error("Avatar or voice not set up — visit Settings → Voice & Avatar (D-ID + ElevenLabs)")
         return
       }
 

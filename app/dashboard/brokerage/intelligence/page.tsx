@@ -132,7 +132,7 @@ export default async function BrokerageIntelligencePage() {
   // Provider status: known providers to check
   const knownProviders = [
     { key: "ghl", label: "CRM/GHL", matchType: "ghl" },
-    { key: "heygen", label: "HeyGen", matchType: "heygen" },
+    { key: "did", label: "D-ID Video", matchType: "did" },
     { key: "idx", label: "IDX", matchType: "idx" },
     { key: "dotloop", label: "Dotloop", matchType: "dotloop" },
     { key: "stripe", label: "Stripe", matchType: "stripe" },

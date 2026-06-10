@@ -49,13 +49,13 @@ const PROVIDER_DEFINITIONS = [
     affectedFeatures: ["Transaction forms", "E-sign in transactions", "Document management"],
   },
   {
-    key: "heygen",
-    name: "HeyGen (Video AI)",
+    key: "did",
+    name: "D-ID (Video AI)",
     category: "AI",
-    envKey: "HEYGEN_API_KEY",
-    settingsKey: "heygen_api_key",
-    configPath: "/settings/integrations/heygen",
-    affectedFeatures: ["Video generation", "Personalized property videos", "AI presenter"],
+    envKey: "DID_API_KEY",
+    settingsKey: null,
+    configPath: "/settings/integrations/did",
+    affectedFeatures: ["Avatar / talking-head video", "Personalized property videos", "AI presenter (voice via ElevenLabs)"],
   },
   {
     key: "idx",
@@ -125,7 +125,7 @@ export default async function ProviderHealthPage() {
   // Fetch all brokerage settings to derive provider status across all tenants
   const { data: allSettings } = await service
     .from("brokerage_settings")
-    .select("brokerage_id, ghl_api_key, google_calendar_token, esign_api_key, esign_provider, dotloop_access_token, heygen_api_key, idx_api_key, social_accounts")
+    .select("brokerage_id, ghl_api_key, google_calendar_token, esign_api_key, esign_provider, dotloop_access_token, idx_api_key, social_accounts")
 
   // Fetch brokerage_integrations for richer data
   const { data: integrations } = await service

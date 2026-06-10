@@ -299,7 +299,7 @@ export async function startVoiceCloneTraining(
     .insert({
       voice_profile_id: profileId,
       brokerage_id: brokerageId,
-      provider: "heygen",
+      provider: "elevenlabs",
       status: "queued",
       sample_manifest: sampleManifest,
     })

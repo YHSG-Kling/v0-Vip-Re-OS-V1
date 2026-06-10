@@ -235,10 +235,16 @@ export default function VideoKanbanBoard() {
     const pollInterval = setInterval(async () => {
       for (const videoId of pollingVideoIds) {
         try {
-          const response = await fetch(`/api/heygen/check-status/${videoId}`)
-          const data = await response.json()
+          // D-ID renders are finalized asynchronously by the poll-did-videos cron,
+          // which writes status onto the ai_video_projects row. Read the row directly
+          // (the realtime channel above also refreshes the list on change).
+          const { data } = await supabase
+            .from("ai_video_projects")
+            .select("status")
+            .eq("id", videoId)
+            .maybeSingle()
 
-          if (data.status === "completed" || data.status === "failed") {
+          if (data?.status === "ready" || data?.status === "failed" || data?.status === "completed") {
             setPollingVideoIds(prev => {
               const next = new Set(prev)
               next.delete(videoId)
@@ -252,7 +258,7 @@ export default function VideoKanbanBoard() {
     }, 10000) // Poll every 10 seconds
 
     return () => clearInterval(pollInterval)
-  }, [pollingVideoIds])
+  }, [pollingVideoIds, supabase])
 
   // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
@@ -278,19 +284,44 @@ export default function VideoKanbanBoard() {
         })
         .eq("id", videoId)
 
-      // Re-submit to HeyGen
-      const response = await fetch("/api/heygen/generate-video", {
+      // Resolve the agent's D-ID avatar + ElevenLabs voice for re-render.
+      // The avatar/explainer video engine is D-ID + ElevenLabs ONLY.
+      let elevenlabsVoiceId: string | null = null
+      let agentPhotoUrl: string | null = null
+      let agentVideoUrl: string | null = null
+      if (user?.id) {
+        const { data: agentRow } = await supabase
+          .from("agents")
+          .select("id")
+          .eq("user_id", user.id)
+          .maybeSingle()
+        if (agentRow?.id) {
+          const { data: profile } = await supabase
+            .from("agent_voice_profiles")
+            .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+            .eq("agent_id", agentRow.id)
+            .maybeSingle()
+          elevenlabsVoiceId = profile?.elevenlabs_voice_id ?? null
+          agentPhotoUrl = profile?.did_photo_url ?? null
+          agentVideoUrl = profile?.did_video_url ?? null
+        }
+      }
+
+      if (!elevenlabsVoiceId) {
+        console.error("Cannot retry — agent has no ElevenLabs voice configured")
+        return
+      }
+
+      // Re-submit to D-ID
+      const response = await fetch("/api/did/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           script: video.script_content,
-          avatar_id: video.provider_metadata?.quality_preset ? "Angela-inblackskirt-20220820" : "Angela-inblackskirt-20220820",
-          voice_id: "en-US-JennyNeural",
+          elevenlabs_voice_id: elevenlabsVoiceId,
+          agent_photo_url: agentPhotoUrl,
+          agent_video_url: agentVideoUrl,
           video_project_id: videoId,
-          brokerage_id: video.brokerage_id,
-          user_id: user?.id,
-          quality_preset: video.provider_metadata?.quality_preset || "1080p",
-          output_orientation: video.provider_metadata?.output_orientation || "landscape",
         }),
       })
 
