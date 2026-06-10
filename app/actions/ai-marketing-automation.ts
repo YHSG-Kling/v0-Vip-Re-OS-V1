@@ -67,7 +67,7 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       params.includeListings
         ? supabase
             .from("listings")
-            .select("id, address, city, price, bedrooms, bathrooms, photos")
+            .select("id, address, city, list_price, bedrooms, bathrooms, photos")
             .eq("agent_id", params.agentId)
             .eq("status", "active")
             .limit(3)
@@ -107,7 +107,7 @@ ${marketData ? `MARKET DATA:
 - Price Per Sqft: $${marketData.price_per_sqft || "N/A"}` : ""}
 
 ${featuredListings.length > 0 ? `FEATURED LISTINGS:
-${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
+${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.list_price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
 
 ${params.customSections ? `INCLUDE SECTIONS: ${params.customSections.join(", ")}` : ""}
 
@@ -694,9 +694,9 @@ export async function createAIOffer(params: OfferCreationParams): Promise<OfferC
     if (!listing) return { success: false, error: "Listing not found" }
 
     // Calculate offer metrics
-    const offerToListRatio = (params.offerAmount / listing.price) * 100
-    const daysOnMarket = listing.list_date
-      ? Math.floor((Date.now() - new Date(listing.list_date).getTime()) / (1000 * 60 * 60 * 24))
+    const offerToListRatio = (params.offerAmount / listing.list_price) * 100
+    const daysOnMarket = listing.listing_date
+      ? Math.floor((Date.now() - new Date(listing.listing_date).getTime()) / (1000 * 60 * 60 * 24))
       : 0
 
     const defaultContingencies = params.contingencies || ["inspection", "financing", "appraisal"]
@@ -707,7 +707,7 @@ export async function createAIOffer(params: OfferCreationParams): Promise<OfferC
 
 LISTING:
 - Address: ${listing.address}
-- List Price: $${listing.price.toLocaleString()}
+- List Price: $${listing.list_price.toLocaleString()}
 - Days on Market: ${daysOnMarket}
 - Listing Agent: ${listing.agent?.first_name} ${listing.agent?.last_name}
 
@@ -833,7 +833,7 @@ export async function generateCounterOfferStrategy(
 You are representing the ${representingSide.toUpperCase()}.
 
 CURRENT OFFER:
-- List Price: $${offer.listing.price.toLocaleString()}
+- List Price: $${offer.listing.list_price.toLocaleString()}
 - Offer: $${offer.offer_amount.toLocaleString()}
 - Earnest: $${offer.earnest_money.toLocaleString()}
 - Financing: ${offer.financing_type}

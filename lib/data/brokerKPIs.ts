@@ -57,7 +57,7 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
   // Query closings (sold listings)
   const { data: closings, error: closingsError } = await supabase
     .from("listings")
-    .select("id, price, commission_rate")
+    .select("id, list_price, commission_rate")
     .eq("brokerage_id", brokerageId)
     .eq("status", "sold")
     .gte("updated_at", startDate.toISOString())
@@ -73,7 +73,7 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
   // Calculate GCI from closings
   const gci =
     closings?.reduce((sum: number, listing: any) => {
-      return sum + listing.price * (listing.commission_rate || 0.03)
+      return sum + listing.list_price * (listing.commission_rate || 0.03)
     }, 0) || 0
 
   // Estimate net margin (GCI - broker split - expenses, typically 30-40% net)
@@ -136,7 +136,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
     // Closed deals
     const { data: closedDeals } = await supabase
       .from("listings")
-      .select("id, price, commission_rate")
+      .select("id, list_price, commission_rate")
       .eq("agent_id", agentId)
       .eq("status", "sold")
       .gte("updated_at", startDate.toISOString())
@@ -153,7 +153,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
     // Calculate GCI
     const gci =
       closedDeals?.reduce((sum: number, listing: any) => {
-        return sum + listing.price * (listing.commission_rate || 0.03)
+        return sum + listing.list_price * (listing.commission_rate || 0.03)
       }, 0) || 0
 
     const agentName =

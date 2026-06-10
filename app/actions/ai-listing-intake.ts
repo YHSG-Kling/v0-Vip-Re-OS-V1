@@ -1119,7 +1119,7 @@ export async function generateListingLandingPage(params: {
     if (params.listingId) {
       const { data: listing } = await supabase
         .from("listings")
-        .select("address, city, state, price, bedrooms, bathrooms, sqft, description, photos")
+        .select("address, city, state, list_price, bedrooms, bathrooms, sqft, public_remarks, photos")
         .eq("id", params.listingId)
         .maybeSingle()
       if (listing) listingData = listing as Record<string, unknown>

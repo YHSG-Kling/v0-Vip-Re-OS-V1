@@ -45,7 +45,7 @@ export default async function CoachingPage() {
       .limit(10),
     supabase
       .from("listings")
-      .select("id, property_address, lifecycle_stage, seller_persona")
+      .select("id, property_address:address, lifecycle_stage, seller_persona")
       .eq("agent_id", agentId)
       .eq("status", "active")
       .order("updated_at", { ascending: false })

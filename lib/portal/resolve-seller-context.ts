@@ -162,7 +162,7 @@ export async function resolveSellerContext(
   // compute DOM via the canonical helper.
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, seller_contact_id, address, city, state, list_price, status, listing_status, listing_date, go_live_date, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .select("id, seller_contact_id, address, city, state, list_price, status, listing_status:status, listing_date, go_live_date, bedrooms, bathrooms, square_feet:sqft, description:public_remarks, primary_photo_url")
     .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)

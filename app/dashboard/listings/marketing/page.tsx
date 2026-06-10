@@ -25,7 +25,7 @@ export default async function ListingsMarketingPage() {
   // Get active listings for marketing
   const { data: listings } = await service
     .from("listings")
-    .select("id, property_address, list_price, status, photos")
+    .select("id, property_address:address, list_price, status, photos")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("status", "active")
     .order("created_at", { ascending: false })

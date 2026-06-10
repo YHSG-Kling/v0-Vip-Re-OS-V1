@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
 
   const { data: listing } = await service
     .from("listings")
-    .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description")
+    .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
     .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
     .single()
@@ -62,7 +62,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const { data: listing, error: listingError } = await service
     .from("listings")
     .select(
-      "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
+      "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
     )
     .eq("id", listingId)
     .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])

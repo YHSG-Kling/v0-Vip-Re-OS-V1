@@ -2264,7 +2264,7 @@ export async function generateSEOKeywords(property: any, neighborhoodData?: any)
   }
 
   // Price range keywords
-  const price = property.price || property.listing_price || 0
+  const price = property.list_price || property.price || property.listing_price || 0
   const priceRange = price < 300000 ? 'affordable' : price < 600000 ? 'mid-range' : price < 1000000 ? 'upscale' : 'luxury'
   keywords.push(`${priceRange} homes ${property.city}`)
 
@@ -2286,8 +2286,8 @@ export async function getNeighborhoodData(city: string, zip?: string) {
 
 export async function detectTargetBuyer(property: any) {
   const bedrooms = property.bedrooms || 0
-  const sqft = property.square_feet || property.square_footage || 0
-  const price = property.price || property.listing_price || 0
+  const sqft = property.sqft || property.square_feet || property.square_footage || 0
+  const price = property.list_price || property.price || property.listing_price || 0
   const features = property.features || property.property_features || []
 
   if (bedrooms >= 4 && sqft > 2500) {
@@ -2311,14 +2311,14 @@ export async function getComparableProperties(property: any) {
   }
 
   const supabase = await createClient()
-  const sqft = property.square_feet || property.square_footage || 0
+  const sqft = property.sqft || property.square_feet || property.square_footage || 0
 
   const { data: comps } = await supabase
     .from('listings')
-    .select('address, price, listing_price, status, sold_date, square_feet')
+    .select('address, list_price, status, sold_date, sqft')
     .eq('city', property.city)
-    .gte('square_feet', sqft * 0.9)
-    .lte('square_feet', sqft * 1.1)
+    .gte('sqft', sqft * 0.9)
+    .lte('sqft', sqft * 1.1)
     .neq('id', property.id)
     .limit(5)
 
@@ -2406,7 +2406,7 @@ export async function enhancedGenerateListingDescription(params: {
     }
 
     // Get neighborhood data
-    const neighborhoodData = await getNeighborhoodData(property.city, property.zip_code)
+    const neighborhoodData = await getNeighborhoodData(property.city, property.zip)
 
     // Get comparable properties
     const comps = await getComparableProperties(property)

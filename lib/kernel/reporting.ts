@@ -404,10 +404,10 @@ export async function loadReportingWorkspace(
         .eq("brokerage_id", ctx.brokerageId),
       supabase
         .from("listings")
-        .select("id, listing_status")
+        .select("id, status")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("agent_id", ctx.agentId)
-        .in("listing_status", ["active", "pending"]),
+        .in("status", ["active", "pending"]),
       supabase
         .from("contacts")
         .select("id, created_at")

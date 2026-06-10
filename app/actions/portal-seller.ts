@@ -126,16 +126,25 @@ export async function getListingDetails(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select(`
-      id, contact_id, address, property_address, list_price, status, listing_status,
-      listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url,
-      lot_size, year_built, property_type, listing_type
+      id, contact_id, address, property_address:address, list_price, status, listing_status:status,
+      listing_date, bedrooms, bathrooms, square_feet:sqft, description:public_remarks, primary_photo_url,
+      lot_size, year_built, property_type
     `)
     .eq("seller_contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
-  const listing = listings?.[0] ?? null
+  const listingRow = listings?.[0] ?? null
+  // dom (days on market) has no backing column — compute from listing_date
+  const listing = listingRow
+    ? {
+        ...listingRow,
+        dom: listingRow.listing_date
+          ? Math.floor((Date.now() - new Date(listingRow.listing_date).getTime()) / 86400000)
+          : null,
+      }
+    : null
 
   if (!listing) {
     return { listing: null, metrics: null, engagement: [], priceHistory: [] }

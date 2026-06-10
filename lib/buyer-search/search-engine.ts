@@ -124,8 +124,8 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       .eq('status', 'active')
       .not('deleted_at', 'is', null)
 
-    if (filters.priceRange?.max) q = q.lte('price', filters.priceRange.max)
-    if (filters.priceRange?.min) q = q.gte('price', filters.priceRange.min)
+    if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)
+    if (filters.priceRange?.min) q = q.gte('list_price', filters.priceRange.min)
     if (filters.bedrooms?.min)   q = q.gte('bedrooms', filters.bedrooms.min)
     if (filters.bedrooms?.max)   q = q.lte('bedrooms', filters.bedrooms.max)
     if (filters.bathrooms?.min)  q = q.gte('bathrooms', filters.bathrooms.min)

@@ -272,8 +272,8 @@ export async function prefillFormWithContext(input: {
       const { data: listing } = await supabase
         .from("listings")
         .select(`
-          id, address, property_address, city, state, zip_code,
-          list_price, bedrooms, bathrooms, square_feet, lot_size, year_built,
+          id, address, property_address:address, city, state, zip_code:zip,
+          list_price, bedrooms, bathrooms, square_feet:sqft, lot_size, year_built,
           property_type, mls_number, agent_id,
           seller_contact_id,
           contacts!seller_contact_id (
@@ -316,7 +316,7 @@ export async function prefillFormWithContext(input: {
             first_name, last_name, email, phone
           ),
           listings (
-            address, property_address, city, state, zip_code, list_price
+            address, property_address:address, city, state, zip_code:zip, list_price
           )
         `)
         .eq("id", input.context_id)
@@ -356,7 +356,7 @@ export async function prefillFormWithContext(input: {
             first_name, last_name, email, phone
           ),
           listings!listing_id (
-            address, property_address, city, state, zip_code, mls_number,
+            address, property_address:address, city, state, zip_code:zip, mls_number,
             seller_contact_id,
             contacts!seller_contact_id (
               first_name, last_name, email, phone

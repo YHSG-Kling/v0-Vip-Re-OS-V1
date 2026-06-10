@@ -131,7 +131,7 @@ export async function GET(req: Request) {
     brokerageId
       ? supabase
           .from("listings")
-          .select("id, address, list_price, current_stage, showing_count, listing_date", {
+          .select("id, address, list_price, current_stage:lifecycle_stage, showing_count, listing_date", {
             count: "exact",
           })
           .eq("brokerage_id", brokerageId)
@@ -144,7 +144,7 @@ export async function GET(req: Request) {
           .from("listings")
           .select("id", { count: "exact", head: true })
           .eq("brokerage_id", brokerageId)
-          .in("current_stage", ["offer_received", "under_contract"])
+          .in("lifecycle_stage", ["offer_received", "under_contract"])
       : Promise.resolve({ count: 0 }),
 
     // Closed listings in period

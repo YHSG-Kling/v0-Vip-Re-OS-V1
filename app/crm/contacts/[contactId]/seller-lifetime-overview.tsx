@@ -31,7 +31,7 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
   const [listingsRes, transactionsRes, activitiesRes] = await Promise.all([
     // Listings where this contact is the seller — recent first
     svc.from("listings")
-       .select("id, address, list_price, status, stage, mls_status, created_at, listed_at")
+       .select("id, address, list_price, status, lifecycle_stage, created_at, listing_date")
        .eq("brokerage_id", brokerageId)
        .eq("seller_contact_id", contactId)
        .order("created_at", { ascending: false })
@@ -99,7 +99,7 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
                 <li key={l.id} className="py-2 flex items-center justify-between gap-2">
                   <Link href={`/dashboard/listings/${l.id}`} className="hover:underline">{l.address ?? "(no address)"}</Link>
                   <span className="text-xs text-muted-foreground">
-                    {fmtMoney(l.list_price)} · {l.stage ?? l.status ?? "—"} · {fmtDate(l.listed_at ?? l.created_at)}
+                    {fmtMoney(l.list_price)} · {l.lifecycle_stage ?? l.status ?? "—"} · {fmtDate(l.listing_date ?? l.created_at)}
                   </span>
                 </li>
               ))}

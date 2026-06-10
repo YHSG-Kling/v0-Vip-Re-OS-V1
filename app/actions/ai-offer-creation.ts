@@ -563,7 +563,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
     // Get listing details — RLS handles cross-brokerage visibility for buyer-side offers
     const { data: listing } = await supabase
       .from("listings")
-      .select("*, agent_id, seller_id, address, state")
+      .select("*, agent_id, seller_contact_id, address, state")
       .eq("id", params.listingId)
       .single()
 
@@ -722,7 +722,7 @@ export async function runCompleteOfferWorkflow(params: {
       agentId: effectiveAgentId,
       buyerId: params.buyerId,
       listingId: params.listingId,
-      listPrice: listing.price,
+      listPrice: listing.list_price,
       daysOnMarket: Math.floor((Date.now() - new Date(listing.created_at).getTime()) / (1000 * 60 * 60 * 24)),
       marketConditions: "balanced",
       buyerMotivation: params.buyerMotivation,
@@ -742,7 +742,7 @@ export async function runCompleteOfferWorkflow(params: {
     let escalationResult = null
     if (strategyResult.success && strategyResult.strategy?.escalationRecommendation?.recommended) {
       escalationResult = await aiCalculateEscalation({
-        listPrice: listing.price,
+        listPrice: listing.list_price,
         initialOffer: strategyResult.strategy.recommendedOfferPrice,
         maxBudget: params.buyerMaxBudget,
         estimatedCompetition: "medium",
@@ -786,7 +786,7 @@ export async function runCompleteOfferWorkflow(params: {
         requiredForms: formsResult.success ? formsResult.forms : null,
         listing: {
           address: listing.address,
-          price: listing.price,
+          price: listing.list_price,
           state: listing.state,
         },
       },

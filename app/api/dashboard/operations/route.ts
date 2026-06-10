@@ -90,9 +90,9 @@ export async function GET() {
     brokerageId
       ? supabase
           .from("listings")
-          .select("id, address, status, current_stage, stage_entered_at, agent_id")
+          .select("id, address, status, current_stage:lifecycle_stage, stage_entered_at, agent_id")
           .eq("brokerage_id", brokerageId)
-          .in("current_stage", ["prep", "pre_listing", "coming_soon"])
+          .in("lifecycle_stage", ["prep", "pre_listing", "coming_soon"])
           .lte("stage_entered_at", minus14d)
           .order("stage_entered_at", { ascending: true })
           .limit(20)
