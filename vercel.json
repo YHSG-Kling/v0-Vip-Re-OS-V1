@@ -198,6 +198,10 @@
       "schedule": "0 8 * * 1"
     },
     {
+      "path": "/api/cron/listing-seller-update-video",
+      "schedule": "0 9 * * 1"
+    },
+    {
       "path": "/api/cron/referral-asks",
       "schedule": "0 10 * * 2"
     },

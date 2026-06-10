@@ -121,6 +121,9 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
   client_message_gate:        { manager: "campaign_orchestrator", proof: "test:client-extract", what: "Every client-facing AI output proposes → human approves → sends" },
   manager_daily_standup:      { manager: "campaign_orchestrator", proof: "test:manager-ownership", what: "Broker's daily per-manager accountability report (manager-standup.ts); every line manager-attributed" },
+  manager_weekly_pnl:         { manager: "campaign_orchestrator", proof: "test:command-center", what: "Broker's weekly per-manager production scorecard (manager-weekly-pnl.ts); WoW outcomes incl. GCI" },
+  seller_update_video:        { manager: "listing_concierge", proof: "test:seller-update-video", what: "Weekly seller-update D-ID avatar video proposed into the client-message gate (no HeyGen)" },
+  strategy_learning_loop:     { manager: "shopping_agent",    proof: "test:strategy-learning",  what: "Offer/counter outcomes close the loop back to the recommendation that produced them (strategy_outcomes)" },
 }
 
 /**
