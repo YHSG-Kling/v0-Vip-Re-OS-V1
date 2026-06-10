@@ -248,8 +248,8 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     svc.from("transactions").select("id, property_address, status, created_at, buyer_id, seller_id")
        .eq("brokerage_id", req.brokerage_id),
     svc.from("offers").select("id, status, amount, created_at, buyer_id").eq("brokerage_id", req.brokerage_id),
-    svc.from("showings").select("id, listing_id, appointment_datetime, source, status, buyer_id")
-       .in("buyer_id", (await svc.from("contacts").select("id").eq("email", email)).data?.map((c: any) => c.id) ?? ["00000000-0000-0000-0000-000000000000"]),
+    svc.from("showings").select("id, listing_id, scheduled_at, sync_source, status, contact_id")
+       .in("contact_id", (await svc.from("contacts").select("id").eq("email", email)).data?.map((c: any) => c.id) ?? ["00000000-0000-0000-0000-000000000000"]),
     svc.from("contact_consent_events").select("*").in("contact_id", (await svc.from("contacts").select("id").eq("email", email)).data?.map((c: any) => c.id) ?? ["00000000-0000-0000-0000-000000000000"]),
   ])
 

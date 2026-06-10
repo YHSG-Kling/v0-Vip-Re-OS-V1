@@ -92,7 +92,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         supabase
           .from("showings")
           .select(`
-            id, scheduled_at, duration_minutes, status, notes, location,
+            id, scheduled_at, duration_minutes, status, notes, external_address,
             contact_id, listing_id, agent_id,
             contacts(first_name, last_name),
             listings(address, city)
@@ -183,7 +183,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           endAt: endAt.toISOString(),
           eventType: "showing",
           source: "showings",
-          location: s.location,
+          location: s.external_address ?? (s.listings ? `${s.listings.address}, ${s.listings.city}` : undefined),
           contactId: s.contact_id,
           contactName: s.contacts ? `${s.contacts.first_name || ""} ${s.contacts.last_name || ""}`.trim() : undefined,
           listingId: s.listing_id,

@@ -338,7 +338,7 @@ export async function aiOptimizeShowingRoute(params: {
         contacts(first_name, last_name, phone, email)
       `)
       .eq("agent_id", params.agentId)
-      .eq("showing_date", params.date)
+      .eq("scheduled_date", params.date)
       .in("status", ["scheduled", "confirmed"])
 
     if (params.showingIds?.length) {
@@ -370,7 +370,7 @@ ${showings
   .map(
     (s: any, i: number) => `
 ${i + 1}. Property: ${s.listings?.address}, ${s.listings?.city}
-   - Scheduled Time: ${s.showing_time}
+   - Scheduled Time: ${s.scheduled_time}
    - Contact: ${s.contacts?.first_name} ${s.contacts?.last_name}
    - Property Type: ${s.listings?.property_type}
    - Notes: ${s.notes || "None"}
@@ -440,9 +440,7 @@ Provide JSON response:
         await supabase
           .from("showings")
           .update({
-            showing_time: item.recommendedTime,
-            route_id: route.id,
-            route_order: optimizedRoute.optimizedOrder.indexOf(item) + 1,
+            scheduled_time: item.recommendedTime,
           })
           .eq("id", item.showingId)
       }
@@ -494,8 +492,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
 
 SHOWING DETAILS:
 - Property: ${showing.listings?.address}, ${showing.listings?.city}, ${showing.listings?.state}
-- Date: ${new Date(showing.showing_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-- Time: ${showing.showing_time}
+- Date: ${new Date(showing.scheduled_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+- Time: ${showing.scheduled_time}
 - Agent: ${showing.users?.first_name} ${showing.users?.last_name}
 
 BUYER DETAILS:
@@ -518,7 +516,7 @@ Create JSON with both email and SMS versions:
     } catch {
       confirmationMessages = {
         emailSubject: `Showing Confirmation - ${showing.listings?.address}`,
-        smsMessage: `Your showing at ${showing.listings?.address} is confirmed for ${showing.showing_date} at ${showing.showing_time}`,
+        smsMessage: `Your showing at ${showing.listings?.address} is confirmed for ${showing.scheduled_date} at ${showing.scheduled_time}`,
       }
     }
 
@@ -752,7 +750,7 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
       .eq("agent_id", agentId)
 
     if (dateRange) {
-      query = query.gte("showing_date", dateRange.start).lte("showing_date", dateRange.end)
+      query = query.gte("scheduled_date", dateRange.start).lte("scheduled_date", dateRange.end)
     }
 
     const { data: showings } = await query

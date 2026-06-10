@@ -325,7 +325,7 @@ async function getListingSuggestions(listingId: string) {
     .from("showings")
     .select("*")
     .eq("listing_id", listingId)
-    .gte("showing_date", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    .gte("scheduled_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
 
   if ((!recentShowings || recentShowings.length === 0) && listing.status === "active") {
     suggestions.push({
@@ -344,8 +344,8 @@ async function getListingSuggestions(listingId: string) {
     .from("showings")
     .select("*")
     .eq("listing_id", listingId)
-    .eq("attended", true)
-    .is("feedback_received", null)
+    .eq("status", "completed")
+    .is("feedback", null)
 
   if (showingsNoFeedback && showingsNoFeedback.length > 0) {
     suggestions.push({

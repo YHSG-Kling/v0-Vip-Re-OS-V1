@@ -217,12 +217,12 @@ export async function getShowingInsights(contactId: string) {
   const { data: showings } = await supabase
     .from("showings")
     .select(`
-      id, showing_date, status, notes,
+      id, showing_date:scheduled_at, status, notes,
       contact:contacts(id, first_name, last_name),
       showing_feedback(id, feedback_text, sentiment, rating, created_at)
     `)
     .eq("listing_id", listingId)
-    .order("showing_date", { ascending: false })
+    .order("scheduled_at", { ascending: false })
 
   const allShowings = showings ?? []
 

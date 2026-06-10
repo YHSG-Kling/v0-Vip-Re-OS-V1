@@ -447,9 +447,9 @@ export async function suggestNextActions(agentId: string) {
     .from("showings")
     .select("*, contacts(*)")
     .eq("agent_id", agentId)
-    .eq("attended", true)
-    .eq("feedback_received", false)
-    .gte("showing_date", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+    .eq("status", "completed")
+    .is("feedback", null)
+    .gte("scheduled_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
 
   if (showingsNoFeedback && showingsNoFeedback.length > 0) {
     suggestions.push({
