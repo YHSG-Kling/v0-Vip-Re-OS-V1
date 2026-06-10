@@ -14,6 +14,25 @@
  * All 10 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
  * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture) +
  * Data Steward (m203, data integrity / identity / field stewardship across the lead spine).
+ *
+ * ── PRESERVED MANAGER BOUNDARIES (the product's governance contract) ──────────
+ * Sides of the business map to managers precisely — no blurring:
+ *   · AI ISA            — leads (unconsented, ISA + brokerage owned) and ISA
+ *                         engagement ACTIVITIES: every outreach/call/message the
+ *                         ISA logs while qualifying, until handoff converts the
+ *                         lead to a contact.
+ *   · Listing Concierge — the SELLER side: listings and in-house SHOWINGS of our
+ *                         listings (external buyer agents coming through our door,
+ *                         ShowingTime sync, access codes, seller feedback loops).
+ *   · Shopping Agent    — the BUYER side: TOURS (taking our buyer out, routes,
+ *                         stops) and OFFERS the buyer writes, plus preferences,
+ *                         matches and saved properties.
+ *   · Deal Coordinator  — post-acceptance: transactions, transaction tasks and
+ *                         the deal calendar through closing.
+ *   · Sphere Manager    — LIFETIME relationships: closed & past clients, repeat
+ *                         and referral cultivation after the deal is done.
+ * No additional manager is needed for these splits — each boundary lands cleanly
+ * on an existing manager's charter; introducing one would dilute accountability.
  */
 
 export type ManagerKey =
@@ -39,7 +58,7 @@ export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
   deal_coordinator:      { key: "deal_coordinator",      label: "Deal Coordinator",      domain: "Transactions & closings" },
   shopping_agent:        { key: "shopping_agent",        label: "Shopping Agent",        domain: "Buyer journey" },
   listing_concierge:     { key: "listing_concierge",     label: "Listing Concierge",     domain: "Sellers & listings" },
-  sphere_of_influence:   { key: "sphere_of_influence",   label: "Sphere Manager",        domain: "Database, repeat & referral" },
+  sphere_of_influence:   { key: "sphere_of_influence",   label: "Sphere Manager",        domain: "Lifetime closed & past clients — repeat & referral" },
   campaign_orchestrator: { key: "campaign_orchestrator", label: "Campaign Orchestrator", domain: "Multi-touch campaigns & content" },
   marketing_agent:       { key: "marketing_agent",       label: "Marketing Manager",     domain: "Brand & promotion" },
   asset_manager:         { key: "asset_manager",         label: "Asset Manager",         domain: "Media & brand library" },
@@ -89,6 +108,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   dedup_merge:                { manager: "data_steward", proof: "test:data-steward",       what: "Dedup merges fill empties and preserve conflicts in notes — never drop" },
   enrichment_conservation:    { manager: "data_steward", proof: "test:data-steward",       what: "PeopleData enrichment lands in first-class columns AND jsonb" },
   consent_suppression:        { manager: "data_steward", proof: "test:lead-pipeline",      what: "TCPA consent/opt-out provenance carries faithfully — no fabricated consent" },
+  manager_boundaries:         { manager: "data_steward", proof: "test:manager-ownership",  what: "Buyer/seller/lead/lifetime boundaries preserved: tours+offers=buyer (Shopping), in-house showings=listing side, ISA activities=AI ISA, sphere=lifetime past clients" },
   // ── AI ISA — the qualify → assign → convert chain ──
   qualification_chain:        { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Conversation scoring persists; readiness gates handoff" },
   assignment_routing:         { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Tier-aware routing (solo/team/brokerage/multi-location); preview = engine" },
@@ -123,10 +143,17 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   assignment_log:               "ai_isa",
   ai_daily_briefings:           "ai_isa",
   transactions:                 "deal_coordinator",
-  offers:                       "deal_coordinator",
-  showings:                     "shopping_agent",
+  // Buyer side: the buyer WRITES offers (pre-acceptance) and goes on tours.
+  offers:                       "shopping_agent",
+  tours:                        "shopping_agent",
+  tour_stops:                   "shopping_agent",
+  // Seller side: in-house showings OF our listings (external buyer agents,
+  // ShowingTime sync, access codes) belong to the listing's manager.
+  showings:                     "listing_concierge",
   tasks:                        "deal_coordinator",
-  activities:                   "data_steward",
+  // The activity ledger is dominated by ISA engagement records (outreach, calls,
+  // messages while qualifying) — the AI ISA is accountable for it.
+  activities:                   "ai_isa",
   calendar_events:              "deal_coordinator",
 }
 

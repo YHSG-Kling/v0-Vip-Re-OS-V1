@@ -169,6 +169,23 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "scheduled_date", "scheduled_time", "scheduling_method", "scheduling_reference", "showingtime_id",
     "status", "sync_source", "synced_at", "tour_id", "updated_at",
   ],
+  // Buyer-side touring (Shopping Agent): the planned route + its per-property stops.
+  tours: [
+    "agent_approved_at", "agent_approved_by", "agent_id", "ai_plan_narrative", "all_confirmed",
+    "brokerage_id", "buyer_id", "contact_id", "created_at", "id", "notes", "offline_cached_at",
+    "plan_sent_at", "report_sent_at", "report_sent_via", "report_url", "scheduled_at",
+    "start_address", "start_time", "status", "total_drive_time_minutes", "total_duration_minutes",
+    "tour_date", "updated_at",
+  ],
+  tour_stops: [
+    "access_code", "access_instructions", "access_method", "brokerage_id", "buyer_interest_level",
+    "buyer_note", "city", "confirmed_time", "contact_id", "created_at", "drive_time_from_prev_minutes",
+    "feedback", "id", "is_confirmed", "list_price", "listing_agent_company", "listing_agent_email",
+    "listing_agent_name", "listing_agent_phone", "listing_id", "listing_url", "mls_number",
+    "order_index", "primary_photo_url", "property_address", "rating", "scheduling_instructions",
+    "scheduling_method", "scheduling_reference", "showing_id", "state", "suggested_duration_minutes", "suggested_time",
+    "time_arrived_at", "time_left_at", "time_spent_minutes", "tour_id", "zip",
+  ],
   tasks: [
     "assigned_to_agent_id", "assignee_type", "auto_generated", "brokerage_id", "completed_at",
     "contact_id", "created_at", "created_by_agent_id", "description", "due_date", "id", "listing_id",

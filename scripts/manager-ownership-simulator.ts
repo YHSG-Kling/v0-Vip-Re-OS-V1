@@ -90,6 +90,28 @@ check("resolveTableManager: contacts → Data Steward (spine integrity)",
 check("resolveTableManager: leads → AI ISA (owns leads until qualified)",
   resolveTableManager("leads").key === "ai_isa")
 
+console.log("\n[5b · PRESERVED BOUNDARIES — buyer vs seller vs lead vs lifetime]")
+// The user-set governance contract: each side of the business lands on exactly
+// one manager. Re-mapping any of these is a product decision, not a refactor.
+check("BUYER side: offers (the buyer writes them) → Shopping Agent",
+  resolveTableManager("offers").key === "shopping_agent")
+check("BUYER side: tours (taking our buyer out) → Shopping Agent",
+  resolveTableManager("tours").key === "shopping_agent")
+check("BUYER side: tour_stops → Shopping Agent",
+  resolveTableManager("tour_stops").key === "shopping_agent")
+check("SELLER side: in-house showings of OUR listings → Listing Concierge",
+  resolveTableManager("showings").key === "listing_concierge")
+check("SELLER side: listings → Listing Concierge",
+  resolveTableManager("listings").key === "listing_concierge")
+check("LEAD side: ISA engagement activities → AI ISA",
+  resolveTableManager("activities").key === "ai_isa")
+check("DEAL side: transactions (post-acceptance) → Deal Coordinator",
+  resolveTableManager("transactions").key === "deal_coordinator")
+check("LIFETIME side: Sphere Manager's charter names closed & past clients",
+  /past client/i.test(MANAGERS.sphere_of_influence.domain))
+check("boundary preservation is itself a governed burn domain",
+  MAINTENANCE_DOMAINS.manager_boundaries?.manager === "data_steward")
+
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
 check("all 10 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward)", keys.length === 10)
