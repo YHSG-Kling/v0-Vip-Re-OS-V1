@@ -120,6 +120,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   briefing_isa_overnight:     { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Overnight handoffs/escalations lead the agent + team-lead morning briefs" },
   voice_isa:                  { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Voice calls feed the SAME rolling qualification + canonical handoff chain as email" },
   transaction_propensity:     { manager: "ai_isa",       proof: "test:propensity",         what: "Signal fusion — intent/engagement/equity/life-event/referral/recency fused into one transparent 'likely to transact in 90 days' score + top reasons (who to re-engage first)" },
+  voice_dial_batch:           { manager: "ai_isa",       proof: "test:voice-dial-batch",   what: "AI ISA proposes a batch of CONSENTED high-propensity contacts to call; human approves; consent is RE-CHECKED at approval before any dial (voice is contacts-only, TCPA + ISA-reengage gated)" },
   // ── Surface sections owned by their domain managers ──
   briefing_deal_risk:         { manager: "deal_coordinator",  proof: "test:manager-ownership", what: "Deals-at-risk briefing sections" },
   deadline_watcher:           { manager: "deal_coordinator",  proof: "test:deadline-watcher", what: "Inspection/appraisal/financing/walkthrough/closing deadlines within 24h notify the deal parties (was built but never scheduled — found by the domain audit)" },
@@ -161,6 +162,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   notifications:                "campaign_orchestrator",
   assignment_log:               "ai_isa",
   ai_daily_briefings:           "ai_isa",
+  ai_isa_call_batches:          "ai_isa",
   transactions:                 "deal_coordinator",
   // Buyer side: the buyer WRITES offers (pre-acceptance) and goes on tours.
   offers:                       "shopping_agent",

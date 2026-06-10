@@ -220,4 +220,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "listings_at_risk", "market_pulse", "opened_at", "summary", "tasks_overdue",
     "todays_events", "top_priority_actions", "user_id",
   ],
+  ai_isa_call_batches: [
+    "approved_at", "approved_by", "brokerage_id", "call_results", "completed_at", "created_at",
+    "dialed_count", "id", "proposed_at", "proposed_by_agent_id", "proposed_count", "script",
+    "status", "target_contacts",
+  ],
 }
