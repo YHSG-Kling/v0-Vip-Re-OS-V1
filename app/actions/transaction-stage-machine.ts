@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
 import { TransactionStage, TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
+import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
 
@@ -221,6 +222,23 @@ export async function markTransactionLost(params: {
 
   if (updateError) {
     return { success: false, error: updateError.message }
+  }
+
+  // OUTCOME-CLOSING LOOP (post-acceptance failure) — a deal that died after the
+  // offer won is a DIFFERENT failure mode than a rejected offer, so we don't
+  // overwrite the strategy_outcomes 'accepted' row. Instead close any still-open
+  // negotiation strategy for the transaction's offer as 'lost', so the negotiation
+  // model learns this deal fell apart. Best-effort.
+  try {
+    const { data: txn } = await svc
+      .from("transactions").select("offer_id").eq("id", params.transactionId).maybeSingle()
+    if (txn?.offer_id) {
+      await closeNegotiationStrategyForOffer(svc, {
+        offerId: txn.offer_id, brokerageId: auth.brokerageId, outcome: "lost",
+      })
+    }
+  } catch (err) {
+    console.error("[markTransactionLost] negotiation loop close failed:", err)
   }
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)

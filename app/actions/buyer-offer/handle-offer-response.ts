@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
+import { closeStrategyLoopForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 
 interface HandleOfferResponseParams {
   offerId: string
@@ -259,6 +260,25 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
 
   // Sync status
   await syncOfferStatus(offerId)
+
+  // OUTCOME-CLOSING LOOP — feed the seller's response back to the strategy that
+  // produced this offer (Shopping Agent learns from its own proposals). The
+  // settled/counter price (when the seller named one) is the actual final price;
+  // otherwise the closer falls back to the offer's own price. Idempotent + best-
+  // effort: a learning-write failure must never fail a binding offer transition.
+  try {
+    const counterPrice = Number(
+      counterTerms?.offer_price ?? counterTerms?.counter_price ?? counterTerms?.price,
+    )
+    await closeStrategyLoopForOffer(supabase, {
+      offerId,
+      brokerageId,
+      outcome: response,
+      finalPrice: Number.isFinite(counterPrice) ? counterPrice : null,
+    })
+  } catch (err) {
+    console.error("[handle-offer-response] strategy loop close failed:", err)
+  }
 
   return {
     success:       true,
