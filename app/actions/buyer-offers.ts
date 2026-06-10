@@ -274,10 +274,19 @@ export async function getOrGenerateStrategyRecommendation(
       }`
     : "No comparable offer data available"
 
+  // STRATEGY-LEARNING read side — ground the recommendation in what ACTUALLY won
+  // (the outcome-closing loop's accumulated strategy_outcomes), not just priors.
+  let outcomeContext = "No prior offer-strategy outcomes recorded yet — use standard priors."
+  try {
+    const { generateStrategyInsights } = await import("@/lib/strategy-learning/strategy-insights")
+    outcomeContext = (await generateStrategyInsights({ brokerageId }, supabase)).promptContext
+  } catch { /* best-effort — never block a recommendation */ }
+
   const prompt = `Analyze this offer situation and recommend a strategy.
 Property: $${listing?.list_price?.toLocaleString() ?? "unknown"}, ${dom} days on market, ${listing?.address ?? "external property"}
 Buyer: ${contact?.contact_type ?? "buyer"}, pre-approved${contact ? " (on file)" : ""}
 Market context: ${comparableContext}
+What's winning in this brokerage: ${outcomeContext}
 Available templates: ${templates.map(t => t.strategy_type).join(", ") || "standard"}
 Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": number, "recommended_contingencies": { "financing": bool, "financing_days": number, "inspection": bool, "inspection_days": number, "appraisal": bool, "appraisal_days": number }, "strategy_type": "standard"|"aggressive"|"conservative", "ai_narrative": string, "success_probability": number, "risk_factors": string[], "comparable_context": string }`
 

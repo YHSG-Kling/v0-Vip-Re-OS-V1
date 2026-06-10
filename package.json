@@ -21,6 +21,7 @@
     "test:spend-governance": "tsx scripts/spend-governance-simulator.ts",
     "test:command-center": "tsx scripts/command-center-simulator.ts",
     "test:strategy-learning": "tsx scripts/strategy-learning-simulator.ts",
+    "test:strategy-insights": "tsx scripts/strategy-insights-simulator.ts",
     "test:seller-update-video": "tsx scripts/seller-update-video-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",
