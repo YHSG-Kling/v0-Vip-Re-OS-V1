@@ -148,6 +148,38 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         </section>
       )}
 
+      {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
+          The proof-of-system view: N AI deliverables this week, every one human-approved
+          before it shipped. */}
+      {data.deliverables && data.deliverables.totals.total > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Governed deliverables — last 7 days</h2>
+            <span className="text-xs text-muted-foreground">across all manager loops</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Card className="p-4"><div className="text-xs text-muted-foreground">AI deliverables</div><div className="text-2xl font-semibold">{data.deliverables.totals.total}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Awaiting you</div><div className="text-2xl font-semibold text-blue-700">{data.deliverables.totals.proposed + data.deliverables.totals.approved}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Sent to clients</div><div className="text-2xl font-semibold text-green-700">{data.deliverables.totals.sent}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Rejected</div><div className="text-2xl font-semibold">{data.deliverables.totals.rejected}</div></Card>
+            <Card className={"p-4 " + (data.deliverables.totals.sent === data.deliverables.totals.sentWithApprover ? "border-green-300 bg-green-50/40" : "border-red-300 bg-red-50/40")}>
+              <div className="text-xs text-muted-foreground">Sent w/ human approval</div>
+              <div className="text-2xl font-semibold">{data.deliverables.totals.sentWithApprover}/{data.deliverables.totals.sent}</div>
+            </Card>
+          </div>
+          {data.deliverables.byLoop.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {data.deliverables.byLoop.map((l) => (
+                <Card key={l.loop} className="px-3 py-1.5 flex items-center gap-2">
+                  <span className="text-sm">{l.loop}</span>
+                  <Badge className="bg-slate-900 text-white">{l.count}</Badge>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (

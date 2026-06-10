@@ -20,6 +20,7 @@
     "test:agent-governance": "tsx scripts/agent-governance-simulator.ts",
     "test:spend-governance": "tsx scripts/spend-governance-simulator.ts",
     "test:command-center": "tsx scripts/command-center-simulator.ts",
+    "test:deliverables": "tsx scripts/deliverables-summary-simulator.ts",
     "test:strategy-learning": "tsx scripts/strategy-learning-simulator.ts",
     "test:strategy-insights": "tsx scripts/strategy-insights-simulator.ts",
     "test:referral-closer": "tsx scripts/referral-closer-simulator.ts",

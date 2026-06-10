@@ -149,6 +149,13 @@ async function main() {
     check("weeklyPnl: deltaPct is null exactly when prior is 0 (no divide-by-zero)",
       data.weeklyPnl.every((c) => c.metrics.every((m) => (m.prior === 0) === (m.deltaPct === null))))
 
+    // Unified governed-deliverables rail — the aggregate of every loop's gate proposals.
+    check("deliverables: present on the brokerage-scoped load", data.deliverables !== null)
+    check("deliverables: totals are internally consistent (sum of statuses ≤ total)",
+      !data.deliverables || (data.deliverables.totals.proposed + data.deliverables.totals.approved + data.deliverables.totals.sent + data.deliverables.totals.rejected + data.deliverables.totals.failed) <= data.deliverables.totals.total)
+    check("deliverables: GOVERNANCE — every sent deliverable had a human approver",
+      !data.deliverables || data.deliverables.totals.sentWithApprover === data.deliverables.totals.sent)
+
     // Reject contract — the exact mutation rejectAgentAction performs.
     const { error: rejErr } = await svc.from("marketing_agent_actions")
       .update({ status: "skipped", approved_by: userId, approved_at: new Date().toISOString() })

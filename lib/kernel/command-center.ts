@@ -72,6 +72,9 @@ export interface CommandCenterData {
   /** Manager Weekly P&L — each manager's trailing-7d production vs the prior week.
    *  The outcome layer beneath the standup (did the AI workforce produce?). */
   weeklyPnl:       import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[]
+  /** Unified governed-deliverables rail — every loop's gate proposals rolled up
+   *  (how many AI deliverables this week, how many human-approved, by manager + loop). */
+  deliverables:    import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -222,15 +225,19 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // tenants, so the standup is omitted there). Best-effort: never blocks the queue.
   let standup: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
   let weeklyPnl: import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[] = []
+  let deliverables: import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null = null
   if (params.brokerageId) {
-    const [standupRes, pnlRes] = await Promise.allSettled([
+    const [standupRes, pnlRes, delivRes] = await Promise.allSettled([
       import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(params.brokerageId!)),
       import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(params.brokerageId!)),
+      import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId: params.brokerageId! })),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
     if (pnlRes.status === "fulfilled") weeklyPnl = pnlRes.value
     else console.error("[command-center] manager weekly P&L failed:", pnlRes.reason)
+    if (delivRes.status === "fulfilled") deliverables = delivRes.value
+    else console.error("[command-center] deliverables summary failed:", delivRes.reason)
   }
 
   return {
@@ -239,6 +246,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     managerBreakdown,
     standup,
     weeklyPnl,
+    deliverables,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,
