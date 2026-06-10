@@ -681,7 +681,7 @@ export async function createAIOffer(params: OfferCreationParams): Promise<OfferC
       supabase.from("contacts").select("*").eq("id", params.buyerId).single(),
       supabase
         .from("offers")
-        .select("offer_amount, status")
+        .select("offer_amount:offer_price, status")
         .eq("listing_id", params.listingId)
         .order("created_at", { ascending: false })
         .limit(5),
@@ -764,18 +764,17 @@ Return JSON:
       .from("offers")
       .insert({
         listing_id: params.listingId,
-        buyer_id: params.buyerId,
+        contact_id: params.buyerId,
         agent_id: params.agentId,
-        offer_amount: params.offerAmount,
+        offer_price: params.offerAmount,
         earnest_money: defaultEarnest,
         down_payment_percent: defaultDownPayment,
         financing_type: params.financingType,
         contingencies: defaultContingencies,
-        close_date: params.closeDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        closing_date: params.closeDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
         escalation_clause: params.escalationClause,
-        additional_terms: params.additionalTerms,
+        notes: params.additionalTerms ?? null,
         ai_analysis: aiAnalysis,
-        strength_score: aiAnalysis.strengthScore,
         status: "draft",
       })
       .select()
@@ -879,7 +878,7 @@ export async function compareOffers(
       `)
       .eq("listing_id", listingId)
       .in("status", ["pending", "countered"])
-      .order("offer_amount", { ascending: false })
+      .order("offer_price", { ascending: false })
 
     if (!offers || offers.length === 0) {
       return { success: false, error: "No offers to compare" }
@@ -898,12 +897,12 @@ LISTING:
 OFFERS (${offers.length} total):
 ${offers.map((o: any, i: number) => `
 Offer ${i + 1}:
-- Amount: $${o.offer_amount.toLocaleString()}
+- Amount: $${o.offer_price.toLocaleString()}
 - Earnest: $${o.earnest_money.toLocaleString()}
 - Down Payment: ${o.down_payment_percent}%
 - Financing: ${o.financing_type}
 - Contingencies: ${o.contingencies?.join(", ")}
-- Close Date: ${o.close_date}
+- Close Date: ${o.closing_date}
 ${o.escalation_clause ? `- Escalation: Up to $${o.escalation_clause.maxPrice.toLocaleString()}` : ""}`).join("\n")}
 
 Analyze and rank these offers. Consider:

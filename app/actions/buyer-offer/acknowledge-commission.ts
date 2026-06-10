@@ -55,7 +55,7 @@ export async function acknowledgeBuyerCommissionAction(
   // Verify caller is the buyer OR an agent on the offer's brokerage
   const { data: offer } = await svc
     .from("offers")
-    .select("id, buyer_id, brokerage_id, status, buyer_commission_acknowledged_at")
+    .select("id, contact_id, brokerage_id, status, buyer_commission_acknowledged_at")
     .eq("id", input.offerId)
     .maybeSingle()
   if (!offer) return { ok: false, error: "Offer not found" }
@@ -77,7 +77,7 @@ export async function acknowledgeBuyerCommissionAction(
   const isBuyer = await svc
     .from("contacts")
     .select("user_id")
-    .eq("id", offer.buyer_id)
+    .eq("id", offer.contact_id)
     .maybeSingle()
     .then(r => r.data?.user_id === user.id)
 
@@ -112,7 +112,7 @@ export async function acknowledgeBuyerCommissionAction(
       const { data: buyer } = await svc
         .from("contacts")
         .select("first_name, last_name, email")
-        .eq("id", offer.buyer_id)
+        .eq("id", offer.contact_id)
         .maybeSingle()
       if (!buyer?.email) {
         return { ok: false, error: "Buyer contact has no email — cannot dispatch e-sign request" }
@@ -121,7 +121,7 @@ export async function acknowledgeBuyerCommissionAction(
         propertyAddress: `Commission disclosure — offer ${input.offerId.slice(0, 8)}`,
         transactionType: "purchase",
         agentId:         user.id,
-        contactId:       offer.buyer_id,
+        contactId:       offer.contact_id,
       })
       if (!tx.success || !tx.externalTransactionId) {
         return { ok: false, error: tx.error ?? "E-sign provider createTransaction failed" }

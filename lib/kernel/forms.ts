@@ -310,7 +310,7 @@ export async function prefillFormWithContext(input: {
       const { data: offer } = await supabase
         .from("offers")
         .select(`
-          id, offer_price, offer_date, closing_date, earnest_money,
+          id, offer_price, offer_date:submitted_at, closing_date, earnest_money,
           financing_type, contingencies, contact_id,
           contacts!contact_id (
             first_name, last_name, email, phone

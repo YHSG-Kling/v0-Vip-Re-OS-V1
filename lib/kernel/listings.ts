@@ -679,7 +679,7 @@ export async function createTransactionShellFromAcceptedOffer(input: {
     // Validate offer is accepted
     const { data: offer } = await supabase
       .from("offers")
-      .select("id, status, offer_price, buyer_contact_id")
+      .select("id, status, offer_price, contact_id")
       .eq("id", input.offerId)
       .maybeSingle()
 
@@ -709,7 +709,7 @@ export async function createTransactionShellFromAcceptedOffer(input: {
         // not exist / failed the CHECK, so the insert silently errored.
         contact_id:        listing.seller_contact_id,
         seller_contact_id: listing.seller_contact_id,
-        buyer_contact_id:  offer.buyer_contact_id ?? null,
+        buyer_contact_id:  offer.contact_id ?? null,
         deal_type:         "seller",
         status:            "under_contract",
         stage:             "UNDER_CONTRACT",

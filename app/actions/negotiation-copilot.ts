@@ -137,8 +137,8 @@ export async function negotiationCoPilot(params: {
     .select(`
       id, offer_price, earnest_money, down_payment_percent, financing_type,
       contingencies, closing_date, current_round, status,
-      contact_id, buyer_contact_id, listing_id,
-      seller_concession_amount, closing_cost_contribution,
+      contact_id, listing_id,
+      closing_cost_contribution,
       listing:listings(id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, brokerage_id),
       buyer:contacts(id, first_name, last_name)
     `)
@@ -299,7 +299,7 @@ export async function negotiationCoPilot(params: {
   // Generate 4 scenarios (status quo, price-up vs concession-up,
   // concession-up vs price-down, balanced midpoint). Each shows the delta
   // to both parties so the agent can frame the trade for their client.
-  const existingConcession = Number((offer as { seller_concession_amount?: number }).seller_concession_amount ?? 0)
+  const existingConcession = Number((offer as { closing_cost_contribution?: number }).closing_cost_contribution ?? 0)
   const concessionMatrix = await buildConcessionMatrix({
     side,
     offerPrice,
@@ -326,8 +326,7 @@ export async function negotiationCoPilot(params: {
 
   // Pick the contact_id we'd route a "send as counter response" through.
   // Both sides use the offer's primary contact (buyer's contact record).
-  const offerAny = offer as unknown as { contact_id?: string | null; buyer_contact_id?: string | null }
-  const routableContactId = offerAny.contact_id ?? offerAny.buyer_contact_id ?? null
+  const routableContactId = (offer as unknown as { contact_id?: string | null }).contact_id ?? null
 
   return {
     success: true,
@@ -619,14 +618,11 @@ export async function sendDraftAsCounterResponse(params: SendDraftAsCounterParam
   // Resolve the contact for this offer
   const { data: offer } = await supabase
     .from("offers")
-    .select("id, contact_id, buyer_contact_id")
+    .select("id, contact_id")
     .eq("id", params.offerId)
     .maybeSingle()
   if (!offer) return { success: false, error: "Offer not found" }
-  const contactId =
-    (offer as { contact_id?: string | null }).contact_id ??
-    (offer as { buyer_contact_id?: string | null }).buyer_contact_id ??
-    null
+  const contactId = (offer as { contact_id?: string | null }).contact_id ?? null
   if (!contactId) {
     return { success: false, error: "No contact linked to this offer — can't route." }
   }

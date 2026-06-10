@@ -62,25 +62,25 @@ export async function buildMultiOfferMatrix(input: {
   // Pull every active offer on this listing
   const { data: offers } = await svc
     .from("offers")
-    .select("id, buyer_contact_id, offer_price, earnest_money, down_payment_percent, financing_type, close_date, contingencies, escalation_cap, seller_concession_amount, status, created_at")
+    .select("id, contact_id, offer_price, earnest_money, down_payment_percent, financing_type, closing_date, contingencies, escalation_cap, closing_cost_contribution, status, created_at")
     .eq("listing_id", input.listingId)
     .in("status", ["pending", "submitted", "countered"])
 
   const rows: OfferRow[] = []
   for (const off of (offers ?? [])) {
     let buyerName: string | null = null
-    if ((off as any).buyer_contact_id) {
+    if ((off as any).contact_id) {
       const { data: c } = await svc
-        .from("contacts").select("first_name, last_name").eq("id", (off as any).buyer_contact_id).maybeSingle()
+        .from("contacts").select("first_name, last_name").eq("id", (off as any).contact_id).maybeSingle()
       if (c) buyerName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || null
     }
 
     const offerPrice = (off as any).offer_price ?? 0
-    const concessions = (off as any).seller_concession_amount ?? 0
+    const concessions = (off as any).closing_cost_contribution ?? 0
     const estimatedSellerCosts = offerPrice * 0.06   // realistic conservative est. (commission + closing)
     const netToSeller = offerPrice - concessions - estimatedSellerCosts
 
-    const closeDate = (off as any).close_date
+    const closeDate = (off as any).closing_date
     const closeDateDays = closeDate
       ? Math.floor((new Date(closeDate).getTime() - Date.now()) / 86_400_000)
       : null
@@ -103,7 +103,7 @@ export async function buildMultiOfferMatrix(input: {
       closeDateDays,
       contingencies:         (off as any).contingencies ?? [],
       escalationCap:         (off as any).escalation_cap,
-      sellerConcessionAmount: (off as any).seller_concession_amount,
+      sellerConcessionAmount: (off as any).closing_cost_contribution,
       netToSeller,
       buyerStrengthScore,
       buyerStrengthLabel:    labelStrength(buyerStrengthScore),
@@ -223,7 +223,7 @@ export async function buildCounterOfferDiff(input: {
 
   const { data: offer } = await svc
     .from("offers")
-    .select("id, offer_price, earnest_money, close_date, contingencies, financing_type, down_payment_percent, seller_concession_amount, escalation_cap")
+    .select("id, offer_price, earnest_money, closing_date, contingencies, financing_type, down_payment_percent, closing_cost_contribution, escalation_cap")
     .eq("id", input.offerId)
     .maybeSingle()
 
@@ -234,8 +234,8 @@ export async function buildCounterOfferDiff(input: {
   const fields: Array<{ key: string; label: string }> = [
     { key: "offer_price",                 label: "Price" },
     { key: "earnest_money",               label: "Earnest money" },
-    { key: "close_date",                  label: "Close date" },
-    { key: "seller_concession_amount",    label: "Seller concessions" },
+    { key: "closing_date",                label: "Close date" },
+    { key: "closing_cost_contribution",   label: "Seller concessions" },
     { key: "down_payment_percent",        label: "Down payment %" },
     { key: "financing_type",              label: "Financing type" },
     { key: "contingencies",               label: "Contingencies" },
@@ -306,13 +306,13 @@ function recommendForField(
       }
       return { recommendation: "review", rationale: "Manual review." }
     }
-    case "close_date":
+    case "closing_date":
       return { recommendation: "review", rationale: "Verify lender/title can hit the new date." }
     case "earnest_money":
       return { recommendation: "match", rationale: "Buyer can typically meet a higher EMD." }
     case "contingencies":
       return { recommendation: "review", rationale: "Contingency changes affect risk — review carefully." }
-    case "seller_concession_amount":
+    case "closing_cost_contribution":
       return { recommendation: "review", rationale: "Concession changes affect net to buyer." }
     default:
       return { recommendation: "review", rationale: "Manual review." }

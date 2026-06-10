@@ -340,7 +340,7 @@ export async function getOfferSummary(
 }> {
   const { data: offers } = await supabase
     .from("offers")
-    .select("id, listing_id, contact_id, offer_amount:offer_price, status, offer_date, expiration_date, buyer:contacts(id, first_name, last_name)")
+    .select("id, listing_id, contact_id, offer_amount:offer_price, status, offer_date:submitted_at, expiration_date:response_deadline, buyer:contacts(id, first_name, last_name)")
     .eq("listing_id", listingId)
     .order("offer_price", { ascending: false })
 

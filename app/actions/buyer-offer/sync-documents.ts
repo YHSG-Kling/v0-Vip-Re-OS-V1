@@ -33,25 +33,26 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
 
   const supabase = createServiceClient()
 
-  // Get offer
+  // Get offer — esign_provider + provider_envelope_id are the real link columns
+  // (offer-bridge maps them to transactions.external_provider_source/_transaction_id).
   const { data: offer } = await supabase
     .from("offers")
-    .select("id, external_provider, external_provider_id, transaction_id")
+    .select("id, brokerage_id, contact_id, esign_provider, provider_envelope_id, transaction_id")
     .eq("id", offerId)
     .single()
 
-  if (!offer?.external_provider || !offer.external_provider_id) {
+  if (!offer?.esign_provider || !offer.provider_envelope_id) {
     return { success: false, error: "Offer not linked to provider" }
   }
 
   try {
-    // Get provider instance
-    const provider = await getTransactionProvider(offer.external_provider)
+    // Get provider instance (resolved from the brokerage's configured provider)
+    const provider = await getTransactionProvider(offer.brokerage_id)
 
     // Fetch documents from provider
     const syncResult = await provider.syncDocuments({
-      externalTransactionId: offer.external_provider_id,
-      contactId: (offer as any).contact_id ?? "",
+      externalTransactionId: offer.provider_envelope_id,
+      contactId: offer.contact_id ?? "",
       transactionId: offer.transaction_id,
     })
 
@@ -70,7 +71,7 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
           document_name: doc.documentName,
           document_type: normalizeDocumentType(doc.folderName),
           external_url: doc.url,
-          external_provider: offer.external_provider,
+          external_provider: offer.esign_provider,
           external_provider_id: doc.externalDocumentId,
           status: doc.isSigned ? "signed" : "pending",
           uploaded_by: userId
@@ -89,7 +90,7 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
       agent_user_id: userId,
       metadata: {
         offer_id: offerId,
-        provider: offer.external_provider,
+        provider: offer.esign_provider,
         document_count: documents.length
       }
     })

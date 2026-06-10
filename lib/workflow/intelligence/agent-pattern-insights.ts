@@ -59,7 +59,7 @@ export async function getAgentPatternInsights(input: {
   // Pull the agent's offers
   const { data: offers } = await svc
     .from("offers")
-    .select("id, status, offer_price, earnest_money, financing_type, contingencies, escalation_cap, created_at, accepted_at, listing_id")
+    .select("id, status, offer_price, earnest_money, financing_type, contingencies, escalation_cap, created_at, accepted_at:responded_at, listing_id")
     .eq("agent_id", agent.id)
     .gte("created_at", since)
 
@@ -121,10 +121,10 @@ export async function getAgentPatternInsights(input: {
     // Compare to brokerage best
     const { data: brokerageOffers } = await svc
       .from("offers")
-      .select("created_at, accepted_at, agent_id")
+      .select("created_at, accepted_at:responded_at, agent_id")
       .eq("status", "accepted")
       .gte("created_at", since)
-      .not("accepted_at", "is", null)
+      .not("responded_at", "is", null)
     const brokerageDays = (brokerageOffers ?? [])
       .filter(o => o.created_at && o.accepted_at)
       .map(o => (new Date(o.accepted_at!).getTime() - new Date(o.created_at).getTime()) / 86_400_000)

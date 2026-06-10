@@ -45,7 +45,6 @@ type Offer = {
   offer_number: string | null
   offer_price: number
   earnest_money: number | null
-  earnest_money_amount: number | null
   closing_date: string | null
   financing_type: string | null
   down_payment_amount: number | null
@@ -187,8 +186,8 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         setOffers((prev) =>
           prev.map((o) =>
             o.id === offerId
-              ? { ...o, is_winning_offer: true, winning_offer: true, status: "accepted" }
-              : { ...o, is_winning_offer: false, winning_offer: false }
+              ? { ...o, is_winning_offer: true, status: "accepted" }
+              : { ...o, is_winning_offer: false }
           )
         )
         toast({ title: "Offer accepted", description: "Listing moved to Under Contract" })
@@ -532,8 +531,8 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                       setOffers(prev =>
                         prev.map(o =>
                           o.id === offer.id
-                            ? { ...o, status: "accepted", is_winning_offer: true, winning_offer: true }
-                            : { ...o, is_winning_offer: false, winning_offer: false }
+                            ? { ...o, status: "accepted", is_winning_offer: true }
+                            : { ...o, is_winning_offer: false }
                         )
                       )
                       toast({ title: "Offer accepted — transaction created", description: `Transaction ID: ${txId.slice(0, 8)}…` })

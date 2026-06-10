@@ -40,7 +40,7 @@ export async function GET(req: Request) {
   const nowIso = new Date().toISOString()
   const { data: offers, error } = await supabase
     .from("offers")
-    .select("id, brokerage_id, contact_id, agent_id, earnest_money, earnest_money_due_at, earnest_money_due_days, contract_date")
+    .select("id, brokerage_id, contact_id, agent_id, earnest_money, earnest_money_due_at, earnest_money_due_days, fully_signed_contract_received_at")
     .eq("status", "accepted")
     .not("earnest_money_due_at", "is", null)
     .lte("earnest_money_due_at", nowIso)

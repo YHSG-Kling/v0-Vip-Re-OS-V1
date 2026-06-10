@@ -13,7 +13,7 @@ interface NegotiationRecommendationCardProps {
     contingencies: string[] | null
     ai_recommendation: string | null
     ai_analysis: Record<string, unknown> | null
-    earnest_money_amount: number | null
+    earnest_money: number | null
     down_payment_percent: number | null
     appraisal_gap: number | null
     escalation_clause: boolean | null

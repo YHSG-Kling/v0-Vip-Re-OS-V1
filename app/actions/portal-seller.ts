@@ -300,12 +300,12 @@ export async function getSellerOffers(contactId: string) {
   const { data: offers } = await supabase
     .from("offers")
     .select(`
-      id, listing_id, contact_id, offer_amount:offer_price, status, offer_date, expiration_date,
+      id, listing_id, contact_id, offer_amount:offer_price, status, offer_date:submitted_at, expiration_date:response_deadline,
       earnest_money, down_payment_percent, contingencies, notes,
       buyer:contacts(id, first_name, last_name, email, phone)
     `)
     .eq("listing_id", listing.id)
-    .order("offer_date", { ascending: false })
+    .order("submitted_at", { ascending: false })
 
   return {
     offers: offers ?? [],

@@ -12,7 +12,7 @@ interface TimelineRiskCardProps {
     inspection_period_days: number | null
     closing_date: string | null
     down_payment_percent: number | null
-    earnest_money_amount: number | null
+    earnest_money: number | null
     appraisal_gap: number | null
     contingencies: string[] | null
   }
@@ -151,7 +151,7 @@ function assessRisks(offer: TimelineRiskCardProps["offer"], listPrice: number): 
   }
 
   // Buyer Strength (earnest money as proxy)
-  const earnest = offer.earnest_money_amount ?? 0
+  const earnest = offer.earnest_money ?? 0
   const earnestPercent = listPrice > 0 ? (earnest / listPrice) * 100 : 0
   if (earnestPercent >= 3) {
     risks.push({

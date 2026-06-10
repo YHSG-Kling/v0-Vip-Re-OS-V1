@@ -12,7 +12,7 @@ interface SellerMeaningCardProps {
     appraisal_contingency_days: number | null
     financing_contingency_days: number | null
     inspection_period_days: number | null
-    earnest_money_amount: number | null
+    earnest_money: number | null
     down_payment_percent: number | null
   }
   listPrice: number

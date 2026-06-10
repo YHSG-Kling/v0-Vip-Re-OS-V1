@@ -119,7 +119,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   if (portalView.view === "buyer") {
     const { data: buyerOffers } = await supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, list_price)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date:response_deadline, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, list_price)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
 

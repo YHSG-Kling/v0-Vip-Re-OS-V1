@@ -157,7 +157,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "possession_terms", "property_address", "property_address_ai_filled", "provider_envelope_id",
     "ready_for_compliance_at", "responded_at", "response_deadline", "seller_net_estimate",
     "seller_response_document_url", "seller_response_received_at", "seller_response_type",
-    "seller_signed_at", "seller_signed_document_url", "seller_viewed_at", "status", "submitted_at",
+    "seller_signed_at", "seller_signed_document_url", "seller_viewed_at", "status",
+    "strategy_recommendation_id", "submitted_at",
     "transaction_id", "updated_at", "uploaded_by",
   ],
   showings: [

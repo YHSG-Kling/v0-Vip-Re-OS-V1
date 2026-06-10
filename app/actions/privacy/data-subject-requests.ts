@@ -239,18 +239,28 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
   // Gather data from the standard tables. (Brokerage-internal tables only —
   // never include records from OTHER brokerages.)
   const email = req.subject_email
+  // Resolve the subject's contact ids ONCE — every record set below is scoped to
+  // the SUBJECT, never the whole brokerage (a data-subject export must not leak
+  // other clients' deals).
+  const subjectContactIds: string[] =
+    (await svc.from("contacts").select("id").eq("email", email).eq("brokerage_id", req.brokerage_id))
+      .data?.map((c: any) => c.id) ?? []
+  const idsOrNone = subjectContactIds.length > 0 ? subjectContactIds : ["00000000-0000-0000-0000-000000000000"]
+  const idList = idsOrNone.join(",")
   const [user, contacts, communications, transactions, offers, showings, consents] = await Promise.all([
     svc.from("users").select("*").eq("email", email).eq("brokerage_id", req.brokerage_id).maybeSingle(),
     svc.from("contacts").select("*").eq("email", email).eq("brokerage_id", req.brokerage_id),
     svc.from("communications").select("id, channel, direction, content_preview, sent_at, contact_id")
        .or(`contact_email.eq.${email},to_email.eq.${email}`)
        .limit(500),
-    svc.from("transactions").select("id, property_address, status, created_at, buyer_id, seller_id")
-       .eq("brokerage_id", req.brokerage_id),
-    svc.from("offers").select("id, status, amount, created_at, buyer_id").eq("brokerage_id", req.brokerage_id),
+    svc.from("transactions").select("id, property_address, status, created_at, buyer_contact_id, seller_contact_id")
+       .eq("brokerage_id", req.brokerage_id)
+       .or(`buyer_contact_id.in.(${idList}),seller_contact_id.in.(${idList}),contact_id.in.(${idList})`),
+    svc.from("offers").select("id, status, offer_price, created_at, contact_id").eq("brokerage_id", req.brokerage_id)
+       .in("contact_id", idsOrNone),
     svc.from("showings").select("id, listing_id, scheduled_at, sync_source, status, contact_id")
-       .in("contact_id", (await svc.from("contacts").select("id").eq("email", email)).data?.map((c: any) => c.id) ?? ["00000000-0000-0000-0000-000000000000"]),
-    svc.from("contact_consent_events").select("*").in("contact_id", (await svc.from("contacts").select("id").eq("email", email)).data?.map((c: any) => c.id) ?? ["00000000-0000-0000-0000-000000000000"]),
+       .in("contact_id", idsOrNone),
+    svc.from("contact_consent_events").select("*").in("contact_id", idsOrNone),
   ])
 
   const bundle = {
