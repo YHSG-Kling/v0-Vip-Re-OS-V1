@@ -110,9 +110,9 @@ function testIsaOvernightBriefing() {
   const t0 = "2026-06-10T02:00:00Z", t1 = "2026-06-10T05:00:00Z"
   const section = buildIsaOvernightSection({
     handoffs: [
-      { lead_id: "L2", lead_name: "Late Larry", claimed: false, assignment_method: "round_robin", assigned_at: t1 },
-      { lead_id: "L1", lead_name: "Early Erin", claimed: false, assignment_method: "round_robin", assigned_at: t0 },
-      { lead_id: "L3", lead_name: "Claimed Cara", claimed: true, assignment_method: "manual", assigned_at: t0 },
+      { lead_id: "L2", contact_id: "C2", lead_name: "Late Larry", claimed: false, assignment_method: "round_robin", assigned_at: t1 },
+      { lead_id: "L1", contact_id: "C1", lead_name: "Early Erin", claimed: false, assignment_method: "round_robin", assigned_at: t0 },
+      { lead_id: "L3", contact_id: "C3", lead_name: "Claimed Cara", claimed: true, assignment_method: "manual", assigned_at: t0 },
     ],
     escalations: [{ lead_id: "L9", message: "Wants a human", urgency: "critical" }],
     hotIsaLeadCount: 2,
@@ -125,8 +125,14 @@ function testIsaOvernightBriefing() {
     section.summary_line.includes("1 ISA escalation") && section.summary_line.includes("2 hot conversations"))
 
   const actions = isaPriorityActions(section, [{ lead_id: "L9", message: "Wants a human", urgency: "critical" }])
-  check("unclaimed handoffs become HIGH priorities with view_lead CTA",
-    actions[0].priority === "high" && actions[0].action_type === "view_lead" && actions[0].entity_id === "L1")
+  // Canonical process: qualification converted the lead — the CTA opens the CONTACT.
+  check("unclaimed handoffs become HIGH priorities opening the CONVERTED CONTACT",
+    actions[0].priority === "high" && actions[0].action_type === "open_contact" && actions[0].entity_id === "C1")
+  check("conversion-in-flight handoff falls back to the lead",
+    isaPriorityActions(buildIsaOvernightSection({
+      handoffs: [{ lead_id: "LX", contact_id: null, lead_name: "Mid Flight", claimed: false, assignment_method: null, assigned_at: t0 }],
+      escalations: [], hotIsaLeadCount: 0,
+    }), [])[0].action_type === "view_lead")
   check("critical escalation is HIGH priority", actions.some((a) => a.action.includes("escalation") && a.priority === "high"))
 
   const empty = buildIsaOvernightSection({ handoffs: [], escalations: [], hotIsaLeadCount: 0 })

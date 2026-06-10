@@ -89,12 +89,15 @@ export async function checkAndTriggerGiftOrder(params: {
   })
 
   // Notify TC
+  // Real notifications shape (type/body/entity_*; no notification_type/message/link
+  // columns — the phantom insert failed silently and the TC was never notified).
   await supabase.from("notifications").insert({
     user_id: params.userId,
-    notification_type: 'task_assigned',
+    type: 'task_assigned',
     title: 'Order Closing Gift',
-    message: 'Financing conditional approval received. Please order closing gift for client.',
-    link: `/transactions/${params.transactionId}`,
+    body: 'Financing conditional approval received. Please order closing gift for client.',
+    entity_type: 'transaction',
+    entity_id: params.transactionId,
     brokerage_id: params.brokerageId
   })
 

@@ -426,12 +426,12 @@ async function generateSellerVideo(listingId: string, videoType: string) {
 
   if (scriptRecord) {
     await supabase.from("notifications").insert({
-      recipient_id: listing.agent_id,
-      notification_type: "video_approval_needed",
+      user_id: listing.agent_id,
+      type: "video_approval_needed",
       title: "Video Script Ready for Approval",
-      message: `Review ${videoType} video script for ${listing.seller?.first_name}`,
-      related_entity_type: "video_script",
-      related_entity_id: scriptRecord.id,
+      body: `Review ${videoType} video script for ${listing.seller?.first_name}`,
+      entity_type: "video_script",
+      entity_id: scriptRecord.id,
     })
   }
 }
@@ -441,11 +441,12 @@ async function notifySeller(sellerId: string, notificationType: string) {
   const messages: Record<string, string> = {
     offer_received: "Great news! We just received an offer on your property. I'll review it and call you shortly.",
   }
+  // Seller is a CONTACT — notifications carries contact_id for portal surfacing.
   await supabase.from("notifications").insert({
-    recipient_id: sellerId,
-    notification_type: notificationType,
+    contact_id: sellerId,
+    type: notificationType,
     title: "Important Update",
-    message: messages[notificationType] || "You have a new update.",
+    body: messages[notificationType] || "You have a new update.",
   })
 }
 

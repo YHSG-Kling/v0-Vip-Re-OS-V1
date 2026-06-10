@@ -14,6 +14,10 @@ import type { PriorityAction } from './daily-briefing-generator'
 
 export interface IsaHandoffRow {
   lead_id: string
+  /** contacts.id the ISA converted this lead into at assignment (canonical process:
+   *  qualification → assignment → CONVERSION; the agent's first touch is on the
+   *  CONTACT). Null only if conversion is still in flight. */
+  contact_id: string | null
   lead_name: string
   claimed: boolean
   assignment_method: string | null
@@ -43,7 +47,7 @@ export interface IsaOvernightSection {
   /** One agent-readable line for the summary strip. */
   summary_line: string
   /** Handoffs awaiting first touch (the actionable subset, capped). */
-  unclaimed: Array<{ lead_id: string; lead_name: string; assigned_at: string }>
+  unclaimed: Array<{ lead_id: string; contact_id: string | null; lead_name: string; assigned_at: string }>
 }
 
 export function buildIsaOvernightSection(input: IsaOvernightInput): IsaOvernightSection {
@@ -51,7 +55,7 @@ export function buildIsaOvernightSection(input: IsaOvernightInput): IsaOvernight
     .filter((h) => !h.claimed)
     .sort((a, b) => a.assigned_at.localeCompare(b.assigned_at)) // oldest first — longest-waiting lead leads
     .slice(0, 5)
-    .map((h) => ({ lead_id: h.lead_id, lead_name: h.lead_name, assigned_at: h.assigned_at }))
+    .map((h) => ({ lead_id: h.lead_id, contact_id: h.contact_id, lead_name: h.lead_name, assigned_at: h.assigned_at }))
 
   const parts: string[] = []
   if (input.handoffs.length > 0) {
@@ -87,13 +91,15 @@ export function isaPriorityActions(section: IsaOvernightSection, escalations: Is
   const actions: PriorityAction[] = []
 
   for (const h of section.unclaimed.slice(0, 3)) {
+    // Canonical process: the ISA already CONVERTED this qualified lead to a contact
+    // at assignment — the agent's first touch happens on the CONTACT in the CRM.
     actions.push({
       priority: 'high',
-      action: `First touch: ${h.lead_name} (ISA-qualified, assigned to you)`,
-      context: 'Qualified by the AI ISA and awaiting your first contact — speed-to-first-touch drives conversion.',
+      action: `First touch: ${h.lead_name} (ISA-qualified, now your contact)`,
+      context: 'Qualified by the AI ISA and converted to your contact — speed-to-first-touch drives conversion.',
       entity_type: 'contact',
-      entity_id: h.lead_id,
-      action_type: 'view_lead',
+      entity_id: h.contact_id ?? h.lead_id,
+      action_type: h.contact_id ? 'open_contact' : 'view_lead',
     } as PriorityAction)
   }
 

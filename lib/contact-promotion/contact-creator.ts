@@ -1,11 +1,16 @@
 /**
- * Creates a contact record from a promoted lead
- * 
+ * Creates a contact record from a promoted lead — THE canonical lead→contact
+ * converter (Data Steward owned). Canonical business process: leads are AI-ISA +
+ * brokerage owned while unconsented; the moment the ISA qualifies, the lead is
+ * CONVERTED to a contact with the agent resolved by the contact-assignment
+ * settings (agent → team lead → team-lead/brokerage admin → platform).
+ *
  * Critical Rules:
- * - Only copy relationship-safe data
- * - Do NOT copy internal intelligence fields (lead_score, enrichment_status)
- * - Associate with agent and brokerage
- * - Contacts represent active relationships
+ * - LOSSLESS: identity + physical/mailing address + secondary phone + enrichment
+ *   profile + ISA qualification carry all move upward (nothing dropped at the hop).
+ * - agentId MUST be agents.id (contacts.agent_id FK semantics per migration 111 —
+ *   a users.id here makes the contact INVISIBLE to the agent's CRM via RLS).
+ * - Do NOT copy internal pipeline fields (enrichment_status etc.).
  */
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
@@ -13,8 +18,24 @@ import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichmen
 export interface ContactCreationData {
   leadId: string
   lead: any
+  /** agents.id of the assigned agent (NOT users.id). */
   agentId: string
   brokerageId: string
+}
+
+/**
+ * The ISA qualified the lead by intent; that intent IS the contact type going
+ * forward (canonical contact_type vocabulary): buyer/seller/investor; 'both'
+ * maps to buyer with persona 'both'.
+ */
+export function motivationToContactType(m: string | null | undefined): string | null {
+  if (!m) return null
+  const lower = m.toLowerCase()
+  if (lower.includes('investor')) return 'investor'
+  if (lower.includes('seller')) return 'seller'
+  if (lower.includes('both')) return 'buyer'
+  if (lower.includes('buyer')) return 'buyer'
+  return null
 }
 
 export async function createContactFromLead(
@@ -35,20 +56,43 @@ export async function createContactFromLead(
       // DNC/opt-out on one line never silently drops the other reachable number.
       phone_secondary: data.lead.phone_secondary ?? null,
 
-      // Attribution
+      // Attribution — full source provenance moves upward
       source: data.lead.source || 'lead_promotion',
+      source_family: data.lead.source_family ?? null,
+      source_channel: data.lead.source_channel ?? null,
+      source_subtype: data.lead.source_subtype ?? null,
 
-      // Relationship context
+      // Relationship context (agentId is agents.id — see ContactCreationData)
       agent_id: data.agentId,
       brokerage_id: data.brokerageId,
 
-      // Contact type and persona (if available)
-      contact_type: data.lead.lead_type || 'prospect',
-      contact_persona: data.lead.contact_persona,
+      // Contact type and persona — the ISA's qualified intent IS the contact type
+      contact_type:
+        motivationToContactType(data.lead.motivation_type) ??
+        motivationToContactType(data.lead.lead_type) ??
+        (data.lead.lead_type || 'prospect'),
+      contact_persona:
+        (data.lead.motivation_type ?? '').toLowerCase().includes('both')
+          ? 'both'
+          : (data.lead.contact_persona ?? data.lead.persona ?? null),
 
       // Intent indicators (if available)
       timeline: data.lead.timeline,
       intent_score: data.lead.intent_score,
+
+      // ISA qualification carry — the agent sees the FULL picture the moment the
+      // contact lands in their CRM (budget, motivation, urgency, financing, the
+      // handoff brief and the qualification score).
+      budget_min: data.lead.budget_min ?? null,
+      budget_max: data.lead.budget_max ?? null,
+      motivation_type: data.lead.motivation_type ?? null,
+      motivation_confidence: data.lead.motivation_confidence ?? null,
+      urgency_level: data.lead.urgency_level ?? null,
+      lender_status: data.lead.lender_status ?? null,
+      qualification_summary: data.lead.qualification_summary ?? null,
+      isa_handoff_brief: data.lead.isa_handoff_brief ?? null,
+      isa_handoff_at: data.lead.isa_handoff_brief ? new Date().toISOString() : null,
+      isa_qualification_score: data.lead.lead_score ?? null,
 
       // Address — carry BOTH the physical address and the MAILING address upward, faithfully.
       // A contact can own a property but not live there, so the mailing breakdown is kept
@@ -56,7 +100,7 @@ export async function createContactFromLead(
       address:                  data.lead.address ?? null,
       city:                     data.lead.city ?? null,
       state:                    data.lead.state ?? null,
-      zip_code:                 data.lead.zip_code ?? null,
+      zip_code:                 data.lead.zip_code ?? data.lead.property_zip_code ?? null,
       mailing_address:          data.lead.mailing_address ?? null,
       mailing_address_source:   data.lead.mailing_address_source ?? null,
       mailing_address_verified: data.lead.mailing_address_verified ?? null,
@@ -65,10 +109,15 @@ export async function createContactFromLead(
       mailing_zip:              data.lead.mailing_zip ?? null,
 
       // Consent provenance — carry over what was captured during the lead phase. Faithful (no
-      // fabricated consent) — converted contacts inherit exactly the consent state on the lead, so
-      // downstream phone/SMS gates evaluate against real captured consent (TCPA-safe).
-      tcpa_consent:        data.lead.tcpa_consent ?? null,
+      // fabricated consent) — converted contacts inherit exactly the consent state on the lead.
+      // web_form / qr_scan sources captured explicit consent at submission (documented business
+      // rule, same as the kernel handler used), so those count as consented even when the lead
+      // row's flag wasn't stamped.
+      tcpa_consent:
+        data.lead.tcpa_consent === true ||
+        ['web_form', 'qr_scan'].includes(data.lead.source ?? ''),
       tcpa_consent_date:   data.lead.tcpa_consent_at ?? null,
+      tcpa_consent_at:     data.lead.tcpa_consent_at ?? null,
       tcpa_consent_ip:     data.lead.tcpa_consent_ip ?? null,
       tcpa_consent_source: data.lead.tcpa_consent_source ?? null,
       tcpa_consent_text:   data.lead.tcpa_consent_text ?? null,
@@ -97,6 +146,8 @@ export async function createContactFromLead(
 
       // Status
       status: 'active',
+      isa_reengage_allowed: true,
+      dnc_status: false,
 
       // Metadata
       notes: `Promoted from lead ${data.leadId}`,

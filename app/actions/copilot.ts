@@ -69,12 +69,14 @@ export async function handleMorningKickoff(payload: any) {
     .order("priority", { ascending: false })
 
   // Create daily summary notification
+  // notifications' real shape is user_id/type/body (the phantom recipient_id/
+  // notification_type/message insert failed silently — no kickoff ever delivered).
   await supabase.from("notifications").insert({
-    recipient_id: user_id,
-    notification_type: "morning_kickoff",
+    user_id: user_id,
+    type: "morning_kickoff",
     title: "Good Morning! Here's Your Day",
-    message: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
-    priority: "normal",
+    body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
+    priority: "medium",
   })
 
   return { success: true, taskCount: todayTasks?.length || 0 }
@@ -560,12 +562,11 @@ async function sendPropertyMatches(contactId: string) {
   // Create property match notification
   if (matches && matches.length > 0) {
     await supabase.from("notifications").insert({
-      recipient_id: contactId,
-      notification_type: "property_matches",
+      contact_id: contactId,
+      type: "property_matches",
       title: `${matches.length} New Property Matches`,
-      message: `We found ${matches.length} properties matching your preferences.`,
-      related_entity_type: "property_match",
-      data: { property_ids: matches.map(m => m.id) },
+      body: `We found ${matches.length} properties matching your preferences.`,
+      entity_type: "property_match",
     })
   }
   

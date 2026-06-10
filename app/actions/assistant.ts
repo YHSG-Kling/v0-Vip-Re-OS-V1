@@ -70,13 +70,15 @@ export async function handleTaskDelegated(payload: any) {
     .update({ assigned_to: to_user_id, delegated_by: from_user_id })
     .eq("id", task_id)
 
+  // Real notifications shape (user_id/type/body/entity_*) — the phantom insert
+  // failed silently, so delegated-task recipients were never notified.
   await supabase.from("notifications").insert({
-    recipient_id: to_user_id,
-    notification_type: "task_delegated",
+    user_id: to_user_id,
+    type: "task_delegated",
     title: "New Task Assigned",
-    message: `You've been assigned: ${task_title}`,
-    related_entity_type: "task",
-    related_entity_id: task_id,
+    body: `You've been assigned: ${task_title}`,
+    entity_type: "task",
+    entity_id: task_id,
   })
 
   return { success: true }

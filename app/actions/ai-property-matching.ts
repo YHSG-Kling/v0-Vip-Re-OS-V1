@@ -330,12 +330,13 @@ export async function notifyNewMatches(params: {
     // Log the notification
     await supabase.from("notifications").insert({
       contact_id: params.contactId,
-      agent_id: ctx.agentId,
+      user_id: ctx.userId, // notifications targets users.id (no agent_id column)
       brokerage_id: ctx.brokerageId,
       type: "property_match",
       title: "New Property Matches",
-      message: notification,
-      metadata: { match_count: newMatches.length, threshold },
+      body: notification,
+      entity_type: "contact",
+      entity_id: params.contactId,
     })
 
     // Wave 59 — buyer property-match reel AUTO-handoff (deliverable-gated): produce a

@@ -316,11 +316,15 @@ export async function generateDailyBriefing(
     const logRows = (handoffLogs.data ?? []) as Array<{ lead_id: string; claimed: boolean; assignment_method: string | null; created_at: string }>
     const leadIds = logRows.map((r) => r.lead_id)
     const leadNames = new Map<string, string>()
+    const leadContacts = new Map<string, string | null>()
     if (leadIds.length > 0) {
+      // contact_id: assignment CONVERTED the lead to a contact (canonical process) —
+      // the briefing deep-links the agent to the CONTACT, not the retired lead row.
       const { data: leadRows } = await supabase
-        .from("leads").select("id, first_name, last_name").in("id", leadIds)
+        .from("leads").select("id, first_name, last_name, contact_id").in("id", leadIds)
       for (const l of leadRows ?? []) {
         leadNames.set(l.id, `${l.first_name ?? ""} ${l.last_name ?? ""}`.trim() || "Unnamed lead")
+        leadContacts.set(l.id, (l as any).contact_id ?? null)
       }
     }
 
@@ -333,6 +337,7 @@ export async function generateDailyBriefing(
     isaOvernight = buildIsaOvernightSection({
       handoffs: logRows.map((r) => ({
         lead_id: r.lead_id,
+        contact_id: leadContacts.get(r.lead_id) ?? null,
         lead_name: leadNames.get(r.lead_id) ?? "Unnamed lead",
         claimed: r.claimed,
         assignment_method: r.assignment_method,

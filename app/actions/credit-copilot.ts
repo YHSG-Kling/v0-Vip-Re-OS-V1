@@ -147,12 +147,12 @@ export async function handlePartnerStatusUpdate(payload: any) {
   // Create notification
   if (user_id) {
     await supabase.from("notifications").insert({
-      recipient_id: user_id,
-      notification_type: "partner_status_update",
+      user_id: user_id,
+      type: "partner_status_update",
       title: "Partner Status Updated",
-      message: `Credit partner status changed from ${old_status} to ${new_status}.`,
-      related_entity_type: "contact",
-      related_entity_id: contact_id,
+      body: `Credit partner status changed from ${old_status} to ${new_status}.`,
+      entity_type: "contact",
+      entity_id: contact_id,
     })
   }
 
@@ -186,12 +186,12 @@ export async function handleTargetReached(payload: any) {
   // Create celebration notification
   if (user_id) {
     await supabase.from("notifications").insert({
-      recipient_id: user_id,
-      notification_type: "credit_target_reached",
+      user_id: user_id,
+      type: "credit_target_reached",
       title: "Client Reached Credit Target!",
-      message: `Your client reached their target credit score of ${target_score}. Time to re-engage for home buying!`,
-      related_entity_type: "contact",
-      related_entity_id: contact_id,
+      body: `Your client reached their target credit score of ${target_score}. Time to re-engage for home buying!`,
+      entity_type: "contact",
+      entity_id: contact_id,
       priority: "high",
     })
   }
@@ -362,12 +362,16 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
     case "flow_c": // Application Submitted
       // Notify partner if configured
       if (account.partner_name) {
-        await supabase.from("notifications").insert({
-          recipient_type: "partner",
-          title: "New Credit Application",
-          message: `Application submitted for ${account.contact.first_name} ${account.contact.last_name}`,
-          notification_type: "credit_application",
-          metadata: { account_id: accountId },
+        // notifications requires a user recipient and external credit partners have
+        // no platform user — record the submission on the contact's activity
+        // timeline instead (the phantom recipient_type insert failed silently).
+        await supabase.from("activities").insert({
+          contact_id: account.contact_id,
+          activity_type: "credit_application_submitted",
+          title: "Credit application submitted to partner",
+          description: `Application submitted for ${account.contact.first_name} ${account.contact.last_name} (partner: ${account.partner_name})`,
+          status: "completed",
+          created_at: new Date().toISOString(),
         })
       }
 
@@ -465,11 +469,12 @@ export async function trackCreditUsage(agentId: string, amount: number) {
   if (percentUsed >= 80) {
     // Send warning notification
     await supabase.from("notifications").insert({
-      recipient_id: agentId,
-      notification_type: "credit_budget_warning",
+      user_id: agentId,
+      type: "credit_budget_warning",
       title: "Credit Budget Alert",
-      message: `You've used ${percentUsed.toFixed(0)}% of your monthly credit budget ($${newUsed.toLocaleString()} of $${limit.toLocaleString()})`,
-      priority: percentUsed >= 100 ? "urgent" : "high",
+      body: `You've used ${percentUsed.toFixed(0)}% of your monthly credit budget ($${newUsed.toLocaleString()} of $${limit.toLocaleString()})`,
+      // priority check allows low|medium|high|critical ('urgent' violated it)
+      priority: percentUsed >= 100 ? "critical" : "high",
     })
   }
 

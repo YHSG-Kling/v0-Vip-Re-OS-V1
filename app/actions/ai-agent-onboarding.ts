@@ -887,10 +887,10 @@ export async function certifyAgent(params: {
 
     // Send certification notification
     await supabase.from("notifications").insert({
-      recipient_id: params.agentId,
-      notification_type: "certification_achieved",
+      user_id: params.agentId,
+      type: "certification_achieved",
       title: "Congratulations! You're Certified!",
-      message: "Welcome to the team. You now have full access to Smart Engine.",
+      body: "Welcome to the team. You now have full access to Smart Engine.",
       priority: "high",
       created_at: new Date().toISOString(),
     })

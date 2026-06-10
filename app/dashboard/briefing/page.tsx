@@ -833,7 +833,7 @@ export default function BriefingPage() {
                     {briefing.isa_overnight.unclaimed.map((h) => (
                       <a
                         key={h.lead_id}
-                        href={`/leads/${h.lead_id}`}
+                        href={h.contact_id ? `/crm?contact=${h.contact_id}` : `/leads/${h.lead_id}`}
                         className="block p-3 rounded-lg bg-primary/5 border border-primary/20 hover:bg-primary/10 transition"
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -843,7 +843,7 @@ export default function BriefingPage() {
                           </span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">
-                          Qualified by the AI ISA · assigned {new Date(h.assigned_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                          Qualified by the AI ISA · converted to your contact {new Date(h.assigned_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                         </p>
                       </a>
                     ))}

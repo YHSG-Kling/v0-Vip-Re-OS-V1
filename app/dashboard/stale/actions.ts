@@ -193,6 +193,13 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
  * Claim an unassigned stale lead — assigns to the current agent.
  * Restricted to broker/admin/team-lead roles. Agents may NOT self-assign
  * leads from the unassigned pool; lead routing is an admin responsibility.
+ *
+ * Canonical business process: leads are AI-ISA + brokerage owned while
+ * unconsented — a human may only take ownership AFTER the ISA has qualified
+ * (lead_stage='qualified' + consent), and taking ownership CONVERTS the lead
+ * to a contact via the kernel handler (assignment_log + lifecycle + canonical
+ * lossless conversion). This action previously stamped agent_id directly on
+ * the lead with no gate and no conversion — a side door around ISA ownership.
  */
 export async function claimStaleLead(leadId: string): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
@@ -209,26 +216,38 @@ export async function claimStaleLead(leadId: string): Promise<{ success: boolean
     return { success: false, error: "Only brokers / admins can assign leads" }
   }
 
-  // leads has NO assigned_at column — writing it PGRST204-failed the whole update, so
-  // claiming a stale lead silently never assigned it. Stamp last_activity_at instead
-  // (which is also what the stale scan keys on).
-  const now = new Date().toISOString()
-  const { error } = await svc
+  const { data: lead } = await svc
     .from("leads")
-    .update({ agent_id: agentRow.id, last_activity_at: now, updated_at: now })
+    .select("id, brokerage_id, agent_id, lead_stage, lifecycle_state, lead_score")
     .eq("id", leadId)
     .eq("brokerage_id", agentRow.brokerage_id)
-    .is("agent_id", null)
-  if (error) return { success: false, error: error.message }
+    .maybeSingle()
+  if (!lead) return { success: false, error: "Lead not found in your brokerage" }
+  if (lead.agent_id) return { success: false, error: "Lead already has an assigned agent" }
 
-  // Log lifecycle event so this lead is no longer stale after the next scan.
-  await svc.from("lifecycle_events").insert({
-    entity_id:   leadId,
-    entity_type: "lead",
-    event_type:  "lead_assigned",
-    brokerage_id: agentRow.brokerage_id,
-    metadata:     { assigned_to_agent_id: agentRow.id, claimed_via: "stale_dashboard" },
-  })
+  const isQualified = lead.lead_stage === "qualified"
+  const isConsented = ["consented", "qualified", "assigned"].includes(lead.lifecycle_state ?? "")
+  if (!isQualified || !isConsented) {
+    return {
+      success: false,
+      error:
+        "This lead is still owned by the AI ISA (not yet qualified + consented). " +
+        "It will be assigned automatically when qualification completes.",
+    }
+  }
+
+  try {
+    const { handleLeadAssigned } = await import("@/lib/kernel/lead-acquisition-handlers")
+    await handleLeadAssigned({
+      leadId,
+      brokerageId: agentRow.brokerage_id,
+      agentId: agentRow.id, // agents.id
+      method: "stale_claim",
+      scoreAtAssignment: lead.lead_score ?? 0,
+    })
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
   return { success: true }
 }
 

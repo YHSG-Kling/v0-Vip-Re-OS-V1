@@ -96,12 +96,12 @@ export async function handleVideoGenerated(payload: any) {
   // Create notification for agent to review
   if (user_id) {
     await supabase.from("notifications").insert({
-      recipient_id: user_id,
-      notification_type: "video_ready",
+      user_id: user_id,
+      type: "video_ready",
       title: "Video Ready for Review",
-      message: `Your ${video_type} video is ready. Review and publish when ready.`,
-      related_entity_type: "video",
-      related_entity_id: video_id,
+      body: `Your ${video_type} video is ready. Review and publish when ready.`,
+      entity_type: "video",
+      entity_id: video_id,
     })
   }
 
@@ -150,12 +150,12 @@ export async function handleVideoPublished(payload: any) {
   // Create celebration notification
   if (user_id) {
     await supabase.from("notifications").insert({
-      recipient_id: user_id,
-      notification_type: "video_published",
+      user_id: user_id,
+      type: "video_published",
       title: "Video Published!",
-      message: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
-      related_entity_type: "video",
-      related_entity_id: video_id,
+      body: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
+      entity_type: "video",
+      entity_id: video_id,
     })
   }
 
@@ -169,12 +169,12 @@ export async function handleHighEngagement(payload: any) {
   // Create notification for high engagement
   if (user_id) {
     await supabase.from("notifications").insert({
-      recipient_id: user_id,
-      notification_type: "video_engagement",
+      user_id: user_id,
+      type: "video_engagement",
       title: "Video Performing Well!",
-      message: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
-      related_entity_type: "video",
-      related_entity_id: video_id,
+      body: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
+      entity_type: "video",
+      entity_id: video_id,
     })
   }
 

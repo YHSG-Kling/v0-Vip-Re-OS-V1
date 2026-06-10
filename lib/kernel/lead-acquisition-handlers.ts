@@ -318,15 +318,12 @@ export async function handleLeadAssigned(params: {
   }
   const agentUserId: string = agentRow.user_id
 
+  // Full row — the canonical converter (createContactFromLead) is LOSSLESS and
+  // needs the complete field set (address/mailing breakdown, secondary phone,
+  // enrichment profile, consent provenance), not a hand-picked subset.
   const { data: leadData, error: leadError } = await supabase
     .from('leads')
-    .select(
-      'first_name, last_name, email, phone, source, source_family, source_channel, ' +
-        'source_subtype, motivation_type, motivation_confidence, persona, lead_type, ' +
-        'property_zip_code, budget_min, budget_max, timeline, urgency_level, ' +
-        'lender_status, equity_estimate, qualification_summary, isa_handoff_brief, ' +
-        'lead_score, tcpa_consent, tcpa_consent_at, tcpa_consent_text, tcpa_consent_source'
-    )
+    .select('*')
     .eq('id', leadId)
     .single()
 
@@ -334,35 +331,9 @@ export async function handleLeadAssigned(params: {
     throw new Error(`handleLeadAssigned: lead not found: ${leadId}`)
   }
 
-  // Cast — newer columns aren't in the generated Supabase types yet
-  const lead = leadData as unknown as {
-    first_name: string | null
-    last_name: string | null
-    email: string | null
-    phone: string | null
-    source: string | null
-    source_family: string | null
-    source_channel: string | null
-    source_subtype: string | null
-    motivation_type: string | null
-    motivation_confidence: number | null
-    persona: string | null
-    lead_type: string | null
-    property_zip_code: string | null
-    budget_min: number | null
-    budget_max: number | null
-    timeline: string | null
-    urgency_level: string | null
-    lender_status: string | null
-    equity_estimate: number | null
-    qualification_summary: string | null
-    isa_handoff_brief: Record<string, unknown> | null
-    lead_score: number | null
-    tcpa_consent: boolean | null
-    tcpa_consent_at: string | null
-    tcpa_consent_text: string | null
-    tcpa_consent_source: string | null
-  }
+  // Cast — newer columns aren't in the generated Supabase types yet; the canonical
+  // converter consumes the whole row.
+  const lead = leadData as Record<string, any>
 
   await supabase
     .from('leads')
@@ -399,90 +370,29 @@ export async function handleLeadAssigned(params: {
     created_at: new Date().toISOString(),
   })
 
-  // Auto-create contact.
-  //
-  // Carry forward contact_type from the lead's motivation/lead_type. The ISA
-  // qualified the lead by intent; that intent IS the contact type going
-  // forward. Mapping:
-  //   buyer_motivated  → contact_type = 'buyer'
-  //   seller_motivated → contact_type = 'seller'
-  //   investor_*       → contact_type = 'investor'
-  //   both             → contact_type = 'buyer' (primary), persona='both'
-  //   else             → null (agent fills it in CRM)
-  const motivationToContactType = (m: string | null): string | null => {
-    if (!m) return null
-    const lower = m.toLowerCase()
-    if (lower.includes('investor')) return 'investor'
-    if (lower.includes('seller')) return 'seller'
-    if (lower.includes('both')) return 'buyer'
-    if (lower.includes('buyer')) return 'buyer'
-    return null
-  }
+  // Convert lead → contact through THE canonical, lossless converter (Data Steward
+  // owned — lib/contact-promotion/contact-creator.ts). This replaced a second,
+  // hand-rolled insert here that (a) wrote agentUserId (users.id) into
+  // contacts.agent_id — which is agents.id by contract, so every converted contact
+  // was INVISIBLE to the assigned agent's CRM via RLS — and (b) dropped the
+  // address/mailing breakdown, secondary phone, and the whole enrichment profile.
+  const { createContactFromLead, motivationToContactType } =
+    await import('@/lib/contact-promotion/contact-creator')
+  const conversion = await createContactFromLead(supabase, {
+    leadId,
+    lead,
+    agentId, // agents.id — the converter's documented contract
+    brokerageId,
+  })
 
+  if (conversion.error || !conversion.contactId) {
+    throw new Error(`handleLeadAssigned: failed to create contact: ${conversion.error ?? 'no data'}`)
+  }
+  const contact = { id: conversion.contactId }
   const contactType =
     motivationToContactType(lead.motivation_type) ??
     motivationToContactType(lead.lead_type) ??
     null
-
-  const contactPersona =
-    (lead.motivation_type ?? '').toLowerCase().includes('both')
-      ? 'both'
-      : lead.persona ?? null
-
-  // TCPA consent flows from the lead. Form/QR submissions explicitly captured
-  // consent; ISA qualification path also persists consent via
-  // handleConsentReceived upstream. Either way, the lead row carries the
-  // authoritative consent flags.
-  const tcpaConsent =
-    lead.tcpa_consent === true ||
-    ['web_form', 'qr_scan'].includes(lead.source ?? '')
-  const tcpaConsentAt = lead.tcpa_consent_at ?? new Date().toISOString()
-
-  const { data: contact, error: contactError } = await supabase
-    .from('contacts')
-    .insert({
-      brokerage_id: brokerageId,
-      agent_id: agentUserId,
-      first_name: lead.first_name,
-      last_name: lead.last_name,
-      email: lead.email,
-      phone: lead.phone,
-      source: lead.source,
-      source_family: lead.source_family,
-      source_channel: lead.source_channel,
-      source_subtype: lead.source_subtype,
-      contact_type: contactType,
-      contact_persona: contactPersona,
-      zip_code: lead.property_zip_code,
-      // Carry forward ALL ISA-captured qualification data so the agent
-      // sees the full picture the moment the contact arrives in their CRM.
-      budget_min: lead.budget_min,
-      budget_max: lead.budget_max,
-      motivation_type: lead.motivation_type,
-      motivation_confidence: lead.motivation_confidence,
-      timeline: lead.timeline,
-      urgency_level: lead.urgency_level,
-      lender_status: lead.lender_status,
-      equity_estimate: lead.equity_estimate,
-      qualification_summary: lead.qualification_summary,
-      isa_handoff_brief: lead.isa_handoff_brief,
-      isa_handoff_at: lead.isa_handoff_brief ? new Date().toISOString() : null,
-      isa_qualification_score: lead.lead_score,
-      tcpa_consent: tcpaConsent,
-      tcpa_consent_date: tcpaConsent ? tcpaConsentAt : null,
-      tcpa_consent_at: tcpaConsent ? tcpaConsentAt : null,
-      tcpa_consent_source: lead.tcpa_consent_source ?? null,
-      tcpa_consent_text: lead.tcpa_consent_text ?? null,
-      isa_reengage_allowed: true,
-      dnc_status: false,
-      created_at: new Date().toISOString(),
-    })
-    .select('id')
-    .single()
-
-  if (contactError || !contact) {
-    throw new Error(`handleLeadAssigned: failed to create contact: ${contactError?.message ?? 'no data'}`)
-  }
 
   await supabase
     .from('leads')
