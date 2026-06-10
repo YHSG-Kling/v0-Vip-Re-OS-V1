@@ -77,40 +77,129 @@ export async function loadMobileApprovalQueue(
   }
 }
 
+/** Managers (broker/admin) escalate only after a deliverable sits unapproved this long.
+ *  Agents are the PRIMARY approvers — they own the deal/client the deliverable touches —
+ *  so they're alerted immediately; the manager is a 4-hour safety net, not the front line. */
+export const MANAGER_ESCALATION_HOURS = 4
+
+/** Resolve the users.id of the AGENT responsible for a deliverable (the agent on the
+ *  contact / listing / transaction / recruit it relates to). Null when none resolves
+ *  (then only the manager escalation applies). */
+export async function resolveResponsibleAgentUserId(
+  supabase: ReturnType<typeof createServiceClient>,
+  msg: { recipient_contact_id: string | null; entity_type: string | null; entity_id: string | null },
+): Promise<string | null> {
+  const agentIdToUser = async (agentId: string | null): Promise<string | null> => {
+    if (!agentId) return null
+    const { data } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+    return (data as { user_id: string | null } | null)?.user_id ?? null
+  }
+  // 1) The recipient contact's agent (covers most client messages).
+  if (msg.recipient_contact_id) {
+    const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", msg.recipient_contact_id).maybeSingle()
+    const u = await agentIdToUser((c as { agent_id?: string | null } | null)?.agent_id ?? null)
+    if (u) return u
+  }
+  // 2) The owning entity's agent.
+  if (msg.entity_id) {
+    if (msg.entity_type === "listing") {
+      const { data } = await supabase.from("listings").select("agent_id").eq("id", msg.entity_id).maybeSingle()
+      const u = await agentIdToUser((data as { agent_id?: string | null } | null)?.agent_id ?? null)
+      if (u) return u
+    } else if (msg.entity_type === "transaction") {
+      const { data } = await supabase.from("transactions").select("agent_id").eq("id", msg.entity_id).maybeSingle()
+      const u = await agentIdToUser((data as { agent_id?: string | null } | null)?.agent_id ?? null)
+      if (u) return u
+    } else if (msg.entity_type === "recruit") {
+      const { data } = await supabase.from("recruits").select("recruiter_agent_id").eq("id", msg.entity_id).maybeSingle()
+      const u = await agentIdToUser((data as { recruiter_agent_id?: string | null } | null)?.recruiter_agent_id ?? null)
+      if (u) return u
+    } else if (msg.entity_type === "vendor_booking") {
+      const { data } = await supabase.from("vendor_bookings").select("contact_id").eq("id", msg.entity_id).maybeSingle()
+      const cid = (data as { contact_id?: string | null } | null)?.contact_id ?? null
+      if (cid) {
+        const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", cid).maybeSingle()
+        const u = await agentIdToUser((c as { agent_id?: string | null } | null)?.agent_id ?? null)
+        if (u) return u
+      }
+    }
+  }
+  return null
+}
+
+/** Has `userId` already been notified about `messageId` with this notification type? */
+async function alreadyNotified(
+  supabase: ReturnType<typeof createServiceClient>, userId: string, messageId: string, type: string,
+): Promise<boolean> {
+  const { data } = await supabase.from("notifications")
+    .select("id").eq("user_id", userId).eq("type", type).eq("entity_id", messageId).limit(1).maybeSingle()
+  return !!data
+}
+
 /**
- * "Push" — for each DUE/BREACHED pending approval without an existing approval
- * notification, insert one for `recipientUserId` (deep-linked to /mobile/approvals).
- * Idempotent per (message) via notifications.entity_id. Returns how many were enqueued.
+ * TWO-TIER approval push:
+ *   · TIER 1 (agent) — the responsible agent is alerted on EVERY pending approval (they
+ *     own the deal/client; they're the front line). type='approval_needed'.
+ *   · TIER 2 (manager) — the broker/admin is escalated ONLY when a deliverable has sat
+ *     unapproved ≥ MANAGER_ESCALATION_HOURS (4h). type='approval_escalation', high prio.
+ * Idempotent per (user, message, type). Returns the counts for each tier.
  */
 export async function enqueueApprovalNotifications(
-  brokerageId: string, recipientUserId: string, client?: ReturnType<typeof createServiceClient>,
-): Promise<{ enqueued: number }> {
+  brokerageId: string, client?: ReturnType<typeof createServiceClient>,
+  opts: { escalationHours?: number } = {},
+): Promise<{ agentAlerts: number; managerEscalations: number }> {
   const supabase = client ?? createServiceClient()
-  const queue = await loadMobileApprovalQueue(brokerageId, supabase)
-  const urgent = queue.items.filter((i) => i.slaLevel === "breached" || i.slaLevel === "due")
-  if (urgent.length === 0) return { enqueued: 0 }
+  const escalationHours = opts.escalationHours ?? MANAGER_ESCALATION_HOURS
+  const now = Date.now()
 
-  // Skip messages that already have an approval notification (idempotency).
-  const ids = urgent.map((i) => i.id)
-  const { data: existing } = await supabase
-    .from("notifications")
-    .select("entity_id")
-    .eq("user_id", recipientUserId).eq("type", "approval_needed").in("entity_id", ids)
-  const have = new Set(((existing ?? []) as Array<{ entity_id: string | null }>).map((e) => e.entity_id))
+  const { data } = await supabase
+    .from("agent_client_messages")
+    .select("id, agent_kind, subject, proposed_at, recipient_contact_id, entity_type, entity_id")
+    .eq("brokerage_id", brokerageId).eq("status", "proposed")
+    .order("proposed_at", { ascending: true })
+    .limit(200)
+  const messages = (data ?? []) as Array<{
+    id: string; agent_kind: string | null; subject: string | null; proposed_at: string | null
+    recipient_contact_id: string | null; entity_type: string | null; entity_id: string | null
+  }>
+  if (messages.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
-  let enqueued = 0
-  for (const item of urgent) {
-    if (have.has(item.id)) continue
-    const { error } = await supabase.from("notifications").insert({
-      user_id: recipientUserId, brokerage_id: brokerageId,
-      type: "approval_needed",
-      title: `${item.managerLabel} needs your approval`,
-      body: item.subject ? `${item.subject} — tap to review & approve.` : "A client message is awaiting your approval — tap to review.",
-      entity_type: "agent_client_message", entity_id: item.id,
-      priority: item.slaLevel === "breached" ? "high" : "medium",
-      is_read: false,
-    })
-    if (!error) enqueued += 1
+  // Brokerage managers (escalation targets) resolved once.
+  const { data: mgrs } = await supabase.from("users").select("id")
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+  const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
+
+  let agentAlerts = 0, managerEscalations = 0
+  for (const m of messages) {
+    const label = (m.agent_kind && m.agent_kind in MANAGERS) ? MANAGERS[m.agent_kind as ManagerKey].label : "A manager"
+    const ageHours = m.proposed_at ? (now - new Date(m.proposed_at).getTime()) / 3_600_000 : 0
+
+    // TIER 1 — the responsible agent (front line).
+    const agentUserId = await resolveResponsibleAgentUserId(supabase, m)
+    if (agentUserId && !(await alreadyNotified(supabase, agentUserId, m.id, "approval_needed"))) {
+      const { error } = await supabase.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: brokerageId, type: "approval_needed",
+        title: `${label} needs your approval`,
+        body: m.subject ? `${m.subject} — tap to review & approve.` : "A client message is awaiting your approval — tap to review.",
+        entity_type: "agent_client_message", entity_id: m.id, priority: "medium", is_read: false,
+      })
+      if (!error) agentAlerts += 1
+    }
+
+    // TIER 2 — manager escalation, only past the 4h threshold.
+    if (ageHours >= escalationHours) {
+      for (const mid of managerIds) {
+        if (mid === agentUserId) continue // the agent is the manager — don't double-notify
+        if (await alreadyNotified(supabase, mid, m.id, "approval_escalation")) continue
+        const { error } = await supabase.from("notifications").insert({
+          user_id: mid, brokerage_id: brokerageId, type: "approval_escalation",
+          title: `Overdue approval — ${label}`,
+          body: `${m.subject ? `"${m.subject}"` : "A client message"} has waited ${Math.round(ageHours)}h without approval. Tap to step in.`,
+          entity_type: "agent_client_message", entity_id: m.id, priority: "high", is_read: false,
+        })
+        if (!error) managerEscalations += 1
+      }
+    }
   }
-  return { enqueued }
+  return { agentAlerts, managerEscalations }
 }

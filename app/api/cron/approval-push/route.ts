@@ -10,10 +10,10 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { enqueueApprovalNotifications } from "@/lib/intelligence/mobile-approval-queue"
 
 /**
- * APPROVAL-PUSH cron (every 2h) — approval latency is the egress's critical path. For
- * each brokerage with DUE/BREACHED pending approvals, push a notification to its
- * broker/admin users (deep-linked to the mobile approval queue). Idempotent per
- * (message, user), so re-running won't spam.
+ * APPROVAL-PUSH cron (every 2h) — approval latency is the egress's critical path.
+ * Two-tier: the responsible AGENT is alerted on every pending approval (front line);
+ * the brokerage's MANAGERS are escalated only when a deliverable has sat unapproved for
+ * 4+ hours. Idempotent per (user, message, type), so re-running won't spam.
  */
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
@@ -31,7 +31,8 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServiceClient()
   const errors: string[] = []
-  let enqueued = 0
+  let agentAlerts = 0
+  let managerEscalations = 0
 
   try {
     // Brokerages with pending proposals.
@@ -45,24 +46,20 @@ export async function GET(req: NextRequest) {
 
     for (const brokerageId of brokerages) {
       try {
-        // The brokerage's approvers (broker/admin). Push to each.
-        const { data: approvers } = await supabase
-          .from("users").select("id").eq("brokerage_id", brokerageId)
-          .in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
-        for (const a of (approvers ?? []) as Array<{ id: string }>) {
-          const r = await enqueueApprovalNotifications(brokerageId, a.id, supabase)
-          enqueued += r.enqueued
-        }
+        // Self-resolving two-tier push: agents (front line) + manager escalation at 4h.
+        const r = await enqueueApprovalNotifications(brokerageId, supabase)
+        agentAlerts += r.agentAlerts
+        managerEscalations += r.managerEscalations
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }
     }
 
     await recordCronSuccessAction({
-      context_id: contextId, records_processed: enqueued,
-      metadata: { enqueued, brokerages: brokerages.length, errors: errors.slice(0, 20) },
+      context_id: contextId, records_processed: agentAlerts + managerEscalations,
+      metadata: { agentAlerts, managerEscalations, brokerages: brokerages.length, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, enqueued, brokerages: brokerages.length, errors: errors.length })
+    return NextResponse.json({ ok: true, agentAlerts, managerEscalations, brokerages: brokerages.length, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
