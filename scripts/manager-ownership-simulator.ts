@@ -13,8 +13,13 @@
  *
  * Run: npx tsx scripts/manager-ownership-simulator.ts  (npm run test:manager-ownership) — no DB.
  */
-import { MANAGERS, QUEUE_MANAGER, resolveActionManager, type ManagerKey } from "../lib/kernel/manager-registry"
+import {
+  MANAGERS, QUEUE_MANAGER, resolveActionManager,
+  MAINTENANCE_DOMAINS, TABLE_MANAGER, resolveMaintenanceManager, resolveTableManager,
+  type ManagerKey,
+} from "../lib/kernel/manager-registry"
 import { CONTENT_SOURCES } from "../lib/kernel/approval-sources"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -58,7 +63,34 @@ check("no Command Center queue is unmapped", orphans.length === 0, orphans.join(
 const unownedContent = CONTENT_QUEUES.filter((q) => !(q in QUEUE_MANAGER))
 check("every content-approval source has a manager owner", unownedContent.length === 0, unownedContent.join(", "))
 
-console.log("\n[4 · every manager is well-formed]")
+console.log("\n[4 · maintenance / burn-domain ownership — the cleanup itself is governed]")
+const domains = Object.keys(MAINTENANCE_DOMAINS)
+check(`every burn domain has a REAL manager owner (${domains.length} domains)`,
+  domains.every((d) => MAINTENANCE_DOMAINS[d].manager in MANAGERS))
+check("every burn domain ties its owner to a runnable proof (npm test target)",
+  domains.every((d) => MAINTENANCE_DOMAINS[d].proof.startsWith("test:")))
+check("resolveMaintenanceManager never returns undefined (unknown domain → fallback)",
+  resolveMaintenanceManager("not_a_domain").label.length > 0)
+// The workstreams this audit actually ran must each be owned:
+for (const d of ["schema_drift_guard", "lossless_promotion", "import_value_normalization",
+                 "qualification_chain", "assignment_routing", "lead_conversion",
+                 "credit_pipeline", "briefing_isa_overnight"]) {
+  check(`'${d}' → ${resolveMaintenanceManager(d).label}`, d in MAINTENANCE_DOMAINS)
+}
+
+console.log("\n[5 · guarded-table ownership — every drift entry lands on a manager's list]")
+const guardedTables = Object.keys(SCHEMA_SNAPSHOT)
+const unownedTables = guardedTables.filter((t) => !(t in TABLE_MANAGER))
+check(`every guarded table has an owning manager (${guardedTables.length} tables, derived from the live snapshot)`,
+  unownedTables.length === 0, unownedTables.join(", "))
+check("every TABLE_MANAGER target is a real manager",
+  Object.values(TABLE_MANAGER).every((k) => k in MANAGERS))
+check("resolveTableManager: contacts → Data Steward (spine integrity)",
+  resolveTableManager("contacts").key === "data_steward")
+check("resolveTableManager: leads → AI ISA (owns leads until qualified)",
+  resolveTableManager("leads").key === "ai_isa")
+
+console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
 check("all 10 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward)", keys.length === 10)
 for (const k of keys) {

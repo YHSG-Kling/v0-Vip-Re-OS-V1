@@ -20,6 +20,7 @@
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { resolveTableManager } from "../lib/kernel/manager-registry"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
 const vkey = (v: { file: string; table: string; op: string; column: string }) => `${v.file}::${v.table}.${v.column}::${v.op}`
@@ -271,8 +272,23 @@ function testScan() {
   const fixed = [...baseline].filter((k) => !all.some((v) => vkey(v) === k))
 
   check(`scanned ${files.length} files — NO NEW schema drift (baseline: ${baseline.size} legacy, burn-down)`, fresh.length === 0,
-    fresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column} (${x.op})`).join(" | "))
+    fresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column} (${x.op}) [owner: ${resolveTableManager(x.table).label}]`).join(" | "))
   if (fixed.length > 0) console.log(`  ↘  ${fixed.length} baseline entries are now fixed — run GUARD_WRITE_BASELINE=1 to tighten the ratchet.`)
+
+  // Burn-down by Claude manager — every remaining baseline entry is on a named
+  // manager's list (TABLE_MANAGER), so the cleanup itself is governed on the egress.
+  const byManager = new Map<string, number>()
+  for (const k of baseline) {
+    const table = k.split("::")[1]?.split(".")[0] ?? "unknown"
+    const owner = resolveTableManager(table).label
+    byManager.set(owner, (byManager.get(owner) ?? 0) + 1)
+  }
+  if (byManager.size > 0) {
+    console.log("  📋 burn-down ownership (every entry has a Claude manager):")
+    for (const [owner, n] of [...byManager.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`     ${String(n).padStart(3)}  ${owner}`)
+    }
+  }
 }
 
 async function main() {

@@ -72,6 +72,68 @@ export const QUEUE_MANAGER: Record<string, ManagerKey> = {
   podcast:                "campaign_orchestrator",
 }
 
+/**
+ * MAINTENANCE / BURN-DOMAIN OWNERSHIP — every audit/cleanup workstream on the egress
+ * is owned by a named Claude manager, so as code is cleaned and fixed there is always
+ * a manager accountable for keeping that domain on the ONE egress. The ownership
+ * simulator asserts every domain maps to a real manager (zero orphan burn types),
+ * and each domain lists its runnable proof so the owner is tied to a regression,
+ * not just a label.
+ */
+export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: string; what: string }> = {
+  // ── Data Steward — data integrity across the raw → leads → contacts spine ──
+  schema_drift_guard:         { manager: "data_steward", proof: "test:schema-drift",       what: "No code references a column the live table lacks; baseline burn-down ratchet" },
+  lossless_promotion:         { manager: "data_steward", proof: "test:data-steward",       what: "raw → leads → contacts moves identity/address/enrichment without loss" },
+  import_field_mapping:       { manager: "data_steward", proof: "test:data-steward",       what: "CSV/CRM imports: known fields map, unmapped columns preserved in notes" },
+  import_value_normalization: { manager: "data_steward", proof: "test:data-steward",       what: "Imported values reconciled to canonical vocabulary (synonyms + gated AI match)" },
+  dedup_merge:                { manager: "data_steward", proof: "test:data-steward",       what: "Dedup merges fill empties and preserve conflicts in notes — never drop" },
+  enrichment_conservation:    { manager: "data_steward", proof: "test:data-steward",       what: "PeopleData enrichment lands in first-class columns AND jsonb" },
+  consent_suppression:        { manager: "data_steward", proof: "test:lead-pipeline",      what: "TCPA consent/opt-out provenance carries faithfully — no fabricated consent" },
+  // ── AI ISA — the qualify → assign → convert chain ──
+  qualification_chain:        { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Conversation scoring persists; readiness gates handoff" },
+  assignment_routing:         { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Tier-aware routing (solo/team/brokerage/multi-location); preview = engine" },
+  lead_conversion:            { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Qualification converts to a lossless contact via the canonical converter" },
+  credit_pipeline:            { manager: "ai_isa",       proof: "test:schema-drift",       what: "Credit-readiness nurture (kanban mirrors on contacts; credit_accounts canonical)" },
+  briefing_isa_overnight:     { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Overnight handoffs/escalations lead the agent + team-lead morning briefs" },
+  // ── Surface sections owned by their domain managers ──
+  briefing_deal_risk:         { manager: "deal_coordinator",  proof: "test:manager-ownership", what: "Deals-at-risk briefing sections" },
+  briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
+  client_message_gate:        { manager: "campaign_orchestrator", proof: "test:client-extract", what: "Every client-facing AI output proposes → human approves → sends" },
+}
+
+/**
+ * GUARDED-TABLE OWNERSHIP — every table under the schema-drift guard has an owning
+ * manager, so every remaining baseline entry (and any future drift) lands on a named
+ * manager's burn-down list. The ownership simulator derives the table list from the
+ * live snapshot: adding a guarded table without an owner FAILS the regression.
+ */
+export const TABLE_MANAGER: Record<string, ManagerKey> = {
+  contacts:                     "data_steward",
+  leads:                        "ai_isa",
+  raw_scraped_leads:            "data_steward",
+  property_preferences:         "shopping_agent",
+  listings:                     "listing_concierge",
+  property_matches:             "shopping_agent",
+  saved_properties:             "shopping_agent",
+  agent_client_messages:        "campaign_orchestrator",
+  remotion_composition_renders: "asset_manager",
+  notifications:                "campaign_orchestrator",
+  assignment_log:               "ai_isa",
+  ai_daily_briefings:           "ai_isa",
+}
+
+/** Resolve the manager accountable for a maintenance/burn domain (never undefined). */
+export function resolveMaintenanceManager(domain: string): ManagerInfo {
+  const entry = MAINTENANCE_DOMAINS[domain]
+  return entry ? MANAGERS[entry.manager] : FALLBACK_MANAGER
+}
+
+/** Resolve the manager accountable for a guarded table's data integrity (never undefined). */
+export function resolveTableManager(table: string): ManagerInfo {
+  const key = TABLE_MANAGER[table]
+  return key ? MANAGERS[key] : FALLBACK_MANAGER
+}
+
 /** Fallback owner for any activity not yet mapped — surfaced so nothing is ever truly orphaned. */
 export const FALLBACK_MANAGER: ManagerInfo = {
   key: "marketing_agent", label: "Operations", domain: "Unassigned — needs an owner",
