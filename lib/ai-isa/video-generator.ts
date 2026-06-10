@@ -3,10 +3,9 @@
 // AI-ISA personalized intro video generator.
 //
 // Routes through `dispatchVideo`, which is platform-locked to D-ID + ElevenLabs
-// (the agent's own avatar/voice cloned in Settings → Voice & Avatar) and falls
-// back to HeyGen ONLY when the superadmin platform_video_provider override is set
-// to "heygen". Provider key returned from dispatch is the source of truth for the
-// log row — never hard-code "heygen" here.
+// (the agent's own avatar/voice cloned in Settings → Voice & Avatar). HeyGen is
+// NOT a reachable path. Provider key returned from dispatch is the source of
+// truth for the log row.
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { dispatchVideo } from '@/lib/providers/dispatch'
@@ -17,8 +16,7 @@ export interface VideoGenerationContext {
   brokerageId: string
   agentUserId?: string
   recipientEmail: string
-  /** D-ID path: rendered script template (variables filled by dispatch).
-   *  HeyGen path: HeyGen template_id. */
+  /** Rendered script template (variables filled by dispatch). */
   templateId?: string
   motivation_type?: string
   property_interest?: string

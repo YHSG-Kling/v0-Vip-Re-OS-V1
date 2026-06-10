@@ -45,9 +45,9 @@ export async function getAgentSettings(_userId?: string) {
       avatarId: user.heygen_avatar_id,
       voiceId: user.heygen_voice_id,
       assistantWakeName: (user.assistant_wake_name as string | null) ?? null,
-      message: user.heygen_avatar_id && user.heygen_voice_id 
-        ? "HeyGen video generation configured" 
-        : "Configure your HeyGen avatar and voice in settings",
+      message: user.heygen_avatar_id && user.heygen_voice_id
+        ? "Video generation configured (D-ID + ElevenLabs)"
+        : "Configure your D-ID avatar and ElevenLabs voice in settings",
     }
   } catch (error) {
     console.error("[v0] Failed to load agent settings:", error)

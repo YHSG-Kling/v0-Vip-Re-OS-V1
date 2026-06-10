@@ -356,7 +356,8 @@ export async function sendCampaignTestTouch(params: {
     const result = await dispatchVideo({
       brokerageId:    auth.brokerageId,
       userId:         auth.userId,
-      templateId:     process.env.HEYGEN_DEFAULT_TEMPLATE_ID ?? "",
+      // templateId is the D-ID narration script (the avatar reads this).
+      templateId:     `Hi ${params.testRecipientName ?? "there"}, this is a quick test video from your real estate team.`,
       recipientEmail: params.testRecipientEmail,
       recipientName:  params.testRecipientName,
       systemSource:   "ai_isa",

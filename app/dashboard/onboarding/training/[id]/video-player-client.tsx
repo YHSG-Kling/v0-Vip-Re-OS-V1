@@ -86,7 +86,9 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`
 }
 
-function isHeyGenUrl(url: string): boolean {
+function isEmbeddedVideoUrl(url: string): boolean {
+  // Third-party players that must render in an <iframe> rather than <video>.
+  // (heygen.com retained for any legacy training URLs; new renders are direct mp4.)
   return url.includes("heygen.com") || url.includes("vimeo.com") || url.includes("youtube.com")
 }
 
@@ -116,8 +118,8 @@ export function VideoPlayerClient({
   const [showCompletionBanner, setShowCompletionBanner] = useState(false)
   const [allRequiredComplete, setAllRequiredComplete] = useState(initialAllRequiredComplete)
 
-  // Determine if this is an embedded video (HeyGen, YouTube, Vimeo)
-  const isEmbedded = isHeyGenUrl(video.video_url)
+  // Determine if this is an embedded video (third-party player: YouTube, Vimeo)
+  const isEmbedded = isEmbeddedVideoUrl(video.video_url)
 
   // Save progress to server
   const saveProgress = useCallback(async () => {
@@ -335,7 +337,7 @@ export function VideoPlayerClient({
           <div className="lg:col-span-2 space-y-4">
             <div className="relative bg-black rounded-xl overflow-hidden aspect-video">
               {isEmbedded ? (
-                // Embedded video (HeyGen, YouTube, Vimeo)
+                // Embedded video (third-party player: YouTube, Vimeo)
                 <iframe
                   src={video.video_url}
                   className="absolute inset-0 w-full h-full"

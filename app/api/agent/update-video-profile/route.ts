@@ -7,7 +7,7 @@
  *   did_photo_url?: string       — public URL of agent headshot for D-ID /talks
  *   did_video_url?: string       — public URL of short agent video for D-ID /clips
  *   elevenlabs_voice_id?: string — ElevenLabs cloned voice ID
- *   preferred_avatar_provider?: "did" | "heygen"
+ *   preferred_avatar_provider?: "did" | "upload"  (HeyGen is NOT accepted — coerced to "did")
  */
 
 import { type NextRequest, NextResponse } from "next/server"
@@ -45,7 +45,11 @@ export async function POST(request: NextRequest) {
     if (did_photo_url !== undefined) updates.did_photo_url = did_photo_url
     if (did_video_url !== undefined) updates.did_video_url = did_video_url
     if (elevenlabs_voice_id !== undefined) updates.elevenlabs_voice_id = elevenlabs_voice_id
-    if (preferred_avatar_provider !== undefined) updates.preferred_avatar_provider = preferred_avatar_provider
+    if (preferred_avatar_provider !== undefined) {
+      // BUSINESS RULE: the avatar/video engine is D-ID + ElevenLabs ONLY. HeyGen
+      // (or any other value) is never persisted — only "upload" is honored besides "did".
+      updates.preferred_avatar_provider = preferred_avatar_provider === "upload" ? "upload" : "did"
+    }
 
     // Upsert: create profile row if it doesn't exist yet
     const { error } = await supabase

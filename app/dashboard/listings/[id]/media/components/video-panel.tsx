@@ -161,7 +161,7 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                     </span>
                     {v.heygen_status && v.heygen_status !== v.status && (
                       <Badge variant="outline" className="text-xs">
-                        HeyGen: {v.heygen_status}
+                        Render: {v.heygen_status}
                       </Badge>
                     )}
                     {v.duration_seconds && (
@@ -267,7 +267,7 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="avatarId">HeyGen Avatar ID</Label>
+                <Label htmlFor="avatarId">D-ID Avatar ID</Label>
                 <Input
                   id="avatarId"
                   value={form.heygenAvatarId}
@@ -276,7 +276,7 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="voiceId">HeyGen Voice ID</Label>
+                <Label htmlFor="voiceId">ElevenLabs Voice ID</Label>
                 <Input
                   id="voiceId"
                   value={form.heygenVoiceId}
@@ -284,15 +284,6 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                   placeholder="voice_..."
                 />
               </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="templateId">HeyGen Template ID</Label>
-              <Input
-                id="templateId"
-                value={form.heygenTemplateId}
-                onChange={e => setForm(f => ({ ...f, heygenTemplateId: e.target.value }))}
-                placeholder="template_..."
-              />
             </div>
           </div>
 

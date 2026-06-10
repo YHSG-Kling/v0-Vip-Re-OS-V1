@@ -379,7 +379,7 @@ async function fanOutToChannel(
           title:               mod.title,
           description:         mod.summary,
           category:             deriveVideoCategory(mod),
-          video_url:            "pending://heygen",   // updated when HeyGen + approval finish
+          video_url:            "pending://did",   // updated when the D-ID render + approval finish
           thumbnail_url:        mod.cover_image_url,
           duration_seconds:     secondsFromMinutes(mod.estimated_minutes),
           created_by:           mod.authored_by ?? authorUserId,
