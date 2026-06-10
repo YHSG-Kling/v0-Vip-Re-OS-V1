@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logCreditStatusUpdated } from "@/lib/events"
 import { sendSMS } from "@/lib/providers/messaging"
 
@@ -160,7 +161,7 @@ export async function handlePartnerStatusUpdate(payload: any) {
   if (new_status === "approved") {
     await supabase.from("tasks").insert({
       contact_id,
-      assigned_to: user_id,
+      assigned_to_agent_id: await agentIdForUser(supabase, user_id),
       title: "Schedule credit program kickoff",
       due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       priority: "high",
@@ -199,7 +200,7 @@ export async function handleTargetReached(payload: any) {
   // Create follow-up task
   await supabase.from("tasks").insert({
     contact_id,
-    assigned_to: user_id,
+    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
     title: "Re-engage client for home buying",
     description: "Client has reached target credit score and is ready to start looking at homes!",
     due_date: new Date().toISOString(),
@@ -225,7 +226,7 @@ export async function handlePartnerReferral(payload: any) {
   // Create follow-up task
   await supabase.from("tasks").insert({
     contact_id,
-    assigned_to: user_id,
+    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
     title: `Follow up on ${partner_name} referral`,
     due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
@@ -334,7 +335,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         description: `Follow up with ${account.contact.first_name} about credit repair options`,
         due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         priority: "high",
-        task_type: "credit_followup",
+        source: "credit_followup",
       })
       break
 
@@ -346,7 +347,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         description: "Check if client needs help completing credit application",
         due_date: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
         priority: "high",
-        task_type: "credit_followup",
+        source: "credit_followup",
       })
 
       // Send encouragement SMS
@@ -396,7 +397,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         description: "Schedule call to review credit improvement program",
         due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         priority: "high",
-        task_type: "meeting",
+        source: "credit_meeting",
       })
       break
 
@@ -426,7 +427,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         description: `Congratulate ${account.contact.first_name} on reaching credit goals!`,
         due_date: new Date().toISOString(),
         priority: "high",
-        task_type: "celebration",
+        source: "credit_celebration",
       })
       break
   }

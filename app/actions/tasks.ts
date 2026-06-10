@@ -19,10 +19,10 @@ export async function getTasks(params?: {
 
     let query = supabase
       .from("tasks")
-      .select("*, assigned_agent:agents!tasks_assigned_to_fkey(id, first_name, last_name)")
+      .select("*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, first_name, last_name)")
       .order("due_date", { ascending: true })
 
-    if (params?.assignedTo) query = query.eq("assigned_to", params.assignedTo)
+    if (params?.assignedTo) query = query.eq("assigned_to_agent_id", params.assignedTo)
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
     if (params?.listingId) query = query.eq("listing_id", params.listingId)
     if (params?.transactionId) query = query.eq("transaction_id", params.transactionId)
@@ -57,7 +57,7 @@ export async function updateTask(params: {
     if (params.title !== undefined) updates.title = params.title
     if (params.description !== undefined) updates.description = params.description
     if (params.dueDate !== undefined) updates.due_date = params.dueDate
-    if (params.assignedTo !== undefined) updates.assigned_to = params.assignedTo
+    if (params.assignedTo !== undefined) updates.assigned_to_agent_id = params.assignedTo
     if (params.priority !== undefined) updates.priority = params.priority
     if (params.status !== undefined) updates.status = params.status
 

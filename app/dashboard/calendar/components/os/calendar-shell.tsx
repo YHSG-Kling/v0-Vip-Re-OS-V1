@@ -139,7 +139,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         supabase
           .from("tasks")
           .select("*")
-          .eq("agent_id", agentId)
+          .eq("assigned_to_agent_id", agentId)
           .gte("due_date", start.toISOString().split("T")[0])
           .lte("due_date", end.toISOString().split("T")[0])
           .neq("status", "completed"),

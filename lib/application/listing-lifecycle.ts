@@ -325,7 +325,7 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
 async function createTask(agentId: string, listingId: string, title: string, dueDays: number) {
   const supabase = await createClient()
   await supabase.from("tasks").insert({
-    assigned_to: agentId,
+    assigned_to_agent_id: agentId,
     listing_id: listingId,
     title,
     due_date: new Date(Date.now() + dueDays * 24 * 60 * 60 * 1000).toISOString(),
@@ -369,7 +369,7 @@ async function trackClosingGift(listingId: string) {
       .eq("id", gift.id)
 
     await supabase.from("tasks").insert({
-      assigned_to: gift.agent_id,
+      assigned_to_agent_id: gift.agent_id,
       listing_id: listingId,
       title: "Confirm closing gift delivered",
       due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),

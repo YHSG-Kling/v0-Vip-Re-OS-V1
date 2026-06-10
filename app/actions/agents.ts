@@ -740,7 +740,7 @@ export async function getAgentStats(userIdOrAgentId: string) {
     const { count } = await supabase
       .from("tasks")
       .select("*", { count: "exact", head: true })
-      .eq("assigned_to", agentId)
+      .eq("assigned_to_agent_id", agentId)
       .eq("status", "pending")
     pendingTasks = count || 0
   } catch (e) {

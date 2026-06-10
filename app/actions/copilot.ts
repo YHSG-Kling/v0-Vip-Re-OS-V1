@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient, createClient } from "@/lib/supabase/server"
+import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logMilestoneOverdue } from "@/lib/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
@@ -44,9 +45,9 @@ export async function handleCoachingSessionBooked(payload: any) {
     attendees: [coach_id],
   })
 
-  // Create reminder task
+  // Create reminder task (assignment keys on agents.id, payload carries users.id)
   await supabase.from("tasks").insert({
-    assigned_to: user_id,
+    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
     title: `Prepare for coaching session: ${topic}`,
     due_date: new Date(new Date(session_date).getTime() - 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
@@ -63,7 +64,7 @@ export async function handleMorningKickoff(payload: any) {
   const { data: todayTasks } = await supabase
     .from("tasks")
     .select("*")
-    .eq("assigned_to", user_id)
+    .eq("assigned_to_agent_id", await agentIdForUser(supabase, user_id))
     .gte("due_date", new Date().toISOString().split("T")[0])
     .lte("due_date", new Date().toISOString().split("T")[0] + "T23:59:59")
     .order("priority", { ascending: false })
@@ -97,15 +98,16 @@ export async function generate7DayPlan(payload: any) {
     { day: 6, title: "Schedule next steps call", priority: "high" },
   ]
 
+  const nurtureAgentId = await agentIdForUser(supabase, user_id)
   for (const task of tasks) {
     await supabase.from("tasks").insert({
       contact_id,
-      assigned_to: user_id,
+      assigned_to_agent_id: nurtureAgentId,
       title: task.title,
       due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
       priority: task.priority,
       auto_generated: true,
-      task_type: "lead_nurture",
+      source: "lead_nurture",
     })
   }
 
@@ -269,7 +271,7 @@ export async function generateDailyGameplan(userId: string) {
   const { data: overdueTasks } = await supabase
     .from("tasks")
     .select("*, contacts(*)")
-    .eq("assigned_to", userId)
+    .eq("assigned_to_agent_id", await agentIdForUser(supabase, userId))
     .eq("status", "pending")
     .lt("due_date", new Date().toISOString())
     .order("priority", { ascending: false })

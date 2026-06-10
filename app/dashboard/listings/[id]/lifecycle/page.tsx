@@ -82,7 +82,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Load tasks
   const { data: tasks } = await supabase
     .from("tasks")
-    .select("id, title, description, status, priority, due_date, owner_role, auto_generated, completed_at")
+    .select("id, title, description, status, priority, due_date, owner_role:assignee_type, auto_generated, completed_at")
     .eq("listing_id", listingId)
     .eq("auto_generated", true)
     .order("due_date", { ascending: true })

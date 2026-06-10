@@ -768,7 +768,7 @@ export async function generateWeeklyPlan(params: {
     const { data: tasks } = await supabase
       .from("tasks")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("assigned_to_agent_id", params.agentId)
       .gte("due_date", params.weekStartDate)
       .lt("due_date", endDate.toISOString().split('T')[0])
 

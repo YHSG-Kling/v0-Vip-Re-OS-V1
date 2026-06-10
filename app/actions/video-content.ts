@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logVideoGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -181,7 +182,7 @@ export async function handleHighEngagement(payload: any) {
   // Create task to engage with comments if applicable
   if (engagement_type === "comments" && engagement_count > 5) {
     await supabase.from("tasks").insert({
-      assigned_to: user_id,
+      assigned_to_agent_id: await agentIdForUser(supabase, user_id),
       title: "Respond to video comments",
       description: `Your video has ${engagement_count} comments. Engage with your audience!`,
       due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),

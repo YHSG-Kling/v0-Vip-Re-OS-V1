@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // =====================================================
@@ -54,20 +55,28 @@ export async function handleTaskDelegated(payload: any) {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createServerClient()
+  // Task assignment keys on agents.id; the webhook payload carries users.id —
+  // translate both sides before the ownership check and the reassignment.
+  const [fromAgentId, toAgentId] = await Promise.all([
+    agentIdForUser(supabase, from_user_id),
+    agentIdForUser(supabase, to_user_id),
+  ])
+  if (!fromAgentId) return { success: false, error: "Delegator has no agent record" }
+  if (!toAgentId)   return { success: false, error: "Recipient has no agent record" }
   // Verify the task actually belongs to the delegator before reassigning.
   const { data: task } = await supabase
     .from("tasks")
-    .select("id, assigned_to, created_by")
+    .select("id, assigned_to_agent_id, created_by_agent_id")
     .eq("id", task_id)
     .maybeSingle()
   if (!task) return { success: false, error: "Task not found" }
-  if (task.assigned_to !== from_user_id && task.created_by !== from_user_id) {
+  if (task.assigned_to_agent_id !== fromAgentId && task.created_by_agent_id !== fromAgentId) {
     return { success: false, error: "Forbidden: not your task to delegate" }
   }
 
   await supabase
     .from("tasks")
-    .update({ assigned_to: to_user_id, delegated_by: from_user_id })
+    .update({ assigned_to_agent_id: toAgentId })
     .eq("id", task_id)
 
   // Real notifications shape (user_id/type/body/entity_*) — the phantom insert
@@ -438,9 +447,9 @@ async function getDashboardSuggestions(agentId: string) {
   const { data: autoTasks, count: taskCount } = await supabase
     .from("tasks")
     .select("*", { count: "exact" })
-    .eq("assigned_to", agentId)
+    .eq("assigned_to_agent_id", agentId)
     .eq("auto_generated", true)
-    .eq("agent_approved", false)
+    .eq("status", "pending")
 
   if (taskCount && taskCount > 0) {
     suggestions.push({
