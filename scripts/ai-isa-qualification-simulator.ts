@@ -31,6 +31,7 @@ import {
   deriveQualificationSignals,
   qualificationScoreFor,
   engine2GatePasses,
+  voiceSignalFor,
 } from "../lib/ai-isa/qualification-core"
 import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
 import {
@@ -60,6 +61,15 @@ function testRollingSignal() {
     signalTemperature("hot") === "hot" && signalTemperature("warm") === "warm" && signalTemperature("cold") === "cold")
   check("unqualified → temperature NULL (leads check allows hot|warm|cold only)",
     signalTemperature("unqualified") === null)
+
+  // VOICE channel rides the same vocabulary (vapi end-of-call → rolling state)
+  check("voice: negative outcome → unqualified (DNC handled separately)",
+    voiceSignalFor({ urgencyScore: 90, isPositiveOutcome: true, isNegativeOutcome: true }) === "unqualified")
+  check("voice: positive outcome → hot regardless of urgency",
+    voiceSignalFor({ urgencyScore: 10, isPositiveOutcome: true, isNegativeOutcome: false }) === "hot")
+  check("voice: urgency 70+ → hot", voiceSignalFor({ urgencyScore: 72, isPositiveOutcome: false, isNegativeOutcome: false }) === "hot")
+  check("voice: urgency 45-69 → warm", voiceSignalFor({ urgencyScore: 50, isPositiveOutcome: false, isNegativeOutcome: false }) === "warm")
+  check("voice: low urgency neutral → cold", voiceSignalFor({ urgencyScore: 20, isPositiveOutcome: false, isNegativeOutcome: false }) === "cold")
 }
 
 function testSignalDerivation() {

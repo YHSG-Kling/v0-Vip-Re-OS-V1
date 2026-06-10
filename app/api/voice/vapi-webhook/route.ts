@@ -556,6 +556,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       if (voiceCall.lead_id && !voiceCall.contact_id) {
         // ── Call operated from a LEAD (no contact yet) ──────────────────────
+        // VOICE rides the SAME qualification rails as the email ISA: persist the
+        // rolling lead state (lead_temperature + lead_score via qualification-core)
+        // so readinessForAgent and Engine 2 rule conditions (min_score, urgency)
+        // see the conversation — previously a voice call never fed the rolling
+        // state and the chain only moved on the binary positive/negative outcome.
+        try {
+          const { signalScore, signalTemperature, voiceSignalFor } = await import("@/lib/ai-isa/qualification-core")
+          const voiceSignal = voiceSignalFor({ urgencyScore, isPositiveOutcome, isNegativeOutcome })
+          await supabase
+            .from("leads")
+            .update({
+              lead_temperature: signalTemperature(voiceSignal),
+              lead_score: signalScore(voiceSignal),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", voiceCall.lead_id)
+            .then(...logWrite("lead rolling qualification (voice)"))
+        } catch (e) {
+          console.warn("[vapi-webhook] rolling qualification write skipped:", e)
+        }
+
         if (isPositiveOutcome) {
           // Positive: assign agent + convert lead to contact for further follow-up
           const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")

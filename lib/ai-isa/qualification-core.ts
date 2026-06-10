@@ -87,6 +87,22 @@ export function qualificationScoreFor(signals: QualificationSignals): number {
 }
 
 /**
+ * VOICE channel → rolling signal. A call's analyzed outcome maps onto the same
+ * hot/warm/cold/unqualified vocabulary the email ISA's mark_qualification tool
+ * uses, so voice conversations feed the identical readiness + Engine 2 inputs.
+ */
+export function voiceSignalFor(input: {
+  urgencyScore: number
+  isPositiveOutcome: boolean
+  isNegativeOutcome: boolean
+}): ISAQualSignal {
+  if (input.isNegativeOutcome) return 'unqualified'
+  if (input.urgencyScore >= 70 || input.isPositiveOutcome) return 'hot'
+  if (input.urgencyScore >= 45) return 'warm'
+  return 'cold'
+}
+
+/**
  * Engine 2's assignment gate (assignment-engine Step 2): leads are ONLY assigned
  * after the AI ISA qualified them AND consent exists. Assignment then converts the
  * lead to a contact (handleLeadAssigned) per the canonical business process.

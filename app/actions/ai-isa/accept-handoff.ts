@@ -1,15 +1,29 @@
 'use server'
 
-import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
+/**
+ * AI-ISA handoff acceptance — the VOICE channel's entry into the canonical
+ * qualify → assign → convert chain (also callable from the UI).
+ *
+ * Canonical business process: leads are AI-ISA + brokerage owned while
+ * unconsented; a positive ISA conversation IS the qualification + consent
+ * signal, after which the engine assigns per the contact-assignment settings
+ * (owner → solo → team rules/fallback → brokerage → load-balance) and the
+ * assignment CONVERTS the lead to a lossless contact (createContactFromLead,
+ * agents.id).
+ *
+ * This replaced a side door that (a) stamped users.id from a "primary agent"
+ * fallback into the agent slot — making converted contacts INVISIBLE to their
+ * agents via RLS, (b) bypassed tier-aware routing entirely, and (c) contained
+ * a leftover broken edit inserting junk notification rows on every handoff.
+ */
 export async function acceptAIISAHandoff(params: {
   leadId: string
   brokerageId: string
   actorUserId: string
 }): Promise<{ success: boolean; contactId?: string; error?: string }> {
-  const supabase = await createClient()
   const service = createServiceClient()
 
   // ── AUTH GATE ────────────────────────────────────────────────────────────
@@ -18,8 +32,6 @@ export async function acceptAIISAHandoff(params: {
   //   2. Trusted server-to-server (e.g. VAPI webhook route, already verified
   //      via VAPI_WEBHOOK_SECRET) — actorUserId === 'system' AND CRON_SECRET
   //      is configured (proves we're in a real deploy, not an open endpoint).
-  // In BOTH paths we re-verify the lead row's brokerage_id matches what the
-  // caller supplied so a forged param cannot reach cross-tenant data.
   const ctx = await getAgentContext()
   const isSystemCaller =
     params.actorUserId === 'system' && !!process.env.CRON_SECRET
@@ -34,7 +46,7 @@ export async function acceptAIISAHandoff(params: {
 
   const { data: lead, error: leadErr } = await service
     .from('leads')
-    .select('id, brokerage_id, agent_id, contact_id, lifecycle_state')
+    .select('id, brokerage_id, agent_id, contact_id, lifecycle_state, lead_stage, lead_score')
     .eq('id', params.leadId)
     .eq('brokerage_id', params.brokerageId)
     .maybeSingle()
@@ -42,121 +54,87 @@ export async function acceptAIISAHandoff(params: {
   if (leadErr || !lead) {
     return { success: false, error: 'Lead not found' }
   }
-
-  // Defense in depth: even if RLS/filter was bypassed, hard-fail on mismatch
   if (lead.brokerage_id !== params.brokerageId) {
     return { success: false, error: 'Forbidden' }
   }
 
-  // Already has a contact — just open it
+  // Already converted — just open the contact
   if (lead.contact_id) {
     return { success: true, contactId: lead.contact_id }
   }
 
-  // ── Agent assignment: governance → team fallback → brokerage primary ──────
-  // Priority: (1) already on the lead, (2) governLead routing engine,
-  // (3) brokerage/team primary active agent. Handoff never stalls waiting
-  // for manual assignment — a human can reassign afterwards via the CRM.
-  let assignedAgentId: string | null = lead.agent_id ?? null
-
-  if (!assignedAgentId) {
-    try {
-      const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
-      const governance = await governLead(lead.id, lead.brokerage_id)
-      assignedAgentId = governance?.agentAssigned ?? null
-    } catch {
-      // governLead failure is non-fatal — fall through to primary-agent lookup
-    }
-  }
-
-  // Fallback: brokerage's earliest-created active agent (owner/primary)
-  if (!assignedAgentId) {
-    const { data: primaryAgent } = await service
-      .from('agents')
-      .select('user_id')
-      .eq('brokerage_id', lead.brokerage_id)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle()
-    assignedAgentId = primaryAgent?.user_id ?? null
-  }
-
-  if (!assignedAgentId) {
-    return { success: false, error: 'No active agent found in this brokerage. Add an agent first.' }
-  }
-
-  // Stamp the agent on the lead immediately so it is visible in the CRM
-  // before the contact conversion completes
-  await service
-    .from('leads')
-    .update({ agent_id: assignedAgentId, updated_at: new Date().toISOString() })
-    .eq('id', lead.id)
-
-  // Convert lead → contact through canonical path
-  let contactId: string | undefined
   try {
-    const { convertLeadToContact } = await import('@/app/actions/lead-lifecycle')
-    const result = await convertLeadToContact({
+    // 1. Consent — a positive voice conversation is an engaged reply. The kernel
+    //    handler is the SOLE lifecycle_state writer (isa_qualifying → consented).
+    if (lead.lifecycle_state !== 'consented' && lead.lifecycle_state !== 'qualified') {
+      const { handleConsentReceived } = await import('@/lib/kernel/lead-acquisition-handlers')
+      await handleConsentReceived({
+        leadId: lead.id,
+        brokerageId: lead.brokerage_id,
+        consentSource: 'reply',
+      })
+    }
+
+    // 2. Qualified — satisfies Engine 2's gate (lead_stage='qualified' + consented).
+    if (lead.lead_stage !== 'qualified') {
+      await service
+        .from('leads')
+        .update({ lead_stage: 'qualified', ai_isa_owner: false, updated_at: new Date().toISOString() })
+        .eq('id', lead.id)
+    }
+
+    // 3. Engine 2 — the ONE assignment path: tier-aware routing (solo/team/brokerage/
+    //    multi-location), assignment_log, and the canonical lossless conversion
+    //    (handleLeadAssigned → createContactFromLead, agents.id).
+    const { evaluateAndAssignLead } = await import('@/lib/lead-assignment/assignment-engine')
+    const assignResult = await evaluateAndAssignLead({
       leadId: lead.id,
-      agentId: assignedAgentId,
       brokerageId: lead.brokerage_id,
     })
-    contactId = result?.contactId ?? undefined
+    if (!assignResult.assigned) {
+      return { success: false, error: `Assignment failed: ${assignResult.reason}` }
+    }
   } catch (err: any) {
-    return { success: false, error: err?.message ?? 'Conversion failed' }
+    return { success: false, error: err?.message ?? 'Handoff failed' }
   }
 
+  // The conversion stamped leads.contact_id — read it back for the caller.
+  const { data: after } = await service
+    .from('leads')
+    .select('contact_id')
+    .eq('id', lead.id)
+    .maybeSingle()
+  const contactId = after?.contact_id ?? undefined
   if (!contactId) {
     return { success: false, error: 'Contact was not created — check lead conversion logs' }
   }
 
-  // Mark lifecycle state and stamp handed_to_agent_at
-  try {
-  await supabase
-    .from("notifications")
-    .insert({
-      // keep the same payload already in your file
-      created_at: new Date().toISOString(),
-    })
-} catch {
-  // non-blocking notification write
-}
+  // Notify the human actor (UI callers only — 'system' is not a users.id).
+  if (!isSystemCaller) {
+    try {
+      await service.from('notifications').insert({
+        brokerage_id: lead.brokerage_id,
+        user_id: params.actorUserId,
+        type: 'ai_handoff_completed',
+        title: 'AI-ISA handoff accepted',
+        body: 'Lead has been converted to a contact and is ready for follow-up.',
+        entity_type: 'contact',
+        entity_id: contactId,
+        priority: 'high',
+      })
+    } catch { /* non-blocking */ }
+  }
 
-  // Notify the actor that handoff is complete
- try{ await supabase
-    .from('notifications')
-    .insert({
-      brokerage_id: lead.brokerage_id,
-      user_id: params.actorUserId,
-      type: 'ai_handoff_completed',
-      title: 'AI-ISA handoff accepted',
-      body: 'Lead has been converted to a contact and is ready for follow-up.',
-      entity_type: 'contact',
-      entity_id: contactId,
-      is_read: false,
-      priority: 'high',
-      created_at: new Date().toISOString(),
-    })
-} catch {
-  // non-blocking notification write
-}
-
-  // Emit lifecycle event
   try {
-  await supabase
-    .from('lifecycle_events')
-    .insert({
+    await service.from('lifecycle_events').insert({
       entity_type: 'lead',
       entity_id: lead.id,
       brokerage_id: lead.brokerage_id,
       event_type: 'AI_ISA_HANDOFF_ACCEPTED',
-      metadata: { actorUserId: params.actorUserId, contactId, assignedAgentId },
+      metadata: { actorUserId: params.actorUserId, contactId, channel: 'voice_or_ui', manager: 'ai_isa' },
       created_at: new Date().toISOString(),
     })
-} catch {
-  // non-blocking notification write
-}
+  } catch { /* non-blocking */ }
 
   return { success: true, contactId }
 }

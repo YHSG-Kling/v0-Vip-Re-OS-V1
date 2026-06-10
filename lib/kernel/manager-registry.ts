@@ -95,6 +95,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   lead_conversion:            { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Qualification converts to a lossless contact via the canonical converter" },
   credit_pipeline:            { manager: "ai_isa",       proof: "test:schema-drift",       what: "Credit-readiness nurture (kanban mirrors on contacts; credit_accounts canonical)" },
   briefing_isa_overnight:     { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Overnight handoffs/escalations lead the agent + team-lead morning briefs" },
+  voice_isa:                  { manager: "ai_isa",       proof: "test:isa-qualification",  what: "Voice calls feed the SAME rolling qualification + canonical handoff chain as email" },
   // ── Surface sections owned by their domain managers ──
   briefing_deal_risk:         { manager: "deal_coordinator",  proof: "test:manager-ownership", what: "Deals-at-risk briefing sections" },
   briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
