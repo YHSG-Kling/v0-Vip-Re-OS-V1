@@ -64,7 +64,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   }
 
   const { contact, agent, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
-  const firstName = contact.first_name || contact.name?.split(" ")[0] || "Homeowner"
+  const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the
   // contact row — agentName was always undefined.

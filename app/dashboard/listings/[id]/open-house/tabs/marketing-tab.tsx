@@ -153,7 +153,7 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         .from("contacts")
         .select("id")
         .eq("brokerage_id", listing.brokerage_id)
-        .eq("zip", listing.zip)
+        .eq("zip_code", listing.zip)
         .limit(100)
 
       if (!farmContacts?.length) {

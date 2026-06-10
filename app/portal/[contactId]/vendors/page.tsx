@@ -48,7 +48,7 @@ export default async function ClientVendorsPage({
   // Load contact with everything the audience resolver needs.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, agent_id, brokerage_id, team_id, contact_type, contact_persona, buyer_stage")
+    .select("id, first_name, last_name, agent_id, brokerage_id, team_id, contact_type, contact_persona, buyer_stage")
     .eq("id", contactId)
     .maybeSingle()
 

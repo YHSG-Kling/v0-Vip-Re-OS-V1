@@ -53,7 +53,7 @@ export async function initiateWhisperBridge(params: {
     // Get contact and agent details
     const { data: contact } = await supabase
       .from("contacts")
-      .select("first_name, last_name, phone, stage, last_property_viewed")
+      .select("first_name, last_name, phone, buyer_stage, last_property_viewed")
       .eq("id", contactId)
       .single()
 
@@ -222,7 +222,7 @@ export async function triggerVapiVoiceBot(params: {
     // Get contact details
     const { data: contact } = await supabase
       .from("contacts")
-      .select("first_name, last_name, phone, last_property_viewed, preferred_price_max, stage")
+      .select("first_name, last_name, phone, last_property_viewed, budget_max, buyer_stage")
       .eq("id", contactId)
       .single()
 

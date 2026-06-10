@@ -406,7 +406,7 @@ export async function getBuyerMatchCount(): Promise<{
       .from("contacts")
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agentId)
-      .in("lead_type", ["buyer", "Buyer"])
+      .in("contact_type", ["buyer", "Buyer"])
       .in("status", ["active", "hot", "nurture"])
       .or("min_price.not.is.null,max_price.not.is.null")
 

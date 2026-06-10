@@ -48,7 +48,7 @@ export default async function PortalJourneyPage({
   // Get contact basic info
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, contact_type, buyer_stage")
+    .select("id, first_name, last_name, contact_type, buyer_stage")
     .eq("id", contactId)
     .single()
 
@@ -104,7 +104,7 @@ export default async function PortalJourneyPage({
   const labelMap = portalView.view === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
 
   // Get contact display name
-  const contactName = contact.first_name || contact.name || "there"
+  const contactName = contact.first_name || "there"
 
   return (
     <JourneyClient

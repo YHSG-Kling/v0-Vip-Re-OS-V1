@@ -204,7 +204,7 @@ export async function prefillOfferWithAI(
   // Get buyer profile
   const { data: buyer } = await supabase
     .from("contacts")
-    .select("name, notes, metadata")
+    .select("first_name, last_name, notes, metadata")
     .eq("id", buyerId)
     .single()
 
@@ -255,7 +255,7 @@ export async function prefillOfferWithAI(
   // Build AI context
   const context = {
     buyer: {
-      name: buyer.name,
+      name: [buyer.first_name, buyer.last_name].filter(Boolean).join(" "),
       notes: buyer.notes,
       metadata: buyer.metadata,
     },

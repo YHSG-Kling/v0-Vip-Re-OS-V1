@@ -70,7 +70,7 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
     const svc = createServiceClient()
     const { data: contact } = await svc
       .from("contacts")
-      .select("dnc_status, tcpa_consent, tcpa_consent_date, sms_opted_out, phone_status, phone_validated_at, email_opt_out")
+      .select("dnc_status, tcpa_consent, tcpa_consent_date, sms_opt_out, phone_status, phone_validated_at, email_opt_out")
       .eq("id", input.contactId)
       .maybeSingle()
 
@@ -80,8 +80,8 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
         return { allowed: false, blockReason: "dnc", message: "Contact is on DNC list", logEntryId: log }
       }
       // SMS-specific opt-out from STOP keyword path
-      if (input.channel === "sms" && contact.sms_opted_out === true) {
-        const log = await writeLog(input, "blocked", "opted_out", { sms_opted_out: true })
+      if (input.channel === "sms" && contact.sms_opt_out === true) {
+        const log = await writeLog(input, "blocked", "opted_out", { sms_opt_out: true })
         return { allowed: false, blockReason: "opted_out", message: "Contact texted STOP — opted out", logEntryId: log }
       }
       // EWC required for non-transactional (marketing) outbound auto-dialer/SMS

@@ -107,7 +107,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   // Get contact
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, contact_type")
+    .select("id, first_name, last_name, contact_type")
     .eq("id", contactId)
     .maybeSingle()
 

@@ -374,7 +374,7 @@ async function enrollLifetimeCustomer(contactId: string) {
   const supabase = await createClient()
   await supabase
     .from("contacts")
-    .update({ status: "lifetime_customer", lifetime_customer: true })
+    .update({ status: "lifetime_customer" })
     .eq("id", contactId)
 
   const touchpoints = [

@@ -49,7 +49,7 @@ async function createTask(params: {
 async function updateContactStage(params: { contactId: string; newStage: string; notes?: string }) {
   const supabase = await createClient()
   await supabase.from("contacts").update({
-    stage: params.newStage,
+    lifecycle_state: params.newStage,
     updated_at: new Date().toISOString(),
   }).eq("id", params.contactId)
   return { success: true }

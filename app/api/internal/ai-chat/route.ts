@@ -599,7 +599,7 @@ export async function POST(req: NextRequest) {
 
         let builder = service
           .from("contacts")
-          .select("id, first_name, last_name, email, phone, contact_type, contact_persona, last_contact_at")
+          .select("id, first_name, last_name, email, phone, contact_type, contact_persona, last_contacted_at")
           .eq("brokerage_id", brokerageId)
           .limit(5)
 
@@ -620,7 +620,7 @@ export async function POST(req: NextRequest) {
             phone: c.phone,
             type: c.contact_type,
             persona: c.contact_persona,
-            last_contact: c.last_contact_at,
+            last_contact: c.last_contacted_at,
           })),
         }
       },

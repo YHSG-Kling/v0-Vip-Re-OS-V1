@@ -88,9 +88,9 @@ export async function generateMarketInsights(): Promise<{
         // Buyer contacts: count all buyers and active-stage buyers
         supabase
           .from("contacts")
-          .select("id, lead_type, lead_stage, status")
+          .select("id, contact_type, buyer_stage, status")
           .eq("agent_id", agentId)
-          .in("lead_type", ["buyer", "Buyer"]),
+          .in("contact_type", ["buyer", "Buyer"]),
       ])
 
     // ── 2. Process results ────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ export async function generateMarketInsights(): Promise<{
     const activeBuyerStages = new Set(["active", "hot", "nurture", "qualified", "touring"])
     const activeBuyerContactsCount = (buyerContacts ?? []).filter(
       (c) =>
-        activeBuyerStages.has((c.lead_stage ?? "").toLowerCase()) ||
+        activeBuyerStages.has((c.buyer_stage ?? "").toLowerCase()) ||
         activeBuyerStages.has((c.status ?? "").toLowerCase())
     ).length
 

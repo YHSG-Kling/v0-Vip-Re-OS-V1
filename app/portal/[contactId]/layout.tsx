@@ -58,7 +58,7 @@ export default async function PortalLayout({
   // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, name, contact_persona, email")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -212,7 +212,7 @@ export default async function PortalLayout({
   // Portal access logged below after view is derived
 
   // Derive display values
-  const contactName = contact.first_name || contact.name || "Guest"
+  const contactName = contact.first_name || "Guest"
   const agentName = agentData?.full_name || "Your Agent"
   const isBuyer = view === "buyer"
   const isSeller = view === "seller"

@@ -65,15 +65,15 @@ Contact Details:
 - Name: ${contact.first_name} ${contact.last_name}
 - Email: ${contact.email}
 - Phone: ${contact.phone || "Not provided"}
-- Current Stage: ${contact.lead_stage || "New"}
-- Source: ${contact.lead_source || "Unknown"}
+- Current Stage: ${contact.lifecycle_state || "New"}
+- Source: ${contact.source || "Unknown"}
 - Budget: ${contact.budget_min ? `$${contact.budget_min} - $${contact.budget_max}` : "Not specified"}
 - Preferred Areas: ${contact.preferred_areas?.join(", ") || "Not specified"}
 - Timeline: ${contact.buying_timeline || "Unknown"}
 
 Behavioral Data:
 - Recent Interactions: ${interactions?.length || 0}
-- Last Contact: ${contact.last_contact_date || "Never"}
+- Last Contact: ${contact.last_contacted_at || "Never"}
 
 Provide a JSON response with:
 {
@@ -191,10 +191,10 @@ export async function bulkScoreLeads(params: {
     if (params.contactIds) {
       query = query.in("id", params.contactIds)
     } else if (params.leadStage) {
-      query = query.eq("lead_stage", params.leadStage)
+      query = query.eq("lifecycle_state", params.leadStage)
     } else {
       // Score all active leads by default
-      query = query.in("lead_stage", ["new", "nurturing", "qualified"])
+      query = query.in("lifecycle_state", ["new", "nurturing", "qualified"])
     }
 
     const { data: contacts, error } = await query.limit(50)

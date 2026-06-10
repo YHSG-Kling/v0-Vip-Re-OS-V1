@@ -293,10 +293,10 @@ export function VideoContextPicker({
       } else if (contextType === "homeowner") {
         const { data } = await supabase
           .from("contacts")
-          .select("id, first_name, last_name, email, phone, contact_type, property_address")
+          .select("id, first_name, last_name, email, phone, contact_type, address")
           .eq("brokerage_id", brokerageId)
           .eq("contact_type", "homeowner")
-          .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,property_address.ilike.%${value}%`)
+          .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,address.ilike.%${value}%`)
           .order("created_at", { ascending: false })
           .limit(8)
 
@@ -415,8 +415,8 @@ export function VideoContextPicker({
                       {item.first_name} {item.last_name}
                     </p>
                     <p className="text-xs text-muted-foreground">{item.email}</p>
-                    {item.property_address && (
-                      <p className="text-xs text-muted-foreground">{item.property_address}</p>
+                    {item.address && (
+                      <p className="text-xs text-muted-foreground">{item.address}</p>
                     )}
                   </div>
                 </div>

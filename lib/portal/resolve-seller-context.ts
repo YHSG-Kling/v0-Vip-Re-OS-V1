@@ -151,11 +151,11 @@ export async function resolveSellerContext(
   // Get contact basic info
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, agent_id")
+    .select("id, first_name, last_name, agent_id")
     .eq("id", contactId)
     .single()
 
-  const contactName = contact?.first_name || contact?.name || "there"
+  const contactName = contact?.first_name || "there"
 
   // Get active or most recent listing for this seller. The `dom` column
   // does NOT exist in the live schema — we select `go_live_date` and

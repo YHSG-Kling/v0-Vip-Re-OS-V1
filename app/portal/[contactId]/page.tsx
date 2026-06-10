@@ -64,7 +64,7 @@ export default async function PortalHomePage({
   // Fetch contact basic info
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, contact_type, buyer_stage, agent_id, contact_persona")
+    .select("id, first_name, last_name, contact_type, buyer_stage, agent_id, contact_persona")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -237,7 +237,7 @@ export default async function PortalHomePage({
   const recentUpdates = (recentUpdatesResult as any).data ?? []
 
   // Computed values
-  const contactName = contact.first_name || contact.name || "there"
+  const contactName = contact.first_name || "there"
   const unreadMessageCount = messages.filter((m: any) => m.direction === "outbound" && !m.read_at).length
   const upcomingShowings = showings.filter((s: any) => new Date(s.scheduled_at) >= new Date())
 

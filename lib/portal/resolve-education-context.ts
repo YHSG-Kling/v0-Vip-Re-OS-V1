@@ -150,17 +150,17 @@ export async function resolveEducationContext(
   // Get contact details
   const { data: contact } = await supabase
     .from("contacts")
-    .select("buyer_stage, contact_type, date_of_birth")
+    .select("buyer_stage, contact_type, birthday")
     .eq("id", contactId)
     .single()
 
   const buyerStage = contact?.buyer_stage ?? null
 
-  // Calculate age segment + generational cohort from date_of_birth
+  // Calculate age segment + generational cohort from birthday
   let ageSeg: AgeSegment = "30-50"  // Default
   let computedAge: number | null = null
-  if (contact?.date_of_birth) {
-    const birthDate = new Date(contact.date_of_birth)
+  if (contact?.birthday) {
+    const birthDate = new Date(contact.birthday)
     const today = new Date()
     computedAge = today.getFullYear() - birthDate.getFullYear()
     // Adjust if birthday hasn't happened yet this year

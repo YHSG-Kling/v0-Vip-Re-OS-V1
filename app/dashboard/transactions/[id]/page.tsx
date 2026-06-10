@@ -82,7 +82,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const [{ data: contactRow }, { data: providerCred }, { data: linkedOfferRow }] = await Promise.all([
     supabase
       .from("contacts")
-      .select("id, first_name, last_name, name, email")
+      .select("id, first_name, last_name, email")
       .eq("id", transaction.contact_id)
       .maybeSingle(),
     supabase
@@ -105,7 +105,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   const contactEmail = contactRow?.email ?? null
   const contactName = contactRow
-    ? (contactRow.name ?? ([contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null))
+    ? ([contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null)
     : null
   const connectedEsignProvider = providerCred
     ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }

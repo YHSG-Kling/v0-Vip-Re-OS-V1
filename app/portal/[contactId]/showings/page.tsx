@@ -53,7 +53,7 @@ export default async function ShowingsPage({
 
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name")
+    .select("id, first_name, last_name")
     .eq("id", contactId)
     .single()
 

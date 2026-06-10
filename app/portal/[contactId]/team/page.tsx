@@ -20,7 +20,7 @@ export default async function TeamPage({
   // Get contact
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, agent_id")
+    .select("id, first_name, last_name, agent_id")
     .eq("id", contactId)
     .single()
 
@@ -79,7 +79,7 @@ export default async function TeamPage({
   const lender = lenderResult.data
   const titleEscrow = titleResult.data
 
-  const contactName = contact.first_name || contact.name || "Guest"
+  const contactName = contact.first_name || "Guest"
 
   return (
     <div className="space-y-6">

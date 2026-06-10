@@ -218,7 +218,7 @@ export async function getSellersInMarket(marketArea: string) {
     .from("contacts")
     .select("id, first_name, last_name, email, phone")
     .eq("brokerage_id", brokerageId)
-    .eq("lead_type", "seller")
+    .eq("contact_type", "seller")
     .eq("status", "active")
     .ilike("address", `%${marketArea}%`)
     .limit(50)

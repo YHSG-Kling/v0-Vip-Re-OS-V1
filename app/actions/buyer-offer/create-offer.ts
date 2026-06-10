@@ -77,7 +77,7 @@ export async function createBuyerOffer(
   // Check buyer exists, is active, AND belongs to caller's brokerage
   const { data: buyer, error: buyerError } = await supabase
     .from("contacts")
-    .select("id, name, status, brokerage_id")
+    .select("id, first_name, last_name, status, brokerage_id")
     .eq("id", buyerContactId)
     .single()
 

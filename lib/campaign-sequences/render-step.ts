@@ -58,7 +58,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   // ── Load the contact + agent + brokerage details for token replacement ──
   const [{ data: contact }, agentInfo, { data: brokerage }] = await Promise.all([
     supabase.from("contacts")
-      .select("id, first_name, last_name, name, email, phone, contact_persona, contact_type, brokerage_id")
+      .select("id, first_name, last_name, email, phone, contact_persona, contact_type, brokerage_id")
       .eq("id", input.contactId)
       .maybeSingle(),
     input.agentUserId
@@ -75,9 +75,9 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
 
   const portalBase = process.env.NEXT_PUBLIC_APP_URL ?? ""
   const tokens: Record<string, string> = {
-    first_name:        contact?.first_name ?? contact?.name?.split(" ")[0] ?? "there",
+    first_name:        contact?.first_name ?? "there",
     last_name:         contact?.last_name ?? "",
-    full_name:         [contact?.first_name, contact?.last_name].filter(Boolean).join(" ") || (contact?.name ?? "there"),
+    full_name:         [contact?.first_name, contact?.last_name].filter(Boolean).join(" ") || "there",
     email:             contact?.email ?? "",
     phone:             contact?.phone ?? "",
     agent_first_name:  (agentInfo as any)?.first_name ?? "",

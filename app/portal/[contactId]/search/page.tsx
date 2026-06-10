@@ -35,7 +35,7 @@ export default async function SearchPage({
 
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, name, email, contact_persona")
+    .select("id, first_name, last_name, email, contact_persona")
     .eq("id", contactId)
     .single()
 

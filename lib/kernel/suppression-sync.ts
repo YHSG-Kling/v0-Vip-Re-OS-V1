@@ -65,14 +65,16 @@ export async function syncSuppressionState(
       }
       targetId = lead.contact_id
     } else {
-      // Find lead linked to this contact
-      const { data: contact, error: contactError } = await supabase
-        .from("contacts")
-        .select("lead_id")
-        .eq("id", input.sourceId)
+      // Find lead linked to this contact (leads point at contacts via leads.contact_id)
+      const { data: linkedLead, error: linkedLeadError } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("contact_id", input.sourceId)
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle()
 
-      if (contactError || !contact?.lead_id) {
+      if (linkedLeadError || !linkedLead?.id) {
         console.warn("[Sync] Contact not linked to lead:", input.sourceId)
         return {
           synced: false,
@@ -82,7 +84,7 @@ export async function syncSuppressionState(
           timestamp: new Date().toISOString(),
         }
       }
-      targetId = contact.lead_id
+      targetId = linkedLead.id
     }
 
     // ─── BUILD UPDATE PAYLOAD ──────────────────────────────────────────────

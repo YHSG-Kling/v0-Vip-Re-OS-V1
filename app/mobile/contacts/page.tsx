@@ -15,7 +15,7 @@ interface Contact {
   email?: string
   phone?: string
   contact_type: string
-  stage: string
+  lifecycle_state: string
 }
 
 export default function MobileContactsPage() {
@@ -33,7 +33,7 @@ export default function MobileContactsPage() {
       const supabase = createClient()
       const { data, error } = await supabase
         .from("contacts")
-        .select("id, first_name, last_name, email, phone, contact_type, stage")
+        .select("id, first_name, last_name, email, phone, contact_type, lifecycle_state")
         .order("last_contacted_at", { ascending: false })
         .limit(50)
 
@@ -143,8 +143,8 @@ export default function MobileContactsPage() {
                         )}
                       </div>
                     </div>
-                    <Badge className={getStageColor(contact.stage)}>
-                      {contact.stage}
+                    <Badge className={getStageColor(contact.lifecycle_state)}>
+                      {contact.lifecycle_state}
                     </Badge>
                   </div>
                 </CardContent>

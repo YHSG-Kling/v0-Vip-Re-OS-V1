@@ -172,7 +172,7 @@ export async function inviteFarmContacts(params: {
     .from("contacts")
     .select("id, first_name, last_name, email, phone, dnc_status, tcpa_consent")
     .eq("brokerage_id", auth.brokerageId)
-    .eq("zip", params.zip)
+    .eq("zip_code", params.zip)
     .eq("dnc_status", false)
     .is("deleted_at", null)
 

@@ -18,10 +18,11 @@ export async function POST(req: NextRequest) {
 
   const service = createServiceClient()
 
-  // Fetch contact + linked lead id
+  // Fetch contact (the linked lead is resolved separately — leads point at
+  // contacts via leads.contact_id; contacts has no lead_id column)
   const { data: contact, error: contactErr } = await service
     .from("contacts")
-    .select("id, brokerage_id, email, lead_id, call_stop_flag, dnc_status, email_opt_out, mailing_address, address")
+    .select("id, brokerage_id, email, call_stop_flag, dnc_status, email_opt_out, mailing_address, address")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -42,9 +43,17 @@ export async function POST(req: NextRequest) {
   }
 
   // If the contact has a linked lead, use the standard engagement action
-  if (contact.lead_id) {
+  const { data: linkedLead } = await service
+    .from("leads")
+    .select("id")
+    .eq("contact_id", contact.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (linkedLead?.id) {
     const { initiateAIISAEngagement } = await import("@/app/actions/ai-isa/initiate-engagement")
-    const result = await initiateAIISAEngagement(contact.lead_id, { forceChannel: channel })
+    const result = await initiateAIISAEngagement(linkedLead.id, { forceChannel: channel })
     return NextResponse.json(result ?? { success: true })
   }
 

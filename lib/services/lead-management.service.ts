@@ -260,7 +260,7 @@ function calculateEngagementScore(record: any, table: string): number {
  * Calculate recency score (0-100)
  */
 function calculateRecencyScore(contact: any): number {
-  const lastContact = contact.last_contact_date || contact.created_at
+  const lastContact = contact.last_contacted_at || contact.created_at
   const daysSince = Math.floor((Date.now() - new Date(lastContact).getTime()) / (1000 * 60 * 60 * 24))
 
   if (daysSince <= 1) return 100
@@ -591,7 +591,7 @@ export async function getLeadsNeedingAttention(agentId: string) {
       .eq("agent_id", agentId)
       .eq("status", "active")
       .gte("lead_score", 60)
-      .lt("last_contact_date", sevenDaysAgo)
+      .lt("last_contacted_at", sevenDaysAgo)
       .order("lead_score", { ascending: false })
       .limit(10)
 

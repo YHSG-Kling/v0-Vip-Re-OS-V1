@@ -29,11 +29,11 @@ export default async function PortalPage() {
     redirect(`/portal/${contactByEmail.id}`)
   }
 
-  // Fallback 1: look up by portal_user_id
+  // Fallback 1: look up by contact_user_id
   const { data: contactByPortalUserId } = await supabase
     .from('contacts')
     .select('id')
-    .eq('portal_user_id', user.id)
+    .eq('contact_user_id', user.id)
     .single()
 
   if (contactByPortalUserId) {

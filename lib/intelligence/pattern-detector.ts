@@ -337,7 +337,7 @@ async function fetchEntitySignals(
         // Contact details
         supabase
           .from("contacts")
-          .select("buyer_stage, timeline, financing_status")
+          .select("buyer_stage, timeline, lender_status")
           .eq("id", entityId)
           .single(),
       ])
@@ -387,8 +387,8 @@ async function fetchEntitySignals(
       daysSinceLastShowing,
       buyerStage: contact?.buyer_stage,
       timeline: contact?.timeline,
-      financingStatus: contact?.financing_status,
-      hasPreapproval: contact?.financing_status === "pre_approved",
+      financingStatus: contact?.lender_status,
+      hasPreapproval: contact?.lender_status === "pre_approved",
       predictedReadyToOffer: predictions?.predicted_ready_to_offer,
       predictedFatigueRisk: predictions?.predicted_fatigue_risk,
       predictionConfidence: predictions?.confidence,

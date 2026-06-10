@@ -99,7 +99,7 @@ export async function evaluateAutoSendEligibility(
   const { data: contact } = await supabase
     .from("contacts")
     .select(
-      "id, email, phone, phone_digits, tcpa_consent, do_not_contact, " +
+      "id, email, phone, phone_digits, tcpa_consent, " +
         "email_opt_out, sms_opt_out, email_unsubscribed, sms_unsubscribed, " +
         "ai_outreach_paused, dnc_status, preferred_channel"
     )
@@ -113,7 +113,6 @@ export async function evaluateAutoSendEligibility(
     phone: string | null
     phone_digits: string | null
     tcpa_consent: boolean | null
-    do_not_contact: boolean | null
     email_opt_out: boolean | null
     sms_opt_out: boolean | null
     email_unsubscribed: boolean | null
@@ -123,7 +122,7 @@ export async function evaluateAutoSendEligibility(
     preferred_channel: string | null
   }
 
-  if (c.do_not_contact || c.dnc_status || c.ai_outreach_paused) {
+  if (c.dnc_status || c.ai_outreach_paused) {
     return { eligible: false, reason: "contact_dnc_or_paused" }
   }
 

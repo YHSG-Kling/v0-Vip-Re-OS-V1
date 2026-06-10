@@ -249,7 +249,7 @@ export function ContactDetail({
       const supabase = createClient()
       await supabase
         .from("contacts")
-        .update({ aiisa_state: hold ? "compliance_hold" : "ai_active", updated_at: new Date().toISOString() })
+        .update({ call_stop_flag: hold, updated_at: new Date().toISOString() })
         .eq("id", contact.id)
       toast.success(hold ? "Compliance hold placed" : "Compliance hold removed")
       router.refresh()
@@ -258,7 +258,7 @@ export function ContactDetail({
   }
 
   const isAiPaused = (contact as any).ai_outreach_paused
-  const isComplianceHold = (contact as any).aiisa_state === "compliance_hold"
+  const isComplianceHold = (contact as any).call_stop_flag === true
   const hasPhone = !!contact.phone && !(contact as any).call_stop_flag
   const hasEmail = !!contact.email && !(contact as any).email_opt_out
   const hasAddress = !!((contact as any).mailing_address || (contact as any).address)

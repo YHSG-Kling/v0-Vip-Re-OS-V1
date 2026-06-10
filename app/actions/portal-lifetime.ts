@@ -63,7 +63,6 @@ export async function getLifetimeContext(contactId: string) {
       id,
       first_name,
       last_name,
-      name,
       buyer_stage,
       agent_id
     `)

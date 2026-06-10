@@ -199,7 +199,7 @@ export async function executeSequenceStep(
   if (contactId) {
     const { data } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, email, phone, mailing_address, city, state, zip, agent_id")
+      .select("id, first_name, last_name, email, phone, mailing_address, city, state, zip_code, agent_id")
       .eq("id", contactId)
       .single()
     contact = data

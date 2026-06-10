@@ -37,8 +37,8 @@ export async function identifyReferralOpportunities(agentId: string) {
         referrals(*)
       `)
       .eq("agent_id", agentId)
-      .in("stage", ["closed", LIFETIME_CUSTOMER_TYPE, "sphere"])
-      .order("last_interaction_date", { ascending: false })
+      .in("contact_type", ["closed", LIFETIME_CUSTOMER_TYPE, "sphere"])
+      .order("last_contacted_at", { ascending: false })
       .limit(100)
 
     if (!contacts || contacts.length === 0) {
@@ -150,10 +150,10 @@ export async function generateReferralRequest(params: {
 
 Agent: ${agent?.first_name} ${agent?.last_name}
 Client: ${contact.first_name} ${contact.last_name}
-Relationship: ${contact.stage}
+Relationship: ${contact.contact_type}
 Transaction History: ${contact.transactions?.map((t: any) => t.property_address).join(', ') || 'None'}
 Past Referrals: ${contact.referrals?.length || 0}
-Last Interaction: ${contact.last_interaction_date}
+Last Interaction: ${contact.last_contacted_at}
 
 Channel: ${params.channel}
 ${params.context ? `Context: ${params.context}` : ''}

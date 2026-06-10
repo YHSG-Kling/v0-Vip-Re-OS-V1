@@ -73,7 +73,7 @@ export default async function ISACallingPage() {
     ? await supabase
         .from('contacts')
         .select(
-          'id, first_name, last_name, phone, status, contact_type, lead_score, created_at, buyer_stage, seller_stage'
+          'id, first_name, last_name, phone, status, contact_type, lead_score, created_at, buyer_stage, lifecycle_state'
         )
         .eq('brokerage_id', profile.brokerage_id)
         .not('phone', 'is', null)
@@ -200,7 +200,7 @@ export default async function ISACallingPage() {
             <div className="space-y-2">
               {contacts.map((contact: any) => {
                 const priority = getPriorityLabel(contact.lead_score)
-                const stage = contact.buyer_stage ?? contact.seller_stage ?? null
+                const stage = contact.buyer_stage ?? contact.lifecycle_state ?? null
                 return (
                   <div
                     key={contact.id}

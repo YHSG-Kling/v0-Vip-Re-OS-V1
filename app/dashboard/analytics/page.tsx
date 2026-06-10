@@ -60,9 +60,9 @@ export default async function AnalyticsPage() {
       .lt("created_at", thirtyDaysAgo)
       .eq("status", "closed"),
     supabase.from("contacts")
-      .select("lead_source")
+      .select("source")
       .eq("agent_id", user.id)
-      .not("lead_source", "is", null),
+      .not("source", "is", null),
     supabase.from("activities")
       .select("id, title, activity_type, created_at")
       .eq("agent_id", user.id)
@@ -84,7 +84,7 @@ export default async function AnalyticsPage() {
   // Calculate lead source distribution
   const leadSources: Record<string, number> = {}
   leadSourcesResult.data?.forEach(contact => {
-    const source = contact.lead_source || "unknown"
+    const source = contact.source || "unknown"
     leadSources[source] = (leadSources[source] || 0) + 1
   })
   const topSources = Object.entries(leadSources)

@@ -58,7 +58,7 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     .eq("brokerage_id", userData.brokerage_id)
 
   if (input.recipientSegment.ZIP) {
-    countQuery = countQuery.eq("zip", input.recipientSegment.ZIP)
+    countQuery = countQuery.eq("zip_code", input.recipientSegment.ZIP)
   }
   if (input.recipientSegment.role) {
     countQuery = countQuery.eq("contact_type", input.recipientSegment.role)
