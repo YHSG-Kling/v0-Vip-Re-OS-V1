@@ -36,7 +36,7 @@ const NON_CLIENT_QUEUES = [...AGENT_QUEUES, ...CONTENT_QUEUES]
 
 // Deal-critical managers that can propose a client_message (its agent_kind owns the row).
 const CLIENT_MESSAGE_MANAGERS: ManagerKey[] = [
-  "listing_concierge", "deal_coordinator", "shopping_agent", "sphere_of_influence", "campaign_orchestrator",
+  "listing_concierge", "deal_coordinator", "shopping_agent", "sphere_of_influence", "campaign_orchestrator", "recruiting_manager",
 ]
 
 console.log("\n[1 · every non-client queue has an explicit, accountable owner]")
@@ -114,7 +114,7 @@ check("boundary preservation is itself a governed burn domain",
 
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
-check("all 10 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward)", keys.length === 10)
+check("all 11 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward/recruiting)", keys.length === 11)
 for (const k of keys) {
   const m = MANAGERS[k]
   check(`${k} has label + domain + matching key`, m.key === k && m.label.length > 0 && m.domain.length > 0)

@@ -202,6 +202,10 @@
       "schedule": "0 9 * * 1"
     },
     {
+      "path": "/api/cron/recruit-outreach",
+      "schedule": "0 11 * * 1"
+    },
+    {
       "path": "/api/cron/referral-asks",
       "schedule": "0 10 * * 2"
     },

@@ -11,8 +11,9 @@
  * Command Center UI (client) share ONE source of truth for manager identity + labels —
  * no drift between a server map and a hand-kept client KIND_LABEL.
  *
- * All 10 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
+ * All 11 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
  * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture) +
+ * Recruiting Manager (m215, agent recruiting / talent pipeline — brokerage growth) +
  * Data Steward (m203, data integrity / identity / field stewardship across the lead spine).
  *
  * ── PRESERVED MANAGER BOUNDARIES (the product's governance contract) ──────────
@@ -46,6 +47,7 @@ export type ManagerKey =
   | "ads_manager"
   | "ai_isa"
   | "data_steward"
+  | "recruiting_manager"
 
 export interface ManagerInfo {
   key:    ManagerKey
@@ -65,6 +67,7 @@ export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
   ads_manager:           { key: "ads_manager",           label: "Ads Manager",           domain: "Paid advertising" },
   ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement" },
   data_steward:          { key: "data_steward",          label: "Data Steward",          domain: "Data integrity, identity & field stewardship" },
+  recruiting_manager:    { key: "recruiting_manager",    label: "Recruiting Manager",    domain: "Agent recruiting & talent pipeline (brokerage growth)" },
 }
 
 /**
@@ -126,6 +129,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   strategy_learning_loop:     { manager: "shopping_agent",    proof: "test:strategy-learning",  what: "Offer/counter outcomes close the loop back to the recommendation that produced them (strategy_outcomes)" },
   strategy_learning_insights: { manager: "shopping_agent",    proof: "test:strategy-insights",  what: "Accumulated outcomes → market intelligence (win rate, deviation, by strategy type) fed back into the next recommendation" },
   referral_closing_loop:      { manager: "sphere_of_influence", proof: "test:referral-closer", what: "Deal close → matching referral closed, partner lifetime value credited, partner thank-you proposed into the gate" },
+  recruiting_outreach_loop:   { manager: "recruiting_manager", proof: "test:recruit-outreach", what: "Recruit stage advance / stale recruit → next recruiting outreach proposed into the gate (talent pipeline kept warm)" },
 }
 
 /**

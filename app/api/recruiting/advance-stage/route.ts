@@ -72,13 +72,22 @@ export async function POST(req: Request) {
     // Activity log entry
     await service.from("activities").insert({
       activity_type: "recruiting.stage_advance",
-      agent_id: user.id,
+      agent_user_id: user.id,
       brokerage_id: profile!.brokerage_id,
       title: `Recruit stage: ${recruit.first_name} ${recruit.last_name} → ${toStatus}`,
       notes: note ?? null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).then(() => {}, () => {})
+
+    // RECRUITING MANAGER — propose the next stage-appropriate outreach into the gate
+    // (skips terminal stages + de-dupes a pending proposal). Best-effort.
+    try {
+      const { produceRecruitOutreach } = await import("@/lib/agents/recruit-outreach-producer")
+      await produceRecruitOutreach(profile!.brokerage_id!, recruitId, service)
+    } catch (err) {
+      console.error("[recruiting/advance-stage] outreach proposal failed:", err)
+    }
 
     return NextResponse.json({ success: true, recruitId, toStatus })
   } catch (err: any) {
