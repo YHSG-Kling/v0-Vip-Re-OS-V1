@@ -104,13 +104,25 @@ export async function approveClientMessage(
         if (!r.success) return await fail(supabase, messageId, r.error ?? "email send failed")
       }
     } else {
-      // portal / portal_push → the canonical kernel emitter (client portal card + bell).
-      const { emitKernelEvent } = await import("@/lib/kernel/emit")
-      await emitKernelEvent({
-        event: "agent_message_received", brokerageId: m.brokerage_id, entityType: m.entity_type,
-        entityId: (m.entity_id ?? m.recipient_contact_id) as string,
-        metadata: { agent_message: m.body, subject: m.subject ?? "An update from your agent", audience: m.audience, recipient_contact_id: m.recipient_contact_id, channel, human_approved: true, message_preview: m.body.slice(0, 400) },
+      // portal / portal_push → write the canonical portal card DIRECTLY.
+      // (Previously this emitted the string "agent_message_received" — which is not a
+      // KernelEvent enum member, has no PORTAL_UPDATE_TEMPLATES entry, and no portal-stream
+      // translation — so an approved portal-channel message NEVER rendered for the client.
+      // transparency_updates is the canonical "what happened on my deal" card the portal
+      // reads; writing it directly makes the final hop provable.)
+      if (!m.recipient_contact_id) return await fail(supabase, messageId, "portal channel needs a recipient contact")
+      const { error: cardErr } = await supabase.from("transparency_updates").insert({
+        brokerage_id:           m.brokerage_id,
+        contact_id:             m.recipient_contact_id,
+        title:                  m.subject ?? "An update from your agent",
+        plain_language_summary: m.body,
+        message:                m.body,
+        update_type:            "agent_message",
+        is_visible_to_client:   true,
+        metadata:               { audience: m.audience, channel, human_approved: true, agent_client_message_id: messageId },
+        created_at:             new Date().toISOString(),
       })
+      if (cardErr) return await fail(supabase, messageId, `portal card write failed: ${cardErr.message}`)
     }
   } catch (e) {
     return await fail(supabase, messageId, (e as Error).message)
