@@ -10,84 +10,77 @@ import { sendSMS, sendEmail } from "@/lib/providers/messaging"
 import { createTransfer } from "@/lib/providers/payment"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
-// HEYGEN VIDEO GENERATION
-// HeyGen is a video-specific provider — kept inline until lib/providers/video is created.
+// ─── AVATAR / EXPLAINER VIDEO ─────────────────────────────────────────────────
+// BUSINESS RULE (platform-locked): the avatar/explainer-video engine is D-ID +
+// ElevenLabs ONLY — HeyGen is NOT used. These functions keep their historical
+// names for backward-compat with existing callers, but every render goes through
+// D-ID. `avatarId` is treated as a D-ID source/actor reference, `voiceId` as the
+// ElevenLabs voice id. Brokerage scoping is resolved from the caller's session.
+const DID_API_BASE = "https://api.d-id.com"
+
 export async function generateHeyGenVideo(params: {
   avatarId: string
   voiceId: string
   script: string
   contactId?: string
+  brokerageId?: string
 }) {
-  const apiKey = process.env.HEYGEN_API_KEY
+  const didApiKey = process.env.DID_API_KEY
+  const elApiKey = process.env.ELEVENLABS_API_KEY
 
-  if (!apiKey) {
+  if (!didApiKey || !elApiKey) {
     return {
       success: false,
-      error: "HeyGen API key not configured. Add HEYGEN_API_KEY to environment variables.",
+      error: "Video provider (D-ID + ElevenLabs) not configured. Add DID_API_KEY and ELEVENLABS_API_KEY to environment variables.",
       requiresConfiguration: true,
     }
   }
 
   try {
-    const response = await callConnector<{ data?: { video_id?: string } }>({
-      connector: "heygen",
-      baseUrl: "https://api.heygen.com",
-      path: "/v2/video/generate",
-      method: "POST",
-      auth: { style: "header", name: "X-Api-Key", value: apiKey },
-      body: {
-        video_inputs: [
-          {
-            character: {
-              type: "avatar",
-              avatar_id: params.avatarId,
-              avatar_style: "normal",
-            },
-            voice: {
-              type: "text",
-              input_text: params.script,
-              voice_id: params.voiceId,
-            },
-          },
-        ],
-        dimension: { width: 1920, height: 1080 },
-      },
+    const { generateVideo } = await import("@/lib/did")
+    const result = await generateVideo({
+      script: params.script,
+      voiceId: params.voiceId || undefined,
+      // avatarId resolves to a D-ID actor (persistent avatar) or null source.
+      actorId: params.avatarId || null,
+      brokerageId: params.brokerageId ?? "",
     })
 
-    if (!response.ok) {
-      throw new Error(response.error || "HeyGen API error")
+    if (result.status === "error") {
+      return { success: false, error: result.note ?? "D-ID render failed" }
     }
-
-    return { success: true, videoId: response.data?.data?.video_id, status: "processing" }
+    // videoId is the D-ID talk/clip id used for downstream status polling.
+    return { success: true, videoId: result.videoId, status: result.status === "done" ? "completed" : "processing" }
   } catch (error: any) {
-    console.error("[External Services] HeyGen error:", error)
+    console.error("[External Services] D-ID video error:", error)
     return { success: false, error: error.message }
   }
 }
 
 export async function getHeyGenVideoStatus(videoId: string) {
-  const apiKey = process.env.HEYGEN_API_KEY
-
-  if (!apiKey) {
-    return { success: false, error: "HeyGen API key not configured" }
+  const didApiKey = process.env.DID_API_KEY
+  if (!didApiKey) {
+    return { success: false, error: "D-ID API key not configured" }
   }
 
-  const response = await callConnector<{ data?: { status?: string; video_url?: string } }>({
-    connector: "heygen",
-    baseUrl: "https://api.heygen.com",
-    path: "/v1/video_status.get",
+  // Poll D-ID /talks/{id}. Clip jobs also resolve through the same id space; the
+  // poll-did-videos cron is the canonical async finalizer — this is the sync read.
+  const response = await callConnector<{ status?: string; result_url?: string }>({
+    connector: "did",
+    baseUrl: DID_API_BASE,
+    path: `/talks/${videoId}`,
     method: "GET",
-    query: { video_id: videoId },
-    auth: { style: "header", name: "X-Api-Key", value: apiKey },
+    auth: { style: "basic", username: didApiKey, password: "" },
   })
 
-  if (!response.ok) {
-    return { success: false, error: response.error ?? "HeyGen status error" }
+  if (!response.ok || !response.data) {
+    return { success: false, error: response.error ?? "D-ID status error" }
   }
+  const status = response.data.status === "done" ? "completed" : response.data.status === "error" ? "failed" : "processing"
   return {
     success: true,
-    status: response.data?.data?.status,
-    videoUrl: response.data?.data?.video_url,
+    status,
+    videoUrl: response.data.result_url,
   }
 }
 

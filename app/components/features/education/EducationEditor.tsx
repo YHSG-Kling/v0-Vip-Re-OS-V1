@@ -437,8 +437,8 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
             ) : avatars.length === 0 ? (
               <div className="text-sm text-muted-foreground py-4 text-center">
                 <Video className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                <p>No HeyGen avatars available.</p>
-                <p className="text-xs mt-1">Add <code>HEYGEN_API_KEY</code> to your environment to enable avatar videos.</p>
+                <p>No avatars available yet.</p>
+                <p className="text-xs mt-1">Create an avatar in Settings → Voice &amp; Avatar (powered by D-ID) to enable avatar videos.</p>
               </div>
             ) : (
               <>

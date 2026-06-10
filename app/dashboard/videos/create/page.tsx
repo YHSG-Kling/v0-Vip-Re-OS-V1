@@ -1,5 +1,5 @@
-// Server component wrapper — checks HeyGen config and passes it to the client wizard.
-// Tables read: none (env-var check only).
+// Server component wrapper for the AI video wizard.
+// The avatar/explainer video engine is D-ID + ElevenLabs ONLY.
 
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
@@ -21,8 +21,5 @@ export default async function VideoCreateServerPage() {
     redirect("/login")
   }
 
-  // Check HeyGen API key from server environment — never exposed to client
-  const heygenConfigured = !!process.env.HEYGEN_API_KEY
-
-  return <VideoCreatePage heygenConfigured={heygenConfigured} />
+  return <VideoCreatePage />
 }

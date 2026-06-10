@@ -57,8 +57,6 @@ import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdate
 import { generateVideoScript } from "@/app/actions/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
-import { getHeyGenAvatars } from "@/app/actions/heygen-avatars"
-import { getPlatformVideoProvider } from "@/app/actions/settings/global-settings-actions"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -144,11 +142,7 @@ const BACKGROUND_STYLES = [
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 
-interface VideoCreatePageProps {
-  heygenConfigured?: boolean
-}
-
-export default function VideoCreatePage({ heygenConfigured = true }: VideoCreatePageProps) {
+export default function VideoCreatePage() {
   const router = useRouter()
   const { user, userContext } = useAuth()
   // useAuth does not return a `brokerage` object — derive it from userContext
@@ -263,9 +257,9 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
       if (!brokerage?.id) return
 
       try {
-        // Load platform provider and agent D-ID profile in parallel with other data
-        const provider = await getPlatformVideoProvider()
-        setPlatformProvider(provider)
+        // Platform video engine is D-ID + ElevenLabs ONLY (HeyGen removed).
+        // platformProvider is pinned to "did" — the heygen branches below are dead.
+        setPlatformProvider("did")
 
         // Load approved scripts from library
         const { data: scriptsData } = await supabase
@@ -353,41 +347,11 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
         setBrandingPresets(brandingData || [])
 
-        // HeyGen default avatars (fallback when API call fails)
-        const defaultAvatars = [
-          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional", thumbnailUrl: undefined },
-          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly", thumbnailUrl: undefined },
-          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual", thumbnailUrl: undefined },
-          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional", thumbnailUrl: undefined },
-          { id: "Wayne_20240711", name: "Wayne", style: "Executive", thumbnailUrl: undefined },
-        ]
-
-        // Fetch all available HeyGen avatars from live API
-        const heygenResult = await getHeyGenAvatars()
-        const rawAvatars = heygenResult.success && heygenResult.avatars.length > 0
-          ? heygenResult.avatars.map((av) => ({
-              id: av.avatar_id,
-              name: av.avatar_name,
-              style: av.gender ?? "Public",
-              thumbnailUrl: av.preview_image_url ?? undefined,
-            }))
-          : defaultAvatars
-        const seenAvatarIds = new Set<string>()
-        const liveAvatars = rawAvatars.filter(av => !seenAvatarIds.has(av.id) && seenAvatarIds.add(av.id))
-
-        // Load per-user avatar + voice configured during onboarding
+        // Load per-user voice configured during onboarding + social platforms.
+        // Avatar selection for the D-ID engine is driven by didAvatarAssets below;
+        // the legacy avatar list is no longer fetched (HeyGen removed).
         if (user?.id) {
           const agentSettings = await getAgentSettings(user.id)
-          if (agentSettings.avatarId) {
-            // Personal avatar goes first, live/default avatars as fallbacks
-            setAvatars([
-              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal", thumbnailUrl: undefined },
-              ...liveAvatars.filter(av => av.id !== agentSettings.avatarId),
-            ])
-            setSelectedAvatar(agentSettings.avatarId)
-          } else {
-            setAvatars(liveAvatars)
-          }
           // Pre-select configured voice ID if no cloned voice profiles exist
           if (agentSettings.voiceId && clonedVoiceProfiles.length === 0) {
             setSelectedVoice(agentSettings.voiceId)
@@ -402,8 +366,6 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
           const platforms = (socialData ?? []).map((a: any) => a.platform as string)
           setConnectedPlatforms(platforms)
-        } else {
-          setAvatars(defaultAvatars)
         }
       } catch (err) {
         console.error("Error loading data:", err)
@@ -487,10 +449,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
       if (projectError || !project) throw projectError ?? new Error("Failed to create video project")
 
-      // 2. Submit to video generation API (provider-aware)
-      const endpoint = platformProvider === "did"
-        ? "/api/did/generate-video"
-        : "/api/heygen/generate-video"
+      // 2. Submit to video generation API — D-ID is the only engine.
+      const endpoint = "/api/did/generate-video"
 
       // Resolve background payload (color hex or image URL) for the D-ID API.
       // D-ID requires a valid color (hex) or an image URL. The "office" and
@@ -925,25 +885,6 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             ))}
           </div>
         </div>
-
-        {/* HeyGen not configured — non-blocking notice */}
-        {!heygenConfigured && (
-          <Alert className="mb-6 border-amber-200 bg-amber-50 text-amber-900">
-            <AlertTriangle className="h-4 w-4 text-amber-600" />
-            <AlertTitle className="text-amber-800">HeyGen Not Configured</AlertTitle>
-            <AlertDescription className="text-amber-700">
-              The HeyGen API key is not set. You can still build and save your video project — it will be queued once HeyGen is connected. Admins: configure in{" "}
-              <a href="/settings/integrations" className="underline font-medium">
-                Settings &rarr; Integrations
-              </a>
-              . To set your personal avatar and voice ID, visit your{" "}
-              <a href="/dashboard/profile" className="underline font-medium">
-                Profile Settings
-              </a>
-              .
-            </AlertDescription>
-          </Alert>
-        )}
 
         {/* Error Alert */}
         {error && (

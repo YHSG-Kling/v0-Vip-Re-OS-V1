@@ -317,11 +317,12 @@ export async function submitToHeyGen(
     .update({ status: "generating", heygen_status: "pending", updated_at: new Date().toISOString() })
     .eq("id", projectId)
 
-  // Submit to HeyGen
+  // Submit to D-ID (platform-locked engine; heygen_* columns retained for legacy rows)
   const result = await generateHeyGenVideo({
     avatarId: project.heygen_avatar_id,
     voiceId: project.heygen_voice_id,
     script: project.script_content,
+    brokerageId,
   })
 
   if (!result.success) {
