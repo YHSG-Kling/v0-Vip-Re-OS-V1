@@ -124,6 +124,15 @@ async function main() {
     check("sla: summary counts the breached approval", data.summary.breachedApprovals >= 1)
     check("sla: breached action sorts ahead of fresh one", data.pendingActions.findIndex((a) => a.id === (mAction as any).id) < data.pendingActions.findIndex((a) => a.id === (aAction as any).id))
 
+    // Manager Daily Standup — heads the Command Center. It's built from live tables
+    // and every line is manager-attributed; assert it loaded and carries the marketing
+    // activity we seeded (the Marketing Manager has work in the last 24h).
+    check("standup: present on the brokerage-scoped load", Array.isArray(data.standup))
+    check("standup: every line maps to a real manager key",
+      data.standup.every((l) => typeof l.label === "string" && l.label.length > 0 && typeof l.headline === "string"))
+    check("standup: no line is silent noise (activity or needs_human > 0)",
+      data.standup.every((l) => l.activity_24h > 0 || l.needs_human > 0))
+
     // Reject contract — the exact mutation rejectAgentAction performs.
     const { error: rejErr } = await svc.from("marketing_agent_actions")
       .update({ status: "skipped", approved_by: userId, approved_at: new Date().toISOString() })

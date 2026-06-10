@@ -68,6 +68,16 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
   const [actions, setActions] = useState<CommandCenterAction[]>(data.pendingActions)
   const [summary, setSummary] = useState(data.summary)
 
+  // Standup card → jump to that manager's first item in the approval queue below.
+  function scrollToManagerQueue(managerKey: string) {
+    const el = document.querySelector(`[data-manager="${managerKey}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" })
+      el.classList.add("ring-2", "ring-blue-400", "rounded-lg")
+      setTimeout(() => el.classList.remove("ring-2", "ring-blue-400", "rounded-lg"), 1800)
+    }
+  }
+
   function onResolved(actionId: string) {
     setActions((prev) => {
       const next = prev.filter((a) => a.id !== actionId)
@@ -96,6 +106,48 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         <Stat label="SLA breached" value={summary.breachedApprovals} accent={summary.breachedApprovals > 0 ? "text-red-700" : "text-slate-500"} />
       </div>
 
+      {/* Manager Daily Standup — the morning roll-call: what each Claude manager did in
+          the last 24h and what is waiting on a human. The governed-autonomy report. */}
+      {data.standup.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Manager standup — last 24 hours</h2>
+            <span className="text-xs text-muted-foreground">
+              {data.standup.reduce((s, l) => s + l.needs_human, 0)} item{data.standup.reduce((s, l) => s + l.needs_human, 0) === 1 ? "" : "s"} need you
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {data.standup.map((line) => (
+              <Card
+                key={line.manager}
+                className={"p-4 " + (line.needs_human > 0 ? "border-blue-300 bg-blue-50/40" : "")}
+                title={MANAGERS[line.manager]?.domain ?? ""}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <Badge className="bg-slate-900 text-white">{line.label}</Badge>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{line.activity_24h} action{line.activity_24h === 1 ? "" : "s"}/24h</span>
+                    {line.needs_human > 0 && (
+                      <Badge className="bg-blue-600 text-white">{line.needs_human} need you</Badge>
+                    )}
+                  </div>
+                </div>
+                <p className="text-sm text-foreground">{line.headline}</p>
+                {line.needs_human > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => scrollToManagerQueue(line.manager)}
+                    className="mt-2 text-xs font-medium text-blue-700 hover:underline"
+                  >
+                    Review {line.label}&apos;s {line.needs_human} item{line.needs_human === 1 ? "" : "s"} ↓
+                  </button>
+                )}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Managers on duty — every pending activity is owned by an accountable manager */}
       {data.managerBreakdown.length > 0 && (
         <section className="space-y-2">
@@ -119,7 +171,11 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         {actions.length === 0 ? (
           <Card className="p-6 text-sm text-muted-foreground">No actions awaiting approval.</Card>
         ) : (
-          actions.map((a) => <ActionRow key={a.id} action={a} onResolved={onResolved} />)
+          actions.map((a) => (
+            <div key={a.id} data-manager={a.managerKey}>
+              <ActionRow action={a} onResolved={onResolved} />
+            </div>
+          ))
         )}
       </section>
 

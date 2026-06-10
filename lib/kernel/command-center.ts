@@ -66,6 +66,9 @@ export interface CommandCenterData {
   pendingActions:  CommandCenterAction[]
   /** Per-manager pending load — proves every activity has an accountable owner. */
   managerBreakdown: ManagerBreakdownEntry[]
+  /** Manager Daily Standup — each manager's 24h activity + what needs a human.
+   *  The morning roll-call that heads the Command Center. */
+  standup:         import("@/lib/intelligence/manager-standup").ManagerStandupLine[]
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -211,10 +214,24 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   }
   const managerBreakdown = Array.from(breakdownMap.values()).sort((a, b) => b.count - a.count)
 
+  // Manager Daily Standup — the morning roll-call (24h activity + needs-human per
+  // manager). Brokerage-scoped only (platform-wide superadmin view aggregates many
+  // tenants, so the standup is omitted there). Best-effort: never blocks the queue.
+  let standup: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
+  if (params.brokerageId) {
+    try {
+      const { generateManagerStandup } = await import("@/lib/intelligence/manager-standup")
+      standup = await generateManagerStandup(params.brokerageId)
+    } catch (err) {
+      console.error("[command-center] manager standup failed:", err)
+    }
+  }
+
   return {
     sessions,
     pendingActions,
     managerBreakdown,
+    standup,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,
