@@ -125,6 +125,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   deadline_watcher:           { manager: "deal_coordinator",  proof: "test:deadline-watcher", what: "Inspection/appraisal/financing/walkthrough/closing deadlines within 24h notify the deal parties (was built but never scheduled — found by the domain audit)" },
   briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
   client_message_gate:        { manager: "campaign_orchestrator", proof: "test:client-extract", what: "Every client-facing AI output proposes → human approves → sends" },
+  portal_final_hop:           { manager: "campaign_orchestrator", proof: "test:portal-e2e", what: "End-to-end: approved portal messages render a visible client card; regulated channels (sms/email) hard-block at the consent gate before any send" },
   manager_daily_standup:      { manager: "campaign_orchestrator", proof: "test:manager-ownership", what: "Broker's daily per-manager accountability report (manager-standup.ts); every line manager-attributed" },
   manager_weekly_pnl:         { manager: "campaign_orchestrator", proof: "test:command-center", what: "Broker's weekly per-manager production scorecard (manager-weekly-pnl.ts); WoW outcomes incl. GCI" },
   brokerage_owner_report:     { manager: "campaign_orchestrator", proof: "test:brokerage-pnl", what: "Owner's Report — YTD GCI + company dollar, production by agent, recruiting ROI, referral value (brokerage-pnl.ts)" },

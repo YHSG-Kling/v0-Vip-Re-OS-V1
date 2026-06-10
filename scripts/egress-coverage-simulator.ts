@@ -85,7 +85,7 @@ for (const k of GATE_PRODUCER_KINDS) {
 console.log("\n[5 · coverage breadth — the governance graph is substantial]")
 check("≥ 11 managers registered", allManagers.length >= 11)
 check("≥ 18 burn domains governed", domains.length >= 18)
-check("every domain proof string is well-formed (test:*)", domains.every(([, d]) => /^test:[a-z-]+$/.test(d.proof)))
+check("every domain proof string is well-formed (test:*)", domains.every(([, d]) => /^test:[a-z0-9-]+$/.test(d.proof)))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
