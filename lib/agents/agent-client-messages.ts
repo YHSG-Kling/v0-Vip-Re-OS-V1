@@ -70,15 +70,19 @@ export async function approveClientMessage(
   try {
     const channel = m.channel ?? "portal"
     if (channel === "sms" || channel === "voice_drop" || channel === "email") {
-      // Direct channels need the contact's identifier + (for SMS/voice) TCPA consent.
+      // Direct channels need the contact's identifier + the canonical suppression gate
+      // (TCPA consent, DNC, per-channel opt-out / unsubscribe) — one source of truth.
+      const { canDispatchToContact, CONTACT_CONSENT_COLUMNS } = await import("@/lib/compliance/contact-channel-gate")
       const { data: c } = await supabase.from("contacts")
-        .select("email, phone, tcpa_consent, first_name").eq("id", m.recipient_contact_id ?? "").maybeSingle()
-      const contact = c as { email?: string | null; phone?: string | null; tcpa_consent?: boolean; first_name?: string | null } | null
+        .select(`email, phone, first_name, ${CONTACT_CONSENT_COLUMNS}`).eq("id", m.recipient_contact_id ?? "").maybeSingle()
+      const contact = c as ({ email?: string | null; phone?: string | null; first_name?: string | null } & import("@/lib/compliance/contact-channel-gate").ContactConsentState) | null
       if (!contact) return await fail(supabase, messageId, "no recipient contact for this channel")
 
+      // HARD pre-dispatch compliance gate — blocks before any provider is called.
+      const gate = canDispatchToContact(contact, channel as import("@/lib/compliance/contact-channel-gate").DispatchChannel)
+      if (!gate.allowed) return await fail(supabase, messageId, gate.reason ?? "blocked by compliance gate")
+
       if (channel === "sms" || channel === "voice_drop") {
-        // TCPA: SMS/voice to a client requires marketing consent — hard block (lawsuit-safe).
-        if (!contact.tcpa_consent) return await fail(supabase, messageId, "TCPA consent required for SMS/voice — not sent")
         if (!contact.phone) return await fail(supabase, messageId, "contact has no phone")
         if (channel === "sms") {
           const { dispatchSms } = await import("@/lib/providers/dispatch")
