@@ -148,6 +148,52 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         </section>
       )}
 
+      {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
+          vs the prior week. Proves the AI workforce moves the business, not just acts. */}
+      {data.weeklyPnl.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Manager weekly P&amp;L — production vs last week</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {data.weeklyPnl.map((card) => (
+              <Card key={card.manager} className="p-4" title={MANAGERS[card.manager]?.domain ?? ""}>
+                <div className="mb-2">
+                  <Badge className="bg-slate-900 text-white">{card.label}</Badge>
+                </div>
+                <p className="text-sm text-foreground mb-3">{card.headline}</p>
+                <div className="space-y-1.5">
+                  {card.metrics.map((m) => {
+                    const display = m.unit === "currency" ? `$${Math.round(m.value).toLocaleString()}` : String(m.value)
+                    const up = m.deltaPct !== null && m.deltaPct > 0
+                    const down = m.deltaPct !== null && m.deltaPct < 0
+                    return (
+                      <div key={m.label} className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">{m.label}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold">{display}</span>
+                          {m.deltaPct === null ? (
+                            <span className="text-[11px] text-muted-foreground" title="No prior-week baseline">new</span>
+                          ) : (
+                            <span
+                              className={
+                                "text-[11px] font-medium " +
+                                (up ? "text-green-700" : down ? "text-red-700" : "text-muted-foreground")
+                              }
+                              title={`Prior week: ${m.unit === "currency" ? "$" + Math.round(m.prior).toLocaleString() : m.prior}`}
+                            >
+                              {up ? "▲" : down ? "▼" : "—"} {Math.abs(m.deltaPct)}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Managers on duty — every pending activity is owned by an accountable manager */}
       {data.managerBreakdown.length > 0 && (
         <section className="space-y-2">

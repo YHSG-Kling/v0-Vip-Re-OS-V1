@@ -69,6 +69,9 @@ export interface CommandCenterData {
   /** Manager Daily Standup — each manager's 24h activity + what needs a human.
    *  The morning roll-call that heads the Command Center. */
   standup:         import("@/lib/intelligence/manager-standup").ManagerStandupLine[]
+  /** Manager Weekly P&L — each manager's trailing-7d production vs the prior week.
+   *  The outcome layer beneath the standup (did the AI workforce produce?). */
+  weeklyPnl:       import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[]
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -218,13 +221,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // manager). Brokerage-scoped only (platform-wide superadmin view aggregates many
   // tenants, so the standup is omitted there). Best-effort: never blocks the queue.
   let standup: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
+  let weeklyPnl: import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[] = []
   if (params.brokerageId) {
-    try {
-      const { generateManagerStandup } = await import("@/lib/intelligence/manager-standup")
-      standup = await generateManagerStandup(params.brokerageId)
-    } catch (err) {
-      console.error("[command-center] manager standup failed:", err)
-    }
+    const [standupRes, pnlRes] = await Promise.allSettled([
+      import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(params.brokerageId!)),
+      import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(params.brokerageId!)),
+    ])
+    if (standupRes.status === "fulfilled") standup = standupRes.value
+    else console.error("[command-center] manager standup failed:", standupRes.reason)
+    if (pnlRes.status === "fulfilled") weeklyPnl = pnlRes.value
+    else console.error("[command-center] manager weekly P&L failed:", pnlRes.reason)
   }
 
   return {
@@ -232,6 +238,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     pendingActions,
     managerBreakdown,
     standup,
+    weeklyPnl,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,

@@ -133,6 +133,22 @@ async function main() {
     check("standup: no line is silent noise (activity or needs_human > 0)",
       data.standup.every((l) => l.activity_24h > 0 || l.needs_human > 0))
 
+    // Manager Weekly P&L — the outcome layer beneath the standup. Built from live
+    // operational tables (offers/transactions/showings/...); every card is manager-
+    // attributed, carries week-over-week metrics, and no all-zero card is shown.
+    check("weeklyPnl: present on the brokerage-scoped load", Array.isArray(data.weeklyPnl))
+    check("weeklyPnl: every card maps to a real manager + has metrics",
+      data.weeklyPnl.every((c) => typeof c.label === "string" && c.label.length > 0 && Array.isArray(c.metrics) && c.metrics.length > 0))
+    check("weeklyPnl: every metric carries value/prior/deltaPct + unit",
+      data.weeklyPnl.every((c) => c.metrics.every((m) =>
+        typeof m.value === "number" && typeof m.prior === "number" &&
+        (m.deltaPct === null || typeof m.deltaPct === "number") &&
+        (m.unit === "count" || m.unit === "currency"))))
+    check("weeklyPnl: no all-zero card is shown (production or baseline > 0)",
+      data.weeklyPnl.every((c) => c.metrics.some((m) => m.value > 0 || m.prior > 0)))
+    check("weeklyPnl: deltaPct is null exactly when prior is 0 (no divide-by-zero)",
+      data.weeklyPnl.every((c) => c.metrics.every((m) => (m.prior === 0) === (m.deltaPct === null))))
+
     // Reject contract — the exact mutation rejectAgentAction performs.
     const { error: rejErr } = await svc.from("marketing_agent_actions")
       .update({ status: "skipped", approved_by: userId, approved_at: new Date().toISOString() })
