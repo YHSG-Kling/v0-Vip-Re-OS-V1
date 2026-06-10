@@ -125,7 +125,7 @@ export async function processVoiceCommand(params: {
           response = "You have no appointments scheduled for today."
         } else {
           const next = appointments[0]
-          response = `You have ${appointments.length} appointments today. Next up: ${next.title || next.event_type} at ${formatTime(next.start_time)}`
+          response = `You have ${appointments.length} appointments today. Next up: ${next.title || next.event_type} at ${formatTime(next.start_at)}`
         }
         actionTaken = "calendar_query"
         break
@@ -494,10 +494,10 @@ async function getTodayAppointments(agentId: string) {
   const { data } = await supabase
     .from("calendar_events")
     .select("*")
-    .eq("agent_id", agentId)
-    .gte("start_time", `${today}T00:00:00`)
-    .lte("start_time", `${today}T23:59:59`)
-    .order("start_time", { ascending: true })
+    .eq("agent_user_id", agentId)
+    .gte("start_at", `${today}T00:00:00`)
+    .lte("start_at", `${today}T23:59:59`)
+    .order("start_at", { ascending: true })
 
   return data || []
 }

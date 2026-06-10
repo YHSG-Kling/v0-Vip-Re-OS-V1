@@ -36,10 +36,10 @@ export async function handleCoachingSessionBooked(payload: any) {
 
   // Create calendar event
   await supabase.from("calendar_events").insert({
-    user_id,
+    agent_user_id: user_id,
     title: `Coaching Session: ${topic}`,
-    start_time: session_date,
-    end_time: new Date(new Date(session_date).getTime() + 60 * 60 * 1000).toISOString(),
+    start_at: session_date,
+    end_at: new Date(new Date(session_date).getTime() + 60 * 60 * 1000).toISOString(),
     event_type: "coaching",
     attendees: [coach_id],
   })

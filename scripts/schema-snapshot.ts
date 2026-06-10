@@ -182,8 +182,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "status", "title", "transaction_id", "updated_at",
   ],
   calendar_events: [
-    "brokerage_id", "created_at", "deadline_notified", "end_at", "entity_id", "entity_type",
-    "event_type", "id", "is_system_generated", "metadata", "start_at", "timezone_name",
+    "agent_user_id", "attendees", "brokerage_id", "created_at", "deadline_notified", "end_at",
+    "entity_id", "entity_type", "event_type", "id", "is_system_generated", "location", "metadata",
+    "start_at", "status", "timezone_name", "title",
   ],
   assignment_log: [
     "agent_id", "assignment_method", "brokerage_id", "claimed", "claimed_at", "created_at",

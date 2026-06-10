@@ -46,7 +46,7 @@ export async function scheduleISAAppointment(params: {
     .from('calendar_events')
     .insert({
       brokerage_id:        params.brokerageId,
-      agent_id:            params.agentId,
+      agent_user_id:       params.agentId,
       entity_type:         entityType,
       entity_id:           entityId,
       event_type:          CalendarEventType.ISA_APPOINTMENT,
@@ -56,7 +56,7 @@ export async function scheduleISAAppointment(params: {
       timezone_name:       params.timezoneName,
       location:            params.location ?? null,
       is_system_generated: true,
-      is_cancelled:        false,
+      status:              'scheduled',
       metadata:            { notes: params.notes ?? null },
     })
     .select('id')
