@@ -8,7 +8,7 @@
  * Flow:
  *   1. Contact taps "Request Booking" on a vendor card in /portal/[id]/vendors
  *   2. Form: service description + preferred time window + message
- *   3. We insert vendor_bookings row with status='pending_review' and
+ *   3. We insert vendor_bookings row with status='booked' and
  *      request_origin='contact'
  *   4. Agent gets notification + activity logged on contact timeline
  *   5. Agent reviews in transaction or contact view; can confirm or decline
@@ -87,7 +87,7 @@ export async function requestContactVendorBooking(
       transaction_id: tx?.id ?? null,
       contact_id: input.contactId,
       service_type: input.serviceType,
-      status: "pending_review",
+      status: "booked",  // initial state; agent confirms → "confirmed"
       request_origin: "contact",
       request_message: input.message ?? null,
       preferred_time_window: input.preferredTimeWindow ?? null,
@@ -149,6 +149,15 @@ export async function requestContactVendorBooking(
       priority: "medium",
       is_read: false,
     })
+  }
+
+  // VENDOR LOOP — propose a client vendor-intro into the gate (Deal Coordinator).
+  // Best-effort: a deliverable proposal never fails the booking request.
+  try {
+    const { produceVendorIntro } = await import("@/lib/agents/vendor-loop-producer")
+    await produceVendorIntro(contact.brokerage_id, booking.id, svc)
+  } catch (err) {
+    console.error("[contact-vendor-booking] vendor intro proposal failed:", err)
   }
 
   return { success: true, bookingId: booking.id }

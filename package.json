@@ -25,6 +25,7 @@
     "test:referral-closer": "tsx scripts/referral-closer-simulator.ts",
     "test:recruit-outreach": "tsx scripts/recruit-outreach-simulator.ts",
     "test:brokerage-pnl": "tsx scripts/brokerage-pnl-simulator.ts",
+    "test:vendor-loop": "tsx scripts/vendor-loop-simulator.ts",
     "test:seller-update-video": "tsx scripts/seller-update-video-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

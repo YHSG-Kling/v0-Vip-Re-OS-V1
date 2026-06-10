@@ -306,6 +306,17 @@ export async function markBookingComplete(bookingId: string) {
     }
   }
 
+  // VENDOR LOOP — service complete → propose a client review request into the gate
+  // (Sphere Manager). Best-effort, idempotent. Needs a client contact on the booking.
+  if ((booking as any).contact_id) {
+    try {
+      const { produceVendorReviewRequest } = await import("@/lib/agents/vendor-loop-producer")
+      await produceVendorReviewRequest(booking.brokerage_id, bookingId, supabase)
+    } catch (err) {
+      console.error("[markBookingComplete] vendor review request failed:", err)
+    }
+  }
+
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")

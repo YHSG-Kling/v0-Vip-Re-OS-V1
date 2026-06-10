@@ -24,7 +24,7 @@ interface Props {
 
 /**
  * Lets a buyer/seller in their portal request a booking from a vendor card.
- * Submits with status='pending_review' for the agent to approve.
+ * Submits with status='booked' for the agent to confirm.
  */
 export function RequestBookingButton({
   contactId,

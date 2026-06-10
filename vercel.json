@@ -206,6 +206,10 @@
       "schedule": "0 11 * * 1"
     },
     {
+      "path": "/api/cron/vendor-review-requests",
+      "schedule": "0 13 * * *"
+    },
+    {
       "path": "/api/cron/referral-asks",
       "schedule": "0 10 * * 2"
     },
