@@ -122,6 +122,12 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   notifications:                "campaign_orchestrator",
   assignment_log:               "ai_isa",
   ai_daily_briefings:           "ai_isa",
+  transactions:                 "deal_coordinator",
+  offers:                       "deal_coordinator",
+  showings:                     "shopping_agent",
+  tasks:                        "deal_coordinator",
+  activities:                   "data_steward",
+  calendar_events:              "deal_coordinator",
 }
 
 /** Resolve the manager accountable for a maintenance/burn domain (never undefined). */
