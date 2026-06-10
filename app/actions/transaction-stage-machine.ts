@@ -175,6 +175,20 @@ export async function advanceTransactionStage(params: {
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
+
+    // SPHERE MANAGER referral closing loop — when the deal CLOSES, close any matching
+    // open referral, credit the partner, and propose a partner thank-you into the gate.
+    // Best-effort: never fails the stage transition.
+    if (params.targetStage === TRANSACTION_STAGES.CLOSED) {
+      try {
+        const { closeReferralOnDealClose } = await import("@/lib/agents/referral-closer")
+        await closeReferralOnDealClose(createServiceClient(), {
+          transactionId: params.transactionId, brokerageId: auth.brokerageId,
+        })
+      } catch (err) {
+        console.error("[transaction-stage-machine] referral close failed:", err)
+      }
+    }
   }
 
   return result

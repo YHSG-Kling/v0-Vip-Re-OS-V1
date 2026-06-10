@@ -125,6 +125,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   seller_update_video:        { manager: "listing_concierge", proof: "test:seller-update-video", what: "Weekly seller-update D-ID avatar video proposed into the client-message gate (no HeyGen)" },
   strategy_learning_loop:     { manager: "shopping_agent",    proof: "test:strategy-learning",  what: "Offer/counter outcomes close the loop back to the recommendation that produced them (strategy_outcomes)" },
   strategy_learning_insights: { manager: "shopping_agent",    proof: "test:strategy-insights",  what: "Accumulated outcomes → market intelligence (win rate, deviation, by strategy type) fed back into the next recommendation" },
+  referral_closing_loop:      { manager: "sphere_of_influence", proof: "test:referral-closer", what: "Deal close → matching referral closed, partner lifetime value credited, partner thank-you proposed into the gate" },
 }
 
 /**
