@@ -35,21 +35,26 @@ export async function GET(req: NextRequest) {
   let managerEscalations = 0
 
   try {
-    // Brokerages with pending proposals.
-    const { data: pendRows, error } = await supabase
-      .from("agent_client_messages")
-      .select("brokerage_id")
-      .eq("status", "proposed")
-      .limit(5000)
+    // Brokerages with pending client-message OR dial-batch approvals.
+    const [{ data: pendRows, error }, { data: dialRows }] = await Promise.all([
+      supabase.from("agent_client_messages").select("brokerage_id").eq("status", "proposed").limit(5000),
+      supabase.from("ai_isa_call_batches").select("brokerage_id").eq("status", "proposed").limit(5000),
+    ])
     if (error) throw error
-    const brokerages = Array.from(new Set(((pendRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id)))
+    const brokerages = Array.from(new Set([
+      ...((pendRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id),
+      ...((dialRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id),
+    ]))
 
+    const { enqueueDialBatchNotifications } = await import("@/lib/ai-isa/voice-dial-batch")
     for (const brokerageId of brokerages) {
       try {
-        // Self-resolving two-tier push: agents (front line) + manager escalation at 4h.
+        // Self-resolving two-tier push: agents (front line) + manager escalation at 4h —
+        // for client messages AND ISA dial batches (agent-first on both).
         const r = await enqueueApprovalNotifications(brokerageId, supabase)
-        agentAlerts += r.agentAlerts
-        managerEscalations += r.managerEscalations
+        const d = await enqueueDialBatchNotifications(brokerageId, supabase)
+        agentAlerts += r.agentAlerts + d.agentAlerts
+        managerEscalations += r.managerEscalations + d.managerEscalations
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }

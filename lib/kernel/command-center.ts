@@ -75,6 +75,8 @@ export interface CommandCenterData {
   /** Unified governed-deliverables rail — every loop's gate proposals rolled up
    *  (how many AI deliverables this week, how many human-approved, by manager + loop). */
   deliverables:    import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null
+  /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
+  dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -240,6 +242,18 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     else console.error("[command-center] deliverables summary failed:", delivRes.reason)
   }
 
+  // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
+  let dialBatches: CommandCenterData["dialBatches"] = []
+  if (params.brokerageId) {
+    const { data: db } = await supabase
+      .from("ai_isa_call_batches")
+      .select("id, proposed_count, proposed_at")
+      .eq("brokerage_id", params.brokerageId).eq("status", "proposed")
+      .order("proposed_at", { ascending: true }).limit(50)
+    dialBatches = ((db ?? []) as Array<{ id: string; proposed_count: number; proposed_at: string | null }>)
+      .map((b) => ({ id: b.id, proposedCount: b.proposed_count ?? 0, proposedAt: b.proposed_at }))
+  }
+
   return {
     sessions,
     pendingActions,
@@ -247,6 +261,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     standup,
     weeklyPnl,
     deliverables,
+    dialBatches,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,

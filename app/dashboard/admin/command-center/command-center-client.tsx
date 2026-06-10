@@ -148,6 +148,27 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         </section>
       )}
 
+      {/* AI ISA dial batches awaiting approval — "call my hottest N consented contacts". */}
+      {data.dialBatches && data.dialBatches.length > 0 && (
+        <section className="space-y-2">
+          <a href="/dashboard/admin/voice-dial-batches" className="block">
+            <Card className="p-4 border-indigo-300 bg-indigo-50/40 hover:bg-indigo-50 transition-colors">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-indigo-900">
+                    AI ISA wants to call {data.dialBatches.reduce((s, b) => s + b.proposedCount, 0)} consented contact{data.dialBatches.reduce((s, b) => s + b.proposedCount, 0) === 1 ? "" : "s"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {data.dialBatches.length} dial batch{data.dialBatches.length === 1 ? "" : "es"} awaiting approval — consent re-checked the moment you approve.
+                  </div>
+                </div>
+                <Badge className="bg-indigo-600 text-white">Review &amp; approve →</Badge>
+              </div>
+            </Card>
+          </a>
+        </section>
+      )}
+
       {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
           The proof-of-system view: N AI deliverables this week, every one human-approved
           before it shipped. */}
