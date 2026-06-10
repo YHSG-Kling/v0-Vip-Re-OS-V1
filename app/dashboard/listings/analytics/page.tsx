@@ -27,13 +27,13 @@ export default async function ListingsAnalyticsPage() {
   // `days_on_market` column does not exist on listings.
   const { data: listings } = await service
     .from("listings")
-    .select("id, status, list_price, go_live_date, views_count, created_at")
+    .select("id, status, list_price, go_live_date, showing_count, created_at")
     .eq("brokerage_id", profile.brokerage_id)
     .order("created_at", { ascending: false })
     .limit(50)
 
   const activeListings = listings?.filter(l => l.status === "active") || []
-  const totalViews = listings?.reduce((sum, l) => sum + (l.views_count || 0), 0) || 0
+  const totalViews = listings?.reduce((sum, l) => sum + (l.showing_count || 0), 0) || 0
   const activeDoms = activeListings
     .map(l => computeDaysOnMarket(l.go_live_date))
     .filter((d): d is number => typeof d === "number" && d >= 0)
@@ -139,7 +139,7 @@ export default async function ListingsAnalyticsPage() {
                     </div>
                     <div className="flex items-center gap-6 text-sm">
                       <div className="text-right">
-                        <p className="font-medium">{listing.views_count || 0}</p>
+                        <p className="font-medium">{listing.showing_count || 0}</p>
                         <p className="text-xs text-muted-foreground">Views</p>
                       </div>
                       <div className="text-right">

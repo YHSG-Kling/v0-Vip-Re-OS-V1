@@ -45,7 +45,7 @@ export default async function CoachingPage() {
       .limit(10),
     supabase
       .from("listings")
-      .select("id, property_address:address, lifecycle_stage, seller_persona")
+      .select("id, property_address:address, lifecycle_stage, seller:seller_contact_id(contact_persona)")
       .eq("agent_id", agentId)
       .eq("status", "active")
       .order("updated_at", { ascending: false })
@@ -84,12 +84,17 @@ export default async function CoachingPage() {
   })
 
   const sellerCoachingPromises = activeListings.map(async (listing) => {
+    // seller persona lives on the seller CONTACT (PostgREST embed → array); strip the
+    // embed off the listing object so it matches the downstream SellerCoachingItem shape.
+    const sellerEmbed = (listing as any).seller
+    const sellerPersona = (Array.isArray(sellerEmbed) ? sellerEmbed[0] : sellerEmbed)?.contact_persona ?? null
+    const { seller: _omit, ...listingRow } = listing as any
     const coaching = await getSellerCoaching(
-      listing.lifecycle_stage ?? "pre_listing",
-      listing.seller_persona as any,
+      listingRow.lifecycle_stage ?? "pre_listing",
+      sellerPersona as any,
       brokerageId
     )
-    return { listing, coaching }
+    return { listing: listingRow, coaching }
   })
 
   const [buyerCoachingResults, sellerCoachingResults] = await Promise.all([

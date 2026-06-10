@@ -61,8 +61,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ],
   listings: [
     "address", "agent_id", "bathrooms", "bedrooms", "brokerage_id", "city", "commission_rate",
-    "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "expiration_date",
-    "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar",
+    "appointment_at", "appointment_event_id", "appointment_notes",
+    "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "estimated_close_date",
+    "expiration_date", "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar",
     "hoa_dues", "id", "last_price_change_at", "lifecycle_stage", "list_price",
     "listing_agent_email", "listing_agent_name", "listing_date", "lot_size", "marketing_budget",
     "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date",

@@ -24,13 +24,35 @@ export async function scheduleListingAppointmentService(
 ) {
   const supabase = await createClient()
 
+  // The seller listing-presentation appointment is a FIRST-CLASS calendar event
+  // (flows to the agent's daily briefing, calendar view, and Google sync), with the
+  // listing carrying the denormalized time + a FK to the event for the listing card.
+  // (Previously written to phantom listings.appointment_date/_time/notes — silently failed.)
+  const appointmentAt = new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
+
+  const { data: calEvent, error: calErr } = await supabase
+    .from("calendar_events")
+    .insert({
+      brokerage_id: brokerageId,
+      entity_type: "listing",
+      entity_id: params.listing_id,
+      event_type: "listing_appointment",
+      start_at: appointmentAt,
+      is_system_generated: false,
+      metadata: { contact_id: params.contact_id, agent_id: agentId, notes: params.notes ?? null },
+    })
+    .select("id")
+    .single()
+  if (calErr) throw calErr
+
   const { data, error } = await supabase
     .from("listings")
     .update({
-      appointment_date: params.appointment_date,
-      appointment_time: params.appointment_time,
-      notes: params.notes,
-      updated_at: new Date().toISOString(),
+      appointment_at:       appointmentAt,
+      appointment_notes:    params.notes ?? null,
+      appointment_event_id: calEvent.id,
+      lifecycle_stage:      "APPOINTMENT_SET",
+      updated_at:           new Date().toISOString(),
     })
     .eq("id", params.listing_id)
     .select()
@@ -43,10 +65,10 @@ export async function scheduleListingAppointmentService(
     user_id: agentId,
     listing_id: params.listing_id,
     contact_id: params.contact_id,
-    appointment_date: `${params.appointment_date} ${params.appointment_time}`,
+    appointment_date: appointmentAt,
   })
 
-  return { success: true, listing: data }
+  return { success: true, listing: data, appointmentEventId: calEvent.id }
 }
 
 export async function markListingSignedService(
