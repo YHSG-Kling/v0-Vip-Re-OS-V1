@@ -156,8 +156,10 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .from("leads")
         .update({
           lead_score: totalScore,
-          temperature,
-          last_scored_at: new Date().toISOString(),
+          // leads uses lead_temperature (not temperature) and has no last_scored_at —
+          // the old keys PGRST204-failed, so scraped-lead scores never persisted.
+          lead_temperature: temperature,
+          last_activity_at: new Date().toISOString(),
         })
         .eq("id", params.id)
 
@@ -482,10 +484,10 @@ export async function bulkRecalculateScrapedLeadScores(filters?: {
     let query = supabase.from("leads").select("id, agent_id")
 
     if (filters?.lead_source) {
-      query = query.eq("lead_source", filters.lead_source)
+      query = query.eq("source", filters.lead_source)
     }
     if (filters?.temperature) {
-      query = query.eq("temperature", filters.temperature)
+      query = query.eq("lead_temperature", filters.temperature)
     }
     if (filters?.limit) {
       query = query.limit(filters.limit)

@@ -37,22 +37,23 @@ export async function resolveVideoProvider(
     providerType: "video",
     actorContext: { userId: input.agentUserId ?? "", brokerageId: input.brokerageId },
   })
-  // resolveProvider returns the platform vendor (superadmin override or 'did').
-  return providerKey === "heygen" ? "heygen" : "did"
+  // BUSINESS RULE (platform-locked): the avatar/explainer video engine is D-ID +
+  // ElevenLabs — HeyGen is NOT used. Even if a stale superadmin override still says
+  // 'heygen', it is forced to 'did' here so the engine can never render via HeyGen.
+  // 'upload' (agent-provided content, no async render) is still honored.
+  return providerKey === "upload" ? "upload" : "did"
 }
 
 /**
  * The provider-specific status column to set on insert. D-ID uses
- * `provider_status`/`provider_job_id`; HeyGen uses `heygen_status`/
- * `heygen_video_id`. Both columns exist on ai_video_projects.
+ * `provider_status`/`provider_job_id`. (HeyGen columns intentionally not produced —
+ * the engine is D-ID-locked; see resolveVideoProvider.)
  */
 export function initialProviderColumns(provider: VideoProvider): Record<string, unknown> {
-  if (provider === "did") {
-    return { provider_status: "pending", provider_job_id: null }
+  if (provider === "upload") {
+    // upload — content already exists, no async render
+    return {}
   }
-  if (provider === "heygen") {
-    return { heygen_status: "pending", heygen_video_id: null }
-  }
-  // upload — content already exists, no async render
-  return {}
+  // did (the only render path)
+  return { provider_status: "pending", provider_job_id: null }
 }

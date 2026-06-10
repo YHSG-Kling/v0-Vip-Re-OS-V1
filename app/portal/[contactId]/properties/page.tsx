@@ -25,7 +25,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     .from("saved_properties")
     .select("*")
     .eq("contact_id", contactId)
-    .order("created_at", { ascending: false })
+    .order("saved_at", { ascending: false })
 
   // Fetch showing requests
   const { data: showings } = await supabase

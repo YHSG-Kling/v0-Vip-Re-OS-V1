@@ -612,7 +612,7 @@ export async function unsaveProperty(contactId: string, propertyId: string) {
     .from("saved_properties")
     .delete()
     .eq("contact_id", contactId)
-    .eq("property_id", propertyId)
+    .eq("listing_id", propertyId)
 
   if (error) {
     console.error("[v0] Error unsaving property:", error)
@@ -629,7 +629,7 @@ export async function getSavedProperties(contactId: string) {
     .from("saved_properties")
     .select("*")
     .eq("contact_id", contactId)
-    .order("created_at", { ascending: false })
+    .order("saved_at", { ascending: false })
 
   if (error) {
     console.error("[v0] Error fetching saved properties:", error)
@@ -646,7 +646,7 @@ export async function isPropertySaved(contactId: string, propertyId: string) {
     .from("saved_properties")
     .select("id")
     .eq("contact_id", contactId)
-    .eq("property_id", propertyId)
+    .eq("listing_id", propertyId)
     .maybeSingle()
 
   return !!data

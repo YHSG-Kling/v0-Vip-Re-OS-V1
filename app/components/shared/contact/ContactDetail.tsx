@@ -231,7 +231,10 @@ export function ContactDetail({
         brokerage_id: brokerageId ?? (contact as any).brokerage_id,
         type: "isa_escalation",
         title: "Contact escalated for immediate attention",
-        message: `Contact ${contact.first_name} ${contact.last_name} has been escalated from the CRM.`,
+        // notifications uses body (not message); the phantom column failed the
+        // insert silently, so escalations from the CRM never reached anyone.
+        body: `Contact ${contact.first_name} ${contact.last_name} has been escalated from the CRM.`,
+        contact_id: contact.id,
         entity_type: "contact",
         entity_id: contact.id,
         is_read: false,

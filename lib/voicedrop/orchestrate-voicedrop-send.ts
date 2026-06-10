@@ -82,15 +82,18 @@ async function ensureCompliance(args: {
       .maybeSingle()
     kc = data as typeof kc
   } else if (args.leadId) {
+    // leads has NO dnc_status — call_stop_flag is the lead-stage hard voice block.
+    // (Selecting dnc_status errored the whole lookup, so voicedrop to a LEAD always
+    // failed recipient resolution — a phone-compliance gate that never ran.)
     const { data } = await svc.from("leads")
-      .select("id, tcpa_consent, dnc_status, phone_opt_out, lifecycle_state")
+      .select("id, tcpa_consent, call_stop_flag, phone_opt_out, lifecycle_state")
       .eq("id", args.leadId)
       .maybeSingle()
     if (data) {
       kc = {
         id:            data.id as string,
         tcpa_consent:  (data as { tcpa_consent?: boolean | null }).tcpa_consent ?? null,
-        dnc_status:    (data as { dnc_status?: boolean | null }).dnc_status ?? null,
+        dnc_status:    (data as { call_stop_flag?: boolean | null }).call_stop_flag ?? null,
         phone_opt_out: (data as { phone_opt_out?: boolean | null }).phone_opt_out ?? null,
         status:        (data as { lifecycle_state?: string | null }).lifecycle_state ?? null,
       }

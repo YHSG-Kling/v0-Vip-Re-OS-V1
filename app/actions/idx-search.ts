@@ -296,7 +296,7 @@ export async function getSavedProperties(contactId: string) {
       .from("saved_properties")
       .select("*")
       .eq("contact_id", contactId)
-      .order("created_at", { ascending: false })
+      .order("saved_at", { ascending: false })
 
     if (error) throw error
 

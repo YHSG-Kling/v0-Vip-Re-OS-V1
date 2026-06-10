@@ -122,7 +122,7 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }:
         entity_type: "qualification",
         entity_id: qualificationId,
         created_at: new Date().toISOString(),
-        read: false,
+        is_read: false,
       })
 
       // 4. Optimistic removal — remove from local queue immediately

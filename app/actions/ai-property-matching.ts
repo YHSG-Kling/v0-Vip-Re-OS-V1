@@ -96,7 +96,7 @@ export async function generatePropertyMatches(params: {
 
     const { data: savedProperties } = await supabase
       .from("saved_properties")
-      .select("property_id, saved_at, notes")
+      .select("listing_id, saved_at, notes")
       .eq("contact_id", params.contactId)
       .eq("brokerage_id", ctx.brokerageId)
 

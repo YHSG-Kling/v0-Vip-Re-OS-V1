@@ -70,10 +70,6 @@
       "schedule": "0 6 * * *"
     },
     {
-      "path": "/api/cron/poll-heygen-videos",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cron/poll-did-videos",
       "schedule": "*/2 * * * *"
     },

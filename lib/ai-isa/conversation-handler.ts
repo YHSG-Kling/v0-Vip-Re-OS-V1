@@ -82,7 +82,9 @@ export async function haltEngagementForNegativeReply(params: {
     brokerage_id: params.brokerageId,
     type: 'lead_opted_out',
     title: 'Lead requested to be removed',
-    message: 'A lead replied with an opt-out signal. They have been marked Do Not Contact.',
+    // notifications uses body, not message — the phantom failed the insert, so the
+    // agent was never told a lead opted out (a compliance-relevant blind spot).
+    body: 'A lead replied with an opt-out signal. They have been marked Do Not Contact.',
     entity_type: 'lead',
     entity_id: params.leadId,
     is_read: false,
