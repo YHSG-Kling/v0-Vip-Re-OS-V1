@@ -122,6 +122,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   transaction_propensity:     { manager: "ai_isa",       proof: "test:propensity",         what: "Signal fusion — intent/engagement/equity/life-event/referral/recency fused into one transparent 'likely to transact in 90 days' score + top reasons (who to re-engage first)" },
   // ── Surface sections owned by their domain managers ──
   briefing_deal_risk:         { manager: "deal_coordinator",  proof: "test:manager-ownership", what: "Deals-at-risk briefing sections" },
+  deadline_watcher:           { manager: "deal_coordinator",  proof: "test:deadline-watcher", what: "Inspection/appraisal/financing/walkthrough/closing deadlines within 24h notify the deal parties (was built but never scheduled — found by the domain audit)" },
   briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
   client_message_gate:        { manager: "campaign_orchestrator", proof: "test:client-extract", what: "Every client-facing AI output proposes → human approves → sends" },
   manager_daily_standup:      { manager: "campaign_orchestrator", proof: "test:manager-ownership", what: "Broker's daily per-manager accountability report (manager-standup.ts); every line manager-attributed" },

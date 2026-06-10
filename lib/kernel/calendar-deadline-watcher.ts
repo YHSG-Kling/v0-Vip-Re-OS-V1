@@ -9,7 +9,7 @@
 // - Uses existing processKernelEvent signature
 // - deadline_notified is set to true AFTER all notifications fire
 
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from './events'
 import { processKernelEvent } from './notification-engine'
 import { CalendarEventType } from './calendar-types'
@@ -53,16 +53,24 @@ interface CalendarEventRow {
  *
  * Designed to be called from a cron route (e.g. /api/cron/deadline-watcher).
  */
-export async function checkUpcomingDeadlines(): Promise<void> {
-  const supabase = await createClient()
+export async function checkUpcomingDeadlines(
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<void> {
+  // Cron context — no user session, so the cookie-bound server client sees nothing
+  // under RLS. The service client (or an injected one, for the simulator) is required.
+  const supabase = client ?? createServiceClient()
 
   const now   = new Date()
   const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000)
 
   // ── Step 1: Query upcoming, unnotified calendar events ────────────────────
+  // Lower bound at NOW: a deadline that already passed is not worth a "due soon"
+  // notification (and without the floor, the first scheduled run would flood every
+  // ancient unnotified event).
   const { data: events, error: fetchError } = await supabase
     .from('calendar_events')
     .select('id, brokerage_id, entity_type, entity_id, event_type, start_at, deadline_notified')
+    .gte('start_at', now.toISOString())
     .lte('start_at', in24h.toISOString())
     .eq('deadline_notified', false)
 
