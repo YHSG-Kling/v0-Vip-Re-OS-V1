@@ -13,7 +13,7 @@ async function advanceListingStage(listingId: string, stage: string): Promise<{ 
   const supabase = await createClient()
   await supabase
     .from("listings")
-    .update({ current_stage: stage, updated_at: new Date().toISOString() })
+    .update({ lifecycle_stage: stage, updated_at: new Date().toISOString() })
     .eq("id", listingId)
   return { success: true }
 }

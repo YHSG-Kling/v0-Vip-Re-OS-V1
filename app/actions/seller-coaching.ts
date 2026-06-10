@@ -64,7 +64,7 @@ export async function getListingCoaching(
   if (listing.contact_id) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("contact_persona, lead_score, tags, preferred_channel")
+      .select("contact_persona, lead_score, tags, occupation")
       .eq("id", listing.contact_id)
       .single()
 
@@ -129,7 +129,7 @@ export async function refreshSellerCoaching(
   if (listing.contact_id) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("contact_persona, lead_score, tags, preferred_channel")
+      .select("contact_persona, lead_score, tags, occupation")
       .eq("id", listing.contact_id)
       .single()
     if (contact) persona = getSellerPersona(contact)

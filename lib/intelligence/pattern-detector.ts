@@ -400,7 +400,7 @@ async function fetchEntitySignals(
     const [listingResult, showingsResult, offersResult] = await Promise.all([
       supabase
         .from("listings")
-        .select("go_live_date, status, listing_price, lifecycle_stage, created_at")
+        .select("go_live_date, status, list_price, lifecycle_stage, created_at")
         .eq("id", entityId)
         .single(),
 
@@ -427,7 +427,7 @@ async function fetchEntitySignals(
     return {
       daysOnMarket: dom,
       listingStatus: listing?.status,
-      listingPrice: listing?.listing_price,
+      listingPrice: listing?.list_price,
       lifecycleStage: listing?.lifecycle_stage,
       showingCount: showings.length,
       offerCount: offers.length,

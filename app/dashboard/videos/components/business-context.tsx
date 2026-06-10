@@ -282,7 +282,7 @@ export function VideoContextPicker({
       if (contextType === "listing") {
         const { data } = await supabase
           .from("listings")
-          .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, listing_photos")
+          .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, listing_photos:photos")
           .eq("brokerage_id", brokerageId)
           .or(`address.ilike.%${value}%,city.ilike.%${value}%`)
           .in("status", ["active", "pending", "under_contract"])

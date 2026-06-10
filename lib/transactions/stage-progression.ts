@@ -281,7 +281,7 @@ export async function advanceStage(params: {
         .from("listings")
         .update({
           status: "sold",
-          current_stage: "SOLD",
+          lifecycle_stage: "CLOSED",
           stage_updated_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })

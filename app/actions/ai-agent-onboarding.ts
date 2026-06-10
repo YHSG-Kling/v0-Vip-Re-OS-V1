@@ -885,9 +885,12 @@ export async function certifyAgent(params: {
       })
       .eq("id", params.agentId)
 
-    // Send certification notification
+    // Send certification notification — params.agentId is agents.id; notifications
+    // targets users.id, so resolve the agent's user (the congrats never arrived).
+    const { data: certAgent } = await supabase
+      .from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
     await supabase.from("notifications").insert({
-      user_id: params.agentId,
+      user_id: certAgent?.user_id ?? params.agentId,
       type: "certification_achieved",
       title: "Congratulations! You're Certified!",
       body: "Welcome to the team. You now have full access to Smart Engine.",

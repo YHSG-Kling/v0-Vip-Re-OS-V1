@@ -158,7 +158,7 @@ export async function POST(request: Request) {
     // Active listing if seller
     const { data: activeListing } = await supabase
       .from('listings')
-      .select('id, address, city, state, status, current_stage, list_price')
+      .select('id, address, city, state, status, current_stage:lifecycle_stage, list_price')
       .or(`seller_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
       .not('status', 'in', '(cancelled,expired)')
       .order('created_at', { ascending: false })

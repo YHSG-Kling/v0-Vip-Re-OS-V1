@@ -8,7 +8,7 @@ import type { SellerPersona } from "./coaching-generator"
  * Derivation rules (spec-ordered, highest priority first):
  *   lead_score > 80                 → 'motivated'
  *   tags includes 'investor'        → 'investor'
- *   preferred_channel = 'detailed'  → 'analytical'
+ *   tag 'analytical' / analytical occupation → 'analytical'
  *   contact_persona (stored value)  → use if valid
  *   Default                         → null (system will treat as 'standard')
  */
@@ -17,6 +17,7 @@ export function getSellerPersona(contact: {
   lead_score?: number | null
   tags?: string[] | null
   preferred_channel?: string | null
+  occupation?: string | null
 }): SellerPersona {
   const valid: SellerPersona[] = [
     "motivated", "skeptical", "emotional", "investor", "indecisive", "analytical",
@@ -24,7 +25,11 @@ export function getSellerPersona(contact: {
 
   if ((contact.lead_score ?? 0) > 80)                  return "motivated"
   if (contact.tags?.includes("investor"))              return "investor"
-  if (contact.preferred_channel === "detailed")        return "analytical"
+  // Product decision (flagged in the contacts sweep): the old rule compared the
+  // preferred_channel COLUMN to a communication-STYLE value ("detailed") that can
+  // never occur there. Analytical sellers are identified by tag or occupation.
+  if (contact.tags?.includes("analytical"))            return "analytical"
+  if (/engineer|analyst|accountant|cpa|actuar/i.test(contact.occupation ?? "")) return "analytical"
 
   const stored = contact.contact_persona as SellerPersona
   if (stored && valid.includes(stored))                return stored

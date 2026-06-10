@@ -165,7 +165,7 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
   // Active listing (sellers only).
   const { data: listing } = await supabase
     .from("listings")
-    .select("address, city, state, status, current_stage, list_price")
+    .select("address, city, state, status, current_stage:lifecycle_stage, list_price")
     .eq("contact_id", contactId)
     .in("status", ["active", "coming_soon", "pending"])
     .order("created_at", { ascending: false })

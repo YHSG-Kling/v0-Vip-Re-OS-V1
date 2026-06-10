@@ -36,7 +36,7 @@ export default async function ListingsAIPricingPage() {
   const [listingsResult, predictionsResult, alertsResult] = await Promise.all([
     service
       .from("listings")
-      .select("id, property_address, list_price, status, bedrooms, bathrooms, sqft, city, state")
+      .select("id, property_address:address, list_price, status, bedrooms, bathrooms, sqft, city, state")
       .eq("brokerage_id", profile.brokerage_id)
       .in("status", ["active", "coming_soon"])
       .order("created_at", { ascending: false })

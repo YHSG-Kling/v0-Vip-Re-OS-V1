@@ -22,7 +22,7 @@ export default async function CMAPage({ params }: Props) {
 
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, address, city, state, lifecycle_stage, status, list_price, agent_id, brokerage_id, property_type, bedrooms, bathrooms, square_footage")
+    .select("id, address, city, state, lifecycle_stage, status, list_price, agent_id, brokerage_id, property_type, bedrooms, bathrooms, square_footage:sqft")
     .eq("id", listingId)
     .single()
 

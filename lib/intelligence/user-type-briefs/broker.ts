@@ -174,12 +174,41 @@ export async function generateBrokerBrief(params: {
     })
   }
 
+  // 3b. MANAGER DAILY STANDUP — what the ten Claude managers did in 24h and what
+  // needs a human. Items needing approval become priorities (manager-attributed);
+  // the report itself rides the brief, so the broker reads governed autonomy's
+  // accountability report in the same glance as deals and compliance.
+  let standupLines: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
+  try {
+    const { generateManagerStandup } = await import("@/lib/intelligence/manager-standup")
+    standupLines = await generateManagerStandup(params.brokerageId)
+    for (const line of standupLines) {
+      if (line.needs_human > 0) {
+        priorities.push({
+          id: `standup-${line.manager}`,
+          title: line.headline,
+          body: `${line.label} is waiting on your decision.`,
+          severity: "high",
+          manager: line.manager,
+          ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+        })
+      }
+    }
+  } catch (err) {
+    console.error("[BrokerBrief] manager standup failed:", err)
+  }
+
   // 4. Build metrics
   const metrics: BriefMetric[] = [
     { label: "Active agents", value: activeAgentsCount, href: "/dashboard/admin/users" },
     { label: "Critical deals", value: criticalDeals.length, href: "/dashboard/brokerage/deal-health" },
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
+    // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
+    ...standupLines.slice(0, 4).map((l) => ({
+      label: l.label,
+      value: l.needs_human > 0 ? `${l.activity_24h} (${l.needs_human} need you)` : l.activity_24h,
+    })),
   ]
 
   // 5. AI summary via routed model (Commit 1 layering)

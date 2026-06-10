@@ -100,6 +100,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   briefing_deal_risk:         { manager: "deal_coordinator",  proof: "test:manager-ownership", what: "Deals-at-risk briefing sections" },
   briefing_listing_risk:      { manager: "listing_concierge", proof: "test:manager-ownership", what: "Listings-at-risk briefing sections" },
   client_message_gate:        { manager: "campaign_orchestrator", proof: "test:client-extract", what: "Every client-facing AI output proposes → human approves → sends" },
+  manager_daily_standup:      { manager: "campaign_orchestrator", proof: "test:manager-ownership", what: "Broker's daily per-manager accountability report (manager-standup.ts); every line manager-attributed" },
 }
 
 /**
