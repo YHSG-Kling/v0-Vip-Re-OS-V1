@@ -30,7 +30,7 @@ export async function generateBrokerBrief(params: {
     const { data: cached } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("agent_id", params.userId)
+      .eq("user_id", params.userId)
       .eq("briefing_date", today)
       .maybeSingle()
 
@@ -206,7 +206,7 @@ export async function generateBrokerBrief(params: {
   await supabase
     .from("ai_daily_briefings")
     .upsert({
-      agent_id: params.userId,
+      user_id: params.userId,
       brokerage_id: params.brokerageId,
       briefing_date: today,
       summary,

@@ -6,8 +6,9 @@
  * consumes this with no per-user_type branching.
  *
  * Caching: each generator caches per-day in `ai_daily_briefings` keyed by
- * (agent_id, briefing_date). The `agent_id` column in that table is
- * legacy-named — we use it as the user_id key for ALL user_types.
+ * (user_id, briefing_date). user_id has FK→users.id and is the key for ALL
+ * user_types; the legacy agent_id column (FK→agents.id) is no longer written —
+ * putting users.id there violated the FK and broke briefing caching entirely.
  */
 
 import type { UserTypeBrief } from "./types"
@@ -48,7 +49,7 @@ export async function generateUserTypeBrief(input: GenerateBriefInput): Promise<
       const { generateDailyBriefing } = await import("@/lib/intelligence/daily-briefing-generator")
       const agent = await generateDailyBriefing(userId, brokerageId ?? "", forceRegenerate ?? false)
       return {
-        userId: agent.agent_id,
+        userId: agent.user_id ?? agent.agent_id ?? userId,
         userType: "agent",
         brokerageId: agent.brokerage_id,
         briefingDate: agent.briefing_date,
@@ -65,6 +66,10 @@ export async function generateUserTypeBrief(input: GenerateBriefInput): Promise<
           { label: "Hot leads", value: agent.hot_leads?.length ?? 0, href: "/crm?filter=hot" },
           { label: "Deals at risk", value: agent.deals_at_risk?.length ?? 0, href: "/dashboard/transactions?risk=high" },
           { label: "Tasks overdue", value: agent.tasks_overdue ?? 0, href: "/dashboard/overdue" },
+          // AI ISA manager: qualified handoffs from overnight awaiting first touch.
+          ...(agent.isa_overnight && agent.isa_overnight.handoffs_total > 0
+            ? [{ label: "ISA handoffs", value: agent.isa_overnight.handoffs_unclaimed, href: "/leads" }]
+            : []),
         ],
         generatedAt: agent.generated_at,
       }

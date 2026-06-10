@@ -25,7 +25,7 @@ export async function generateTeamLeadBrief(params: {
     const { data: cached } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("agent_id", params.userId)
+      .eq("user_id", params.userId)
       .eq("briefing_date", today)
       .maybeSingle()
     if (cached) {
@@ -141,7 +141,7 @@ export async function generateTeamLeadBrief(params: {
     .from("ai_daily_briefings")
     .upsert(
       {
-        agent_id: params.userId,
+        user_id: params.userId,
         brokerage_id: params.brokerageId,
         briefing_date: today,
         summary,

@@ -119,4 +119,19 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "thumbnail_url", "used_did_avatar", "used_intro_asset_id", "used_music_asset_id",
     "used_outro_asset_id", "used_voiceover",
   ],
+  notifications: [
+    "activity_id", "body", "brokerage_id", "channel", "compliance_event_id", "contact_id",
+    "created_at", "delivered_at", "dismissed_at", "entity_id", "entity_type", "id", "is_read",
+    "lifecycle_event_id", "priority", "read_at", "title", "type", "user_id",
+  ],
+  assignment_log: [
+    "agent_id", "assignment_method", "brokerage_id", "claimed", "claimed_at", "created_at",
+    "id", "lead_id", "routing_reason", "rule_id", "score_at_assignment",
+  ],
+  ai_daily_briefings: [
+    "active_transactions_summary", "agent_id", "ai_model_used", "briefing_date", "brokerage_id",
+    "deals_at_risk", "delivered_at", "generated_at", "hot_leads", "id", "isa_overnight",
+    "listings_at_risk", "market_pulse", "opened_at", "summary", "tasks_overdue",
+    "todays_events", "top_priority_actions", "user_id",
+  ],
 }

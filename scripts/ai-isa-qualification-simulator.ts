@@ -32,6 +32,7 @@ import {
   qualificationScoreFor,
   engine2GatePasses,
 } from "../lib/ai-isa/qualification-core"
+import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -102,6 +103,34 @@ function testScoreAndGate() {
   check("gate: qualified + unconsented → BLOCKED", !engine2GatePasses("qualified", "unconsented"))
   check("gate: new + consented → BLOCKED (ISA hasn't qualified)", !engine2GatePasses("new", "consented"))
   check("gate: null state → BLOCKED", !engine2GatePasses(null, null))
+}
+
+function testIsaOvernightBriefing() {
+  console.log("\n[Layer 1 · ISA overnight briefing section — handoffs lead the agent's morning]")
+  const t0 = "2026-06-10T02:00:00Z", t1 = "2026-06-10T05:00:00Z"
+  const section = buildIsaOvernightSection({
+    handoffs: [
+      { lead_id: "L2", lead_name: "Late Larry", claimed: false, assignment_method: "round_robin", assigned_at: t1 },
+      { lead_id: "L1", lead_name: "Early Erin", claimed: false, assignment_method: "round_robin", assigned_at: t0 },
+      { lead_id: "L3", lead_name: "Claimed Cara", claimed: true, assignment_method: "manual", assigned_at: t0 },
+    ],
+    escalations: [{ lead_id: "L9", message: "Wants a human", urgency: "critical" }],
+    hotIsaLeadCount: 2,
+  })
+  check("counts: 3 handoffs / 2 unclaimed / 1 escalation / 2 hot", section.handoffs_total === 3 && section.handoffs_unclaimed === 2 && section.escalations === 1 && section.hot_isa_leads === 2)
+  check("oldest unclaimed handoff leads (longest-waiting first)", section.unclaimed[0].lead_id === "L1")
+  check("claimed handoffs excluded from actionable list", !section.unclaimed.some((u) => u.lead_id === "L3"))
+  check("summary line covers handoffs + escalations + hot conversations",
+    section.summary_line.includes("3 leads overnight") && section.summary_line.includes("2 awaiting") &&
+    section.summary_line.includes("1 ISA escalation") && section.summary_line.includes("2 hot conversations"))
+
+  const actions = isaPriorityActions(section, [{ lead_id: "L9", message: "Wants a human", urgency: "critical" }])
+  check("unclaimed handoffs become HIGH priorities with view_lead CTA",
+    actions[0].priority === "high" && actions[0].action_type === "view_lead" && actions[0].entity_id === "L1")
+  check("critical escalation is HIGH priority", actions.some((a) => a.action.includes("escalation") && a.priority === "high"))
+
+  const empty = buildIsaOvernightSection({ handoffs: [], escalations: [], hotIsaLeadCount: 0 })
+  check("quiet night → empty section, no noise", empty.summary_line === "" && isaPriorityActions(empty, []).length === 0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,6 +214,7 @@ async function main() {
   testRollingSignal()
   testSignalDerivation()
   testScoreAndGate()
+  testIsaOvernightBriefing()
   await testLiveChain()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

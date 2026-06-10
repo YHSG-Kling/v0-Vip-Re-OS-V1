@@ -390,7 +390,7 @@ async function readCachedBrief(
   const { data: cached } = await supabase
     .from("ai_daily_briefings")
     .select("*")
-    .eq("agent_id", userId)
+    .eq("user_id", userId)
     .eq("briefing_date", today)
     .maybeSingle()
   if (!cached) return null
@@ -428,7 +428,7 @@ async function persistBrief(
     .from("ai_daily_briefings")
     .upsert(
       {
-        agent_id: userId,
+        user_id: userId,
         brokerage_id: brokerageId,
         briefing_date: today,
         summary,

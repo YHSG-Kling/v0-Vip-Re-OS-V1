@@ -817,6 +817,42 @@ export default function BriefingPage() {
             </Card>
           )}
 
+          {/* AI ISA OVERNIGHT — qualified handoffs awaiting first touch */}
+          {briefing?.isa_overnight && briefing.isa_overnight.handoffs_total + briefing.isa_overnight.escalations + briefing.isa_overnight.hot_isa_leads > 0 && (
+            <Card className="border-primary/50">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  AI ISA Overnight
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground mb-3">{briefing.isa_overnight.summary_line}</p>
+                {briefing.isa_overnight.unclaimed.length > 0 && (
+                  <div className="space-y-2">
+                    {briefing.isa_overnight.unclaimed.map((h) => (
+                      <a
+                        key={h.lead_id}
+                        href={`/leads/${h.lead_id}`}
+                        className="block p-3 rounded-lg bg-primary/5 border border-primary/20 hover:bg-primary/10 transition"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-sm">{h.lead_name}</p>
+                          <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full font-medium bg-primary text-primary-foreground whitespace-nowrap">
+                            awaiting first touch
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Qualified by the AI ISA · assigned {new Date(h.assigned_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                        </p>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* TOP 3 CONTACTS TO WORK TODAY */}
           {priorityContacts.length > 0 && (
             <Card>

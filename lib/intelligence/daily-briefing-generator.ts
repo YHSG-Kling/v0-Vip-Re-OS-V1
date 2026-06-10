@@ -60,7 +60,10 @@ export interface ListingAtRisk {
 
 export interface DailyBriefing {
   id: string
-  agent_id: string
+  /** users.id — the briefing key (FK→users). */
+  user_id: string | null
+  /** Legacy column (FK→agents.id) — null on rows written after the user_id fix. */
+  agent_id: string | null
   brokerage_id: string
   briefing_date: string
   summary: string
@@ -71,6 +74,10 @@ export interface DailyBriefing {
   tasks_overdue: number
   deals_at_risk: DealAtRisk[]
   listings_at_risk: ListingAtRisk[]
+  /** AI ISA overnight section (m204): qualified handoffs awaiting first touch,
+   *  escalations, hot ISA conversations. Built deterministically — see
+   *  lib/intelligence/isa-overnight.ts. */
+  isa_overnight: import("./isa-overnight").IsaOvernightSection | null
   ai_model_used: string
   generated_at: string
   opened_at: string | null
@@ -96,7 +103,7 @@ export async function generateDailyBriefing(
     const { data: existing } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("user_id", agentId)
       .eq("briefing_date", today)
       .maybeSingle()
 
@@ -263,6 +270,82 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] listing-health fetch failed:", err)
   }
 
+  // ── AI ISA overnight section ────────────────────────────────────────────────
+  // What the ISA manager did while the agent slept: qualified handoffs (Engine 2
+  // assignment_log, agents.id-keyed), unclaimed first-touches, escalations, and hot
+  // conversations still in ISA ownership. Built deterministically (isa-overnight.ts)
+  // and merged into top_priority_actions BELOW the AI call so a handoff can never be
+  // dropped by a model's judgment.
+  const { buildIsaOvernightSection, isaPriorityActions } = await import("./isa-overnight")
+  let isaOvernight: import("./isa-overnight").IsaOvernightSection | null = null
+  let isaActions: PriorityAction[] = []
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    // ai_daily_briefings keys briefings by users.id; assignment_log.agent_id is
+    // agents.id — resolve the mapping (and tolerate agentId already being agents.id).
+    const { data: agentRow } = await supabase
+      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+    const agentsId = agentRow?.id ?? null
+
+    const [handoffLogs, escalationRows, hotIsaCount] = await Promise.all([
+      agentsId
+        ? supabase
+            .from("assignment_log")
+            .select("lead_id, claimed, assignment_method, created_at")
+            .eq("agent_id", agentsId)
+            .gte("created_at", since)
+            .order("created_at", { ascending: true })
+            .limit(20)
+        : Promise.resolve({ data: [] as any[] }),
+      supabase
+        .from("notifications")
+        .select("body, entity_id, priority")
+        .eq("user_id", agentId)
+        .eq("type", "isa_escalation")
+        .is("read_at", null)
+        .gte("created_at", since)
+        .limit(10),
+      supabase
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("ai_isa_owner", true)
+        .eq("lead_temperature", "hot"),
+    ])
+
+    const logRows = (handoffLogs.data ?? []) as Array<{ lead_id: string; claimed: boolean; assignment_method: string | null; created_at: string }>
+    const leadIds = logRows.map((r) => r.lead_id)
+    const leadNames = new Map<string, string>()
+    if (leadIds.length > 0) {
+      const { data: leadRows } = await supabase
+        .from("leads").select("id, first_name, last_name").in("id", leadIds)
+      for (const l of leadRows ?? []) {
+        leadNames.set(l.id, `${l.first_name ?? ""} ${l.last_name ?? ""}`.trim() || "Unnamed lead")
+      }
+    }
+
+    const escalations = ((escalationRows.data ?? []) as Array<{ body: string | null; entity_id: string | null; priority: string | null }>).map((n) => ({
+      lead_id: n.entity_id,
+      message: n.body ?? "Lead asked for a human",
+      urgency: n.priority,
+    }))
+
+    isaOvernight = buildIsaOvernightSection({
+      handoffs: logRows.map((r) => ({
+        lead_id: r.lead_id,
+        lead_name: leadNames.get(r.lead_id) ?? "Unnamed lead",
+        claimed: r.claimed,
+        assignment_method: r.assignment_method,
+        assigned_at: r.created_at,
+      })),
+      escalations,
+      hotIsaLeadCount: hotIsaCount.count ?? 0,
+    })
+    isaActions = isaPriorityActions(isaOvernight, escalations)
+  } catch (err) {
+    console.error("[DailyBriefing] ISA-overnight fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -273,6 +356,9 @@ export async function generateDailyBriefing(
     hotContacts: hotContacts.slice(0, 3),
     dealHealthScores: dealHealthScores.slice(0, 5),
     tasksOverdue,
+    // ISA overnight summary so the AI's narrative reflects it (the actionable items
+    // are merged deterministically below, never left to the model).
+    isaOvernight: isaOvernight ? { summary: isaOvernight.summary_line, unclaimed: isaOvernight.handoffs_unclaimed } : null,
   }
 
   const systemPrompt = `You are an AI briefing generator for a real estate agent. Generate a concise daily briefing based on the data provided. Be action-oriented and prioritize the most urgent items.
@@ -367,18 +453,31 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     ),
   ].slice(0, 5)
 
+  // ISA handoffs awaiting first touch lead the list DETERMINISTICALLY — an unclaimed
+  // qualified lead is never left to the model's judgment. AI items fill the rest.
+  const finalPriorityActions = [
+    ...isaActions,
+    ...(aiResponse.top_priority_actions ?? []).filter(
+      (a) => !isaActions.some((i) => i.entity_id && i.entity_id === a.entity_id),
+    ),
+  ].slice(0, 7)
+
   // 4. UPSERT ai_daily_briefings
   const briefingData = {
-    agent_id: agentId,
+    // user_id (FK→users.id) is the briefing key. The legacy agent_id column has
+    // FK→agents.id — writing users.id there violated the FK, the upsert THREW, and
+    // briefings never cached (full regeneration + AI spend on every page view).
+    user_id: agentId,
     brokerage_id: brokerageId,
     briefing_date: today,
     summary: aiResponse.summary,
-    top_priority_actions: aiResponse.top_priority_actions,
+    top_priority_actions: finalPriorityActions,
     hot_leads: aiResponse.hot_leads,
     todays_events: calendarEvents,
     market_pulse: aiResponse.market_pulse,
     deals_at_risk: finalDealsAtRisk,
     listings_at_risk: listingsAtRisk,
+    isa_overnight: isaOvernight,
     tasks_overdue: tasksOverdue,
     ai_model_used: AI_MODEL,
     generated_at: new Date().toISOString(),
@@ -390,7 +489,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   const { data: existingForUpsert } = await supabase
     .from("ai_daily_briefings")
     .select("id")
-    .eq("agent_id", agentId)
+    .eq("user_id", agentId)
     .eq("briefing_date", today)
     .maybeSingle()
 
@@ -452,7 +551,7 @@ export async function markBriefingOpened(agentId: string): Promise<void> {
   await supabase
     .from("ai_daily_briefings")
     .update({ opened_at: new Date().toISOString() })
-    .eq("agent_id", agentId)
+    .eq("user_id", agentId)
     .eq("briefing_date", today)
     .is("opened_at", null)
 }

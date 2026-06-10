@@ -58,14 +58,19 @@ export function buildISATools(ctx: ISAToolContext) {
           const { data: agent } = await supabase
             .from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
           if (agent?.user_id) {
+            // notifications' real shape is type/title/body/entity_* (the previous
+            // notification_type/message/metadata insert was phantom — every ISA
+            // escalation page FAILED silently and no agent was ever notified).
+            // priority check allows low|medium|high|critical → 'normal' maps to medium.
             await supabase.from("notifications").insert({
               user_id: agent.user_id,
               brokerage_id: ctx.brokerageId,
-              notification_type: "isa_escalation",
+              type: "isa_escalation",
               title: urgency === "critical" ? "URGENT: Lead needs your attention" : "Lead needs your attention",
-              message: reason,
-              priority: urgency,
-              metadata: { lead_id: ctx.leadId, source: "ai_isa" },
+              body: reason,
+              priority: urgency === "normal" ? "medium" : urgency,
+              entity_type: "lead",
+              entity_id: ctx.leadId,
             })
           }
         }
@@ -153,14 +158,17 @@ export function buildISATools(ctx: ISAToolContext) {
           const { data: agent } = await supabase
             .from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
           if (agent?.user_id) {
+            // Real notifications shape (see escalate_to_agent note) — the phantom
+            // insert meant a lead asking to MEET never paged the agent.
             await supabase.from("notifications").insert({
               user_id: agent.user_id,
               brokerage_id: ctx.brokerageId,
-              notification_type: "appointment_request",
+              type: "appointment_request",
               title: "Lead wants to meet — book a time",
-              message: `${meeting_type.replace("_", " ")}${preferred_window ? ` (${preferred_window})` : ""}`,
+              body: `${meeting_type.replace("_", " ")}${preferred_window ? ` (${preferred_window})` : ""}`,
               priority: "high",
-              metadata: { lead_id: ctx.leadId, source: "ai_isa" },
+              entity_type: "lead",
+              entity_id: ctx.leadId,
             })
           }
         }
