@@ -214,6 +214,10 @@
       "schedule": "0 14 * * 3"
     },
     {
+      "path": "/api/cron/approval-push",
+      "schedule": "0 */2 * * *"
+    },
+    {
       "path": "/api/cron/referral-asks",
       "schedule": "0 10 * * 2"
     },

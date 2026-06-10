@@ -2,13 +2,18 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Home, Mic, BarChart3, HelpCircle } from "lucide-react"
+import { Home, Mic, BarChart3, ShieldCheck, HelpCircle } from "lucide-react"
 
 const navItems = [
   {
     label: "Home",
     href: "/mobile/assistant",
     icon: Home,
+  },
+  {
+    label: "Approvals",
+    href: "/mobile/approvals",
+    icon: ShieldCheck,
   },
   {
     label: "Voice",

@@ -22,6 +22,7 @@
     "test:command-center": "tsx scripts/command-center-simulator.ts",
     "test:deliverables": "tsx scripts/deliverables-summary-simulator.ts",
     "test:agent-scorecard": "tsx scripts/agent-scorecard-simulator.ts",
+    "test:mobile-approval": "tsx scripts/mobile-approval-simulator.ts",
     "test:strategy-learning": "tsx scripts/strategy-learning-simulator.ts",
     "test:strategy-insights": "tsx scripts/strategy-insights-simulator.ts",
     "test:referral-closer": "tsx scripts/referral-closer-simulator.ts",
