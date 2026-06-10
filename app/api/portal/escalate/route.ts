@@ -13,15 +13,23 @@ export async function POST(request: NextRequest) {
 
   const serviceClient = createServiceClient()
 
+  // contacts.agent_id is agents.id — resolve the agent's users.id for the
+  // notification target (the phantom assigned_agent_user_id select errored the
+  // lookup, so portal "talk to a human" requests never reached any agent).
   const { data: contact } = await serviceClient
     .from("contacts")
-    .select("first_name, last_name, assigned_agent_user_id, brokerage_id, phone")
+    .select("first_name, last_name, agent_id, brokerage_id, phone")
     .eq("id", contactId)
     .maybeSingle()
 
   if (!contact) return NextResponse.json({ error: "Contact not found" }, { status: 404 })
 
-  const agentUserId = contact.assigned_agent_user_id
+  let agentUserId: string | null = null
+  if (contact.agent_id) {
+    const { data: agentRow } = await serviceClient
+      .from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
+    agentUserId = agentRow?.user_id ?? null
+  }
   if (!agentUserId) return NextResponse.json({ ok: true, note: "No agent assigned" })
 
   const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "A portal user"

@@ -194,7 +194,7 @@ export async function recordPropertyActionAction(input: {
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, brokerage_id, assigned_agent_id")
+    .select("id, brokerage_id, agent_id")
     .eq("id", input.contact_id)
     .maybeSingle()
 
@@ -206,7 +206,7 @@ export async function recordPropertyActionAction(input: {
     interest_level: input.interest_level,
     notes:          input.notes,
     brokerage_id:   contact.brokerage_id,
-    agent_id:       contact.assigned_agent_id ?? "",
+    agent_id:       contact.agent_id ?? "",
   })
 }
 

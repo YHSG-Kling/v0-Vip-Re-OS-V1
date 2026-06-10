@@ -1004,7 +1004,7 @@ async function lookupContact(
 
   let q = supabase
     .from("contacts")
-    .select("id, first_name, last_name, email, phone, contact_type, last_contact_at")
+    .select("id, first_name, last_name, email, phone, contact_type, last_contacted_at")
     .eq("brokerage_id", session.brokerage_id)
     .limit(5)
 
@@ -1025,7 +1025,7 @@ async function lookupContact(
       email: c.email,
       phone: c.phone,
       type: c.contact_type,
-      last_contact: c.last_contact_at,
+      last_contact: c.last_contacted_at,
     })),
   }
 }
@@ -1093,7 +1093,7 @@ async function getContactDetails(
   const { data: c } = await supabase
     .from("contacts")
     .select(
-      "id, first_name, last_name, email, phone, contact_type, contact_persona, last_contact_at, engagement_score, do_not_contact, notes, status",
+      "id, first_name, last_name, email, phone, contact_type, contact_persona, last_contacted_at, engagement_score, dnc_status, notes, status",
     )
     .eq("id", contactId)
     .eq("brokerage_id", session.brokerage_id)
@@ -1116,9 +1116,9 @@ async function getContactDetails(
     type: c.contact_type,
     persona: c.contact_persona,
     status: c.status,
-    do_not_contact: !!c.do_not_contact,
+    do_not_contact: !!c.dnc_status,
     engagement_score: c.engagement_score,
-    last_contact: c.last_contact_at,
+    last_contact: c.last_contacted_at,
     notes: c.notes,
     recent_activities: recentActivities ?? [],
   }
@@ -1161,10 +1161,10 @@ async function logActivity(
 
   if (error || !data) return { error: error?.message ?? "Failed to log activity" }
 
-  // Bump contacts.last_contact_at so the CRM reflects the touchpoint.
+  // Bump contacts.last_contacted_at so the CRM reflects the touchpoint.
   await supabase
     .from("contacts")
-    .update({ last_contact_at: new Date().toISOString() })
+    .update({ last_contacted_at: new Date().toISOString() })
     .eq("id", contactId)
 
   return { success: true, activity_id: data.id }

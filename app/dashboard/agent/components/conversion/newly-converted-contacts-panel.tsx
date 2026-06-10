@@ -63,7 +63,6 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
           phone,
           lifecycle_state,
           created_at,
-          source_lead_id,
           ai_isa_qualifications (
             qualification_reason,
             urgency_level,
@@ -73,7 +72,7 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
           )
         `)
         .eq("brokerage_id", brokerageId)
-        .eq("assigned_agent_id", agentId)
+        .eq("agent_id", agentId)
         .in("lifecycle_state", ["qualified", "active_buyer", "active_seller", "under_contract"])
         .gte("created_at", sevenDaysAgo.toISOString())
         .order("created_at", { ascending: false })
@@ -88,24 +87,21 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
       // Enrich with lead source data if available
       const enrichedContacts: ConvertedContact[] = await Promise.all(
         (conversions || []).map(async (c: any) => {
-          let sourceLead = null
-          if (c.source_lead_id) {
-            // leads' source column is `source` (lead_source doesn't exist — the old
-            // select errored, so the panel never showed where a conversion came from).
-            const { data: leadData } = await supabase
-              .from("leads")
-              .select("first_name, last_name, source")
-              .eq("id", c.source_lead_id)
-              .maybeSingle()
-            sourceLead = leadData
-          }
+          // The lead→contact link lives on leads.contact_id (stamped at conversion);
+          // contacts has no source_lead_id column.
+          const { data: leadData } = await supabase
+            .from("leads")
+            .select("id, first_name, last_name, source")
+            .eq("contact_id", c.id)
+            .maybeSingle()
+          const sourceLead = leadData
 
           const qualification = c.ai_isa_qualifications?.[0]
 
           return {
             id: c.id,
             contact_id: c.id,
-            lead_id: c.source_lead_id,
+            lead_id: (sourceLead as any)?.id ?? null,
             first_name: c.first_name || "",
             last_name: c.last_name || "",
             email: c.email,

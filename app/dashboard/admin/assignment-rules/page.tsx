@@ -30,6 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { previewRuleRouting, type MatchableRule } from "@/lib/lead-assignment/rule-matcher"
 
 type RuleType = "round_robin" | "load_balance" | "geo_based" | "specialization"
 
@@ -67,6 +68,10 @@ function conditionsSummary(conditions: Record<string, unknown>): string {
     parts.push(`Sources: ${(conditions.sources as string[]).join(", ")}`)
   if (Array.isArray(conditions.urgency_levels) && conditions.urgency_levels.length > 0)
     parts.push(`Urgency: ${(conditions.urgency_levels as string[]).join(", ")}`)
+  if (Array.isArray(conditions.motivation_types) && conditions.motivation_types.length > 0)
+    parts.push(`Motivation: ${(conditions.motivation_types as string[]).join(", ")}`)
+  if (Array.isArray(conditions.contact_personas) && conditions.contact_personas.length > 0)
+    parts.push(`Personas: ${(conditions.contact_personas as string[]).join(", ")}`)
   return parts.length > 0 ? parts.join(" · ") : "All leads"
 }
 
@@ -80,7 +85,11 @@ const EMPTY_FORM = {
   zip_codes: "",
   sources: "",
   urgency_levels: "",
+  motivation_types: "",
+  contact_personas: "",
 }
+
+const EMPTY_PREVIEW = { lead_score: "75", property_zip_code: "", source: "", urgency_level: "" }
 
 export default function AssignmentRulesPage() {
   const supabase = createClient()
@@ -92,6 +101,8 @@ export default function AssignmentRulesPage() {
   const [editingRule, setEditingRule] = useState<AssignmentRule | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [isPending, startTransition] = useTransition()
+  const [planTier, setPlanTier] = useState<string | null>(null)
+  const [preview, setPreview] = useState(EMPTY_PREVIEW)
 
   useEffect(() => {
     void load()
@@ -112,7 +123,7 @@ export default function AssignmentRulesPage() {
       if (!profile?.brokerage_id) return
       setBrokerageId(profile.brokerage_id)
 
-      const [{ data: rulesData }, { data: agentsData }] = await Promise.all([
+      const [{ data: rulesData }, { data: agentsData }, { data: brokerageRow }] = await Promise.all([
         supabase
           .from("assignment_rules")
           .select("id, name, rule_type, conditions, agent_ids, priority, is_active, times_triggered")
@@ -123,10 +134,16 @@ export default function AssignmentRulesPage() {
           .select("id, users!user_id ( first_name, last_name )")
           .eq("brokerage_id", profile.brokerage_id)
           .eq("is_active", true),
+        supabase
+          .from("brokerages")
+          .select("plan_tier")
+          .eq("id", profile.brokerage_id)
+          .maybeSingle(),
       ])
 
       setRules((rulesData ?? []) as AssignmentRule[])
       setAgents((agentsData ?? []) as AgentOption[])
+      setPlanTier((brokerageRow as { plan_tier?: string } | null)?.plan_tier ?? null)
     } finally {
       setLoading(false)
     }
@@ -153,6 +170,12 @@ export default function AssignmentRulesPage() {
       urgency_levels: Array.isArray(cond.urgency_levels)
         ? (cond.urgency_levels as string[]).join(", ")
         : "",
+      motivation_types: Array.isArray(cond.motivation_types)
+        ? (cond.motivation_types as string[]).join(", ")
+        : "",
+      contact_personas: Array.isArray(cond.contact_personas)
+        ? (cond.contact_personas as string[]).join(", ")
+        : "",
     })
     setModalOpen(true)
   }
@@ -167,6 +190,10 @@ export default function AssignmentRulesPage() {
       cond.sources = form.sources.split(",").map((s) => s.trim()).filter(Boolean)
     if (form.urgency_levels.trim() !== "")
       cond.urgency_levels = form.urgency_levels.split(",").map((u) => u.trim()).filter(Boolean)
+    if (form.motivation_types.trim() !== "")
+      cond.motivation_types = form.motivation_types.split(",").map((m) => m.trim()).filter(Boolean)
+    if (form.contact_personas.trim() !== "")
+      cond.contact_personas = form.contact_personas.split(",").map((c) => c.trim()).filter(Boolean)
     return cond
   }
 
@@ -204,6 +231,14 @@ export default function AssignmentRulesPage() {
     })
   }
 
+  function handleDelete(rule: AssignmentRule) {
+    if (!window.confirm(`Delete rule "${rule.name}"? Routing falls through to lower-priority rules / load-balance.`)) return
+    startTransition(async () => {
+      await supabase.from("assignment_rules").delete().eq("id", rule.id)
+      await load()
+    })
+  }
+
   function toggleAgentId(agentId: string) {
     setForm((prev) => ({
       ...prev,
@@ -232,6 +267,120 @@ export default function AssignmentRulesPage() {
         </div>
         <Button onClick={openCreate}>+ Add Rule</Button>
       </div>
+
+      {/* HOW ASSIGNMENT RESOLVES — the canonical precedence chain, shown truthfully.
+          Same order resolveAgentForContact / Engine 2 run: a contact created from a
+          qualified lead (or captured from a form) is routed by the FIRST step that
+          produces an agent. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">How assignment resolves</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ol className="space-y-2 text-sm">
+            <li className="flex gap-3">
+              <Badge variant="outline" className="shrink-0">1</Badge>
+              <div>
+                <span className="font-medium">Capture owner</span>
+                <span className="text-muted-foreground"> — a form, QR code, or ad tagged to a specific agent keeps that agent, regardless of rules below.</span>
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <Badge variant="outline" className="shrink-0">2</Badge>
+              <div>
+                <span className="font-medium">Solo-agent shortcut</span>
+                <span className="text-muted-foreground"> — on a solo plan every contact goes to the solo agent. </span>
+                {planTier === "solo_agent" ? (
+                  <Badge className="ml-1">ACTIVE for this brokerage — rules below are bypassed</Badge>
+                ) : (
+                  <Badge variant="secondary" className="ml-1">not a solo plan — skipped</Badge>
+                )}
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <Badge variant="outline" className="shrink-0">3</Badge>
+              <div>
+                <span className="font-medium">Your rules below</span>
+                <span className="text-muted-foreground"> — evaluated highest-priority first; the first rule whose conditions ALL match picks the agent (Round Robin rotates through the list; other types take the first listed agent).</span>
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <Badge variant="outline" className="shrink-0">4</Badge>
+              <div>
+                <span className="font-medium">Load-balance fallback</span>
+                <span className="text-muted-foreground"> — when nothing above fires, the active agent with the fewest contacts gets the assignment. No lead is ever left unrouted.</span>
+              </div>
+            </li>
+          </ol>
+        </CardContent>
+      </Card>
+
+      {/* ROUTING PREVIEW — dry-runs step 3 with the EXACT matcher the engine uses
+          (lib/lead-assignment/rule-matcher.ts). Pure client-side, no writes. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Preview routing</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="pv-score" className="text-xs text-muted-foreground">Lead score</Label>
+              <Input id="pv-score" type="number" value={preview.lead_score}
+                onChange={(e) => setPreview((p) => ({ ...p, lead_score: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="pv-zip" className="text-xs text-muted-foreground">ZIP</Label>
+              <Input id="pv-zip" placeholder="33133" value={preview.property_zip_code}
+                onChange={(e) => setPreview((p) => ({ ...p, property_zip_code: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="pv-source" className="text-xs text-muted-foreground">Source</Label>
+              <Input id="pv-source" placeholder="zillow" value={preview.source}
+                onChange={(e) => setPreview((p) => ({ ...p, source: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="pv-urgency" className="text-xs text-muted-foreground">Urgency</Label>
+              <Input id="pv-urgency" placeholder="hot" value={preview.urgency_level}
+                onChange={(e) => setPreview((p) => ({ ...p, urgency_level: e.target.value }))} />
+            </div>
+          </div>
+          {(() => {
+            if (planTier === "solo_agent") {
+              return (
+                <p className="text-sm">
+                  <Badge>solo-agent shortcut</Badge>
+                  <span className="text-muted-foreground ml-2">This brokerage is on a solo plan — every contact routes to the solo agent before rules are consulted.</span>
+                </p>
+              )
+            }
+            const result = previewRuleRouting(rules as unknown as MatchableRule[], {
+              lead_score: preview.lead_score === "" ? null : Number(preview.lead_score),
+              property_zip_code: preview.property_zip_code || null,
+              source: preview.source || null,
+              urgency_level: preview.urgency_level || null,
+            })
+            if (result.rule) {
+              const agent = agents.find((a) => a.id === result.agentId)
+              const agentName = agent
+                ? (agent.full_name ?? [agent.users?.first_name, agent.users?.last_name].filter(Boolean).join(" ")) || result.agentId
+                : result.agentId
+              return (
+                <p className="text-sm">
+                  <Badge>rule: {result.rule.name ?? result.rule.id}</Badge>
+                  <span className="ml-2">→ <span className="font-medium">{agentName}</span></span>
+                  <span className="text-muted-foreground ml-2">(this exact matcher runs in the assignment engine)</span>
+                </p>
+              )
+            }
+            return (
+              <p className="text-sm">
+                <Badge variant="secondary">load-balance fallback</Badge>
+                <span className="text-muted-foreground ml-2">No rule matches this lead — it routes to the active agent with the fewest contacts.</span>
+              </p>
+            )
+          })()}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -303,13 +452,24 @@ export default function AssignmentRulesPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => openEdit(rule)}
-                      >
-                        Edit
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEdit(rule)}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => handleDelete(rule)}
+                          disabled={isPending}
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 )
@@ -422,7 +582,7 @@ export default function AssignmentRulesPage() {
               </div>
               <div className="space-y-1">
                 <Label htmlFor="urgency" className="text-xs text-muted-foreground">
-                  Urgency Levels (comma-separated)
+                  Urgency Levels (comma-separated: hot, warm, cool, cold)
                 </Label>
                 <Input
                   id="urgency"
@@ -430,6 +590,32 @@ export default function AssignmentRulesPage() {
                   value={form.urgency_levels}
                   onChange={(e) =>
                     setForm((p) => ({ ...p, urgency_levels: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="motivations" className="text-xs text-muted-foreground">
+                  Motivation Types (comma-separated, e.g. seller_motivated, buyer_motivated)
+                </Label>
+                <Input
+                  id="motivations"
+                  placeholder="seller_motivated"
+                  value={form.motivation_types}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, motivation_types: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="personas" className="text-xs text-muted-foreground">
+                  Contact Personas (comma-separated, e.g. first_time_buyer, investor_flipper)
+                </Label>
+                <Input
+                  id="personas"
+                  placeholder="first_time_buyer"
+                  value={form.contact_personas}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, contact_personas: e.target.value }))
                   }
                 />
               </div>

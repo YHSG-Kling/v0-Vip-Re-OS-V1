@@ -45,7 +45,14 @@ export async function getListingCoaching(
     .eq("brokerage_id", userRow.brokerage_id)
 
   if ((userRow.user_type ?? "agent") === "agent") {
-    listingQuery = listingQuery.eq("assigned_agent_id", user.id)
+    // listings.agent_id is agents.id (FK) — resolve the caller's agents row; the old
+    // filter compared a phantom assigned_agent_id to users.id, so the query errored
+    // and agents could never load their own listing for coaching.
+    const { data: agentRow } = await supabase
+      .from("agents").select("id").eq("user_id", user.id)
+      .eq("brokerage_id", userRow.brokerage_id).maybeSingle()
+    if (!agentRow?.id) return { success: false, error: "No agent profile" }
+    listingQuery = listingQuery.eq("agent_id", agentRow.id)
   }
 
   const { data: listing, error: listingError } = await listingQuery.single()

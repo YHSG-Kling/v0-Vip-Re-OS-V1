@@ -34,57 +34,10 @@ interface LeadRow {
 }
 
 // ─── CONDITION EVALUATOR ──────────────────────────────────────────────────────
-
-function evaluateRuleConditions(
-  lead: LeadRow,
-  conditions: Record<string, unknown>
-): boolean {
-  for (const [key, value] of Object.entries(conditions)) {
-    switch (key) {
-      case "min_score":
-        if ((lead.lead_score ?? 0) < (value as number)) return false
-        break
-      case "max_score":
-        if ((lead.lead_score ?? 0) > (value as number)) return false
-        break
-      case "zip_codes": {
-        const zips = value as string[]
-        if (!lead.property_zip_code || !zips.includes(lead.property_zip_code)) return false
-        break
-      }
-      case "sources": {
-        const sources = value as string[]
-        if (!lead.source || !sources.includes(lead.source)) return false
-        break
-      }
-      case "urgency_levels": {
-        const levels = value as string[]
-        if (!lead.urgency_level || !levels.includes(lead.urgency_level)) return false
-        break
-      }
-      case "motivation_types": {
-        const motivations = value as string[]
-        if (!lead.motivation_type || !motivations.includes(lead.motivation_type)) return false
-        break
-      }
-      case "contact_personas": {
-        const personas = value as string[]
-        if (!lead.persona || !personas.includes(lead.persona)) return false
-        break
-      }
-      default:
-        break
-    }
-  }
-  return true
-}
-
-// ─── ROUND-ROBIN INDEX HELPER ─────────────────────────────────────────────────
-// Reads times_triggered to pick next agent index deterministically.
-
-function pickRoundRobinAgent(agentIds: string[], timesTriggered: number): string {
-  return agentIds[timesTriggered % agentIds.length]
-}
+// Consolidated into lib/lead-assignment/rule-matcher.ts (pure) — the SAME matcher
+// powers this engine, the settings UI's routing preview, and the simulator, so
+// what the broker previews is exactly what the engine does.
+import { evaluateRuleConditions, pickRoundRobinAgent } from "./rule-matcher"
 
 // ─── LOAD-BALANCE FALLBACK ────────────────────────────────────────────────────
 // Pick the agent in the brokerage with the fewest active leads.

@@ -33,6 +33,7 @@ import {
   engine2GatePasses,
 } from "../lib/ai-isa/qualification-core"
 import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
+import { previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent } from "../lib/lead-assignment/rule-matcher"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -139,6 +140,34 @@ function testIsaOvernightBriefing() {
   check("quiet night → empty section, no noise", empty.summary_line === "" && isaPriorityActions(empty, []).length === 0)
 }
 
+function testRuleRouting() {
+  console.log("\n[Layer 1 · assignment-rule routing — the matcher the settings UI previews IS the engine's]")
+  const rules = [
+    { id: "r-low", name: "Catch-all", rule_type: "load_balance", priority: 1, is_active: true,
+      times_triggered: 0, agent_ids: ["A9"], conditions: {} },
+    { id: "r-zip", name: "Miami farm", rule_type: "round_robin", priority: 50, is_active: true,
+      times_triggered: 3, agent_ids: ["A1", "A2"], conditions: { zip_codes: ["33133"] } },
+    { id: "r-hot", name: "Hot sellers", rule_type: "specialization", priority: 90, is_active: true,
+      times_triggered: 0, agent_ids: ["A5"], conditions: { min_score: 80, motivation_types: ["seller_motivated"] } },
+    { id: "r-off", name: "Disabled", rule_type: "round_robin", priority: 99, is_active: false,
+      times_triggered: 0, agent_ids: ["A7"], conditions: {} },
+  ]
+  const hot = previewRuleRouting(rules, { lead_score: 88, motivation_type: "seller_motivated", property_zip_code: "33133" })
+  check("highest-priority matching rule wins", hot.rule?.id === "r-hot" && hot.agentId === "A5")
+  check("inactive rules never fire (priority 99 skipped)", hot.rule?.id !== "r-off")
+  const zip = previewRuleRouting(rules, { lead_score: 40, property_zip_code: "33133" })
+  check("score gate fails → next matching rule (zip farm)", zip.rule?.id === "r-zip")
+  check("round_robin rotates by times_triggered (3 % 2 → A2)", zip.agentId === "A2")
+  const none = previewRuleRouting(rules, { lead_score: 40, property_zip_code: "99999" })
+  check("catch-all (no conditions) matches anything", none.rule?.id === "r-low")
+  const empty = previewRuleRouting([], { lead_score: 90 })
+  check("no rules → load-balance fallback (never unrouted)", empty.method === "load_balance" && empty.rule === null)
+  check("all-conditions-must-match: one failing condition rejects",
+    !evaluateRuleConditions({ lead_score: 95, motivation_type: "buyer_motivated" },
+      { min_score: 80, motivation_types: ["seller_motivated"] }))
+  check("rotation is deterministic", pickRoundRobinAgent(["a","b","c"], 7) === "b")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 2 — live DB round-trip (real schema + constraints, full cleanup)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +250,7 @@ async function main() {
   testSignalDerivation()
   testScoreAndGate()
   testIsaOvernightBriefing()
+  testRuleRouting()
   await testLiveChain()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
