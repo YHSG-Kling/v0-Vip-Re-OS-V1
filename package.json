@@ -55,6 +55,7 @@
     "test:closing-testimonial": "tsx scripts/closing-testimonial-simulator.ts",
     "test:portal-fanout": "tsx scripts/portal-fanout-simulator.ts",
     "test:manager-ownership": "tsx scripts/manager-ownership-simulator.ts",
+    "test:egress-coverage": "tsx scripts/egress-coverage-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",
