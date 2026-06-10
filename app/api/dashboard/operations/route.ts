@@ -92,7 +92,13 @@ export async function GET() {
           .from("listings")
           .select("id, address, status, current_stage:lifecycle_stage, stage_entered_at, agent_id")
           .eq("brokerage_id", brokerageId)
-          .in("lifecycle_stage", ["prep", "pre_listing", "coming_soon"])
+          // Canonical lifecycle_stage vocabulary is the UPPERCASE state machine
+          // (listings check constraint) — the old lowercase values matched NOTHING,
+          // so "stuck in prep" never surfaced a single listing.
+          .in("lifecycle_stage", [
+            "COMING_SOON_PREP", "REPAIRS_IN_PROGRESS", "MEDIA_CAPTURE",
+            "MEDIA_APPROVED", "MLS_READY", "COMING_SOON_ACTIVE",
+          ])
           .lte("stage_entered_at", minus14d)
           .order("stage_entered_at", { ascending: true })
           .limit(20)

@@ -144,7 +144,10 @@ export async function GET(req: Request) {
           .from("listings")
           .select("id", { count: "exact", head: true })
           .eq("brokerage_id", brokerageId)
-          .in("lifecycle_stage", ["offer_received", "under_contract"])
+          // Canonical UPPERCASE stage vocabulary (see listings check constraint) —
+          // the old lowercase values matched NOTHING, so "listings with active
+          // offers" always reported 0.
+          .in("lifecycle_stage", ["OFFERS_RECEIVED", "NEGOTIATION", "UNDER_CONTRACT"])
       : Promise.resolve({ count: 0 }),
 
     // Closed listings in period

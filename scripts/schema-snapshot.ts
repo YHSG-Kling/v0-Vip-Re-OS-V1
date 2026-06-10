@@ -16,6 +16,7 @@
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   contacts: [
     "address", "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",
+    "avatar_url", "birthday", "home_anniversary", "preferred_contact_time", "tags", "time_zone",
     "ai_isa_enabled", "ai_outreach_paused", "ai_predicted_close_date", "nurture_status",
     "referral_approach", "referral_score",
     "brokerage_id", "budget_max", "budget_min", "buyer_stage", "call_stop_flag",
