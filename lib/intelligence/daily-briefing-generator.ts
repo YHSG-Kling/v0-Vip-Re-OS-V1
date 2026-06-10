@@ -23,6 +23,8 @@ export interface PriorityAction {
   priority: "high" | "medium" | "low"
   action: string
   context: string
+  /** Claude manager (manager-registry key) that produced this item. */
+  manager?: string
   /** Optional entity reference so the UI can build a deep link. */
   entity_type?: "contact" | "transaction" | "listing" | "task" | null
   entity_id?: string | null

@@ -22,6 +22,9 @@ export interface BriefPriority {
   title: string
   body: string
   severity: Severity
+  /** Claude manager (manager-registry ManagerKey) that produced/owns this item —
+   *  every egress activity is owned by a named manager (zero orphans). */
+  manager?: string
   /** Optional CTAs surfaced inline on the priority card */
   ctas?: Array<{
     label: string

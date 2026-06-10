@@ -40,6 +40,7 @@ import {
 import { generateContactInsights } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import type { DailyBriefing, PriorityAction, HotLead, DealAtRisk } from "@/lib/intelligence/daily-briefing-generator"
+import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
@@ -447,6 +448,11 @@ export default function BriefingPage() {
                             <Badge variant={getPriorityBadgeVariant(action.priority)} className="text-xs">
                               {action.priority}
                             </Badge>
+                            {action.manager && (
+                              <Badge variant="outline" className="text-xs">
+                                {MANAGERS[action.manager as ManagerKey]?.label ?? action.manager}
+                              </Badge>
+                            )}
                           </div>
                           <p className="font-medium text-foreground">{action.action}</p>
                           <p className="text-sm text-muted-foreground mt-1">{action.context}</p>

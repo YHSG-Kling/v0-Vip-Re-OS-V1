@@ -60,6 +60,7 @@ export async function generateUserTypeBrief(input: GenerateBriefInput): Promise<
           body: p.context,
           severity:
             p.priority === "high" ? "high" : p.priority === "medium" ? "medium" : "low",
+          manager: p.manager,
           ctas: buildAgentPriorityCtas(p),
         })),
         metrics: [

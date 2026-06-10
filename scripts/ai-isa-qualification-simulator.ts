@@ -37,6 +37,7 @@ import {
   previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent,
   effectiveAgentPool, teamScopeAllows,
 } from "../lib/lead-assignment/rule-matcher"
+import { MANAGERS } from "../lib/kernel/manager-registry"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -132,6 +133,10 @@ function testIsaOvernightBriefing() {
   // Canonical process: qualification converted the lead — the CTA opens the CONTACT.
   check("unclaimed handoffs become HIGH priorities opening the CONVERTED CONTACT",
     actions[0].priority === "high" && actions[0].action_type === "open_contact" && actions[0].entity_id === "C1")
+  // Manager ownership: every ISA-produced briefing item is attributed to the AI ISA
+  // manager (a REAL manager-registry key — zero orphan activities on the egress).
+  check("ISA briefing items carry manager='ai_isa' (valid registry key)",
+    actions.every((a) => (a as { manager?: string }).manager === "ai_isa") && "ai_isa" in MANAGERS)
   check("conversion-in-flight handoff falls back to the lead",
     isaPriorityActions(buildIsaOvernightSection({
       handoffs: [{ lead_id: "LX", contact_id: null, lead_name: "Mid Flight", claimed: false, assignment_method: null, assigned_at: t0 }],
