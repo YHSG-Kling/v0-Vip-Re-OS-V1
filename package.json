@@ -74,6 +74,7 @@
     "test:standup-action": "tsx scripts/standup-action-simulator.ts",
     "test:area-query": "tsx scripts/area-query-simulator.ts",
     "test:idle-hands": "tsx scripts/idle-hands-simulator.ts",
+    "test:client-pulse": "tsx scripts/client-pulse-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",

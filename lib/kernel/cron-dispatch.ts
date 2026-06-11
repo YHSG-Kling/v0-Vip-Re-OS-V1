@@ -48,6 +48,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/sync-facebook-audiences",        schedule: "0 */6 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
   { path: "/api/cron/idle-hands",                     schedule: "0 * * * *" },
+  // Client Pulse — the weekly "what your team did for you" for sellers + buyers.
+  { path: "/api/cron/client-pulse",                   schedule: "0 16 * * 5" },
   // ── The original vercel.json schedules, preserved verbatim ──
   { path: "/api/cron/appointment-whisper"                 , schedule: "*/10 * * * *" },
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
