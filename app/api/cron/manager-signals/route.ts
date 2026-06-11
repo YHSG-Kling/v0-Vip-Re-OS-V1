@@ -60,6 +60,12 @@ export async function GET(req: NextRequest) {
           const c = await consumeManagerSignals({ brokerageId, toManager: manager }, supabase)
           consumed += c.consumed
         }
+        // THE HUDDLE — after individual handoffs, convene Team Plays: when ≥2 managers
+        // still have open business on the SAME contact, compose ONE coordinated play
+        // and supersede the fragments (no more proposal spam for the agent).
+        const { runTeamPlays } = await import("@/lib/kernel/team-plays")
+        const tp = await runTeamPlays(brokerageId, supabase)
+        consumed += tp.fragmentsSuperseded
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }
