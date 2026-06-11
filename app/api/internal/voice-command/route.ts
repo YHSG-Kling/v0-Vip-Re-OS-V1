@@ -13,6 +13,7 @@ type VoiceIntent =
   | "query_pipeline"
   | "create_task"
   | "schedule_followup"
+  | "team_query"
   | "general_query"
 
 interface CallQueueItem {
@@ -67,6 +68,7 @@ export async function POST(req: NextRequest) {
 - query_pipeline: asking about leads in pipeline or follow-ups needed
 - create_task: asking to create, add, or set a task reminder
 - schedule_followup: asking to schedule a follow-up
+- team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -199,6 +201,26 @@ Respond with ONLY the intent string, nothing else.`,
       spokenResponse = needFollowup.length > 0
         ? `${needFollowup.length} contact${needFollowup.length > 1 ? "s" : ""} in your pipeline haven't been contacted in over a week. Top one is ${needFollowup[0].first_name ?? "Unknown"}.`
         : `You have ${leads?.length ?? 0} active leads in your pipeline. All have been contacted recently.`
+    } else if (intent === "team_query") {
+      // "HEY TEAM—" — the bullpen question: every manager contributes what its own
+      // tables know about the named person; one manager-attributed spoken answer.
+      // Read-only: the team reports, acting still goes through the gate.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the person/family name the user is asking about. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If no name is present, respond with NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 12,
+      })
+      const personQuery = extract.text.trim()
+      if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Who should I ask the team about? Give me a name and I'll pull everything the managers know."
+      } else {
+        const { runTeamQuery } = await import("@/lib/kernel/team-query")
+        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
+        spokenResponse = tq.spoken
+        data = { contactId: tq.contactId, contributions: tq.contributions }
+        action = tq.found ? "team_query_answered" : null
+      }
     } else {
       // General query — pass to the main AI chat endpoint context
       spokenResponse = "Got it. I'm sending that to the assistant for you."
