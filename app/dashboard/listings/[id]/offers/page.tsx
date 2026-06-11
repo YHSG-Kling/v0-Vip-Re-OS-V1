@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { OffersManagerClient } from "./offers-manager-client"
 import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
+import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
+import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-sheet"
 
 export default async function OffersPage({
   params,
@@ -17,7 +19,7 @@ export default async function OffersPage({
   const [{ data: listing }, { data: agentRow }, { data: offers }] = await Promise.all([
     supabase
       .from("listings")
-      .select("id, address, city, state, list_price, status, brokerage_id, agent_id")
+      .select("id, address, city, state, list_price, status, brokerage_id, agent_id, hoa_dues, commission_rate")
       .eq("id", listingId)
       .single(),
     supabase
@@ -64,15 +66,47 @@ export default async function OffersPage({
   if (!listing) redirect("/dashboard/listings")
 
   // Active offers (pending|submitted|countered) drive the multi-offer matrix
-  const activeOfferCount = offersWithAgentNames.filter(o =>
+  const activeOffers = offersWithAgentNames.filter(o =>
+    ["pending", "submitted", "under_review", "countered"].includes(o.status)
+  )
+  const activeOfferCount = activeOffers.filter(o =>
     ["pending", "submitted", "countered"].includes(o.status)
   ).length
+
+  // Interactive net sheet inputs — REUSES the consolidated net-proceeds engine
+  // (lib/kernel/offer-net-sheet). Same math the cron's portal card + agent summary use,
+  // so the agent edits assumptions live and sees which offer nets the seller most.
+  const netSheetOffers: OfferNetInput[] = activeOffers.map((o, i) => ({
+    offerId: o.id,
+    buyerName: o.buyer_agent?.full_name ?? `Offer ${String.fromCharCode(65 + i)}`,
+    offerPrice: Number(o.offer_price ?? 0),
+    financingType: o.financing_type ?? null,
+    buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
+  }))
+  const netSheetCosts = defaultSellerCosts({
+    listPrice: listing.list_price != null ? Number(listing.list_price) : null,
+    commissionRateDecimal: (listing as any).commission_rate != null ? Number((listing as any).commission_rate) / 100 : 0.06,
+    hoaDuesMonthly: (listing as any).hoa_dues != null ? Number((listing as any).hoa_dues) : null,
+  })
 
   return (
     <>
       {/* Multi-offer matrix card — renders only when 2+ active offers exist.
           Server component; runs in parallel with the existing client tree below. */}
       <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} />
+
+      {/* Interactive net sheet — side-by-side net proceeds the agent adjusts live with
+          the seller (commission/payoff/taxes/HOA/other). Surfaces which offer NETS the
+          seller most, not just the highest price. Renders whenever there's an open offer. */}
+      {netSheetOffers.length > 0 && (
+        <div className="mb-4">
+          <InteractiveNetSheet
+            listingAddress={listing.address}
+            offers={netSheetOffers}
+            initialCosts={netSheetCosts}
+          />
+        </div>
+      )}
 
       <OffersManagerClient
         listing={listing}
