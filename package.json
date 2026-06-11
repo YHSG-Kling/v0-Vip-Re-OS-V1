@@ -75,6 +75,8 @@
     "test:area-query": "tsx scripts/area-query-simulator.ts",
     "test:idle-hands": "tsx scripts/idle-hands-simulator.ts",
     "test:client-pulse": "tsx scripts/client-pulse-simulator.ts",
+    "test:office-hours": "tsx scripts/office-hours-simulator.ts",
+    "test:outcome-learning": "tsx scripts/outcome-learning-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",

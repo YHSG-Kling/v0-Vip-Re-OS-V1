@@ -16,7 +16,7 @@
  *
  * Run: npx tsx scripts/idle-hands-simulator.ts  (npm run test:idle-hands)
  */
-import { isManagerIdle, runIdleHands } from "../lib/kernel/idle-hands"
+import { isManagerIdle, seasonalPlayFor, runIdleHands } from "../lib/kernel/idle-hands"
 import type { PromoDispatcher } from "../lib/kernel/voice-delegation"
 
 let passed = 0, failed = 0
@@ -41,6 +41,10 @@ async function main() {
   check("no open proposals → idle (initiative allowed)", isManagerIdle({}, "marketing_agent"))
   check("open proposals → BUSY (no initiative onto a backlog)", !isManagerIdle({ marketing_agent: 2 }, "marketing_agent"))
   check("another manager's backlog doesn't block this one", isManagerIdle({ sphere_of_influence: 5 }, "marketing_agent"))
+  check("seasonal plays: every month maps to a season, named by year",
+    seasonalPlayFor(3, 2026).name === "Spring Sellers 2026" && seasonalPlayFor(6, 2026).name === "Summer Movers 2026"
+    && seasonalPlayFor(8, 2026).name === "Fall Market Reset 2026" && seasonalPlayFor(11, 2026).name === "Year-End Gratitude 2026"
+    && seasonalPlayFor(0, 2027).name === "Year-End Gratitude 2027")
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

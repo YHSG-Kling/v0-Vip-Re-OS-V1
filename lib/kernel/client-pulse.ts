@@ -116,13 +116,25 @@ export async function runClientPulse(
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
 
   // ── SELLERS: active/pending listings with a seller contact. ──
+  // CONSOLIDATION: the weekly seller-update D-ID VIDEO (seller-update-reel-producer,
+  // Mondays) is the seller's PRIMARY weekly update — richer (avatar, showings,
+  // interest, DOM, price position) and already gated. The text Pulse DEFERS to it:
+  // any seller the Listing Concierge already touched this week is skipped, so the
+  // Pulse only fills the weeks the video system produced nothing. ONE weekly seller
+  // touch, never two.
+  const sellerTouchedThisWeek = async (contactId: string): Promise<boolean> => {
+    const { data } = await supabase.from("agent_client_messages").select("id")
+      .eq("recipient_contact_id", contactId).eq("agent_kind", "listing_concierge")
+      .gte("proposed_at", weekAgo).limit(1).maybeSingle()
+    return !!data
+  }
   const { data: sellerListings } = await supabase.from("listings")
     .select("id, address, city, seller_contact_id").eq("brokerage_id", brokerageId)
     .in("status", ["active", "pending", "coming_soon"]).not("seller_contact_id", "is", null).limit(100)
   for (const l of (sellerListings ?? []) as any[]) {
     const { data: c } = await supabase.from("contacts").select("first_name, nurture_status").eq("id", l.seller_contact_id).maybeSingle()
     if (!c || (c as any).nurture_status === "withdrawn") continue
-    if (await alreadyPulsed(l.seller_contact_id)) continue
+    if (await sellerTouchedThisWeek(l.seller_contact_id)) continue
 
     const [{ data: shows }, { count: socialCount }, { data: reel }, txnRow] = await Promise.all([
       supabase.from("showings").select("feedback").eq("listing_id", l.id).gte("scheduled_date", weekAgoDate).limit(50),
