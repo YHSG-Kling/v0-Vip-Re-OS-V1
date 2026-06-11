@@ -33,7 +33,7 @@ export function composeLaunch(address: string, city: string | null, comingSoon: 
     email: `${tag}${where} — ${address}. I wanted you to see this before anyone else. Reply for the full details and a private showing.`,
     newsletter: `New ${comingSoon ? "coming-soon" : "listing"}${where}: ${address}. A standout on the market this week.`,
     blog: `Introducing ${address}${where}. Here's a closer look at the home, the neighborhood, and why it won't last.`,
-    agentSummary: `Launch war room is staged for ${address}${where}: the coming-soon reel, social + email + newsletter + blog drafts, your first open house, a neighbor "coming soon" farm, and a geo ad — all waiting on your approval. Get the launch out the door in one review.`,
+    agentSummary: `Launch war room is staged for ${address}${where}: the coming-soon reel, social + email + newsletter + blog drafts, an open-house draft to date, a neighbor "coming soon" farm, and a geo ad — all waiting on your approval. Set your open-house date and approve to launch in one review.`,
   }
 }
 
@@ -41,7 +41,9 @@ export interface LaunchResult {
   launches: number
   reels: number
   channelsStaged: number
-  openHousesScheduled: number
+  /** Open houses are PROPOSED (a draft with no date) — never auto-scheduled, because
+   *  the system can't know the agent's chosen date. */
+  openHousesProposed: number
   neighborFarms: number
   adsStaged: number
   summariesProposed: number
@@ -53,13 +55,13 @@ export interface LaunchResult {
  */
 export async function runLaunchWarRoom(
   brokerageId: string,
-  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher } = {},
+  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator } = {},
   client?: Svc,
 ): Promise<LaunchResult> {
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const result: LaunchResult = {
-    launches: 0, reels: 0, channelsStaged: 0, openHousesScheduled: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
+    launches: 0, reels: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
   }
 
   const { data: listings } = await supabase.from("listings")
@@ -94,33 +96,41 @@ export async function runLaunchWarRoom(
       if (rr.ok && rr.status !== "skipped") result.reels += 1
     }
 
-    // 2) THE BENCH — social + email + newsletter + blog (all channels, gated).
+    // 2) THE BENCH — social + email + newsletter + blog, copy GENERATED per channel
+    // to the buyer audience (composeLaunch is the deterministic fallback).
     if (agentRowId || agentUserId) {
+      const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+      const facts = [`${comingSoon ? "Coming soon" : "Just listed"}: ${l.address}${l.city ? ` in ${l.city}` : ""}`, "Private previews and showings are available on request"]
+      const persona = { audience: "buyer", situation: comingSoon ? "watching for new inventory" : "actively shopping" }
+      const gen = (goal: string, channel: string, fb: string) => generatePersonaCopy({ goal, facts, channel, persona, words: channel === "blog" ? 120 : 50 }, { body: fb }, { generator: opts.copyGenerator })
+      const [soc, em, nl, bl] = await Promise.all([
+        gen(`a ${comingSoon ? "coming-soon" : "just-listed"} social post`, "social", copy.social),
+        gen("a new-listing announcement email", "email", copy.email),
+        gen("a newsletter listing feature", "newsletter", copy.newsletter),
+        gen("a listing blog post", "blog", copy.blog),
+      ])
       const { stageBenchDrafts } = await import("@/lib/kernel/marketing-bench")
       const b = await stageBenchDrafts({ brokerageId, agentRowId, agentUserId, listingId: l.id }, [
-        { channel: "social", idemName: `Launch Social — ${l.address}`, subject: "", body: copy.social, socialPostType: comingSoon ? "coming_soon" : "new_listing", brief: "LAUNCH WAR ROOM — launch social" },
-        { channel: "email", idemName: `Launch Email — ${l.address}`, subject: `${comingSoon ? "Coming soon" : "Just listed"} — ${l.address}`, body: copy.email, brief: "LAUNCH WAR ROOM — launch email" },
-        { channel: "newsletter", idemName: `Launch Newsletter — ${l.address}`, subject: `New${comingSoon ? " coming-soon" : ""} listing — ${l.address}`, body: copy.newsletter, brief: "LAUNCH WAR ROOM — newsletter feature" },
-        { channel: "blog", idemName: `Introducing ${l.address}`, subject: `A closer look at ${l.address}`, body: copy.blog, brief: "LAUNCH WAR ROOM — listing blog" },
+        { channel: "social", idemName: `Launch Social — ${l.address}`, subject: "", body: soc.body, socialPostType: comingSoon ? "coming_soon" : "new_listing", brief: "LAUNCH WAR ROOM — launch social" },
+        { channel: "email", idemName: `Launch Email — ${l.address}`, subject: `${comingSoon ? "Coming soon" : "Just listed"} — ${l.address}`, body: em.body, brief: "LAUNCH WAR ROOM — launch email" },
+        { channel: "newsletter", idemName: `Launch Newsletter — ${l.address}`, subject: `New${comingSoon ? " coming-soon" : ""} listing — ${l.address}`, body: nl.body, brief: "LAUNCH WAR ROOM — newsletter feature" },
+        { channel: "blog", idemName: `Introducing ${l.address}`, subject: `A closer look at ${l.address}`, body: bl.body, brief: "LAUNCH WAR ROOM — listing blog" },
       ], supabase)
       result.channelsStaged += b.staged.length
     }
 
-    // 3) LISTING CONCIERGE — schedule the first open house if none exists (unpublished).
+    // 3) LISTING CONCIERGE — PROPOSE the first open house as a DRAFT (no date). The
+    // system can't know the agent's chosen date, so it stages a placeholder for the
+    // agent to date + publish — never a fabricated event_date.
     if (agentRowId) {
       const { data: existOH } = await supabase.from("open_houses").select("id").eq("listing_id", l.id).limit(1).maybeSingle()
       if (!existOH) {
-        // First open house: the upcoming Saturday, 11:00–14:00 (the agent can move it).
-        const d = new Date(now.getTime()); const day = d.getUTCDay()
-        const daysToSat = (6 - day + 7) % 7 || 7
-        const sat = new Date(d.getTime() + daysToSat * 86_400_000)
         const { error } = await supabase.from("open_houses").insert({
           brokerage_id: brokerageId, listing_id: l.id, agent_id: agentRowId,
-          title: `Open House — ${l.address}`, property_address: l.address,
-          event_date: sat.toISOString().slice(0, 10), start_time: "11:00", end_time: "14:00",
-          status: "scheduled", is_published: false, require_rsvp: true, allow_walkins: true,
+          title: `Open House — ${l.address} (set a date)`, property_address: l.address,
+          status: "draft", is_published: false, require_rsvp: true, allow_walkins: true,
         })
-        if (!error) result.openHousesScheduled += 1
+        if (!error) result.openHousesProposed += 1
       }
     }
 

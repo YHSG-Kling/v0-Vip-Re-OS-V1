@@ -78,6 +78,8 @@
     "test:office-hours": "tsx scripts/office-hours-simulator.ts",
     "test:outcome-learning": "tsx scripts/outcome-learning-simulator.ts",
     "test:farm-play": "tsx scripts/farm-play-simulator.ts",
+    "test:ai-copy": "tsx scripts/ai-copy-simulator.ts",
+    "test:campaign-center": "tsx scripts/campaign-center-simulator.ts",
     "test:marketing-bench": "tsx scripts/marketing-bench-simulator.ts",
     "test:intent-campaign": "tsx scripts/intent-campaign-simulator.ts",
     "test:launch-war-room": "tsx scripts/launch-war-room-simulator.ts",

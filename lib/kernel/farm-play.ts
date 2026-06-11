@@ -97,7 +97,7 @@ export interface FarmPlayResult {
  */
 export async function runFarmPlays(
   brokerageId: string,
-  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher } = {},
+  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator } = {},
   client?: Svc,
 ): Promise<FarmPlayResult> {
   const supabase = client ?? createServiceClient()
@@ -140,6 +140,19 @@ export async function runFarmPlays(
       daysOnMarket: dom, salePrice: t.purchase_price ?? null,
     }
     const copy = composeFarmPlay(win)
+    // PERSONA-AWARE COPY — the neighbor postcard is generated to the farm audience, not
+    // hardcoded (composeFarmPlay's text is the deterministic fallback).
+    const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+    const facts = [
+      `A home just sold nearby: ${soldAddress}${(listing as any).city ? ` in ${(listing as any).city}` : ""}`,
+      dom !== null ? `It sold in ${dom} days` : "It sold recently",
+      "We can prepare a no-pressure home valuation for nearby owners",
+    ]
+    const postcardCopy = (await generatePersonaCopy(
+      { goal: "a 'just sold near you' farm postcard inviting a home valuation", facts, channel: "direct_mail",
+        persona: { audience: "neighbor", situation: "homeowner near a recent sale" }, words: 55 },
+      { body: copy.postcardCopy }, { generator: opts.copyGenerator },
+    )).body
 
     // 1) DATA STEWARD — SCRAPE the block + stage the farm (awaiting seller permission).
     if (agentUserId) {
@@ -183,7 +196,7 @@ export async function runFarmPlays(
     if (!existPostcard) {
       const { error } = await supabase.from("direct_mail_campaigns").insert({
         brokerage_id: brokerageId, agent_id: agentRowId, campaign_name: copy.adName,
-        target_audience: "farm", piece_type: "postcard", copy_text: copy.postcardCopy,
+        target_audience: "farm", piece_type: "postcard", copy_text: postcardCopy,
         // direct_mail_campaigns.status CHECK: planning|approved|printed|mailed — the
         // pre-approval state is 'planning' (approval_status carries the gate state).
         is_ai_generated: true, approval_status: "pending", status: "planning",
@@ -212,9 +225,9 @@ export async function runFarmPlays(
       const b = await stageBenchDrafts({
         brokerageId, agentRowId, agentUserId, listingId: t.listing_id,
       }, [
-        { channel: "email", idemName: `Just Sold Farm Email — ${soldAddress}`, subject: `Just sold near you — ${soldAddress}`, body: copy.postcardCopy, brief: "FARM PLAY — email to the area" },
-        { channel: "newsletter", idemName: `Just Sold Farm Newsletter — ${soldAddress}`, subject: `Another sale in ${win.soldCity ?? "your neighborhood"}`, body: copy.postcardCopy, brief: "FARM PLAY — newsletter feature" },
-        { channel: "blog", idemName: `Just Sold: ${soldAddress}`, subject: `A look at the latest sale near ${win.soldCity ?? "you"}`, body: `${copy.postcardCopy}\n\nWhat this sale means for nearby homeowners and the local market.`, brief: "FARM PLAY — market blog post" },
+        { channel: "email", idemName: `Just Sold Farm Email — ${soldAddress}`, subject: `Just sold near you — ${soldAddress}`, body: postcardCopy, brief: "FARM PLAY — email to the area" },
+        { channel: "newsletter", idemName: `Just Sold Farm Newsletter — ${soldAddress}`, subject: `Another sale in ${win.soldCity ?? "your neighborhood"}`, body: postcardCopy, brief: "FARM PLAY — newsletter feature" },
+        { channel: "blog", idemName: `Just Sold: ${soldAddress}`, subject: `A look at the latest sale near ${win.soldCity ?? "you"}`, body: `${postcardCopy}\n\nWhat this sale means for nearby homeowners and the local market.`, brief: "FARM PLAY — market blog post" },
       ], supabase)
       result.channelsStaged += b.staged.length
     }

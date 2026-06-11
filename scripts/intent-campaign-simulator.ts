@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /** scripts/intent-campaign-simulator.ts — Data Steward outbound: scrape sellers + hot buyers. */
-import { composeSellerIntent, composeBuyerIntent, runIntentCampaign, BUYER_INTENT_THRESHOLD, type SellerScraper } from "../lib/kernel/intent-campaign"
+import { composeSellerIntent, composeBuyerIntent, runIntentCampaign, BUYER_INTENT_THRESHOLD, type SellerScraper, type BuyerIntentScraper } from "../lib/kernel/intent-campaign"
 let passed = 0, failed = 0; const fails: string[] = []
 const check = (n: string, c: boolean, d?: string) => { if (c) { passed++; console.log(`  ✓ ${n}`) } else { failed++; fails.push(n); console.log(`  ✗ ${n}${d ? ` — ${d}` : ""}`) } }
 const report = () => { console.log(`\n RESULT: ${passed} passed, ${failed} failed`); if (failed) { for (const f of fails) console.log("   - " + f); process.exit(1) } console.log(" ✅ Intent campaign verified") }
@@ -24,8 +24,9 @@ async function main() {
     cleanup.push({ table: "contacts", id: (hb as any).id })
     // Injected seller scraper — no BatchData spend; returns a count.
     const sellerScraper: SellerScraper = async () => ({ recordsFound: 17 })
-    const r1 = await runIntentCampaign(brokerageId, { sellerScraper, maxMarkets: 1 }, svc)
-    check("scraped sellers + found a hot buyer + staged channels", r1.sellersFound === 17 && r1.sellerChannels >= 2 && r1.buyerChannels >= 1)
+    const buyerIntentScraper: BuyerIntentScraper = async () => ({ recordsFound: 9 })  // Exa NEW buyers
+    const r1 = await runIntentCampaign(brokerageId, { sellerScraper, buyerIntentScraper, maxMarkets: 1 }, svc)
+    check("scraped sellers (BatchData) + NEW buyers (Exa) + hot buyer + staged channels", r1.sellersFound === 17 && r1.newBuyersFound === 9 && r1.sellerChannels >= 2 && r1.buyerChannels >= 1)
     // Seller direct mail + email gated.
     const { data: dm } = await svc.from("direct_mail_campaigns").select("id, approval_status, target_audience").ilike("campaign_name", `Intent Sellers ${CITY}%`).maybeSingle()
     if (dm) cleanup.push({ table: "direct_mail_campaigns", id: (dm as any).id })
@@ -40,7 +41,7 @@ async function main() {
     if (sum) { cleanup.push({ table: "agent_client_messages", id: (sum as any).id })
       const { data: rt } = await svc.from("notifications").select("id").eq("entity_id", (sum as any).id).in("type", ["approved_draft", "approval_needed"]).limit(3); for (const n of (rt ?? []) as any[]) cleanup.push({ table: "notifications", id: n.id }) }
     check("Campaign Orchestrator: agent summary proposed (audience agent, by data_steward)", (sum as any)?.audience === "agent" && (sum as any)?.agent_kind === "data_steward")
-    const r2 = await runIntentCampaign(brokerageId, { sellerScraper, maxMarkets: 1 }, svc)
+    const r2 = await runIntentCampaign(brokerageId, { sellerScraper, buyerIntentScraper, maxMarkets: 1 }, svc)
     check("idempotency: second pass stages nothing new", r2.sellerChannels === 0 && r2.buyerChannels === 0)
   } finally {
     for (const c of [...cleanup].reverse()) { try { await svc.from(c.table).delete().eq("id", c.id) } catch {} }

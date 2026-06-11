@@ -10,7 +10,7 @@ async function main() {
   console.log("══ Launch war room simulator ══\n[Layer 1 · compose]")
   const c = composeLaunch("44 Birch Lane", "Oakdale", true)
   check("coming-soon copy across channels names the home", c.social.includes("COMING SOON") && c.social.includes("44 Birch Lane") && c.email.includes("44 Birch Lane") && c.blog.includes("44 Birch Lane"))
-  check("agent summary names the launch pieces", c.agentSummary.includes("open house") && c.agentSummary.includes("neighbor") && c.agentSummary.includes("ad"))
+  check("agent summary names the launch pieces", c.agentSummary.includes("open-house") && c.agentSummary.includes("neighbor") && c.agentSummary.includes("ad"))
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) { console.log("\n[Layer 2] ⏭ no creds"); report(); return }
   const { createServiceClient } = await import("../lib/supabase/service"); const svc = createServiceClient()
@@ -25,11 +25,11 @@ async function main() {
     const promoDispatcher: PromoDispatcher = async () => ({ ok: true, status: "remotion_pending" })
     const r1 = await runLaunchWarRoom(brokerageId, { scraper: fakeScraper, promoDispatcher }, svc)
     check("war room convened: reel + channels + open house + neighbor farm + ad + summary",
-      r1.launches >= 1 && r1.reels >= 1 && r1.channelsStaged >= 3 && r1.openHousesScheduled >= 1 && r1.neighborFarms >= 1 && r1.adsStaged >= 1 && r1.summariesProposed >= 1)
+      r1.launches >= 1 && r1.reels >= 1 && r1.channelsStaged >= 3 && r1.openHousesProposed >= 1 && r1.neighborFarms >= 1 && r1.adsStaged >= 1 && r1.summariesProposed >= 1)
     // Open house scheduled (unpublished).
-    const { data: oh } = await svc.from("open_houses").select("id, status, is_published").eq("listing_id", (l as any).id).maybeSingle()
+    const { data: oh } = await svc.from("open_houses").select("id, status, is_published, event_date").eq("listing_id", (l as any).id).maybeSingle()
     if (oh) cleanup.push({ table: "open_houses", id: (oh as any).id })
-    check("Listing Concierge: first open house scheduled, UNPUBLISHED", (oh as any)?.is_published === false)
+    check("Listing Concierge: open house PROPOSED as a draft (no fabricated date), unpublished", (oh as any)?.status === "draft" && (oh as any)?.is_published === false)
     // Coming-soon social drafted.
     const { data: sp } = await svc.from("social_posts").select("id, post_type, approval_status").eq("listing_id", (l as any).id).eq("post_type", "coming_soon").maybeSingle()
     if (sp) cleanup.push({ table: "social_posts", id: (sp as any).id })

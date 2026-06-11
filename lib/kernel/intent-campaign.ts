@@ -20,7 +20,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Injectable seam: how many motivated sellers in this market + a sample. */
+/** Injectable seam: how many motivated sellers in this market (BatchData). */
 export type SellerScraper = (params: { city: string; state: string | null; motivationTypes: string[] })
   => Promise<{ recordsFound: number }>
 
@@ -30,6 +30,17 @@ export const realSellerScraper: SellerScraper = async (params) => {
     state: params.state ?? "", city: params.city, motivationTypes: params.motivationTypes,
   }).catch(() => ({ recordsFound: 0 }))
   return { recordsFound: (r as { recordsFound?: number }).recordsFound ?? 0 }
+}
+
+/** Injectable seam: NEW buyers showing online intent (Exa neural search), distinct from
+ *  the brokerage's own contacts — this is buyer ACQUISITION. */
+export type BuyerIntentScraper = (params: { city: string; state: string | null })
+  => Promise<{ recordsFound: number }>
+
+export const realBuyerIntentScraper: BuyerIntentScraper = async (params) => {
+  const { sourceExaBuyerIntent } = await import("@/lib/lead-pipeline/exa-sourcer")
+  const r = await sourceExaBuyerIntent({ city: params.city, state: params.state ?? "" } as any).catch(() => ({ records: [] as unknown[] }))
+  return { recordsFound: ((r as { records?: unknown[] }).records ?? []).length }
 }
 
 /** Below this intent_score a buyer is not "showing intent" enough for outbound. */
@@ -58,6 +69,8 @@ export interface IntentCampaignResult {
   markets: number
   sellersFound: number
   sellerChannels: number
+  /** NEW buyers discovered via Exa online-intent search (acquisition). */
+  newBuyersFound: number
   buyerSegments: number
   buyerChannels: number
   summariesProposed: number
@@ -72,18 +85,20 @@ const DEFAULT_MOTIVATIONS = ["high_equity", "absentee", "pre_foreclosure"]
  */
 export async function runIntentCampaign(
   brokerageId: string,
-  opts: { now?: Date; sellerScraper?: SellerScraper; maxMarkets?: number } = {},
+  opts: { now?: Date; sellerScraper?: SellerScraper; buyerIntentScraper?: BuyerIntentScraper; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator; maxMarkets?: number } = {},
   client?: Svc,
 ): Promise<IntentCampaignResult> {
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const scraper = opts.sellerScraper ?? realSellerScraper
+  const buyerScraper = opts.buyerIntentScraper ?? realBuyerIntentScraper
   const maxMarkets = opts.maxMarkets ?? 2
   const result: IntentCampaignResult = {
-    markets: 0, sellersFound: 0, sellerChannels: 0, buyerSegments: 0, buyerChannels: 0, summariesProposed: 0,
+    markets: 0, sellersFound: 0, sellerChannels: 0, newBuyersFound: 0, buyerSegments: 0, buyerChannels: 0, summariesProposed: 0,
   }
   const weekStamp = now.toISOString().slice(0, 10)
   const { stageBenchDrafts } = await import("@/lib/kernel/marketing-bench")
+  const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
 
   // A representative agent for the bench rows (brokerage-level campaign).
   const { data: anyAgent } = await supabase.from("agents").select("id, user_id")
@@ -103,12 +118,21 @@ export async function runIntentCampaign(
     const found = await scraper({ city: m.city, state: m.state, motivationTypes: DEFAULT_MOTIVATIONS }).catch(() => ({ recordsFound: 0 }))
     if (found.recordsFound <= 0) continue
     result.sellersFound += found.recordsFound
-    const copy = composeSellerIntent(m.city, found.recordsFound, DEFAULT_MOTIVATIONS)
+    const fb = composeSellerIntent(m.city, found.recordsFound, DEFAULT_MOTIVATIONS)
+    const copy = await generatePersonaCopy(
+      { goal: "outreach to a motivated homeowner about selling", channel: "direct_mail",
+        facts: [`${found.recordsFound} homes like theirs in ${m.city} are positioned to sell well now`, "We offer a no-pressure valuation and plan"],
+        persona: { audience: "seller", situation: "a motivated homeowner (equity / circumstances)" }, words: 55 },
+      fb, { generator: opts.copyGenerator })
     const b = await stageBenchDrafts({ brokerageId, agentRowId, agentUserId, listingId: null }, [
-      { channel: "direct_mail", idemName: `Intent Sellers ${m.city} ${weekStamp}`, subject: copy.subject, body: copy.body, mailAudience: "motivated_sellers", brief: `INTENT CAMPAIGN — ${found.recordsFound} motivated sellers scraped in ${m.city}` },
-      { channel: "email", idemName: `Intent Sellers Email ${m.city} ${weekStamp}`, subject: copy.subject, body: copy.body, brief: `INTENT CAMPAIGN — motivated sellers in ${m.city}` },
+      { channel: "direct_mail", idemName: `Intent Sellers ${m.city} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, mailAudience: "motivated_sellers", brief: `INTENT CAMPAIGN — ${found.recordsFound} motivated sellers scraped in ${m.city}` },
+      { channel: "email", idemName: `Intent Sellers Email ${m.city} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, brief: `INTENT CAMPAIGN — motivated sellers in ${m.city}` },
     ], supabase)
     result.sellerChannels += b.staged.length
+
+    // NEW BUYERS — Exa online-intent search finds buyers NOT yet in our CRM (acquisition).
+    const newBuyers = await buyerScraper({ city: m.city, state: m.state }).catch(() => ({ recordsFound: 0 }))
+    result.newBuyersFound += newBuyers.recordsFound
   }
 
   // ── BUYER side: the brokerage's own high-intent buyers → an email to their search. ──
@@ -120,9 +144,14 @@ export async function runIntentCampaign(
   if (hotBuyers.length > 0) {
     result.buyerSegments += 1
     const area = markets[0]?.city ?? null
-    const copy = composeBuyerIntent(area, hotBuyers.length)
+    const fb = composeBuyerIntent(area, hotBuyers.length)
+    const copy = await generatePersonaCopy(
+      { goal: "an email to an active buyer about fresh inventory in their search area", channel: "email",
+        facts: [`${hotBuyers.length > 0 ? "New or improved matches" : "Fresh inventory"} just came up${area ? ` around ${area}` : ""}`, "We can line up private tours"],
+        persona: { audience: "buyer", situation: "actively searching, showing recent intent" }, words: 55 },
+      fb, { generator: opts.copyGenerator })
     const b = await stageBenchDrafts({ brokerageId, agentRowId, agentUserId, listingId: null }, [
-      { channel: "email", idemName: `Intent Buyers ${area ?? "all"} ${weekStamp}`, subject: copy.subject, body: copy.body, brief: `INTENT CAMPAIGN — ${hotBuyers.length} high-intent buyers (score ≥ ${BUYER_INTENT_THRESHOLD})` },
+      { channel: "email", idemName: `Intent Buyers ${area ?? "all"} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, brief: `INTENT CAMPAIGN — ${hotBuyers.length} high-intent buyers (score ≥ ${BUYER_INTENT_THRESHOLD})` },
     ], supabase)
     result.buyerChannels += b.staged.length
   }
@@ -136,9 +165,9 @@ export async function runIntentCampaign(
       const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
       const res = await proposeClientMessage({
         brokerageId, agentKind: "data_steward", entityType: "contact", audience: "agent",
-        subject: `🎯 Intent campaign staged — ${result.sellersFound} motivated sellers, ${hotBuyers.length} hot buyers`,
-        body: `The Data Steward scraped your markets: ${result.sellersFound} motivated-seller signals across ${result.markets} area${result.markets === 1 ? "" : "s"} and ${hotBuyers.length} of your own buyers showing fresh intent. Situation-specific email + direct mail are drafted across the channels — review and approve.`,
-        rationale: `INTENT CAMPAIGN — Data Steward scraped motivated sellers + high-intent buyers; Marketing staged situation-specific multi-channel drafts; all gated.`,
+        subject: `🎯 Intent campaign staged — ${result.sellersFound} motivated sellers, ${result.newBuyersFound} new buyers, ${hotBuyers.length} hot buyers`,
+        body: `The Data Steward scraped your markets: ${result.sellersFound} motivated-seller signals + ${result.newBuyersFound} NEW buyers showing online intent (Exa) across ${result.markets} area${result.markets === 1 ? "" : "s"}, plus ${hotBuyers.length} of your own buyers active recently. Situation-specific, persona-written email + direct mail are drafted across the channels — review and approve.`,
+        rationale: `INTENT CAMPAIGN — Data Steward scraped motivated sellers (BatchData) + new buyers (Exa) + high-intent contacts; bench staged persona-written multi-channel drafts; all gated.`,
         channel: "portal",
       }, supabase)
       if (res.ok) result.summariesProposed += 1
