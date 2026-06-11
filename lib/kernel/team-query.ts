@@ -187,12 +187,14 @@ export async function runTeamQuery(
       .order("created_at", { ascending: false }).limit(1).maybeSingle()
     if (promo) {
       const st = (promo as any).status as string
-      c.push({
-        manager: "asset_manager",
-        line: st === "completed"
-          ? `the ${String((promo as any).event_type ?? "promo").replace(/_/g, " ")} reel for their listing is rendered and ready to share.`
-          : `a ${String((promo as any).event_type ?? "promo").replace(/_/g, " ")} reel for their listing is in the render pipeline (${st.replace(/_/g, " ")}).`,
-      })
+      // listing_promo_videos.status terminal-success state is social_drafted (NOT
+      // "completed" — that value isn't in the CHECK); failed/suppressed = no reel.
+      const evt = String((promo as any).event_type ?? "promo").replace(/_/g, " ")
+      if (st === "social_drafted") {
+        c.push({ manager: "asset_manager", line: `the ${evt} reel for their listing is rendered and ready to share.` })
+      } else if (["queued", "remotion_pending", "rendering"].includes(st)) {
+        c.push({ manager: "asset_manager", line: `a ${evt} reel for their listing is in the render pipeline (${st.replace(/_/g, " ")}).` })
+      }
     }
   }
 

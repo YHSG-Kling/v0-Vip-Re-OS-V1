@@ -15,6 +15,8 @@ type VoiceIntent =
   | "schedule_followup"
   | "team_query"
   | "morning_standup"
+  | "do_standup_item"
+  | "area_query"
   | "voice_followup"
   | "start_marketing"
   | "cut_promo"
@@ -73,6 +75,8 @@ export async function POST(req: NextRequest) {
 - create_task: asking to create, add, or set a task reminder
 - schedule_followup: asking to schedule a follow-up
 - morning_standup: asking the team what to do / what matters today / what's my day / where to start / priorities (NO specific person named)
+- do_standup_item: telling the team to DO / knock out / handle / approve a stand-up item BY ITS RANK ("do number two", "knock out the first one", "handle #3")
+- area_query: asking what's happening / running / for sale in an AREA, neighborhood, city, or near a street ("anything happening near 44 Birch", "what's running in Springfield", "our listings in Oakdale")
 - team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
@@ -241,6 +245,39 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = s.spoken
         data = { items: s.items }
         action = s.items.length > 0 ? "standup_delivered" : null
+      }
+    } else if (intent === "do_standup_item") {
+      // "Knock out number two" — re-derive the stand-up (live) and act on item N
+      // through its rail (approval → the gate as the agent; reengage → follow-up;
+      // fire → never auto-resolved).
+      const { parseOrdinal, runStandupAction } = await import("@/lib/kernel/standup-action")
+      const ordinal = parseOrdinal(transcript)
+      if (!ordinal || !brokerageId) {
+        spokenResponse = "Which one — number one, two, or three? Say the rank and I'll knock it out."
+      } else {
+        const r = await runStandupAction({ brokerageId, agentUserId: user.id, ordinal, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = { ordinal, actedKind: r.actedKind ?? null, entityId: r.entityId ?? null }
+        action = r.ok ? `standup_${r.actedKind}_done` : null
+      }
+    } else if (intent === "area_query") {
+      // "Anything happening near 44 Birch?" — the marketing bench reports listings,
+      // reels, and live ads in the area. Read-only.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the area, neighborhood, city, or street the user is asking about. Respond with ONLY that place (e.g. "44 Birch" or "Springfield"). If none, respond NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 16,
+      })
+      const areaQuery = extract.text.trim()
+      if (!areaQuery || areaQuery.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Which area? Give me a street, neighborhood, or city and I'll pull what the team has going there."
+      } else {
+        const { runAreaQuery } = await import("@/lib/kernel/area-query")
+        const a = await runAreaQuery(brokerageId, areaQuery, service)
+        spokenResponse = a.spoken
+        data = { area: a.area, contributions: a.contributions }
+        action = a.contributions.length > 0 ? "area_query_answered" : null
       }
     } else if (intent === "voice_followup" || intent === "start_marketing") {
       // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
