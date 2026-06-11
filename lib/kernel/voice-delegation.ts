@@ -114,7 +114,7 @@ export async function voiceFollowUp(
 /** Seam: how a promo dispatch happens (tests inject; prod uses the canonical reactor). */
 export type PromoDispatcher = (input: {
   brokerageId: string; listingId: string; agentUserId: string;
-  eventType: "just_listed" | "under_contract" | "just_sold"; bypassPolicy: boolean;
+  eventType: "just_listed" | "coming_soon" | "under_contract" | "just_sold"; bypassPolicy: boolean;
 }) => Promise<{ ok: boolean; status: string; reason?: string }>
 
 /** "Cut a promo reel for 44 Birch" — rides the CANONICAL Remotion + D-ID rail

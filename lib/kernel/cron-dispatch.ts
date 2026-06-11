@@ -54,6 +54,12 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/office-hours",                   schedule: "0 13,19 * * *" },
   // Farm Play — the marketing bench convenes geographic farming on each closed deal.
   { path: "/api/cron/farm-play",                      schedule: "0 15 * * *" },
+  // Intent Campaign — Data Steward scrapes motivated sellers + hot buyers → multi-channel.
+  { path: "/api/cron/intent-campaign",                schedule: "0 14 * * 2" },
+  // Listing Launch War Room — the bench launches each new/coming-soon listing.
+  { path: "/api/cron/launch-war-room",                schedule: "0 */4 * * *" },
+  // Lookalike from the closing table — first-party seed audience (weekly).
+  { path: "/api/cron/lookalike-audience",             schedule: "0 11 * * 1" },
   // ── The original vercel.json schedules, preserved verbatim ──
   { path: "/api/cron/appointment-whisper"                 , schedule: "*/10 * * * *" },
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },

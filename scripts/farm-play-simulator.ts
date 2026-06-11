@@ -95,7 +95,7 @@ async function main() {
 
     const r1 = await runFarmPlays(brokerageId, { scraper: fakeScraper, promoDispatcher }, svc)
     check("farm play: convened (all contributions counted: neighbors scraped, reel, social, postcard, ad, recruiting, summary)",
-      r1.plays >= 1 && r1.neighborCampaigns >= 1 && r1.neighborsIdentified === 2 && r1.reels >= 1 && r1.socialPosts >= 1 && r1.postcards >= 1 && r1.adsStaged >= 1 && r1.recruitingProofs >= 1 && r1.summariesProposed >= 1)
+      r1.plays >= 1 && r1.neighborCampaigns >= 1 && r1.neighborsIdentified === 2 && r1.reels >= 1 && r1.socialPosts >= 1 && r1.postcards >= 1 && r1.adsStaged >= 1 && r1.channelsStaged >= 3 && r1.recruitingProofs >= 1 && r1.summariesProposed >= 1)
 
     // Data Steward: the scraped recipients actually landed.
     const { data: ncForClean } = await svc.from("neighbor_notification_campaigns").select("id").eq("listing_id", (lst as any).id).maybeSingle()
@@ -131,6 +131,16 @@ async function main() {
       .eq("campaign_name", `Just Sold Farm — ${TAG} 44 Birch Lane`).maybeSingle()
     if (ad) cleanup.push({ table: "ad_campaigns", id: (ad as any).id })
     check("Ads: geo campaign STAGED as a draft, targeting the city", (ad as any)?.status === "draft" && Array.isArray((ad as any)?.targeting_config?.locations) && (ad as any).targeting_config.locations[0] === `${TAG}ville`)
+
+    // The full-bench channels (email + newsletter + blog) — drafted, gated.
+    const { data: fpEmail } = await svc.from("email_campaigns").select("id, status").eq("campaign_name", `Just Sold Farm Email — ${TAG} 44 Birch Lane`).maybeSingle()
+    if (fpEmail) cleanup.push({ table: "email_campaigns", id: (fpEmail as any).id })
+    const { data: fpNl } = await svc.from("newsletter_campaigns").select("id").eq("campaign_name", `Just Sold Farm Newsletter — ${TAG} 44 Birch Lane`).maybeSingle()
+    if (fpNl) cleanup.push({ table: "newsletter_campaigns", id: (fpNl as any).id })
+    const { data: fpBlog } = await svc.from("blog_posts").select("id").eq("title", `Just Sold: ${TAG} 44 Birch Lane`).maybeSingle()
+    if (fpBlog) cleanup.push({ table: "blog_posts", id: (fpBlog as any).id })
+    check("full bench: email + newsletter + blog drafted (all channels, gated)",
+      !!fpEmail && (fpEmail as any).status === "draft" && !!fpNl && !!fpBlog)
 
     // Recruiting — the standout win on the bus.
     const { data: rsig } = await svc.from("manager_signals").select("id, to_manager, signal_type")

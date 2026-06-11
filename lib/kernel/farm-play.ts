@@ -84,6 +84,7 @@ export interface FarmPlayResult {
   socialPosts: number
   postcards: number
   adsStaged: number
+  channelsStaged: number
   recruitingProofs: number
   summariesProposed: number
 }
@@ -104,7 +105,7 @@ export async function runFarmPlays(
   const since = new Date(now.getTime() - FARM_PLAY_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10)
   const result: FarmPlayResult = {
     plays: 0, neighborCampaigns: 0, neighborsIdentified: 0, reels: 0, socialPosts: 0,
-    postcards: 0, adsStaged: 0, recruitingProofs: 0, summariesProposed: 0,
+    postcards: 0, adsStaged: 0, channelsStaged: 0, recruitingProofs: 0, summariesProposed: 0,
   }
 
   const { data: closed } = await supabase.from("transactions")
@@ -204,7 +205,21 @@ export async function runFarmPlays(
       }
     }
 
-    // 5) RECRUITING MANAGER — a standout close becomes recruiting proof (the bus).
+    // 5) THE FULL BENCH — email + newsletter + blog drafts on the just-sold story
+    // (social + direct mail + ad are staged above; this closes the channel set).
+    if (agentRowId || agentUserId) {
+      const { stageBenchDrafts } = await import("@/lib/kernel/marketing-bench")
+      const b = await stageBenchDrafts({
+        brokerageId, agentRowId, agentUserId, listingId: t.listing_id,
+      }, [
+        { channel: "email", idemName: `Just Sold Farm Email — ${soldAddress}`, subject: `Just sold near you — ${soldAddress}`, body: copy.postcardCopy, brief: "FARM PLAY — email to the area" },
+        { channel: "newsletter", idemName: `Just Sold Farm Newsletter — ${soldAddress}`, subject: `Another sale in ${win.soldCity ?? "your neighborhood"}`, body: copy.postcardCopy, brief: "FARM PLAY — newsletter feature" },
+        { channel: "blog", idemName: `Just Sold: ${soldAddress}`, subject: `A look at the latest sale near ${win.soldCity ?? "you"}`, body: `${copy.postcardCopy}\n\nWhat this sale means for nearby homeowners and the local market.`, brief: "FARM PLAY — market blog post" },
+      ], supabase)
+      result.channelsStaged += b.staged.length
+    }
+
+    // 6) RECRUITING MANAGER — a standout close becomes recruiting proof (the bus).
     if (copy.recruitingNote) {
       const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       const pub = await publishManagerSignal({
@@ -215,7 +230,7 @@ export async function runFarmPlays(
       if (pub.ok && !pub.reason) result.recruitingProofs += 1
     }
 
-    // 6) CAMPAIGN ORCHESTRATOR — ONE internal summary into the gate (audience 'agent').
+    // 7) CAMPAIGN ORCHESTRATOR — ONE internal summary into the gate (audience 'agent').
     if (agentUserId) {
       const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
       const res = await proposeClientMessage({
@@ -229,7 +244,7 @@ export async function runFarmPlays(
       if (res.ok) result.summariesProposed += 1
     }
 
-    // 7) THE BUS — the convening line (the Command Center shows the bench converge).
+    // 8) THE BUS — the convening line (the Command Center shows the bench converge).
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const conv = await publishManagerSignal({
       brokerageId, fromManager: "deal_coordinator", toManager: "campaign_orchestrator",
