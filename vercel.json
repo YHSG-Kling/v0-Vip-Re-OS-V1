@@ -222,6 +222,10 @@
       "schedule": "*/30 * * * *"
     },
     {
+      "path": "/api/cron/appointment-whisper",
+      "schedule": "*/10 * * * *"
+    },
+    {
       "path": "/api/cron/deadline-watcher",
       "schedule": "30 * * * *"
     },

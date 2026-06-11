@@ -195,6 +195,36 @@ export async function signupBrokerageAction(
     console.warn("[signupBrokerage] Invite email failed:", err?.message)
   }
 
+  // SUBSCRIBER ONBOARDING EDUCATION — day-one learning path. Assign the platform's
+  // published onboarding modules (brokerage_id IS NULL = platform library; audience
+  // 'agent'/'broker') to the new admin + welcome them to their AI team. Best-effort —
+  // education must never block a signup.
+  try {
+    const { data: mods } = await service
+      .from("learning_modules").select("id")
+      .is("brokerage_id", null).eq("status", "published")
+      .overlaps("audience_roles", ["agent", "broker"])
+      .order("display_priority", { ascending: false }).limit(3)
+    let assigned = 0
+    for (const m of (mods ?? []) as Array<{ id: string }>) {
+      const { error } = await service.from("learning_assignments").upsert({
+        brokerage_id: brokerage.id, module_id: m.id, agent_user_id: newUser.id,
+        status: "open", signal_source: "subscriber_onboarding",
+      }, { onConflict: "agent_user_id,module_id", ignoreDuplicates: true })
+      if (!error) assigned += 1
+    }
+    await service.from("notifications").insert({
+      user_id: newUser.id, brokerage_id: brokerage.id, type: "agent_onboarding",
+      title: "Welcome — meet your AI team",
+      body: assigned > 0
+        ? `Your ${input.tier.replace(/_/g, " ")} plan is live. Start with your ${assigned}-lesson onboarding path — your eleven AI managers are already on duty.`
+        : `Your ${input.tier.replace(/_/g, " ")} plan is live — your eleven AI managers are already on duty. Your onboarding wizard is ready.`,
+      priority: "high", is_read: false,
+    })
+  } catch (err) {
+    console.warn("[signupBrokerage] onboarding education failed (non-fatal):", err)
+  }
+
   return {
     ok:          true,
     brokerageId: brokerage.id,
