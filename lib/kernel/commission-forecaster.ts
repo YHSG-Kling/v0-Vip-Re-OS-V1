@@ -265,6 +265,79 @@ export function composeForecastSummary(
   return { subject, body: lines.join(" ") }
 }
 
+// ── Recruiting classification (pure) ─────────────────────────────────────────
+
+/**
+ * PURE. Decide whether an agent's forecast is a RECRUITING signal — strictly from the
+ * already-computed capStatus / forecast / closedYtd (NEVER recomputed). Two outcomes the
+ * Recruiting Manager (who "manages agents") cares about, else null (the healthy middle):
+ *
+ *  · 'crushed'  — the agent has HIT or crossed their commission cap (isCapped). Real
+ *                 production proof a recruiter can cite to talent: "agents here hit and
+ *                 blow past cap." Requires a CONFIGURED cap (no cap → never crushed).
+ *
+ *  · 'stalling' — a coaching trigger. Either:
+ *                   (a) real pipeline exists but the year is projected to BADLY miss the
+ *                       goal (projectedVsGoal ≤ −STALL_GOAL_MISS_FRACTION × goal), OR
+ *                   (b) real pipeline exists but cap progress is deep into the year yet
+ *                       very low (cap configured, progress ≤ STALL_CAP_PROGRESS, well past
+ *                       year start), OR
+ *                   (c) ZERO closed YTD with only a THIN pipeline (≤ STALL_THIN_PIPELINE
+ *                       weighted dollars) — at risk of a no-production year.
+ *                 A capped agent is NEVER stalling (crushed wins).
+ *
+ *  · null       — healthy mid-progress, or nothing real to say.
+ *
+ * Boundaries are intentionally conservative: we'd rather stay silent than mislabel a
+ * productive agent as stalling. No fabrication — only the real numbers decide.
+ */
+export const STALL_GOAL_MISS_FRACTION = 0.4
+export const STALL_CAP_PROGRESS = 0.25
+export const STALL_THIN_PIPELINE = 5_000
+
+export function classifyAgentForRecruiting(
+  capStatus: CapStatus,
+  forecast: GciForecast,
+  closedYtd: number,
+): "crushed" | "stalling" | null {
+  const closed = Math.max(0, Number(closedYtd) || 0)
+
+  // CRUSHED — post-cap (cap must be configured for isCapped to be true).
+  if (capStatus.isCapped) return "crushed"
+
+  const weighted = Math.max(0, Number(forecast.weightedPipeline) || 0)
+  const hasRealPipeline = weighted > 0
+
+  // (a) Real pipeline but projected to BADLY miss a real goal.
+  if (
+    hasRealPipeline &&
+    forecast.goal != null &&
+    forecast.goal > 0 &&
+    forecast.projectedVsGoal != null &&
+    forecast.projectedVsGoal <= -(STALL_GOAL_MISS_FRACTION * forecast.goal)
+  ) {
+    return "stalling"
+  }
+
+  // (b) Cap configured, well into the year, yet cap progress is very low despite pipeline.
+  if (
+    hasRealPipeline &&
+    capStatus.cap != null &&
+    capStatus.progress != null &&
+    capStatus.progress <= STALL_CAP_PROGRESS &&
+    forecast.yearElapsed >= 0.4
+  ) {
+    return "stalling"
+  }
+
+  // (c) Zero closed YTD with only a thin pipeline → at risk of a no-production year.
+  if (closed <= 0 && weighted > 0 && weighted <= STALL_THIN_PIPELINE) {
+    return "stalling"
+  }
+
+  return null
+}
+
 // ── Pipeline normalization (pure) ─────────────────────────────────────────────
 
 interface RawTxn {
@@ -320,6 +393,12 @@ export interface CommissionForecasterResult {
   audioBriefs: number
   textBriefs: number
   capsConfigured: number
+  /** Recruiting-bus signals emitted to recruiting_manager for agents who HIT/crossed cap
+   *  (recruiting PROOF datapoints the recruiter can cite to talent). */
+  recruitingProofSignals: number
+  /** Recruiting-bus COACHING signals emitted to recruiting_manager for stalling agents
+   *  (real pipeline but projected to badly miss, or zero production with a thin pipeline). */
+  coachingSignals: number
   errors: string[]
 }
 
@@ -368,7 +447,8 @@ export async function runCommissionForecaster(
   const now = opts.now ?? new Date()
   const synthesizer = opts.synthesizer ?? realSynthesizer
   const result: CommissionForecasterResult = {
-    agentsConsidered: 0, forecastsProposed: 0, audioBriefs: 0, textBriefs: 0, capsConfigured: 0, errors: [],
+    agentsConsidered: 0, forecastsProposed: 0, audioBriefs: 0, textBriefs: 0, capsConfigured: 0,
+    recruitingProofSignals: 0, coachingSignals: 0, errors: [],
   }
 
   const weekTag = isoWeekTag(now)
@@ -469,6 +549,49 @@ export async function runCommissionForecaster(
       if (res.ok) {
         result.forecastsProposed += 1
         if (audioUrl) result.audioBriefs += 1; else result.textBriefs += 1
+
+        // ── Loop the Recruiting Manager into agent-management via the inter-manager bus ──
+        // Decide crushing vs stalling vs neither from the ALREADY-COMPUTED capStatus/forecast
+        // (no recompute). GATED/observational: we only publish an INTERNAL bus signal — the
+        // recruiting handler decides what to do; nothing here messages any agent autonomously.
+        // Idempotent: the bus dedupes on (recruiting_manager, signalType, agent.id) → at most
+        // one OPEN signal per agent per outcome.
+        const recruitingClass = classifyAgentForRecruiting(capStatus, forecast, forecast.closedYtd)
+        if (recruitingClass) {
+          try {
+            const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+            const basePayload = {
+              agent_id: agent.id,
+              user_id: agent.user_id,
+              closed_ytd: Math.round(forecast.closedYtd),
+              cap: capStatus.cap,
+              projected_annual_gci: forecast.projectedAnnualGci,
+              cap_progress: capStatus.progress,
+              goal: forecast.goal,
+              projected_vs_goal: forecast.projectedVsGoal,
+              week: weekTag,
+            }
+            if (recruitingClass === "crushed") {
+              const sig = await publishManagerSignal({
+                brokerageId, fromManager: "deal_coordinator", toManager: "recruiting_manager",
+                signalType: "agent_crushed_cap", entityType: "agent", entityId: agent.id,
+                message: `${agentName} hit their ${cap != null ? usd(cap) : "commission"} cap (${usd(forecast.closedYtd)} GCI closed YTD) — live proof for the recruiting pitch that agents here hit and blow past cap.`,
+                payload: basePayload,
+              }, supabase)
+              if (sig.ok) result.recruitingProofSignals += 1
+            } else {
+              const sig = await publishManagerSignal({
+                brokerageId, fromManager: "deal_coordinator", toManager: "recruiting_manager",
+                signalType: "agent_stalling", entityType: "agent", entityId: agent.id,
+                message: `${agentName} is tracking behind — ${usd(forecast.closedYtd)} GCI closed YTD, projecting ${usd(forecast.projectedAnnualGci)}${forecast.goal != null ? ` against a ${usd(forecast.goal)} goal` : ""}. Worth a coaching touch from the management side.`,
+                payload: basePayload,
+              }, supabase)
+              if (sig.ok) result.coachingSignals += 1
+            }
+          } catch (sigErr: any) {
+            result.errors.push(`agent ${agent.id} recruiting signal: ${sigErr?.message ?? String(sigErr)}`)
+          }
+        }
       } else if (res.error) {
         result.errors.push(`agent ${agent.id}: ${res.error}`)
       }

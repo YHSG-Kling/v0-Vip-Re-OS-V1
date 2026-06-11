@@ -27,6 +27,7 @@ import { scoreCriteriaFit, type ListingFacts } from "@/lib/buyer-search/market-w
 import { proposeClientMessage } from "@/lib/agents/agent-client-messages"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import { generatePersonaCopy, type CopyGenerator, type CopyPersona } from "@/lib/kernel/ai-copy"
+import { pushPortalValueCard } from "@/lib/kernel/portal-value"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -89,6 +90,8 @@ export interface ReverseProspectingResult {
   notesProposed: number
   /** Buyers queued to the AI ISA as call candidates on the bus. */
   isaQueued: number
+  /** Portal value cards pushed to matched buyers' portals (additive, idempotent per day). */
+  portalCardsPushed: number
 }
 
 /** Build the persona for a buyer contact (best-effort) for copy generation. */
@@ -117,7 +120,8 @@ export async function runReverseProspecting(
   client?: Svc,
 ): Promise<ReverseProspectingResult> {
   const supabase = client ?? createServiceClient()
-  const result: ReverseProspectingResult = { listings: 0, matches: 0, notesProposed: 0, isaQueued: 0 }
+  const now = opts.now ?? new Date()
+  const result: ReverseProspectingResult = { listings: 0, matches: 0, notesProposed: 0, isaQueued: 0, portalCardsPushed: 0 }
   if (!brokerageId) return result
 
   // Fresh inventory only (coming_soon / active). list_price is the canonical price column.
@@ -236,6 +240,23 @@ export async function runReverseProspecting(
         supabase,
       )
       if (proposed.ok) result.notesProposed += 1
+
+      // (c) PORTAL VALUE CARD — leave the SAME real "this just came up for you" match on the
+      // buyer's portal so it always has something fresh worth returning to. ADDITIVE: the gated
+      // note above is unchanged; this surfaces only the REAL matched-listing copy (facts come
+      // straight off the listing row — no fabrication). Reuses the persona-generated body. The
+      // listing is real context, so we attach listing_id. Idempotent per (buyer, "reverse_prospecting",
+      // day): if the buyer matched multiple fresh listings the same day, the portal gets ONE card
+      // (honesty over noise — the gated per-listing notes still carry every match).
+      const card = await pushPortalValueCard({
+        brokerageId, contactId: m.contactId, listingId: listing.id,
+        title: draft.subject ?? fallback.subject,
+        summary: draft.body,
+        updateType: "reverse_prospecting",
+        metadata: { audience: "buyer", listing_id: listing.id, listing_address: listing.address, fit_score: m.score, source: "reverse_prospecting" },
+        now,
+      }, supabase)
+      if (card.pushed) result.portalCardsPushed += 1
 
       // (b) AI ISA — queue the buyer as a call candidate on the bus. fromManager
       // 'shopping_agent' (demand side) → toManager 'ai_isa' (from !== to). Idempotent per

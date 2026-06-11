@@ -27,6 +27,8 @@
     "test:strategy-insights": "tsx scripts/strategy-insights-simulator.ts",
     "test:referral-closer": "tsx scripts/referral-closer-simulator.ts",
     "test:recruit-outreach": "tsx scripts/recruit-outreach-simulator.ts",
+    "test:recruiter-agent-mgmt": "tsx scripts/recruiter-agent-management-simulator.ts",
+    "test:portal-value": "tsx scripts/portal-value-simulator.ts",
     "test:brokerage-pnl": "tsx scripts/brokerage-pnl-simulator.ts",
     "test:vendor-loop": "tsx scripts/vendor-loop-simulator.ts",
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",

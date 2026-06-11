@@ -78,7 +78,7 @@ export function composeBuyerPulse(firstName: string | null, f: BuyerPulseFacts):
   }
 }
 
-export interface ClientPulseResult { sellerPulses: number; buyerPulses: number; quietWeeks: number }
+export interface ClientPulseResult { sellerPulses: number; buyerPulses: number; quietWeeks: number; portalCardsPushed: number }
 
 /** Next uncovered-or-covered deadline from a transaction row (honest coverage state). */
 function nextDeadlineOf(t: any, lender: any): { kind: string; date: string; covered: boolean } | null {
@@ -105,7 +105,8 @@ export async function runClientPulse(
   const now = opts.now ?? new Date()
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString()
   const weekAgoDate = weekAgo.slice(0, 10)
-  let sellerPulses = 0, buyerPulses = 0, quietWeeks = 0
+  let sellerPulses = 0, buyerPulses = 0, quietWeeks = 0, portalCardsPushed = 0
+  const { pushPortalValueCard } = await import("@/lib/kernel/portal-value")
 
   const alreadyPulsed = async (contactId: string): Promise<boolean> => {
     const { data } = await supabase.from("agent_client_messages").select("id")
@@ -178,6 +179,18 @@ export async function runClientPulse(
       channel: "portal",
     }, supabase)
     if (res.ok) sellerPulses += 1
+
+    // PORTAL VALUE CARD — push the same earned weekly value (the real Pulse body) onto the
+    // seller's portal so the portal always has something fresh worth returning to. ADDITIVE:
+    // the gated proposal above is unchanged; this card surfaces only REAL computed lines.
+    // Idempotent per (contact, "client_pulse", day).
+    const sellerCard = await pushPortalValueCard({
+      brokerageId, contactId: l.seller_contact_id, listingId: l.id,
+      title: pulse.subject, summary: pulse.body, updateType: "client_pulse",
+      metadata: { audience: "seller", listing_id: l.id, source: "client_pulse" },
+      now,
+    }, supabase)
+    if (sellerCard.pushed) portalCardsPushed += 1
   }
 
   // ── BUYERS: live deals + this week's saves. ──
@@ -213,7 +226,17 @@ export async function runClientPulse(
       channel: "portal",
     }, supabase)
     if (res.ok) buyerPulses += 1
+
+    // PORTAL VALUE CARD — the buyer's earned weekly value on their portal (additive to the
+    // gated proposal; only REAL lines; idempotent per (contact, "client_pulse", day)).
+    const buyerCard = await pushPortalValueCard({
+      brokerageId, contactId: t.buyer_contact_id, listingId: null,
+      title: pulse.subject, summary: pulse.body, updateType: "client_pulse",
+      metadata: { audience: "buyer", transaction_id: t.id, source: "client_pulse" },
+      now,
+    }, supabase)
+    if (buyerCard.pushed) portalCardsPushed += 1
   }
 
-  return { sellerPulses, buyerPulses, quietWeeks }
+  return { sellerPulses, buyerPulses, quietWeeks, portalCardsPushed }
 }

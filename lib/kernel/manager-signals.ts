@@ -177,6 +177,57 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     return `recorded first-production datapoint${commission > 0 ? ` ($${Math.round(commission).toLocaleString()} GCI)` : ""} + celebrated to the broker`
   },
+  // Commission & Cap Forecaster (Deal Coordinator) → Recruiting Manager: a CURRENT agent
+  // HIT/crossed their commission cap. This is RECRUITING PROOF — a real production datapoint
+  // the recruiter can cite to talent ("agents here hit and blow past cap"). We deliberately
+  // do NOT write recruiting_analytics here: recruited_agent_id (NOT NULL) means a RECRUITED
+  // agent, and a tenured agent crushing cap is not a recruit — misusing that column would
+  // corrupt recruiting-ROI reporting. So we surface the talking point to the broker/admins
+  // (the recruiting decision-makers), honestly, and leave the durable proof to the place it
+  // belongs (the agent's own production), not a fabricated recruit row.
+  "recruiting_manager:agent_crushed_cap": async (signal, ctx) => {
+    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    if (!agentId) return null
+    const { data: mgrs } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+    const managerIds = (mgrs ?? []) as Array<{ id: string }>
+    if (managerIds.length === 0) return "no broker/admin to surface the recruiting proof to"
+    let notified = 0
+    for (const m of managerIds) {
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: m.id, brokerage_id: ctx.brokerageId, type: "recruiting_proof",
+        title: "Recruiting proof: an agent just blew past cap 🚀",
+        body: `${signal.message} Cite this in talent conversations — real, current production beats any pitch.`,
+        entity_type: "agent", entity_id: agentId, priority: "medium", is_read: false,
+      })
+      if (!error) notified += 1
+    }
+    return notified > 0 ? `surfaced post-cap production as recruiting proof to ${notified} broker/admin${notified === 1 ? "" : "s"}` : null
+  },
+  // Commission & Cap Forecaster (Deal Coordinator) → Recruiting Manager: a CURRENT agent is
+  // STALLING (real pipeline but projected to badly miss, or zero production with a thin
+  // pipeline). Recruiting "manages agents", so this is a COACHING prompt — surfaced to the
+  // responsible MANAGER (broker/admin), never an autonomous message to the agent. The human
+  // decides the intervention.
+  "recruiting_manager:agent_stalling": async (signal, ctx) => {
+    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    if (!agentId) return null
+    const { data: mgrs } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+    const managerIds = (mgrs ?? []) as Array<{ id: string }>
+    if (managerIds.length === 0) return "no broker/admin to route the coaching prompt to"
+    let notified = 0
+    for (const m of managerIds) {
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: m.id, brokerage_id: ctx.brokerageId, type: "agent_coaching",
+        title: "Coaching prompt: an agent is tracking behind",
+        body: `${signal.message} A check-in now — pipeline review, accountability, or a skills touch — is the highest-leverage management move.`,
+        entity_type: "agent", entity_id: agentId, priority: "medium", is_read: false,
+      })
+      if (!error) notified += 1
+    }
+    return notified > 0 ? `routed a coaching prompt to ${notified} responsible manager${notified === 1 ? "" : "s"}` : null
+  },
   // Marketing → Ads Manager: an organic content week outperformed — propose promoting it
   // as PAID. Lands in the existing ads approval queue (governed spend, human-approved).
   "ads_manager:content_winner": async (signal, ctx) => {

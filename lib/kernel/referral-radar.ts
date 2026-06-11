@@ -203,6 +203,7 @@ export interface ReferralRadarResult {
   touchpoints: number
   skippedWithdrawn: number
   skippedDuplicate: number
+  portalCardsPushed: number
 }
 
 /** Injectable scraper seam — derive/refresh a life-event hint for a contact. Default
@@ -225,6 +226,7 @@ export async function runReferralRadar(
   const now = opts.now ?? new Date()
   const result: ReferralRadarResult = {
     scanned: 0, detected: 0, nudges: 0, touchpoints: 0, skippedWithdrawn: 0, skippedDuplicate: 0,
+    portalCardsPushed: 0,
   }
 
   // Pull past clients (by contact_type OR nurture_status). Cast a wide net, filter in code
@@ -241,6 +243,7 @@ export async function runReferralRadar(
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
   const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+  const { pushPortalValueCard } = await import("@/lib/kernel/portal-value")
 
   for (const c of contacts) {
     result.scanned += 1
@@ -305,6 +308,21 @@ export async function runReferralRadar(
       channel: "portal",
     }, supabase)
     if (proposed.ok) result.touchpoints += 1
+
+    // ── PORTAL VALUE CARD — leave the SAME warm, real touchpoint on the past client's portal
+    // so it always has something fresh worth returning to. ADDITIVE: the gated touchpoint above
+    // is unchanged; this surfaces only the REAL detected-event copy (no fabricated dates/numbers —
+    // detectLifeEvent already guarantees a real signal). Reuses the persona-generated client-facing
+    // body (Fair-Housing-safe by construction). Idempotent per (contact, "referral_radar", day). ──
+    const card = await pushPortalValueCard({
+      brokerageId, contactId: c.id, listingId: null,
+      title: draft.subject ?? fallback.subject,
+      summary: draft.body,
+      updateType: "referral_radar",
+      metadata: { audience, event_type: ev.type, event_label: ev.label, source: "referral_radar" },
+      now,
+    }, supabase)
+    if (card.pushed) result.portalCardsPushed += 1
 
     // ── (a) NUDGE — internal notification to the RESPONSIBLE agent: who + why. ──
     const agentUserId = await resolveResponsibleAgentUserId(supabase, {
