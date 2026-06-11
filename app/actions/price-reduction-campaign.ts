@@ -45,6 +45,23 @@ export async function launchPriceReductionCampaign(listingId: string): Promise<L
   const l = listing as { id: string; brokerage_id: string | null; agent_id: string | null } | null
   if (!l || l.brokerage_id !== ctx.brokerageId) return { ok: false, error: "listing not found in your brokerage" }
 
+  // MANAGERS TALKING — inventory tells demand: the Listing Concierge announces the price
+  // drop to the Shopping Agent, who re-matches buyers that saved this listing (gated).
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId: ctx.brokerageId,
+      fromManager: "listing_concierge",
+      toManager: "shopping_agent",
+      signalType: "price_reduced",
+      message: "Price reduced on an in-house listing — re-match your buyers before the market notices.",
+      entityType: "listing",
+      entityId: listingId,
+    }, svc)
+  } catch (err) {
+    console.error("[price-reduction-campaign] price_reduced signal failed:", err)
+  }
+
   // 1) Deliverable-gated paid-ad creative (DRAFT → ad_creative approval queue).
   const { produceListingAdCampaign } = await import("@/lib/ads/listing-ad-producer")
   const ad = await produceListingAdCampaign(ctx.brokerageId, listingId, "price_reduction", svc)

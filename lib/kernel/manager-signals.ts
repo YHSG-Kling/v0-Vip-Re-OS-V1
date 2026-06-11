@@ -124,7 +124,75 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed lifetime welcome (gate message ${res.id})` : null
   },
-  // Recruiting Manager → Deal Coordinator: a recruit just became an ACTIVE AGENT (no
+  // Listing Concierge → Shopping Agent: a price drop on an IN-HOUSE listing — inventory
+  // talking to demand. The buyer side re-matches: every buyer who SAVED this listing gets
+  // a price-improved alert proposed into the gate (capped, never autonomous).
+  "shopping_agent:price_reduced": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const { data: savers } = await ctx.supabase
+      .from("saved_properties")
+      .select("contact_id, property_address")
+      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", signal.entityId)
+      .eq("dismissed", false).not("contact_id", "is", null)
+      .limit(5)
+    const rows = (savers ?? []) as Array<{ contact_id: string; property_address: string | null }>
+    if (rows.length === 0) return "no saved-property buyers to alert"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    let proposed = 0
+    for (const r of rows) {
+      const res = await proposeClientMessage({
+        brokerageId: ctx.brokerageId, agentKind: "shopping_agent", entityType: "listing",
+        entityId: signal.entityId, recipientContactId: r.contact_id, audience: "buyer",
+        subject: "Price improved on a home you saved",
+        body: `Good news — ${r.property_address ?? "a home you saved"} just had a price improvement. Want a fresh look before others notice? Reply here and I'll set up a showing.`,
+        rationale: `Price reduced on an in-house listing — re-match alert for a buyer who saved it (signal ${signal.signalType}).`,
+        channel: "portal",
+      }, ctx.supabase)
+      if (res.ok) proposed += 1
+    }
+    return proposed > 0 ? `alerted ${proposed} saved-property buyer${proposed === 1 ? "" : "s"} (gated)` : null
+  },
+  // Deal Coordinator → Recruiting Manager: a RECRUITED agent just closed their FIRST deal.
+  // Recruiting ROI gets its first real production datapoint + the broker gets the
+  // celebration moment.
+  "recruiting_manager:agent_first_close": async (signal, ctx) => {
+    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    if (!agentId) return null
+    const commission = Number(signal.payload?.commission_amount ?? 0)
+    // First production datapoint (year 1) — recruiting_analytics.
+    await ctx.supabase.from("recruiting_analytics").insert({
+      brokerage_id: ctx.brokerageId, recruited_agent_id: agentId, year_number: 1,
+      gross_commission_generated: commission, transaction_count: 1, computed_at: new Date().toISOString(),
+    })
+    // Celebrate to the brokerage managers.
+    const { data: mgrs } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+    for (const m of (mgrs ?? []) as Array<{ id: string }>) {
+      await ctx.supabase.from("notifications").insert({
+        user_id: m.id, brokerage_id: ctx.brokerageId, type: "recruiting_milestone",
+        title: "A recruited agent just closed their first deal 🎉",
+        body: signal.message, entity_type: "recruit", entity_id: signal.entityId,
+        priority: "medium", is_read: false,
+      })
+    }
+    return `recorded first-production datapoint${commission > 0 ? ` ($${Math.round(commission).toLocaleString()} GCI)` : ""} + celebrated to the broker`
+  },
+  // Marketing → Ads Manager: an organic content week outperformed — propose promoting it
+  // as PAID. Lands in the existing ads approval queue (governed spend, human-approved).
+  "ads_manager:content_winner": async (signal, ctx) => {
+    // ad_manager_actions.action_type CHECK: launch_ad_campaign | pause | shift_budget |
+    // scale_ad_creative — promoting an organic winner = launching a campaign from it.
+    const { error } = await ctx.supabase.from("ad_manager_actions").insert({
+      brokerage_id: ctx.brokerageId,
+      action_type: "launch_ad_campaign",
+      action_input: { source: "content_winner", ...((signal.payload ?? {}) as Record<string, unknown>) },
+      rationale: `Organic winner: ${signal.message} — promote it as paid before it goes stale.`,
+      status: "proposed",
+      proposed_at: new Date().toISOString(),
+    })
+    return error ? null : "proposed paid promotion in the ads approval queue"
+  },
+    // Recruiting Manager → Deal Coordinator: a recruit just became an ACTIVE AGENT (no
   // contacts yet — the rule). The Deal Coordinator sets up first-deal onboarding support:
   // assigns the published agent-audience learning path + welcomes the new agent.
   "deal_coordinator:recruit_activated": async (signal, ctx) => {

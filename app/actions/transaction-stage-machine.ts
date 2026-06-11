@@ -213,6 +213,41 @@ export async function advanceTransactionStage(params: {
       } catch (err) {
         console.error("[transaction-stage-machine] deal_closed signal failed:", err)
       }
+      // MANAGERS TALKING — if a RECRUITED agent just closed their FIRST deal, the Deal
+      // Coordinator tells the Recruiting Manager: ROI gets its first real production
+      // datapoint + the broker gets the celebration moment.
+      try {
+        const { data: t2 } = await svcClient.from("transactions")
+          .select("agent_id, commission_amount").eq("id", params.transactionId).maybeSingle()
+        const closeAgentId = (t2 as any)?.agent_id ?? null
+        if (closeAgentId) {
+          const { data: agentRow } = await svcClient.from("agents").select("user_id").eq("id", closeAgentId).maybeSingle()
+          const agentUid = (agentRow as any)?.user_id ?? null
+          const { data: recruitRow } = agentUid
+            ? await svcClient.from("recruits").select("id").eq("provisioned_user_id", agentUid).eq("provisioned", true).limit(1).maybeSingle()
+            : { data: null }
+          if (recruitRow) {
+            const { count: closedCount } = await svcClient.from("transactions")
+              .select("id", { count: "exact", head: true })
+              .eq("brokerage_id", auth.brokerageId).eq("agent_id", closeAgentId).eq("status", "closed")
+            if ((closedCount ?? 0) === 1) {
+              const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+              await publishManagerSignal({
+                brokerageId: auth.brokerageId,
+                fromManager: "deal_coordinator",
+                toManager: "recruiting_manager",
+                signalType: "agent_first_close",
+                message: "A recruited agent just closed their FIRST deal — recruiting ROI has its first production datapoint.",
+                entityType: "recruit",
+                entityId: (recruitRow as any).id,
+                payload: { agent_id: closeAgentId, commission_amount: (t2 as any)?.commission_amount ?? 0 },
+              }, svcClient)
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[transaction-stage-machine] agent_first_close signal failed:", err)
+      }
     }
   }
 

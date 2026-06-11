@@ -86,6 +86,25 @@ export async function GET(req: NextRequest) {
           realized_persona_breakdown: measured.persona_breakdown,
           plan_quality_score:         score,
         }).eq("id", row.id)
+      // MANAGERS TALKING — a strong organic week (real engagement, not vanity): the
+      // Marketing Manager tells the Ads Manager to propose paid promotion while it's hot.
+      if (measured.campaigns_sent >= 1 && (measured.open_rate >= 40 || measured.click_rate >= 10)) {
+        try {
+          const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+          await publishManagerSignal({
+            brokerageId: row.brokerage_id,
+            fromManager: "marketing_agent",
+            toManager: "ads_manager",
+            signalType: "content_winner",
+            message: `Week of ${row.week_start}: ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s) — organic winner.`,
+            entityType: "marketing_week",
+            entityId: row.id,
+            payload: { week_start: row.week_start, open_rate: measured.open_rate, click_rate: measured.click_rate, campaigns_sent: measured.campaigns_sent },
+          }, svc)
+        } catch (e) {
+          console.error("[weekly-measure] content_winner signal failed:", e)
+        }
+      }
       results.push({ id: row.id, outcome: `measured:${score}` })
     } catch (e) {
       results.push({ id: row.id, outcome: "failed", reason: (e as Error).message })
