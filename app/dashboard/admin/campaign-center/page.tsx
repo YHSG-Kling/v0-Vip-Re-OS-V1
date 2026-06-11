@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { loadCampaignCenter } from "@/lib/kernel/campaign-center"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { ApproveItemButton, ApprovePlayButton } from "./approve-buttons"
 
 export const metadata = {
   title: "Campaign Command Center | Kernel OS",
@@ -43,9 +44,12 @@ export default async function CampaignCenterPage() {
         <>
           <Card className="p-4">
             <div className="text-xs font-medium mb-2">By play</div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {Object.entries(data.byPlay).sort((a, b) => b[1] - a[1]).map(([play, n]) => (
-                <Badge key={play} variant="secondary">{play} · {n}</Badge>
+                <div key={play} className="flex items-center gap-1">
+                  <Badge variant="secondary">{play} · {n}</Badge>
+                  {play !== "Other" && <ApprovePlayButton play={play} />}
+                </div>
               ))}
             </div>
             <div className="text-xs font-medium mt-3 mb-2">By channel</div>
@@ -58,12 +62,15 @@ export default async function CampaignCenterPage() {
 
           <div className="grid gap-2">
             {data.items.map((it) => (
-              <Card key={`${it.channel}:${it.id}`} className="p-3 flex items-center justify-between">
+              <Card key={`${it.channel}:${it.id}`} className="p-3 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">{it.title}</div>
                   <div className="text-xs text-muted-foreground">{CHANNEL_LABEL[it.channel] ?? it.channel}{it.play ? ` · ${it.play}` : ""}</div>
                 </div>
-                <Badge variant="outline">{it.status.replace(/_/g, " ")}</Badge>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Badge variant="outline">{it.status.replace(/_/g, " ")}</Badge>
+                  <ApproveItemButton channel={it.channel} id={it.id} />
+                </div>
               </Card>
             ))}
           </div>

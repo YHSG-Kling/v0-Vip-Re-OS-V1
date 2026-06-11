@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /** scripts/campaign-center-simulator.ts — one surface for every staged draft, grouped by play. */
-import { playTagOf, loadCampaignCenter } from "../lib/kernel/campaign-center"
+import { playTagOf, loadCampaignCenter, approveCampaignItem, approveCampaignPlay } from "../lib/kernel/campaign-center"
 let passed = 0, failed = 0; const fails: string[] = []
 const check = (n: string, c: boolean, d?: string) => { if (c) { passed++; console.log(`  ✓ ${n}`) } else { failed++; fails.push(n); console.log(`  ✗ ${n}${d ? ` — ${d}` : ""}`) } }
 const report = () => { console.log(`\n RESULT: ${passed} passed, ${failed} failed`); if (failed) { for (const f of fails) console.log("   - " + f); process.exit(1) } console.log(" ✅ Campaign command center verified") }
@@ -31,6 +31,17 @@ async function main() {
     check("grouped by channel (email + social + direct_mail present)", mine.some(i => i.channel === "email") && mine.some(i => i.channel === "social") && mine.some(i => i.channel === "direct_mail"))
     check("each draft carries its PLAY tag", mine.filter(i => i.play === "Farm Play").length === 2)
     check("every surfaced item is gated (pending/draft, never published)", mine.every(i => /pending|draft|planning|awaiting/.test(i.status)))
+
+    // ACTIONABLE: approve one item through its gate (the email) → flips to approved.
+    const aprUser = (agent as any).user_id
+    const r1 = await approveCampaignItem(brokerageId, "email", (em as any).id, aprUser, svc)
+    const { data: emAfter } = await svc.from("email_campaigns").select("approval_status").eq("id", (em as any).id).single()
+    check("approve item: email flipped pending → approved through the gate", r1.ok && (emAfter as any).approval_status === "approved")
+    // Approve the whole Farm Play (social + direct_mail remaining).
+    const rp = await approveCampaignPlay(brokerageId, "Farm Play", aprUser, svc)
+    const { data: spAfter } = await svc.from("social_posts").select("approval_status").eq("id", (sp as any).id).single()
+    const { data: dmAfter } = await svc.from("direct_mail_campaigns").select("approval_status").eq("id", (dm as any).id).single()
+    check("approve play: the Farm Play's social + direct_mail flipped to approved", rp.approved >= 2 && (spAfter as any).approval_status === "approved" && (dmAfter as any).approval_status === "approved")
   } finally {
     for (const c of [...cleanup].reverse()) { try { await svc.from(c.table).delete().eq("id", c.id) } catch {} }
     const { count } = await svc.from("listings").select("id", { count: "exact", head: true }).like("address", `${TAG}%`)
