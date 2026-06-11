@@ -151,6 +151,7 @@ async function main() {
 
     // Unified governed-deliverables rail — the aggregate of every loop's gate proposals.
     check("dialBatches: present on the brokerage-scoped load (AI ISA call queue)", Array.isArray(data.dialBatches))
+    check("managerTalk: present on the brokerage-scoped load (the bus made visible)", Array.isArray(data.managerTalk))
     check("deliverables: present on the brokerage-scoped load", data.deliverables !== null)
     check("deliverables: totals are internally consistent (sum of statuses ≤ total)",
       !data.deliverables || (data.deliverables.totals.proposed + data.deliverables.totals.approved + data.deliverables.totals.sent + data.deliverables.totals.rejected + data.deliverables.totals.failed) <= data.deliverables.totals.total)

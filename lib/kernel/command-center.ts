@@ -77,6 +77,9 @@ export interface CommandCenterData {
   deliverables:    import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
+  /** Managers talking — recent inter-manager signals (who told whom what, and what the
+   *  addressed manager did about it). The bus made visible. */
+  managerTalk:     import("@/lib/kernel/manager-signals").ManagerTalkLine[]
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -244,7 +247,14 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
   let dialBatches: CommandCenterData["dialBatches"] = []
+  let managerTalk: import("@/lib/kernel/manager-signals").ManagerTalkLine[] = []
   if (params.brokerageId) {
+    try {
+      const { loadRecentManagerTalk } = await import("@/lib/kernel/manager-signals")
+      managerTalk = await loadRecentManagerTalk(params.brokerageId, 12, supabase)
+    } catch (err) {
+      console.error("[command-center] manager talk failed:", err)
+    }
     const { data: db } = await supabase
       .from("ai_isa_call_batches")
       .select("id, proposed_count, proposed_at")
@@ -262,6 +272,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyPnl,
     deliverables,
     dialBatches,
+    managerTalk,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,

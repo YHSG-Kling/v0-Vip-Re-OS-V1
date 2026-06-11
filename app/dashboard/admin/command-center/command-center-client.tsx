@@ -169,6 +169,36 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
         </section>
       )}
 
+      {/* Managers talking — the inter-manager bus made visible: who told whom what,
+          and what the addressed manager did about it. */}
+      {data.managerTalk && data.managerTalk.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Managers talking</h2>
+          <div className="space-y-1.5">
+            {data.managerTalk.map((t) => (
+              <Card key={t.id} className="px-4 py-2.5">
+                <div className="flex items-start gap-2">
+                  <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                    <Badge className="bg-slate-900 text-white text-[11px]">{t.fromLabel}</Badge>
+                    <span className="text-muted-foreground text-xs">→</span>
+                    <Badge className="bg-slate-700 text-white text-[11px]">{t.toLabel}</Badge>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm text-foreground">{t.message}</p>
+                    {t.status === "consumed" && t.consumedAction && (
+                      <p className="text-xs text-green-700 mt-0.5">✓ {t.consumedAction}</p>
+                    )}
+                    {t.status === "open" && (
+                      <p className="text-xs text-amber-700 mt-0.5">awaiting the addressed manager</p>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
           The proof-of-system view: N AI deliverables this week, every one human-approved
           before it shipped. */}

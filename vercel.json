@@ -218,6 +218,10 @@
       "schedule": "0 */2 * * *"
     },
     {
+      "path": "/api/cron/manager-signals",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/cron/deadline-watcher",
       "schedule": "30 * * * *"
     },

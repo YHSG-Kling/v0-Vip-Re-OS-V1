@@ -225,4 +225,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "dialed_count", "id", "proposed_at", "proposed_by_agent_id", "proposed_count", "script",
     "status", "target_contacts",
   ],
+  manager_signals: [
+    "brokerage_id", "consumed_action", "consumed_at", "contact_id", "created_at", "entity_id",
+    "entity_type", "from_manager", "id", "message", "payload", "signal_type", "status", "to_manager",
+  ],
 }

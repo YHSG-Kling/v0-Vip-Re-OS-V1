@@ -99,13 +99,14 @@ async function main() {
     check("propose: another agent's contact is EXCLUDED (agent-scoped)", !cB || !targets.some((t) => t.contact_id === cB))
     check("propose: proposed_by_agent_id = agentA (the approver)", (batch as any)?.proposed_by_agent_id === agentA.id)
 
-    // AGENT-FIRST notification: agentA (the owner) is alerted; no manager escalation on a fresh batch.
-    const n1 = await enqueueDialBatchNotifications(brokerageId, svc)
-    check("notify: the responsible AGENT is alerted (front line)", n1.agentAlerts >= 1)
-    check("notify: NO manager escalation on a fresh (<4h) batch", n1.managerEscalations === 0)
+    // REAL-TIME agent-first alert: propose itself fired the notification instantly.
     const { data: agentNotif } = await svc.from("notifications").select("id, type, priority").eq("user_id", agentA.user_id).eq("type", "dial_batch_approval").eq("entity_id", prop.batchId ?? "").maybeSingle()
     if (agentNotif) cleanup.push({ table: "notifications", id: (agentNotif as any).id })
-    check("notify: agent alert exists for the batch", !!agentNotif)
+    check("real-time: agent alert fired AT PROPOSE TIME (no cron needed)", !!agentNotif)
+    // The cron pass is now idempotent — adds nothing for tier 1, no fresh-batch escalation.
+    const n1 = await enqueueDialBatchNotifications(brokerageId, svc)
+    check("cron safety net: no duplicate agent alert (idempotent with real-time)", n1.agentAlerts === 0)
+    check("notify: NO manager escalation on a fresh (<4h) batch", n1.managerEscalations === 0)
 
     // APPROVE with an INJECTED executor (vendor seam — no real call) → records ai_isa_calls.
     const executor: DialExecutor = async (t) => ({ contactId: t.contact_id, placed: true, voiceCallId: null })

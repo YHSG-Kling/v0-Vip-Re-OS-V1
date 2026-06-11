@@ -43,7 +43,36 @@ export async function proposeClientMessage(
     status: "proposed",
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
-  return { ok: true, id: (data as { id: string }).id }
+  const messageId = (data as { id: string }).id
+
+  // REAL-TIME GATE FIRING — alert the responsible agent THE MOMENT the proposal lands
+  // (the approval-push cron remains the safety net + 4h manager escalation). Best-effort
+  // and idempotent (the cron's alreadyNotified check covers the same key), so a failure
+  // here never fails the proposal.
+  try {
+    const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+    const { MANAGERS } = await import("@/lib/kernel/manager-registry")
+    const agentUserId = await resolveResponsibleAgentUserId(supabase, {
+      recipient_contact_id: input.recipientContactId ?? null,
+      entity_type: input.entityType ?? null,
+      entity_id: input.entityId ?? null,
+    })
+    if (agentUserId) {
+      const label = (input.agentKind in MANAGERS)
+        ? MANAGERS[input.agentKind as keyof typeof MANAGERS].label
+        : "A manager"
+      await supabase.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: input.brokerageId, type: "approval_needed",
+        title: `${label} needs your approval`,
+        body: input.subject ? `${input.subject} — tap to review & approve.` : "A client message is awaiting your approval — tap to review.",
+        entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
+      })
+    }
+  } catch (e) {
+    console.error("[proposeClientMessage] real-time approval alert failed:", e)
+  }
+
+  return { ok: true, id: messageId }
 }
 
 export interface ClientMessageResult { status: "sent" | "skipped" | "failed"; result: Record<string, unknown> }

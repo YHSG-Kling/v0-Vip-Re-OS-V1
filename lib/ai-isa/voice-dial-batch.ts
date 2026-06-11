@@ -39,6 +39,28 @@ export function eligibleForIsaCall(c: IsaCallConsent): { allowed: boolean; reaso
   return { allowed: true }
 }
 
+/** Voice-results learn-loop thresholds (transparent, like the propensity weights). */
+export const CALL_COOLDOWN_DAYS = 14     // any recent ISA call → don't re-dial yet
+export const COLD_COOLDOWN_DAYS = 30     // a cold-quality outcome suppresses longer
+export const COLD_QUALITY_FLOOR = 30     // lead_quality_score below this = cold outcome
+
+/** Pure: should past call outcomes keep this contact OFF the next dial list?
+ *  appointment_set → yes (they're with the agent now); cold quality (<floor) within
+ *  COLD_COOLDOWN_DAYS → yes; any call within CALL_COOLDOWN_DAYS → yes. */
+export function callCooldownActive(
+  history: Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>,
+  now: number = Date.now(),
+): boolean {
+  for (const h of history) {
+    const ageDays = (now - new Date(h.created_at).getTime()) / 86_400_000
+    if (ageDays < 0 || ageDays > COLD_COOLDOWN_DAYS) continue
+    if (h.appointment_set) return true
+    if (h.lead_quality_score != null && h.lead_quality_score < COLD_QUALITY_FLOOR) return true
+    if (ageDays <= CALL_COOLDOWN_DAYS) return true
+  }
+  return false
+}
+
 export interface DialTarget {
   contact_id: string
   name: string
@@ -87,12 +109,31 @@ export async function proposeIsaDialBatch(
     .in("id", ids)
   const byId = new Map((rows ?? []).map((c: any) => [c.id, c as IsaCallConsent & { agent_id: string | null }]))
 
+  // VOICE-RESULTS LEARN LOOP — past call outcomes shape who we call next:
+  //   · any ISA call in the last CALL_COOLDOWN_DAYS → skip (don't hammer)
+  //   · appointment_set on a recent call → skip (they're with the agent now)
+  //   · lead_quality_score < COLD_QUALITY_FLOOR on a recent call → skip for the
+  //     longer COLD_COOLDOWN_DAYS (the call told us they're not ready)
+  const { data: recentCalls } = await supabase
+    .from("ai_isa_calls")
+    .select("contact_id, appointment_set, lead_quality_score, created_at")
+    .eq("brokerage_id", params.brokerageId)
+    .in("contact_id", ids)
+    .gte("created_at", new Date(Date.now() - COLD_COOLDOWN_DAYS * 86_400_000).toISOString())
+  const callHistory = new Map<string, Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>>()
+  for (const c of (recentCalls ?? []) as any[]) {
+    const list = callHistory.get(c.contact_id) ?? []
+    list.push(c)
+    callHistory.set(c.contact_id, list)
+  }
+
   const targets: DialTarget[] = []
   for (const r of ranked) {
     const c = byId.get(r.contactId)
     if (!c) continue
     if (agentId && c.agent_id !== agentId) continue          // agent-scoped: only this agent's contacts
     if (!eligibleForIsaCall(c).allowed) continue
+    if (callCooldownActive(callHistory.get(r.contactId) ?? [])) continue
     targets.push({ contact_id: r.contactId, name: r.name, phone: String(c.phone), propensity_score: r.result.score })
     if (targets.length >= limit) break
   }
@@ -107,7 +148,29 @@ export async function proposeIsaDialBatch(
     proposed_count: targets.length,
   }).select("id").single()
   if (error || !batch) return { proposed: false, reason: error?.message ?? "insert failed" }
-  return { proposed: true, batchId: (batch as any).id, eligibleCount: targets.length }
+  const batchId = (batch as any).id as string
+
+  // REAL-TIME GATE FIRING — alert the owning agent the moment the batch lands (the
+  // approval-push cron stays as the safety net + 4h manager escalation). Best-effort;
+  // idempotent with the cron via the same (user, batch, type) notification key.
+  if (agentId) {
+    try {
+      const { data: a } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+      const agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
+      if (agentUserId) {
+        await supabase.from("notifications").insert({
+          user_id: agentUserId, brokerage_id: params.brokerageId, type: "dial_batch_approval",
+          title: "AI ISA wants to call your contacts",
+          body: `${targets.length} consented contact${targets.length === 1 ? "" : "s"} ready to dial — review & approve.`,
+          entity_type: "ai_isa_call_batch", entity_id: batchId, priority: "medium", is_read: false,
+        })
+      }
+    } catch (e) {
+      console.error("[proposeIsaDialBatch] real-time approval alert failed:", e)
+    }
+  }
+
+  return { proposed: true, batchId, eligibleCount: targets.length }
 }
 
 /** One placed-call result, per dial target. `voiceCallId` is the voice_calls row id (a uuid
@@ -279,4 +342,59 @@ export async function enqueueDialBatchNotifications(
     }
   }
   return { agentAlerts, managerEscalations }
+}
+
+/**
+ * MANAGERS TALKING — publish ISA call OUTCOMES to the inter-manager bus. Sweeps recent
+ * ai_isa_calls with appointment_set=true and publishes an `isa_call_appointment` signal
+ * to the side-appropriate concierge (Shopping Agent for buyers, Listing Concierge for
+ * sellers), who consumes it by proposing the prep follow-up into the gate. Idempotent —
+ * the bus dedupes per open (to_manager, signal_type, entity_id=ai_isa_calls.id).
+ */
+export async function publishIsaCallOutcomes(
+  brokerageId: string, client?: Svc, windowDays = 7,
+): Promise<{ published: number }> {
+  const supabase = client ?? createServiceClient()
+  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+
+  const { data: calls } = await supabase
+    .from("ai_isa_calls")
+    .select("id, contact_id, appointment_set, appointment_datetime, lead_quality_score, created_at")
+    .eq("brokerage_id", brokerageId)
+    .eq("appointment_set", true)
+    .not("contact_id", "is", null)
+    .gte("created_at", since)
+    .limit(200)
+  const rows = (calls ?? []) as Array<{ id: string; contact_id: string; appointment_datetime: string | null }>
+  if (rows.length === 0) return { published: 0 }
+
+  // Side resolution: seller contacts → Listing Concierge; everyone else → Shopping Agent.
+  const contactIds = Array.from(new Set(rows.map((r) => r.contact_id)))
+  const { data: contacts } = await supabase
+    .from("contacts").select("id, contact_type, first_name, last_name").in("id", contactIds)
+  const contactById = new Map((contacts ?? []).map((c: any) => [c.id, c]))
+
+  const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  let published = 0
+  for (const call of rows) {
+    const contact = contactById.get(call.contact_id)
+    const name = contact ? [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "a contact" : "a contact"
+    const toManager = contact?.contact_type === "seller" ? "listing_concierge" as const : "shopping_agent" as const
+    const when = call.appointment_datetime
+      ? new Date(call.appointment_datetime).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+      : "soon"
+    const res = await publishManagerSignal({
+      brokerageId,
+      fromManager: "ai_isa",
+      toManager,
+      signalType: "isa_call_appointment",
+      message: `I booked an appointment with ${name} (${when}) on a dial-batch call — over to you for prep.`,
+      entityType: "ai_isa_call",
+      entityId: call.id,
+      contactId: call.contact_id,
+      payload: { appointment_datetime: call.appointment_datetime },
+    }, supabase)
+    if (res.ok && res.reason !== "already open (deduped)") published += 1
+  }
+  return { published }
 }
