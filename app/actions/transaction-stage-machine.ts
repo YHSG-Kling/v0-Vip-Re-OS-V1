@@ -180,13 +180,38 @@ export async function advanceTransactionStage(params: {
     // open referral, credit the partner, and propose a partner thank-you into the gate.
     // Best-effort: never fails the stage transition.
     if (params.targetStage === TRANSACTION_STAGES.CLOSED) {
+      const svcClient = createServiceClient()
       try {
         const { closeReferralOnDealClose } = await import("@/lib/agents/referral-closer")
-        await closeReferralOnDealClose(createServiceClient(), {
+        await closeReferralOnDealClose(svcClient, {
           transactionId: params.transactionId, brokerageId: auth.brokerageId,
         })
       } catch (err) {
         console.error("[transaction-stage-machine] referral close failed:", err)
+      }
+      // MANAGERS TALKING — Deal Coordinator tells the Sphere Manager the deal closed:
+      // the client crosses the boundary into LIFETIME territory (sphere = closed/past
+      // clients). The Sphere consumes by proposing the lifetime welcome into the gate.
+      try {
+        const { data: txn } = await svcClient.from("transactions")
+          .select("contact_id, buyer_contact_id, seller_contact_id, deal_name, property_address")
+          .eq("id", params.transactionId).maybeSingle()
+        const contactId = (txn as any)?.contact_id ?? (txn as any)?.buyer_contact_id ?? (txn as any)?.seller_contact_id ?? null
+        if (contactId) {
+          const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+          await publishManagerSignal({
+            brokerageId: auth.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager: "sphere_of_influence",
+            signalType: "deal_closed",
+            message: `${(txn as any)?.property_address ?? "A deal"} just closed — this client is now lifetime territory. Over to you for the welcome.`,
+            entityType: "transaction",
+            entityId: params.transactionId,
+            contactId,
+          }, svcClient)
+        }
+      } catch (err) {
+        console.error("[transaction-stage-machine] deal_closed signal failed:", err)
       }
     }
   }

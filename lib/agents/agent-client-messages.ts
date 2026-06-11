@@ -139,7 +139,29 @@ export async function approveClientMessage(
       // translation — so an approved portal-channel message NEVER rendered for the client.
       // transparency_updates is the canonical "what happened on my deal" card the portal
       // reads; writing it directly makes the final hop provable.)
-      if (!m.recipient_contact_id) return await fail(supabase, messageId, "portal channel needs a recipient contact")
+      if (!m.recipient_contact_id) {
+        // INTERNAL drafts (audience 'agent' — e.g. recruiting outreach, partner thank-yous
+        // with no contact): approving delivers the APPROVED DRAFT to the responsible
+        // agent's notifications — the human sends it personally (recruiting mail should
+        // come from the recruiter, not the machine). Client audiences still require a
+        // recipient contact.
+        if (m.audience === "agent") {
+          const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+          const agentUserId = await resolveResponsibleAgentUserId(supabase, {
+            recipient_contact_id: null, entity_type: m.entity_type, entity_id: m.entity_id,
+          })
+          if (!agentUserId) return await fail(supabase, messageId, "no responsible agent to deliver the approved draft to")
+          const { error: notifErr } = await supabase.from("notifications").insert({
+            user_id: agentUserId, brokerage_id: m.brokerage_id, type: "approved_draft",
+            title: m.subject ?? "Approved draft ready to send",
+            body: m.body.slice(0, 2000),
+            entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
+          })
+          if (notifErr) return await fail(supabase, messageId, `draft delivery failed: ${notifErr.message}`)
+        } else {
+          return await fail(supabase, messageId, "portal channel needs a recipient contact")
+        }
+      } else {
       const { error: cardErr } = await supabase.from("transparency_updates").insert({
         brokerage_id:           m.brokerage_id,
         contact_id:             m.recipient_contact_id,
@@ -152,6 +174,7 @@ export async function approveClientMessage(
         created_at:             new Date().toISOString(),
       })
       if (cardErr) return await fail(supabase, messageId, `portal card write failed: ${cardErr.message}`)
+      }
     }
   } catch (e) {
     return await fail(supabase, messageId, (e as Error).message)

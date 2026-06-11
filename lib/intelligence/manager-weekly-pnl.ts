@@ -143,6 +143,28 @@ export async function generateManagerWeeklyPnl(brokerageId: string): Promise<Man
   ])
 
   const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+  // BUS ANALYTICS — managers talking, counted: signals CONSUMED by each manager (handoffs
+  // they acted on) this week vs prior. Shows the broker which manager handoffs are
+  // producing. One grouped pull per window.
+  const handoffWindow = async (fromIso: string, toIso: string): Promise<Map<string, number>> => {
+    const { data } = await supabase
+      .from("manager_signals")
+      .select("to_manager")
+      .eq("brokerage_id", brokerageId).eq("status", "consumed")
+      .gte("consumed_at", fromIso).lt("consumed_at", toIso)
+      .limit(2000)
+    const map = new Map<string, number>()
+    for (const r of (data ?? []) as Array<{ to_manager: string }>) {
+      map.set(r.to_manager, (map.get(r.to_manager) ?? 0) + 1)
+    }
+    return map
+  }
+  const [handoffsThis, handoffsPrior] = await Promise.all([
+    handoffWindow(thisFrom, thisTo), handoffWindow(priorFrom, priorTo),
+  ])
+  const handoffMetric = (manager: string): ManagerWeeklyMetric =>
+    metric("Handoffs handled", handoffsThis.get(manager) ?? 0, handoffsPrior.get(manager) ?? 0)
+
   const cards: ManagerWeeklyScorecard[] = [
     {
       manager: 'ai_isa', label: MANAGERS.ai_isa.label,
@@ -184,5 +206,19 @@ export async function generateManagerWeeklyPnl(brokerageId: string): Promise<Man
 
   // Only show managers that produced something across either window (a card with
   // 0/0 on every metric is noise — the standup already covers idle managers).
+  // Every manager card carries its handoffs-handled metric; managers that ONLY appear
+  // via the bus (e.g. Recruiting consuming nothing yet but Deal Coordinator handling
+  // recruit_activated) are covered because the metric is attached to existing cards.
+  for (const card of cards) card.metrics.push(handoffMetric(card.manager))
+  // Recruiting Manager has no production card above — add one when it has handoffs.
+  const recruitingHandoffs = handoffMetric("recruiting_manager")
+  if (recruitingHandoffs.value > 0 || recruitingHandoffs.prior > 0) {
+    cards.push({
+      manager: "recruiting_manager", label: MANAGERS.recruiting_manager.label,
+      metrics: [recruitingHandoffs],
+      headline: `${recruitingHandoffs.value} manager handoff${recruitingHandoffs.value === 1 ? "" : "s"} handled this week`,
+    })
+  }
+
   return cards.filter((c) => c.metrics.some((m) => m.value > 0 || m.prior > 0))
 }

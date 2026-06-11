@@ -113,6 +113,50 @@ async function main() {
       if (rtNotif) cleanup.push({ table: "notifications", id: (rtNotif as any).id })
     }
 
+    // ── Conversation 2: deal_closed → Sphere proposes the lifetime welcome ──
+    const dc = await publishManagerSignal({
+      brokerageId, fromManager: "deal_coordinator", toManager: "sphere_of_influence",
+      signalType: "deal_closed", message: `${TAG} deal closed`, entityType: "transaction",
+      entityId: (call as any).id /* any uuid for dedupe key */, contactId,
+    }, svc)
+    check("deal_closed: published to the Sphere", dc.ok === true)
+    if (dc.signalId) cleanup.push({ table: "manager_signals", id: dc.signalId })
+    const c2 = await consumeManagerSignals({ brokerageId, toManager: "sphere_of_influence" }, svc)
+    check("deal_closed: the Sphere consumed it", c2.consumed >= 1)
+    const { data: welcome } = await svc.from("agent_client_messages")
+      .select("id, agent_kind, status").eq("recipient_contact_id", contactId)
+      .eq("agent_kind", "sphere_of_influence").order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (welcome) cleanup.push({ table: "agent_client_messages", id: (welcome as any).id })
+    check("deal_closed: lifetime welcome PROPOSED into the gate (not sent)", (welcome as any)?.status === "proposed")
+    if (welcome) {
+      const { data: rtN } = await svc.from("notifications").select("id").eq("entity_id", (welcome as any).id).eq("type", "approval_needed").maybeSingle()
+      if (rtN) cleanup.push({ table: "notifications", id: (rtN as any).id })
+    }
+
+    // ── Conversation 3: recruit_activated → Deal Coordinator onboards the NEW AGENT ──
+    // (the rule: a recruit becomes an ACTIVE agent before any contacts — this handler
+    // only assigns learning + welcomes; zero contact involvement.)
+    const { data: agentRow } = await svc.from("agents").select("id, user_id").not("user_id", "is", null).eq("brokerage_id", brokerageId).limit(1).maybeSingle()
+    if (agentRow) {
+      const ra = await publishManagerSignal({
+        brokerageId, fromManager: "recruiting_manager", toManager: "deal_coordinator",
+        signalType: "recruit_activated", message: `${TAG} recruit activated`, entityType: "recruit",
+        entityId: contactId /* uuid for dedupe key */, payload: { agent_id: (agentRow as any).id, user_id: (agentRow as any).user_id },
+      }, svc)
+      check("recruit_activated: published to the Deal Coordinator", ra.ok === true)
+      if (ra.signalId) cleanup.push({ table: "manager_signals", id: ra.signalId })
+      const c3 = await consumeManagerSignals({ brokerageId, toManager: "deal_coordinator" }, svc)
+      check("recruit_activated: the Deal Coordinator consumed it (onboarding support)", c3.consumed >= 1)
+      const { data: welcomeNotif } = await svc.from("notifications")
+        .select("id, type").eq("user_id", (agentRow as any).user_id).eq("type", "agent_onboarding")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle()
+      if (welcomeNotif) cleanup.push({ table: "notifications", id: (welcomeNotif as any).id })
+      check("recruit_activated: the new agent got the onboarding welcome (no contacts involved)", !!welcomeNotif)
+      // clean any learning assignments the handler created for this signal
+      const { data: las } = await svc.from("learning_assignments").select("id").eq("agent_user_id", (agentRow as any).user_id).eq("signal_source", "recruit_activated")
+      for (const la of (las ?? []) as Array<{ id: string }>) cleanup.push({ table: "learning_assignments", id: la.id })
+    }
+
     // TALK FEED: the conversation is visible.
     const talk = await loadRecentManagerTalk(brokerageId, 20, svc)
     const line = talk.find((t) => t.fromLabel === "AI ISA" && t.toLabel === "Shopping Agent")

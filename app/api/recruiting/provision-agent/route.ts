@@ -172,13 +172,35 @@ export async function POST(req: Request) {
     // Activity log
     await service.from("activities").insert({
       activity_type: "recruiting.agent_provisioned",
-      agent_id: user.id,
+      agent_user_id: user.id,
       brokerage_id: recruit.brokerage_id,
       title: `Agent provisioned from recruit: ${recruit.first_name} ${recruit.last_name}`,
       notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).then(() => {}, () => {})
+
+    // MANAGERS TALKING — the Recruiting Manager tells the Deal Coordinator a recruit just
+    // became an ACTIVE AGENT (provisioned users+agents rows). No contacts are involved at
+    // this stage — the Deal Coordinator consumes by setting up first-deal onboarding
+    // support (learning path + welcome), governed and recorded.
+    if (agentId && resolvedUserId) {
+      try {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId: recruit.brokerage_id,
+          fromManager: "recruiting_manager",
+          toManager: "deal_coordinator",
+          signalType: "recruit_activated",
+          message: `${recruit.first_name} ${recruit.last_name} just became an active agent — over to you for first-deal onboarding support.`,
+          entityType: "recruit",
+          entityId: recruit.id,
+          payload: { agent_id: agentId, user_id: resolvedUserId },
+        }, service)
+      } catch (err) {
+        console.error("[provision-agent] recruit_activated signal failed:", err)
+      }
+    }
 
     // Tenant transition audit (immutable cross-tenant log — migration 038)
     await service.from("tenant_transition_log").insert({

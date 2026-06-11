@@ -109,7 +109,55 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed buyer prep follow-up (gate message ${res.id})` : null
   },
-  "listing_concierge:isa_call_appointment": async (signal, ctx) => {
+  // Deal Coordinator → Sphere: a deal closed — the client crossed into LIFETIME territory.
+  // The Sphere proposes the lifetime welcome to the client through the gate.
+  "sphere_of_influence:deal_closed": async (signal, ctx) => {
+    if (!signal.contactId) return null
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
+      entityId: signal.contactId, recipientContactId: signal.contactId, audience: "buyer",
+      subject: "Congratulations — and welcome to the family",
+      body: "Congratulations on your closing! From here on I'm your home's ongoing resource — annual value updates, trusted vendors whenever something needs fixing, and a real person to call before any move. Welcome to the family.",
+      rationale: `Deal closed (${signal.message}) — Sphere lifetime welcome (signal ${signal.signalType}).`,
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed lifetime welcome (gate message ${res.id})` : null
+  },
+  // Recruiting Manager → Deal Coordinator: a recruit just became an ACTIVE AGENT (no
+  // contacts yet — the rule). The Deal Coordinator sets up first-deal onboarding support:
+  // assigns the published agent-audience learning path + welcomes the new agent.
+  "deal_coordinator:recruit_activated": async (signal, ctx) => {
+    const agentUserId = (signal.payload?.user_id as string | undefined) ?? null
+    if (!agentUserId) return null
+    // Assign up to 3 published agent-audience learning modules (idempotent per
+    // uq_la_agent_module via upsert-ignore).
+    const { data: mods } = await ctx.supabase
+      .from("learning_modules")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("status", "published")
+      .contains("audience_roles", ["agent"])
+      .limit(3)
+    let assigned = 0
+    for (const m of (mods ?? []) as Array<{ id: string }>) {
+      const { error } = await ctx.supabase.from("learning_assignments").upsert({
+        brokerage_id: ctx.brokerageId, module_id: m.id, agent_user_id: agentUserId,
+        status: "open", signal_source: "recruit_activated",
+      }, { onConflict: "agent_user_id,module_id", ignoreDuplicates: true })
+      if (!error) assigned += 1
+    }
+    // Welcome the new agent with their first-deal support kickoff.
+    await ctx.supabase.from("notifications").insert({
+      user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "agent_onboarding",
+      title: "Welcome aboard — your first-deal support is ready",
+      body: assigned > 0
+        ? `Your onboarding learning path (${assigned} module${assigned === 1 ? "" : "s"}) is assigned. The Deal Coordinator has your back on your first transaction.`
+        : "The Deal Coordinator has your back on your first transaction — your onboarding kickoff is ready.",
+      entity_type: "recruit", entity_id: signal.entityId, priority: "medium", is_read: false,
+    })
+    return `assigned ${assigned} onboarding module(s) + welcomed the new agent`
+  },
+    "listing_concierge:isa_call_appointment": async (signal, ctx) => {
     if (!signal.contactId) return null
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
