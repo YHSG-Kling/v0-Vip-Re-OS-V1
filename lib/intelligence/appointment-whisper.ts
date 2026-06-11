@@ -7,21 +7,23 @@
 // USER'S CONFIGURED ASSISTANT VOICE (voice_assistant_config → agent_voice_profiles
 // elevenlabs voice id — never a hardcoded voice, never the client-facing clone).
 //
-// TIER-GEARED (subscriptions are the product):
-//   · solo_agent           → TEXT whisper (the brief as a push note)
-//   · team / brokerage / multi_location → AUDIO whisper (ElevenLabs, assistant voice)
+// EVERY TIER gets the AUDIO whisper (solo agents are not second-class — the assistant
+// voice is part of the product on every subscription). Text is strictly the FALLBACK:
+// it appears only when the user hasn't configured an assistant voice yet or synthesis
+// is unavailable — never as a tier downgrade.
 // The synthesizer is an injectable vendor seam (like the dial executor) — tests never
-// spend TTS credits; the brief content is REAL either way and falls back to text when
-// synthesis is unavailable.
+// spend TTS credits; the brief content is REAL either way.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { UserTier } from "@/lib/kernel/0.1-feature-access"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Tier capability — the whisper everyone gets; AUDIO is the team+ upgrade. */
+/** Tier capability — AUDIO on EVERY tier (solo included); "text" is never returned by
+ *  tier. Text happens downstream only as the no-voice-configured / synth-down fallback. */
 export function whisperTierCapability(tier: UserTier): "audio" | "text" {
-  return tier === "solo_agent" ? "text" : "audio"
+  void tier
+  return "audio"
 }
 
 export interface WhisperFacts {
@@ -75,7 +77,7 @@ export interface WhisperRunResult { whispers: number; audio: number; text: numbe
 
 /**
  * Produce whispers for appointments starting in [25, 40] minutes. Idempotent per
- * calendar event (one whisper notification per event). Tier decides audio vs text;
+ * calendar event (one whisper notification per event). AUDIO on every tier;
  * audio requires the user's configured assistant voice AND working synthesis —
  * otherwise the same brief lands as text (never silently nothing).
  */
@@ -137,7 +139,7 @@ export async function produceAppointmentWhispers(
     }
     const script = buildWhisperScript(facts)
 
-    // Tier decides the delivery; the assistant voice comes from THE USER'S SETTINGS.
+    // Audio on every tier; the assistant voice comes from THE USER'S SETTINGS.
     const { mapUserTypeToTier } = await import("@/lib/kernel/0.1-feature-access")
     const tier = mapUserTypeToTier((usr as any)?.user_type ?? "agent", (usr as any)?.brokerage_id ?? undefined, (usr as any)?.team_id ?? undefined)
     let audioUrl: string | null = null

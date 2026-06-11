@@ -238,6 +238,33 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed seller prep follow-up (gate message ${res.id})` : null
   },
+  // Data Steward → Sphere: the consent-recovery chain exhausted every step (no fallback
+  // channel, enrichment re-run found nothing). The Sphere releases the relationship
+  // RESPECTFULLY: nurture_status='withdrawn' (history kept, never a delete), agent told.
+  // entity_id carries the contact (contact_id stays null so Team Plays never folds a
+  // withdraw into a client-facing play).
+  "sphere_of_influence:contact_withdrawn": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const { data: updated } = await ctx.supabase.from("contacts")
+      .update({ nurture_status: "withdrawn" })
+      .eq("id", signal.entityId).eq("brokerage_id", ctx.brokerageId)
+      .select("id, first_name, last_name").maybeSingle()
+    if (!updated) return null
+    const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+    const agentUserId = await resolveResponsibleAgentUserId(ctx.supabase, {
+      recipient_contact_id: signal.entityId, entity_type: "contact", entity_id: signal.entityId,
+    })
+    if (agentUserId) {
+      const name = [(updated as any).first_name, (updated as any).last_name].filter(Boolean).join(" ").trim() || "A contact"
+      await ctx.supabase.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "consent_withdrawn",
+        title: `${name} released — every channel revoked`,
+        body: `${name} revoked every channel and the enrichment re-run found no new contact info. The relationship is marked withdrawn — history kept, nothing further will be proposed. If they ever reach out, the chain reopens automatically.`,
+        entity_type: "contact", entity_id: signal.entityId, priority: "medium", is_read: false,
+      })
+    }
+    return "relationship marked withdrawn (nurture_status) + agent informed — history preserved"
+  },
 }
 
 /**

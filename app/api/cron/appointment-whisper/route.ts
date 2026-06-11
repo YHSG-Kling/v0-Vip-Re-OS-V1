@@ -12,8 +12,8 @@ import { produceAppointmentWhispers } from "@/lib/intelligence/appointment-whisp
 /**
  * THE WHISPER cron (every 10 min) — T-minus-30 hallway briefings. For every brokerage
  * with client appointments starting in 25-40 minutes, the managers' combined knowledge
- * is whispered to the agent — in their configured ASSISTANT voice on team+ tiers,
- * as a text brief on solo. Idempotent per calendar event.
+ * is whispered to the agent in their configured ASSISTANT voice on EVERY tier (text
+ * only as the no-voice-configured fallback). Idempotent per calendar event.
  */
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)

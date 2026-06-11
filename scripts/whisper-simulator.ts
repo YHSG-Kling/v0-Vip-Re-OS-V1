@@ -4,7 +4,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * THE WHISPER harness — T-minus-30 hallway briefings in the user's ASSISTANT voice.
  *
- * Layer 1 (pure): whisperTierCapability (solo=text, team+=audio — tier-geared) +
+ * Layer 1 (pure): whisperTierCapability (AUDIO on every tier — solo included) +
  *   buildWhisperScript (no fabricated sections; only facts the team actually has).
  * Layer 2 (live, gated): seed a contact appointment 30min out with team knowledge
  *   (signals, saved home), run produceAppointmentWhispers with an INJECTED synthesizer
@@ -34,7 +34,7 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · pure]")
-  check("tier: solo_agent → text whisper", whisperTierCapability("solo_agent") === "text")
+  check("tier: solo_agent → AUDIO whisper (no tier downgrade)", whisperTierCapability("solo_agent") === "audio")
   check("tier: team → audio whisper", whisperTierCapability("team") === "audio")
   check("tier: brokerage → audio whisper", whisperTierCapability("brokerage") === "audio")
   check("tier: multi_location → audio whisper", whisperTierCapability("multi_location") === "audio")

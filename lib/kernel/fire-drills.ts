@@ -11,7 +11,7 @@
 //   · the lender's loan officer is named with the exact nudge to send
 //   · Campaign Orchestrator drafts the client-calming note INTO THE GATE (human approves)
 //   · the agent gets a CRITICAL briefing — in their CONFIGURED assistant voice on
-//     team+ tiers (voice_assistant_config), text on solo (tier-geared, like The Whisper)
+//     EVERY tier (voice_assistant_config) — text only as the no-voice fallback
 //
 // Nothing autonomous touches the client; the drill's output is a plan + a draft. The
 // drill publishes its audit line onto the manager bus (consumed inline — the work is
@@ -162,7 +162,7 @@ const defaultSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
 
 /**
  * Run fire drills for a brokerage: scan live deals for uncovered deadlines inside the
- * window, and for each, brief the agent (CRITICAL, tier-geared assistant voice) +
+ * window, and for each, brief the agent (CRITICAL, assistant-voice audio on every tier) +
  * draft the client-calming note into the gate + leave the audit line on the bus.
  * Idempotent: one drill per transaction per 24h (notification-keyed).
  */
@@ -255,7 +255,7 @@ export async function runFireDrills(
       if (res.ok) clientDraftsProposed += 1
     }
 
-    // Tier-geared briefing in the user's CONFIGURED assistant voice (team+ = audio).
+    // Briefing in the user's CONFIGURED assistant voice — audio on EVERY tier.
     const { data: usr } = await supabase.from("users").select("user_type, brokerage_id, team_id").eq("id", agentUserId).maybeSingle()
     const { mapUserTypeToTier } = await import("@/lib/kernel/0.1-feature-access")
     const tier = mapUserTypeToTier((usr as any)?.user_type ?? "agent", (usr as any)?.brokerage_id ?? undefined, (usr as any)?.team_id ?? undefined)
