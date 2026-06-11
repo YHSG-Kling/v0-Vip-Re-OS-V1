@@ -96,7 +96,7 @@ export async function runTeamQuery(
   const name = [(contact as any).first_name, (contact as any).last_name].filter(Boolean).join(" ").trim() || "this client"
   const c: ManagerContribution[] = []
 
-  const [saves, tours, showings, txns, gate, lastSent, talk, lastCall] = await Promise.all([
+  const [saves, tours, showings, txns, gate, lastSent, talk, lastCall, touches, enrollments, recruitRow] = await Promise.all([
     supabase.from("saved_properties").select("property_address").eq("contact_id", contact.id).eq("dismissed", false).order("saved_at", { ascending: false }).limit(5),
     supabase.from("tours").select("id").eq("contact_id", contact.id).in("status", ["scheduled", "confirmed", "pending"]).limit(5),
     supabase.from("showings").select("id, scheduled_date").eq("contact_id", contact.id).gte("scheduled_date", now.toISOString().slice(0, 10)).limit(5),
@@ -107,6 +107,10 @@ export async function runTeamQuery(
     supabase.from("agent_client_messages").select("sent_at").eq("recipient_contact_id", contact.id).eq("status", "sent").not("sent_at", "is", null).order("sent_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("manager_signals").select("message, from_manager").eq("contact_id", contact.id).order("created_at", { ascending: false }).limit(2),
     supabase.from("ai_isa_calls").select("appointment_set, created_at").eq("contact_id", contact.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("marketing_campaign_touchpoints").select("channel, sent_at").eq("contact_id", contact.id).order("sent_at", { ascending: false }).limit(5),
+    supabase.from("sequence_enrollments").select("status, current_step, campaign_sequences(name)").eq("contact_id", contact.id).eq("status", "active").limit(3),
+    supabase.from("recruits").select("id").eq("brokerage_id", brokerageId)
+      .or(`first_name.ilike.%${personQuery.replace(/[%,()]/g, "")}%,last_name.ilike.%${personQuery.replace(/[%,()]/g, "")}%`).limit(1).maybeSingle(),
   ])
 
   // AI ISA — propensity + last dial.
@@ -155,11 +159,39 @@ export async function runTeamQuery(
     c.push({ manager: "sphere_of_influence", line: `this relationship is WITHDRAWN — every channel revoked; the team recommends no outreach unless they come to us.` })
   }
 
+  // Marketing Manager — campaign touches + active sequences (the FULL bench answers).
+  const touchRows = (touches.data ?? []) as any[]
+  if (touchRows.length > 0) {
+    c.push({ manager: "marketing_agent", line: `marketing has touched them ${touchRows.length} time${touchRows.length === 1 ? "" : "s"} recently, last via ${touchRows[0].channel ?? "a campaign"}.` })
+  }
+  const enrRows = (enrollments.data ?? []) as any[]
+  if (enrRows.length > 0) {
+    const seqName = (enrRows[0].campaign_sequences as { name?: string | null } | null)?.name ?? "a campaign sequence"
+    c.push({ manager: "marketing_agent", line: `they're running in "${seqName}" at step ${enrRows[0].current_step ?? 0}.` })
+  } else if ((contact as any).nurture_status !== "withdrawn") {
+    c.push({ manager: "marketing_agent", line: `no campaign is running for them — say "start marketing" and I'll enroll them.` })
+  }
+
+  // Data Steward — hygiene: what we're MISSING (so the team can fix it, not guess).
+  const { data: hygiene } = await supabase.from("contacts").select("email, phone").eq("id", contact.id).maybeSingle()
+  const missing: string[] = []
+  if (!(hygiene as any)?.email) missing.push("an email")
+  if (!(hygiene as any)?.phone) missing.push("a phone number")
+  if (missing.length > 0) c.push({ manager: "data_steward", line: `we're missing ${missing.join(" and ")} — enrichment can fix that.` })
+
+  // Recruiting Manager — the same name in the talent pipeline.
+  if (recruitRow.data) c.push({ manager: "recruiting_manager", line: `heads up — there's also a recruit by this name in the talent pipeline.` })
+
   // The bus — the managers' own recent talk.
   for (const t of ((talk.data ?? []) as any[]).slice(0, 1)) {
     const from = (t.from_manager in MANAGERS ? MANAGERS[t.from_manager as ManagerKey].label : t.from_manager)
     c.push({ manager: "campaign_orchestrator", line: `on the team bus, ${from} noted: ${t.message}` })
   }
 
-  return { found: true, contactId: contact.id, contactName: name, spoken: composeTeamAnswer(name, c), contributions: c }
+  // The handoff — the bullpen answers, then offers to take the ball (voice delegation).
+  const spoken = (contact as any).nurture_status === "withdrawn"
+    ? composeTeamAnswer(name, c)
+    : `${composeTeamAnswer(name, c)} Say "send a follow-up" or "start marketing" and the team takes it from here.`
+
+  return { found: true, contactId: contact.id, contactName: name, spoken, contributions: c }
 }

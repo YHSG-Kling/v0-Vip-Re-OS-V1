@@ -14,6 +14,8 @@ type VoiceIntent =
   | "create_task"
   | "schedule_followup"
   | "team_query"
+  | "voice_followup"
+  | "start_marketing"
   | "general_query"
 
 interface CallQueueItem {
@@ -69,6 +71,8 @@ export async function POST(req: NextRequest) {
 - create_task: asking to create, add, or set a task reminder
 - schedule_followup: asking to schedule a follow-up
 - team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
+- voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
+- start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -220,6 +224,41 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = tq.spoken
         data = { contactId: tq.contactId, contributions: tq.contributions }
         action = tq.found ? "team_query_answered" : null
+      }
+    } else if (intent === "voice_followup" || intent === "start_marketing") {
+      // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
+      // run propose→approve(as the agent) through the SAME gate (consent re-checked);
+      // marketing enrolls in a sequence whose steps clear the compliance gate.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `From the voice command, extract:\nNAME: the person/family name\nDICTATION: the exact message content the user dictated, if any (the words after "saying"/"tell them"), else NONE\nFormat exactly:\nNAME: <name or NONE>\nDICTATION: <text or NONE>`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 120,
+      })
+      const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
+      const dictMatch = extract.text.match(/DICTATION:\s*([\s\S]+)/)?.[1]?.trim()
+      const personQuery = nameMatch && nameMatch.toUpperCase() !== "NONE" ? nameMatch : null
+      const dictation = dictMatch && dictMatch.toUpperCase() !== "NONE" ? dictMatch : null
+      if (!personQuery || !brokerageId) {
+        spokenResponse = "Who is that for? Give me the name and I'll take it from there."
+      } else {
+        const { runTeamQuery } = await import("@/lib/kernel/team-query")
+        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
+        if (!tq.found || !tq.contactId) {
+          spokenResponse = tq.spoken
+        } else if (intent === "voice_followup") {
+          const { voiceFollowUp } = await import("@/lib/kernel/voice-delegation")
+          const r = await voiceFollowUp({ brokerageId, agentUserId: user.id, contactId: tq.contactId, dictation }, service)
+          spokenResponse = r.spoken
+          data = { contactId: tq.contactId, messageId: r.messageId ?? null }
+          action = r.ok ? "voice_followup_sent" : null
+        } else {
+          const { voiceStartMarketing } = await import("@/lib/kernel/voice-delegation")
+          const r = await voiceStartMarketing({ brokerageId, agentUserId: user.id, contactId: tq.contactId }, service)
+          spokenResponse = r.spoken
+          data = { contactId: tq.contactId, enrollmentId: r.enrollmentId ?? null }
+          action = r.ok ? "marketing_started" : null
+        }
       }
     } else {
       // General query — pass to the main AI chat endpoint context
