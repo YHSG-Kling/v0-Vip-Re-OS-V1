@@ -351,9 +351,20 @@ async function identifyNeighborCandidates(params: {
   minTenureYears: number
   threshold: number
 }): Promise<NeighborCandidate[]> {
-  // Implementation deferred to property-records provider integration.
-  // Returning empty array here lets the campaign be created with
-  // recipients_identified = 0; the agent can re-run identification once
-  // the provider is connected, or upload a recipient list manually.
-  return []
+  // REAL scrape via the kernel's BatchData-backed neighbor scraper (was a deferred
+  // stub returning []). Single source of truth shared with the automated Farm Play.
+  const { realNeighborScraper } = await import("@/lib/kernel/neighbor-farm")
+  const found = await realNeighborScraper({
+    listingAddress: params.listingAddress, city: null, state: null,
+    radiusMeters: params.radiusMeters, maxResults: params.maxResults, minTenureYears: params.minTenureYears,
+  }).catch(() => [])
+  return found
+    .filter((c) => c.knowsBuyerScore >= params.threshold)
+    .map((c) => ({
+      address: c.address, city: c.city ?? "", state: c.state ?? "", zip: c.zip ?? "",
+      ownerName: c.ownerName ?? undefined, tenureYears: c.tenureYears ?? undefined,
+      estimatedAge: c.estimatedAge ?? undefined, knowsBuyerScore: c.knowsBuyerScore,
+      proximityMeters: c.proximityMeters ?? 0, lifeStageMatch: c.lifeStageMatch ?? undefined,
+      signals: c.signals ?? undefined,
+    }))
 }

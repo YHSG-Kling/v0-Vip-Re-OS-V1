@@ -6,9 +6,13 @@
 // runs it as a coordinated play; ours convenes the whole marketing bench the moment a
 // deal closes, each manager staging its piece on an EXISTING governed rail:
 //
-//   · Data Steward        — stages the neighbor farm (neighbor_notification_campaigns,
-//                           awaiting_seller_permission): the homeowners around the sold
-//                           home, identified + scored. NEVER sends without the seller's OK.
+//   · Data Steward        — SCRAPES the block (BatchData via the neighbor-farm seam) and
+//                           stages the farm (neighbor_notification_campaigns +
+//                           neighbor_notification_recipients): real owner names + tenure,
+//                           scored. NEVER sends without the seller's OK.
+//   · Asset Manager       — produces the just-sold reel on the canonical Remotion+D-ID
+//                           rail AND drafts a "just sold" social post (social_posts,
+//                           pending approval) — the media for the whole play
 //   · Marketing Manager   — drafts the "just sold near you" neighbor postcard
 //                           (direct_mail_campaigns, approval_status='pending')
 //   · Ads Manager         — stages a geo-fenced paid campaign on the block
@@ -26,6 +30,8 @@
 // managers converging on one address. NOT server-only (simulator-driven).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import type { NeighborScraper } from "@/lib/kernel/neighbor-farm"
+import type { PromoDispatcher } from "@/lib/kernel/voice-delegation"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -64,7 +70,7 @@ export function composeFarmPlay(win: FarmWin): {
     : null
   const parts = [
     `You own this block now — ${win.soldAddress}${where} just closed${speed}.`,
-    `The team staged your farm play: the Data Steward identified the neighbors, Marketing drafted the "just sold near you" postcard, and Ads staged a geo campaign on the block.`,
+    `The team staged your farm play: the Data Steward scraped + scored the neighbors, the Asset Manager cut a "just sold" reel and social post, Marketing drafted the "just sold near you" postcard, and Ads staged a geo campaign on the block.`,
     `Get the seller's OK to notify neighbors, then approve — nothing goes out until you do.`,
   ]
   return { agentSummary: parts.join(" "), postcardCopy, adName, recruitingNote }
@@ -73,6 +79,9 @@ export function composeFarmPlay(win: FarmWin): {
 export interface FarmPlayResult {
   plays: number
   neighborCampaigns: number
+  neighborsIdentified: number
+  reels: number
+  socialPosts: number
   postcards: number
   adsStaged: number
   recruitingProofs: number
@@ -87,14 +96,15 @@ export interface FarmPlayResult {
  */
 export async function runFarmPlays(
   brokerageId: string,
-  opts: { now?: Date } = {},
+  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher } = {},
   client?: Svc,
 ): Promise<FarmPlayResult> {
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const since = new Date(now.getTime() - FARM_PLAY_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10)
   const result: FarmPlayResult = {
-    plays: 0, neighborCampaigns: 0, postcards: 0, adsStaged: 0, recruitingProofs: 0, summariesProposed: 0,
+    plays: 0, neighborCampaigns: 0, neighborsIdentified: 0, reels: 0, socialPosts: 0,
+    postcards: 0, adsStaged: 0, recruitingProofs: 0, summariesProposed: 0,
   }
 
   const { data: closed } = await supabase.from("transactions")
@@ -130,19 +140,43 @@ export async function runFarmPlays(
     }
     const copy = composeFarmPlay(win)
 
-    // 1) DATA STEWARD — stage the neighbor farm (awaiting seller permission; never sends).
-    const { data: existCampaign } = await supabase.from("neighbor_notification_campaigns").select("id")
-      .eq("listing_id", t.listing_id).limit(1).maybeSingle()
-    if (!existCampaign && agentUserId) {
-      const { error } = await supabase.from("neighbor_notification_campaigns").insert({
-        brokerage_id: brokerageId, agent_user_id: agentUserId, listing_id: t.listing_id,
-        max_neighbors: 50, search_radius_meters: 800, min_tenure_years: 5,
-        knows_buyer_score_threshold: 0.6, status: "awaiting_seller_permission",
-      })
-      if (!error) result.neighborCampaigns += 1
+    // 1) DATA STEWARD — SCRAPE the block + stage the farm (awaiting seller permission).
+    if (agentUserId) {
+      const { stageNeighborFarm } = await import("@/lib/kernel/neighbor-farm")
+      const farm = await stageNeighborFarm(brokerageId, t.listing_id, agentUserId, { scraper: opts.scraper }, supabase)
+      if (farm.created) result.neighborCampaigns += 1
+      result.neighborsIdentified += farm.identified
     }
 
-    // 2) MARKETING MANAGER — the neighbor postcard, drafted, pending approval.
+    // 2) ASSET MANAGER — the just-sold reel (canonical Remotion+D-ID rail) + a "just
+    // sold" social post drafted for approval. The reel dispatch is idempotent
+    // (listing_promo_videos uniqueness); the social post is keyed per listing+type.
+    if (agentUserId) {
+      const dispatcher: PromoDispatcher = opts.promoDispatcher ?? (async (d) => {
+        const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+        const r = await dispatchListingPromoVideo({ ...d, eventType: d.eventType })
+        return { ok: r.ok, status: r.status, reason: r.reason }
+      })
+      const rr = await dispatcher({ brokerageId, listingId: t.listing_id, agentUserId, eventType: "just_sold", bypassPolicy: false })
+      if (rr.ok && rr.status !== "skipped") result.reels += 1
+
+      const { data: existSocial } = await supabase.from("social_posts").select("id")
+        .eq("listing_id", t.listing_id).eq("post_type", "just_sold")
+        .gte("created_at", new Date(now.getTime() - FARM_PLAY_WINDOW_DAYS * 86_400_000).toISOString()).limit(1).maybeSingle()
+      if (!existSocial) {
+        const { error } = await supabase.from("social_posts").insert({
+          // social_posts.agent_id FK → agents.id (use agentRowId, not the users.id).
+          brokerage_id: brokerageId, listing_id: t.listing_id, agent_id: agentRowId,
+          platform: "all", post_type: "just_sold",
+          content: `JUST SOLD: ${soldAddress}${(listing as any).city ? ` in ${(listing as any).city}` : ""}${dom !== null ? ` — in ${dom} days` : ""}. Thinking of selling? Let's talk about what your home is worth.`,
+          status: "draft", approval_status: "pending", ai_generated: true,
+          post_brief: "FARM PLAY — Asset Manager: the just-sold social post for the block; pairs with the reel + postcard.",
+        })
+        if (!error) result.socialPosts += 1
+      }
+    }
+
+    // 3) MARKETING MANAGER — the neighbor postcard, drafted, pending approval.
     const { data: existPostcard } = await supabase.from("direct_mail_campaigns").select("id")
       .eq("brokerage_id", brokerageId).eq("campaign_name", copy.adName).limit(1).maybeSingle()
     if (!existPostcard) {
@@ -156,7 +190,7 @@ export async function runFarmPlays(
       if (!error) result.postcards += 1
     }
 
-    // 3) ADS MANAGER — the geo-fenced paid campaign, staged as a draft (inactive).
+    // 4) ADS MANAGER — the geo-fenced paid campaign, staged as a draft (inactive).
     if ((listing as any).city) {
       const { data: existAd } = await supabase.from("ad_campaigns").select("id")
         .eq("brokerage_id", brokerageId).eq("campaign_name", copy.adName).limit(1).maybeSingle()
@@ -170,7 +204,7 @@ export async function runFarmPlays(
       }
     }
 
-    // 4) RECRUITING MANAGER — a standout close becomes recruiting proof (the bus).
+    // 5) RECRUITING MANAGER — a standout close becomes recruiting proof (the bus).
     if (copy.recruitingNote) {
       const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       const pub = await publishManagerSignal({
@@ -181,7 +215,7 @@ export async function runFarmPlays(
       if (pub.ok && !pub.reason) result.recruitingProofs += 1
     }
 
-    // 5) CAMPAIGN ORCHESTRATOR — ONE internal summary into the gate (audience 'agent').
+    // 6) CAMPAIGN ORCHESTRATOR — ONE internal summary into the gate (audience 'agent').
     if (agentUserId) {
       const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
       const res = await proposeClientMessage({
@@ -189,18 +223,18 @@ export async function runFarmPlays(
         entityId: t.listing_id, audience: "agent",
         subject: `🏡 Farm play ready — you own ${soldAddress}`,
         body: copy.agentSummary,
-        rationale: `FARM PLAY — ${soldAddress} closed; the marketing bench (Data Steward + Marketing + Ads + Recruiting) staged the geographic-farming play; seller-permission + human-approval gated.`,
+        rationale: `FARM PLAY — ${soldAddress} closed; the marketing bench (Data Steward scrape + Asset reel/social + Marketing + Ads + Recruiting) staged the geographic-farming play; seller-permission + human-approval gated.`,
         channel: "portal",
       }, supabase)
       if (res.ok) result.summariesProposed += 1
     }
 
-    // 6) THE BUS — the convening line (the Command Center shows six managers converge).
+    // 7) THE BUS — the convening line (the Command Center shows the bench converge).
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const conv = await publishManagerSignal({
       brokerageId, fromManager: "deal_coordinator", toManager: "campaign_orchestrator",
       signalType: "farm_play_convened",
-      message: `Farm play convened on ${soldAddress}: neighbor farm staged, postcard + geo ad drafted${copy.recruitingNote ? ", win logged for recruiting" : ""} — awaiting seller OK + your approval.`,
+      message: `Farm play convened on ${soldAddress}: neighbors scraped, reel + social + postcard + geo ad drafted${copy.recruitingNote ? ", win logged for recruiting" : ""} — awaiting seller OK + your approval.`,
       entityType: "listing", entityId: t.listing_id,
     }, supabase)
     if (conv.ok && conv.signalId && !conv.reason) {

@@ -17,6 +17,8 @@
  * Run: npx tsx scripts/farm-play-simulator.ts  (npm run test:farm-play)
  */
 import { farmWinIsRecruitingProof, composeFarmPlay, runFarmPlays } from "../lib/kernel/farm-play"
+import { scoreNeighbor, type NeighborScraper } from "../lib/kernel/neighbor-farm"
+import type { PromoDispatcher } from "../lib/kernel/voice-delegation"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -42,10 +44,12 @@ async function main() {
   check("slow + modest close → NOT recruiting proof", !farmWinIsRecruitingProof({ soldAddress: "x", soldCity: null, dealName: null, daysOnMarket: 60, salePrice: 300_000 }))
   const standout = composeFarmPlay({ soldAddress: "44 Birch Lane", soldCity: "Oakdale", dealName: "44 Birch", daysOnMarket: 9, salePrice: 820_000 })
   check("postcard: names the sold home + the speed, invites a valuation", standout.postcardCopy.includes("44 Birch Lane") && standout.postcardCopy.includes("9 days") && standout.postcardCopy.toLowerCase().includes("valuation"))
-  check("agent summary: names the bench (Data Steward + Marketing + Ads) + the gate", standout.agentSummary.includes("Data Steward") && standout.agentSummary.includes("Marketing") && standout.agentSummary.includes("Ads") && standout.agentSummary.includes("seller's OK"))
+  check("agent summary: names the FULL bench (Data Steward scrape + Asset reel/social + Marketing + Ads)", standout.agentSummary.includes("Data Steward") && standout.agentSummary.includes("Asset Manager") && standout.agentSummary.includes("reel and social") && standout.agentSummary.includes("Marketing") && standout.agentSummary.includes("Ads") && standout.agentSummary.includes("seller's OK"))
   check("recruiting note present + carries the win facts for a standout", !!standout.recruitingNote && standout.recruitingNote!.includes("$820,000"))
   const modest = composeFarmPlay({ soldAddress: "9 Elm", soldCity: null, dealName: "9 Elm", daysOnMarket: 70, salePrice: 250_000 })
   check("modest close: NO recruiting note (nothing to crow about)", modest.recruitingNote === null)
+  check("neighbor score: long tenure + owner-occupied scores higher than a fresh renter",
+    scoreNeighbor(20, true) > scoreNeighbor(0, false) && scoreNeighbor(20, true) <= 1)
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -81,15 +85,39 @@ async function main() {
     }).select("id").single()
     cleanup.push({ table: "transactions", id: (txn as any).id })
 
-    const r1 = await runFarmPlays(brokerageId, {}, svc)
-    check("farm play: convened (all six contributions counted)",
-      r1.plays >= 1 && r1.neighborCampaigns >= 1 && r1.postcards >= 1 && r1.adsStaged >= 1 && r1.recruitingProofs >= 1 && r1.summariesProposed >= 1)
+    // Injected seams — the Data Steward scraper (2 real-shaped candidates, no BatchData
+    // spend) + the Asset reel dispatcher (no render spend).
+    const fakeScraper: NeighborScraper = async () => ([
+      { address: `${TAG} 46 Birch Lane`, city: `${TAG}ville`, state: "CA", zip: "90210", ownerName: "Pat Neighbor", tenureYears: 18, estimatedAge: 55, knowsBuyerScore: scoreNeighbor(18, true), proximityMeters: 40, lifeStageMatch: null, signals: { source: "test" } },
+      { address: `${TAG} 48 Birch Lane`, city: `${TAG}ville`, state: "CA", zip: "90210", ownerName: "Sam Owner", tenureYears: 9, estimatedAge: 48, knowsBuyerScore: scoreNeighbor(9, true), proximityMeters: 75, lifeStageMatch: null, signals: { source: "test" } },
+    ])
+    const promoDispatcher: PromoDispatcher = async () => ({ ok: true, status: "remotion_pending" })
 
-    // Data Steward — neighbor farm staged, awaiting seller permission (never sends).
-    const { data: nc } = await svc.from("neighbor_notification_campaigns").select("id, status")
+    const r1 = await runFarmPlays(brokerageId, { scraper: fakeScraper, promoDispatcher }, svc)
+    check("farm play: convened (all contributions counted: neighbors scraped, reel, social, postcard, ad, recruiting, summary)",
+      r1.plays >= 1 && r1.neighborCampaigns >= 1 && r1.neighborsIdentified === 2 && r1.reels >= 1 && r1.socialPosts >= 1 && r1.postcards >= 1 && r1.adsStaged >= 1 && r1.recruitingProofs >= 1 && r1.summariesProposed >= 1)
+
+    // Data Steward: the scraped recipients actually landed.
+    const { data: ncForClean } = await svc.from("neighbor_notification_campaigns").select("id").eq("listing_id", (lst as any).id).maybeSingle()
+    if (ncForClean) {
+      const { data: recips } = await svc.from("neighbor_notification_recipients").select("id, owner_name, knows_buyer_score, status").eq("campaign_id", (ncForClean as any).id)
+      for (const r of (recips ?? []) as any[]) cleanup.push({ table: "neighbor_notification_recipients", id: r.id })
+      check("Data Steward: scraped neighbors written as recipients (owner names + score, status 'identified')",
+        (recips ?? []).length === 2 && (recips ?? []).every((r: any) => r.owner_name && r.status === "identified" && r.knows_buyer_score > 0))
+      cleanup.push({ table: "neighbor_notification_campaigns", id: (ncForClean as any).id })
+    } else { check("Data Steward: scraped neighbors written as recipients", false, "no campaign") }
+
+    // Asset Manager: the just-sold social post drafted, pending approval.
+    const { data: social } = await svc.from("social_posts").select("id, post_type, approval_status, content")
+      .eq("listing_id", (lst as any).id).eq("post_type", "just_sold").maybeSingle()
+    if (social) cleanup.push({ table: "social_posts", id: (social as any).id })
+    check("Asset Manager: 'just sold' social post drafted, PENDING approval (never published)",
+      (social as any)?.approval_status === "pending" && ((social as any)?.content ?? "").includes("JUST SOLD"))
+
+    // Data Steward — the farm campaign itself is gated awaiting seller permission.
+    const { data: nc } = await svc.from("neighbor_notification_campaigns").select("status")
       .eq("listing_id", (lst as any).id).maybeSingle()
-    if (nc) cleanup.push({ table: "neighbor_notification_campaigns", id: (nc as any).id })
-    check("Data Steward: neighbor farm staged + AWAITING seller permission", (nc as any)?.status === "awaiting_seller_permission")
+    check("Data Steward: neighbor farm AWAITING seller permission (never sends without OK)", (nc as any)?.status === "awaiting_seller_permission")
 
     // Marketing — postcard drafted, pending approval.
     const { data: dm } = await svc.from("direct_mail_campaigns").select("id, approval_status, status, copy_text")
