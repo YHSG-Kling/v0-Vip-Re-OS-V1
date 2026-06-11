@@ -66,6 +66,21 @@ export function isManagerTrusted(outcomes: Record<string, ManagerOutcome>, manag
   return o.approvalRate >= TRUST_THRESHOLD
 }
 
+/** Pure: the human's spoken/typed rejection reasons per manager — DIRECTION, not just
+ *  a score. Reads the 'agent feedback:' marker rejectClientMessage stores; machine
+ *  markers never appear here. Most recent first, capped. */
+export function summarizeRejectionFeedback(rows: DecidedProposal[], cap = 3): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const r of rows) {
+    const fb = (r.send_error ?? "").startsWith("agent feedback: ") ? (r.send_error ?? "").slice("agent feedback: ".length) : null
+    if (!fb || r.status !== "rejected") continue
+    const list = out[r.agent_kind] ?? []
+    if (list.length < cap) list.push(fb)
+    out[r.agent_kind] = list
+  }
+  return out
+}
+
 /** Compute outcomes from the gate's recent history (last ~200 decided proposals). */
 export async function computeManagerOutcomes(
   brokerageId: string, client?: Svc,
@@ -76,4 +91,17 @@ export async function computeManagerOutcomes(
     .eq("brokerage_id", brokerageId).in("status", ["approved", "sent", "rejected"])
     .order("proposed_at", { ascending: false }).limit(200)
   return scoreOutcomes(((data ?? []) as DecidedProposal[]))
+}
+
+/** The trust meter's full payload: per-manager rates + the human's recent reasons. */
+export async function computeManagerTrust(
+  brokerageId: string, client?: Svc,
+): Promise<{ outcomes: Record<string, ManagerOutcome>; feedback: Record<string, string[]> }> {
+  const supabase = client ?? createServiceClient()
+  const { data } = await supabase.from("agent_client_messages")
+    .select("agent_kind, status, approved_by, send_error")
+    .eq("brokerage_id", brokerageId).in("status", ["approved", "sent", "rejected"])
+    .order("proposed_at", { ascending: false }).limit(200)
+  const rows = (data ?? []) as DecidedProposal[]
+  return { outcomes: scoreOutcomes(rows), feedback: summarizeRejectionFeedback(rows) }
 }

@@ -77,6 +77,33 @@ export async function actOnStandupItem(
   return { ok: r.ok, actedKind: "reengage", entityId: item.entityId, spoken: r.spoken }
 }
 
+/** "Reject number N — too pushy" — the spoken NO carries its reason. The rejection is
+ *  stored with 'agent feedback: <reason>' so OUTCOME LEARNING gains direction, not just
+ *  a score (the trust meter shows these reasons to the team's manager pages).
+ *  Only approval-kind items are rejectable; fires and re-engages have nothing to reject. */
+export async function runStandupReject(
+  input: { brokerageId: string; agentUserId: string; ordinal: number; reason?: string | null; firstName?: string | null },
+  client?: Svc,
+): Promise<StandupActionResult> {
+  const supabase = client ?? createServiceClient()
+  const { runMorningStandup } = await import("@/lib/kernel/morning-standup")
+  const { items } = await runMorningStandup(input.brokerageId, input.agentUserId, { firstName: input.firstName }, supabase)
+  const item = items.find((i) => i.rank === input.ordinal)
+  if (!item) return { ok: false, spoken: `There's no number ${input.ordinal} today.` }
+  if (item.kind !== "approval" || !item.entityId) {
+    return { ok: false, actedKind: item.kind, spoken: `Number ${input.ordinal} isn't an approval — there's nothing to reject there.` }
+  }
+  const { rejectClientMessage } = await import("@/lib/agents/agent-client-messages")
+  const r = await rejectClientMessage(item.entityId, input.agentUserId, supabase, input.reason ?? undefined)
+  if (!r.ok) return { ok: false, actedKind: "approval", entityId: item.entityId, spoken: "That one wasn't rejectable anymore — it may already be decided." }
+  return {
+    ok: true, actedKind: "approval", entityId: item.entityId,
+    spoken: input.reason
+      ? `Rejected — and I logged your reason ("${input.reason}") so the team drafts it better next time.`
+      : `Rejected. Tell me why next time and the team will learn from it.`,
+  }
+}
+
 /**
  * "Do number N" — re-derive the stand-up (live, never stale) and act on item N.
  * Out-of-range or empty days answer honestly.

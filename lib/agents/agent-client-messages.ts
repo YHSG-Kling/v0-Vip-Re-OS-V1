@@ -190,10 +190,15 @@ async function fail(supabase: ReturnType<typeof createServiceClient>, messageId:
 
 export async function rejectClientMessage(
   messageId: string, approverUserId: string, client?: ReturnType<typeof createServiceClient>,
+  /** WHY the human said no — one sentence stored on the rejection ("agent feedback: …").
+   *  Outcome learning reads it so the managers learn direction, not just a score. */
+  reason?: string,
 ): Promise<{ ok: boolean }> {
   const supabase = client ?? createServiceClient()
+  const patch: Record<string, unknown> = { status: "rejected", approved_by: approverUserId, approved_at: new Date().toISOString() }
+  if (reason?.trim()) patch.send_error = `agent feedback: ${reason.trim().slice(0, 300)}`
   const { data } = await supabase.from("agent_client_messages")
-    .update({ status: "rejected", approved_by: approverUserId, approved_at: new Date().toISOString() })
+    .update(patch)
     .eq("id", messageId).eq("status", "proposed").select("id").maybeSingle()
   return { ok: !!data }
 }

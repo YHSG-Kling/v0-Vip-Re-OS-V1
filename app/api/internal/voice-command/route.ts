@@ -16,6 +16,7 @@ type VoiceIntent =
   | "team_query"
   | "morning_standup"
   | "do_standup_item"
+  | "reject_standup_item"
   | "area_query"
   | "voice_followup"
   | "start_marketing"
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
 - schedule_followup: asking to schedule a follow-up
 - morning_standup: asking the team what to do / what matters today / what's my day / where to start / priorities (NO specific person named)
 - do_standup_item: telling the team to DO / knock out / handle / approve a stand-up item BY ITS RANK ("do number two", "knock out the first one", "handle #3")
+- reject_standup_item: REJECTING a stand-up item by rank, optionally with a reason ("reject number two — too pushy", "kill the second one, wrong tone")
 - area_query: asking what's happening / running / for sale in an AREA, neighborhood, city, or near a street ("anything happening near 44 Birch", "what's running in Springfield", "our listings in Oakdale")
 - team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
@@ -259,6 +261,27 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = r.spoken
         data = { ordinal, actedKind: r.actedKind ?? null, entityId: r.entityId ?? null }
         action = r.ok ? `standup_${r.actedKind}_done` : null
+      }
+    } else if (intent === "reject_standup_item") {
+      // "Reject number two — too pushy" — the spoken NO carries its reason; outcome
+      // learning stores it so the team drafts it better next time.
+      const { parseOrdinal, runStandupReject } = await import("@/lib/kernel/standup-action")
+      const ordinal = parseOrdinal(transcript)
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract WHY the user is rejecting (the reason after the rank, e.g. "too pushy", "wrong tone"). Respond with ONLY the reason, or NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 30,
+      })
+      const reasonRaw = extract.text.trim()
+      const reason = reasonRaw && reasonRaw.toUpperCase() !== "NONE" ? reasonRaw : null
+      if (!ordinal || !brokerageId) {
+        spokenResponse = "Which one should I reject — number one, two, or three? Add a reason and the team learns from it."
+      } else {
+        const r = await runStandupReject({ brokerageId, agentUserId: user.id, ordinal, reason, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = { ordinal, reason, entityId: r.entityId ?? null }
+        action = r.ok ? "standup_rejected" : null
       }
     } else if (intent === "area_query") {
       // "Anything happening near 44 Birch?" — the marketing bench reports listings,

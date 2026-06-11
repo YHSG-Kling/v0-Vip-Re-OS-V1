@@ -1,7 +1,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
+import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { CommandCenterClient } from "./command-center-client"
+import { TrustMeter } from "./trust-meter"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -33,5 +35,16 @@ export default async function CommandCenterPage() {
     limit:       100,
   })
 
-  return <CommandCenterClient data={data} scope={userType === "superadmin" ? "platform" : "brokerage"} />
+  // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
+  // reasons (outcome learning made visible; brokerage scope only).
+  const trust = brokerageId && userType !== "superadmin"
+    ? await computeManagerTrust(brokerageId).catch(() => null)
+    : null
+
+  return (
+    <>
+      {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
+      <CommandCenterClient data={data} scope={userType === "superadmin" ? "platform" : "brokerage"} />
+    </>
+  )
 }

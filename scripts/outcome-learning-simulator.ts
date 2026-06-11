@@ -12,7 +12,7 @@
  *
  * Run: npx tsx scripts/outcome-learning-simulator.ts  (npm run test:outcome-learning)
  */
-import { scoreOutcomes, isManagerTrusted, MIN_DECISIONS, TRUST_THRESHOLD, type DecidedProposal } from "../lib/kernel/outcome-learning"
+import { scoreOutcomes, isManagerTrusted, summarizeRejectionFeedback, MIN_DECISIONS, TRUST_THRESHOLD, type DecidedProposal } from "../lib/kernel/outcome-learning"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -69,6 +69,24 @@ check("healthy manager trusted while the rejected one is paused (per-manager iso
   isManagerTrusted(mixed, "shopping_agent") && !isManagerTrusted(mixed, "marketing_agent"))
 check("rates are exact (15/15 approved = 1.0; 0/12 = 0.0)",
   mixed["shopping_agent"].approvalRate === 1 && mixed["marketing_agent"].approvalRate === 0)
+
+// DIRECTION, not just a score: the human's spoken reasons are summarized per manager.
+const withReasons = summarizeRejectionFeedback([
+  { agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: "agent feedback: too pushy" },
+  { agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: "agent feedback: wrong tone" },
+  veto("marketing_agent"),
+  { agent_kind: "sphere_of_influence", status: "rejected", approved_by: "u1", send_error: null },
+  ...Array.from({ length: 5 }, (_, i) => ({ agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: `agent feedback: r${i}` })),
+])
+check("feedback: 'agent feedback:' reasons extracted per manager, capped at 3",
+  withReasons["marketing_agent"].length === 3 && withReasons["marketing_agent"][0] === "too pushy")
+check("feedback: machine vetoes + reasonless rejections never appear",
+  !withReasons["marketing_agent"].some((f) => f.includes("vetoed")) && !withReasons["sphere_of_influence"])
+const fbScore = scoreOutcomes([
+  { agent_kind: "ai_isa", status: "rejected", approved_by: "u1", send_error: "agent feedback: too long" },
+])
+check("a reasoned rejection still COUNTS as a human rejection in the score",
+  fbScore["ai_isa"].rejected === 1)
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
