@@ -65,6 +65,8 @@
     "test:whisper": "tsx scripts/whisper-simulator.ts",
     "test:fire-drill": "tsx scripts/fire-drill-simulator.ts",
     "test:consent-recovery": "tsx scripts/consent-recovery-simulator.ts",
+    "test:manager-dissent": "tsx scripts/manager-dissent-simulator.ts",
+    "test:partners-meeting": "tsx scripts/partners-meeting-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",

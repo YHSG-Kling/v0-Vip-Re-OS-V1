@@ -66,6 +66,12 @@ export async function GET(req: NextRequest) {
         const { runTeamPlays } = await import("@/lib/kernel/team-plays")
         const tp = await runTeamPlays(brokerageId, supabase)
         consumed += tp.fragmentsSuperseded
+        // MANAGER DISSENT — after the huddle consolidates, a PEER manager reviews every
+        // remaining proposal (Fair Housing, consent, fire-drill timing, spacing) so the
+        // human approves pre-vetted work instead of proofreading raw output.
+        const { runManagerDissent } = await import("@/lib/kernel/manager-dissent")
+        const md = await runManagerDissent(brokerageId, {}, supabase)
+        consumed += md.vetoes
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }
