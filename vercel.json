@@ -226,6 +226,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/cron/fire-drill",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/cron/deadline-watcher",
       "schedule": "30 * * * *"
     },
