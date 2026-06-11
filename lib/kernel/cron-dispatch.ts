@@ -46,6 +46,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/recalculate-roi",                schedule: "0 1 * * *" },
   { path: "/api/cron/review-request-on-close",        schedule: "0 16 * * *" },
   { path: "/api/cron/sync-facebook-audiences",        schedule: "0 */6 * * *" },
+  // Idle-hands initiative — managers fill silence with governed work (hourly).
+  { path: "/api/cron/idle-hands",                     schedule: "0 * * * *" },
   // ── The original vercel.json schedules, preserved verbatim ──
   { path: "/api/cron/appointment-whisper"                 , schedule: "*/10 * * * *" },
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
