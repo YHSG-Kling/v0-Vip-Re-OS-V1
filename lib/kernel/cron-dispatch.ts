@@ -60,6 +60,12 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/launch-war-room",                schedule: "0 */4 * * *" },
   // Lookalike from the closing table — first-party seed audience (weekly).
   { path: "/api/cron/lookalike-audience",             schedule: "0 11 * * 1" },
+  // Parallel multi-manager plays (reverse prospecting, vendor orchestration, objections, referrals).
+  { path: "/api/cron/reverse-prospecting",            schedule: "0 * * * *" },
+  { path: "/api/cron/vendor-orchestration",           schedule: "0 14 * * *" },
+  { path: "/api/cron/objection-library",              schedule: "0 13 * * 1" },
+  { path: "/api/cron/referral-radar",                 schedule: "0 12 * * 1" },
+  { path: "/api/cron/commission-forecaster",          schedule: "0 12 * * 1" },
   // ── The original vercel.json schedules, preserved verbatim ──
   { path: "/api/cron/appointment-whisper"                 , schedule: "*/10 * * * *" },
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
