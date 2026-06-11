@@ -31,6 +31,30 @@ export function composeFollowUp(contactFirstName: string | null, dictation?: str
   return { subject: "Great talking with you", body }
 }
 
+/** Pure: pick the listing a spoken address means — every digit group must appear and
+ *  street tokens must match prefixes ("44 Birch" → "44 Birch Lane", never "144 Birch"). */
+export function matchListingByAddress<T extends { id: string; address: string | null }>(
+  listings: T[], spokenAddress: string,
+): T | null {
+  const tokens = spokenAddress.toLowerCase().split(/[\s,]+/).filter(Boolean)
+  if (tokens.length === 0) return null
+  const scored = listings.map((l) => {
+    const addrTokens = (l.address ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean)
+    const every = tokens.every((t) =>
+      /^\d+$/.test(t) ? addrTokens.includes(t) : addrTokens.some((a) => a.startsWith(t)))
+    return { l, score: every ? tokens.length : 0 }
+  }).filter((s) => s.score > 0).sort((a, b) => b.score - a.score)
+  return scored[0]?.l ?? null
+}
+
+/** Pure: the promo moment for a listing's current status (the reactor's 7-moment set). */
+export function promoEventForStatus(status: string | null): "just_listed" | "under_contract" | "just_sold" {
+  const s = (status ?? "").toLowerCase()
+  if (s.includes("sold") || s.includes("closed")) return "just_sold"
+  if (s.includes("pending") || s.includes("under_contract") || s.includes("contract")) return "under_contract"
+  return "just_listed"
+}
+
 /** Pure: pick the campaign sequence to start — active first, nurture types preferred. */
 export function pickSequence<T extends { id: string; name: string | null; is_active: boolean | null; sequence_type: string | null }>(
   sequences: T[],
@@ -84,6 +108,49 @@ export async function voiceFollowUp(
   return {
     ok: true, messageId: proposed.id,
     spoken: `Done — your follow-up to ${name} is approved and on its way via ${emailClean ? "email" : "their portal"}.`,
+  }
+}
+
+/** Seam: how a promo dispatch happens (tests inject; prod uses the canonical reactor). */
+export type PromoDispatcher = (input: {
+  brokerageId: string; listingId: string; agentUserId: string;
+  eventType: "just_listed" | "under_contract" | "just_sold"; bypassPolicy: boolean;
+}) => Promise<{ ok: boolean; status: string; reason?: string }>
+
+/** "Cut a promo reel for 44 Birch" — rides the CANONICAL Remotion + D-ID rail
+ *  (dispatchListingPromoVideo): AI script → compliance pre-flight (Fair Housing +
+ *  brand voice, one redraft) → Remotion render → D-ID intro/outro in the agent's
+ *  voice → social drafts that still wait for human approval. A voice command is a
+ *  manual trigger (bypassPolicy=true; the 24h cooldown still debounces). */
+export async function voiceCutPromo(
+  input: { brokerageId: string; agentUserId: string; addressQuery: string; dispatcher?: PromoDispatcher },
+  client?: Svc,
+): Promise<DelegationResult> {
+  const supabase = client ?? createServiceClient()
+  const { data: rows } = await supabase.from("listings")
+    .select("id, address, status, agent_id").eq("brokerage_id", input.brokerageId).limit(200)
+  const listing = matchListingByAddress(((rows ?? []) as Array<{ id: string; address: string | null; status: string | null; agent_id: string | null }>), input.addressQuery)
+  if (!listing) {
+    return { ok: false, spoken: `I couldn't find a listing matching "${input.addressQuery}" — give me the street number and name as it appears on the listing.` }
+  }
+  const eventType = promoEventForStatus((listing as any).status)
+  const dispatcher: PromoDispatcher = input.dispatcher ?? (async (d) => {
+    const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+    const r = await dispatchListingPromoVideo({ ...d, eventType: d.eventType })
+    return { ok: r.ok, status: r.status, reason: r.reason }
+  })
+  const r = await dispatcher({
+    brokerageId: input.brokerageId, listingId: listing.id,
+    agentUserId: (listing as any).agent_id ?? input.agentUserId,
+    eventType, bypassPolicy: true,
+  })
+  if (!r.ok) return { ok: false, spoken: `The promo for ${listing.address ?? "that listing"} didn't queue — ${r.reason ?? "try again in a moment"}.` }
+  if (r.status === "already_queued" || (r.reason ?? "").startsWith("cooldown")) {
+    return { ok: true, spoken: `A promo for ${listing.address ?? "that listing"} is already in the pipeline — no duplicate render.` }
+  }
+  return {
+    ok: true,
+    spoken: `Cutting the ${eventType.replace(/_/g, " ")} reel for ${listing.address ?? "that listing"} now — script drafts, clears Fair Housing and brand compliance, renders with your voice on the intro and outro, and the social posts land in your approval queue.`,
   }
 }
 

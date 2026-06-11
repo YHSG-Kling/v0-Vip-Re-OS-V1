@@ -15,7 +15,7 @@
  *
  * Run: npx tsx scripts/voice-delegation-simulator.ts  (npm run test:voice-delegation)
  */
-import { composeFollowUp, pickSequence, voiceFollowUp, voiceStartMarketing } from "../lib/kernel/voice-delegation"
+import { composeFollowUp, pickSequence, voiceFollowUp, voiceStartMarketing, matchListingByAddress, promoEventForStatus, voiceCutPromo, type PromoDispatcher } from "../lib/kernel/voice-delegation"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -47,6 +47,17 @@ async function main() {
   ]
   check("pickSequence: nurture-type preferred among ACTIVE", pickSequence(seqs)?.id === "b")
   check("pickSequence: inactive never picked; none active → null", pickSequence([seqs[2]]) === null)
+
+  const listings = [
+    { id: "L1", address: "44 Birch Lane" },
+    { id: "L2", address: "144 Birch Lane" },
+    { id: "L3", address: "44 Maple St" },
+  ]
+  check("'44 Birch' → 44 Birch Lane (digits exact, street prefix)", matchListingByAddress(listings, "44 Birch")?.id === "L1")
+  check("'44 Birch' never grabs 144 Birch (no fuzzy digits)", matchListingByAddress(listings, "144 birch")?.id === "L2")
+  check("unknown address → null", matchListingByAddress(listings, "9 Elm") === null)
+  check("promo moment follows listing status (sold → just_sold, pending → under_contract)",
+    promoEventForStatus("sold") === "just_sold" && promoEventForStatus("pending") === "under_contract" && promoEventForStatus("active") === "just_listed")
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -101,6 +112,25 @@ async function main() {
     check("marketing: enrolled_by = the speaking agent, status active", (enr as any).enrolled_by === agentUserId && (enr as any).status === "active")
     const m2 = await voiceStartMarketing({ brokerageId, agentUserId, contactId: (con as any).id }, svc)
     check("marketing: second command refuses to double-enroll", m2.ok && m2.spoken.includes("already running"))
+
+    // CUT A PROMO: the voice command rides the CANONICAL promo rail (injected
+    // dispatcher = the vendor seam; asserts the exact dispatch, spends nothing).
+    const { data: lst } = await svc.from("listings").insert({
+      brokerage_id: brokerageId, address: `${TAG} 44 Birch Lane`, status: "active",
+    }).select("id").single()
+    cleanup.push({ table: "listings", id: (lst as any).id })
+    const dispatches: any[] = []
+    const dispatcher: PromoDispatcher = async (d) => { dispatches.push(d); return { ok: true, status: "remotion_pending" } }
+    const p1 = await voiceCutPromo({ brokerageId, agentUserId, addressQuery: `${TAG} 44 Birch`, dispatcher }, svc)
+    check("promo: spoken address resolved to the real listing", p1.ok && dispatches.length === 1 && dispatches[0].listingId === (lst as any).id)
+    check("promo: manual trigger semantics (bypassPolicy=true, just_listed for an active listing)",
+      dispatches[0]?.bypassPolicy === true && dispatches[0]?.eventType === "just_listed")
+    check("promo: spoken confirmation names compliance + approval queue", p1.spoken.includes("Fair Housing") && p1.spoken.includes("approval queue"))
+    const dupDispatcher: PromoDispatcher = async () => ({ ok: true, status: "already_queued", reason: "duplicate event for this listing" })
+    const p2 = await voiceCutPromo({ brokerageId, agentUserId, addressQuery: `${TAG} 44 Birch`, dispatcher: dupDispatcher }, svc)
+    check("promo: duplicate render refused, spoken honestly", p2.ok && p2.spoken.includes("already in the pipeline"))
+    const p3 = await voiceCutPromo({ brokerageId, agentUserId, addressQuery: "9 Nowhere Blvd Zz", dispatcher }, svc)
+    check("promo: unknown address → honest miss, nothing dispatched", !p3.ok && dispatches.length === 1)
 
     // WITHDRAWN refuses both — the consent chain's promise holds against voice too.
     const { data: gone } = await svc.from("contacts").insert({

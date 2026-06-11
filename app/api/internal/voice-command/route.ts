@@ -16,6 +16,7 @@ type VoiceIntent =
   | "team_query"
   | "voice_followup"
   | "start_marketing"
+  | "cut_promo"
   | "general_query"
 
 interface CallQueueItem {
@@ -73,6 +74,7 @@ export async function POST(req: NextRequest) {
 - team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
+- cut_promo: asking to create/cut/make a promo video/reel for a LISTING ADDRESS ("cut a promo reel for 44 Birch Lane", "make a video for the new listing on Maple")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -259,6 +261,26 @@ Respond with ONLY the intent string, nothing else.`,
           data = { contactId: tq.contactId, enrollmentId: r.enrollmentId ?? null }
           action = r.ok ? "marketing_started" : null
         }
+      }
+    } else if (intent === "cut_promo") {
+      // "Cut a promo reel for 44 Birch" — the voice command is a manual trigger on the
+      // CANONICAL Remotion + D-ID promo rail (compliance pre-flight, cooldown debounce,
+      // social drafts still human-approved).
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the listing street address the user wants a promo video for. Respond with ONLY the address fragment (e.g. "44 Birch Lane"). If none, respond NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 20,
+      })
+      const addressQuery = extract.text.trim()
+      if (!addressQuery || addressQuery.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Which listing? Give me the street number and name and I'll cut the reel."
+      } else {
+        const { voiceCutPromo } = await import("@/lib/kernel/voice-delegation")
+        const r = await voiceCutPromo({ brokerageId, agentUserId: user.id, addressQuery }, service)
+        spokenResponse = r.spoken
+        data = { addressQuery }
+        action = r.ok ? "promo_dispatched" : null
       }
     } else {
       // General query — pass to the main AI chat endpoint context

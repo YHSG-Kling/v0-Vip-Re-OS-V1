@@ -100,7 +100,7 @@ export async function runTeamQuery(
     supabase.from("saved_properties").select("property_address").eq("contact_id", contact.id).eq("dismissed", false).order("saved_at", { ascending: false }).limit(5),
     supabase.from("tours").select("id").eq("contact_id", contact.id).in("status", ["scheduled", "confirmed", "pending"]).limit(5),
     supabase.from("showings").select("id, scheduled_date").eq("contact_id", contact.id).gte("scheduled_date", now.toISOString().slice(0, 10)).limit(5),
-    supabase.from("transactions").select("id, deal_name, stage, inspection_deadline, appraisal_deadline, financing_deadline")
+    supabase.from("transactions").select("id, deal_name, stage, listing_id, inspection_deadline, appraisal_deadline, financing_deadline")
       .or(`buyer_contact_id.eq.${contact.id},seller_contact_id.eq.${contact.id},contact_id.eq.${contact.id}`)
       .in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(5),
     supabase.from("agent_client_messages").select("id, subject").eq("recipient_contact_id", contact.id).eq("status", "proposed").limit(5),
@@ -178,6 +178,32 @@ export async function runTeamQuery(
   if (!(hygiene as any)?.email) missing.push("an email")
   if (!(hygiene as any)?.phone) missing.push("a phone number")
   if (missing.length > 0) c.push({ manager: "data_steward", line: `we're missing ${missing.join(" and ")} — enrichment can fix that.` })
+
+  // Asset Manager — the media bench: a promo reel on the contact's deal listing.
+  const txWithListing = txRows.find((t2) => t2.listing_id)
+  if (txWithListing?.listing_id) {
+    const { data: promo } = await supabase.from("listing_promo_videos")
+      .select("status, event_type").eq("listing_id", txWithListing.listing_id)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (promo) {
+      const st = (promo as any).status as string
+      c.push({
+        manager: "asset_manager",
+        line: st === "completed"
+          ? `the ${String((promo as any).event_type ?? "promo").replace(/_/g, " ")} reel for their listing is rendered and ready to share.`
+          : `a ${String((promo as any).event_type ?? "promo").replace(/_/g, " ")} reel for their listing is in the render pipeline (${st.replace(/_/g, " ")}).`,
+      })
+    }
+  }
+
+  // Ads Manager — live paid coverage (only when real campaigns are running).
+  // ad_campaigns.status CHECK: draft|pending_review|approved|launching|live|paused|
+  // ended|failed — "running" means live or launching (there is NO 'active').
+  const { count: adCount } = await supabase.from("ad_campaigns")
+    .select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).in("status", ["live", "launching"])
+  if ((adCount ?? 0) > 0) {
+    c.push({ manager: "ads_manager", line: `${adCount} paid campaign${adCount === 1 ? " is" : "s are"} live right now — their saved areas are getting coverage.` })
+  }
 
   // Recruiting Manager — the same name in the talent pipeline.
   if (recruitRow.data) c.push({ manager: "recruiting_manager", line: `heads up — there's also a recruit by this name in the talent pipeline.` })
