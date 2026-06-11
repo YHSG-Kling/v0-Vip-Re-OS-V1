@@ -70,6 +70,7 @@
     "test:cron-dispatch": "tsx scripts/cron-dispatch-simulator.ts",
     "test:team-query": "tsx scripts/team-query-simulator.ts",
     "test:voice-delegation": "tsx scripts/voice-delegation-simulator.ts",
+    "test:morning-standup": "tsx scripts/morning-standup-simulator.ts",
     "test:manager-eval": "tsx scripts/manager-eval-simulator.ts",
     "test:tour-followup": "tsx scripts/tour-followup-simulator.ts",
     "test:offer-strategy": "tsx scripts/offer-strategy-simulator.ts",

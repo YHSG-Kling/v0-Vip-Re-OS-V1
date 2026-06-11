@@ -14,6 +14,7 @@ type VoiceIntent =
   | "create_task"
   | "schedule_followup"
   | "team_query"
+  | "morning_standup"
   | "voice_followup"
   | "start_marketing"
   | "cut_promo"
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
 - query_pipeline: asking about leads in pipeline or follow-ups needed
 - create_task: asking to create, add, or set a task reminder
 - schedule_followup: asking to schedule a follow-up
+- morning_standup: asking the team what to do / what matters today / what's my day / where to start / priorities (NO specific person named)
 - team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
@@ -226,6 +228,19 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = tq.spoken
         data = { contactId: tq.contactId, contributions: tq.contributions }
         action = tq.found ? "team_query_answered" : null
+      }
+    } else if (intent === "morning_standup") {
+      // "Hey team, what should I do today?" — the managers rank the day's top 3 moves
+      // (fires → aging approvals → warmest cooling lead). Read-only; acting is the
+      // existing voice verbs.
+      if (!brokerageId) {
+        spokenResponse = "I can't pull your day without a brokerage on your profile."
+      } else {
+        const { runMorningStandup } = await import("@/lib/kernel/morning-standup")
+        const s = await runMorningStandup(brokerageId, user.id, { firstName: profile.first_name }, service)
+        spokenResponse = s.spoken
+        data = { items: s.items }
+        action = s.items.length > 0 ? "standup_delivered" : null
       }
     } else if (intent === "voice_followup" || intent === "start_marketing") {
       // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
