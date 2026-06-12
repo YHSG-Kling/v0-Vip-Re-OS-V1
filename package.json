@@ -36,6 +36,8 @@
     "test:video-qr": "tsx scripts/video-qr-simulator.ts",
     "test:video-director": "tsx scripts/video-director-simulator.ts",
     "test:video-broll": "tsx scripts/broll-picker-simulator.ts",
+    "test:format-learning": "tsx scripts/format-learning-simulator.ts",
+    "test:promo-composition": "tsx scripts/promo-composition-simulator.ts",
     "test:explainer-anim": "tsx scripts/explainer-anim-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",

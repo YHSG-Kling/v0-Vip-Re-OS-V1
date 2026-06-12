@@ -47,6 +47,11 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import { mintVideoQr, type VideoQrKind } from "@/lib/video/video-qr"
+import {
+  compositionForPromoEvent,
+  buildPromoProps,
+  computeDaysOnMarket,
+} from "@/lib/video/promo-composition"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -87,6 +92,17 @@ interface ListingFacts {
   sqft:          string
   property_type: string
   images:        string[]
+  /** USD-formatted sold price (listings.sold_price) — "" when not sold/known.
+   *  Drives the JustSoldReelSquare price strip for just_sold promos. */
+  soldPrice:     string
+  /** Days on market (created_at → sold_date) — null when not computable. */
+  daysOnMarket:  number | null
+  /** Open-house headline date — "" when the render path has no schedule.
+   *  The render path loads no open-house event, so this stays "" today and
+   *  open_house promos fall back to the legacy reel (honest, no broken render). */
+  openHouseDate: string
+  /** Open-house time window — "" when unknown (see openHouseDate). */
+  openHouseTime: string
 }
 
 interface BrandContext {
@@ -96,6 +112,8 @@ interface BrandContext {
   agentName?:   string
   agentPhone?:  string
   showEhoMark:  boolean
+  /** Brokerage trade name — the square event compositions' disclosure line. */
+  brokerageName?: string
 }
 
 export async function POST(req: NextRequest) {
@@ -157,8 +175,10 @@ export async function POST(req: NextRequest) {
       listingId:   promo.listing_id,
     }, svc)
 
-    // 5. Remotion render → Supabase storage URL.
-    const reelUrl = await renderRemotionReel({
+    // 5. Remotion render → Supabase storage URL. The render path routes the
+    //    composition choice through compositionForPromoEvent + buildPromoProps
+    //    (the DRIFT FIX) and reports back which composition actually rendered.
+    const reel = await renderRemotionReel({
       promoId: promo.id,
       facts,
       brand,
@@ -167,6 +187,7 @@ export async function POST(req: NextRequest) {
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     qrCaptionForEvent(promo.event_type),
     })
+    const reelUrl = reel.url
 
     // 6. Create ai_video_projects row + emit canonical event.
     const { data: project } = await svc.from("ai_video_projects").insert({
@@ -179,7 +200,7 @@ export async function POST(req: NextRequest) {
       status:          hybrid ? "generating" : "completed",
       usage_intent:    "public_marketing",
       audience_type:   "customer_facing",
-      duration_seconds: 25,
+      duration_seconds: reel.durationSeconds,
       video_url:       reelUrl,
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
@@ -189,6 +210,9 @@ export async function POST(req: NextRequest) {
         listing_id:       promo.listing_id,
         voiceover_url:    voiceoverUrl,
         remotion_only:    !hybrid,
+        composition_id:   reel.compositionId,
+        composition_fell_back: reel.fellBack,
+        composition_fallback_reason: reel.fallbackReason,
       },
     }).select("id").single()
 
@@ -268,11 +292,11 @@ export async function POST(req: NextRequest) {
 
 async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, listingId: string): Promise<ListingFacts> {
   const { data: l } = await svc.from("listings")
-    .select("id, brokerage_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type")
+    .select("id, brokerage_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, sold_price, sold_date, created_at")
     .eq("id", listingId)
     .maybeSingle()
   if (!l) throw new Error("listing not found")
-  const lr = l as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null; property_type: string | null }
+  const lr = l as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null; property_type: string | null; sold_price: number | null; sold_date: string | null; created_at: string | null }
   const { data: media } = await svc.from("listing_media")
     .select("file_url, sort_order, is_primary, media_type")
     .eq("listing_id", listingId)
@@ -292,6 +316,13 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
     sqft:          lr.sqft != null ? lr.sqft.toLocaleString("en-US") : "",
     property_type: lr.property_type ?? "",
     images:        (media ?? []).map((m: { file_url: string }) => m.file_url).filter(Boolean),
+    soldPrice:     usd(lr.sold_price),
+    daysOnMarket:  computeDaysOnMarket(lr.created_at, lr.sold_date),
+    // The render path has no open-house schedule source (eventContext is not
+    // threaded here), so these stay empty and open_house promos fall back to
+    // the legacy reel — honest, never a broken event headline.
+    openHouseDate: "",
+    openHouseTime: "",
   }
 }
 
@@ -313,6 +344,7 @@ async function loadBrandContext(svc: ReturnType<typeof createServiceClient>, bro
     agentName:    [ur?.first_name, ur?.last_name].filter(Boolean).join(" ") || undefined,
     agentPhone:   ur?.phone ?? undefined,
     showEhoMark:  true,
+    brokerageName: br?.name ?? undefined,
   }
 }
 
@@ -413,30 +445,50 @@ async function renderRemotionReel(args: {
   eventType: string
   qrCodeDataUrl: string | null
   qrCaption: string
-}): Promise<string> {
+}): Promise<{ url: string; compositionId: string; durationSeconds: number; fellBack: boolean; fallbackReason: string | null }> {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
   const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
   const bundleLocation = await getBundle(entryPoint)
 
-  const inputProps = {
-    hook:        eventLabel(args.eventType),
-    address:     args.facts.address,
-    cityState:   args.facts.city_state,
-    price:       args.facts.price,
-    bedrooms:    args.facts.bedrooms,
-    bathrooms:   args.facts.bathrooms,
-    sqft:        args.facts.sqft,
-    imageUrls:   args.facts.images,
-    brand:       args.brand,
-    voiceoverUrl: args.voiceoverUrl,
+  // DRIFT FIX — route the composition choice through the Video Director's
+  // SituationKind taxonomy instead of hardcoding "JustListedReel" for every
+  // event_type. compositionForPromoEvent picks the desired composition;
+  // buildPromoProps assembles its REQUIRED props from the loaded facts and,
+  // where those facts are missing (e.g. no open-house schedule, no sold
+  // price), falls back to the legacy JustListedReel — honest, no broken render.
+  const choice = compositionForPromoEvent(args.eventType)
+  const built  = buildPromoProps({
+    choice,
+    facts: {
+      address:       args.facts.address,
+      city_state:    args.facts.city_state,
+      price:         args.facts.price,
+      bedrooms:      args.facts.bedrooms,
+      bathrooms:     args.facts.bathrooms,
+      sqft:          args.facts.sqft,
+      property_type: args.facts.property_type,
+      images:        args.facts.images,
+      soldPrice:     args.facts.soldPrice,
+      daysOnMarket:  args.facts.daysOnMarket,
+      openHouseDate: args.facts.openHouseDate,
+      openHouseTime: args.facts.openHouseTime,
+    },
+    brand:         args.brand,
+    voiceoverUrl:  args.voiceoverUrl,
     qrCodeDataUrl: args.qrCodeDataUrl,
     qrCaption:     args.qrCaption,
+    hook:          eventLabel(args.eventType),
+  })
+  const compositionId = built.compositionId
+  const inputProps    = built.inputProps
+  if (built.fellBack) {
+    console.warn(`[render-just-listed] ${args.eventType}: ${built.fallbackReason}`)
   }
 
   const composition = await selectComposition({
     serveUrl: bundleLocation,
-    id:       "JustListedReel",
+    id:       compositionId,
     inputProps,
   })
 
@@ -471,7 +523,16 @@ async function renderRemotionReel(args: {
     bytes,
     { access: "public", contentType: "video/mp4" },
   )
-  return blob.url
+  const durationSeconds = composition.fps > 0
+    ? Math.round(composition.durationInFrames / composition.fps)
+    : 25
+  return {
+    url:            blob.url,
+    compositionId,
+    durationSeconds,
+    fellBack:       built.fellBack,
+    fallbackReason: built.fallbackReason,
+  }
 }
 
 function buildHybridHookScript(position: "intro" | "outro", facts: ListingFacts, agentName: string): string {
@@ -483,9 +544,14 @@ function buildHybridHookScript(position: "intro" | "outro", facts: ListingFacts,
 
 function eventLabel(eventType: string): string {
   switch (eventType) {
-    case "just_listed":   return "Just Listed"
-    case "just_sold":     return "Just Sold"
-    case "price_changed": return "Price Update"
-    default:              return "New Listing"
+    case "just_listed":         return "Just Listed"
+    case "just_sold":           return "Just Sold"
+    case "price_reduction":     return "Price Update"
+    case "price_changed":       return "Price Update"
+    case "coming_soon":         return "Coming Soon"
+    case "open_house_announce": return "Open House"
+    case "open_house_reminder": return "Open House"
+    case "under_contract":      return "Under Contract"
+    default:                    return "New Listing"
   }
 }

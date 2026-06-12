@@ -51,6 +51,10 @@
  */
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { VideoQrKind } from "@/lib/video/video-qr"
+// The learning layer is PURE (no I/O, not server-only) so it is safe to import by
+// value here — selectVideoFormatLearned uses recommendFormatAdjustment directly,
+// and selectVideoFormat itself never touches it (backward-compat preserved).
+import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -280,6 +284,67 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
 }
 
 // ============================================================================
+// SELF-IMPROVING LAYER (pure, optional, backward-compatible)
+// ============================================================================
+
+/**
+ * selectVideoFormatLearned — a SEPARATE, OPTIONAL learning layer over the expert
+ * default. It NEVER replaces selectVideoFormat (the render-just-listed path + the
+ * simulator still call plain selectVideoFormat and get the deterministic choice).
+ *
+ * Given a scored outcomes map (from lib/video/format-learning loadFormatOutcomes /
+ * scoreFormatOutcomes), it resolves the default, then asks recommendFormatAdjustment
+ * whether REAL per-brokerage outcomes justify overriding it. The gate is honest:
+ * thin or tied data → the default is returned UNCHANGED (so passing an empty
+ * ScoredFormats is EXACTLY equivalent to selectVideoFormat — the backward-compat
+ * contract the simulator asserts).
+ *
+ * Returns the (possibly overridden) SelectedFormat — same shape selectVideoFormat
+ * returns — PLUS the learning provenance so commissionVideo can stamp
+ * video_metadata.format_source + the WHY for auditability.
+ */
+export interface LearnedFormat {
+  format: SelectedFormat
+  /** "default" = expert rule kept; "learned" = a real, gated per-brokerage win. */
+  formatSource: "default" | "learned"
+  /** The music mood after any learned override (default's mood unless overridden). */
+  mood: MusicMood
+  /** Human-readable explanation of the choice — rides video_metadata. */
+  why: string
+}
+
+export function selectVideoFormatLearned(
+  situation: VideoSituation,
+  scored: ScoredFormats,
+): LearnedFormat {
+  // The expert default is ALWAYS the starting point and the fallback.
+  const def = selectVideoFormat(situation)
+  const defaultMood = musicMoodForSituation(situation.kind)
+
+  const rec = recommendFormatAdjustment(
+    { kind: videoTypeForSituation(situation.kind), channel: situation.targetChannel },
+    scored,
+    { compositionId: def.compositionId, mood: defaultMood },
+  )
+
+  if (rec.source !== "learned" || rec.compositionId === def.compositionId) {
+    // Default kept — identical to selectVideoFormat (backward-compat contract).
+    return { format: def, formatSource: "default", mood: defaultMood, why: rec.why }
+  }
+
+  // A gated, real win: swap the composition id (+ learned mood) onto the default's
+  // flags/aspect/channels. The capability flags stay the default's — the render
+  // path re-reads the registry for the chosen composition anyway (commissionVideo
+  // step 2), so swapping the id is sufficient and never fabricates a capability.
+  return {
+    format: { ...def, compositionId: rec.compositionId },
+    formatSource: "learned",
+    mood: rec.mood,
+    why: rec.why,
+  }
+}
+
+// ============================================================================
 // ASSEMBLY SPEC (pure) — the intro + outro STRUCTURE
 // ============================================================================
 
@@ -460,6 +525,15 @@ export interface CommissionOpts {
   copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
   /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge). */
   mlsClean?: boolean
+  /**
+   * OPTIONAL self-improving seam. When an injected/loaded scored-outcomes map is
+   * supplied, commissionVideo consults selectVideoFormatLearned — which still
+   * returns the deterministic default unless REAL per-brokerage outcomes clear the
+   * sample+margin gate (lib/video/format-learning). Omitted → current behavior
+   * EXACTLY (the pure expert default). Pass `true` to load outcomes for the
+   * brokerage on-read; pass a ScoredFormats to inject a precomputed map (tests).
+   */
+  formatLearning?: boolean | ScoredFormats
 }
 
 export interface CommissionResult {
@@ -492,7 +566,33 @@ export async function commissionVideo(
   const svc: AnyClient = client ?? createServiceClient()
 
   // 1. Resolve the format + assembly structure (pure).
-  const format = selectVideoFormat(situation)
+  //    By default this is the deterministic expert choice. When formatLearning is
+  //    supplied, we consult the SELF-IMPROVING layer — which still returns the
+  //    default unless REAL per-brokerage outcomes clear the sample+margin gate. The
+  //    chosen source + WHY are stamped onto video_metadata for auditability.
+  let format = selectVideoFormat(situation)
+  let formatSource: "default" | "learned" = "default"
+  let formatWhy = "Expert default (no learning consulted)."
+  let learnedMood: MusicMood | null = null
+  if (opts.formatLearning) {
+    try {
+      let scored: ScoredFormats
+      if (opts.formatLearning === true) {
+        const { loadFormatOutcomes } = await import("@/lib/video/format-learning")
+        scored = await loadFormatOutcomes(opts.brokerageId, svc)
+      } else {
+        scored = opts.formatLearning
+      }
+      const learned = selectVideoFormatLearned(situation, scored)
+      format = learned.format
+      formatSource = learned.formatSource
+      formatWhy = learned.why
+      if (learned.formatSource === "learned") learnedMood = learned.mood
+    } catch (e) {
+      // Learning is an enhancement, never a gate — fall back to the expert default.
+      console.warn("[video-director] format-learning consult failed; using default:", (e as Error).message)
+    }
+  }
   const spec = assemblySpec(situation, format)
 
   // 2. Read the composition's capabilities from the registry (source of truth).
@@ -661,6 +761,10 @@ export async function commissionVideo(
     mlsClean: opts.mlsClean ?? false,
   }
 
+  // The effective music mood: the learned override when the gate fired, else the
+  // expert default from the assembly spec.
+  const effectiveMood: MusicMood = learnedMood ?? spec.music.mood
+
   const videoMetadata = {
     director_key: directorKey,
     composition_id: format.compositionId,
@@ -673,9 +777,13 @@ export async function commissionVideo(
     target_channels: format.targetChannels,
     intro: introProps,
     outro: outroProps,
-    music_mood: spec.music.mood,
+    music_mood: effectiveMood,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // SELF-IMPROVING provenance — "default" or a gated "learned" pick + the WHY,
+    // so the format choice is auditable on the row itself.
+    format_source: formatSource,
+    format_why: formatWhy,
     // B-roll the Director sourced from the scope cascade (empty when none
     // uploaded — the composition then renders without B-roll, like today).
     broll_clips:         brollClips,
@@ -691,7 +799,7 @@ export async function commissionVideo(
     input_props: {
       intro: introProps,
       outro: outroProps,
-      music_mood: spec.music.mood,
+      music_mood: effectiveMood,
       ...(format.needsBroll ? { brollClips } : {}),
     },
   }
