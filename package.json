@@ -44,6 +44,7 @@
     "test:photo-walkthrough": "tsx scripts/photo-walkthrough-simulator.ts",
     "test:captions": "tsx scripts/captions-simulator.ts",
     "test:content-studio": "tsx scripts/content-studio-simulator.ts",
+    "test:lead-intake": "tsx scripts/lead-intake-simulator.ts",
     "test:inventory-radar": "tsx scripts/inventory-radar-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
