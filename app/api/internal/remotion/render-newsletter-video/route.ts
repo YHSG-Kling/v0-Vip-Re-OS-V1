@@ -38,6 +38,7 @@ import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import { runPersonaVariantPostPass } from "@/lib/video/persona-variant-post-pass"
+import { mintVideoQr } from "@/lib/video/video-qr"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -223,6 +224,17 @@ Return ONLY the spoken text.${fix}`
       { access: "public", contentType: "audio/mpeg" },
     )
 
+    // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
+    //     → landing_page. Never throws; null mint = render without a QR.
+    const qr = ledger.agent_id
+      ? await mintVideoQr({
+          brokerageId: camp.brokerage_id,
+          agentUserId: ledger.agent_id,
+          kind:        "newsletter",
+          campaignId:  camp.id,
+        }, svc)
+      : null
+
     // 5. Remotion render.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
     const bundleLoc = await getBundle(entryPoint)
@@ -238,6 +250,8 @@ Return ONLY the spoken text.${fix}`
         brokerageName: br?.name                ?? "Your Brokerage",
       },
       voiceoverUrl: voiceBlob.url,
+      qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
+      qrCaption:     "Scan to read",
     }
     const composition = await selectComposition({ serveUrl: bundleLoc, id: "NewsletterDigestVideo", inputProps })
 

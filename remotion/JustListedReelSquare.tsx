@@ -34,6 +34,7 @@ import {
   Sequence,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -63,6 +64,11 @@ export interface JustListedReelSquareProps {
    *  beat. Defaults to "Tour this listing". Brokerage can override
    *  per campaign — e.g. "Get pricing", "See more photos". */
   ctaLabel?: string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to tour". */
+  qrCaption?: string
 }
 
 const FPS    = 30
@@ -81,7 +87,7 @@ function kenBurnsScale(localFrame: number, span: number): number {
 
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
-  imageUrls, brand, voiceoverUrl, ctaLabel,
+  imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
 }) => {
   const frame      = useCurrentFrame()
   const images     = imageUrls.slice(0, 4)
@@ -196,6 +202,12 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
               Equal Housing Opportunity
             </div>
           )}
+          <QrOutroBadge
+            qrCodeDataUrl={qrCodeDataUrl}
+            caption={qrCaption ?? "Scan to tour"}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+          />
         </AbsoluteFill>
       </Sequence>
 

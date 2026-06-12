@@ -30,6 +30,7 @@ import {
   Sequence,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface NewsletterDigestVideoProps {
   subject:        string
@@ -42,6 +43,11 @@ export interface NewsletterDigestVideoProps {
     brokerageName: string
   }
   voiceoverUrl?:  string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to read". */
+  qrCaption?:     string
 }
 
 const FRAMES = {
@@ -139,7 +145,7 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
   )
 }
 
-const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand }) => {
+const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" })
   return (
@@ -153,6 +159,12 @@ const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand }) => {
       <p style={{ color: brand.accentColor, fontSize: 48, marginTop: 16, fontWeight: 600 }}>
         for this week's full digest
       </p>
+      <QrOutroBadge
+        qrCodeDataUrl={qrCodeDataUrl}
+        caption={qrCaption ?? "Scan to read"}
+        primaryColor={brand.primaryColor}
+        accentColor={brand.accentColor}
+      />
     </AbsoluteFill>
   )
 }

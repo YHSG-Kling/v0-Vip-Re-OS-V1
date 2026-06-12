@@ -383,6 +383,18 @@ export async function GET(request: NextRequest) {
             }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
           }
 
+          // ─── Inter-manager bus: Asset Manager announces the finished render ──
+          // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,
+          // always) + Ads Manager (promote, promotable kinds only). Deduped per
+          // ai_video_project so re-polling never re-signals; coexists idempotently with
+          // the polling crons (listing-promo-social-publish) as a safety net.
+          try {
+            const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+            await publishVideoCoordinationSignals(video.id, supabase)
+          } catch (e) {
+            console.error("[poll-did-videos] video-coordination publish failed:", (e as Error).message)
+          }
+
           results.completed++
         } else if (didStatus === "error" || didStatus === "rejected") {
           const errorMsg: string = data.error?.description ?? data.error ?? "D-ID render failed"
@@ -410,6 +422,17 @@ export async function GET(request: NextRequest) {
               priority: "high",
               channel: "in_app",
             })
+          }
+
+          // ─── Inter-manager bus: Asset Manager escalates the failed render ──
+          // A failed/rejected render is never invisible — Asset Manager →
+          // Campaign Orchestrator (video_compliance_failed) routes it to the
+          // responsible agent + brokerage managers. Deduped per ai_video_project.
+          try {
+            const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+            await publishVideoCoordinationSignals(video.id, supabase)
+          } catch (e) {
+            console.error("[poll-did-videos] video-coordination escalation failed:", (e as Error).message)
           }
 
           results.failed++

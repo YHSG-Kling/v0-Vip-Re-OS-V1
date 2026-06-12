@@ -243,6 +243,79 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return error ? null : "proposed paid promotion in the ads approval queue"
   },
+  // Asset Manager → Campaign Orchestrator: a render FINISHED. The Campaign Orchestrator
+  // proposes ONE coordinated multi-channel distribution as a GATED draft (social_posts
+  // status='draft', approval_status='pending') — nothing auto-publishes; a human approves
+  // it in the Command Center. Idempotent: skips if a draft already carries this video.
+  "campaign_orchestrator:video_ready": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const title = (signal.payload?.title as string | undefined) ?? "Your finished video"
+    const kind = (signal.payload?.kind as string | undefined) ?? null
+    const { proposeGatedVideoDistribution } = await import("@/lib/kernel/video")
+    const res = await proposeGatedVideoDistribution({
+      brokerageId: ctx.brokerageId,
+      projectId: signal.entityId,
+      title,
+      description: `${title} — share-ready ${kind ?? "video"}. Reach your audience across channels.`,
+      tags: kind ? [kind] : [],
+    }, ctx.supabase as any)
+    if (!res.ok) return res.reason === "draft already exists for this project"
+      ? "coordinated distribution already proposed (gated, deduped)"
+      : null
+    return res.created
+      ? "proposed a gated multi-channel distribution draft (pending approval)"
+      : "coordinated distribution already proposed (gated, deduped)"
+  },
+  // Asset Manager → Ads Manager: a PROMOTABLE render (just_listed / just_sold /
+  // open_house) finished. Mirrors content_winner — propose paid promotion into the
+  // governed ad_manager_actions queue (status='proposed'); human-approved spend only.
+  "ads_manager:video_ready": async (signal, ctx) => {
+    // ad_manager_actions.action_type CHECK: launch_ad_campaign | pause_ad_campaign |
+    // shift_ad_budget | scale_ad_creative — promoting a finished reel = launching a campaign.
+    const { error } = await ctx.supabase.from("ad_manager_actions").insert({
+      brokerage_id: ctx.brokerageId,
+      action_type: "launch_ad_campaign",
+      action_input: { source: "video_ready", video_project_id: signal.entityId, ...((signal.payload ?? {}) as Record<string, unknown>) },
+      rationale: `Promotable video finished: ${signal.message} — promote it as paid while the moment is fresh.`,
+      status: "proposed",
+      proposed_at: new Date().toISOString(),
+    })
+    return error ? null : "proposed paid video promotion in the ads approval queue"
+  },
+  // Asset Manager → Campaign Orchestrator: a render FAILED compliance/redraft (or the
+  // provider rejected it). The Orchestrator escalates so the failure is never invisible —
+  // it routes a Command Center notification to the responsible agent + the brokerage
+  // managers. No silent dead reels.
+  "campaign_orchestrator:video_compliance_failed": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    let notified = 0
+    // Responsible agent for this video, when resolvable.
+    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    if (agentId) {
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: agentId, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
+        title: "A video render failed — needs your attention",
+        body: `${signal.message} Review the source content; the coordinated distribution is paused until a clean render is produced.`,
+        entity_type: "video_project", entity_id: signal.entityId, priority: "high", is_read: false,
+      })
+      if (!error) notified += 1
+    }
+    // Brokerage managers (broker/admin) — so a failure surfaces to the people who own it.
+    const { data: mgrs } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+    for (const m of (mgrs ?? []) as Array<{ id: string }>) {
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: m.id, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
+        title: "Video render failed compliance",
+        body: `${signal.message} Surfaced so it isn't lost — no distribution or spend proposed for a failed render.`,
+        entity_type: "video_project", entity_id: signal.entityId, priority: "medium", is_read: false,
+      })
+      if (!error) notified += 1
+    }
+    return notified > 0
+      ? `escalated the failed render to ${notified} responsible recipient${notified === 1 ? "" : "s"} (no silent dead reel)`
+      : null
+  },
     // Recruiting Manager → Deal Coordinator: a recruit just became an ACTIVE AGENT (no
   // contacts yet — the rule). The Deal Coordinator sets up first-deal onboarding support:
   // assigns the published agent-audience learning path + welcomes the new agent.

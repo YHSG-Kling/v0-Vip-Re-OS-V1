@@ -30,6 +30,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustListedReelProps {
   /** Hook label — "Just Listed" / "Just Sold" / "Price Update". */
@@ -57,6 +58,11 @@ export interface JustListedReelProps {
   /** Voiceover MP3 URL (our Supabase storage). Optional — composition
    *  works silent if the TTS step failed. */
   voiceoverUrl?: string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to tour". */
+  qrCaption?: string
 }
 
 // 25 seconds @ 30 fps = 750 frames. Component breakdown in frames:
@@ -89,6 +95,12 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
       <Sequence from={FRAMES.CTA_START} durationInFrames={FRAMES.CTA_END - FRAMES.CTA_START}>
         <CTAFrame {...props} />
+        <QrOutroBadge
+          qrCodeDataUrl={props.qrCodeDataUrl}
+          caption={props.qrCaption ?? "Scan to tour"}
+          primaryColor={props.brand.primaryColor}
+          accentColor={props.brand.accentColor}
+        />
       </Sequence>
 
       {props.brand.showEhoMark && <EhoBadge />}

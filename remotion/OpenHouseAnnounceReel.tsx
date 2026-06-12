@@ -27,6 +27,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { ContextCueRow } from "./_BrollLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface OpenHouseAnnounceReelProps {
   /** Property address line. */
@@ -53,6 +54,11 @@ export interface OpenHouseAnnounceReelProps {
   voiceoverUrl?: string
   /** Optional content-bank cues. */
   contextCues?: string[]
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to RSVP". */
+  qrCaption?:    string
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -71,7 +77,8 @@ const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
 
 export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   address, cityState, dateLabel, timeLabel, imageUrls, bodyLine,
-  ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues, brand,
+  ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues,
+  qrCodeDataUrl, qrCaption, brand,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -205,6 +212,12 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               </>
             )}
           </div>
+          <QrOutroBadge
+            qrCodeDataUrl={qrCodeDataUrl}
+            caption={qrCaption ?? "Scan to RSVP"}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+          />
         </AbsoluteFill>
       </Sequence>
 

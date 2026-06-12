@@ -15,6 +15,7 @@
 import React from "react"
 import { AbsoluteFill, Audio, useVideoConfig } from "remotion"
 import { ListingPresentationSlide, type SlideKind } from "./ListingPresentationSlide"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 const SECTION_KIND: Record<string, SlideKind> = {
   intro:       "title",
@@ -34,6 +35,12 @@ export interface ListingSectionReelProps {
   voiceoverUrl?:  string | null
   slideNumber?:   number
   totalSlides?:   number
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — only shown on the CLOSING section so it reads as an
+   *  outro. When absent the section renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to start". */
+  qrCaption?:     string
   brand: {
     primaryColor:  string
     accentColor:   string
@@ -48,6 +55,8 @@ export interface ListingSectionReelProps {
 export const ListingSectionReel: React.FC<ListingSectionReelProps> = (props) => {
   const { durationInFrames } = useVideoConfig()
   const kind = SECTION_KIND[props.sectionKey] ?? "title"
+  // Only the closing section reads as an outro — that's where the QR belongs.
+  const isOutroSection = kind === "closing"
   return (
     <AbsoluteFill>
       {props.voiceoverUrl ? <Audio src={props.voiceoverUrl} /> : null}
@@ -65,6 +74,14 @@ export const ListingSectionReel: React.FC<ListingSectionReelProps> = (props) => 
         agentName={props.agentName}
         brand={props.brand}
       />
+      {isOutroSection && (
+        <QrOutroBadge
+          qrCodeDataUrl={props.qrCodeDataUrl}
+          caption={props.qrCaption ?? "Scan to start"}
+          primaryColor={props.brand.primaryColor}
+          accentColor={props.brand.accentColor}
+        />
+      )}
     </AbsoluteFill>
   )
 }

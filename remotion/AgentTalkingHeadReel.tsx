@@ -49,6 +49,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -73,6 +74,11 @@ export interface AgentTalkingHeadReelProps {
    *  null. When the brokerage opted into a separate ElevenLabs TTS
    *  layer (e.g. multi-language), point at the synthesized track. */
   voiceoverUrl?:  string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to connect". */
+  qrCaption?:     string
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -92,7 +98,7 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  brand,
+  qrCodeDataUrl, qrCaption, brand,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -223,6 +229,12 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               </>
             )}
           </div>
+          <QrOutroBadge
+            qrCodeDataUrl={qrCodeDataUrl}
+            caption={qrCaption ?? "Scan to connect"}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+          />
         </AbsoluteFill>
       </Sequence>
 

@@ -46,6 +46,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
+import { mintVideoQr, type VideoQrKind } from "@/lib/video/video-qr"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -146,6 +147,16 @@ export async function POST(req: NextRequest) {
       script,
     })
 
+    // 4b. Mint (or reuse) the tracked outro QR for this listing × event.
+    //     Never throws — a null mint means the reel renders without a QR.
+    //     just_listed/just_sold → listing_detail; open_house → book_meeting.
+    const qr = await mintVideoQr({
+      brokerageId: promo.brokerage_id,
+      agentUserId: promo.agent_id,
+      kind:        videoQrKindForEvent(promo.event_type),
+      listingId:   promo.listing_id,
+    }, svc)
+
     // 5. Remotion render → Supabase storage URL.
     const reelUrl = await renderRemotionReel({
       promoId: promo.id,
@@ -153,6 +164,8 @@ export async function POST(req: NextRequest) {
       brand,
       voiceoverUrl,
       eventType: promo.event_type,
+      qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
+      qrCaption:     qrCaptionForEvent(promo.event_type),
     })
 
     // 6. Create ai_video_projects row + emit canonical event.
@@ -377,12 +390,29 @@ async function renderVoiceover(args: {
   return blob.url
 }
 
+/** Map a listing-promo event_type to a video-qr kind. just_sold maps to its
+ *  own kind (CTA = list-with-me); open_house_* routes to the RSVP booking
+ *  link; everything else is a just_listed listing-detail QR. */
+function videoQrKindForEvent(eventType: string): VideoQrKind {
+  if (eventType === "just_sold" || eventType === "under_contract") return "just_sold"
+  if (eventType === "open_house_announce" || eventType === "open_house_reminder") return "open_house"
+  return "just_listed"
+}
+
+function qrCaptionForEvent(eventType: string): string {
+  if (eventType === "just_sold" || eventType === "under_contract") return "Scan to list with me"
+  if (eventType === "open_house_announce" || eventType === "open_house_reminder") return "Scan to RSVP"
+  return "Scan to tour"
+}
+
 async function renderRemotionReel(args: {
   promoId: string
   facts: ListingFacts
   brand: BrandContext
   voiceoverUrl: string
   eventType: string
+  qrCodeDataUrl: string | null
+  qrCaption: string
 }): Promise<string> {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
@@ -400,6 +430,8 @@ async function renderRemotionReel(args: {
     imageUrls:   args.facts.images,
     brand:       args.brand,
     voiceoverUrl: args.voiceoverUrl,
+    qrCodeDataUrl: args.qrCodeDataUrl,
+    qrCaption:     args.qrCaption,
   }
 
   const composition = await selectComposition({

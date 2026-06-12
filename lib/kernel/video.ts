@@ -735,3 +735,86 @@ async function checkHeyGenJobStatus(_jobId: string): Promise<{
   return { status: "unknown" }
 }
 
+// ============================================================================
+// GATED COORDINATED DISTRIBUTION (inter-manager bus)
+// ============================================================================
+
+/**
+ * GATED, off-request video distribution proposal — used by the Campaign Orchestrator
+ * when it consumes a `video_ready` signal from the Asset Manager.
+ *
+ * Unlike distributeVideoProject() (the user-initiated publish path, which inserts
+ * social_posts as status='scheduled'/approval_status='approved' so the publisher cron
+ * sends them), this proposes ONE multi-channel draft (status='draft',
+ * approval_status='pending', platform='all') that NEVER auto-publishes — a human must
+ * approve it in the Command Center first. It mirrors the gated marketing-bench pattern
+ * (no connected social account required at draft time; the account is bound at publish).
+ *
+ * Idempotent per project: skips if a draft already carries this project's video as media.
+ * Takes a caller-supplied service client so it runs from the signal handler (no request).
+ */
+export async function proposeGatedVideoDistribution(
+  input: {
+    brokerageId: string
+    projectId: string
+    title: string
+    description: string
+    tags?: string[]
+  },
+  client: SupabaseClient,
+): Promise<{ ok: boolean; created: boolean; reason?: string; postId?: string }> {
+  const supabase = client
+
+  const { data: project, error: projErr } = await supabase
+    .from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, listing_id, marketing_campaign_id, video_url, status")
+    .eq("id", input.projectId)
+    .maybeSingle()
+  if (projErr) return { ok: false, created: false, reason: projErr.message }
+  if (!project || !(project as any).video_url) {
+    return { ok: false, created: false, reason: "video not ready (no video_url)" }
+  }
+  const videoUrl = (project as any).video_url as string
+
+  // Idempotency — skip if a draft for this project's video already exists.
+  const { data: existing } = await supabase
+    .from("social_posts")
+    .select("id")
+    .eq("brokerage_id", input.brokerageId)
+    .contains("media_urls", [videoUrl])
+    .limit(1)
+    .maybeSingle()
+  if (existing) {
+    return { ok: true, created: false, reason: "draft already exists for this project", postId: (existing as any).id }
+  }
+
+  // ONE multi-channel gated draft. platform='all' mirrors marketing-bench's
+  // coordinated-stage pattern; a human picks/approves channels at the gate.
+  const { data: inserted, error } = await supabase
+    .from("social_posts")
+    .insert({
+      brokerage_id:          input.brokerageId,
+      // NOTE: ai_video_projects.agent_id FKs users.id, but social_posts.agent_id FKs
+      // agents.id — they are different id-spaces. Leave null on the gated draft (the
+      // agent + connected social account are bound at approval/publish time, mirroring
+      // the gated marketing-bench pattern) rather than cross-wire mismatched ids.
+      agent_id:              null,
+      listing_id:            (project as any).listing_id ?? null,
+      marketing_campaign_id: (project as any).marketing_campaign_id ?? null,
+      platform:              "all",
+      post_type:             "custom",
+      content:               input.description,
+      media_urls:            [videoUrl],
+      hashtags:              input.tags ?? [],
+      status:                "draft",
+      approval_status:       "pending",
+      ai_generated:          true,
+      post_brief:            `Coordinated video distribution proposed by the Campaign Orchestrator from a finished render: ${input.title}`,
+      created_at:            new Date().toISOString(),
+    })
+    .select("id")
+    .maybeSingle()
+  if (error || !inserted) return { ok: false, created: false, reason: error?.message ?? "insert failed" }
+  return { ok: true, created: true, postId: (inserted as any).id }
+}
+

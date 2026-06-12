@@ -32,6 +32,7 @@ import {
   Sequence,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustSoldReelSquareProps {
   address:   string
@@ -59,6 +60,11 @@ export interface JustSoldReelSquareProps {
     showEhoMark?: boolean
   }
   voiceoverUrl?: string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to list with me". */
+  qrCaption?: string
 }
 
 const FPS    = 30
@@ -85,7 +91,7 @@ function aboveAskingBadge(sold: string, list: string | null | undefined): string
 
 export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   address, cityState, soldPrice, listPrice, daysOnMarket, imageUrls,
-  ctaLabel, brand, voiceoverUrl,
+  ctaLabel, brand, voiceoverUrl, qrCodeDataUrl, qrCaption,
 }) => {
   const frame    = useCurrentFrame()
   const images   = imageUrls.slice(0, 4)
@@ -226,6 +232,12 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
               Equal Housing Opportunity
             </div>
           )}
+          <QrOutroBadge
+            qrCodeDataUrl={qrCodeDataUrl}
+            caption={qrCaption ?? "Scan to list with me"}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+          />
         </AbsoluteFill>
       </Sequence>
 

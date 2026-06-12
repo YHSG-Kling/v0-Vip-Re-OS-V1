@@ -34,6 +34,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -55,6 +56,11 @@ export interface JustListedReelHorizontalProps {
   }
   voiceoverUrl?: string
   ctaLabel?:    string
+  /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
+   *  default-off — when absent the outro renders exactly as before. */
+  qrCodeDataUrl?: string | null
+  /** Caption under the outro QR, e.g. "Scan to tour". */
+  qrCaption?: string
 }
 
 const FPS    = 30
@@ -95,7 +101,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
 
 export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
-  imageUrls, brand, voiceoverUrl, ctaLabel,
+  imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
 }) => {
   const frame    = useCurrentFrame()
   const images   = imageUrls.slice(0, 2)
@@ -221,6 +227,12 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           }}>
             {showEho && "Equal Housing Opportunity · "}{brand.licenseLine ?? ""}
           </div>
+          <QrOutroBadge
+            qrCodeDataUrl={qrCodeDataUrl}
+            caption={qrCaption ?? "Scan to tour"}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+          />
         </AbsoluteFill>
       </Sequence>
 
