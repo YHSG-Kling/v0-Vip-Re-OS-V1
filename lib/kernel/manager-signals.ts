@@ -362,14 +362,55 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed seller prep follow-up (gate message ${res.id})` : null
   },
-  // LISTING INVENTORY RADAR — Data Steward → Listing Concierge: the Radar scored a
-  // bench-scraped seller candidate HOT (expired/withdrawn, FSBO, absentee, high-equity /
-  // pre-foreclosure). The Listing Concierge turns the routed candidate into GATED
-  // deliverables: (1) ALWAYS a "thinking of selling?" prospecting brief into the approval
-  // gate (audience 'agent' — internal, never a client message, no contact info assumed);
-  // (2) OPTIONALLY, when the owner is ALREADY a CRM contact AND we have a real agent, a
-  // gated CMA + a Director-commissioned listing/explainer reel. Nothing auto-sends; every
-  // enrichment honestly skips when its prerequisite (contact / agent / key) is absent.
+  // AI ISA — Data Steward → AI ISA: the Listing Inventory Radar promoted a bench-scraped
+  // hot seller candidate THROUGH THE GATE into a `leads` row (ai_isa_owner=true, NO portal —
+  // NOT a contact) and carried the seller-intent score + reasons onto the lead. This is the
+  // DEFAULT route for a raw scraped seller lead: the AI ISA owns it, so the bus PRIORITIZES it
+  // for qualification (lead_score floor already stamped by the runner; here we record the
+  // prioritization on the ISA activity ledger). It NEVER proposes a client message and NEVER
+  // commissions a reel — the lead is not a contact. The seller relationship only begins after
+  // AI ISA qualifies → conversion → contact, at which point the listing_concierge path applies.
+  "ai_isa:seller_intent_hot": async (signal, ctx) => {
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const leadId = (p.lead_id as string | undefined) ?? null
+    if (!leadId) return null
+    const intentScore = typeof p.intent_score === "number" ? p.intent_score : 0
+    const reasons = Array.isArray(p.reasons) ? (p.reasons as string[]) : []
+    const propertyAddress = (p.property_address as string | undefined) ?? null
+
+    // Confirm the gated lead exists + is ISA-owned and not a contact (defensive — the runner
+    // promotes through the gate; we never act on a non-existent or already-converted lead here).
+    const { data: lead } = await ctx.supabase
+      .from("leads")
+      .select("id, ai_isa_owner, contact_id, lead_score")
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const l = lead as { ai_isa_owner?: boolean; contact_id?: string | null; lead_score?: number | null } | null
+    if (!l || l.contact_id) return null // converted/contact-backed → not this handler's job
+
+    // Record the prioritization on the AI-ISA activity ledger so the lead surfaces ahead of
+    // the queue for qualification. No client message, no reel — a lead is not a contact.
+    const { error } = await ctx.supabase.from("ai_isa_activities").insert({
+      brokerage_id: ctx.brokerageId,
+      lead_id: leadId,
+      activity_type: "seller_intent_prioritized",
+      summary: `Listing Inventory Radar: seller-intent ${(intentScore * 100).toFixed(0)}/100${propertyAddress ? ` (${propertyAddress})` : ""} — prioritized for qualification.`,
+      qualifying_response: { source: "listing_inventory_radar", intent_score: intentScore, reasons, property_address: propertyAddress },
+      created_at: new Date().toISOString(),
+    })
+    if (error) return null
+    // Bump last_activity_at so the ISA workspace queue (ordered by it) floats this lead up.
+    await ctx.supabase.from("leads")
+      .update({ last_activity_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId)
+    return `prioritized ISA-owned lead ${leadId} for seller-intent qualification (${(intentScore * 100).toFixed(0)}/100) — no client message (not a contact)`
+  },
+  // LISTING INVENTORY RADAR — Data Steward → Listing Concierge: a seller candidate that has
+  // ALREADY converted to a CRM contact (portal-eligible, post-qualification) scored HOT. ONLY
+  // a contact-backed candidate reaches this handler (the runner routes non-contacts to ai_isa).
+  // The Listing Concierge turns it into GATED seller deliverables: (1) a "thinking of selling?"
+  // brief into the approval gate (audience 'agent'); (2) when a real agent exists, a gated CMA
+  // flag + a Director-commissioned listing/explainer reel. Nothing auto-sends; each enrichment
+  // honestly skips when its prerequisite (agent / key) is absent. A non-contact NEVER lands here.
   "listing_concierge:seller_intent_hot": async (signal, ctx) => {
     if (!signal.entityId) return null
     const p = (signal.payload ?? {}) as Record<string, unknown>
@@ -378,9 +419,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const reasons = Array.isArray(p.reasons) ? (p.reasons as string[]) : []
     const contactBacked = p.contact_backed === true && !!signal.contactId
 
+    // GUARD: this is the contact-backed seller path ONLY. A raw scraped lead that is not yet
+    // a CRM contact must never receive a client-facing seller deliverable — it routes to
+    // ai_isa instead. Refuse to act on a non-contact (defends the gate even if mis-routed).
+    if (!contactBacked) return null
+
     const actions: string[] = []
 
-    // (1) GATED "thinking of selling?" prospecting brief — ALWAYS, audience 'agent'.
+    // (1) GATED "thinking of selling?" prospecting brief — audience 'agent'.
     const { composeProspectingBriefFallback } = await import("@/lib/kernel/listing-inventory-radar")
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const briefBody = composeProspectingBriefFallback({
@@ -395,11 +441,11 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       agentKind: "listing_concierge",
       entityType: "raw_scraped_lead",
       entityId: signal.entityId,
-      recipientContactId: contactBacked ? signal.contactId : null, // agent-audience only
+      recipientContactId: signal.contactId, // contact-backed only
       audience: "agent",
       subject: `Seller-intent radar: ${propertyAddress ?? "a high-intent listing candidate"}`,
       body: briefBody,
-      rationale: `LISTING INVENTORY RADAR — bench-scraped seller candidate scored ${(intentScore * 100).toFixed(0)}/100 intent; "thinking of selling?" play proposed (gated, agent audience; ${contactBacked ? "owner is a CRM contact" : "owner not yet a contact — no client message, consent respected"}).`,
+      rationale: `LISTING INVENTORY RADAR — seller candidate (CRM contact) scored ${(intentScore * 100).toFixed(0)}/100 intent; "thinking of selling?" play proposed (gated, agent audience; owner is a CRM contact, consent respected).`,
       channel: "portal",
     }, ctx.supabase)
     if (!brief.ok) return null
@@ -407,7 +453,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     // The optional enrichments require a REAL agent on this brokerage (users.id for the
     // video FK + agents.id for the CMA). Resolve once; honest skip when absent.
-    if (contactBacked && signal.contactId) {
+    if (signal.contactId) {
       const { data: agentRow } = await ctx.supabase
         .from("agents")
         .select("id, user_id")

@@ -1,37 +1,47 @@
 // lib/kernel/listing-inventory-radar.ts
 //
 // LISTING INVENTORY RADAR — the lead-gen leap that ties the EXISTING scraper bench →
-// routing → video into ONE coordinated team play. The Data Steward continuously surfaces
+// THE GATE → AI ISA into the canonical lead flow. The Data Steward continuously surfaces
 // SELLER-INTENT signals the bench ALREADY scraped (expired/withdrawn listings, FSBO,
-// absentee owners, high-equity / pre-foreclosure), SCORES intent, RANKS, and ROUTES the
-// hottest candidates to the Listing Concierge with a GATED 'thinking of selling?' outreach
-// (+ optional gated CMA + a Director-commissioned listing/explainer reel).
+// absentee owners, high-equity / pre-foreclosure), SCORES intent, RANKS, and feeds the
+// hottest candidates INTO THE CANONICAL PIPELINE — it does NOT shortcut a non-contact to
+// the seller relationship.
 //
-// REUSE, DO NOT REBUILD:
-//   · The scraper bench (lib/external/* — fetchMotivatedSellers, exa/zenrows normalizers,
-//     vision-property) already PRODUCES seller candidates and lands them in
-//     raw_scraped_leads (source 'batchdata_motivated' | 'craigslist_fsbo' |
-//     'expired_listing' | 'facebook_marketplace' …) with the rich BatchDataRecord in
-//     raw_data (quickLists, valuation.equityPercent, motivationType, ownershipLengthYears,
-//     mailingAddressVacant, vacancy, lastSale) and a normalized_preview seller summary.
-//     THIS MODULE IS THE DELTA: scoreSellerIntent + rankSellerLeads + the data_steward →
-//     listing_concierge routing + the gated CMA/video commission. It NEVER scrapes and it
-//     NEVER fabricates contact info — it reads what the bench already earned.
-//   · The routing rail (publishManagerSignal + SIGNAL_HANDLERS) carries the handoff; the
-//     handler listing_concierge:seller_intent_hot turns a routed candidate into the gated
-//     proposal(s). proposeClientMessage = the governed gate (proposed, human-approved).
-//   · generateAICMA (app/actions/ai-cma) and commissionVideo (lib/video/video-director)
-//     are the optional gated enrichments — GATED behind "is this a real contact / has a
-//     real agent", with honest skip when the key/agent isn't there.
+// THE CANONICAL FLOW (respected, not skipped):
+//   raw_scraped_leads → THE GATE (lib/lead-pipeline processRawRecord: enrich + dedup +
+//   territory/identity guards) → a `leads` row (ai_isa_owner=true, NO portal — NOT a
+//   contact) → AI ISA qualifies → on conversion → contact (gets portal) → THEN the Listing
+//   Concierge runs the seller relationship.
 //
-// CONSENT: raw_scraped_leads rows carry NO consent state (that's enforced at contact
-// outreach time by the TCPA/DNC gate). The Radar therefore proposes ONLY an internal,
-// agent-audience prospecting deliverable into the gate — it NEVER pushes a portal card or
-// a message to a non-contact, and it routes a portal value card ONLY when the owner is
-// already a contact in the CRM. Nothing auto-sends.
+// WHAT THIS MODULE OWNS (the DELTA — the prioritization is the real value):
+//   · scoreSellerIntent + rankSellerLeads — score/rank a bench-scraped candidate's intent
+//     from REAL persisted signals (never fabricates, never scrapes).
+//   · The runner: for a HOT raw candidate, PROMOTE it THROUGH THE GATE into a `leads` row
+//     (ai_isa_owner=true) when not already promoted, CARRY the seller-intent score + reasons
+//     onto the lead (leads.notes + a lead_score bump — existing columns) so AI ISA
+//     prioritizes it, then ROUTE data_steward → ai_isa to assign/prioritize the lead for
+//     qualification. The lead has NO portal and is NOT a contact; NO client-facing message,
+//     NO commissioned reel for a non-contact.
+//   · CONTACT-BACKED branch ONLY: when the candidate already corresponds to a CRM contact
+//     (its promoted lead converted — leads.contact_id set, portal-eligible), the
+//     data_steward → listing_concierge seller path still applies (post-conversion). That is
+//     the ONLY path that proposes a client-facing seller deliverable.
 //
-// IDEMPOTENT: one route per (candidate, window). The signal bus dedupes open
-// (to_manager, signal_type, entity_id); the runner reuses raw_scraped_leads.id as entity_id.
+// REUSE, DO NOT REBUILD: the scraper bench (lib/external/*) already lands seller candidates
+//   in raw_scraped_leads with the rich BatchDataRecord in raw_data + a normalized_preview.
+//   processRawRecord (lib/lead-pipeline) IS the gate. publishManagerSignal + SIGNAL_HANDLERS
+//   carry the handoff; ai_isa:seller_intent_hot assigns/prioritizes the lead for ISA
+//   qualification; listing_concierge:seller_intent_hot (contact-backed only) proposes the
+//   gated seller deliverable.
+//
+// CONSENT: raw_scraped_leads + leads carry NO consent state (enforced at contact outreach by
+// the TCPA/DNC gate + AI-ISA channel resolver). The Radar therefore NEVER pushes a portal
+// card or a message to a non-contact — a raw scraped lead becomes an ISA-owned lead, not a
+// seller conversation, until it converts. Nothing auto-sends.
+//
+// IDEMPOTENT: one promotion + one route per (candidate, window). processRawRecord is a
+// no-op past 'promoted'; the signal bus dedupes open (to_manager, signal_type, entity_id);
+// the runner reuses raw_scraped_leads.id as entity_id.
 //
 // NOT server-only (simulator-driven). Pure helpers carry the scoring; the runner does I/O.
 
@@ -82,7 +92,13 @@ export interface SellerLeadCandidate {
   propertyAddress?: string | null
   ownerFirstName?: string | null
   ownerLastName?: string | null
-  /** When the bench already promoted this owner to a CRM contact, its id (enables a portal card). */
+  /** The promoted `leads.id` for this raw row, when the gate already created one
+   *  (raw_scraped_leads.lead_id). NULL until promotion — the runner promotes it through
+   *  the gate before routing. A lead is NOT a contact and carries NO portal. */
+  leadId?: string | null
+  /** ONLY set when the owner already corresponds to a CRM contact (leads.contact_id —
+   *  the lead converted, became portal-eligible). This is the sole gate for the
+   *  client-facing Listing Concierge path. NULL for a raw scraped lead by default. */
   contactId?: string | null
 }
 
@@ -277,7 +293,11 @@ export function candidateFromRawRow(row: {
 
   return {
     rawLeadId: row.id,
-    contactId: row.lead_id ?? null, // when the bench already promoted the owner (leads→contacts)
+    // raw_scraped_leads.lead_id is the promoted LEAD (NOT a contact — a lead has no portal
+    // and is not a contact). It is carried as leadId; contactId stays null here and is
+    // resolved by the runner ONLY when that lead has converted (leads.contact_id set).
+    leadId: row.lead_id ?? null,
+    contactId: null,
     propertyAddress: (raw.propertyAddress as string) ?? prev.propertyAddress ?? row.address ?? null,
     ownerFirstName: (raw.firstName as string) ?? prev.firstName ?? null,
     ownerLastName: (raw.lastName as string) ?? prev.lastName ?? null,
@@ -310,14 +330,25 @@ export function describeSellerReason(lead: ScoredSellerLead): string {
     : `${addr}: scored seller-intent ${(lead.intentScore * 100).toFixed(0)}/100.`
 }
 
-/** Deterministic FALLBACK body for the gated 'thinking of selling?' agent prospecting
- *  brief (audience 'agent' — internal, NOT a client message; no contact info fabricated). */
+/** Deterministic, honest seller-intent note stamped onto the GATED lead (leads.notes) so the
+ *  AI ISA — which owns the lead until it qualifies + converts — can PRIORITIZE it and open
+ *  its qualifying conversation with the right context. This is an INTERNAL lead note, NOT a
+ *  client message; no contact info is fabricated and nothing is sent. */
+export function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
+  const addr = lead.propertyAddress ?? "this property"
+  const why = lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"
+  return `[Listing Inventory Radar] Seller-intent ${(lead.intentScore * 100).toFixed(0)}/100 for ${addr}. Why now: ${why}. Prioritize for AI-ISA qualification — NOT yet a contact (no portal, no client message until qualified + converted).`
+}
+
+/** Deterministic FALLBACK body for the CONTACT-BACKED seller brief (audience 'agent') — only
+ *  ever composed when the owner is already a CRM contact (post-conversion, portal-eligible).
+ *  Internal agent brief; the client-facing follow-up is the agent's gated next step. */
 export function composeProspectingBriefFallback(lead: ScoredSellerLead): string {
   const addr = lead.propertyAddress ?? "a property we surfaced"
   return [
-    `Seller-intent radar flagged ${addr} as a high-intent listing-inventory candidate.`,
+    `Seller-intent radar flagged ${addr} as a high-intent listing-inventory candidate (existing CRM contact).`,
     `Why now: ${lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"}.`,
-    `Suggested play: a "thinking of selling?" touch — open with the home's current market position. If the owner is already a CRM contact, a gated CMA + a short listing/explainer reel are queued for your approval. Nothing sends until you approve it; no contact info is assumed.`,
+    `Suggested play: a "thinking of selling?" touch — open with the home's current market position. A gated CMA + a short listing/explainer reel are queued for your approval. Nothing sends until you approve it.`,
   ].join(" ")
 }
 
@@ -329,7 +360,14 @@ export interface ListingInventoryRadarResult {
   candidatesScanned: number
   scored: number
   routed: number
-  /** how many routed candidates already had a CRM contact (portal-eligible). */
+  /** how many hot candidates were promoted THROUGH THE GATE into a `leads` row this pass
+   *  (ai_isa_owner=true) — the canonical raw → leads step. */
+  promoted: number
+  /** how many hot candidates routed data_steward → ai_isa (the default — a non-contact lead
+   *  prioritized for ISA qualification). */
+  routedToIsa: number
+  /** how many routed candidates already had a CRM contact (portal-eligible) and took the
+   *  data_steward → listing_concierge seller path instead. */
   contactBacked: number
   skippedReason?: string
 }
@@ -346,17 +384,34 @@ export interface RadarOpts {
   /** test seam: inject candidates instead of reading raw_scraped_leads (the simulator seeds
    *  REAL rows and lets the runner read them; this is only for pure-path unit coverage). */
   candidateOverride?: SellerLeadCandidate[]
+  /** THE GATE seam. Production default = lib/lead-pipeline processRawRecord (a 'use server',
+   *  server-client-bound action). It cannot run under a plain-tsx simulator, so the simulator
+   *  injects an equivalent gate that runs the SAME canonical eligibility + promotion against
+   *  the service client. Default is the real gate; never bypasses it. */
+  promote?: (rawLeadId: string, brokerageId: string) => Promise<{ action: "created" | "merged" | "skipped"; leadId?: string }>
 }
 
 /** The scrape sources that represent SELLER candidates (the bench's seller-side output). */
 const SELLER_SOURCES = ["batchdata_motivated", "craigslist_fsbo", "expired_listing", "facebook_marketplace", "rental_listing"]
 
 /**
- * Read the bench's already-scraped seller candidates, score+rank them, and route the
- * TOP (score ≥ minScore) to the Listing Concierge via a data_steward → listing_concierge
- * signal. The handler (listing_concierge:seller_intent_hot) proposes the GATED outreach.
- * Idempotent per (candidate, window) via the signal bus dedupe. Honest skip when the bench
- * returned nothing.
+ * Read the bench's already-scraped seller candidates, score+rank them, and feed the TOP
+ * (score ≥ minScore) INTO THE CANONICAL FLOW — respecting the gate, NOT shortcutting a
+ * non-contact to the seller relationship:
+ *
+ *   1. PROMOTE THROUGH THE GATE — for a hot raw candidate not yet promoted, run
+ *      processRawRecord (enrich + dedup + territory/identity guards) so it becomes a `leads`
+ *      row (ai_isa_owner=true, NO portal, NOT a contact). The gate's own guards may skip it
+ *      (territory mismatch / insufficient identity / duplicate) — that is respected.
+ *   2. CARRY THE INTENT — stamp the seller-intent score + reasons onto the promoted lead
+ *      (leads.notes + a lead_score floor) so the AI ISA, which owns the lead, prioritizes it.
+ *   3. ROUTE — by DEFAULT data_steward → ai_isa (assign/prioritize the lead for
+ *      qualification). ONLY when the candidate already corresponds to a CRM contact
+ *      (its lead converted — leads.contact_id) does it take the data_steward →
+ *      listing_concierge seller path (the one path that proposes a client-facing deliverable).
+ *
+ * Idempotent per (candidate, window): processRawRecord is a no-op past 'promoted'; the signal
+ * bus dedupes the open route. Honest skip when the bench returned nothing.
  */
 export async function runListingInventoryRadar(
   brokerageId: string,
@@ -368,7 +423,9 @@ export async function runListingInventoryRadar(
   const topN = opts.topN ?? 10
   const minScore = opts.minScore ?? 0.45
   const lookbackDays = opts.lookbackDays ?? 30
-  const result: ListingInventoryRadarResult = { candidatesScanned: 0, scored: 0, routed: 0, contactBacked: 0 }
+  const result: ListingInventoryRadarResult = {
+    candidatesScanned: 0, scored: 0, routed: 0, promoted: 0, routedToIsa: 0, contactBacked: 0,
+  }
 
   // 1. Read the bench's seller candidates (NEVER scrape here — reuse what's already landed).
   let candidates: SellerLeadCandidate[]
@@ -397,21 +454,76 @@ export async function runListingInventoryRadar(
   const ranked = rankSellerLeads(candidates)
   result.scored = ranked.length
 
-  // 3. Route the TOP hot candidates to the Listing Concierge.
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  // THE GATE: default = the canonical processRawRecord; the simulator injects an equivalent.
+  const promote = opts.promote ?? (async (rawLeadId: string, bId: string) => {
+    const { processRawRecord } = await import("@/lib/lead-pipeline")
+    const r = await processRawRecord(rawLeadId, bId)
+    return { action: r.action, leadId: r.leadId }
+  })
   const hot = ranked.filter((l) => l.intentScore >= minScore).slice(0, topN)
 
   for (const lead of hot) {
+    // ── 3a. GATE — ensure the raw candidate is promoted into a `leads` row. ──
+    // processRawRecord IS the gate: enrich + dedup + territory/identity guards, ai_isa_owner=true.
+    // It is idempotent enough for our needs — a row already 'promoted' carries leads.lead_id, so
+    // we skip re-promotion and reuse it. The gate may legitimately skip (guard fail) → no lead.
+    let leadId = lead.leadId ?? null
+    if (!leadId) {
+      try {
+        const promo = await promote(lead.rawLeadId, brokerageId)
+        if ((promo.action === "created" || promo.action === "merged") && promo.leadId) {
+          leadId = promo.leadId
+          if (promo.action === "created") result.promoted += 1
+        } else {
+          // Gate honestly declined (territory mismatch / insufficient identity / dup with
+          // equal confidence) — do NOT route a non-existent lead. Skip this candidate.
+          continue
+        }
+      } catch {
+        continue
+      }
+    }
+
+    // ── 3b. Resolve contact-backing: a lead is a CONTACT only after it converted. ──
+    // leads.contact_id is the sole portal-eligibility gate; a freshly promoted lead has none.
+    let contactId: string | null = null
+    if (leadId) {
+      const { data: leadRow } = await supabase
+        .from("leads")
+        .select("id, contact_id, lead_score, notes")
+        .eq("id", leadId)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      contactId = (leadRow as { contact_id?: string | null } | null)?.contact_id ?? null
+
+      // ── Carry the seller-intent onto the lead so AI ISA prioritizes it (existing columns:
+      //    notes + lead_score). Idempotent: only stamp the radar note once; floor the score. ──
+      const note = composeSellerIntentLeadNote(lead)
+      const existingNotes = (leadRow as { notes?: string | null } | null)?.notes ?? ""
+      const alreadyStamped = existingNotes.includes("[Listing Inventory Radar]")
+      const intentFloor = Math.round(lead.intentScore * 100)
+      const curScore = Number((leadRow as { lead_score?: number | null } | null)?.lead_score ?? 0)
+      const patch: Record<string, unknown> = {}
+      if (!alreadyStamped) patch.notes = existingNotes ? `${existingNotes}\n${note}` : note
+      if (intentFloor > curScore) patch.lead_score = intentFloor
+      if (Object.keys(patch).length > 0) {
+        await supabase.from("leads").update(patch).eq("id", leadId).eq("brokerage_id", brokerageId)
+      }
+    }
+
+    // ── 3c. ROUTE — default data_steward → ai_isa; contact-backed → listing_concierge. ──
+    const toManager: "ai_isa" | "listing_concierge" = contactId ? "listing_concierge" : "ai_isa"
     const pub = await publishManagerSignal(
       {
         brokerageId,
         fromManager: "data_steward",
-        toManager: "listing_concierge",
+        toManager,
         signalType: SELLER_INTENT_SIGNAL_TYPE,
         message: describeSellerReason(lead),
         entityType: "raw_scraped_lead",
         entityId: lead.rawLeadId, // idempotency anchor — one open route per candidate
-        contactId: lead.contactId ?? null,
+        contactId, // null for a non-contact lead (the default)
         payload: {
           intent_score: Number(lead.intentScore.toFixed(4)),
           reasons: lead.reasons,
@@ -420,7 +532,8 @@ export async function runListingInventoryRadar(
           owner_last_name: lead.ownerLastName ?? null,
           source: lead.signals.source,
           motivation_type: lead.signals.motivationType ?? null,
-          contact_backed: !!lead.contactId,
+          lead_id: leadId,
+          contact_backed: !!contactId,
         },
         dedupe: true,
       },
@@ -428,7 +541,8 @@ export async function runListingInventoryRadar(
     )
     if (pub.ok) {
       result.routed += 1
-      if (lead.contactId) result.contactBacked += 1
+      if (contactId) result.contactBacked += 1
+      else result.routedToIsa += 1
     }
   }
 
