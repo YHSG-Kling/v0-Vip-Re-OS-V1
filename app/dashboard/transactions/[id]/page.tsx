@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { TransactionDetailClient } from "./transaction-detail-client"
+import { ClosingWatchtowerSection } from "./closing-watchtower-section"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
 
 export const dynamic = "force-dynamic"
@@ -339,7 +340,11 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const currentStageIndex = stages.indexOf(transaction.stage as TransactionStage)
 
   return (
-    <TransactionDetailClient
+    <>
+      {/* Title & Closing Watchtower — server-rendered date-chain status with
+          severity badges (pure core shared with the hourly watchtower cron). */}
+      <ClosingWatchtowerSection milestones={(milestones ?? []) as any} />
+      <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}
       brokerageName={brokerageInfo?.name ?? undefined}
@@ -378,6 +383,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       currentLenderId={currentLenderId}
       availableLenders={availableLenders ?? []}
       vendorBookings={(vendorBookings ?? []) as any}
-    />
+      />
+    </>
   )
 }
