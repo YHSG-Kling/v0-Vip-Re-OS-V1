@@ -2,34 +2,26 @@
 /**
  * scripts/seller-appt-conversion-simulator.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * Proves the FULL seller-lead journey end to end — the MISSING STEP now wired:
+ * Proves the CORRECTED seller-lead conversion flow: conversion happens on
+ * POSITIVE INTENT (a positive ISA conversation / a CMA request) — DECOUPLED from
+ * the listing APPOINTMENT, which is a separate, later milestone.
  *
- *   qualified seller LEAD
- *     → bookSellerListingAppointment
- *         (1) schedules the listing appointment   (reuse scheduleISAAppointment)
- *         (2) CONVERTS lead → contact             (canonical promoteLeadToContact)
- *         (3) fires CONTACT_AGENT_ASSIGNED        (welcome / meet-your-agent intro)
- *         (4) runs listing.appointment_set        (flagship listing-appt-prep chain)
+ *   (A) positive-intent / CMA-request seller LEAD → convertSellerLeadOnIntent
+ *         → converts lead→contact (canonical handoff), agent notified,
+ *           ai_isa_owner=false (ISA dormant), the CMA proposed,
+ *           and NO listing.appointment_set / NO listing-appt-prep run.
+ *   (B) the SAME contact later books an appointment via bookSellerListingAppointment
+ *         → listing.appointment_set fires + the flagship chain runs ONCE on the
+ *           existing contact, with NO second conversion / NO second welcome.
+ *   (C) a converted-no-appointment contact past the stale threshold →
+ *         detectStaleContacts returns it (re-engage eligible); idempotent reruns.
+ *       Then a lead under representation → refused; reverse-delete + cleanup==0.
  *
  * Layer 1 (pure, no I/O):
- *   - motivationToContactType maps a seller motivation to contact_type='seller'
- *     (the converter's persisted intent — the contact lands as a seller, getting
- *     the seller portal view).
+ *   - motivationToContactType maps a seller motivation to contact_type='seller'.
  *
- * Layer 2 (live, gated by SUPABASE_SERVICE_ROLE_KEY):
- *   - seed a QUALIFIED seller LEAD (ai_isa_owner, no contact_id, email_verified),
- *     inject the chain's money-spending leaves (NO D-ID / AVM / CMA spend), run
- *     bookSellerListingAppointment for REAL, and assert:
- *       (a) an appointment row exists (calendar_events, ISA_APPOINTMENT)
- *       (b) the lead CONVERTED → a contact (contacts row; lead deactivated + linked)
- *       (c) the contact has portal eligibility (determinePortalView → 'seller')
- *       (d) CONTACT_AGENT_ASSIGNED fired the welcome/intro reactor path
- *           (an agent_intro_videos ledger row for trigger=contact_agent_assigned)
- *       (e) listing.appointment_set ran the chain (a workflow_runs row for
- *           chain listing-appt-prep on this contact)
- *       (f) idempotent rerun — no double convert / double book / double chain run
- *   - then a "lead under representation" → REFUSED (honest guard).
- *   - reverse-delete ALL seeded rows + assert cleanup count == 0.
+ * Layer 2 (live, gated by SUPABASE_SERVICE_ROLE_KEY): real orchestration, the
+ *   chain's money-leaves injected (NO D-ID / AVM / CMA spend), real DB.
  *
  * Run:  npx tsx scripts/seller-appt-conversion-simulator.ts   (npm run test:seller-appt-conversion)
  */
@@ -37,8 +29,7 @@
 // ── test-only shim ──────────────────────────────────────────────────────────
 // The chain's direct-mail leaves import `server-only`, which throws outside a
 // Server Component. Neutralize it in the require cache BEFORE importing anything
-// that transitively pulls it. Shims the guard module ONLY; the orchestration,
-// converter, reactor, and engine (the system under test) all run for real.
+// that transitively pulls it.
 import { createRequire } from "module"
 const _require = createRequire(import.meta.url)
 try {
@@ -57,8 +48,8 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Layer 1 — PURE: the converter persists the ISA's seller intent as the
-// contact_type, which is what gives the converted contact its seller portal view.
+// Layer 1 — PURE: the converter persists the ISA's seller intent as contact_type.
+// Dual buyer/seller ('both') intent is preserved (must not regress).
 // ───────────────────────────────────────────────────────────────────────────
 function testPure() {
   console.log("\n[Layer 1 · pure — seller intent → contact_type]")
@@ -66,34 +57,35 @@ function testPure() {
     motivationToContactType("seller_motivated") === "seller", String(motivationToContactType("seller_motivated")))
   check("an 'investor' motivation maps to 'investor' (not mis-bucketed as seller)",
     motivationToContactType("investor") === "investor")
+  check("a 'both' motivation maps to 'buyer' (dual buyer/seller preserved; persona='both' set by creator)",
+    motivationToContactType("both") === "buyer", String(motivationToContactType("both")))
   check("a null motivation maps to null (caller falls back to lead_type)",
     motivationToContactType(null) === null)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Layer 2 — LIVE: real orchestration, injected money-leaves, real DB.
+// Layer 2 — LIVE.
 // ───────────────────────────────────────────────────────────────────────────
 async function testLive() {
-  console.log("\n[Layer 2 · live seller-lead journey (money-leaves injected)]")
+  console.log("\n[Layer 2 · live — intent conversion DECOUPLED from appointment]")
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     console.log("  ⏭  Skipped — SUPABASE_SERVICE_ROLE_KEY not set.")
     return
   }
 
   const { createServiceClient } = await import("../lib/supabase/service")
+  const { convertSellerLeadOnIntent } = await import("../lib/ai-isa/convert-seller-lead-on-intent")
   const { bookSellerListingAppointment } = await import("../lib/ai-isa/book-seller-appointment")
+  const { detectStaleContacts } = await import("../lib/ai-isa/stale-contact-detector")
   const { setListingApptPrepExecutors } = await import("../lib/workflow-orchestrator/chains/listing-appt-prep")
-  const { determinePortalView } = await import("../lib/kernel/portal")
   const svc = createServiceClient()
 
-  const TAG = `__sappt_${Date.now()}__`
+  const TAG = `__sintent_${Date.now()}__`
   const cleanup: Array<{ table: string; column: string; value: string }> = []
   let leadId: string | null = null
   let contactId: string | null = null
   let repLeadId: string | null = null
 
-  // Inject the three money-spending leaves of listing-appt-prep. The orchestration
-  // around them (schedule → convert → welcome → chain) is REAL.
   let cmaCalls = 0, presCalls = 0, videoCalls = 0
   setListingApptPrepExecutors({
     generateCMA: async () => { cmaCalls++; return { success: true, id: `${TAG}-cma`, valuation: 540000, pricingStrategy: "market" } },
@@ -108,7 +100,6 @@ async function testLive() {
   })
 
   try {
-    // Reuse a real agent (the converter + chain resolve agents by id/user_id) under a real brokerage.
     const { data: agent } = await svc
       .from("agents")
       .select("id, user_id, brokerage_id")
@@ -121,7 +112,10 @@ async function testLive() {
     const brokerageId = (agent as any).brokerage_id as string
     const agentId = (agent as any).id as string
 
-    // ── Seed a QUALIFIED seller LEAD: ai_isa_owner, active, no contact_id, email_verified.
+    // ── Seed a seller LEAD showing positive intent (CMA request). It is in the
+    //    isa_qualifying phase — convertSellerLeadOnIntent drives the canonical
+    //    handoff (consent → qualified → assigned → contact).
+    const propertyData = { address: `${TAG} 12 Cypress Ln`, city: "Tampa", state: "FL", zip: "33602", bedrooms: 4, bathrooms: 3, sqft: 2400, propertyType: "single_family" }
     const { data: lead, error: lErr } = await svc.from("leads").insert({
       brokerage_id: brokerageId,
       agent_id: agentId,
@@ -130,117 +124,154 @@ async function testLive() {
       email: `${TAG}@example.com`,
       lead_type: "seller",
       motivation_type: "seller_motivated",
-      lifecycle_state: "qualification",
+      lifecycle_state: "isa_qualifying",
       is_active: true,
       ai_isa_owner: true,
       email_verified: true,
+      address: propertyData.address,
+      city: propertyData.city,
+      state: propertyData.state,
     }).select("id").single()
-    check("seed qualified seller lead", !lErr && !!lead, lErr?.message)
+    check("seed positive-intent seller lead", !lErr && !!lead, lErr?.message)
     if (!lead) throw new Error("lead seed failed")
     leadId = (lead as any).id as string
     cleanup.push({ table: "lead_sla_tracking", column: "lead_id", value: leadId })
     cleanup.push({ table: "ai_isa_activities", column: "lead_id", value: leadId })
+    cleanup.push({ table: "assignment_log", column: "lead_id", value: leadId })
+    cleanup.push({ table: "ai_isa_qualifications", column: "lead_id", value: leadId })
 
-    const startAt = new Date(Date.now() + 6 * 86_400_000) // 6 days out
-    const endAt = new Date(startAt.getTime() + 60 * 60_000)
-    const propertyData = { address: `${TAG} 12 Cypress Ln`, city: "Tampa", state: "FL", zip: "33602", bedrooms: 4, bathrooms: 3, sqft: 2400, propertyType: "single_family" }
+    // ════════════════════════════════════════════════════════════════════════
+    // (A) CONVERT ON INTENT — CMA request. NO appointment, NO chain.
+    // ════════════════════════════════════════════════════════════════════════
+    console.log("\n  ── (A) positive-intent / CMA-request → convertSellerLeadOnIntent ──")
+    const a = await convertSellerLeadOnIntent({ brokerageId, leadId, reason: "cma_request", propertyData })
+    check("(A) convertSellerLeadOnIntent succeeded", a.success, a.error)
+    contactId = a.contactId ?? null
 
-    // ── (RUN 1) The full journey, for real. ──────────────────────────────────
-    const r1 = await bookSellerListingAppointment({
-      brokerageId, leadId, agentId, startAt, endAt, timezoneName: "America/New_York", location: propertyData.address, propertyData,
-    })
-    check("bookSellerListingAppointment succeeded", r1.success, r1.error)
-    contactId = r1.contactId ?? null
-
-    // Register cleanup for everything the journey created.
-    const calId = r1.calendarEventId
-    if (calId) cleanup.push({ table: "calendar_events", column: "id", value: calId })
     if (contactId) {
       cleanup.push({ table: "agent_intro_videos", column: "contact_id", value: contactId })
       cleanup.push({ table: "transparency_updates", column: "contact_id", value: contactId })
       cleanup.push({ table: "activities", column: "contact_id", value: contactId })
+      cleanup.push({ table: "cma_reports", column: "contact_id", value: contactId })
       cleanup.push({ table: "workflow_runs", column: "contact_id", value: contactId })
       cleanup.push({ table: "ai_isa_activities", column: "contact_id", value: contactId })
+      cleanup.push({ table: "notifications", column: "contact_id", value: contactId })
+      cleanup.push({ table: "lifecycle_events", column: "entity_id", value: contactId })
+      cleanup.push({ table: "calendar_events", column: "entity_id", value: contactId })
       cleanup.push({ table: "contacts", column: "id", value: contactId })
     }
-    if (leadId) {
-      cleanup.push({ table: "lifecycle_events", column: "entity_id", value: leadId })
-    }
-    if (contactId) cleanup.push({ table: "lifecycle_events", column: "entity_id", value: contactId })
+    cleanup.push({ table: "lifecycle_events", column: "entity_id", value: leadId })
     cleanup.push({ table: "leads", column: "id", value: leadId })
 
-    // (a) Appointment row exists, ISA appointment type.
-    const { data: cal } = await svc.from("calendar_events")
-      .select("id, entity_type, entity_id, event_type").eq("id", calId ?? "").maybeSingle()
-    check("(a) appointment row exists (calendar_events)", !!cal, "no calendar_events row")
-    check("(a) appointment is an ISA appointment for the lead",
-      (cal as any)?.entity_type === "lead" && (cal as any)?.event_type === "isa_appointment",
-      `${(cal as any)?.entity_type}/${(cal as any)?.event_type}`)
-
-    // (b) Lead converted → contact; lead deactivated + linked.
-    check("(b) lead converted to a contact (contactId returned)", !!contactId, "no contactId")
+    // (A) converts lead → contact
+    check("(A) lead converted to a contact (contactId returned)", !!contactId, "no contactId")
     const { data: contactRow } = contactId
-      ? await svc.from("contacts").select("id, contact_type, agent_id, notes").eq("id", contactId).maybeSingle()
+      ? await svc.from("contacts").select("id, contact_type, agent_id").eq("id", contactId).maybeSingle()
       : { data: null }
-    check("(b) contact row exists with the agent assigned (relationship begins)",
-      !!contactRow && (contactRow as any).agent_id === agentId)
-    check("(b) contact landed as a SELLER (ISA seller intent persisted)",
-      (contactRow as any)?.contact_type === "seller", (contactRow as any)?.contact_type)
-    const { data: leadAfter } = await svc.from("leads").select("is_active, ai_isa_owner, contact_id").eq("id", leadId).maybeSingle()
-    check("(b) lead deactivated + ISA released after conversion",
-      (leadAfter as any)?.is_active === false && (leadAfter as any)?.ai_isa_owner === false)
-    check("(b) lead linked to its contact (leads.contact_id stamped)",
-      (leadAfter as any)?.contact_id === contactId, String((leadAfter as any)?.contact_id))
+    check("(A) contact landed as a SELLER with the agent assigned",
+      (contactRow as any)?.contact_type === "seller" && (contactRow as any)?.agent_id === agentId,
+      `${(contactRow as any)?.contact_type}/${(contactRow as any)?.agent_id}`)
 
-    // (c) The contact has portal eligibility — a seller contact resolves to the seller view.
-    const portal = contactId ? await determinePortalView(svc as any, { contactId }) : null
-    check("(c) converted contact has portal eligibility → seller view",
-      portal?.view === "seller", `${portal?.view} (${portal?.reason})`)
+    // (A) ISA dormant: lead deactivated + ai_isa_owner=false
+    const { data: leadAfterA } = await svc.from("leads").select("is_active, ai_isa_owner, contact_id").eq("id", leadId).maybeSingle()
+    check("(A) ISA went DORMANT (ai_isa_owner=false, lead deactivated, linked)",
+      (leadAfterA as any)?.ai_isa_owner === false && (leadAfterA as any)?.is_active === false && (leadAfterA as any)?.contact_id === contactId)
 
-    // (d) CONTACT_AGENT_ASSIGNED fired the welcome/meet-your-agent intro reactor path.
-    // The agent_intro_videos ledger row is written by dispatchAssignmentIntroVideo for
-    // trigger=contact_agent_assigned regardless of the agent's voice-profile config
-    // (queued / suppressed / failed all leave the ledger row — proof the path ran).
-    const { data: introVids } = contactId
-      ? await svc.from("agent_intro_videos").select("id, trigger, status").eq("contact_id", contactId).eq("trigger", "contact_agent_assigned")
-      : { data: [] as any[] }
-    const introList = (introVids ?? []) as Array<{ status: string }>
-    // Belt-and-suspenders: the m122 trigger also logs the kernel event as an audit row.
-    const { data: caaEvents } = contactId
-      ? await svc.from("lifecycle_events").select("id").eq("entity_id", contactId).eq("event_type", "contact_agent_assigned")
-      : { data: [] as any[] }
-    check("(d) CONTACT_AGENT_ASSIGNED fired (intro-video reactor path OR kernel audit row)",
-      introList.length >= 1 || (caaEvents ?? []).length >= 1,
-      `intro_rows=${introList.length} caa_events=${(caaEvents ?? []).length}`)
+    // (A) agent notified of a new contact
+    check("(A) agent was notified of the new contact", a.agentNotified === true, String(a.agentNotified))
+    const { count: notifCount } = await svc.from("notifications")
+      .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("type", "seller_intent_converted")
+    check("(A) exactly one 'new contact to reach out to' notification", (notifCount ?? 0) === 1, `got ${notifCount}`)
 
-    // (e) listing.appointment_set ran the flagship chain.
-    check("(e) listing-appt-prep chain run started for the contact", !!r1.chainRunId, "no chainRunId")
-    const { data: runs } = contactId
-      ? await svc.from("workflow_runs").select("id, chain_key, trigger_event, status").eq("contact_id", contactId).eq("chain_key", "listing-appt-prep")
-      : { data: [] as any[] }
-    const runList = (runs ?? []) as Array<{ trigger_event: string; status: string }>
-    check("(e) exactly one listing-appt-prep run exists (trigger listing.appointment_set)",
-      runList.length === 1 && runList[0].trigger_event === "listing.appointment_set",
-      `count=${runList.length} trigger=${runList[0]?.trigger_event}`)
-    check("(e) the injected money-leaves each ran exactly once (no real spend)",
-      cmaCalls === 1 && presCalls === 1 && videoCalls === 1, `cma=${cmaCalls} pres=${presCalls} vid=${videoCalls}`)
+    // (A) the CMA the lead asked for was proposed
+    check("(A) the requested CMA was proposed (cma_reports row)", !!a.cmaReportId, "no cmaReportId")
+    const { data: cmaRow } = a.cmaReportId
+      ? await svc.from("cma_reports").select("id, contact_id, agent_id, status").eq("id", a.cmaReportId).maybeSingle()
+      : { data: null }
+    check("(A) the proposed CMA is on this contact (status draft = proposed)",
+      (cmaRow as any)?.contact_id === contactId && (cmaRow as any)?.status === "draft", JSON.stringify(cmaRow))
 
-    // ── (RUN 2) Idempotent rerun — no double convert / book / chain run. ──────
-    const cmaBefore = cmaCalls, vidBefore = videoCalls
-    const r2 = await bookSellerListingAppointment({
+    // (A) NO appointment fired, NO listing-appt-prep chain ran
+    const { count: apptCountA } = await svc.from("calendar_events")
+      .select("id", { count: "exact", head: true }).eq("entity_id", contactId!).eq("event_type", "isa_appointment")
+    check("(A) NO listing appointment was scheduled on intent-conversion", (apptCountA ?? 0) === 0, `got ${apptCountA}`)
+    const { count: chainCountA } = await svc.from("workflow_runs")
+      .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("chain_key", "listing-appt-prep")
+    check("(A) NO listing-appt-prep chain ran on intent-conversion", (chainCountA ?? 0) === 0, `got ${chainCountA}`)
+    check("(A) NO money-leaves invoked on intent-conversion", cmaCalls === 0 && presCalls === 0 && videoCalls === 0,
+      `cma=${cmaCalls} pres=${presCalls} vid=${videoCalls}`)
+
+    // (A) idempotent rerun — same contact, no second notification / CMA
+    const aRerun = await convertSellerLeadOnIntent({ brokerageId, leadId, reason: "cma_request", propertyData })
+    check("(A) rerun returns SAME contact, alreadyConverted=true",
+      aRerun.success && aRerun.contactId === contactId && aRerun.alreadyConverted === true, JSON.stringify(aRerun))
+    const { count: notifCount2 } = await svc.from("notifications")
+      .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("type", "seller_intent_converted")
+    check("(A) rerun did NOT double-notify", (notifCount2 ?? 0) === 1, `got ${notifCount2}`)
+
+    // ════════════════════════════════════════════════════════════════════════
+    // (C) DORMANT → RE-ENGAGE — the converted-no-appt contact is stale-eligible.
+    //     (Run before booking the appointment, while it has no appt + no activity.)
+    // ════════════════════════════════════════════════════════════════════════
+    console.log("\n  ── (C) converted-no-appt contact → detectStaleContacts ──")
+    // Fresh contacts land with last_contacted_at=null → immediately stale-eligible.
+    const stale = await detectStaleContacts(brokerageId)
+    const found = stale.some((s) => s.id === contactId)
+    check("(C) the converted-no-appt contact is RE-ENGAGE eligible (detectStaleContacts)", found,
+      `stale ids did not include the contact (n=${stale.length})`)
+    const stale2 = await detectStaleContacts(brokerageId)
+    check("(C) detection is idempotent (still eligible on rerun)", stale2.some((s) => s.id === contactId))
+
+    // ════════════════════════════════════════════════════════════════════════
+    // (B) SAME contact later books an appointment — chain runs ONCE, no re-convert.
+    // ════════════════════════════════════════════════════════════════════════
+    console.log("\n  ── (B) SAME contact books appointment → listing.appointment_set + chain ──")
+    const startAt = new Date(Date.now() + 6 * 86_400_000)
+    const endAt = new Date(startAt.getTime() + 60 * 60_000)
+    const b = await bookSellerListingAppointment({
       brokerageId, leadId, agentId, startAt, endAt, timezoneName: "America/New_York", location: propertyData.address, propertyData,
     })
-    check("(f) rerun returns the SAME contact (no double convert)",
-      r2.success && r2.contactId === contactId && r2.alreadyConverted === true, `${r2.contactId} already=${r2.alreadyConverted}`)
+    check("(B) bookSellerListingAppointment succeeded", b.success, b.error)
+    check("(B) booked on the EXISTING contact (no second conversion)",
+      b.contactId === contactId && b.alreadyConverted === true, `${b.contactId} already=${b.alreadyConverted}`)
+    if (b.calendarEventId) cleanup.push({ table: "calendar_events", column: "id", value: b.calendarEventId })
+
+    const { data: cal } = await svc.from("calendar_events")
+      .select("id, entity_type, entity_id, event_type").eq("id", b.calendarEventId ?? "").maybeSingle()
+    check("(B) ISA appointment row exists on the contact",
+      (cal as any)?.entity_type === "contact" && (cal as any)?.entity_id === contactId && (cal as any)?.event_type === "isa_appointment",
+      JSON.stringify(cal))
+
+    check("(B) listing-appt-prep chain run started", !!b.chainRunId, "no chainRunId")
+    const { data: runs } = await svc.from("workflow_runs")
+      .select("id, trigger_event").eq("contact_id", contactId!).eq("chain_key", "listing-appt-prep")
+    const runList = (runs ?? []) as Array<{ trigger_event: string }>
+    check("(B) exactly ONE listing-appt-prep run (trigger listing.appointment_set)",
+      runList.length === 1 && runList[0].trigger_event === "listing.appointment_set",
+      `count=${runList.length} trigger=${runList[0]?.trigger_event}`)
+    check("(B) money-leaves each ran exactly once (no real spend)",
+      cmaCalls === 1 && presCalls === 1 && videoCalls === 1, `cma=${cmaCalls} pres=${presCalls} vid=${videoCalls}`)
+
+    // (B) no second welcome — exactly one contact, one intro-video ledger key
     const { count: contactCount } = await svc.from("contacts")
       .select("id", { count: "exact", head: true }).eq("notes", `Promoted from lead ${leadId}`)
-    check("(f) still exactly ONE contact for this lead", (contactCount ?? 0) === 1, `got ${contactCount}`)
+    check("(B) still exactly ONE contact for this lead (no double-convert)", (contactCount ?? 0) === 1, `got ${contactCount}`)
+
+    // (B) idempotent rerun — no double chain run, no extra money-leaf calls
+    const cmaBefore = cmaCalls, vidBefore = videoCalls
+    const b2 = await bookSellerListingAppointment({
+      brokerageId, leadId, agentId, startAt, endAt, timezoneName: "America/New_York", location: propertyData.address, propertyData,
+    })
+    check("(B) rerun still the same contact", b2.success && b2.contactId === contactId)
     const { count: runCount } = await svc.from("workflow_runs")
       .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("chain_key", "listing-appt-prep")
-    check("(f) still exactly ONE listing-appt-prep run (chain deduped)", (runCount ?? 0) === 1, `got ${runCount}`)
-    check("(f) rerun did NOT re-invoke the money leaves", cmaCalls === cmaBefore && videoCalls === vidBefore, `cma ${cmaCalls} vid ${videoCalls}`)
+    check("(B) still exactly ONE chain run (deduped)", (runCount ?? 0) === 1, `got ${runCount}`)
+    check("(B) rerun did NOT re-invoke the money leaves", cmaCalls === cmaBefore && videoCalls === vidBefore, `cma ${cmaCalls} vid ${videoCalls}`)
 
-    // ── (REFUSE) A lead under representation is REFUSED (honest guard). ───────
+    // ════════════════════════════════════════════════════════════════════════
+    // (REFUSE) A lead under representation is REFUSED.
+    // ════════════════════════════════════════════════════════════════════════
+    console.log("\n  ── (refuse) lead under representation ──")
     const { data: repLead } = await svc.from("leads").insert({
       brokerage_id: brokerageId, agent_id: agentId, first_name: `${TAG}rep`, last_name: "RepSeller",
       email: `${TAG}rep@example.com`, lead_type: "seller", lifecycle_state: "representation", is_active: true, ai_isa_owner: true,
@@ -261,9 +292,8 @@ async function testLive() {
       check("(refuse) refused lead created NO contact", (repContacts ?? 0) === 0, `got ${repContacts}`)
     }
   } finally {
-    setListingApptPrepExecutors(null) // reset to real executors
+    setListingApptPrepExecutors(null)
 
-    // Reverse-delete every seeded row, then verify nothing remains.
     for (let i = cleanup.length - 1; i >= 0; i--) {
       const { table, column, value } = cleanup[i]
       try { await svc.from(table).delete().eq(column, value) } catch { /* noop */ }
@@ -279,13 +309,13 @@ async function testLive() {
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
-  console.log(" Seller Appointment → Conversion — full-journey simulator")
+  console.log(" Seller Intent → Conversion (DECOUPLED from appointment) simulator")
   console.log("══════════════════════════════════════════════════")
   testPure()
   await testLive()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ SELLER_APPT_CONVERSION verified — schedule → convert → welcome → flagship chain, idempotent + honest-guarded")
+  console.log(" ✅ SELLER_INTENT_CONVERSION verified — convert-on-intent (CMA proposed, ISA dormant, agent notified) decoupled from the appointment milestone; re-engage covered; idempotent + honest-guarded")
 }
 main().catch((e) => { console.error(e); process.exit(1) })
