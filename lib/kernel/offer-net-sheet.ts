@@ -30,23 +30,11 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
-
-// CONSOLIDATION NOTE: lib/offers/offer-analyzer exports calcNetToSeller — the canonical
-// commission + buyer-credit math — but that module top-level imports "@/lib/ai" which
-// pulls the server-only chain, so it CANNOT be imported here (this module must stay
-// non-server-only: client component + cron + simulator all import it). We mirror its
-// exact formula below (price − commission − credit) so the math stays identical and
-// single-sourced in intent; the server-side offer-analyzer remains the AI surface.
-function calcNetToSeller(params: {
-  offer_price: number
-  closing_cost_contribution: number | null
-  commission_rate: number // decimal e.g. 0.06
-}): number {
-  const { offer_price, closing_cost_contribution, commission_rate } = params
-  const commission = offer_price * commission_rate
-  const sellerConc = closing_cost_contribution ?? 0
-  return offer_price - commission - sellerConc
-}
+// SINGLE SOURCE OF TRUTH: the canonical commission + buyer-credit math lives in the
+// PURE module lib/offers/offer-math (no "@/lib/ai", no server-only deps), so this
+// non-server-only kernel module (client component + cron + simulator import it) shares
+// the EXACT same formula as the server-side offer-analyzer AI surface — no drift.
+import { calcNetToSeller } from "@/lib/offers/offer-math"
 
 type Svc = ReturnType<typeof createServiceClient>
 

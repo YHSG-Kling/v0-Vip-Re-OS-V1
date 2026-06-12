@@ -2,6 +2,13 @@ import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+// Net-to-seller commission math lives in the PURE, dependency-light single source of
+// truth (lib/offers/offer-math) so the non-server-only kernel net-sheet + client net
+// sheet can share the EXACT same formula without pulling this file's server-only deps.
+import { calcNetToSeller } from "@/lib/offers/offer-math"
+
+// Re-exported so existing importers of "@/lib/offers/offer-analyzer" are unaffected.
+export { calcNetToSeller }
 
 export interface OfferForAnalysis {
   id: string
@@ -30,17 +37,9 @@ export interface OfferAnalysisResult {
   comparison_summary: string
 }
 
-// ── Net-to-seller calculation (uses only live schema columns) ──────────────────
-export function calcNetToSeller(params: {
-  offer_price: number
-  closing_cost_contribution: number | null
-  commission_rate: number               // decimal e.g. 0.06
-}): number {
-  const { offer_price, closing_cost_contribution, commission_rate } = params
-  const commission = offer_price * commission_rate
-  const sellerConc = closing_cost_contribution ?? 0
-  return offer_price - commission - sellerConc
-}
+// ── Net-to-seller calculation ─────────────────────────────────────────────────
+// calcNetToSeller is imported + re-exported from lib/offers/offer-math (the pure
+// single source of truth). See the import at the top of this file.
 
 // ── AI comparison — only called when 2+ offers ────────────────────────────────
 export async function analyzeAndCompareOffers(params: {
