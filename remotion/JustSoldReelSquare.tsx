@@ -33,6 +33,8 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustSoldReelSquareProps {
   address:   string
@@ -65,6 +67,11 @@ export interface JustSoldReelSquareProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to list with me". */
   qrCaption?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -92,6 +99,7 @@ function aboveAskingBadge(sold: string, list: string | null | undefined): string
 export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   address, cityState, soldPrice, listPrice, daysOnMarket, imageUrls,
   ctaLabel, brand, voiceoverUrl, qrCodeDataUrl, qrCaption,
+  captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const images   = imageUrls.slice(0, 4)
@@ -244,6 +252,8 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }

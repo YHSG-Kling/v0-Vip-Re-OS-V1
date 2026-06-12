@@ -36,6 +36,8 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface NeighborhoodHighlight {
   /** Short label — "Median price", "Walk score". 1-3 words. */
@@ -78,6 +80,11 @@ export interface NeighborhoodSpotlightReelProps {
     showEhoMark?:    boolean
     licenseLine?:    string
   }
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -89,7 +96,7 @@ const TOTAL  = COVER + BODY + CTA  // 480 frames = 16s
 export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps> = ({
   neighborhood, tagline, highlights, brollClips, ctaLabel,
   agentName, agentPhone, voiceoverUrl, avatarVideoUrl, agentPhotoUrl,
-  contextCues, brand,
+  contextCues, brand, captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -231,6 +238,8 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }

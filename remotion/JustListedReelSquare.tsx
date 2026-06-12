@@ -35,6 +35,8 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -69,6 +71,11 @@ export interface JustListedReelSquareProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to tour". */
   qrCaption?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -88,6 +95,7 @@ function kenBurnsScale(localFrame: number, span: number): number {
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
+  captionsCues, captionScript,
 }) => {
   const frame      = useCurrentFrame()
   const images     = imageUrls.slice(0, 4)
@@ -217,6 +225,8 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }

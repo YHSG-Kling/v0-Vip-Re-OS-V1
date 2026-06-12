@@ -137,6 +137,129 @@ export async function synthesizeSpeech(
   }
 }
 
+// ─── Timestamped TTS (caption burn-in) ──────────────────────────────────────
+
+/**
+ * Per-character alignment as returned by ElevenLabs'
+ * /v1/text-to-speech/{voice}/with-timestamps endpoint
+ * (CharacterAlignmentResponseModel). The three arrays are parallel: the i-th
+ * character is spoken from character_start_times_seconds[i] to
+ * character_end_times_seconds[i]. Mirrors lib/video/caption-plan.ts
+ * CharacterAlignment so the planner can consume it directly.
+ */
+export interface CharacterAlignment {
+  characters: string[]
+  character_start_times_seconds: number[]
+  character_end_times_seconds: number[]
+}
+
+export interface SynthesizeSpeechWithTimestampsResult extends SynthesizeSpeechResult {
+  /** Per-character alignment for the original text — present on success. Used by
+   *  buildCaptionPlan to place WORD-ACCURATE captions. */
+  alignment?: CharacterAlignment
+}
+
+/** Shape of the with-timestamps response body (AudioWithTimestampsResponseModel). */
+interface AudioWithTimestampsBody {
+  audio_base64: string
+  alignment?: CharacterAlignment | null
+  normalized_alignment?: CharacterAlignment | null
+}
+
+/**
+ * synthesizeSpeechWithTimestamps — PREFERRED path for SOUND-OFF CAPTIONS.
+ *
+ * A SIBLING of synthesizeSpeech (the default buffered path is UNCHANGED). Calls
+ * the `/v1/text-to-speech/{voice}/with-timestamps` endpoint, which returns the
+ * full mp3 as base64 PLUS per-character alignment. We decode the audio to a
+ * Buffer (identical contract to synthesizeSpeech.audioBuffer so the existing
+ * upload/compose path is unchanged) AND return the alignment so captions can be
+ * placed at the REAL frame each word is spoken.
+ *
+ * Throws never — returns { success: false, errorCode } on failure so callers can
+ * fall back to synthesizeSpeech (no alignment → even-distribution caption ESTIMATE).
+ */
+export async function synthesizeSpeechWithTimestamps(
+  input: SynthesizeSpeechInput,
+): Promise<SynthesizeSpeechWithTimestampsResult> {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
+  }
+
+  // Same vendor budget gate as synthesizeSpeech — auto-pause when over ceiling.
+  if (input.brokerageId) {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
+    if (!budget.allowed) {
+      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
+    }
+  }
+
+  const voiceId = input.voiceId || FALLBACK_VOICE_ID
+  const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
+
+  try {
+    // PLATFORM-owned connector — egresses through the single gateway (json mode →
+    // the with-timestamps body: base64 audio + per-character alignment).
+    const res = await callConnector<AudioWithTimestampsBody>({
+      connector: "elevenlabs",
+      baseUrl: ELEVENLABS_BASE,
+      path: `v1/text-to-speech/${voiceId}/with-timestamps`,
+      method: "POST",
+      auth: { style: "header", name: "xi-api-key", value: apiKey },
+      headers: { Accept: "application/json" },
+      responseType: "json",
+      body: {
+        text: input.text,
+        model_id: input.modelId ?? "eleven_monolingual_v1",
+        voice_settings: settings,
+      },
+    })
+
+    if (!res.ok || !res.data?.audio_base64) {
+      const body = res.error ?? ""
+      const code: SynthesizeSpeechResult["errorCode"] =
+        res.status === 401 || res.status === 403
+          ? "auth"
+          : res.status === 422 && /voice/i.test(body)
+          ? "voice_not_found"
+          : res.status === 429
+          ? "rate_limit"
+          : /quota/i.test(body)
+          ? "quota"
+          : "unknown"
+      return {
+        success: false,
+        errorCode: code,
+        error: `ElevenLabs with-timestamps (${res.status ?? "—"}): ${body || "request failed"}`,
+      }
+    }
+
+    const audioBuffer = Buffer.from(res.data.audio_base64, "base64")
+    // Prefer alignment over the original text (matches the characters we sent).
+    const alignment = res.data.alignment ?? res.data.normalized_alignment ?? undefined
+
+    // Same unified vendor-spend ledger as synthesizeSpeech.
+    if (input.brokerageId) {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "elevenlabs",
+        usageType: "tts",
+        cost: estimatePlatformVendorCost("elevenlabs", input.text.length),
+        unitCount: input.text.length,
+        brokerageId: input.brokerageId,
+        systemSource: "voice_tts_timestamped",
+        metadata: { voice_id: voiceId, chars: input.text.length, with_timestamps: true },
+      })
+    }
+    return { success: true, audioBuffer, alignment: alignment ?? undefined }
+  } catch (err: any) {
+    return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
+  }
+}
+
 /**
  * Streaming variant — returns the raw fetch Response so callers can pipe
  * the audio chunks directly to the client (lower TTFB for assistant TTS).

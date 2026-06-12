@@ -31,6 +31,8 @@ import {
   useVideoConfig,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelProps {
   /** Hook label — "Just Listed" / "Just Sold" / "Price Update". */
@@ -63,6 +65,12 @@ export interface JustListedReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to tour". */
   qrCaption?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off). Precomputed word-accurate cues
+   *  built upstream from REAL ElevenLabs alignment — preferred. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; the CaptionLayer
+   *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 // 25 seconds @ 30 fps = 750 frames. Component breakdown in frames:
@@ -104,6 +112,12 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
       </Sequence>
 
       {props.brand.showEhoMark && <EhoBadge />}
+
+      <CaptionLayer
+        cues={props.captionsCues}
+        script={props.captionScript}
+        accentColor={props.brand.accentColor}
+      />
     </AbsoluteFill>
   )
 }

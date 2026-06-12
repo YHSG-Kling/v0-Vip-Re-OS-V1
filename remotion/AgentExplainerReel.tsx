@@ -44,6 +44,8 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentExplainerReelProps {
   /** Short eyebrow above title (e.g. "FIRST-TIME BUYER"). 1-3 words. */
@@ -70,6 +72,11 @@ export interface AgentExplainerReelProps {
     brokerageName:   string
     showEhoMark?:    boolean
   }
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -164,6 +171,7 @@ const BulletPanel: React.FC<{
 
 export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
   eyebrow, title, bullets, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl, brand,
+  captionsCues, captionScript,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -253,6 +261,8 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }

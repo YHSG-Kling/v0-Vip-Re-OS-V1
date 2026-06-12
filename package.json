@@ -41,6 +41,8 @@
     "test:explainer-anim": "tsx scripts/explainer-anim-simulator.ts",
     "test:hook-ab": "tsx scripts/hook-ab-simulator.ts",
     "test:photo-walkthrough": "tsx scripts/photo-walkthrough-simulator.ts",
+    "test:captions": "tsx scripts/captions-simulator.ts",
+    "test:inventory-radar": "tsx scripts/inventory-radar-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

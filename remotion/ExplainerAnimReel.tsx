@@ -53,6 +53,8 @@ import type {
   ClosingTimelineData,
   WhatMonthlyBuysData,
 } from "../lib/charts/explainer-diagram"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ExplainerAnimReelProps {
   /** Short eyebrow above the title. */
@@ -78,6 +80,11 @@ export interface ExplainerAnimReelProps {
     brokerageName: string
     showEhoMark?:  boolean
   }
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS     = 30
@@ -309,6 +316,7 @@ const Diagram: React.FC<{ data: DiagramData; accent: string }> = ({ data, accent
 export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
   eyebrow, title, caption, ctaLabel, hasData, diagram,
   agentName, avatarVideoUrl, agentPhotoUrl, brand,
+  captionsCues, captionScript,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -404,6 +412,8 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }

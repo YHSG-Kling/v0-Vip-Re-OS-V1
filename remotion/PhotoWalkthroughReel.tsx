@@ -45,7 +45,9 @@ import {
   useVideoConfig,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface PhotoWalkthroughReelProps {
   /** Hook label — "Just Listed" / "Take the Tour" / "Step Inside". */
@@ -78,6 +80,12 @@ export interface PhotoWalkthroughReelProps {
   qrCaption?: string
   /** MLS-bound cut — suppresses the agent-branded QR badge. */
   mlsClean?: boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. These are the VO-synced
+   *  captions; the per-photo `captions`/roomLabels above are a separate concern. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
@@ -133,6 +141,12 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
       </Sequence>
 
       {props.brand.showEhoMark && <EhoBadge />}
+
+      <CaptionLayer
+        cues={props.captionsCues}
+        script={props.captionScript}
+        accentColor={props.brand.accentColor}
+      />
     </AbsoluteFill>
   )
 }

@@ -362,6 +362,92 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed seller prep follow-up (gate message ${res.id})` : null
   },
+  // LISTING INVENTORY RADAR — Data Steward → Listing Concierge: the Radar scored a
+  // bench-scraped seller candidate HOT (expired/withdrawn, FSBO, absentee, high-equity /
+  // pre-foreclosure). The Listing Concierge turns the routed candidate into GATED
+  // deliverables: (1) ALWAYS a "thinking of selling?" prospecting brief into the approval
+  // gate (audience 'agent' — internal, never a client message, no contact info assumed);
+  // (2) OPTIONALLY, when the owner is ALREADY a CRM contact AND we have a real agent, a
+  // gated CMA + a Director-commissioned listing/explainer reel. Nothing auto-sends; every
+  // enrichment honestly skips when its prerequisite (contact / agent / key) is absent.
+  "listing_concierge:seller_intent_hot": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const intentScore = typeof p.intent_score === "number" ? p.intent_score : 0
+    const propertyAddress = (p.property_address as string | undefined) ?? null
+    const reasons = Array.isArray(p.reasons) ? (p.reasons as string[]) : []
+    const contactBacked = p.contact_backed === true && !!signal.contactId
+
+    const actions: string[] = []
+
+    // (1) GATED "thinking of selling?" prospecting brief — ALWAYS, audience 'agent'.
+    const { composeProspectingBriefFallback } = await import("@/lib/kernel/listing-inventory-radar")
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const briefBody = composeProspectingBriefFallback({
+      rawLeadId: signal.entityId,
+      signals: { source: (p.source as string) ?? "" },
+      propertyAddress,
+      intentScore,
+      reasons,
+    } as any)
+    const brief = await proposeClientMessage({
+      brokerageId: ctx.brokerageId,
+      agentKind: "listing_concierge",
+      entityType: "raw_scraped_lead",
+      entityId: signal.entityId,
+      recipientContactId: contactBacked ? signal.contactId : null, // agent-audience only
+      audience: "agent",
+      subject: `Seller-intent radar: ${propertyAddress ?? "a high-intent listing candidate"}`,
+      body: briefBody,
+      rationale: `LISTING INVENTORY RADAR — bench-scraped seller candidate scored ${(intentScore * 100).toFixed(0)}/100 intent; "thinking of selling?" play proposed (gated, agent audience; ${contactBacked ? "owner is a CRM contact" : "owner not yet a contact — no client message, consent respected"}).`,
+      channel: "portal",
+    }, ctx.supabase)
+    if (!brief.ok) return null
+    actions.push(`proposed gated 'thinking of selling?' brief (gate message ${brief.id})`)
+
+    // The optional enrichments require a REAL agent on this brokerage (users.id for the
+    // video FK + agents.id for the CMA). Resolve once; honest skip when absent.
+    if (contactBacked && signal.contactId) {
+      const { data: agentRow } = await ctx.supabase
+        .from("agents")
+        .select("id, user_id")
+        .eq("brokerage_id", ctx.brokerageId)
+        .not("user_id", "is", null)
+        .limit(1)
+        .maybeSingle()
+      const agentId = (agentRow as { id?: string } | null)?.id ?? null
+      const agentUserId = (agentRow as { user_id?: string } | null)?.user_id ?? null
+
+      // (3) DIRECTOR-COMMISSIONED 'thinking of selling?' reel — GATED (pending_review),
+      //     keyed on the contact so it's idempotent and never auto-publishes.
+      if (agentUserId) {
+        try {
+          const { commissionVideo } = await import("@/lib/video/video-director")
+          const reel = await commissionVideo(
+            { kind: "explainer", tier: "solo_agent", targetChannel: "email",
+              facts: { topic: "thinking of selling?", property_address: propertyAddress ?? undefined } },
+            { brokerageId: ctx.brokerageId, agentUserId, contactId: signal.contactId,
+              title: `Thinking of selling? — ${propertyAddress ?? "your home"}` },
+            ctx.supabase as any,
+          )
+          if (reel.ok && (reel.status === "staged" || reel.status === "already_staged")) {
+            actions.push(`commissioned a gated 'thinking of selling?' reel (${reel.status})`)
+          }
+        } catch (e) {
+          console.error("[seller_intent_hot] reel commission skipped:", (e as Error).message)
+        }
+      }
+
+      // (2) Note the gated CMA availability to the agent. We do NOT auto-generate the CMA
+      //     here (generateAICMA is an authenticated agent action requiring property facts
+      //     the scrape row may not carry) — we surface it as the next gated step in the
+      //     brief's rationale. The agent triggers it from the contact with one tap. This
+      //     keeps the play honest: no fabricated property specs feeding a valuation.
+      actions.push(agentId ? "flagged a gated CMA as the next step (agent-triggered)" : "no agent for CMA — brief only")
+    }
+
+    return actions.join("; ")
+  },
   // Data Steward → Sphere: the consent-recovery chain exhausted every step (no fallback
   // channel, enrichment re-run found nothing). The Sphere releases the relationship
   // RESPECTFULLY: nurture_status='withdrawn' (history kept, never a delete), agent told.

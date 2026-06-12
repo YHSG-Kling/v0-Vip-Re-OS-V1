@@ -38,7 +38,8 @@ import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { put } from "@vercel/blob"
 import { createServiceClient } from "@/lib/supabase/service"
-import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { synthesizeSpeech, synthesizeSpeechWithTimestamps, type CharacterAlignment } from "@/lib/voice/elevenlabs-tts"
+import { buildCaptionPlan } from "@/lib/video/caption-plan"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { dispatchVideo } from "@/lib/providers/dispatch"
@@ -156,8 +157,10 @@ export async function POST(req: NextRequest) {
       eventType:   promo.event_type,
     })
 
-    // 4. ElevenLabs voiceover → Supabase storage URL.
-    const voiceoverUrl = await renderVoiceover({
+    // 4. ElevenLabs voiceover → Supabase storage URL. The timestamped path also
+    //    returns per-character alignment (when available) so captions are
+    //    word-accurate; null alignment → the caption plan even-distributes.
+    const { url: voiceoverUrl, alignment: voiceoverAlignment } = await renderVoiceover({
       svc,
       brokerageId: promo.brokerage_id,
       agentUserId: promo.agent_id,
@@ -186,6 +189,8 @@ export async function POST(req: NextRequest) {
       eventType: promo.event_type,
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     qrCaptionForEvent(promo.event_type),
+      script,
+      voiceoverAlignment,
     })
     const reelUrl = reel.url
 
@@ -213,6 +218,13 @@ export async function POST(req: NextRequest) {
         composition_id:   reel.compositionId,
         composition_fell_back: reel.fellBack,
         composition_fallback_reason: reel.fallbackReason,
+        // SOUND-OFF CAPTIONS — the per-character alignment the captions were
+        // built from (null when the timestamped TTS path was unavailable and the
+        // even-distribution estimate was used). Stored on the EXISTING ledger
+        // JSON so re-renders / audits can rebuild word-accurate captions; honest
+        // about whether timing is real ("alignment") or estimated.
+        caption_timing_source: voiceoverAlignment ? "alignment" : "even",
+        voiceover_alignment:   voiceoverAlignment,
       },
     }).select("id").single()
 
@@ -403,7 +415,7 @@ async function renderVoiceover(args: {
   agentUserId: string
   promoId: string
   script: string
-}): Promise<string> {
+}): Promise<{ url: string; alignment: CharacterAlignment | null }> {
   const { data: profile } = await args.svc.from("agent_voice_profiles")
     .select("elevenlabs_voice_id")
     .eq("agent_id", args.agentUserId)
@@ -411,15 +423,29 @@ async function renderVoiceover(args: {
   const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
   if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")
 
-  const tts = await synthesizeSpeech({ text: args.script, voiceId })
-  if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs TTS failed: ${tts.error}`)
+  // SOUND-OFF CAPTIONS — prefer the timestamped TTS path so captions can be
+  // placed WORD-ACCURATELY. It returns the SAME mp3 buffer contract plus the
+  // per-character alignment. Any failure falls back to the default buffered path
+  // (no alignment → the caption plan even-distributes honestly), so captions
+  // NEVER block the render.
+  let audioBuffer: Buffer | null = null
+  let alignment: CharacterAlignment | null = null
+  const stamped = await synthesizeSpeechWithTimestamps({ text: args.script, voiceId, brokerageId: args.brokerageId })
+  if (stamped.success && stamped.audioBuffer) {
+    audioBuffer = stamped.audioBuffer
+    alignment = stamped.alignment ?? null
+  } else {
+    const tts = await synthesizeSpeech({ text: args.script, voiceId, brokerageId: args.brokerageId })
+    if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs TTS failed: ${stamped.error ?? tts.error}`)
+    audioBuffer = tts.audioBuffer
+  }
 
   const blob = await put(
     `listing-promo/voiceover/${args.promoId}.mp3`,
-    tts.audioBuffer,
+    audioBuffer,
     { access: "public", contentType: "audio/mpeg" },
   )
-  return blob.url
+  return { url: blob.url, alignment }
 }
 
 /** Map a listing-promo event_type to a video-qr kind. just_sold maps to its
@@ -445,6 +471,10 @@ async function renderRemotionReel(args: {
   eventType: string
   qrCodeDataUrl: string | null
   qrCaption: string
+  /** The VO script — used as the caption fallback (even-distribution estimate). */
+  script: string
+  /** Per-character alignment from the timestamped TTS path (null → estimate). */
+  voiceoverAlignment: CharacterAlignment | null
 }): Promise<{ url: string; compositionId: string; durationSeconds: number; fellBack: boolean; fallbackReason: string | null }> {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
@@ -491,6 +521,28 @@ async function renderRemotionReel(args: {
     id:       compositionId,
     inputProps,
   })
+
+  // SOUND-OFF CAPTIONS (additive + best-effort). Build the caption plan against
+  // the SELECTED composition's real duration/fps so cues tile its timeline.
+  // Prefer the REAL ElevenLabs alignment (word-accurate); fall back to the
+  // script text (even-distribution ESTIMATE). A caption failure NEVER blocks the
+  // render — on any error we simply ship the reel without captions (as before).
+  try {
+    const plan = buildCaptionPlan(
+      args.voiceoverAlignment ?? args.script,
+      composition.durationInFrames,
+      composition.fps,
+      { maxWordsPerCue: 4 },
+    )
+    if (plan.cues.length > 0) {
+      // captionsCues = word-accurate/estimated cues the CaptionLayer renders.
+      // captionScript stays as the honest fallback if cues are ever empty.
+      ;(inputProps as Record<string, unknown>).captionsCues  = plan.cues
+      ;(inputProps as Record<string, unknown>).captionScript = args.script
+    }
+  } catch (e) {
+    console.warn(`[render-just-listed] caption plan failed; rendering without captions:`, (e as Error).message)
+  }
 
   // Resolve Chromium executable. In Vercel, @sparticuz/chromium-min provides
   // a downloadable binary the @remotion/renderer uses via puppeteer-core

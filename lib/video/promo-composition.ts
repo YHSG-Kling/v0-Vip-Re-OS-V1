@@ -151,6 +151,13 @@ export interface BuildPropsInput {
   qrCodeDataUrl: string | null
   qrCaption:     string
   hook:          string
+  /** SOUND-OFF CAPTIONS (additive + default-off). Precomputed word-accurate cues
+   *  built upstream from REAL ElevenLabs alignment. Threaded onto every voiced
+   *  composition's captionsCues prop. Absent → no captions (current behavior). */
+  captionsCues?:  import("./caption-plan").CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text (the CaptionLayer
+   *  estimates timing in-composition). Absent → no caption fallback. */
+  captionScript?: string | null
 }
 
 export interface BuildPropsResult {
@@ -182,6 +189,8 @@ function buildJustListedProps(i: BuildPropsInput): Record<string, unknown> {
     voiceoverUrl:  i.voiceoverUrl,
     qrCodeDataUrl: i.qrCodeDataUrl,
     qrCaption:     i.qrCaption,
+    captionsCues:  i.captionsCues ?? null,
+    captionScript: i.captionScript ?? null,
   }
 }
 
@@ -223,6 +232,8 @@ export function buildPromoProps(i: BuildPropsInput): BuildPropsResult {
         voiceoverUrl:  i.voiceoverUrl,
         qrCodeDataUrl: i.qrCodeDataUrl,
         qrCaption:     i.qrCaption,
+        captionsCues:  i.captionsCues ?? null,
+        captionScript: i.captionScript ?? null,
       }
       return { compositionId: "JustSoldReelSquare", inputProps, fellBack: false, fallbackReason: null }
     }

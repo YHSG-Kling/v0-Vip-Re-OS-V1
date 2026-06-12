@@ -42,6 +42,8 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export type StatDirection = "up_good" | "up_bad" | "down_good" | "down_bad" | "flat"
 
@@ -84,6 +86,11 @@ export interface MarketUpdateReelProps {
     brokerageName:  string
     showEhoMark?:   boolean
   }
+  /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
+   *  ElevenLabs alignment — preferred over captionScript. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -226,7 +233,7 @@ const AvatarPIP: React.FC<{
 
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,
-  avatarVideoUrl, agentPhotoUrl, brand,
+  avatarVideoUrl, agentPhotoUrl, brand, captionsCues, captionScript,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brand.upColor   ?? "#22C55E"
@@ -335,6 +342,8 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
     </AbsoluteFill>
   )
 }
