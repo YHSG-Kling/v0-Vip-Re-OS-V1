@@ -29,6 +29,8 @@ import {
   composeOptimizeTourSpoken, voiceOptimizeTour,
   rankAtRiskDeals, composeClosingsAtRiskSpoken, voiceClosingsAtRisk, type AtRiskDeal,
   composeEquityReportSpoken, voiceSendEquityReport,
+  normalizeVideoKind, normalizeVideoChannel, composeCommissionSpoken, voiceCommissionVideo,
+  type CommissionDispatcher,
 } from "../lib/kernel/voice-delegation"
 
 let passed = 0, failed = 0
@@ -121,6 +123,39 @@ async function main() {
   check("equity: duplicate this year → no double-draft, spoken honestly", equityDup.ok && /already has this year's/i.test(equityDup.spoken))
   const equityWithdrawn = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 0, skippedNoValuation: 0, skippedDuplicate: 0, skippedWithdrawn: 1, anniversariesDetected: 1 })
   check("equity: withdrawn relationship refused with the reason spoken", !equityWithdrawn.ok && equityWithdrawn.skipReason === "withdrawn" && /withdrawn/i.test(equityWithdrawn.spoken))
+
+  // ── VERB: commission_video — the Video Director takes the spoken command ──
+  console.log("\n[Layer 1 · commission video (the Director takes the command)]")
+  check("kind: 'market update reel' → market_update", normalizeVideoKind("make a market update reel") === "market_update")
+  check("kind: 'home value video' → cma", normalizeVideoKind("cut a home value video for the Smiths") === "cma")
+  check("kind: 'explainer about escrow' → explainer", normalizeVideoKind("make an explainer about escrow") === "explainer")
+  check("kind: 'neighborhood spotlight' → neighborhood", normalizeVideoKind("a neighborhood spotlight for Oakdale") === "neighborhood")
+  check("kind: 'testimonial reel' → testimonial", normalizeVideoKind("cut a testimonial reel") === "testimonial")
+  check("kind: 'anniversary equity reel' → anniversary", normalizeVideoKind("make their anniversary equity reel") === "anniversary")
+  check("kind: a listing promo phrase → null (routes through cut_promo, no overlap)", normalizeVideoKind("cut a promo reel for 44 Birch") === null)
+  check("channel: 'for TikTok' → tiktok", normalizeVideoChannel("make it for tiktok") === "tiktok")
+  check("channel: 'on YouTube' → youtube", normalizeVideoChannel("post on youtube") === "youtube")
+  check("channel: default → instagram", normalizeVideoChannel("make a market update reel") === "instagram")
+  check("spoken: staged describes format + brand intro + QR outro + compliance + approval queue",
+    /JustListedReelSquare/.test(composeCommissionSpoken("new_listing", "tiktok", "JustListedReelSquare", "staged")) &&
+    /QR/.test(composeCommissionSpoken("market_update", "instagram", "MarketUpdateReel", "staged")) &&
+    /approval queue/.test(composeCommissionSpoken("explainer", "tiktok", "AgentExplainerReel", "staged")))
+  check("spoken: already_staged → no duplicate render", /no duplicate/i.test(composeCommissionSpoken("cma", "email", "CMAReel", "already_staged")))
+  check("spoken: blocked → nothing staged (honest)", /nothing was staged/i.test(composeCommissionSpoken("explainer", "tiktok", "AgentExplainerReel", "blocked")))
+  // voiceCommissionVideo through an INJECTED dispatcher (no DB) — the seam the route uses.
+  const commissioned = await voiceCommissionVideo({
+    brokerageId: "b1", agentUserId: "u1", kind: "market_update", targetChannel: "instagram",
+    dispatcher: (async (situation, opts) => {
+      if (situation.kind !== "market_update" || !opts.brokerageId) return { ok: false, status: "failed" }
+      return { ok: true, status: "staged", compositionId: "MarketUpdateReel" }
+    }) as CommissionDispatcher,
+  })
+  check("voiceCommissionVideo: ok + speaks the directed build via the seam", commissioned.ok && /market update/i.test(commissioned.spoken))
+  const commissionedDup = await voiceCommissionVideo({
+    brokerageId: "b1", agentUserId: "u1", kind: "cma", targetChannel: "email",
+    dispatcher: (async () => ({ ok: true, status: "already_staged", compositionId: "CMAReel" })) as CommissionDispatcher,
+  })
+  check("voiceCommissionVideo: already_staged is idempotent-ok (no duplicate)", commissionedDup.ok && /no duplicate/i.test(commissionedDup.spoken))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

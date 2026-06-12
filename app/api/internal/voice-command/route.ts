@@ -21,6 +21,7 @@ type VoiceIntent =
   | "voice_followup"
   | "start_marketing"
   | "cut_promo"
+  | "commission_video"
   | "optimize_tour"
   | "closings_at_risk"
   | "send_equity_report"
@@ -86,6 +87,7 @@ export async function POST(req: NextRequest) {
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
 - cut_promo: asking to create/cut/make a promo video/reel for a LISTING ADDRESS ("cut a promo reel for 44 Birch Lane", "make a video for the new listing on Maple")
+- commission_video: asking to create an ON-DEMAND video that is NOT a listing promo — a market update, CMA/home-value, explainer/educational, neighborhood spotlight, testimonial, or anniversary/equity reel ("make a market update reel for Instagram", "create an explainer video about escrow for TikTok", "cut a neighborhood spotlight for Oakdale")
 - optimize_tour: asking to optimize/fix/re-route a buyer's TOUR by named person ("optimize the Henderson tour", "fix the route and times for Jordan's tour", "sort the Garcia showings by drive time")
 - closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
 - send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
@@ -362,6 +364,22 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = r.spoken
         data = { addressQuery }
         action = r.ok ? "promo_dispatched" : null
+      }
+    } else if (intent === "commission_video") {
+      // "Make a market-update reel for Instagram" — the Video Director takes the command:
+      // picks the best Remotion format for the situation+channel and assembles intro→main→
+      // outro (brand+photo+hook / brand+contact+QR), compliance-gated, social drafts approved
+      // by a human. On-demand kinds only; listing promos route through cut_promo.
+      const { normalizeVideoKind, normalizeVideoChannel, voiceCommissionVideo } = await import("@/lib/kernel/voice-delegation")
+      const kind = normalizeVideoKind(transcript)
+      const targetChannel = normalizeVideoChannel(transcript)
+      if (!kind || !brokerageId) {
+        spokenResponse = "What kind of video — a market update, CMA, explainer, neighborhood spotlight, testimonial, or anniversary equity reel? Tell me the type and the channel and I'll direct it."
+      } else {
+        const r = await voiceCommissionVideo({ brokerageId, agentUserId: user.id, kind, targetChannel }, service)
+        spokenResponse = r.spoken
+        data = { kind, targetChannel }
+        action = r.ok ? "video_commissioned" : null
       }
     } else if (intent === "optimize_tour") {
       // "Optimize the Henderson tour" — resolve the buyer → their latest planned tour →

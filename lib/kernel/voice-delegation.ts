@@ -27,6 +27,7 @@ import {
   type ChainSeverity,
   type CriticalPath,
 } from "@/lib/kernel/title-closing-watchtower"
+import type { SituationKind as VideoSituationKind, TargetChannel as VideoTargetChannel } from "@/lib/video/video-director"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -158,6 +159,82 @@ export async function voiceCutPromo(
   return {
     ok: true,
     spoken: `Cutting the ${eventType.replace(/_/g, " ")} reel for ${listing.address ?? "that listing"} now — script drafts, clears Fair Housing and brand compliance, renders with your voice on the intro and outro, and the social posts land in your approval queue.`,
+  }
+}
+
+// ─── VERB: "make a market-update reel for Instagram" — the Video Director takes the command ──
+//
+// The voice admin doesn't just cut listing promos (voiceCutPromo) — it commissions the
+// ON-DEMAND video kinds the Director uniquely enables (market update, CMA, explainer,
+// neighborhood spotlight, testimonial, anniversary equity). The spoken command IS the manual
+// trigger: the Director picks the best Remotion format for the situation+channel, assembles
+// intro (brand+photo+hook) → main → outro (brand+contact+tracked QR), and stages a
+// COMPLIANCE-GATED ai_video_projects row. Nothing auto-publishes — social drafts still wait in
+// the approval queue. Listing-promo kinds stay on voiceCutPromo (no drift).
+
+/** PURE: map a spoken phrase to the Director SituationKind, or null when it's not an on-demand
+ *  kind this commissioner handles (listing promos route through voiceCutPromo). */
+export function normalizeVideoKind(text: string): VideoSituationKind | null {
+  const t = (text ?? "").toLowerCase()
+  if (/home ?value|what('?s| is) (it|my home|the home) worth|\bcma\b|comparable/.test(t)) return "cma"
+  if (/market\s*(update|report|beat|this month)|\bmarket\b/.test(t)) return "market_update"
+  if (/explain|explainer|educational|how[- ]?to|teach/.test(t)) return "explainer"
+  if (/neighborhood|community|area spotlight|lifestyle/.test(t)) return "neighborhood"
+  if (/testimonial|review|five[- ]?star|client (says|love)/.test(t)) return "testimonial"
+  if (/anniversary|equity report|year in your home/.test(t)) return "anniversary"
+  if (/presentation|listing strategy|section reel/.test(t)) return "presentation"
+  return null
+}
+
+/** PURE: map a spoken phrase to a target channel; default Instagram (square feed). */
+export function normalizeVideoChannel(text: string): VideoTargetChannel {
+  const t = (text ?? "").toLowerCase()
+  if (/tik ?tok/.test(t)) return "tiktok"
+  if (/you ?tube/.test(t)) return "youtube"
+  if (/facebook|\bfb\b/.test(t)) return "facebook"
+  if (/\bemail\b|newsletter/.test(t)) return "email"
+  if (/portal/.test(t)) return "portal"
+  return "instagram"
+}
+
+/** PURE: the spoken confirmation describing the directed build. */
+export function composeCommissionSpoken(
+  kind: VideoSituationKind, channel: VideoTargetChannel, compositionId: string, status: string,
+): string {
+  const kindLabel = kind.replace(/_/g, " ")
+  if (status === "already_staged") return `A ${kindLabel} video is already in the pipeline — no duplicate render.`
+  if (status === "blocked") return `I couldn't clear that ${kindLabel} video through compliance — nothing was staged.`
+  if (status === "failed") return `The ${kindLabel} video didn't queue — try again in a moment.`
+  return `On it — directing a ${kindLabel} reel for ${channel}: I pick the best format (${compositionId}), open with your brand, photo and a hook, then the ${kindLabel}, and close with your contact and a scannable QR. It clears Fair Housing and brand compliance, then the social drafts land in your approval queue.`
+}
+
+/** Seam: how the directed commission happens (tests inject; prod uses the Director). */
+export type CommissionDispatcher = (
+  situation: { kind: VideoSituationKind; tier: "solo_agent"; targetChannel: VideoTargetChannel; facts?: Record<string, unknown> },
+  opts: { brokerageId: string; agentUserId: string; listingId?: string | null; contactId?: string | null },
+) => Promise<{ ok: boolean; status: string; compositionId?: string; reason?: string }>
+
+/** "Make a market-update reel for Instagram" — the Director commissions an on-demand video. */
+export async function voiceCommissionVideo(
+  input: {
+    brokerageId: string; agentUserId: string;
+    kind: VideoSituationKind; targetChannel: VideoTargetChannel;
+    listingId?: string | null; contactId?: string | null; dispatcher?: CommissionDispatcher;
+  },
+  _client?: Svc,
+): Promise<DelegationResult> {
+  const dispatcher: CommissionDispatcher = input.dispatcher ?? (async (situation, opts) => {
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const r = await commissionVideo(situation, opts)
+    return { ok: r.ok, status: r.status, compositionId: r.compositionId, reason: r.reason }
+  })
+  const r = await dispatcher(
+    { kind: input.kind, tier: "solo_agent", targetChannel: input.targetChannel, facts: {} },
+    { brokerageId: input.brokerageId, agentUserId: input.agentUserId, listingId: input.listingId ?? null, contactId: input.contactId ?? null },
+  )
+  return {
+    ok: r.ok && (r.status === "staged" || r.status === "already_staged"),
+    spoken: composeCommissionSpoken(input.kind, input.targetChannel, r.compositionId ?? "the right reel", r.ok ? r.status : (r.status || "failed")),
   }
 }
 
