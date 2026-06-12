@@ -6,16 +6,30 @@
  * executes ON THE EXISTING RAILS (gate + sequences), never around them.
  *
  * Layer 1 (pure): composeFollowUp (dictation wins; default is warm, no pressure);
- *   pickSequence (active only; nurture-type preferred; none → null).
+ *   pickSequence (active only; nurture-type preferred; none → null);
+ *   composeOptimizeTourSpoken (new order + ESTIMATE label + honest un-geocoded note);
+ *   rankAtRiskDeals + composeClosingsAtRiskSpoken (at_risk before tight, least slack
+ *   first; process-only Fair-Housing-safe copy); composeEquityReportSpoken (queued vs
+ *   the honest no-valuation / withdrawn / duplicate skips).
  * Layer 2 (live, gated): seed a contact + an active sequence; voiceFollowUp →
  *   gate message proposed AND approved BY THE AGENT (real human id, full audit),
  *   portal channel for a contact with no email; voiceStartMarketing → active
  *   enrollment (enrolled_by = agent), second call refuses to double-enroll;
- *   a WITHDRAWN contact refuses BOTH. Self-cleans.
+ *   a WITHDRAWN contact refuses BOTH. NEW VERBS: voiceOptimizeTour → the buyer's
+ *   planned tour is reordered by the REAL optimizer (injected coords, no network);
+ *   voiceClosingsAtRisk → the seeded under-contract deal surfaces at_risk with its
+ *   binding constraint (read-only); voiceSendEquityReport → ONE gated equity proposal
+ *   lands in the queue (injected valuation, never autonomous). Self-cleans.
  *
  * Run: npx tsx scripts/voice-delegation-simulator.ts  (npm run test:voice-delegation)
  */
-import { composeFollowUp, pickSequence, voiceFollowUp, voiceStartMarketing, matchListingByAddress, promoEventForStatus, voiceCutPromo, type PromoDispatcher } from "../lib/kernel/voice-delegation"
+import {
+  composeFollowUp, pickSequence, voiceFollowUp, voiceStartMarketing, matchListingByAddress,
+  promoEventForStatus, voiceCutPromo, type PromoDispatcher,
+  composeOptimizeTourSpoken, voiceOptimizeTour,
+  rankAtRiskDeals, composeClosingsAtRiskSpoken, voiceClosingsAtRisk, type AtRiskDeal,
+  composeEquityReportSpoken, voiceSendEquityReport,
+} from "../lib/kernel/voice-delegation"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -58,6 +72,55 @@ async function main() {
   check("unknown address → null", matchListingByAddress(listings, "9 Elm") === null)
   check("promo moment follows listing status (sold → just_sold, pending → under_contract)",
     promoEventForStatus("sold") === "just_sold" && promoEventForStatus("pending") === "under_contract" && promoEventForStatus("active") === "just_listed")
+
+  console.log("\n[Layer 1 · optimize-tour spoken]")
+  const tourAllPlaced = composeOptimizeTourSpoken({
+    buyerName: "the Hendersons",
+    stops: [{ address: "1 Near St", sequenced: true }, { address: "50 Mid Ave", sequenced: true }, { address: "300 Far St", sequenced: true }],
+    totalDriveMinutes: 42, stopsSequenced: 3, stopsTotal: 3,
+  })
+  check("optimize-tour: speaks the new running order", tourAllPlaced.includes("1 Near St, then 50 Mid Ave, then 300 Far St"))
+  check("optimize-tour: drive time ALWAYS labeled an estimate (never a traffic claim)",
+    tourAllPlaced.includes("42 minutes of estimated drive time") && /not live traffic/i.test(tourAllPlaced))
+  const tourOneUnplaced = composeOptimizeTourSpoken({
+    buyerName: "Jordan",
+    stops: [{ address: "1 Near St", sequenced: true }, { address: "50 Mid Ave", sequenced: true }, { address: "PO Box 9", sequenced: false }],
+    totalDriveMinutes: 18, stopsSequenced: 2, stopsTotal: 3,
+  })
+  check("optimize-tour: un-geocoded stop called out HONESTLY by name", tourOneUnplaced.includes("PO Box 9") && tourOneUnplaced.includes("couldn't map"))
+  const tourNoneSequenced = composeOptimizeTourSpoken({
+    buyerName: "Jordan", stops: [{ address: "PO Box 9", sequenced: false }], totalDriveMinutes: 0, stopsSequenced: 0, stopsTotal: 1,
+  })
+  check("optimize-tour: no drive sentence when <2 stops sequenced (no fabricated estimate)", !/estimated drive time/.test(tourNoneSequenced))
+
+  console.log("\n[Layer 1 · closings-at-risk spoken]")
+  const dealsRaw: AtRiskDeal[] = [
+    { transactionId: "t1", dealName: "Ok Deal", severity: "ok", bindingLabel: "Appraisal", slackDays: 10, daysToClosing: 30, closingDate: "2026-07-30" },
+    { transactionId: "t2", dealName: "Tight Deal", severity: "tight", bindingLabel: "Loan commitment", slackDays: 2, daysToClosing: 12, closingDate: "2026-06-24" },
+    { transactionId: "t3", dealName: "Risky Deal", severity: "at_risk", bindingLabel: "Appraisal", slackDays: -3, daysToClosing: 8, closingDate: "2026-06-20" },
+    { transactionId: "t4", dealName: "Risky Less", severity: "at_risk", bindingLabel: "Inspection", slackDays: -1, daysToClosing: 5, closingDate: "2026-06-17" },
+  ]
+  const ranked = rankAtRiskDeals(dealsRaw)
+  check("at-risk rank: at_risk before tight before ok", ranked[0].severity === "at_risk" && ranked[3].severity === "ok")
+  check("at-risk rank: within at_risk, least slack (most binding) first", ranked[0].transactionId === "t3" && ranked[1].transactionId === "t4")
+  const atRiskSpoken = composeClosingsAtRiskSpoken(ranked, 1)
+  check("at-risk: leads with the flagged count (2 at risk, 1 tight)", atRiskSpoken.includes("2 at risk, 1 tight"))
+  check("at-risk: names the binding constraint + days of slack/short", atRiskSpoken.includes("binding constraint") && /short of the room|days? of slack/.test(atRiskSpoken))
+  check("at-risk: process-only, Fair-Housing-safe (no people, just dates/constraints)", !/buyer|seller|family|client/i.test(atRiskSpoken))
+  const clearWeek = composeClosingsAtRiskSpoken([{ ...dealsRaw[0] }], 0)
+  check("at-risk: clear week speaks the good news honestly", /none of your under-contract deals are at risk/i.test(clearWeek))
+
+  console.log("\n[Layer 1 · equity-report spoken]")
+  const equityQueued = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 1, skippedNoValuation: 0, skippedDuplicate: 0, skippedWithdrawn: 0, anniversariesDetected: 1 })
+  check("equity: queued-for-approval confirmation (never an autonomous send)", equityQueued.ok && /waiting in your approval queue/i.test(equityQueued.spoken) && /until you approve/i.test(equityQueued.spoken))
+  const equityNoVal = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 0, skippedNoValuation: 1, skippedDuplicate: 0, skippedWithdrawn: 0, anniversariesDetected: 1 })
+  check("equity: NO real valuation → honest skip, no estimate sent", !equityNoVal.ok && equityNoVal.skipReason === "no_valuation" && /couldn't get a real valuation/i.test(equityNoVal.spoken))
+  const equityNoAnniv = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 0, skippedNoValuation: 0, skippedDuplicate: 0, skippedWithdrawn: 0, anniversariesDetected: 0 })
+  check("equity: no anniversary near today → honest skip", !equityNoAnniv.ok && equityNoAnniv.skipReason === "no_anniversary")
+  const equityDup = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 0, skippedNoValuation: 0, skippedDuplicate: 1, skippedWithdrawn: 0, anniversariesDetected: 1 })
+  check("equity: duplicate this year → no double-draft, spoken honestly", equityDup.ok && /already has this year's/i.test(equityDup.spoken))
+  const equityWithdrawn = composeEquityReportSpoken({ contactName: "the Garcias", proposed: 0, skippedNoValuation: 0, skippedDuplicate: 0, skippedWithdrawn: 1, anniversariesDetected: 1 })
+  check("equity: withdrawn relationship refused with the reason spoken", !equityWithdrawn.ok && equityWithdrawn.skipReason === "withdrawn" && /withdrawn/i.test(equityWithdrawn.spoken))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -141,6 +204,119 @@ async function main() {
     const mGone = await voiceStartMarketing({ brokerageId, agentUserId, contactId: (gone as any).id }, svc)
     check("withdrawn: follow-up REFUSED with the reason spoken", !fGone.ok && fGone.spoken.includes("withdrawn"))
     check("withdrawn: marketing REFUSED with the reason spoken", !mGone.ok && mGone.spoken.includes("withdrawn"))
+
+    // ── OPTIMIZE TOUR: the buyer's planned tour is reordered by the REAL optimizer ──
+    console.log("\n[Layer 2 · optimize tour]")
+    const today = new Date().toISOString().slice(0, 10)
+    const { data: tour } = await svc.from("tours").insert({
+      brokerage_id: brokerageId, contact_id: (con as any).id, buyer_id: (con as any).id,
+      agent_id: agentUserId, tour_date: today, start_time: "10:00", status: "planned",
+    }).select("id").single()
+    cleanup.push({ table: "tours", id: (tour as any).id })
+    // Stops fed OUT of nearest-neighbor order (far, near, mid); coords via the injected seam.
+    const stopCoords: Record<string, { lat: number; lng: number }> = {}
+    const tourStops = [
+      { addr: `${TAG} 300 Far St`, order: 0, lat: 40.3000, lng: -74.0 },
+      { addr: `${TAG} 1 Near St`, order: 1, lat: 40.0000, lng: -74.0 },
+      { addr: `${TAG} 50 Mid Ave`, order: 2, lat: 40.0500, lng: -74.0 },
+    ]
+    for (const s of tourStops) {
+      const { data: ts } = await svc.from("tour_stops").insert({
+        tour_id: (tour as any).id, brokerage_id: brokerageId, contact_id: (con as any).id,
+        order_index: s.order, property_address: s.addr,
+      }).select("id").single()
+      cleanup.push({ table: "tour_stops", id: (ts as any).id })
+      stopCoords[(ts as any).id] = { lat: s.lat, lng: s.lng }
+    }
+    const ot = await voiceOptimizeTour(
+      { brokerageId, agentUserId, contactId: (con as any).id, resolveCoords: (row: any) => stopCoords[row.id] ?? null },
+      svc,
+    )
+    // The showing_routes audit row the optimizer persists — clean it up.
+    const { data: routes } = await svc.from("showing_routes").select("id").eq("brokerage_id", brokerageId).contains("showings", { tour_id: (tour as any).id })
+    for (const rt of (routes ?? []) as any[]) cleanup.push({ table: "showing_routes", id: rt.id })
+    check("optimize-tour: ran on the buyer's planned tour, sequenced all 3 stops",
+      ot.ok && ot.tourId === (tour as any).id && ot.stopsSequenced === 3, JSON.stringify(ot))
+    const { data: afterStops } = await svc.from("tour_stops")
+      .select("property_address, order_index").eq("tour_id", (tour as any).id).order("order_index", { ascending: true })
+    const orderedAddrs = (afterStops ?? []) as any[]
+    check("optimize-tour: REAL effect — stops reordered Near→Mid→Far in the DB",
+      orderedAddrs[0]?.property_address.includes("Near St") &&
+      orderedAddrs[1]?.property_address.includes("Mid Ave") &&
+      orderedAddrs[2]?.property_address.includes("Far St"),
+      orderedAddrs.map((s) => s.property_address).join(" | "))
+    check("optimize-tour: spoken names the new order + the estimate label", ot.spoken.includes("Near St") && /estimate/i.test(ot.spoken))
+    const otAgain = await voiceOptimizeTour({ brokerageId, agentUserId, contactId: (con as any).id, resolveCoords: (row: any) => stopCoords[row.id] ?? null }, svc)
+    check("optimize-tour: re-run on an optimized tour is a no-op, spoken honestly", otAgain.ok && /already optimized/i.test(otAgain.spoken))
+
+    // ── CLOSINGS AT RISK: a seeded under-contract deal surfaces at_risk (read-only) ──
+    console.log("\n[Layer 2 · closings at risk]")
+    const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10)
+    const { data: riskTxn } = await svc.from("transactions").insert({
+      brokerage_id: brokerageId, deal_name: `${TAG} 9 Risk Rd`, status: "under_contract",
+      property_address: `${TAG} 9 Risk Rd`, contact_id: (con as any).id,
+    }).select("id").single()
+    cleanup.push({ table: "transactions", id: (riskTxn as any).id })
+    // Closing in 8 days, appraisal dated only 2 days before closing (runway 14) → at_risk.
+    const riskMilestones = [
+      { milestone_name: "inspection_deadline", target_date: day(-3), status: "completed" },
+      { milestone_name: "appraisal_deadline", target_date: day(6), status: "pending" },
+      { milestone_name: "financing_deadline", target_date: day(7), status: "pending" },
+      { milestone_name: "closing_date", target_date: day(8), status: "pending" },
+    ]
+    for (const m of riskMilestones) {
+      const { data: ms } = await svc.from("transaction_milestones").insert({
+        transaction_id: (riskTxn as any).id, brokerage_id: brokerageId,
+        milestone_name: m.milestone_name, target_date: m.target_date, status: m.status,
+      }).select("id").single()
+      cleanup.push({ table: "transaction_milestones", id: (ms as any).id })
+    }
+    const car = await voiceClosingsAtRisk({ brokerageId }, svc)
+    const ourDeal = car.deals.find((d) => d.transactionId === (riskTxn as any).id)
+    check("closings-at-risk: REAL effect — the seeded deal returned in the at-risk list",
+      car.ok && !!ourDeal, JSON.stringify({ ok: car.ok, found: !!ourDeal, scanned: car.scanned }))
+    check("closings-at-risk: the seeded deal reads at_risk with a binding constraint",
+      ourDeal?.severity === "at_risk" && !!ourDeal?.bindingLabel, JSON.stringify(ourDeal))
+    check("closings-at-risk: spoken names our deal + flags it as at risk", car.spoken.includes(`${TAG} 9 Risk Rd`) && /at risk/i.test(car.spoken))
+
+    // ── SEND EQUITY REPORT: ONE gated proposal in the queue (never autonomous) ──
+    console.log("\n[Layer 2 · send equity report]")
+    const runNow = new Date()
+    const closeIso = new Date(Date.UTC(runNow.getUTCFullYear() - 1, runNow.getUTCMonth(), runNow.getUTCDate())).toISOString().slice(0, 10)
+    const equityAddr = `${TAG} 12 Equity Ln`
+    const { data: eqTxn } = await svc.from("transactions").insert({
+      brokerage_id: brokerageId, deal_name: `${TAG} equity home`, status: "closed", stage: "CLOSED",
+      property_address: equityAddr, purchase_price: 500_000, close_date: closeIso,
+      buyer_contact_id: (con as any).id, contact_id: (con as any).id, agent_id: (agent as any).id,
+    }).select("id").single()
+    cleanup.push({ table: "transactions", id: (eqTxn as any).id })
+    const ser = await voiceSendEquityReport(
+      {
+        brokerageId, contactId: (con as any).id,
+        // INJECTED valuation: fixed number for OUR seeded address ONLY; any other address → null.
+        valuationFetcher: async (a: { brokerageId: string; address: string }) => a.address === equityAddr ? { value: 600_000, source: "injected" } : null,
+        copyGenerator: async () => null, // deterministic fallback (no token spend)
+      },
+      svc,
+    )
+    // The gated proposal + its portal card + notification — clean them all up.
+    const yearTag = `ANNIVERSARY EQUITY [${runNow.getUTCFullYear()}]`
+    const { data: eqMsg } = await svc.from("agent_client_messages")
+      .select("id, status, audience, agent_kind, body").eq("recipient_contact_id", (con as any).id).ilike("rationale", `${yearTag}%`).maybeSingle()
+    if (eqMsg) {
+      cleanup.push({ table: "agent_client_messages", id: (eqMsg as any).id })
+      const { data: eqNotes } = await svc.from("notifications").select("id").eq("entity_id", (eqMsg as any).id)
+      for (const n of (eqNotes ?? []) as any[]) cleanup.push({ table: "notifications", id: n.id })
+    }
+    const { data: eqCards } = await svc.from("transparency_updates").select("id").eq("contact_id", (con as any).id).eq("update_type", "equity_report")
+    for (const cd of (eqCards ?? []) as any[]) cleanup.push({ table: "transparency_updates", id: cd.id })
+    check("equity-report: REAL effect — ONE gated proposal landed for the contact", ser.ok && ser.proposed === true, JSON.stringify(ser))
+    check("equity-report: GATED, not autonomous (sphere_of_influence, audience 'agent', status proposed)",
+      (eqMsg as any)?.status === "proposed" && (eqMsg as any)?.audience === "agent" && (eqMsg as any)?.agent_kind === "sphere_of_influence")
+    check("equity-report: body is the real ready-to-send note (labeled estimate, not an appraisal)",
+      ((eqMsg as any)?.body ?? "").includes("not an appraisal"))
+    check("equity-report: spoken confirms it's QUEUED FOR APPROVAL, never sent autonomously",
+      /approval queue/i.test(ser.spoken) && /until you approve/i.test(ser.spoken))
   } finally {
     for (const c of [...cleanup].reverse()) {
       try { await svc.from(c.table).delete().eq("id", c.id) } catch { /* noop */ }

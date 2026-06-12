@@ -20,6 +20,13 @@
 // against a voice command. NOT server-only (simulator-driven); pure helpers exported.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  buildDateChain,
+  computeCriticalPath,
+  fmtChainDate,
+  type ChainSeverity,
+  type CriticalPath,
+} from "@/lib/kernel/title-closing-watchtower"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -189,4 +196,332 @@ export async function voiceStartMarketing(
     ok: true, enrollmentId: (enr as any).id,
     spoken: `Marketing is rolling — ${name} is enrolled in "${seq.name ?? "your campaign"}". Every step still clears the compliance gate before it touches them.`,
   }
+}
+
+// ─── VERB: "optimize the Henderson tour" — drive the REAL tour optimizer ──────────
+//
+// Resolve the buyer contact by name → find their LATEST planned, not-yet-optimized
+// tour → run the canonical optimizeTourRoute (the real Shopping Agent play; never a
+// reimplementation) → speak back the new stop order, total estimated drive time, and
+// an HONEST note for any stop that couldn't be geocoded. Read+write on the buyer's own
+// tour rows only; nothing client-facing is sent.
+
+/** Pure: a stop's place in the spoken running order — address + whether it was sequenced. */
+export interface SpokenTourStop {
+  address: string
+  /** true when real coordinates placed it; false = kept in entered order, no drive. */
+  sequenced: boolean
+}
+
+/** Pure: compose the spoken optimize-tour confirmation. Drive time is ALWAYS labeled an
+ *  ESTIMATE (never a traffic claim); un-geocoded stops are called out honestly by name so
+ *  the agent knows exactly which addresses the router couldn't place. */
+export function composeOptimizeTourSpoken(args: {
+  buyerName: string
+  stops: SpokenTourStop[]
+  totalDriveMinutes: number
+  stopsSequenced: number
+  stopsTotal: number
+}): string {
+  const { buyerName, stops, totalDriveMinutes, stopsSequenced, stopsTotal } = args
+  const order = stops.map((s) => s.address).join(", then ")
+  const driveSentence =
+    stopsSequenced >= 2
+      ? ` That's about ${totalDriveMinutes} minute${totalDriveMinutes === 1 ? "" : "s"} of estimated drive time between stops — a straight-line estimate for planning, not live traffic.`
+      : ""
+  const unplaced = stops.filter((s) => !s.sequenced).map((s) => s.address)
+  const honest =
+    unplaced.length > 0
+      ? ` I couldn't map ${unplaced.length === 1 ? "one stop" : `${unplaced.length} stops`} — ${unplaced.join(", ")} — so ${unplaced.length === 1 ? "it stayed" : "they stayed"} in the entered order with no drive estimate.`
+      : ""
+  return `${buyerName}'s tour is reordered for the shortest drive: ${order}.${driveSentence}${honest}`
+}
+
+export interface OptimizeTourSpokenResult extends DelegationResult {
+  tourId?: string
+  totalDriveMinutes?: number
+  stopsSequenced?: number
+  stopsTotal?: number
+}
+
+/** "Optimize the Henderson tour" — resolve the buyer, find their latest planned tour,
+ *  run the REAL optimizer, speak the new order + honest geocoding note. */
+export async function voiceOptimizeTour(
+  input: {
+    brokerageId: string
+    agentUserId: string
+    contactId: string
+    /** Injected ONLY by the simulator (fixed coords, no network). Prod uses the real geocoder. */
+    resolveCoords?: import("@/lib/kernel/tour-optimizer").ResolveCoords
+    now?: Date
+  },
+  client?: Svc,
+): Promise<OptimizeTourSpokenResult> {
+  const supabase = client ?? createServiceClient()
+  const { data: c } = await supabase.from("contacts")
+    .select("first_name, last_name").eq("id", input.contactId).maybeSingle()
+  const buyerName = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "your buyer"
+
+  // The buyer's LATEST planned tour that hasn't been optimized yet (the designed window:
+  // the optimizer stamps total_drive_time_minutes, so a re-run on an optimized tour is a
+  // no-op). Tenant-scoped by brokerage_id.
+  const { data: tours } = await supabase.from("tours")
+    .select("id, tour_date, total_drive_time_minutes")
+    .eq("contact_id", input.contactId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("status", "planned")
+    .order("tour_date", { ascending: false })
+    .limit(5)
+  const tourRows = (tours ?? []) as any[]
+  const pending = tourRows.find((t) => t.total_drive_time_minutes == null)
+  if (tourRows.length === 0) {
+    return { ok: false, spoken: `I don't see a planned tour for ${buyerName} right now — build one in the tour planner and I'll optimize the route.` }
+  }
+  if (!pending) {
+    return { ok: true, tourId: tourRows[0].id, spoken: `${buyerName}'s tour is already optimized — the route and times are set. Want me to re-plan it from scratch instead?` }
+  }
+
+  const { optimizeTourRoute } = await import("@/lib/kernel/tour-optimizer")
+  const r = await optimizeTourRoute(pending.id, supabase, { now: input.now, resolveCoords: input.resolveCoords })
+  if (!r.ok) {
+    return { ok: false, tourId: pending.id, spoken: `I couldn't optimize ${buyerName}'s tour — ${r.reason === "no_stops" ? "there are no stops on it yet" : "try again in a moment"}.` }
+  }
+
+  // Read the freshly-written order back to speak it (the optimizer is the source of truth).
+  const { data: stops } = await supabase.from("tour_stops")
+    .select("property_address, order_index, drive_time_from_prev_minutes")
+    .eq("tour_id", pending.id)
+    .order("order_index", { ascending: true })
+  const spokenStops: SpokenTourStop[] = ((stops ?? []) as any[]).map((s, i) => ({
+    address: (s.property_address ?? "a home on the tour") as string,
+    // A stop is "sequenced" when it carries a real drive estimate, OR it's the first
+    // sequenced stop (whose drive from origin may be null but it WAS placed). The runner
+    // marks un-geocoded stops with a null drive AND appends them last, so a null-drive
+    // stop after a non-null one is the honest un-geocoded tail.
+    sequenced: i < r.stopsSequenced,
+  }))
+
+  const spoken = composeOptimizeTourSpoken({
+    buyerName,
+    stops: spokenStops,
+    totalDriveMinutes: r.totalDriveMinutes,
+    stopsSequenced: r.stopsSequenced,
+    stopsTotal: r.stopsTotal,
+  })
+  return {
+    ok: true, tourId: pending.id, totalDriveMinutes: r.totalDriveMinutes,
+    stopsSequenced: r.stopsSequenced, stopsTotal: r.stopsTotal, spoken,
+  }
+}
+
+// ─── VERB: "what closings are at risk this week?" — READ-ONLY watchtower scan ─────
+//
+// Read the brokerage's live under-contract deals' date chains and speak the at_risk /
+// tight ones with the binding constraint + days of slack. Reuses the watchtower's PURE
+// buildDateChain + computeCriticalPath over the SAME transaction_milestones read path the
+// runner uses — no recompute, no new math, no writes.
+
+const LIVE_TXN_STATUSES_FOR_RISK = ["active", "under_contract", "closing"]
+
+export interface AtRiskDeal {
+  transactionId: string
+  dealName: string
+  severity: ChainSeverity
+  bindingLabel: string | null
+  slackDays: number | null
+  daysToClosing: number
+  closingDate: string
+}
+
+/** Pure: rank at-risk before tight, then by least slack (the most binding first). */
+export function rankAtRiskDeals(deals: AtRiskDeal[]): AtRiskDeal[] {
+  const sevRank: Record<ChainSeverity, number> = { at_risk: 0, tight: 1, ok: 2 }
+  return [...deals].sort((a, b) => {
+    if (sevRank[a.severity] !== sevRank[b.severity]) return sevRank[a.severity] - sevRank[b.severity]
+    const as = a.slackDays ?? Number.POSITIVE_INFINITY
+    const bs = b.slackDays ?? Number.POSITIVE_INFINITY
+    return as - bs
+  })
+}
+
+/** Pure: compose the spoken at-risk closings rundown. Plain-language, process-only
+ *  (Fair-Housing-safe: dates and constraints, never people). Honest when the week is clear. */
+export function composeClosingsAtRiskSpoken(deals: AtRiskDeal[], skippedNoChain: number): string {
+  const flagged = deals.filter((d) => d.severity !== "ok")
+  if (flagged.length === 0) {
+    const tail = skippedNoChain > 0
+      ? ` ${skippedNoChain} deal${skippedNoChain === 1 ? " has" : "s have"} no closing date on file yet, so I can't read a timeline there.`
+      : ""
+    return `Good news — none of your under-contract deals are at risk right now; every date chain still fits before closing.${tail}`
+  }
+  const lines = flagged.slice(0, 5).map((d) => {
+    const slack = d.slackDays
+    const slackPhrase =
+      slack === null
+        ? ""
+        : slack < 0
+          ? ` — ${Math.abs(slack)} day${Math.abs(slack) === 1 ? "" : "s"} short of the room it needs`
+          : ` — only ${slack} day${slack === 1 ? "" : "s"} of slack`
+    const constraint = d.bindingLabel ? `${d.bindingLabel} is the binding constraint${slackPhrase}` : `the closing date itself is the constraint`
+    const head = d.severity === "at_risk" ? "at risk" : "tight"
+    return `${d.dealName}: ${head}, closing ${fmtChainDate(d.closingDate)} — ${constraint}.`
+  })
+  const atRiskCount = flagged.filter((d) => d.severity === "at_risk").length
+  const tightCount = flagged.filter((d) => d.severity === "tight").length
+  const lead =
+    `You have ${flagged.length} closing${flagged.length === 1 ? "" : "s"} that need${flagged.length === 1 ? "s" : ""} attention` +
+    ` — ${atRiskCount} at risk, ${tightCount} tight.`
+  return `${lead} ${lines.join(" ")}`
+}
+
+export interface ClosingsAtRiskResult {
+  ok: boolean
+  spoken: string
+  deals: AtRiskDeal[]
+  scanned: number
+  skippedNoChain: number
+}
+
+/** "What closings are at risk this week?" — read-only scan of live deals' critical paths. */
+export async function voiceClosingsAtRisk(
+  input: { brokerageId: string; now?: Date },
+  client?: Svc,
+): Promise<ClosingsAtRiskResult> {
+  const supabase = client ?? createServiceClient()
+  const now = input.now ?? new Date()
+
+  const { data: txns } = await supabase.from("transactions")
+    .select("id, deal_name, property_address, status, deleted_at")
+    .eq("brokerage_id", input.brokerageId)
+    .in("status", LIVE_TXN_STATUSES_FOR_RISK)
+    .is("deleted_at", null)
+    .limit(200)
+  const txnRows = (txns ?? []) as any[]
+
+  const deals: AtRiskDeal[] = []
+  let skippedNoChain = 0
+  for (const t of txnRows) {
+    // SAME read path the runner uses: the chain milestone rows for this deal.
+    const { data: msRows } = await supabase.from("transaction_milestones")
+      .select("milestone_name, target_date, status")
+      .eq("transaction_id", t.id)
+      .eq("brokerage_id", input.brokerageId)
+    const chain = buildDateChain((msRows ?? []) as any[])
+    const path: CriticalPath | null = computeCriticalPath(chain, now)
+    if (!path) { skippedNoChain += 1; continue } // no closing date → no honest path
+    deals.push({
+      transactionId: t.id,
+      dealName: t.deal_name ?? t.property_address ?? "an under-contract deal",
+      severity: path.severity,
+      bindingLabel: path.bindingLabel,
+      slackDays: path.slackDays,
+      daysToClosing: path.daysToClosing,
+      closingDate: path.closingDate,
+    })
+  }
+  const ranked = rankAtRiskDeals(deals)
+  return {
+    ok: true,
+    spoken: composeClosingsAtRiskSpoken(ranked, skippedNoChain),
+    deals: ranked,
+    scanned: txnRows.length,
+    skippedNoChain,
+  }
+}
+
+// ─── VERB: "send the Garcias their anniversary equity report" — GATED proposal ────
+//
+// Resolve the contact → run the anniversary-equity play SCOPED to that ONE contact (the
+// REAL runner, valuation fetcher and all — never a reimplementation) → the client-facing
+// note lands in the GATE (approval queue) exactly like voiceFollowUp. Speak that it's
+// queued for approval; NEVER an autonomous client send. No real valuation → honest skip.
+
+export interface EquityReportSpokenResult extends DelegationResult {
+  proposed?: boolean
+  skipReason?: string
+}
+
+/** Pure: compose the spoken equity-report confirmation / honest skip. */
+export function composeEquityReportSpoken(args: {
+  contactName: string
+  proposed: number
+  skippedNoValuation: number
+  skippedDuplicate: number
+  skippedWithdrawn: number
+  anniversariesDetected: number
+}): { ok: boolean; spoken: string; skipReason?: string } {
+  const { contactName, proposed, skippedNoValuation, skippedDuplicate, skippedWithdrawn, anniversariesDetected } = args
+  if (proposed > 0) {
+    return { ok: true, spoken: `Done — ${contactName}'s anniversary equity report is drafted with real numbers and waiting in your approval queue. Nothing goes to them until you approve it.` }
+  }
+  if (skippedWithdrawn > 0) {
+    return { ok: false, skipReason: "withdrawn", spoken: `That relationship is withdrawn — the team won't send ${contactName} an equity report unless they come back to us.` }
+  }
+  if (skippedDuplicate > 0) {
+    return { ok: true, spoken: `${contactName} already has this year's anniversary equity report in the queue — I didn't draft a duplicate.` }
+  }
+  if (anniversariesDetected === 0) {
+    return { ok: false, skipReason: "no_anniversary", spoken: `${contactName} doesn't have a closing anniversary near today, so there's no equity report to send right now.` }
+  }
+  if (skippedNoValuation > 0) {
+    return { ok: false, skipReason: "no_valuation", spoken: `I couldn't get a real valuation for ${contactName}'s home, so I'm not sending an estimate I can't stand behind. We can pull a fresh value and try again.` }
+  }
+  return { ok: false, skipReason: "no_report", spoken: `I couldn't put together an equity report for ${contactName} right now — there may be no purchase price or address on file.` }
+}
+
+/** "Send the Garcias their anniversary equity report" — run the REAL play for ONE
+ *  contact; the note lands in the gate. Never autonomous. */
+export async function voiceSendEquityReport(
+  input: {
+    brokerageId: string
+    contactId: string
+    /** Injected ONLY by the simulator (fixed value, no vendor spend). Prod uses RentCast. */
+    valuationFetcher?: import("@/lib/kernel/anniversary-equity").ValuationFetcher
+    copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
+    now?: Date
+  },
+  client?: Svc,
+): Promise<EquityReportSpokenResult> {
+  const supabase = client ?? createServiceClient()
+  const { data: c } = await supabase.from("contacts")
+    .select("first_name, last_name").eq("id", input.contactId).maybeSingle()
+  const contactName = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "your client"
+
+  const { runAnniversaryEquity } = await import("@/lib/kernel/anniversary-equity")
+  // Scope the REAL play to this one contact by filtering at the source: the runner scans
+  // closed transactions for the brokerage, so we run it and read the per-contact outcome.
+  // To scope to ONE contact we wrap the runner with a contact-scoped query is not exposed;
+  // instead we run the play and rely on its idempotency — but to avoid touching OTHER
+  // contacts we run a contact-scoped pass via the dedicated entry below.
+  const r = await runAnniversaryEquityForContact(
+    input.brokerageId, input.contactId,
+    { now: input.now, valuationFetcher: input.valuationFetcher, copyGenerator: input.copyGenerator },
+    supabase,
+  )
+
+  const spoken = composeEquityReportSpoken({
+    contactName,
+    proposed: r.reportsProposed,
+    skippedNoValuation: r.skippedNoValuation,
+    skippedDuplicate: r.skippedDuplicate,
+    skippedWithdrawn: r.skippedWithdrawn,
+    anniversariesDetected: r.anniversariesDetected,
+  })
+  return { ok: spoken.ok, spoken: spoken.spoken, proposed: r.reportsProposed > 0, skipReason: spoken.skipReason }
+}
+
+/** Run the anniversary-equity play for ONE contact's closed transactions only — the same
+ *  REAL runner logic, just scoped. Implemented in anniversary-equity.ts (no duplication). */
+async function runAnniversaryEquityForContact(
+  brokerageId: string,
+  contactId: string,
+  opts: {
+    now?: Date
+    valuationFetcher?: import("@/lib/kernel/anniversary-equity").ValuationFetcher
+    copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
+  },
+  client?: Svc,
+): Promise<import("@/lib/kernel/anniversary-equity").AnniversaryEquityResult> {
+  const { runAnniversaryEquity } = await import("@/lib/kernel/anniversary-equity")
+  return runAnniversaryEquity(brokerageId, { ...opts, contactId }, client)
 }

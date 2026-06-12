@@ -21,6 +21,9 @@ type VoiceIntent =
   | "voice_followup"
   | "start_marketing"
   | "cut_promo"
+  | "optimize_tour"
+  | "closings_at_risk"
+  | "send_equity_report"
   | "general_query"
 
 interface CallQueueItem {
@@ -83,6 +86,9 @@ export async function POST(req: NextRequest) {
 - voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
 - cut_promo: asking to create/cut/make a promo video/reel for a LISTING ADDRESS ("cut a promo reel for 44 Birch Lane", "make a video for the new listing on Maple")
+- optimize_tour: asking to optimize/fix/re-route a buyer's TOUR by named person ("optimize the Henderson tour", "fix the route and times for Jordan's tour", "sort the Garcia showings by drive time")
+- closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
+- send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -356,6 +362,71 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = r.spoken
         data = { addressQuery }
         action = r.ok ? "promo_dispatched" : null
+      }
+    } else if (intent === "optimize_tour") {
+      // "Optimize the Henderson tour" — resolve the buyer → their latest planned tour →
+      // run the REAL optimizer (tour-optimizer.ts) → speak the new order + honest geocoding
+      // note. Read+write on the buyer's own tour rows only; nothing client-facing is sent.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the buyer/person/family name whose tour to optimize. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If none, respond NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 12,
+      })
+      const personQuery = extract.text.trim()
+      if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Whose tour should I optimize? Give me the buyer's name and I'll fix the route and times."
+      } else {
+        const { runTeamQuery } = await import("@/lib/kernel/team-query")
+        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
+        if (!tq.found || !tq.contactId) {
+          spokenResponse = tq.spoken
+        } else {
+          const { voiceOptimizeTour } = await import("@/lib/kernel/voice-delegation")
+          const r = await voiceOptimizeTour({ brokerageId, agentUserId: user.id, contactId: tq.contactId }, service)
+          spokenResponse = r.spoken
+          data = { contactId: tq.contactId, tourId: r.tourId ?? null, totalDriveMinutes: r.totalDriveMinutes ?? null, stopsSequenced: r.stopsSequenced ?? null, stopsTotal: r.stopsTotal ?? null }
+          action = r.ok ? "tour_optimized" : null
+        }
+      }
+    } else if (intent === "closings_at_risk") {
+      // "What closings are at risk this week?" — READ-ONLY scan of the brokerage's live
+      // under-contract deals' date chains; reuses the watchtower's pure critical-path over
+      // the SAME read path the runner uses. No recompute, no writes.
+      if (!brokerageId) {
+        spokenResponse = "I can't read your closings without a brokerage on your profile."
+      } else {
+        const { voiceClosingsAtRisk } = await import("@/lib/kernel/voice-delegation")
+        const r = await voiceClosingsAtRisk({ brokerageId }, service)
+        spokenResponse = r.spoken
+        data = { deals: r.deals, scanned: r.scanned, skippedNoChain: r.skippedNoChain }
+        action = r.ok ? "closings_at_risk_scanned" : null
+      }
+    } else if (intent === "send_equity_report") {
+      // "Send the Garcias their anniversary equity report" — resolve the contact → run the
+      // REAL anniversary-equity play scoped to that ONE contact → the client-facing note
+      // lands in the GATE (approval queue), exactly like voiceFollowUp. Never autonomous.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the person/family name whose anniversary equity report to send. Respond with ONLY the name (e.g. "Garcia" or "Maria Garcia"). If none, respond NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 12,
+      })
+      const personQuery = extract.text.trim()
+      if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Who is the equity report for? Give me the client's name and I'll run their anniversary update."
+      } else {
+        const { runTeamQuery } = await import("@/lib/kernel/team-query")
+        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
+        if (!tq.found || !tq.contactId) {
+          spokenResponse = tq.spoken
+        } else {
+          const { voiceSendEquityReport } = await import("@/lib/kernel/voice-delegation")
+          const r = await voiceSendEquityReport({ brokerageId, contactId: tq.contactId }, service)
+          spokenResponse = r.spoken
+          data = { contactId: tq.contactId, proposed: r.proposed ?? false, skipReason: r.skipReason ?? null }
+          action = r.proposed ? "equity_report_queued" : null
+        }
       }
     } else {
       // General query — pass to the main AI chat endpoint context

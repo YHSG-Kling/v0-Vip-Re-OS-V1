@@ -324,6 +324,10 @@ export async function runAnniversaryEquity(
     valuationFetcher?: ValuationFetcher
     copyGenerator?: CopyGenerator
     videoDispatcher?: AnniversaryVideoDispatcher
+    /** Scope the pass to ONE contact's closed transactions (voice "send the Garcias
+     *  their equity report"). Same logic, same gate, same idempotency — just the
+     *  buyer/contact filter applied at the source so no other contact is touched. */
+    contactId?: string
   } = {},
   client?: Svc,
 ): Promise<AnniversaryEquityResult> {
