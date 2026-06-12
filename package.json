@@ -46,6 +46,7 @@
     "test:content-studio": "tsx scripts/content-studio-simulator.ts",
     "test:lead-intake": "tsx scripts/lead-intake-simulator.ts",
     "test:geo-reel-pages": "tsx scripts/geo-reel-pages-simulator.ts",
+    "test:citation-monitor": "tsx scripts/citation-monitor-simulator.ts",
     "test:inventory-radar": "tsx scripts/inventory-radar-simulator.ts",
     "test:lead-nurture": "tsx scripts/lead-nurture-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
