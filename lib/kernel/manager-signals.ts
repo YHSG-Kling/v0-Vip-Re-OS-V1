@@ -367,9 +367,15 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // NOT a contact) and carried the seller-intent score + reasons onto the lead. This is the
   // DEFAULT route for a raw scraped seller lead: the AI ISA owns it, so the bus PRIORITIZES it
   // for qualification (lead_score floor already stamped by the runner; here we record the
-  // prioritization on the ISA activity ledger). It NEVER proposes a client message and NEVER
-  // commissions a reel — the lead is not a contact. The seller relationship only begins after
-  // AI ISA qualifies → conversion → contact, at which point the listing_concierge path applies.
+  // prioritization on the ISA activity ledger). It NEVER proposes a PORTAL client message — the
+  // lead is not a contact. It DOES extend a channel-appropriate, VERIFICATION-GATED nurture push
+  // (the conversion play lead→contact) on the lead's OWN verified channels: when
+  // leads.email_verified, a Director "thinking of selling?" reel is commissioned + its EMAIL
+  // delivery PROPOSED (agent_client_messages, gated); when leads.mailing_address_verified, a
+  // POSTCARD is PROPOSED (direct_mail_campaigns approval_status='pending', carrying its QR).
+  // Each channel is independent + idempotent per (lead, channel); a false/missing flag → that
+  // channel is skipped honestly; NOTHING auto-sends. The seller portal relationship still only
+  // begins after AI ISA qualifies → conversion → contact (the listing_concierge path).
   "ai_isa:seller_intent_hot": async (signal, ctx) => {
     const p = (signal.payload ?? {}) as Record<string, unknown>
     const leadId = (p.lead_id as string | undefined) ?? null
@@ -402,7 +408,42 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     await ctx.supabase.from("leads")
       .update({ last_activity_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq("id", leadId).eq("brokerage_id", ctx.brokerageId)
-    return `prioritized ISA-owned lead ${leadId} for seller-intent qualification (${(intentScore * 100).toFixed(0)}/100) — no client message (not a contact)`
+
+    const actions = [`prioritized ISA-owned lead ${leadId} for seller-intent qualification (${(intentScore * 100).toFixed(0)}/100)`]
+
+    // ── NURTURE OUTREACH (additive, GATED, VERIFICATION-conditioned) ──
+    // The lead is not a contact (no portal). The conversion push lead→contact goes
+    // out on the LEAD's verified channels only: a Director "thinking of selling?"
+    // reel EMAILED when leads.email_verified, a POSTCARD when
+    // leads.mailing_address_verified. Each channel is independent + idempotent per
+    // (lead, channel); a false/missing flag → that channel is skipped honestly.
+    // NOTHING auto-sends — each channel proposes a GATED deliverable a human approves.
+    // Requires a real agent on the brokerage (ai_video_projects.agent_id FK → users.id
+    // + qr_codes.agent_id); honest skip when absent.
+    try {
+      const { data: agentRow } = await ctx.supabase
+        .from("agents").select("user_id")
+        .eq("brokerage_id", ctx.brokerageId).not("user_id", "is", null)
+        .limit(1).maybeSingle()
+      const agentUserId = (agentRow as { user_id?: string } | null)?.user_id ?? null
+      if (agentUserId) {
+        const { proposeLeadNurture } = await import("@/lib/ai-isa/lead-nurture")
+        const nurture = await proposeLeadNurture(
+          { brokerageId: ctx.brokerageId, leadId, agentUserId, intentScore, propertyAddress },
+          ctx.supabase,
+        )
+        if (nurture.actions.length > 0) actions.push(...nurture.actions)
+        else if (!nurture.channels.email && !nurture.channels.postcard) {
+          actions.push("no verified channel (email/mailing address) — prioritized only, no outreach proposed")
+        }
+      } else {
+        actions.push("no agent on the brokerage — prioritized only (reel/QR need a real agent)")
+      }
+    } catch (e) {
+      console.error("[ai_isa:seller_intent_hot] lead-nurture skipped:", (e as Error).message)
+    }
+
+    return `${actions.join("; ")} (not a contact — EMAIL + DIRECT MAIL only, no portal card)`
   },
   // LISTING INVENTORY RADAR — Data Steward → Listing Concierge: a seller candidate that has
   // ALREADY converted to a CRM contact (portal-eligible, post-qualification) scored HOT. ONLY
