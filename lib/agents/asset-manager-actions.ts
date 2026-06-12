@@ -30,6 +30,7 @@ export type AssetManagerActionType =
   | "start_render"
   | "restart_failed_render"
   | "publish_video_page"
+  | "direct_video"
 
 export interface ProposedAssetAction {
   action_type: AssetManagerActionType
@@ -381,6 +382,43 @@ async function runHandler(
       const res = await publishVideoLanding({ renderId, brokerageId })
       if (!res.ok) return { status: "skipped", result: { reason: res.reason ?? "not publishable" } }
       return { status: "succeeded", result: { render_id: renderId, public_slug: res.slug, url: `/v/${res.slug}` } }
+    }
+
+    case "direct_video": {
+      // The Asset Manager calls the VIDEO DIRECTOR: given a situation it picks the
+      // best Remotion format + music mood for the moment×channel and assembles
+      // intro (brand+photo+hook) → main → outro (brand+contact+tracked QR), staging
+      // ONE compliance-gated ai_video_projects row. This is the Asset-Manager-
+      // initiated front door to commissionVideo — the Director governs creation
+      // BEFORE the video exists (the voice admin's commission_video verb is the
+      // other entry). Idempotent per (entity, kind); nothing auto-publishes.
+      const VALID_KINDS = new Set([
+        "new_listing", "price_drop", "just_sold", "open_house", "coming_soon",
+        "market_update", "cma", "explainer", "presentation", "anniversary",
+        "testimonial", "neighborhood",
+      ])
+      const kind = String(input.kind ?? "")
+      const targetChannel = String(input.target_channel ?? "instagram")
+      const agentUserId = (input.agent_user_id as string | null) ?? null
+      if (!VALID_KINDS.has(kind)) return { status: "failed", result: { error: "valid kind required", kind } }
+      if (!agentUserId) return { status: "failed", result: { error: "agent_user_id required" } }
+
+      const { commissionVideo } = await import("@/lib/video/video-director")
+      const r = await commissionVideo(
+        { kind: kind as Parameters<typeof commissionVideo>[0]["kind"], tier: "solo_agent", targetChannel: targetChannel as Parameters<typeof commissionVideo>[0]["targetChannel"], facts: (input.facts as Record<string, unknown>) ?? {} },
+        { brokerageId, agentUserId, listingId: (input.listing_id as string | null) ?? null, contactId: (input.contact_id as string | null) ?? null },
+      )
+      if (!r.ok) {
+        return { status: r.status === "already_staged" ? "skipped" : "failed", result: { error: r.reason, status: r.status, violations: r.violations } }
+      }
+      return {
+        status: "succeeded",
+        result: {
+          video_project_id: r.videoProjectId,
+          composition_id: r.compositionId,
+          note: "The Director picked the format + music mood and staged the video; the composition-render cron drains it.",
+        },
+      }
     }
 
     default: {
