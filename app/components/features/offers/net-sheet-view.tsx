@@ -10,6 +10,7 @@
 
 import { useMemo } from "react"
 import { cn }      from "@/lib/utils"
+import { calcNetToSeller } from "@/lib/offers/offer-math"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,17 +92,23 @@ export function NetSheetView({
     // Standard commission split
     const commissionAmount = offerPrice * (commissionRate / 100)
 
-    // Typical seller closing costs: ~1% title/escrow/transfer
+    // Typical seller closing costs: ~1% title/escrow/transfer — an explicit,
+    // ITEMIZED estimate this view adds on top of the canonical core.
     const sellerClosingCosts = offerPrice * 0.01
 
     // Closing credit the seller agreed to give buyer
     const closingCreditDeduction = closingCostContribution ?? 0
 
+    // CANONICAL core (lib/offers/offer-math calcNetToSeller — the single source of
+    // truth shared with the offer analyzer + kernel net-sheet engine), minus the
+    // itemized title/escrow estimate shown in the breakdown below.
     const computedNet =
-      offerPrice
-      - commissionAmount
+      calcNetToSeller({
+        offer_price: offerPrice,
+        commission_rate: commissionRate / 100,
+        closing_cost_contribution: closingCostContribution,
+      })
       - sellerClosingCosts
-      - closingCreditDeduction
 
     const priceVsListPct = listPrice
       ? ((offerPrice - listPrice) / listPrice) * 100

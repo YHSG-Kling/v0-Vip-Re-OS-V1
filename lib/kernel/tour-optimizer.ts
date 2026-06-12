@@ -228,6 +228,45 @@ export function totalEstimatedDriveMinutes(seq: SequencedStop[]): number {
   return seq.reduce((sum, s) => sum + (s.driveMinutes ?? 0), 0)
 }
 
+/** PURE. Add minutes to an "HH:MM"(:SS) clock string, wrapping at midnight. Returns
+ *  "HH:MM". Invalid input → null (never fabricate a time). */
+export function addMinutesToClock(hhmm: string | null | undefined, minutes: number): string | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec((hhmm ?? "").trim())
+  if (!m) return null
+  const h = Number(m[1]), min = Number(m[2])
+  if (h > 23 || min > 59) return null
+  const total = ((h * 60 + min + Math.round(minutes)) % 1440 + 1440) % 1440
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
+}
+
+/**
+ * PURE. Walk the clock through the SEQUENCED order and produce each stop's new suggested
+ * arrival time — the same walk createTourPlan does on creation (start_time, then per stop:
+ * + drive when known, arrive, + visit duration). Re-sequencing without this would leave the
+ * original-order times stale. Unknown drives (un-geocoded legs) add 0 — the time is then
+ * "drive not included," matching createTourPlan's own falsy-skip behavior; we never invent
+ * a drive. Returns a map stopId → "HH:MM"; empty when start time is unparseable (times left
+ * untouched rather than fabricated).
+ */
+export function recomputeStopTimes(
+  sequenced: SequencedStop[],
+  startTime: string | null | undefined,
+  durationsByStopId: Map<string, number>,
+): Map<string, string> {
+  const out = new Map<string, string>()
+  let cursor = addMinutesToClock(startTime, 0)
+  if (!cursor) return out
+  const ordered = [...sequenced].sort((a, b) => a.order_index - b.order_index)
+  for (const s of ordered) {
+    cursor = addMinutesToClock(cursor, s.driveMinutes ?? 0)
+    if (!cursor) return out
+    out.set(s.id, cursor)
+    cursor = addMinutesToClock(cursor, durationsByStopId.get(s.id) ?? 30)
+    if (!cursor) return out
+  }
+  return out
+}
+
 /**
  * A 0..1 optimization score: how much shorter the nearest-neighbor straight-line total is
  * vs the original input order's straight-line total (both over geocoded stops only). 1.0 =
@@ -373,7 +412,7 @@ export async function optimizeTourRoute(
 
   const { data: tour } = await supabase
     .from("tours")
-    .select("id, brokerage_id, agent_id, contact_id, tour_date, start_time, status, total_drive_time_minutes")
+    .select("id, brokerage_id, agent_id, contact_id, tour_date, start_time, start_address, status, total_drive_time_minutes")
     .eq("id", tourId)
     .maybeSingle()
   if (!tour) return { ...base, reason: "tour_not_found" }
@@ -388,7 +427,7 @@ export async function optimizeTourRoute(
   // in production, fixed coords from the simulator).
   const { data: rows } = await supabase
     .from("tour_stops")
-    .select("id, order_index, property_address, city, state, zip, listing_id")
+    .select("id, order_index, property_address, city, state, zip, listing_id, suggested_duration_minutes")
     .eq("tour_id", tourId)
     .order("order_index", { ascending: true })
 
@@ -415,22 +454,38 @@ export async function optimizeTourRoute(
     })
   }
 
-  const sequenced = sequenceStopsByDriveTime(geoStops, null)
-  const score = optimizationScore(geoStops, sequenced, null)
+  // ORIGIN = the agent's meeting point (tours.start_address) — the designed flow: the
+  // agent says where the tour STARTS, and the sequence is computed from there. Geocoded
+  // through the same resolver (cached). Null when un-geocodable → the sequence anchors on
+  // the first entered stop instead (honest fallback, documented in sequenceStopsByDriveTime).
+  const startAddress = ((tour as any).start_address ?? "").toString().trim()
+  const origin = startAddress ? await resolve({ property_address: startAddress }) : null
+
+  const sequenced = sequenceStopsByDriveTime(geoStops, origin)
+  const score = optimizationScore(geoStops, sequenced, origin)
   const totalDrive = totalEstimatedDriveMinutes(sequenced)
   const sequencedCount = sequenced.filter((s) => s.sequenced).length
   base.stopsSequenced = sequencedCount
   base.totalDriveMinutes = totalDrive
   base.optimizationScore = score
 
-  // Persist the new order + per-leg ESTIMATED drives. Un-geocoded stops keep their
-  // (re-indexed, original-relative) order with null drive.
+  // Recompute each stop's suggested arrival time for the NEW order — same clock walk
+  // createTourPlan uses (start_time, + drive when known, + visit duration). Without this,
+  // re-sequencing would leave the original-order times stale.
+  const durations = new Map<string, number>(
+    stopRows.map((r: any) => [r.id as string, Number(r.suggested_duration_minutes ?? 30)]),
+  )
+  const times = recomputeStopTimes(sequenced, (tour as any).start_time ?? null, durations)
+
+  // Persist the new order + per-leg ESTIMATED drives + recomputed times. Un-geocoded
+  // stops keep their (re-indexed, original-relative) order with null drive.
   for (const s of sequenced) {
     await supabase
       .from("tour_stops")
       .update({
         order_index: s.order_index,
         drive_time_from_prev_minutes: s.driveMinutes, // null when un-geocoded — no fabrication
+        ...(times.has(s.id) ? { suggested_time: times.get(s.id) } : {}),
       })
       .eq("id", s.id)
       .eq("tour_id", tourId)
@@ -502,10 +557,13 @@ export interface PushRecapResult {
 /**
  * After a tour COMPLETES, build the recap from the stops' real ratings, push ONE buyer-
  * portal value card (transparency_updates, update_type "tour_recap"), and stamp
- * tours.report_sent_at + report_url with the portal deep-link.
+ * tours.report_sent_at + report_url IF NOT ALREADY SET.
  *
- * Idempotent: skips if tours.report_sent_at is already set; pushPortalValueCard is itself
- * idempotent per (contact, update_type, day). Never throws.
+ * Idempotent on the CARD, not on report_sent_at: finalizeTour() stamps report_sent_at at
+ * LOCK-IN when it sends the buyer the confirmed itinerary report — keying the recap on
+ * that column would silently skip every tour that went through the designed flow. So we
+ * key on the recap card itself (transparency_updates, update_type "tour_recap",
+ * metadata.tour_id) and never clobber finalizeTour's stamp. Never throws.
  */
 export async function pushTourRecap(
   tourId: string,
@@ -518,15 +576,23 @@ export async function pushTourRecap(
 
   const { data: tour } = await supabase
     .from("tours")
-    .select("id, brokerage_id, contact_id, status, report_sent_at")
+    .select("id, brokerage_id, contact_id, status, report_sent_at, report_url")
     .eq("id", tourId)
     .maybeSingle()
   if (!tour) return { ...base, reason: "tour_not_found" }
   if (!(tour as any).contact_id || !(tour as any).brokerage_id) return { ...base, reason: "missing_owner" }
 
-  // IDEMPOTENCY — recap already sent. Skip.
-  if ((tour as any).report_sent_at != null) {
-    return { ...base, ok: true, reason: "already_reported" }
+  // IDEMPOTENCY — a recap card for THIS tour already exists (any day). Skip.
+  const { data: existingCard } = await supabase
+    .from("transparency_updates")
+    .select("id")
+    .eq("contact_id", (tour as any).contact_id)
+    .eq("update_type", "tour_recap")
+    .contains("metadata", { tour_id: tourId })
+    .limit(1)
+    .maybeSingle()
+  if (existingCard) {
+    return { ...base, ok: true, reason: "already_recapped" }
   }
 
   const { data: stopRows } = await supabase
@@ -617,12 +683,15 @@ export async function pushTourRecap(
     supabase,
   )
 
-  // Stamp tours.report_sent_at + report_url even on a deduped push — the card already
-  // exists for today and the tour IS reported. This also makes the runner idempotent.
-  await supabase
-    .from("tours")
-    .update({ report_sent_at: now.toISOString(), report_url: portalUrl })
-    .eq("id", tourId)
+  // Stamp tours.report_sent_at + report_url ONLY when unset — finalizeTour() already
+  // stamps them at lock-in for the itinerary report, and that record must not be
+  // overwritten. (The recap's own idempotency is the card above, not this column.)
+  if ((tour as any).report_sent_at == null) {
+    await supabase
+      .from("tours")
+      .update({ report_sent_at: now.toISOString(), report_url: (tour as any).report_url ?? portalUrl })
+      .eq("id", tourId)
+  }
 
   return { ...base, ok: true, pushed: pushed.pushed, cardId: pushed.id }
 }
@@ -637,7 +706,8 @@ export interface TourOptimizerResult {
 
 /**
  * Sweep a brokerage: (a) optimize routes for tours in status 'planned' not yet optimized,
- * and (b) push recaps for tours in status 'completed' with report_sent_at IS NULL.
+ * and (b) push recaps for recently completed tours that have no recap card yet (card-keyed
+ * idempotency — report_sent_at belongs to finalizeTour's lock-in itinerary report).
  * Idempotent at the per-tour level. Never throws on a single tour.
  */
 export async function runTourOptimizer(
@@ -669,18 +739,22 @@ export async function runTourOptimizer(
     }
   }
 
-  // (b) Completed tours not yet recapped.
+  // (b) RECENT completed tours — the recap window. NOT keyed on report_sent_at
+  // (finalizeTour stamps that at lock-in for the itinerary report); pushTourRecap's own
+  // card-existence check is the idempotency, so re-sweeping a recapped tour is a no-op.
+  // 14-day lookback bounds the sweep: a same-day recap has no business landing weeks late.
+  const recapSince = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const { data: completed } = await supabase
     .from("tours")
     .select("id")
     .eq("brokerage_id", brokerageId)
     .eq("status", "completed")
-    .is("report_sent_at", null)
+    .gte("tour_date", recapSince)
     .limit(200)
   for (const t of (completed ?? []) as any[]) {
     try {
       const r = await pushTourRecap(t.id, supabase, { now, copyGenerator: opts.copyGenerator })
-      if (r.ok && r.reason !== "already_reported") result.recapsPushed += 1
+      if (r.ok && r.reason !== "already_recapped") result.recapsPushed += 1
     } catch {
       /* per-tour failure must not break the sweep */
     }

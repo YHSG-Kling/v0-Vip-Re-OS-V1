@@ -27,6 +27,8 @@ import {
   haversineMiles,
   estimateDriveMinutes,
   totalEstimatedDriveMinutes,
+  addMinutesToClock,
+  recomputeStopTimes,
   type GeoStop,
   type RecapStopRating,
 } from "../lib/kernel/tour-optimizer"
@@ -131,6 +133,30 @@ async function main() {
   check("recap with zero loved/liked still produces a body + neutral next step",
     allNo.body.length > 0 && allNo.nextStep.length > 0 && allNo.loved === 0)
   check("tourRecapSignature stable", tourRecapSignature("abc") === "tour_recap:abc")
+
+  // ── Clock walk: re-sequencing recomputes per-stop suggested times ──
+  console.log("\n[Layer 1b · time recompute (designed flow: start time + drive + visit)]")
+  check("addMinutesToClock basic", addMinutesToClock("10:00", 25) === "10:25")
+  check("addMinutesToClock rolls the hour", addMinutesToClock("10:50", 25) === "11:15")
+  check("addMinutesToClock wraps midnight", addMinutesToClock("23:50", 20) === "00:10")
+  check("addMinutesToClock tolerates HH:MM:SS input", addMinutesToClock("09:30:00", 15) === "09:45")
+  check("addMinutesToClock rejects garbage (never fabricates)", addMinutesToClock("noon", 10) === null && addMinutesToClock(null, 10) === null)
+  // Walk the optimized order from the simulator's earlier sequence: A (12.4mi-ish legs are
+  // not asserted here — drives come from the sequence itself). Use a fixed synthetic
+  // sequence: drive 10 to S1, visit 30; drive 20 to S2, visit 45; un-geocoded S3 (null
+  // drive → +0), visit default.
+  const durations = new Map<string, number>([["S1", 30], ["S2", 45]])
+  const synthetic = [
+    { id: "S1", order_index: 0, lat: 1, lng: 1, driveMinutes: 10, haversineMiles: 5, sequenced: true },
+    { id: "S2", order_index: 1, lat: 2, lng: 2, driveMinutes: 20, haversineMiles: 10, sequenced: true },
+    { id: "S3", order_index: 2, lat: null, lng: null, driveMinutes: null, haversineMiles: null, sequenced: false },
+  ] as Parameters<typeof recomputeStopTimes>[0]
+  const times = recomputeStopTimes(synthetic, "09:00", durations)
+  check("stop 1 arrives start + drive (09:10)", times.get("S1") === "09:10")
+  check("stop 2 arrives after visit 30 + drive 20 (10:00)", times.get("S2") === "10:00")
+  check("un-geocoded stop adds NO invented drive (10:45 = after 45-min visit only)", times.get("S3") === "10:45")
+  check("unparseable start time → empty map (times left untouched, not fabricated)",
+    recomputeStopTimes(synthetic, "whenever", durations).size === 0)
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -241,9 +267,10 @@ async function main() {
     check("pushTourRecap pushed a card (loved=1, liked=1, total=3)",
       rec1.ok && rec1.pushed && rec1.loved === 1 && rec1.liked === 1 && rec1.total === 3, JSON.stringify(rec1))
 
-    // Second pass — idempotent (report_sent_at now set → already_reported).
+    // Second pass — idempotent on the CARD (not report_sent_at, which finalizeTour owns
+    // for the lock-in itinerary report).
     const rec2 = await pushTourRecap((tour as any).id, svc, { copyGenerator: async () => null })
-    check("pushTourRecap idempotent: second pass skips (already_reported)", rec2.reason === "already_reported")
+    check("pushTourRecap idempotent: second pass skips (already_recapped, card-keyed)", rec2.reason === "already_recapped")
 
     // Exactly ONE visible tour_recap card for this buyer.
     const { data: cards } = await svc.from("transparency_updates")
