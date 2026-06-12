@@ -23,19 +23,35 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   try {
     const svc = createServiceClient()
-    const { data } = await svc.from("remotion_composition_renders")
-      .select("public_slug, published_at")
-      .eq("is_published", true)
-      .not("public_slug", "is", null)
-      .order("published_at", { ascending: false })
-      .limit(5000)
-    const rows = (data ?? []) as Array<{ public_slug: string; published_at: string | null }>
-    const videoEntries: MetadataRoute.Sitemap = rows.map((r) => ({
-      url: `${base}/v/${r.public_slug}`,
-      lastModified: r.published_at ?? undefined,
-      changeFrequency: "monthly",
-      priority: 0.6,
-    }))
+    // Published reels live on BOTH rails: remotion_composition_renders (the
+    // Asset Manager render rail) and ai_video_projects (the canonical D-ID /
+    // listing-promo reel rail). Union both, dedupe by slug.
+    const [renders, projects] = await Promise.all([
+      svc.from("remotion_composition_renders")
+        .select("public_slug, published_at")
+        .eq("is_published", true).not("public_slug", "is", null)
+        .order("published_at", { ascending: false }).limit(5000),
+      svc.from("ai_video_projects")
+        .select("public_slug, published_at")
+        .eq("is_published", true).not("public_slug", "is", null)
+        .order("published_at", { ascending: false }).limit(5000),
+    ])
+    const rows = [
+      ...((renders.data ?? []) as Array<{ public_slug: string; published_at: string | null }>),
+      ...((projects.data ?? []) as Array<{ public_slug: string; published_at: string | null }>),
+    ]
+    const seen = new Set<string>()
+    const videoEntries: MetadataRoute.Sitemap = []
+    for (const r of rows) {
+      if (seen.has(r.public_slug)) continue
+      seen.add(r.public_slug)
+      videoEntries.push({
+        url: `${base}/v/${r.public_slug}`,
+        lastModified: r.published_at ?? undefined,
+        changeFrequency: "monthly",
+        priority: 0.6,
+      })
+    }
     return [...staticEntries, ...videoEntries]
   } catch {
     return staticEntries

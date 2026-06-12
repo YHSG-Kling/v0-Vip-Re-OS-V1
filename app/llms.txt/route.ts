@@ -21,27 +21,46 @@ export async function GET() {
   let pages: LlmsTxtPage[] = []
   try {
     const svc = createServiceClient()
-    const { data } = await svc.from("remotion_composition_renders")
-      .select("public_slug, composition_id, published_at, remotion_compositions(seo_title, seo_description, display_name)")
-      .eq("is_published", true)
-      .not("public_slug", "is", null)
-      .order("published_at", { ascending: false })
-      .limit(500)
+    // Published reels live on BOTH rails — the Asset Manager render rail
+    // (remotion_composition_renders + registry SEO fields) and the canonical
+    // D-ID / listing-promo reel rail (ai_video_projects, self-describing).
+    const [renders, projects] = await Promise.all([
+      svc.from("remotion_composition_renders")
+        .select("public_slug, composition_id, published_at, remotion_compositions(seo_title, seo_description, display_name)")
+        .eq("is_published", true).not("public_slug", "is", null)
+        .order("published_at", { ascending: false }).limit(500),
+      svc.from("ai_video_projects")
+        .select("public_slug, title, video_type, script_content, published_at")
+        .eq("is_published", true).not("public_slug", "is", null)
+        .order("published_at", { ascending: false }).limit(500),
+    ])
     // The embedded join comes back as an array (Supabase types to-one
     // relationships as arrays); take the first row.
     type CompMeta = { seo_title: string | null; seo_description: string | null; display_name: string | null }
-    const rows = (data ?? []) as unknown as Array<{
+    const renderRows = (renders.data ?? []) as unknown as Array<{
       public_slug: string
       remotion_compositions: CompMeta | CompMeta[] | null
     }>
-    pages = rows.map((r) => {
+    const projectRows = (projects.data ?? []) as Array<{
+      public_slug: string; title: string | null; video_type: string | null; script_content: string | null
+    }>
+    const seen = new Set<string>()
+    const add = (page: LlmsTxtPage) => { if (!seen.has(page.url)) { seen.add(page.url); pages.push(page) } }
+    for (const r of renderRows) {
       const c = Array.isArray(r.remotion_compositions) ? r.remotion_compositions[0] : r.remotion_compositions
-      return {
+      add({
         title:   c?.seo_title || c?.display_name || "Video",
         url:     `${base}/v/${r.public_slug}`,
         summary: c?.seo_description || "Real-estate video.",
-      }
-    })
+      })
+    }
+    for (const p of projectRows) {
+      add({
+        title:   p.title || `${(p.video_type ?? "video").replace(/_/g, " ")} reel`,
+        url:     `${base}/v/${p.public_slug}`,
+        summary: (p.script_content && p.script_content.trim().slice(0, 200)) || "Real-estate video.",
+      })
+    }
   } catch {
     pages = []
   }

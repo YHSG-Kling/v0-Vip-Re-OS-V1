@@ -70,6 +70,38 @@ export function isPublishableRender(args: {
   return true
 }
 
+/** The reel's lifecycle facts the auto-publish gate inspects. Mirrors the
+ *  CHECK-constrained ai_video_projects vocabulary verbatim:
+ *    status:            'planning'|'generating'|'completed'|'failed'|…
+ *    compliance_status: 'not_evaluated'|'passed'|'failed'|'needs_review'
+ *    approval_status:   'draft'|'pending_review'|'approved'|'rejected'|'published'
+ */
+export interface AutoPublishReel {
+  status:            string
+  complianceStatus:  string
+  approvalStatus:    string
+  videoUrl:          string | null
+  isPublished:       boolean
+}
+
+/**
+ * THE AUTO-PUBLISH GATE — a reel becomes a public, broadcast-advertising
+ * /v/[slug] page ONLY when it is finished, compliance-passed, AND
+ * broker-approved, and is not already public. A public page carries
+ * Fair-Housing / EHO / license disclosures, so an un-approved or
+ * non-compliant reel must NEVER auto-publish.
+ *
+ * Pure + total — the sweep cron and the simulator both call it.
+ */
+export function isAutoPublishEligible(reel: AutoPublishReel): boolean {
+  if (reel.isPublished) return false                  // already public — idempotent
+  if (reel.status !== "completed") return false       // render must have finished
+  if (reel.complianceStatus !== "passed") return false// Fair-Housing / disclosures gate
+  if (reel.approvalStatus !== "approved") return false// broker sign-off gate
+  if (!reel.videoUrl) return false                    // nothing to host
+  return true
+}
+
 export interface VideoObjectInput {
   name:           string
   description:    string

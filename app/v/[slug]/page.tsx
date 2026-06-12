@@ -76,7 +76,9 @@ async function loadPage(slug: string): Promise<PageData | null> {
     .eq("is_published", true)
     .maybeSingle()
   const render = r as RenderRow | null
-  if (!render || !render.output_url) return null
+  // No matching Remotion render → try the canonical ai_video_projects reel
+  // (the D-ID / listing-promo rail that carries its own compliance + approval).
+  if (!render || !render.output_url) return loadProjectPage(svc, slug)
 
   const { data: c } = await svc.from("remotion_compositions")
     .select("display_name, category, seo_title, seo_description, duration_frames, fps")
@@ -121,6 +123,82 @@ async function loadPage(slug: string): Promise<PageData | null> {
     brokerageId: render.brokerage_id,
     userId:      render.agent_user_id,
   })
+
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+}
+
+/** Load a published reel from the canonical ai_video_projects rail and shape it
+ *  into the SAME PageData the render path produces, so the page body + JSON-LD
+ *  builders are identical regardless of which rail the reel came from. The
+ *  synthesized composition uses fps=30 + duration_frames=duration_seconds*30 so
+ *  framesToSeconds() recovers the true duration for VideoObject.duration. */
+async function loadProjectPage(
+  svc: ReturnType<typeof createServiceClient>,
+  slug: string,
+): Promise<PageData | null> {
+  const { data: pr } = await svc.from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, listing_id, title, video_type, script_content, video_url, thumbnail_url, duration_seconds, published_at, video_metadata")
+    .eq("public_slug", slug)
+    .eq("is_published", true)
+    .maybeSingle()
+  const proj = pr as {
+    id: string; brokerage_id: string; agent_id: string | null; listing_id: string | null;
+    title: string | null; video_type: string | null; script_content: string | null;
+    video_url: string | null; thumbnail_url: string | null; duration_seconds: number | null;
+    published_at: string | null; video_metadata: Record<string, unknown> | null
+  } | null
+  if (!proj || !proj.video_url) return null
+
+  // Agent attribution.
+  let agentName: string | null = null
+  let agentPhoto: string | null = null
+  if (proj.agent_id) {
+    const [{ data: u }, { data: a }] = await Promise.all([
+      svc.from("users").select("first_name, last_name").eq("id", proj.agent_id).maybeSingle(),
+      svc.from("agents").select("photo_url").eq("user_id", proj.agent_id).eq("brokerage_id", proj.brokerage_id).maybeSingle(),
+    ])
+    const ur = u as { first_name: string | null; last_name: string | null } | null
+    agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    agentPhoto = (a as { photo_url: string | null } | null)?.photo_url ?? null
+  }
+
+  const { data: b } = await svc.from("brokerages").select("name").eq("id", proj.brokerage_id).maybeSingle()
+  const brokerageName = (b as { name: string | null } | null)?.name ?? null
+
+  // Listing facts (every promo / listing-tour reel is listing-tied).
+  let listing: PageData["listing"] = null
+  if (proj.listing_id) {
+    const { data: l } = await svc.from("listings")
+      .select("address, city, state, list_price, bedrooms, bathrooms, sqft")
+      .eq("id", proj.listing_id)
+      .eq("brokerage_id", proj.brokerage_id)
+      .maybeSingle()
+    const lr = l as { address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null } | null
+    if (lr) listing = { address: lr.address, city: lr.city, state: lr.state, price: lr.list_price, bedrooms: lr.bedrooms, bathrooms: lr.bathrooms, sqft: lr.sqft }
+  }
+
+  const title = proj.title || `${(proj.video_type ?? "video").replace(/_/g, " ")} reel`
+  const descBase = (proj.script_content && proj.script_content.trim())
+    || `${title} produced by ${brokerageName ?? SITE_NAME}.`
+  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+
+  const disclosures = await assembleSocialDisclosures(svc as never, {
+    brokerageId: proj.brokerage_id,
+    userId:      proj.agent_id,
+  })
+
+  // Shape a synthetic composition so the shared body + JSON-LD builders work.
+  const durFrames = proj.duration_seconds && proj.duration_seconds > 0 ? Math.round(proj.duration_seconds * 30) : 0
+  const composition: CompositionRow = {
+    display_name: title, category: proj.video_type ?? "video",
+    seo_title: title, seo_description: description, duration_frames: durFrames, fps: 30,
+  }
+  const render: RenderRow = {
+    id: proj.id, brokerage_id: proj.brokerage_id, composition_id: proj.video_type ?? "video",
+    agent_user_id: proj.agent_id, entity_type: proj.listing_id ? "listing" : null,
+    entity_id: proj.listing_id, output_url: proj.video_url, thumbnail_url: proj.thumbnail_url,
+    published_at: proj.published_at,
+  }
 
   return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
 }
