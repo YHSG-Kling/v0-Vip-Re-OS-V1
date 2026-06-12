@@ -329,3 +329,217 @@ export async function loadFormatOutcomes(
 
   return scoreFormatOutcomes(rows)
 }
+
+// ============================================================================
+// HOOK A/B — the "first-3-seconds" learning dimension
+// ============================================================================
+//
+// The Director stages an organic A/B of 2-3 OPENING-HOOK variants per reel
+// (commissionVideoExperiment): N ai_video_projects rows sharing an experiment_id,
+// each with its own variant_index + hook_variant + hook_angle + its own minted QR.
+// This dimension scores per (experiment_id × hook_variant) and crowns the winning
+// variant ONCE it clears the SAME sample+margin gate the format dimension uses —
+// else "still testing" (honest). The signals are the SAME real ones: qr_scan_events
+// on each variant's stamped qr_code_id + social engagement on its distributed post.
+
+/** One raw, already-attributed HOOK outcome — one variant row's measured signal. */
+export interface HookOutcomeRow {
+  /** video_metadata.experiment_id — the A/B this variant belongs to. */
+  experimentId: string
+  /** video_metadata.variant_index — the variant's position in the experiment. */
+  variantIndex: number
+  /** video_metadata.hook_angle — curiosity | social_proof | urgency | value. */
+  hookAngle: string
+  /** Real QR scans accrued to this variant's stamped qr_code_id. */
+  scans: number
+  /** Real social engagement summed from this variant's distributed post(s). */
+  engagement: number
+}
+
+/** A scored hook variant within one experiment. `score` is max-scaled 0..1 across
+ *  the experiment's own variants so they're directly comparable. */
+export interface HookScore {
+  experimentId: string
+  variantIndex: number
+  hookAngle: string
+  sample: number
+  totalScans: number
+  totalEngagement: number
+  meanSignal: number
+  score: number
+}
+
+/** The scored variants for one experiment + the normalizing max. */
+export interface ScoredHooks {
+  /** Keyed by variant_index. */
+  variants: Record<number, HookScore>
+  maxMeanSignal: number
+}
+
+/** What recommendHookWinner returns — either "still testing" or a crowned winner. */
+export interface HookRecommendation {
+  /** "testing" = not enough data / no clear winner yet. "winner" = a gated crown. */
+  status: "testing" | "winner"
+  experimentId: string
+  /** The winning variant_index + angle when status="winner" (else null). */
+  winnerVariantIndex: number | null
+  winnerAngle: string | null
+  /** Human-readable explanation — the WHY (rides video_metadata.hook_why on future
+   *  commissions, and surfaces in the Command Center). */
+  why: string
+}
+
+/**
+ * scoreHookOutcomes — PURE. Fold one experiment's variant outcome rows into a
+ * scored (variant_index) map. Same math as scoreFormatOutcomes: per-variant mean of
+ * (scans + engagement), max-scaled to 0..1 WITHIN the experiment. Each A/B variant
+ * is normally rendered as ONE row, so the "sample" here is the number of distributed
+ * impressions-worth of attributed posts; we treat each row as one sample and sum its
+ * signal (a variant re-rendered/reposted accrues more rows → more sample). Empty
+ * input → empty map (no fabrication).
+ */
+export function scoreHookOutcomes(rows: HookOutcomeRow[]): ScoredHooks {
+  const acc: Record<number, HookScore> = {}
+  let experimentId = ""
+  for (const r of rows) {
+    experimentId = r.experimentId || experimentId
+    const cell = acc[r.variantIndex] ?? {
+      experimentId: r.experimentId, variantIndex: r.variantIndex, hookAngle: r.hookAngle,
+      sample: 0, totalScans: 0, totalEngagement: 0, meanSignal: 0, score: 0,
+    }
+    cell.sample += 1
+    cell.totalScans += Math.max(0, r.scans || 0)
+    cell.totalEngagement += Math.max(0, r.engagement || 0)
+    if (!cell.hookAngle && r.hookAngle) cell.hookAngle = r.hookAngle
+    acc[r.variantIndex] = cell
+  }
+
+  let maxMeanSignal = 0
+  for (const cell of Object.values(acc)) {
+    cell.meanSignal = cell.sample > 0 ? (cell.totalScans + cell.totalEngagement) / cell.sample : 0
+    if (cell.meanSignal > maxMeanSignal) maxMeanSignal = cell.meanSignal
+  }
+  for (const cell of Object.values(acc)) {
+    cell.score = maxMeanSignal > 0 ? cell.meanSignal / maxMeanSignal : 0
+  }
+
+  void experimentId
+  return { variants: acc, maxMeanSignal }
+}
+
+/**
+ * recommendHookWinner — PURE, and the heart of the hook A/B honesty contract.
+ *
+ * Crowns a winning variant ONLY when:
+ *   1. the experiment's TOTAL sample (scans + engagement across all variants) is a
+ *      real signal (≥ MIN_FORMAT_SAMPLE — the same gate the format dimension uses),
+ *      AND
+ *   2. the top variant beats the runner-up by ≥ FORMAT_MARGIN on the normalized score.
+ * Otherwise returns status:"testing" with an HONEST why — thin data or a tie is
+ * "still testing", never a fabricated winner.
+ *
+ * The total-sample gate (vs. per-variant) is deliberate: an organic A/B is ONE post
+ * per variant, so the real "sample" is audience ACTION (scans + engagement) across
+ * the experiment — we need enough total action before any variant is trustworthy.
+ */
+export function recommendHookWinner(experimentId: string, scored: ScoredHooks): HookRecommendation {
+  const variants = Object.values(scored.variants).sort((a, b) => b.score - a.score)
+
+  if (variants.length < 2 || scored.maxMeanSignal <= 0) {
+    return {
+      status: "testing", experimentId, winnerVariantIndex: null, winnerAngle: null,
+      why: "Still testing — the hook A/B needs at least two variants with real audience action before a winner can be crowned.",
+    }
+  }
+
+  const totalSignal = variants.reduce((s, v) => s + v.totalScans + v.totalEngagement, 0)
+  if (totalSignal < MIN_FORMAT_SAMPLE) {
+    return {
+      status: "testing", experimentId, winnerVariantIndex: null, winnerAngle: null,
+      why: `Still testing — only ${totalSignal} total scans+engagement across the variants; need ≥${MIN_FORMAT_SAMPLE} real actions before crowning a winner.`,
+    }
+  }
+
+  const top = variants[0]
+  const runnerUp = variants[1]
+  if (top.score - runnerUp.score < FORMAT_MARGIN) {
+    return {
+      status: "testing", experimentId, winnerVariantIndex: null, winnerAngle: null,
+      why: `Still testing — the leading hook (variant ${top.variantIndex}, ${top.hookAngle}) is only ${fmtScore(top.score - runnerUp.score)} ahead of variant ${runnerUp.variantIndex}; need ≥${FORMAT_MARGIN} margin before crowning.`,
+    }
+  }
+
+  const why =
+    `Hook winner: variant ${top.variantIndex} (${top.hookAngle}) — score ${fmtScore(top.score)} vs runner-up ` +
+    `variant ${runnerUp.variantIndex} (${runnerUp.hookAngle}) ${fmtScore(runnerUp.score)}; ` +
+    `${top.totalScans} scans + ${top.totalEngagement} engagement won the first-3-seconds A/B. ` +
+    `Gate: ≥${MIN_FORMAT_SAMPLE} total actions AND ≥${FORMAT_MARGIN} margin met.`
+
+  return { status: "winner", experimentId, winnerVariantIndex: top.variantIndex, winnerAngle: top.hookAngle, why }
+}
+
+/**
+ * loadHookExperiment — read-only, tenant-scoped. Join one experiment's variant rows
+ * (ai_video_projects where video_metadata.experiment_id = experimentId) with their
+ * REAL outcomes — the SAME attribution loadFormatOutcomes uses:
+ *   · scans — COUNT(qr_scan_events) per the variant's stamped qr_code_id.
+ *   · engagement — SUM engagement_data on social_posts whose media_urls contains the
+ *                  variant's video_url.
+ * Returns the scored hooks (via scoreHookOutcomes). Honest on empty: no variant rows →
+ * empty ScoredHooks (recommendHookWinner then returns "still testing").
+ */
+export async function loadHookExperiment(
+  brokerageId: string,
+  experimentId: string,
+  client?: Svc,
+): Promise<ScoredHooks> {
+  if (!brokerageId || !experimentId) return { variants: {}, maxMeanSignal: 0 }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc: Svc = client ?? createServiceClient()
+
+  const { data: projects } = await svc
+    .from("ai_video_projects")
+    .select("id, video_url, video_metadata")
+    .eq("brokerage_id", brokerageId)
+    .eq("video_metadata->>experiment_id", experimentId)
+    .limit(500)
+
+  const rows: HookOutcomeRow[] = []
+  for (const p of (projects ?? []) as Array<{
+    video_url: string | null
+    video_metadata: Record<string, unknown> | null
+  }>) {
+    const meta = p.video_metadata ?? {}
+    const variantIndex = typeof meta.variant_index === "number" ? meta.variant_index : null
+    if (variantIndex === null) continue
+    const hookAngle = typeof meta.hook_angle === "string" ? meta.hook_angle : "unknown"
+    const qrCodeId = typeof meta.qr_code_id === "string" ? meta.qr_code_id : null
+
+    let scans = 0
+    if (qrCodeId) {
+      const { count } = await svc
+        .from("qr_scan_events")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("qr_code_id", qrCodeId)
+      scans = count ?? 0
+    }
+
+    let engagement = 0
+    if (p.video_url) {
+      const { data: posts } = await svc
+        .from("social_posts")
+        .select("engagement_data")
+        .eq("brokerage_id", brokerageId)
+        .contains("media_urls", [p.video_url])
+      for (const post of (posts ?? []) as Array<{ engagement_data: Record<string, number> | null }>) {
+        const m = post.engagement_data ?? {}
+        engagement += (m.views || 0) + (m.engagement || 0) + (m.comments || 0) + (m.shares || 0)
+      }
+    }
+
+    rows.push({ experimentId, variantIndex, hookAngle, scans, engagement })
+  }
+
+  return scoreHookOutcomes(rows)
+}

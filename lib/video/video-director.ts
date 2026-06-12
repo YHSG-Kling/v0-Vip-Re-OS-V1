@@ -450,6 +450,118 @@ export function defaultHookForSituation(kind: SituationKind): string {
   }
 }
 
+// ============================================================================
+// HOOK A/B — the "first-3-seconds" engine (pure)
+// ============================================================================
+
+/**
+ * The angle a hook variant plays. The scroll is won/lost in the first 3 seconds,
+ * so the Director drafts 2-3 OPENING hooks per reel — each a DISTINCT angle — and
+ * posts them as an organic A/B so the learning loop can crown the winner.
+ *
+ *   curiosity    — an open loop the viewer must tap to close ("You won't believe…").
+ *   social_proof — the crowd already moved ("Buyers are lining up").
+ *   urgency      — the window is closing ("Before it's gone").
+ *   value        — the concrete payoff up front ("What your home is worth").
+ */
+export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
+
+/** The fixed angle ORDER the A/B draws from — curiosity first (the strongest
+ *  scroll-stopper), then social-proof, urgency, value. hookVariants(…, n) takes the
+ *  first n. Deterministic so the simulator + idempotency key are stable. */
+export const HOOK_ANGLE_ORDER: HookAngle[] = ["curiosity", "social_proof", "urgency", "value"]
+
+/** One drafted hook variant — the angle + its (deterministic-fallback) copy. */
+export interface HookVariant {
+  /** 0-based position in the experiment (variant_index stamped on the row). */
+  index: number
+  angle: HookAngle
+  /** The hook copy — a deterministic, Fair-Housing-safe fallback ≤ a few words.
+   *  commissionVideoExperiment re-drafts each through generatePersonaCopy + the gate. */
+  hook: string
+}
+
+/**
+ * Deterministic per-(situation, angle) hook fallbacks. Each is ≤ a few words and
+ * Fair-Housing safe (no protected-class / steering language — never "family",
+ * "safe", "perfect for", a demographic, or a religion). These are the SAFE REAL
+ * defaults used when the persona generator is unavailable (tests, gateway down) —
+ * never a stub. The persona generator may personalize within the same angle, but
+ * each variant still clears the compliance gate before any render spend.
+ */
+function hookForAngle(kind: SituationKind, angle: HookAngle): string {
+  // A few situations carry an angle-specific line; everything else composes the
+  // angle onto the situation's base headline so the angle is always distinct.
+  const base = defaultHookForSituation(kind)
+  switch (angle) {
+    case "curiosity":
+      switch (kind) {
+        case "new_listing":   return "You Have To See This"
+        case "price_drop":    return "The Price Just Changed"
+        case "just_sold":     return "Guess What Just Closed"
+        case "cma":           return "Your Home's Real Number"
+        case "market_update": return "What The Numbers Show"
+        case "neighborhood":  return "What's Really Here"
+        default:              return `Take A Look: ${base}`
+      }
+    case "social_proof":
+      switch (kind) {
+        case "new_listing":   return "Buyers Are Already Asking"
+        case "price_drop":    return "Buyers Are Watching This"
+        case "just_sold":     return "Another One Closed"
+        case "open_house":    return "Everyone's Stopping By"
+        case "testimonial":   return "Clients Keep Saying This"
+        case "neighborhood":  return "Everyone Wants In Here"
+        default:              return `People Are Talking: ${base}`
+      }
+    case "urgency":
+      switch (kind) {
+        case "new_listing":   return "Just Hit The Market"
+        case "price_drop":    return "Priced To Move Now"
+        case "open_house":    return "This Weekend Only"
+        case "coming_soon":   return "Before It's Listed"
+        case "just_sold":     return "Off The Market Fast"
+        default:              return `Don't Wait: ${base}`
+      }
+    case "value":
+      switch (kind) {
+        case "new_listing":   return "Here's What You Get"
+        case "cma":           return "What Your Home Is Worth"
+        case "market_update": return "Your Market This Month"
+        case "explainer":     return "What You Should Know"
+        case "anniversary":   return "Your Equity This Year"
+        default:              return base
+      }
+  }
+}
+
+/**
+ * hookVariants — PURE. Produce n DISTINCT opening-hook angles for a situation, each
+ * with a deterministic, Fair-Housing-safe fallback ≤ a few words. n is clamped to
+ * 1..4 (the four angles). Variant 0 is always the strongest scroll-stopper
+ * (curiosity); the single-hook commissionVideo path is unaffected.
+ *
+ * Distinctness is guaranteed: if two angles would collapse to the same fallback
+ * copy for a situation, the later one is disambiguated so the A/B always tests
+ * genuinely different openings. No I/O.
+ */
+export function hookVariants(situation: VideoSituation, n = 3): HookVariant[] {
+  const count = Math.max(1, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(n) || 1))
+  const out: HookVariant[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < count; i++) {
+    const angle = HOOK_ANGLE_ORDER[i]
+    let hook = hookForAngle(situation.kind, angle).trim()
+    // Distinctness guard — never test two identical openings against each other.
+    if (seen.has(hook.toLowerCase())) {
+      hook = `${hook} — ${angle.replace(/_/g, " ")}`
+    }
+    seen.add(hook.toLowerCase())
+    out.push({ index: i, angle, hook })
+  }
+  return out
+}
+
 /**
  * assemblySpec — PURE. Given the situation + the resolved format, return the
  * intro/outro STRUCTURE the build will fill. No I/O.
@@ -859,4 +971,322 @@ function factStrings(situation: VideoSituation, fallbackHook: string): string[] 
     if (typeof v === "string" && v.trim()) facts.push(`${key}: ${v.trim()}`)
   }
   return facts
+}
+
+// ============================================================================
+// HOOK A/B EXPERIMENT (live) — stage N variant rows sharing an experiment_id
+// ============================================================================
+
+/**
+ * draftAndGateHook — the SHARED hook draft+gate (mirrors commissionVideo step 5):
+ * generatePersonaCopy (with the deterministic fallback) drafts; runWithComplianceRedraft
+ * runs evaluateOutbound and re-prompts once on violations. Returns the gated hook line,
+ * or a blocked result when the hook fails the gate on both attempts. When the gate is
+ * unreachable (no creds/offline) the deterministic fallback is kept and treated as
+ * passed (the render cron's gate stays authoritative).
+ */
+async function draftAndGateHook(
+  situation: VideoSituation,
+  opts: { brokerageId: string; agentUserId: string; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator },
+  fallbackHook: string,
+  goalSuffix = "",
+): Promise<{ ok: true; hook: string } | { ok: false; violations: string[] }> {
+  try {
+    const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+    const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
+    const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+
+    const facts = factStrings(situation, fallbackHook)
+    const result = await runWithComplianceRedraft({
+      draft: async ({ violations: priorViolations }) => {
+        const draft = await generatePersonaCopy(
+          {
+            goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${goalSuffix}${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
+            facts,
+            channel: situation.targetChannel,
+            persona: { audience: "audience" },
+            words: 8,
+          },
+          { body: fallbackHook },
+          { generator: opts.copyGenerator },
+        )
+        return (draft.body || fallbackHook).trim()
+      },
+      gate: async (s) => {
+        const r = await evaluateOutbound({
+          actorContext: { brokerageId: opts.brokerageId, userId: opts.agentUserId, role: "system" },
+          journeyType: "seller",
+          persona: "other",
+          messageType: "social",
+          content: s,
+        })
+        return { allowed: r.allowed, violations: r.violations }
+      },
+    })
+    if (result.ok) return { ok: true, hook: result.script }
+    return { ok: false, violations: result.violations }
+  } catch {
+    // Gate unreachable — keep the deterministic fallback (render cron gate is authoritative).
+    return { ok: true, hook: fallbackHook }
+  }
+}
+
+export interface CommissionExperimentOpts extends CommissionOpts {
+  /**
+   * OPTIONAL learned-angle seam. When supplied, the winning angle (from a prior
+   * crowned hook experiment via recommendHookWinner) is moved to variant 0 so
+   * future commissions PREFER it; the row stamps hook_source:"learned" + the why.
+   * Omitted → the default angle order (curiosity first), hook_source:"default".
+   */
+  preferredAngle?: HookAngle | null
+  /** The WHY behind a learned preferred angle (rides video_metadata.hook_why). */
+  preferredAngleWhy?: string | null
+}
+
+export interface CommissionExperimentResult {
+  ok: boolean
+  status: "staged" | "already_staged" | "blocked" | "failed"
+  experimentId?: string
+  compositionId?: string
+  /** One entry per staged variant row. */
+  variants?: Array<{
+    videoProjectId: string
+    variantIndex: number
+    hookAngle: HookAngle
+    hook: string
+    qrCodeId: string | null
+  }>
+  reason?: string
+  violations?: string[]
+}
+
+/**
+ * commissionVideoExperiment — the HOOK A/B "first-3-seconds" engine.
+ *
+ * Drafts + GATES n DISTINCT opening-hook variants (hookVariants), then stages N
+ * ai_video_projects rows SHARING one experiment_id — each carrying its own
+ * variant_index + hook_variant (the gated copy) + hook_angle in video_metadata, and
+ * each minting its OWN tracked QR so the learning loop can attribute scans per
+ * variant. Idempotent per (entity, kind, experiment): a re-run reuses the staged
+ * experiment instead of duplicating. Compliance-gated, NEVER auto-publishes
+ * (approval_status='pending_review'). selectVideoFormat / commissionVideo UNCHANGED.
+ *
+ * The existing render crons + concatIntroOutro carry each variant from here, and
+ * distributeVideoProject (or the gated proposal path) posts each as a human-approved
+ * social draft so the A/B actually runs.
+ */
+export async function commissionVideoExperiment(
+  situation: VideoSituation,
+  opts: CommissionExperimentOpts,
+  cfg: { variants?: number } = {},
+  client?: AnyClient,
+): Promise<CommissionExperimentResult> {
+  if (!opts.brokerageId || !opts.agentUserId) {
+    return { ok: false, status: "failed", reason: "brokerageId + agentUserId required" }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc: AnyClient = client ?? createServiceClient()
+
+  const variantCount = Math.max(2, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(cfg.variants ?? 3) || 3))
+
+  // 1. Resolve the format + assembly structure (pure expert default — the A/B is
+  //    about the HOOK, not the format; the format stays the deterministic choice).
+  const format = selectVideoFormat(situation)
+  const spec = assemblySpec(situation, format)
+
+  // 2. Read composition capabilities (registry is source of truth; format flags fallback).
+  let supportsBookends = true
+  let requiresAvatar = format.needsAvatar
+  let requiresVoiceover = format.needsAvatar || format.needsCharts
+  try {
+    const { getComposition } = await import("@/lib/remotion/registry")
+    const comp = await getComposition(format.compositionId)
+    if (comp) {
+      supportsBookends = comp.supports_bookends
+      requiresAvatar = comp.requires_did_avatar
+      requiresVoiceover = comp.requires_voiceover
+    }
+  } catch { /* registry read best-effort */ }
+  void requiresVoiceover
+
+  // 3. Idempotency — one experiment per (entity, situation kind). Deterministic
+  //    experiment_id so a re-run reuses the staged experiment instead of duplicating.
+  const entity = opts.listingId ?? opts.contactId ?? opts.campaignId ?? opts.brokerageId
+  const experimentId = `hookexp:${situation.kind}:${entity}`
+
+  const { data: existingRows } = await svc
+    .from("ai_video_projects")
+    .select("id, video_metadata")
+    .eq("brokerage_id", opts.brokerageId)
+    .eq("video_metadata->>experiment_id", experimentId)
+  if (existingRows && existingRows.length > 0) {
+    const variants = (existingRows as Array<{ id: string; video_metadata: Record<string, unknown> | null }>)
+      .map((r) => {
+        const m = r.video_metadata ?? {}
+        return {
+          videoProjectId: r.id,
+          variantIndex: typeof m.variant_index === "number" ? m.variant_index : 0,
+          hookAngle: (typeof m.hook_angle === "string" ? m.hook_angle : "curiosity") as HookAngle,
+          hook: typeof m.hook_variant === "string" ? m.hook_variant : "",
+          qrCodeId: typeof m.qr_code_id === "string" ? m.qr_code_id : null,
+        }
+      })
+      .sort((a, b) => a.variantIndex - b.variantIndex)
+    return {
+      ok: true, status: "already_staged",
+      experimentId, compositionId: format.compositionId, variants,
+      reason: "an experiment already exists for this (entity, kind)",
+    }
+  }
+
+  // 4. Draft the variant angles. When a learned winning angle is supplied, move it
+  //    to variant 0 so future commissions PREFER it (hook_source:"learned").
+  let variantDefs = hookVariants(situation, variantCount)
+  const hookSource: "default" | "learned" = opts.preferredAngle ? "learned" : "default"
+  const hookWhy = opts.preferredAngle
+    ? (opts.preferredAngleWhy ?? `Preferring the learned winning angle "${opts.preferredAngle}".`)
+    : "Default angle order (curiosity-first); no crowned winner yet."
+  if (opts.preferredAngle) {
+    const idx = variantDefs.findIndex((v) => v.angle === opts.preferredAngle)
+    if (idx > 0) {
+      const [win] = variantDefs.splice(idx, 1)
+      variantDefs.unshift(win)
+      variantDefs = variantDefs.map((v, i) => ({ ...v, index: i }))
+    } else if (idx === -1) {
+      // The winning angle wasn't in the first n — prepend it, drop the last.
+      const all = hookVariants(situation, HOOK_ANGLE_ORDER.length)
+      const win = all.find((v) => v.angle === opts.preferredAngle)
+      if (win) {
+        const rest = variantDefs.filter((v) => v.angle !== win.angle).slice(0, variantCount - 1)
+        variantDefs = [win, ...rest].map((v, i) => ({ ...v, index: i }))
+      }
+    }
+  }
+
+  // 5. For EACH variant: gate its hook BEFORE any render spend, mint its OWN tracked
+  //    QR, and stage a row sharing the experiment_id. A variant that fails the gate
+  //    blocks the whole experiment (no half-gated A/B reaches render spend).
+  const now = new Date().toISOString()
+  const staged: NonNullable<CommissionExperimentResult["variants"]> = []
+  const insertedIds: string[] = []
+
+  for (const v of variantDefs) {
+    const gated = await draftAndGateHook(
+      situation,
+      { brokerageId: opts.brokerageId, agentUserId: opts.agentUserId, copyGenerator: opts.copyGenerator },
+      v.hook,
+      ` with a ${v.angle.replace(/_/g, " ")} angle`,
+    )
+    if (!gated.ok) {
+      // Roll back any rows already staged for this experiment so it's all-or-nothing.
+      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: `hook variant ${v.index} (${v.angle}) failed the compliance gate on both attempts`,
+        violations: gated.violations,
+      }
+    }
+    const hookLine = gated.hook
+
+    // Mint this variant's OWN tracked QR (idempotent per (entity, kind, variant) via
+    // a variant-suffixed campaignId-free label — distinct QR so scans attribute per variant).
+    let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
+    if (!opts.mlsClean) {
+      try {
+        const { mintVideoQr } = await import("@/lib/video/video-qr")
+        qr = await mintVideoQr({
+          brokerageId: opts.brokerageId,
+          agentUserId: opts.agentUserId,
+          kind: spec.outro.qr.kind,
+          listingId: opts.listingId ?? null,
+          contactId: opts.contactId ?? null,
+          // Suffix the campaign ref with the variant so each variant gets a DISTINCT
+          // tracked qr_codes row (scans attribute per variant, not pooled).
+          campaignId: `${opts.campaignId ?? entity}:hookv${v.index}`,
+          origin: opts.origin,
+        }, svc)
+      } catch { /* a variant must still stage without a QR */ }
+    }
+
+    const introProps = { brand: true, hook: hookLine, agentPhotoSlot: "agents.avatar_image_url" }
+    const outroProps = {
+      brand: true, agentContact: true,
+      qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
+      qrDestinationType: qr?.destinationType ?? null,
+      qrSlug: qr?.slug ?? null,
+      mlsClean: opts.mlsClean ?? false,
+    }
+
+    const videoMetadata = {
+      director_key: `${experimentId}:v${v.index}`,
+      experiment_id: experimentId,
+      variant_index: v.index,
+      hook_variant: hookLine,
+      hook_angle: v.angle,
+      hook_source: hookSource,
+      hook_why: hookWhy,
+      composition_id: format.compositionId,
+      supports_bookends: supportsBookends,
+      needs_avatar: requiresAvatar,
+      needs_broll: format.needsBroll,
+      needs_charts: format.needsCharts,
+      needs_slides: format.needsSlides,
+      aspect: format.aspect,
+      target_channels: format.targetChannels,
+      intro: introProps,
+      outro: outroProps,
+      music_mood: spec.music.mood,
+      qr_code_id: qr?.qrCodeId ?? null,
+      requested_via: "asset_manager",
+      format_source: "default" as const,
+      format_why: "Expert default (hook A/B holds the format constant).",
+    }
+
+    const providerMetadata = {
+      composition_id: format.compositionId,
+      input_props: { intro: introProps, outro: outroProps, music_mood: spec.music.mood },
+    }
+
+    const { data: inserted, error } = await svc
+      .from("ai_video_projects")
+      .insert({
+        brokerage_id: opts.brokerageId,
+        agent_id: opts.agentUserId,
+        listing_id: opts.listingId ?? null,
+        contact_id: opts.contactId ?? null,
+        title: opts.title ? `${opts.title} — ${v.angle}` : `${hookLine} — ${format.compositionId} (${v.angle})`,
+        script_content: hookLine,
+        status: "remotion_pending",
+        video_type: videoTypeForSituation(situation.kind),
+        format: formatForAspect(format.aspect),
+        audience_type: situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing",
+        is_ai_generated: true,
+        approval_status: "pending_review",
+        compliance_status: "passed",
+        compliance_violations: [],
+        compliance_evaluated_at: now,
+        brand_voice_context: {},
+        intro_video_url: null,
+        outro_video_url: null,
+        b_roll_urls: null,
+        video_metadata: videoMetadata,
+        provider_metadata: providerMetadata,
+        created_at: now,
+        updated_at: now,
+      })
+      .select("id")
+      .maybeSingle()
+
+    if (error || !inserted) {
+      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      return { ok: false, status: "failed", experimentId, reason: error?.message ?? "insert failed" }
+    }
+    const id = (inserted as { id: string }).id
+    insertedIds.push(id)
+    staged.push({ videoProjectId: id, variantIndex: v.index, hookAngle: v.angle, hook: hookLine, qrCodeId: qr?.qrCodeId ?? null })
+  }
+
+  return { ok: true, status: "staged", experimentId, compositionId: format.compositionId, variants: staged }
 }

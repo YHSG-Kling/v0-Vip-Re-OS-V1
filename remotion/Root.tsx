@@ -11,6 +11,7 @@ import React from "react"
 import { Composition } from "remotion"
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
+import { PhotoWalkthroughReel } from "./PhotoWalkthroughReel"
 import { JustListedReelHorizontal } from "./JustListedReelHorizontal"
 import { JustSoldReelSquare } from "./JustSoldReelSquare"
 import { ComingSoonReel } from "./ComingSoonReel"
@@ -94,6 +95,44 @@ export const RemotionRoot: React.FC = () => {
           sqft:       "1,850",
           imageUrls:  [],
           ctaLabel:   "Tour this listing",
+          brand: {
+            primaryColor: "#0F172A",
+            accentColor:  "#F59E0B",
+            showEhoMark:  true,
+          },
+        }}
+      />
+      {/* CINEMATIC photo→walkthrough reel. Turns any MLS photo set into a
+          MOVING property tour — each photo gets a Ken Burns pan/zoom over its
+          own frame window with a cross-fade into the next, plus narrated
+          tour-beat captions. So even a listing with NO video gets a
+          scroll-stopping reel. Motion is planned PURELY upstream by
+          lib/video/ken-burns-plan.ts (kenBurnsPlan → per-photo clip windows);
+          the composition renders the plan verbatim with interpolate scale +
+          translate (NO CSS transitions). Reuses the JustListedReel brand / QR /
+          voiceover contract so it slots into the same render pipeline +
+          bookends + music-mood. Honest fallback card when no photos. 1080×1080
+          square + 20s @ 30fps = 600 frames. The Video Director selects this
+          format when a listing has photos but no walkthrough video; an empty
+          photo plan means the Director skips it. */}
+      <Composition
+        id="PhotoWalkthroughReel"
+        component={PhotoWalkthroughReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={600}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          hook:       "Take the tour",
+          address:    "123 Main Street",
+          cityState:  "Brickell, FL",
+          imageUrls:  [],
+          captions:   [],
+          ctaLabel:   "DM me to tour.",
+          voiceoverUrl:  undefined,
+          qrCodeDataUrl: null,
+          qrCaption:     "Scan to tour",
+          mlsClean:      false,
           brand: {
             primaryColor: "#0F172A",
             accentColor:  "#F59E0B",
