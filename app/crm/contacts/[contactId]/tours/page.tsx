@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { TourPipelineStepper } from '@/app/components/shared/TourPipelineStepper'
+import { OptimizedRouteSummary } from './components/optimized-route-summary'
 
 interface Props {
   params: Promise<{ contactId: string }>
@@ -140,6 +141,11 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
         tourCount={tours.length}
         buyerStage={contact.buyer_stage}
       />
+
+      {/* Optimized route summary — the Tour Day Optimizer's sequenced order + total
+          estimated drive time + optimization score, surfaced where the agent reviews a
+          planned tour before sending. Renders nothing until the optimizer has run. */}
+      <OptimizedRouteSummary contactId={contactId} brokerageId={brokerageId} />
 
       {/* AI route optimization nudge */}
       {tours.length > 0 && savedProperties.length > 1 && (

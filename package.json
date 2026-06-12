@@ -88,6 +88,7 @@
     "test:referral-radar": "tsx scripts/referral-radar-simulator.ts",
     "test:commission-forecaster": "tsx scripts/commission-forecaster-simulator.ts",
     "test:offer-net-sheet": "tsx scripts/offer-net-sheet-simulator.ts",
+    "test:tour-optimizer": "tsx scripts/tour-optimizer-simulator.ts",
     "test:bidding-war": "tsx scripts/bidding-war-concierge-simulator.ts",
     "test:marketing-bench": "tsx scripts/marketing-bench-simulator.ts",
     "test:intent-campaign": "tsx scripts/intent-campaign-simulator.ts",
