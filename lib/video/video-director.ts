@@ -305,9 +305,39 @@ export interface OutroSpec {
   qr: { kind: VideoQrKind }
 }
 
+/** The music MOOD the Director assigns a situation. The render coordinator picks a
+ *  licensed track tagged with this mood (video_assets.music_mood), VO stays dominant
+ *  (music ducked to ~20%). "none" = informational cut, no music. */
+export type MusicMood = "none" | "energetic" | "sophisticated" | "calm" | "upbeat"
+
 export interface AssemblySpec {
   intro: IntroSpec
   outro: OutroSpec
+  /** The background-music mood for this situation (the coordinator honors it). */
+  music: { mood: MusicMood }
+}
+
+/**
+ * Map a Director SituationKind → the background-music MOOD. The creative-director call:
+ * social-proof/celebration → energetic; luxury/new-listing → sophisticated; data/teaching
+ * → calm (subtle, never fights narration); lifestyle/community → upbeat. Informational
+ * in-house cuts (CMA, presentation) default to "none" — the numbers carry themselves.
+ */
+export function musicMoodForSituation(kind: SituationKind): MusicMood {
+  switch (kind) {
+    case "just_sold":
+    case "testimonial":   return "energetic"
+    case "new_listing":
+    case "price_drop":
+    case "coming_soon":   return "sophisticated"
+    case "open_house":
+    case "neighborhood":  return "upbeat"
+    case "market_update":
+    case "anniversary":
+    case "explainer":     return "calm"
+    case "cma":
+    case "presentation":  return "none"
+  }
 }
 
 /**
@@ -374,6 +404,7 @@ export function assemblySpec(
       agentContact: true,
       qr: { kind: qrKindForSituation(situation.kind) },
     },
+    music: { mood: musicMoodForSituation(situation.kind) },
   }
 }
 
@@ -609,13 +640,16 @@ export async function commissionVideo(
     target_channels: format.targetChannels,
     intro: introProps,
     outro: outroProps,
+    music_mood: spec.music.mood,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
   }
 
   const providerMetadata = {
     composition_id: format.compositionId,
-    input_props: { intro: introProps, outro: outroProps },
+    // music_mood rides input_props so buildRenderIntent threads it to the
+    // coordinator's mood-matched music pick.
+    input_props: { intro: introProps, outro: outroProps, music_mood: spec.music.mood },
   }
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,

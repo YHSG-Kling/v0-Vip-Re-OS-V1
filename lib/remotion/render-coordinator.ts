@@ -70,6 +70,11 @@ export interface RenderIntent {
    *  follows availability of a 'music' asset in the scope. Set
    *  false to force-disable. */
   applyMusic?:     boolean
+  /** The Video Director's per-situation music MOOD (e.g. "sophisticated",
+   *  "upbeat", "calm"). When set, the music pick PREFERS a licensed track
+   *  tagged with this mood (video_assets.music_mood), falling back to any
+   *  music asset in scope. "none" suppresses music entirely. */
+  musicMood?:      string | null
 }
 
 export interface CoordinatedRenderResult {
@@ -191,9 +196,11 @@ export async function finalizeCoordinatedRender(
   }
 
   // ─── Music ───
-  const wantsMusic = intent.applyMusic ?? true
+  // The Director's "none" mood suppresses music entirely (informational cuts);
+  // any other mood PREFERS a mood-tagged licensed track, else falls back to any.
+  const wantsMusic = (intent.applyMusic ?? true) && intent.musicMood !== "none"
   if (wantsMusic) {
-    const musicRow = await pickStockAsset(svc, intent, "music")
+    const musicRow = await pickStockAsset(svc, intent, "music", intent.musicMood ?? null)
     if (musicRow?.video_url) {
       try {
         const mixed = await mixBackgroundMusic({
@@ -271,23 +278,26 @@ async function pickStockAsset(
   svc:      ReturnType<typeof createServiceClient>,
   intent:   RenderIntent,
   category: string,
+  /** When category is "music" and a mood is supplied, PREFER a track tagged with
+   *  it; if none in scope, fall back to any music track (mood-preferred, never
+   *  mood-required, so single-track libraries still work). */
+  moodPref?: string | null,
 ): Promise<{
   id:                string
   video_url:         string
   music_volume_pct:  number | null
   music_loop:        boolean | null
 } | null> {
-  const tryScope = async (scopeType: string, scopeId: string) => {
-    const { data } = await svc.from("video_assets")
+  const tryScope = async (scopeType: string, scopeId: string, mood?: string | null) => {
+    let q = svc.from("video_assets")
       .select("id, video_url, music_volume_pct, music_loop")
       .eq("brokerage_id", intent.brokerageId)
       .eq("scope_type", scopeType)
       .eq("scope_id",   scopeId)
       .eq("category",   category)
       .not("video_url", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    if (mood) q = q.eq("music_mood", mood)
+    const { data } = await q.order("created_at", { ascending: false }).limit(1).maybeSingle()
     return data as { id: string; video_url: string; music_volume_pct: number | null; music_loop: boolean | null } | null
   }
 
@@ -300,7 +310,16 @@ async function pickStockAsset(
 
   // Walk the agent → team → brokerage cascade; most specific available wins.
   const { resolveStockScopeOrder } = await import("./stock-scope")
-  for (const ref of resolveStockScopeOrder(intent, teamId)) {
+  const scopes = resolveStockScopeOrder(intent, teamId)
+  // Pass 1: prefer a MOOD-tagged track across the whole cascade (the Director's
+  // mood is honored before falling back). Pass 2: any track in the cascade.
+  if (moodPref) {
+    for (const ref of scopes) {
+      const hit = await tryScope(ref.scopeType, ref.scopeId, moodPref)
+      if (hit) return hit
+    }
+  }
+  for (const ref of scopes) {
     const hit = await tryScope(ref.scopeType, ref.scopeId)
     if (hit) return hit
   }

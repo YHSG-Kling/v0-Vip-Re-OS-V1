@@ -77,6 +77,9 @@ export function buildRenderIntent(
     agentUserId:  row.agent_user_id,
     entityType:   row.entity_type,
     entityId:     row.entity_id,
+    // The Video Director stamps its per-situation music mood into input_props so
+    // the coordinator picks a mood-matched licensed track (null = no preference).
+    musicMood:    ((row.input_props as { music_mood?: unknown } | null)?.music_mood as string | undefined) ?? null,
   }
 }
 

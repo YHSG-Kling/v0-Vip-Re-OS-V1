@@ -17,8 +17,10 @@ import {
   assemblySpec,
   qrKindForSituation,
   defaultHookForSituation,
+  musicMoodForSituation,
   type SituationKind,
   type TargetChannel,
+  type MusicMood,
 } from "../lib/video/video-director"
 
 let passed = 0, failed = 0
@@ -95,6 +97,17 @@ async function main() {
   check("every situation's intro carries brand + agent photo + a real hook fallback (no stub)",
     ALL_KINDS.every((k) => defaultHookForSituation(k).length > 0))
   check("every situation's outro encodes a tracked QR kind", ALL_KINDS.every((k) => !!qrKindForSituation(k)))
+
+  console.log("\n[Layer 1c · music mood (the Director scores the moment)]")
+  const VALID_MOODS: MusicMood[] = ["none", "energetic", "sophisticated", "calm", "upbeat"]
+  check("every situation maps to a valid music mood", ALL_KINDS.every((k) => VALID_MOODS.includes(musicMoodForSituation(k))))
+  check("every situation's assembly spec carries the mood", ALL_KINDS.every((k) => assemblySpec({ kind: k, tier: "solo_agent", targetChannel: "instagram" }, selectVideoFormat({ kind: k, tier: "solo_agent", targetChannel: "instagram" })).music.mood === musicMoodForSituation(k)))
+  // The creative-director scoring the owner asked for:
+  check("just_sold + testimonial → energetic", musicMoodForSituation("just_sold") === "energetic" && musicMoodForSituation("testimonial") === "energetic")
+  check("new_listing (luxury feel) → sophisticated", musicMoodForSituation("new_listing") === "sophisticated")
+  check("open_house + neighborhood → upbeat", musicMoodForSituation("open_house") === "upbeat" && musicMoodForSituation("neighborhood") === "upbeat")
+  check("market_update + explainer → calm (never fights narration)", musicMoodForSituation("market_update") === "calm" && musicMoodForSituation("explainer") === "calm")
+  check("informational in-house cuts (cma, presentation) → none (numbers carry themselves)", musicMoodForSituation("cma") === "none" && musicMoodForSituation("presentation") === "none")
   // QR destination wiring the owner asked for:
   check("open_house outro QR → book_meeting kind (RSVP)", qrKindForSituation("open_house") === "open_house")
   check("anniversary outro QR → anniversary kind (portal equity card)", qrKindForSituation("anniversary") === "anniversary")
