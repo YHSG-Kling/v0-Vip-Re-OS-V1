@@ -43,18 +43,29 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { acceptAIISAHandoff } from "@/app/actions/ai-isa/accept-handoff"
 
-export type SellerIntentReason = "cma_request" | "positive_reply"
+export type SellerIntentReason = "cma_request" | "positive_reply" | "appointment_request"
 
 export interface ConvertSellerLeadOnIntentParams {
   brokerageId: string
   /** The seller LEAD that showed positive intent. */
   leadId: string
-  /** Why we're converting — drives whether a CMA is proposed. */
+  /** Why we're converting — drives whether a CMA is proposed / an appt is booked. */
   reason: SellerIntentReason
-  /** Property data the requested CMA runs against (when reason === 'cma_request').
-   *  When absent we derive a minimal {address} from the lead's address so a CMA
-   *  can still be proposed. */
+  /** Property data the requested CMA / appointment chain runs against (when
+   *  reason === 'cma_request' or 'appointment_request'). When absent we derive a
+   *  minimal {address} from the lead's address. */
   propertyData?: Record<string, any>
+  /** Appointment slot — REQUIRED when reason === 'appointment_request'. Some leads
+   *  ask for a listing appointment right away (an intent case): convert (canonical)
+   *  THEN immediately book the listing appointment via bookSellerListingAppointment,
+   *  which fires listing.appointment_set → the listing-appt-prep chain. */
+  appointment?: {
+    startAt: Date
+    endAt: Date
+    timezoneName: string
+    location?: string
+    notes?: string
+  }
 }
 
 export interface ConvertSellerLeadOnIntentResult {
@@ -67,6 +78,10 @@ export interface ConvertSellerLeadOnIntentResult {
   agentNotified?: boolean
   /** cma_reports.id of the proposed CMA (only when reason === 'cma_request'). */
   cmaReportId?: string
+  /** calendar_events.id of the booked listing appointment (appointment_request only). */
+  calendarEventId?: string
+  /** workflow_runs.id of the listing-appt-prep chain (appointment_request only). */
+  chainRunId?: string
   error?: string
 }
 
@@ -132,6 +147,8 @@ export async function convertSellerLeadOnIntent(
         body:
           params.reason === "cma_request"
             ? "A seller lead asked for a CMA and converted to a contact. Reach out — a CMA has been proposed."
+            : params.reason === "appointment_request"
+            ? "A seller lead asked for a listing appointment and converted to a contact. The appointment is being booked and the prep chain is running."
             : "A seller lead engaged positively and converted to a contact. Reach out to keep the conversation alive.",
         entity_type: "contact",
         entity_id: contactId,
@@ -182,11 +199,51 @@ export async function convertSellerLeadOnIntent(
     }
   }
 
+  // ── Step 4: APPOINTMENT — book the listing appointment milestone (intent case) ─
+  // Some seller leads ask for a listing appointment right away. That's a distinct
+  // intent: convert (canonical, done above) THEN immediately book the listing
+  // appointment via the existing milestone helper (bookSellerListingAppointment).
+  // It is idempotent and detects the contact already exists (converted above) →
+  // NO second convert / NO second welcome — it just schedules + fires
+  // listing.appointment_set → the listing-appt-prep chain.
+  let calendarEventId: string | undefined
+  let chainRunId: string | undefined
+  if (params.reason === "appointment_request" && params.appointment && agentId) {
+    const { bookSellerListingAppointment } = await import("./book-seller-appointment")
+    const appt = await bookSellerListingAppointment({
+      brokerageId: params.brokerageId,
+      leadId: params.leadId,
+      agentId,
+      startAt: params.appointment.startAt,
+      endAt: params.appointment.endAt,
+      timezoneName: params.appointment.timezoneName,
+      location: params.appointment.location ?? params.propertyData?.address ?? undefined,
+      notes: params.appointment.notes,
+      propertyData: params.propertyData,
+    })
+    if (appt.success) {
+      calendarEventId = appt.calendarEventId
+      chainRunId = appt.chainRunId
+    } else {
+      // Surface the booking failure but keep the (successful) conversion — the
+      // contact exists and the agent was notified; only the appt step failed.
+      return {
+        success: false,
+        contactId,
+        alreadyConverted: wasAlreadyConverted,
+        agentNotified,
+        error: `Converted, but appointment booking failed: ${appt.error}`,
+      }
+    }
+  }
+
   return {
     success: true,
     contactId,
     alreadyConverted: wasAlreadyConverted,
     agentNotified,
     cmaReportId,
+    calendarEventId,
+    chainRunId,
   }
 }
