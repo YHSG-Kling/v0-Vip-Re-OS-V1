@@ -108,6 +108,7 @@
     "test:closing-watchtower": "tsx scripts/closing-watchtower-simulator.ts",
     "test:anniversary-equity": "tsx scripts/anniversary-equity-simulator.ts",
     "test:listing-appt-prep": "tsx scripts/listing-appt-prep-simulator.ts",
+    "test:seller-appt-conversion": "tsx scripts/seller-appt-conversion-simulator.ts",
     "test:financing-pit-stop": "tsx scripts/financing-pit-stop-simulator.ts",
     "test:bidding-war": "tsx scripts/bidding-war-concierge-simulator.ts",
     "test:marketing-bench": "tsx scripts/marketing-bench-simulator.ts",
