@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { TransactionDetailClient } from "./transaction-detail-client"
 import { ClosingWatchtowerSection } from "./closing-watchtower-section"
+import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
 
 export const dynamic = "force-dynamic"
@@ -54,6 +55,9 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       status,
       stage,
       contract_date,
+      financing_deadline,
+      buyer_contact_id,
+      loan_amount,
       close_date,
       compliance_passed_at,
       deal_type,
@@ -312,6 +316,17 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     .order("scored_at", { ascending: false })
     .limit(7)
 
+  // Financing Pit Stop inputs — the buyer's pre-approval expiry (the stale-pre-approval
+  // signal) keyed on the deal's buyer contact (buyer_contact_id, else contact_id).
+  const financingBuyerContactId = (transaction as any).buyer_contact_id ?? transaction.contact_id ?? null
+  const { data: buyerFinProfile } = financingBuyerContactId
+    ? await supabase
+        .from("buyer_financial_profiles")
+        .select("pre_approval_expires_at, is_cash_buyer")
+        .eq("contact_id", financingBuyerContactId)
+        .maybeSingle()
+    : { data: null }
+
   // vendor_bookings with joined vendor name — includes contact_id and listing_id
   const { data: vendorBookings } = await supabase
     .from("vendor_bookings")
@@ -344,6 +359,27 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       {/* Title & Closing Watchtower — server-rendered date-chain status with
           severity badges (pure core shared with the hourly watchtower cron). */}
       <ClosingWatchtowerSection milestones={(milestones ?? []) as any} />
+      {/* Financing Pit Stop — the RATE/lender side beside the watchtower's DATE side
+          (pure core shared with the 6h financing-pit-stop cron). */}
+      <FinancingPitStopSection
+        financingDeadline={(transaction as any).financing_deadline ?? null}
+        preApprovalExpiresAt={(buyerFinProfile as any)?.pre_approval_expires_at ?? null}
+        isCashBuyer={(buyerFinProfile as any)?.is_cash_buyer ?? null}
+        lenderQuotes={
+          lenderInfo
+            ? [{
+                id: (lenderInfo as any).id,
+                lenderName: (lenderInfo as any).lender_name ?? null,
+                rate: (lenderInfo as any).interest_rate != null ? Number((lenderInfo as any).interest_rate) : null,
+                loanAmount:
+                  (lenderInfo as any).loan_amount != null
+                    ? Number((lenderInfo as any).loan_amount)
+                    : ((transaction as any).loan_amount != null ? Number((transaction as any).loan_amount) : null),
+                source: "on_file" as const,
+              }]
+            : []
+        }
+      />
       <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}
