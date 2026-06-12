@@ -34,6 +34,7 @@
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",
     "test:seller-update-video": "tsx scripts/seller-update-video-simulator.ts",
     "test:video-qr": "tsx scripts/video-qr-simulator.ts",
+    "test:video-director": "tsx scripts/video-director-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

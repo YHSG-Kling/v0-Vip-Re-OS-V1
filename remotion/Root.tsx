@@ -24,6 +24,7 @@ import { ListingPresentationSlide } from "./ListingPresentationSlide"
 import { BuyerConsultationSlide } from "./BuyerConsultationSlide"
 import { AffordabilitySnapshotReel } from "./AffordabilitySnapshotReel"
 import { CMAReel } from "./CMAReel"
+import { EquityReportReel } from "./EquityReportReel"
 import { ListingSectionReel } from "./ListingSectionReel"
 import { VideoCoverThumb } from "./VideoCoverThumb"
 import { LeadMagnetCard } from "./LeadMagnetCard"
@@ -522,6 +523,45 @@ export const RemotionRoot: React.FC = () => {
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
             agentName:     "Your Agent",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* Wave 39 — Anniversary Equity Reel. The video face of
+          lib/kernel/anniversary-equity.ts: on a past client's yearly
+          closing anniversary, the OPTIONAL personalized reel that rides
+          the SAME real equity numbers the portal card + gated note carry
+          (estimated current value, what they paid, appreciation, and
+          equity ONLY when the original loan is on file — otherwise the
+          honest appreciation-only treatment). Mirrors MarketUpdateReel:
+          stat cards + optional avatar PIP, plus a deterministic SVG
+          basis→value bar (lib/charts/geometry) and the tracked
+          QrOutroBadge (mintVideoQr kind "anniversary" → anniversary_video
+          → the portal equity card). 1080×1080 + 18s. Avatar optional. */}
+      <Composition
+        id="EquityReportReel"
+        component={EquityReportReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={540}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          agentName:       "Your Agent",
+          agentPhotoUrl:   null,
+          avatarVideoUrl:  null,
+          address:         "123 Main Street, Brickell, FL",
+          estimatedValue:  600000,
+          purchasePrice:   500000,
+          appreciation:    100000,
+          appreciationPct: 20,
+          estimatedEquity: 206000,
+          yearsHeld:       1,
+          qrCodeDataUrl:   null,
+          qrCaption:       "Scan for your equity update",
+          brandColors: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
             showEhoMark:   true,
           },
         }}

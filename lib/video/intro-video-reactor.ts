@@ -69,8 +69,36 @@ interface BaseInput {
 
 export interface AssignmentIntroInput extends BaseInput {}
 
+/**
+ * The REAL equity numbers (computeEquityLine output) that ride the OPTIONAL
+ * personalized Anniversary Equity Reel (remotion/EquityReportReel.tsx). When
+ * present, the reactor mints the tracked anniversary QR + stamps the
+ * EquityReportReel composition id, its inputProps, and the QR onto the
+ * ai_video_projects row's video_metadata so the render coordinator renders the
+ * data-driven reel (not a generic talking head). Honest: estimatedEquity null →
+ * the reel renders the appreciation-only treatment (NEVER a fabricated number).
+ */
+export interface AnniversaryEquityReelInput {
+  /** REAL estimated current value (computeEquityLine's valuation source). */
+  estimatedValue:  number
+  /** What they paid — the basis (computeEquityLine basisPrice). */
+  purchasePrice:   number
+  /** est. value − basis. Can be negative — the reel renders it honestly. */
+  appreciation:    number
+  /** appreciation / basis × 100. */
+  appreciationPct: number
+  /** est. value − est. remaining balance; NULL → appreciation-only mode. */
+  estimatedEquity: number | null
+  /** The past client's home — shown on the cover. Falls back to "your home". */
+  address?:        string | null
+}
+
 export interface AnniversaryVideoInput extends BaseInput {
   yearsAgo: number
+  /** OPTIONAL — when supplied, the avatar reel is the data-driven
+   *  EquityReportReel carrying these REAL numbers + a tracked anniversary QR.
+   *  Absent → the legacy generic anniversary talking-head script path. */
+  equityReel?: AnniversaryEquityReelInput
 }
 
 export interface ReactorResult {
