@@ -613,6 +613,39 @@ export async function commissionVideo(
     }
   }
 
+  // 5b. SOURCE the B-roll when the chosen format wants it. The Director already
+  //     FLAGS needsBroll; here we fill it — pickBrollClips walks the EXISTING
+  //     agent → team → brokerage video_assets cascade (same walk as the render
+  //     coordinator's bookend/music pick) and returns the ordered clips the
+  //     composition's B-roll layer composites under the narration. Best-effort:
+  //     an empty scope (no uploaded b_roll) returns [] and the composition
+  //     renders WITHOUT B-roll exactly like today — a picker failure NEVER
+  //     blocks staging.
+  let brollClips: import("@/lib/video/broll-picker").PickedBrollClip[] = []
+  let brollSourcedCount = 0
+  let brollSourcedScope: string | null = null
+  if (format.needsBroll) {
+    try {
+      const { pickBrollClips } = await import("@/lib/video/broll-picker")
+      const picked = await pickBrollClips(
+        {
+          brokerageId: opts.brokerageId,
+          // The Director renders for the agent's personal brand — agent scope
+          // inherits team + brokerage b_roll via the cascade.
+          scopeType:   "agent",
+          scopeId:     opts.agentUserId,
+        },
+        svc,
+      )
+      brollClips        = picked.clips
+      brollSourcedCount = picked.sourcedCount
+      brollSourcedScope = picked.sourcedScope
+    } catch (e) {
+      // B-roll is an enhancement, never a gate — the render still ships without it.
+      console.warn("[video-director] b-roll pick failed; staging without B-roll:", (e as Error).message)
+    }
+  }
+
   // 6. Build the composition input props carrying the intro + outro + QR.
   const introProps = {
     brand: true,
@@ -643,13 +676,24 @@ export async function commissionVideo(
     music_mood: spec.music.mood,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // B-roll the Director sourced from the scope cascade (empty when none
+    // uploaded — the composition then renders without B-roll, like today).
+    broll_clips:         brollClips,
+    broll_sourced_count: brollSourcedCount,
+    broll_sourced_scope: brollSourcedScope,
   }
 
   const providerMetadata = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
-    // coordinator's mood-matched music pick.
-    input_props: { intro: introProps, outro: outroProps, music_mood: spec.music.mood },
+    // coordinator's mood-matched music pick. brollClips rides input_props so the
+    // render path feeds the composition's brollClips prop the real clips.
+    input_props: {
+      intro: introProps,
+      outro: outroProps,
+      music_mood: spec.music.mood,
+      ...(format.needsBroll ? { brollClips } : {}),
+    },
   }
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,
@@ -678,7 +722,7 @@ export async function commissionVideo(
       brand_voice_context: {},
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
-      b_roll_urls: format.needsBroll ? [] : null,
+      b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
       video_metadata: videoMetadata,
       provider_metadata: providerMetadata,
       created_at: now,

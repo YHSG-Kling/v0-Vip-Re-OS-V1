@@ -17,6 +17,7 @@ import { ComingSoonReel } from "./ComingSoonReel"
 import { OpenHouseAnnounceReel } from "./OpenHouseAnnounceReel"
 import { AgentTalkingHeadReel } from "./AgentTalkingHeadReel"
 import { AgentExplainerReel } from "./AgentExplainerReel"
+import { ExplainerAnimReel } from "./ExplainerAnimReel"
 import { TestimonialReel } from "./TestimonialReel"
 import { NeighborhoodSpotlightReel } from "./NeighborhoodSpotlightReel"
 import { MarketUpdateReel } from "./MarketUpdateReel"
@@ -177,6 +178,56 @@ export const RemotionRoot: React.FC = () => {
           ],
           ctaLabel:   "Book a 15-min consult",
           agentName:  "Your Agent",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* ANIMATED EXPLAINER reel — the in-stack answer to Manim. Animates
+          a real-estate CONCEPT as a deterministic diagram (equity-over-time
+          draw-on curve / rate-buydown payment bars / closing-timeline stepped
+          path / what-$X/mo-buys price bars) with the agent avatar PIP
+          narrating. Diagram content is pure data
+          (lib/charts/explainer-diagram.ts); geometry reuses
+          lib/charts/geometry; animation is interpolate/spring/Sequence only.
+          Topic + facts ride on situation.facts. 1080×1080 + 18s. Avatar
+          optional — honest "share your numbers" fallback when facts are thin. */}
+      <Composition
+        id="ExplainerAnimReel"
+        component={ExplainerAnimReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={540}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          eyebrow:  "FIRST-TIME BUYER",
+          title:    "How your equity grows",
+          caption:  "Assumes 4.0% appreciation, 6.5% / 30yr loan — estimates, not a guarantee.",
+          ctaLabel: "Want your numbers?",
+          hasData:  true,
+          diagram: {
+            kind: "equity_over_time" as const,
+            points: [
+              { year: 0,  value: 500000, balance: 400000, equity: 100000 },
+              { year: 2,  value: 540800, balance: 388000, equity: 152800 },
+              { year: 4,  value: 584929, balance: 374000, equity: 210929 },
+              { year: 6,  value: 632659, balance: 358000, equity: 274659 },
+              { year: 8,  value: 684285, balance: 340000, equity: 344285 },
+              { year: 10, value: 740122, balance: 320000, equity: 420122 },
+            ],
+            startValue: 500000,
+            startLoan:  400000,
+            apr:        0.04,
+            rate:       0.065,
+            termYears:  30,
+            finalEquity: 420122,
+          },
+          agentName:      "Your Agent",
           avatarVideoUrl: null,
           agentPhotoUrl:  null,
           brand: {
