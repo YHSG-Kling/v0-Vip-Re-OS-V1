@@ -26,6 +26,7 @@
 import {
   firstTouchDecision,
   DEFAULT_AGENT_GRACE_MINUTES,
+  summarizeFirstTouchLatency,
 } from "../lib/ai-isa/speed-to-lead-policy"
 import type { FirstTouchInput } from "../lib/ai-isa/speed-to-lead-policy"
 import {
@@ -310,6 +311,26 @@ async function main() {
     singlePrompt.some((m) => m.role === "user" && (m.content as string).includes("recently started a new job")))
   check("prompt system message requires Fair Housing",
     singlePrompt.some((m) => m.role === "system" && (m.content as string).toLowerCase().includes("fair housing")))
+
+  // ── Latency summary (the ISA-console KPI math) ──────────────────────────────
+  console.log("\n[Layer 1f · first-touch latency summary]")
+  const t0 = new Date("2026-06-13T12:00:00Z")
+  const mk = (createdSecAgo: number, channel: string) => ({
+    createdAt: new Date(t0.getTime() - createdSecAgo * 1000).toISOString(),
+    firstTouchedAt: t0.toISOString(),
+    channel,
+  })
+  // latencies: 60s, 120s, 600s → median 120s; 2 of 3 within the 300s SLA.
+  const sum = summarizeFirstTouchLatency([mk(60, "email"), mk(120, "sms"), mk(600, "email")])
+  check("latency: touchedCount counts valid rows", sum.touchedCount === 3)
+  check("latency: median of 60/120/600 = 120s", sum.medianSeconds === 120)
+  check("latency: 2/3 within 5-min SLA", Math.round((sum.pctWithinSla ?? 0) * 100) === 67)
+  check("latency: channel breakdown tallies", sum.channelBreakdown.email === 2 && sum.channelBreakdown.sms === 1)
+  const empty = summarizeFirstTouchLatency([])
+  check("latency: empty → honest nulls", empty.touchedCount === 0 && empty.medianSeconds === null && empty.pctWithinSla === null)
+  // clock-skew guard: firstTouchedAt before createdAt is excluded from latency (still counted in channel mix).
+  const skew = summarizeFirstTouchLatency([{ createdAt: t0.toISOString(), firstTouchedAt: new Date(t0.getTime() - 5000).toISOString(), channel: "email" }])
+  check("latency: negative (clock-skew) latency excluded", skew.touchedCount === 0 && skew.channelBreakdown.email === 1)
 
   // ───────────────────────────────────────────────────────────────────────────
   // Layer 2: LIVE (gated)

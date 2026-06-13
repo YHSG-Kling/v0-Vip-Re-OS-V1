@@ -145,3 +145,66 @@ function isEmailAllowed(c: FirstTouchConsentInput): boolean {
 function consent_emailOptedOut(c: FirstTouchConsentInput): boolean {
   return c.email_opt_out === true
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPEED-TO-LEAD LATENCY SUMMARY — pure metric math for the ISA console KPI strip.
+// Given the rows that have been first-touched (createdAt + firstTouchedAt + channel),
+// compute median latency, the share touched within the SLA, and a channel breakdown.
+// No I/O — unit-testable; the server action just feeds it real rows.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const FIRST_TOUCH_SLA_SECONDS = 5 * 60 // the "speed to lead" promise: under 5 minutes
+
+export interface FirstTouchRow {
+  createdAt: string | Date | null
+  firstTouchedAt: string | Date | null
+  channel?: string | null
+}
+
+export interface FirstTouchLatencySummary {
+  touchedCount: number
+  medianSeconds: number | null
+  /** Share (0..1) of touched rows that met the under-5-min SLA. */
+  pctWithinSla: number | null
+  channelBreakdown: Record<string, number>
+}
+
+function toMsOrNull(d: string | Date | null): number | null {
+  if (!d) return null
+  const t = d instanceof Date ? d.getTime() : new Date(d).getTime()
+  return Number.isNaN(t) ? null : t
+}
+
+export function summarizeFirstTouchLatency(rows: FirstTouchRow[]): FirstTouchLatencySummary {
+  const latencies: number[] = []
+  const channelBreakdown: Record<string, number> = {}
+
+  for (const r of rows) {
+    const created = toMsOrNull(r.createdAt)
+    const touched = toMsOrNull(r.firstTouchedAt)
+    // Only count rows with both timestamps and a non-negative latency (clock-skew guard).
+    if (created !== null && touched !== null && touched >= created) {
+      latencies.push(Math.floor((touched - created) / 1000))
+    }
+    const ch = (r.channel ?? "unknown") || "unknown"
+    channelBreakdown[ch] = (channelBreakdown[ch] ?? 0) + 1
+  }
+
+  const touchedCount = latencies.length
+  if (touchedCount === 0) {
+    return { touchedCount: 0, medianSeconds: null, pctWithinSla: null, channelBreakdown }
+  }
+
+  latencies.sort((a, b) => a - b)
+  const mid = Math.floor(touchedCount / 2)
+  const medianSeconds =
+    touchedCount % 2 === 0 ? Math.round((latencies[mid - 1] + latencies[mid]) / 2) : latencies[mid]
+  const withinSla = latencies.filter((s) => s <= FIRST_TOUCH_SLA_SECONDS).length
+
+  return {
+    touchedCount,
+    medianSeconds,
+    pctWithinSla: withinSla / touchedCount,
+    channelBreakdown,
+  }
+}

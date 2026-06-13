@@ -44,6 +44,8 @@ import {
 } from './components/qualification-os'
 import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
 import { AIISAConsoleClient } from './ai-isa-console-client'
+import { SpeedToLeadPanel } from './components/speed-to-lead-panel'
+import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
 
 export const dynamic = 'force-dynamic'
 
@@ -115,7 +117,11 @@ export default async function AIISAOperationsConsolePage() {
     .order('created_at', { ascending: false })
     .limit(20)
 
-  const [leadsResult, draftsResult] = await Promise.all([leadsQuery, draftsQuery])
+  const [leadsResult, draftsResult, speedToLeadMetrics] = await Promise.all([
+    leadsQuery,
+    draftsQuery,
+    getSpeedToLeadMetrics(brokerageId),
+  ])
 
   const leads = (leadsResult.data ?? []) as any[]
   const rawDrafts = (draftsResult.data ?? []) as any[]
@@ -364,6 +370,9 @@ export default async function AIISAOperationsConsolePage() {
           </Link>
         </div>
       </div>
+
+      {/* Speed-to-Lead — automatic first-touch SLA + who is still waiting */}
+      <SpeedToLeadPanel metrics={speedToLeadMetrics} />
 
       {/* AI-ISA Operations Console — Sections 2-9 */}
       <AIISAConsoleClient
