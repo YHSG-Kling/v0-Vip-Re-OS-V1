@@ -52,9 +52,11 @@ export async function GET(req: NextRequest) {
 
     for (const row of (docs ?? []) as Array<{ id: string; ai_metadata: any }>) {
       const prior = row.ai_metadata?.document_compliance_audit
-      // Skip docs already audited with a real result; retry past 'not_audited' (creds may
-      // have been configured since) — but only those, so we don't reprocess clean passes.
-      if (prior && prior.status && prior.status !== "not_audited") continue
+      // Skip docs already audited with a COMPLETE result; retry 'not_audited' (creds may have
+      // been configured since) AND 'partial_audit' (a degraded pass — e.g. vision was down — that
+      // a later run can complete into the full hybrid). Re-runs over the same inputs are no-ops
+      // (idempotent content hash), so retrying these is cheap and never double-escalates.
+      if (prior && prior.status && prior.status !== "not_audited" && prior.status !== "partial_audit") continue
       scanned += 1
       try {
         const r = await runDocumentComplianceAudit({ documentId: row.id }, {}, supabase)
