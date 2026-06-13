@@ -27,6 +27,7 @@ import type { StepContext, StepResult } from "@/lib/workflow/channel-registry"
 import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables"
 import { checkSequenceAuthority }  from "./compliance-gate"
 import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
+import { recordSequenceTouchpoint } from "./touchpoint-bridge"
 import { publishManagerSignal }    from "@/lib/kernel/manager-signals"
 import { KernelEvent }             from "@/lib/kernel/events"
 import { processKernelEvent }      from "@/lib/kernel/notification-engine"
@@ -430,6 +431,20 @@ export async function executeSequenceStep(
       contactId,
       payload:     { channel: step.channel, sequenceId: enrollment.sequence_id },
     }, supabase).catch(() => {})
+  }
+
+  // ── Step 13c: Shared touch ledger — record the send where de-confliction, attribution,
+  // and team-query read it (System A now feeds the SAME ledger System B used). Best-effort. ──
+  if (dispatchResult.status === "sent" && contactId) {
+    await recordSequenceTouchpoint(supabase, {
+      brokerageId,
+      sequenceId:   enrollment.sequence_id,
+      contactId,
+      enrollmentId,
+      stepId:       step.id,
+      stepChannel:  step.channel,
+      sentAt:       now,
+    })
   }
 
   // ── Step 14: Advance enrollment ────────────────────────────────────────────
