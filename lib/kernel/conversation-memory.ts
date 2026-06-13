@@ -306,3 +306,53 @@ export async function loadContactContext(contactId: string, client?: Svc): Promi
   if (!spine || typeof spine !== "object" || typeof spine.summary !== "string") return null
   return spine as ContextSpine
 }
+
+// ─── REFRESH SWEEP (the write side the cron drives) ───────────────────────────
+//
+// The spine is only useful if it's kept current. This bounded sweep refreshes the
+// context spine for contacts that had a RECENT interaction (a conversation touched
+// within the lookback window), so the team always reads a fresh running note. The
+// "update-on-write" intent without scattering update calls across every logging
+// site: one idempotent sweep, gated by recency + a hard cap, every contact updated
+// in place. Honest no-op when nothing was active.
+export interface ContextSpineRefreshResult {
+  contactsConsidered: number
+  spinesRefreshed: number
+  errors: string[]
+}
+
+export async function refreshRecentContactSpines(
+  brokerageId: string,
+  opts: { now?: Date; lookbackHours?: number; limit?: number; rewriter?: SummaryRewriter } = {},
+  client?: Svc,
+): Promise<ContextSpineRefreshResult> {
+  const supabase = client ?? createServiceClient()
+  const now = opts.now ?? new Date()
+  const lookbackHours = opts.lookbackHours ?? 6
+  const cap = opts.limit ?? 500
+  const since = new Date(now.getTime() - lookbackHours * 3_600_000).toISOString()
+  const result: ContextSpineRefreshResult = { contactsConsidered: 0, spinesRefreshed: 0, errors: [] }
+
+  // Recently-active contacts: a conversation updated within the window. updated_at is
+  // the touch column on conversations (last_message_at is nullable); fall back gracefully.
+  const { data: rows, error } = await supabase
+    .from("conversations")
+    .select("contact_id")
+    .eq("brokerage_id", brokerageId)
+    .gte("updated_at", since)
+    .not("contact_id", "is", null)
+    .limit(cap * 4)
+  if (error) { result.errors.push(`conversations: ${error.message}`); return result }
+
+  const contactIds = Array.from(new Set(((rows ?? []) as Array<{ contact_id: string }>).map((r) => r.contact_id))).slice(0, cap)
+  result.contactsConsidered = contactIds.length
+  for (const id of contactIds) {
+    try {
+      await updateContactContext(id, supabase, { now: now, rewriter: opts.rewriter })
+      result.spinesRefreshed += 1
+    } catch (e: any) {
+      result.errors.push(`${id}: ${e?.message ?? String(e)}`)
+    }
+  }
+  return result
+}
