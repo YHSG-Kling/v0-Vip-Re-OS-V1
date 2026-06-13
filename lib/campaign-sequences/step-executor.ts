@@ -26,6 +26,8 @@ import { registry }            from "@/lib/workflow/channel-registry"
 import type { StepContext, StepResult } from "@/lib/workflow/channel-registry"
 import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables"
 import { checkSequenceAuthority }  from "./compliance-gate"
+import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
+import { publishManagerSignal }    from "@/lib/kernel/manager-signals"
 import { KernelEvent }             from "@/lib/kernel/events"
 import { processKernelEvent }      from "@/lib/kernel/notification-engine"
 
@@ -108,10 +110,11 @@ export async function executeSequenceStep(
   // ── Step 3: Sequence creator user id ──────────────────────────────────────
   const { data: seqRow } = await supabase
     .from("campaign_sequences")
-    .select("created_by")
+    .select("created_by, trigger_event")
     .eq("id", enrollment.sequence_id)
     .single()
   const userId = seqRow?.created_by ?? brokerageId
+  const seqTriggerEvent: string | null = seqRow?.trigger_event ?? null
 
   // ── Lead-only channel restriction (TCPA / business rule) ──────────────────
   // An enrollment without a contactId targets an unconsented LEAD. Per the canonical business
@@ -189,6 +192,54 @@ export async function executeSequenceStep(
       await logAndSkip(supabase, { enrollmentId, enrollment, step, contactId, reason: `Feature flag locked: ${featureKey}` })
       return await advanceEnrollment(supabase, enrollment, step, "skipped")
     }
+  }
+
+  // ── Step 5b: First-touch coordination — the baton hand-off with AI ISA speed-to-lead ──
+  // The welcome drip's first hello and the AI ISA speed-to-lead engine both greet a brand-new
+  // contact. They share ONE ledger (contacts.first_touched_at / first_touch_channel) so the
+  // contact never receives two same-channel hellos within minutes. Scoped to the welcome arc
+  // only (CONTACT_CAPTURED-triggered, first step, outreach channel) — every other sequence's
+  // day-0 step is left to send normally.
+  let claimFirstTouch = false
+  const isFirstStep = (enrollment.current_step ?? 0) === 0
+  if (contactId && isFirstStep && FIRST_TOUCH_OUTREACH_CHANNELS.has(step.channel)) {
+    const { data: ftRow } = await supabase
+      .from("contacts")
+      .select("first_touched_at, first_touch_channel")
+      .eq("id", contactId)
+      .single()
+
+    const decision = decideFirstTouch({
+      isFirstStep,
+      sequenceTriggerEvent: seqTriggerEvent,
+      stepChannel:          step.channel,
+      firstTouchedAt:       ftRow?.first_touched_at ?? null,
+      firstTouchChannel:    ftRow?.first_touch_channel ?? null,
+    })
+
+    if (decision === "skip_duplicate") {
+      await logAndSkip(supabase, {
+        enrollmentId, enrollment, step, contactId,
+        reason: `coordinated: AI ISA speed-to-lead already made the first '${step.channel}' touch (first_touched_at ${ftRow?.first_touched_at})`,
+      })
+      // Surface the hand-off on the inter-manager bus → Command Center "managers talking".
+      void publishManagerSignal({
+        brokerageId,
+        fromManager: "campaign_orchestrator",
+        toManager:   "ai_isa",
+        signalType:  "first_touch_deferred",
+        message:     `Welcome drip deferred its first ${step.channel} touch — you already greeted this contact.`,
+        entityType:  "contact",
+        entityId:    contactId,
+        contactId,
+        payload:     { channel: step.channel, sequenceId: enrollment.sequence_id },
+      }, supabase).catch(() => {})
+
+      return await advanceEnrollment(supabase, enrollment, step, "skipped")
+    }
+
+    // No first touch on record → this welcome step IS the first touch; claim it after sending.
+    if (decision === "send_and_claim") claimFirstTouch = true
   }
 
   // ── Step 6: Load contact + agent ───────────────────────────────────────────
@@ -355,6 +406,30 @@ export async function executeSequenceStep(
       entityId: contactId ?? enrollmentId,
       suppressEnrollment: true,
     })
+  }
+
+  // ── Step 13b: Claim the first-touch ledger so speed-to-lead stands down ────
+  // The welcome drip beat (or replaced) the AI ISA speed-to-lead engine to the first hello.
+  // Stamp the SAME shared ledger speed-to-lead reads; the `.is(null)` guard is idempotent and
+  // race-safe — if the ISA stamped between our read and now, we never clobber its channel.
+  if (dispatchResult.status === "sent" && claimFirstTouch && contactId) {
+    await supabase
+      .from("contacts")
+      .update({ first_touched_at: now, first_touch_channel: step.channel })
+      .eq("id", contactId)
+      .is("first_touched_at", null)
+
+    void publishManagerSignal({
+      brokerageId,
+      fromManager: "campaign_orchestrator",
+      toManager:   "ai_isa",
+      signalType:  "first_touch_claimed",
+      message:     `Welcome drip made the first ${step.channel} touch — you can stand down for this contact.`,
+      entityType:  "contact",
+      entityId:    contactId,
+      contactId,
+      payload:     { channel: step.channel, sequenceId: enrollment.sequence_id },
+    }, supabase).catch(() => {})
   }
 
   // ── Step 14: Advance enrollment ────────────────────────────────────────────

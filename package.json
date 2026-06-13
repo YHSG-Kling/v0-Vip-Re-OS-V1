@@ -148,7 +148,8 @@
     "test:document-custody": "tsx scripts/document-custody-simulator.ts",
     "test:isa-reengagement": "tsx scripts/isa-reengagement-simulator.ts",
     "test:speed-to-lead": "tsx scripts/speed-to-lead-simulator.ts",
-    "test:listing-capture": "tsx scripts/listing-landing-capture-simulator.ts"
+    "test:listing-capture": "tsx scripts/listing-landing-capture-simulator.ts",
+    "test:first-touch-coord": "tsx scripts/first-touch-coordination-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
