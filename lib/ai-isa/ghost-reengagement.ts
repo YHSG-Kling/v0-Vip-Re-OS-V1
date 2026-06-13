@@ -3,6 +3,7 @@ import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
+import { ghostReengagementStopReason, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -44,7 +45,6 @@ export async function runGhostReengagement(
 }> {
   const supabase = createServiceClient()
   const today = new Date()
-  const todayDOW = today.getDay() // 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
 
   const ghostIds = await detectGhostLeads(brokerageId, thresholdDays)
 
@@ -72,13 +72,17 @@ export async function runGhostReengagement(
         ? lead.contacts[0]
         : lead.contacts
 
-      const shouldStop =
-        lead.lifecycle_state === 'representation' ||
-        lead.is_active === false ||
-        contactRow?.isa_reengage_allowed === false ||
-        lead.reengagement_status === 'opted_out'
+      // STOP CHECKS 1-3 + 5 — pure policy (reply-received is checked separately below,
+      // since it needs a DB count we only run when not already stopped).
+      const stopReason = ghostReengagementStopReason({
+        lifecycle_state: lead.lifecycle_state,
+        is_active: lead.is_active,
+        reengagement_status: lead.reengagement_status,
+        contactReengageAllowed: contactRow?.isa_reengage_allowed ?? null,
+        replyReceived: false,
+      })
 
-      if (shouldStop) {
+      if (stopReason) {
         await supabase
           .from('leads')
           .update({ reengagement_status: 'completed' })
@@ -149,28 +153,17 @@ export async function runGhostReengagement(
         .limit(1)
         .single()
 
-      const phaseStart = firstLog?.sent_at ? new Date(firstLog.sent_at) : today
-      const daysSinceStart = Math.floor(
-        (today.getTime() - phaseStart.getTime()) / 86400000,
-      )
-      const inPhase1 = daysSinceStart <= 14
+      // CADENCE — pure policy: Phase 1 (≤14d from first outreach) Mon/Wed/Fri only;
+      // Phase 2 (>14d) every 30 days. Single source of truth, exhaustively tested.
+      const cadence = shouldSendGhostOutreach({
+        firstSentAt: firstLog?.sent_at ?? null,
+        lastSentAt: lastLog?.sent_at ?? null,
+        now: today,
+      })
+      const inPhase1 = cadence.phase === 1
+      const daysSinceStart = cadence.daysSinceStart
 
-      let shouldSend = false
-      if (inPhase1) {
-        // Mon=1, Wed=3, Fri=5 only
-        shouldSend = [1, 3, 5].includes(todayDOW)
-      } else {
-        if (!lastLog?.sent_at) {
-          shouldSend = true
-        } else {
-          const daysSinceLast = Math.floor(
-            (today.getTime() - new Date(lastLog.sent_at).getTime()) / 86400000,
-          )
-          shouldSend = daysSinceLast >= 30
-        }
-      }
-
-      if (!shouldSend) {
+      if (!cadence.shouldSend) {
         skipped++
         continue
       }

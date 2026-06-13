@@ -19,12 +19,16 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import {
+  staleContactEligibility,
+  DEFAULT_STALE_DAYS,
+  DEFAULT_GHOSTED_DAYS,
+  DEFAULT_MAX_BATCH,
+} from '@/lib/ai-isa/reengagement-policy'
 
 // ── Default thresholds (overridable per brokerage via ai_isa_settings) ──────
-
-export const DEFAULT_STALE_DAYS    = 14
-export const DEFAULT_GHOSTED_DAYS  = 21
-export const DEFAULT_MAX_BATCH     = 50
+// Re-exported from the pure policy module so callers keep one import surface.
+export { DEFAULT_STALE_DAYS, DEFAULT_GHOSTED_DAYS, DEFAULT_MAX_BATCH }
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -101,15 +105,25 @@ export async function detectStaleContacts(
 
   const blockedIds = new Set((activeTxContacts ?? []).map((t: any) => t.contact_id))
 
-  const now = Date.now()
+  const nowDate = new Date()
   const results: StaleContact[] = []
 
   for (const c of candidates) {
-    if (blockedIds.has(c.id)) continue
-    if (c.isa_reengage_allowed === false) continue
-
-    const lastMs = c.last_contacted_at ? new Date(c.last_contacted_at).getTime() : 0
-    const daysSince = lastMs ? Math.floor((now - lastMs) / 86_400_000) : 999
+    // Authoritative pure eligibility — encodes every exclusion (dnc / paused /
+    // reengage-disallowed / do-not-contact / deleted / active-transaction / not-yet-stale).
+    const elig = staleContactEligibility(
+      {
+        last_contacted_at:    c.last_contacted_at,
+        dnc_status:           c.dnc_status,
+        ai_outreach_paused:   c.ai_outreach_paused,
+        isa_reengage_allowed: c.isa_reengage_allowed,
+        status:               c.status,
+        deleted_at:           c.deleted_at,
+        hasActiveTransaction: blockedIds.has(c.id),
+      },
+      { now: nowDate, staleDays },
+    )
+    if (!elig.eligible) continue
 
     results.push({
       id:                  c.id,
@@ -126,7 +140,7 @@ export async function detectStaleContacts(
       isa_reengage_allowed: c.isa_reengage_allowed ?? true,
       agent_id:            c.agent_id,
       brokerage_id:        c.brokerage_id,
-      days_since_contact:  daysSince,
+      days_since_contact:  elig.daysSinceContact,
       detection_type:      'stale',
     })
 
