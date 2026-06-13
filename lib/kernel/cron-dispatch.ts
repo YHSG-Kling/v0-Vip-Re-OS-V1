@@ -74,6 +74,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/closing-watchtower",             schedule: "0 * * * *" },
   { path: "/api/cron/anniversary-equity",             schedule: "0 13 * * *" },
   { path: "/api/cron/equity-trigger",                 schedule: "0 14 * * 1" },
+  { path: "/api/cron/regulatory-watcher",             schedule: "0 8 * * 1" },
   { path: "/api/cron/financing-pit-stop",             schedule: "0 */6 * * *" },
   { path: "/api/cron/agent-coaching",                 schedule: "0 7 * * 1" },
   // ── The original vercel.json schedules, preserved verbatim ──
