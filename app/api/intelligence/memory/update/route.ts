@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { updateConversationMemory } from '@/lib/intelligence/conversation-memory'
+import { updateConversationMemory } from '@/lib/intelligence/conversation-insights'
 
 /**
  * POST /api/intelligence/memory/update
