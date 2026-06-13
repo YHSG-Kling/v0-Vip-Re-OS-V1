@@ -77,6 +77,8 @@
     "test:egress-coverage": "tsx scripts/egress-coverage-simulator.ts",
     "test:propensity": "tsx scripts/transaction-propensity-simulator.ts",
     "test:deadline-watcher": "tsx scripts/deadline-watcher-simulator.ts",
+    "test:appointment-noshow": "tsx scripts/appointment-noshow-simulator.ts",
+    "test:conversation-memory": "tsx scripts/conversation-memory-simulator.ts",
     "test:portal-e2e": "tsx scripts/portal-e2e-simulator.ts",
     "test:voice-dial-batch": "tsx scripts/voice-dial-batch-simulator.ts",
     "test:manager-signals": "tsx scripts/manager-signals-simulator.ts",

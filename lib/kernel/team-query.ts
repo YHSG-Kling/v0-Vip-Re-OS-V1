@@ -210,6 +210,15 @@ export async function runTeamQuery(
   // Recruiting Manager — the same name in the talent pipeline.
   if (recruitRow.data) c.push({ manager: "recruiting_manager", line: `heads up — there's also a recruit by this name in the talent pipeline.` })
 
+  // Context Spine — the team's ONE durable running summary of this person. Read-only:
+  // surface whatever was last persisted so every manager speaks from shared memory
+  // (the live cross-table read above stays; this ADDS durable memory, never replaces it).
+  const { loadContactContext } = await import("@/lib/kernel/conversation-memory")
+  const spine = await loadContactContext(contact.id, supabase).catch(() => null)
+  if (spine && spine.interactionCount > 0 && spine.summary) {
+    c.push({ manager: "data_steward", line: `our running note on them: ${spine.summary}` })
+  }
+
   // The bus — the managers' own recent talk.
   for (const t of ((talk.data ?? []) as any[]).slice(0, 1)) {
     const from = (t.from_manager in MANAGERS ? MANAGERS[t.from_manager as ManagerKey].label : t.from_manager)
