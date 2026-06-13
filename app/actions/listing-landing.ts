@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
+import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 
 // ============================================================================
 // Types
@@ -429,79 +430,67 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
 export async function submitShowingRequest(input: ShowingRequestInput) {
   const supabase = await createClient()
 
-  // 1. Find or create contact
-  const { data: existingContact } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("email", input.email)
+  // 1. Resolve the listing (brokerage + agent) once — needed for capture routing,
+  //    the lifecycle event, and the confirmation message.
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("brokerage_id, agent_id")
+    .eq("id", input.listingId)
     .single()
 
+  if (!listing?.brokerage_id) {
+    return { success: false, error: "Listing not found" }
+  }
+
+  // Per TCPA rules: always capture, but only store phone and enable phone/SMS channels
+  // when explicit consent is given.
+  const consentGiven = input.tcpaConsent === true
+  const consentNow = new Date().toISOString()
+
+  // NAR Article 16: persist the representation disclosure on enrichment_profile so
+  // downstream gates (convert-outside-inquiry) can refuse promotion of a buyer who
+  // self-disclosed another agent — and NEVER auto-assign the listing agent to a
+  // represented buyer (no silent poaching). The inquiry is still captured for the
+  // listing agent's facilitation and the seller's visibility.
+  const repStatus = input.representationStatus ?? null
+  const isRepresented = repStatus === "represented"
+  const enrichmentProfile = repStatus
+    ? {
+        representation_disclosure: {
+          status:     repStatus,
+          disclosed_at: consentNow,
+          source:     "listing_landing_page",
+        },
+      }
+    : null
+
+  // Route through the canonical capture spine so this inquiry gets the SAME treatment as
+  // every other intake path: fuzzy dedup, enrichment queue, and CONTACT_CAPTURED →
+  // multi-touch sequence enrollment. A represented buyer is captured with NO owner.
   let contactId: string
-
-  if (existingContact) {
-    contactId = existingContact.id
-  } else {
-    // Get listing's brokerage_id and agent_id
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("brokerage_id, agent_id")
-      .eq("id", input.listingId)
-      .single()
-
-    // Per TCPA rules: always create the lead, but only store phone and enable
-    // phone/SMS channels when explicit consent is given.
-    const consentGiven = input.tcpaConsent === true
-    const consentNow = new Date().toISOString()
-
-    // Persist the representation disclosure (NAR Article 16) on enrichment_profile so
-    // downstream gates (convert-outside-inquiry) can refuse promotion of a buyer who
-    // self-disclosed they're already represented by another agent. We DO NOT block lead
-    // creation here — the inquiry is still valuable to the listing agent for facilitation
-    // and to the seller for visibility into who's interested.
-    const repStatus = input.representationStatus ?? null
-    const enrichmentProfile = repStatus
-      ? {
-          representation_disclosure: {
-            status:     repStatus,
-            disclosed_at: consentNow,
-            source:     "listing_landing_page",
-          },
-        }
-      : null
-
-    const { data: newContact, error: contactError } = await supabase
-      .from("contacts")
-      .insert({
-        first_name: input.firstName,
-        last_name: input.lastName,
-        email: input.email,
-        phone: consentGiven && input.phone?.trim() ? input.phone.trim() : null,
-        preferred_channel: consentGiven && input.phone?.trim() ? "phone" : "email",
-        source: "listing_landing_page",
-        contact_type: "buyer",
-        brokerage_id: listing?.brokerage_id,
-        // Only auto-assign the listing agent when the buyer disclosed they're unrepresented.
-        // When the buyer says they have another agent, we DO NOT make the listing agent
-        // their owning agent — we'd be silently auto-poaching. Inquiry still routes for
-        // facilitation (see step 2 below); ownership stays null until handled manually.
-        agent_id: repStatus === "represented" ? null : (listing?.agent_id ?? null),
-        tcpa_consent: consentGiven,
-        tcpa_consent_at: consentGiven ? consentNow : null,
-        tcpa_consent_date: consentGiven ? consentNow : null,
-        tcpa_consent_source: consentGiven ? "listing_landing_page" : null,
-        tcpa_consent_text: consentGiven
-          ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
-          : null,
-        ...(enrichmentProfile ? { enrichment_profile: enrichmentProfile } : {}),
-      })
-      .select("id")
-      .single()
-
-    if (contactError || !newContact) {
-      return { success: false, error: "Failed to create contact" }
-    }
-
-    contactId = newContact.id
+  try {
+    const { contactId: capturedId } = await captureContact({
+      brokerageId:         listing.brokerage_id,
+      ownerAgentId:        isRepresented ? null : (listing.agent_id ?? null),
+      skipAutoAssign:      isRepresented,
+      source:              "listing_landing_page",
+      first_name:          input.firstName,
+      last_name:           input.lastName,
+      email:               input.email,
+      phone:               consentGiven && input.phone?.trim() ? input.phone.trim() : null,
+      preferred_channel:   consentGiven && input.phone?.trim() ? "phone" : "email",
+      contact_type:        "buyer",
+      tcpa_consent:        consentGiven,
+      tcpa_consent_date:   consentGiven ? consentNow : null,
+      tcpa_consent_source: consentGiven ? "listing_landing_page" : null,
+      tcpa_consent_text:   consentGiven
+        ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
+        : null,
+      enrichmentProfile,
+    })
+    contactId = capturedId
+  } catch {
+    return { success: false, error: "Failed to create contact" }
   }
 
   // 2. Insert showing request
@@ -550,13 +539,7 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
       .eq("id", analytics.id)
   }
 
-  // 5. Record lifecycle event with kernel event
-  const { data: listing } = await supabase
-    .from("listings")
-    .select("brokerage_id, agent_id")
-    .eq("id", input.listingId)
-    .single()
-
+  // 5. Record lifecycle event with kernel event (listing resolved at step 1)
   if (listing?.brokerage_id) {
     await supabase.from("lifecycle_events").insert({
       brokerage_id: listing.brokerage_id,

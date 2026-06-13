@@ -147,7 +147,8 @@
     "test:deal-autopsy": "tsx scripts/deal-autopsy-simulator.ts",
     "test:document-custody": "tsx scripts/document-custody-simulator.ts",
     "test:isa-reengagement": "tsx scripts/isa-reengagement-simulator.ts",
-    "test:speed-to-lead": "tsx scripts/speed-to-lead-simulator.ts"
+    "test:speed-to-lead": "tsx scripts/speed-to-lead-simulator.ts",
+    "test:listing-capture": "tsx scripts/listing-landing-capture-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

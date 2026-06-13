@@ -95,7 +95,17 @@ export interface CaptureContactParams {
   preferred_channel?: 'phone' | 'email' | 'sms' | null
   tcpa_consent: boolean
   tcpa_consent_date?: string | null
+  /** TCPA consent provenance — conserved when present (where + exact text consented to). */
+  tcpa_consent_source?: string | null
+  tcpa_consent_text?: string | null
   rawPayload?: Record<string, unknown>
+  /** When true, do NOT auto-assign an agent — agent_id stays the resolved owner hint or
+   *  null. For paths that must legally leave ownership unset, e.g. a listing-landing buyer
+   *  who disclosed they are already represented by another agent (NAR Article 16). */
+  skipAutoAssign?: boolean
+  /** Merged into contacts.enrichment_profile (read-merge-write on dedup so existing
+   *  enrichment is never clobbered) — e.g. the Article-16 representation_disclosure. */
+  enrichmentProfile?: Record<string, unknown> | null
 }
 
 export interface CaptureContactResult {
@@ -255,7 +265,7 @@ export async function captureContact(
     // Resolve agent to assign on merge if existing contact has none.
     // agents.id (NOT users.id) — contacts.agent_id is agents.id.
     let mergeAgentId: string | null = null
-    if (!existing?.agent_id) {
+    if (!existing?.agent_id && !params.skipAutoAssign) {
       const assignment = await resolveAgentForContact({
         brokerageId: params.brokerageId,
         ownerAgentId: ownerAgentHint,
@@ -263,6 +273,12 @@ export async function captureContact(
       })
       mergeAgentId = assignment.agentId
     }
+
+    // Read-merge-write enrichment_profile so a landing-page disclosure (Article 16) is
+    // conserved without clobbering existing enrichment (employer, income, …).
+    const mergedEnrichmentProfile = params.enrichmentProfile
+      ? { ...((existing?.enrichment_profile as Record<string, unknown> | null) ?? {}), ...params.enrichmentProfile }
+      : null
 
     // Data Steward lossless merge over the canonical identity/address fields:
     // existing (the surviving row) keeps its non-empty values, empties are filled
@@ -324,6 +340,9 @@ export async function captureContact(
         tcpa_consent_date: params.tcpa_consent
           ? (params.tcpa_consent_date ?? new Date().toISOString())
           : existing?.tcpa_consent_date,
+        ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
+        ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
+        ...(mergedEnrichmentProfile ? { enrichment_profile: mergedEnrichmentProfile } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', bestId)
@@ -355,22 +374,30 @@ export async function captureContact(
   // Resolve owner via the assignment helper so the same precedence applies
   // (owner hint → solo-agent → assignment_rules → load-balance fallback).
   // contacts.agent_id is agents.id per migration 111.
-  const createAssignment = await resolveAgentForContact({
-    brokerageId: params.brokerageId,
-    ownerAgentId: ownerAgentHint,
-    source: params.source,
-  })
-  if (!createAssignment.agentId) {
-    throw new Error(
-      `captureContact: no eligible agent in brokerage ${params.brokerageId}`,
-    )
+  // skipAutoAssign: honor an explicit owner hint if present, else leave ownership unset
+  // (NAR Article 16 — never auto-poach a represented buyer). Otherwise resolve normally.
+  let createAgentId: string | null
+  if (params.skipAutoAssign) {
+    createAgentId = ownerAgentHint ?? null
+  } else {
+    const createAssignment = await resolveAgentForContact({
+      brokerageId: params.brokerageId,
+      ownerAgentId: ownerAgentHint,
+      source: params.source,
+    })
+    if (!createAssignment.agentId) {
+      throw new Error(
+        `captureContact: no eligible agent in brokerage ${params.brokerageId}`,
+      )
+    }
+    createAgentId = createAssignment.agentId
   }
 
   const { data: created, error: createError } = await supabase
     .from('contacts')
     .insert({
       brokerage_id: params.brokerageId,
-      agent_id: createAssignment.agentId, // agents.id
+      agent_id: createAgentId, // agents.id (null when skipAutoAssign + no owner hint)
       first_name: params.first_name ?? null,
       last_name: params.last_name ?? null,
       email: params.email ?? null,
@@ -394,6 +421,9 @@ export async function captureContact(
       tcpa_consent_date: params.tcpa_consent
         ? (params.tcpa_consent_date ?? new Date().toISOString())
         : null,
+      ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
+      ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
+      ...(params.enrichmentProfile ? { enrichment_profile: params.enrichmentProfile } : {}),
       isa_reengage_allowed: true,
       dnc_status: false,
     })
@@ -433,9 +463,13 @@ export async function captureContact(
   // LEAD_CONVERSION_SOURCES, which are invited via handleLeadAssigned). Resolve the assigned agent's
   // users.id to attribute the invite; the core compliance-gates the OTP email on
   // email_opt_out / email_unsubscribed. Best-effort — never block contact creation.
+  // Skipped when there is no owning agent (skipAutoAssign + no hint, e.g. a represented
+  // buyer): there is no agent to attribute the invite to, and we must not invite them
+  // into the listing agent's portal.
   try {
-    const { data: agentRow } = await supabase
-      .from('agents').select('user_id').eq('id', createAssignment.agentId).maybeSingle()
+    const { data: agentRow } = createAgentId
+      ? await supabase.from('agents').select('user_id').eq('id', createAgentId).maybeSingle()
+      : { data: null }
     if (agentRow?.user_id) {
       const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
       await createSystemPortalInvite({
