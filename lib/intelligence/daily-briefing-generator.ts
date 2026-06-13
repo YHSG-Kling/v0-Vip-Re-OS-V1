@@ -80,6 +80,10 @@ export interface DailyBriefing {
    *  escalations, hot ISA conversations. Built deterministically — see
    *  lib/intelligence/isa-overnight.ts. */
   isa_overnight: import("./isa-overnight").IsaOvernightSection | null
+  /** "What the AI team did while you slept" — the newest autonomous systems
+   *  (no-shows queued for re-book, reels awaiting approval, AI-Sentinel
+   *  license-risk escalations). Deterministic — see lib/intelligence/overnight-ai-work.ts. */
+  overnight_ai_work: import("./overnight-ai-work").OvernightAiWorkSection | null
   ai_model_used: string
   generated_at: string
   opened_at: string | null
@@ -353,6 +357,19 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] ISA-overnight fetch failed:", err)
   }
 
+  // 2b. "What the AI team did while you slept" — the newest autonomous systems.
+  //     Deterministic, brokerage-scoped + agent-scoped; honest empty. Never blocks.
+  let overnightAiWork: import("./overnight-ai-work").OvernightAiWorkSection | null = null
+  try {
+    const { buildOvernightAiWork } = await import("./overnight-ai-work")
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    overnightAiWork = await buildOvernightAiWork(supabase, {
+      agentUserId: agentId, brokerageId, since: since24h,
+    })
+  } catch (err) {
+    console.error("[DailyBriefing] overnight-AI-work fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -485,6 +502,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     deals_at_risk: finalDealsAtRisk,
     listings_at_risk: listingsAtRisk,
     isa_overnight: isaOvernight,
+    overnight_ai_work: overnightAiWork,
     tasks_overdue: tasksOverdue,
     ai_model_used: AI_MODEL,
     generated_at: new Date().toISOString(),

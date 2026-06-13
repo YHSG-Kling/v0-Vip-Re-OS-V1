@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { TransactionDetailClient } from "./transaction-detail-client"
 import { ClosingWatchtowerSection } from "./closing-watchtower-section"
+import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
 
@@ -327,6 +328,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         .maybeSingle()
     : { data: null }
 
+  // Closing-Day War Room — open orchestration actions (transaction_pending_actions)
+  // feed the drive-to-done list alongside the deal's tasks + unmet conditions.
+  const { data: warRoomPendingActions } = await supabase
+    .from("transaction_pending_actions")
+    .select("id, headline, severity, due_date, suggested_recipient, status")
+    .eq("transaction_id", id)
+    .eq("status", "open")
+
   // vendor_bookings with joined vendor name — includes contact_id and listing_id
   const { data: vendorBookings } = await supabase
     .from("vendor_bookings")
@@ -359,6 +368,32 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       {/* Title & Closing Watchtower — server-rendered date-chain status with
           severity badges (pure core shared with the hourly watchtower cron). */}
       <ClosingWatchtowerSection milestones={(milestones ?? []) as any} />
+      {/* Closing-Day War Room — the final-mile cockpit; renders only inside the
+          closing window (closing_date within N days). Clear-to-close conditions,
+          the REUSED critical-path timeline, wire/EMD, and the open-items list. */}
+      <ClosingWarRoomSection
+        milestones={(milestones ?? []) as any}
+        lender={
+          lenderInfo
+            ? {
+                clear_to_close_date: (lenderInfo as any).clear_to_close_date ?? null,
+                underwriting_status: (lenderInfo as any).underwriting_status ?? null,
+              }
+            : null
+        }
+        titleEscrow={
+          titleEscrow
+            ? {
+                earnest_money_received_date: (titleEscrow as any).earnest_money_received_date ?? null,
+                closing_scheduled_date: (titleEscrow as any).closing_scheduled_date ?? null,
+              }
+            : null
+        }
+        signatures={(contractSigsRows ?? []).map((s) => ({ esign_status: s.esign_status }))}
+        tasks={(tasks ?? []) as any}
+        pendingActions={(warRoomPendingActions ?? []) as any}
+        closeDate={(transaction as any).close_date ?? null}
+      />
       {/* Financing Pit Stop — the RATE/lender side beside the watchtower's DATE side
           (pure core shared with the 6h financing-pit-stop cron). */}
       <FinancingPitStopSection
