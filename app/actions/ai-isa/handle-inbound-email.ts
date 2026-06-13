@@ -88,6 +88,36 @@ export async function processInboundEmail(params: {
     return { success: false, responded: false, error: 'Lead not found' }
   }
 
+  // ── AI SENTINEL: license-risk sentiment gate — runs BEFORE everything else ──
+  // A complaint that could become a state-board or Fair-Housing complaint (lawyer,
+  // "I'll report you", discrimination accusation, severe escalation) must HALT all AI
+  // automation on this contact and escalate to a HUMAN BROKER before any reply, intent
+  // classification, or nurture acts. This is the elevated tier ABOVE plain opt-out:
+  // tier 'none' is a no-op and the normal flow continues untouched.
+  if (leadForDnc?.brokerage_id) {
+    try {
+      const { runSentinelOnInbound } = await import('@/lib/kernel/ai-sentinel')
+      const sentinel = await runSentinelOnInbound({
+        leadId: params.leadId,
+        text: params.body,
+        brokerageId: leadForDnc.brokerage_id,
+      })
+      if (sentinel.tier !== 'none') {
+        // License risk → halted + escalated to a human. NEVER auto-reply.
+        return {
+          success: true,
+          responded: false,
+          reason: `ai_sentinel_${sentinel.tier}_license_risk`,
+        }
+      }
+    } catch (err) {
+      // Non-blocking on the read path, but a license-risk halt is safety-critical:
+      // surface the failure loudly. The downstream negative-intent + compliance gates
+      // still run as defense in depth.
+      console.error('[handle-inbound-email] AI Sentinel failed:', err)
+    }
+  }
+
   if (leadForDnc?.brokerage_id) {
     const halted = await haltEngagementForNegativeReply({
       leadId: params.leadId,
