@@ -184,19 +184,29 @@ upsert **failed silently and NO portal card was ever written**. Resolved by alig
 plain insert on the deployed `1093` index and **retiring `m105` to a no-op** so it can't reintroduce
 the column. `1093` is canonical; `m105` is dead.
 
-### 6b. TWO CAMPAIGN-ENROLLMENT SYSTEMS (DECISION REQUIRED — investigated 2026-05-29)
+### 6b. CAMPAIGN ENROLLMENT — ✅ RESOLVED (folded B into A, 2026-06-13; broker/admin sign-off on record)
 
-| System | Tables | Enrolled by | Sent by | Footprint |
-|---|---|---|---|---|
-| **A — Sequences** (canonical) | `campaign_sequences` / `sequence_enrollments` | `fanOutKernelEvent → enrollMatchingSequences` (matches `trigger_event = KernelEvent`) | `campaign-sequence-steps` cron | 14 sites |
-| **B — Marketing triggers** | `marketing_campaign_triggers` / `marketing_campaign_touchpoints` | `marketing-trigger-engine` cron + the Phase-1 kernel reactor | `marketing-campaign-scheduler` / `marketing-attribution-engine` | 3 sites |
+`campaign_sequences` (System A) is now the **SOLE enrollment spine**. The legacy marketing-trigger
+enrollment (System B) was folded into A in two steps, after a full dependency trace confirmed
+production was empty/pre-launch (0 triggers, 0 touchpoints, 0 attribution credits, 0 enrollments).
 
-Both auto-enroll a contact into a multi-touch campaign on a lifecycle event — overlapping purpose.
-**Decision needed (keep one / merge):** recommendation is **A (`campaign_sequences`) is canonical**
-(richer, documented, 14 sites, drives the portal). Either fold B into A (migrate the 3 trigger rows +
-retire the cron) or keep B strictly for *paid-ad* campaigns and rename to avoid the overlap. Until
-this is decided, the Phase-1 reactor enrolls B; it should be re-pointed at A (or removed) once chosen.
-This is destructive to live drips, so it requires explicit broker/admin sign-off.
+| System | Tables | Enrolled by | Status |
+|---|---|---|---|
+| **A — Sequences** (canonical) | `campaign_sequences` / `sequence_enrollments` | `dispatchKernelEvent → enrollMatchingSequences` (matches `trigger_event = KernelEvent`) | **SOLE ENROLLMENT SPINE** |
+| **B — Marketing triggers** | `marketing_campaign_triggers` | ~~`marketing-trigger-engine` cron + reactor branch~~ | **RETIRED** |
+
+**Step 1 — the bridge (m1098):** System A's step-executor now records each send into the SHARED
+`marketing_campaign_touchpoints` ledger (nullable `campaign_id` + `sequence_id` + `source='sequence'`),
+so de-confliction (the over-messaging frequency cap), attribution, and team-query keep working — and
+the canonical drip engine's sends are finally visible to the frequency cap (proof `test:touchpoint-bridge`).
+
+**Step 2 — the retirement (m1099):** removed the reactor's marketing-trigger branch,
+`lib/marketing/trigger-engine.ts`, and the `marketing-trigger-engine` cron (route + `cron-dispatch`
++ health-registry row). KEPT: `marketing_campaign_touchpoints` / `marketing_attribution_credits` and
+the `marketing-campaign-scheduler` / `marketing-attribution-engine` crons (the send/attribution layer,
+orthogonal to enrollment, now fed by System A). KEPT: `lib/marketing/trigger-match.ts` (pure matcher
+still exercised by `test:scrapers`). The empty `marketing_campaign_triggers` table is left in place
+(unused, harmless) for a later non-urgent drop.
 
 ---
 

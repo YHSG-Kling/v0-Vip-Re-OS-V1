@@ -6,26 +6,25 @@
 // (in later phases) AI-ISA / video / podcast / social react in real time instead of waiting for a
 // polling cron to scan lifecycle_events.
 //
-// Phase 1 consumer = marketing campaign enrollment, run REACTIVELY through the exact same
-// processOneLifecycleEvent the safety-net cron uses (one enrollment path → no drift). The reactor
-// only ENROLLS (records a campaign touchpoint); the actual sends stay downstream behind the channel
-// adapters' compliance/TCPA/brand gates — so reacting on an event never auto-sends anything ungated.
+// Phase 1 consumer = campaign enrollment, run REACTIVELY through the canonical campaign_sequences
+// spine (enrollMatchingSequences). The legacy marketing_campaign_triggers path (System B) is RETIRED
+// (fold step 2) — campaign_sequences is the sole enrollment spine. The reactor only ENROLLS; the
+// actual sends stay downstream behind the channel adapters' compliance/TCPA/brand gates — so
+// reacting on an event never auto-sends anything ungated.
 //
-// Idempotency: the per-(campaign × contact) cooldown in processOneLifecycleEvent means the reactor
-// and the cron can both run for the same event without double-enrolling. Never throws — a reactor
-// failure must never break the notification path that calls it.
+// Idempotency: enrollMatchingSequences skips an already-active enrollment, so the reactor and the
+// campaign-sequence-steps cron never double-enroll. Never throws — a reactor failure must never
+// break the notification path that calls it.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processOneLifecycleEvent } from "@/lib/marketing/trigger-engine"
 import { enrollMatchingSequences, writePortalUpdate } from "@/lib/kernel/event-fanout"
 import { resolveEventContacts } from "@/lib/kernel/resolve-event-contacts"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // Valid KernelEvent string values — used to gate sequence enrollment + portal so a non-KernelEvent
 // lifecycle string (e.g. "milestone.completed") never runs the campaign_sequences query or a portal
-// write it was never meant to trigger. (The marketing-trigger system matches its own trigger table,
-// so it is intentionally NOT gated here.)
+// write it was never meant to trigger.
 const VALID_KERNEL_EVENTS = new Set<string>(Object.values(KernelEvent))
 
 export interface ReactorResult {
@@ -40,7 +39,7 @@ export interface ReactorResult {
 }
 
 export interface DispatchKernelEventParams {
-  /** KernelEvent value (its enum string) — matched against marketing_campaign_triggers.trigger_value. */
+  /** KernelEvent value (its enum string) — matched against campaign_sequences.trigger_event. */
   event:        string
   brokerageId:  string
   entityType:   string
@@ -62,36 +61,23 @@ export interface DispatchKernelEventParams {
 }
 
 /**
- * Fan one kernel event into the agentic reactor. Routes to (B) marketing-trigger enrollment,
- * (A) canonical campaign_sequences enrollment, and (C) the template-gated client portal — the same
- * three channels fanOutKernelEvent used to run inline, now centralized here so EVERY emitter (all
- * ~98, via processKernelEvent) gets them uniformly. The portal writer is template-gated (internal
- * events have no template → no client card) and idempotent (no duplicate cards on ret//emit/overlap).
+ * Fan one kernel event into the agentic reactor. Routes to (A) canonical campaign_sequences
+ * enrollment and (C) the template-gated client portal — now centralized here so EVERY emitter (all
+ * ~98, via processKernelEvent) gets them uniformly. (B) the legacy marketing-trigger enrollment is
+ * retired. The portal writer is template-gated (internal events have no template → no client card)
+ * and idempotent (no duplicate cards on retry/emit/overlap).
  */
 export async function dispatchKernelEvent(params: DispatchKernelEventParams): Promise<ReactorResult> {
   const svc = createServiceClient()
   const isKnownEvent  = VALID_KERNEL_EVENTS.has(params.event)
   const enrollAllowed = !params.suppressEnrollment
 
-  // (B) Marketing-trigger enrollment — reactive replacement for the marketing-trigger cron poll.
-  // Matches its OWN trigger table (which may use free-form values), so it's not KernelEvent-gated;
-  // but it IS suppressed for sequence-engine-originated events to avoid an enrollment feedback loop.
-  let mk: { matched: number; enrolled: number; skipped: number; errors: number } =
-    { matched: 0, enrolled: 0, skipped: 0, errors: 0 }
-  if (enrollAllowed) {
-    try {
-      mk = await processOneLifecycleEvent(svc, {
-        event_type:   params.event,
-        entity_type:  params.entityType,
-        entity_id:    params.entityId,
-        brokerage_id: params.brokerageId,
-        metadata:     params.metadata ?? null,
-      })
-    } catch (err) {
-      console.error("[event-reactor] marketing-trigger enrollment failed:", err)
-      mk = { matched: 0, enrolled: 0, skipped: 0, errors: 1 }
-    }
-  }
+  // (B) Marketing-trigger enrollment — RETIRED (fold step 2). System A (campaign_sequences via
+  // enrollMatchingSequences, below) is now the SOLE enrollment spine; the legacy
+  // marketing_campaign_triggers path + its marketing-trigger-engine cron are gone. The
+  // marketing_campaign_touchpoints ledger that de-confliction / attribution / team-query read is
+  // now fed by System A's own sends (lib/campaign-sequences/touchpoint-bridge.ts), so those
+  // consumers keep working without the legacy enrollment path.
 
   let sequencesEnrolled = false
   let portalUpdated     = false
@@ -489,5 +475,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
-  return { ...mk, sequencesEnrolled, portalUpdated }
+  // matched/enrolled/skipped/errors are legacy marketing-trigger counters — System B enrollment
+  // is retired, so they are always zero now (shape kept for callers of ReactorResult).
+  return { matched: 0, enrolled: 0, skipped: 0, errors: 0, sequencesEnrolled, portalUpdated }
 }
