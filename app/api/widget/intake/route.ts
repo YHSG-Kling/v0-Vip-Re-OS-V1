@@ -85,15 +85,17 @@ export async function POST(req: NextRequest) {
     let assignedAgentId: string | null = agent_id ?? null
 
     if (!assignedAgentId) {
-      // Simple round-robin fallback: pick first active agent in brokerage
+      // Simple round-robin fallback: pick first active agent in brokerage.
+      // contacts.agent_id is agents.id (per migration 111) — select id, NOT user_id,
+      // or the contact is RLS-invisible to the agent and orphaned from their CRM.
       const { data: fallbackAgent } = await supabase
         .from('agents')
-        .select('user_id')
+        .select('id')
         .eq('brokerage_id', brokerage_id)
         .eq('is_active', true)
         .limit(1)
         .maybeSingle()
-      assignedAgentId = fallbackAgent?.user_id ?? null
+      assignedAgentId = fallbackAgent?.id ?? null
     }
 
     let contactId: string
