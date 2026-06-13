@@ -105,6 +105,36 @@ export async function processInboundEmail(params: {
     return { success: true, responded: false, reason: 'lead_qualified_or_max_exchanges' }
   }
 
+  // ── INBOUND INTENT CLASSIFIER — the autonomy capstone ─────────────────────
+  // The negative-intent halt above already returned early for opt-outs. Here, for
+  // a still-engaged lead, classify the reply: a CLEAR positive intent self-routes
+  // to the right converter + milestone (seller cma/appt, buyer criteria/preapproval/
+  // showing, or a side-known positive reply) and the ISA goes DORMANT — no AI reply
+  // needed, the canonical handoff fires its own meet-your-agent intro. AMBIGUOUS /
+  // no-intent falls through to the normal nurturing AI reply below. Additive; never
+  // converts on negative (already halted) or ambiguous.
+  if (leadForDnc?.brokerage_id) {
+    try {
+      const { classifyAndRouteInbound } = await import('@/lib/ai-isa/inbound-intent-classifier')
+      const routed = await classifyAndRouteInbound({
+        leadId: params.leadId,
+        brokerageId: leadForDnc.brokerage_id,
+        message: params.body,
+      })
+      if (routed.outcome === 'converted') {
+        return {
+          success: true,
+          responded: false,
+          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}`,
+          contactId: routed.contactId,
+        }
+      }
+    } catch (err) {
+      // Non-blocking: a classifier failure must never break the inbound reply path.
+      console.error('[handle-inbound-email] intent classifier failed:', err)
+    }
+  }
+
   // ── Fetch lead with all compliance-required fields ────────────────────────
   // Re-scope by caller brokerage when session-authed (defense in depth on
   // top of Guard 0 lookup above).
