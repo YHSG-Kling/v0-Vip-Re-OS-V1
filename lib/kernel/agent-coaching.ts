@@ -237,6 +237,106 @@ export function renderCoachingMessage(stats: AgentCoachingStats, brief: Coaching
   return { subject, body: lines.join("\n") }
 }
 
+// ── Dashboard adapter (the coaching dashboard's WeeklyReport shape) ───────────
+//
+// The coaching dashboard (app/dashboard/coaching) renders a "Weekly Report" card with the
+// shape {overall_score, headline, wins[], gaps[], top_recommendation, recommended_actions[],
+// deal_focus, created_at, id}. That card was historically fed by the RETIRED
+// lib/intelligence/coaching-engine weekly-report (an AI free-text report persisted to
+// agent_performance_reports). This OUTCOME-BASED loop is now the single source of truth, so
+// the adapter below maps THIS brief's REAL signals into that exact UI shape — no new tables,
+// no AI free-text, every line earned from a row:
+//   strengths       → wins
+//   leaks           → gaps
+//   focusThisWeek   → top_recommendation
+//   leaks/strengths → recommended_actions (the actionable focus + a couple of leak fixes)
+//   focusThisWeek   → deal_focus
+// overall_score is a PURE, deterministic 1:1 of the brief (no fabricated number): 100 minus a
+// documented penalty per leak, floored, with an honest mid-score for the not-enough-data case.
+
+/** The dashboard's Weekly Report shape — kept in lockstep with the coaching-dashboard client. */
+export interface WeeklyCoachingReport {
+  overall_score: number
+  headline: string
+  wins: string[]
+  gaps: string[]
+  top_recommendation: string
+  recommended_actions: string[]
+  deal_focus: string
+}
+
+/** PURE + deterministic. A 0-100 coaching score from the brief — never a fabricated number:
+ *  each real leak costs LEAK_PENALTY (capped), a clean brief with strengths sits high, and the
+ *  honest not-enough-data case is a neutral 70 (a "we don't know yet" placeholder, not praise). */
+export const LEAK_PENALTY = 12
+export function coachingScore(brief: CoachingBrief): number {
+  if (brief.notEnoughData) return 70
+  const base = brief.strengths.length > 0 ? 92 : 80
+  return Math.max(40, base - brief.leaks.length * LEAK_PENALTY)
+}
+
+/** PURE. Map a composed brief into the dashboard's WeeklyCoachingReport shape. */
+export function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
+  if (brief.notEnoughData) {
+    return {
+      overall_score: coachingScore(brief),
+      headline: `${stats.name} — getting started`,
+      wins: [],
+      gaps: [],
+      top_recommendation: brief.focusThisWeek,
+      recommended_actions: ["Book showings", "Log your conversations", "Build a real activity base to coach on"],
+      deal_focus: brief.focusThisWeek,
+    }
+  }
+  const headline = brief.leaks.length > 0
+    ? `${brief.leaks.length} thing${brief.leaks.length === 1 ? "" : "s"} to fix this week`
+    : "On track — keep it up"
+  // recommended_actions = the single focus first, then up to two more leak fixes (deduped).
+  const actions = [brief.focusThisWeek, ...brief.leaks.slice(0, 2)].filter(
+    (a, i, arr) => a && arr.indexOf(a) === i,
+  )
+  return {
+    overall_score: coachingScore(brief),
+    headline,
+    wins: brief.strengths,
+    gaps: brief.leaks,
+    top_recommendation: brief.focusThisWeek,
+    recommended_actions: actions,
+    deal_focus: brief.focusThisWeek,
+  }
+}
+
+/** Resolve the brokerage for an agent id (the dashboard's getLatestWeeklyReport only has the
+ *  agent id; the new loop is brokerage-scoped). Returns null when the agent has no brokerage. */
+async function brokerageForAgent(agentId: string, supabase: Svc): Promise<string | null> {
+  const { data } = await supabase.from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+  return (data as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+}
+
+/**
+ * Build the coaching dashboard's Weekly Report for ONE agent from the REAL outcome stats —
+ * the read path that replaces the retired getLatestWeeklyReport. Returns null when the agent
+ * is unknown / has no brokerage (the dashboard renders its empty state).
+ */
+export async function getAgentWeeklyReport(
+  agentId: string, opts: { now?: Date } = {}, client?: Svc,
+): Promise<(WeeklyCoachingReport & { id: string; created_at: string }) | null> {
+  if (!agentId) return null
+  const supabase = client ?? createServiceClient()
+  const brokerageId = await brokerageForAgent(agentId, supabase)
+  if (!brokerageId) return null
+  const now = opts.now ?? new Date()
+  const statsList = await buildCoachingStats(brokerageId, { now }, supabase)
+  const stats = statsList.find((s) => s.agentId === agentId)
+  if (!stats) return null
+  const brief = composeCoachingBrief(stats)
+  return {
+    ...briefToWeeklyReport(stats, brief),
+    id: `${agentId}:${isoWeekTag(now)}`,
+    created_at: now.toISOString(),
+  }
+}
+
 // ── Live aggregation (REAL rows only) ─────────────────────────────────────────
 
 const ACTIVE_TXN_STATUSES = ["active", "under_contract", "closing"] as const
@@ -414,4 +514,48 @@ export async function runAgentCoaching(
   }
 
   return result
+}
+
+/**
+ * Single-agent coaching brief — the WRITE path behind the dashboard's "Generate New Report"
+ * button. Builds the agent's REAL stats, proposes the ONE gated, manager-facing brief for THIS
+ * agent (idempotent per ISO week, same rationale key as runAgentCoaching so the two never
+ * double-propose), and returns the brief mapped into the dashboard's WeeklyCoachingReport
+ * shape so the UI re-renders immediately. Returns null when the agent is unknown.
+ */
+export async function runAgentCoachingForAgent(
+  agentId: string, brokerageId: string, opts: { now?: Date } = {}, client?: Svc,
+): Promise<(WeeklyCoachingReport & { id: string; created_at: string }) | null> {
+  if (!agentId || !brokerageId) return null
+  const supabase = client ?? createServiceClient()
+  const now = opts.now ?? new Date()
+  const weekTag = isoWeekTag(now)
+
+  const statsList = await buildCoachingStats(brokerageId, { now }, supabase)
+  const stats = statsList.find((s) => s.agentId === agentId)
+  if (!stats) return null
+
+  const brief = composeCoachingBrief(stats)
+
+  // Idempotency — one coaching brief per agent per ISO week (mirrors runAgentCoaching's key).
+  const { data: already } = await supabase.from("agent_client_messages").select("id")
+    .eq("brokerage_id", brokerageId).eq("agent_kind", "recruiting_manager").eq("entity_type", "agent")
+    .ilike("rationale", `AGENT COACHING ${weekTag}%agent:${agentId}%`).limit(1).maybeSingle()
+
+  if (!already) {
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const { subject, body } = renderCoachingMessage(stats, brief)
+    await proposeClientMessage({
+      brokerageId, agentKind: "recruiting_manager", entityType: "agent", entityId: agentId,
+      audience: "agent", subject, body,
+      rationale: `AGENT COACHING ${weekTag} — agent:${agentId} — strengths ${brief.strengths.length}, leaks ${brief.leaks.length}${brief.notEnoughData ? ", not-enough-data" : ""}; gated manager-facing coaching brief.`,
+      channel: "portal",
+    }, supabase)
+  }
+
+  return {
+    ...briefToWeeklyReport(stats, brief),
+    id: `${agentId}:${weekTag}`,
+    created_at: now.toISOString(),
+  }
 }
