@@ -100,6 +100,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/listing-promo-hybrid-composite"      , schedule: "*/2 * * * *" },
   { path: "/api/cron/listing-promo-social-publish"        , schedule: "*/2 * * * *" },
   { path: "/api/cron/poll-did-videos"                     , schedule: "*/2 * * * *" },
+  // Speed-to-lead — micro-personalized first touch on promotion + 5-min agent-grace ISA jump-in.
+  { path: "/api/cron/speed-to-lead"                       , schedule: "*/2 * * * *" },
   { path: "/api/cron/poll-did-avatars"                    , schedule: "*/3 * * * *" },
   { path: "/api/cron/fire-drill"                          , schedule: "*/30 * * * *" },
   { path: "/api/cron/manager-signals"                     , schedule: "*/30 * * * *" },

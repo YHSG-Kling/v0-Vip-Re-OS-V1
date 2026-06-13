@@ -4,6 +4,7 @@ import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
 import { ghostReengagementStopReason, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
+import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -217,13 +218,31 @@ export async function runGhostReengagement(
         })
         .eq('id', leadId)
 
+      // Micro-personalized subject + body from enrichment_profile (never hardcoded)
+      const reengageFacts = buildPersonalizationFacts({
+        first_name:        lead.first_name,
+        city:              lead.city,
+        motivation_type:   lead.motivation_type,
+        property_interest: lead.property_interest,
+        budget_min:        lead.budget_min,
+        budget_max:        lead.budget_max,
+        timeline:          lead.timeline,
+        enrichment_profile: lead.enrichment_profile as any ?? null,
+        occupation:        lead.occupation,
+        household_income:  lead.household_income,
+        home_owner_status: lead.home_owner_status,
+        life_events:       lead.life_events as any ?? null,
+        marital_status:    lead.marital_status,
+      })
+      const reengageCopy = buildDeterministicCopy(reengageFacts, 'email', lead.first_name ?? undefined)
+
       // Log outreach via isa-outreach-logger
       await logISAOutreach({
         brokerageId,
         entity: { entityType: 'lead', leadId },
         channel: 'email',
-        subject: `Still here for you, ${lead.first_name ?? 'there'}`,
-        bodySnippet: `Re-engagement #${newCount} — phase ${inPhase1 ? 1 : 2}`,
+        subject: reengageCopy.subject ?? `Checking in, ${lead.first_name ?? 'there'}`,
+        bodySnippet: reengageCopy.body.substring(0, 200),
         compliancePassed: true,
       })
 

@@ -36,6 +36,7 @@ import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
+import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
 // ── Lifecycle states where AI ISA MUST NOT engage ──────────────────────────
@@ -56,6 +57,7 @@ export type ISAEngagementReason =
   | 'agent_enabled'
   | 'brokerage_rule'
   | 'reactivation'
+  | 'speed_to_lead'
 
 export interface EngageContactParams {
   contactId: string
@@ -385,7 +387,21 @@ async function dispatchContactChannel(
       return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
 
-    const smsBody = `Hi ${contact.first_name || 'there'}, this is an update from your real estate team. Reply STOP to opt out.`
+    // Micro-personalized SMS — never a hardcoded fixed string
+    const smsFacts = buildPersonalizationFacts({
+      first_name:        contact.first_name,
+      city:              (contact as any).city ?? (contact as any).mailing_city ?? null,
+      motivation_type:   (contact as any).motivation_type ?? contact.buyer_stage ?? null,
+      property_interest: (contact as any).property_interest ?? null,
+      enrichment_profile: (contact as any).enrichment_profile ?? null,
+      occupation:        (contact as any).occupation ?? null,
+      household_income:  (contact as any).household_income ?? null,
+      home_owner_status: (contact as any).home_owner_status ?? null,
+      life_events:       (contact as any).life_events ?? null,
+      marital_status:    (contact as any).marital_status ?? null,
+    })
+    const smsCopy = buildDeterministicCopy(smsFacts, 'sms', contact.first_name ?? undefined)
+    const smsBody = smsCopy.body
 
     await dispatchSms({
       brokerageId,

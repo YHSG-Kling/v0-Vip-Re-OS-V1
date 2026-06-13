@@ -29,6 +29,7 @@ import {
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
 } from '@/lib/ai-isa'
+import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import {
   logISAOutreach,
   checkMaxTouches,
@@ -573,16 +574,24 @@ async function dispatchToChannel(
       return { success: false, reason: 'no_phone', channel }
     }
 
-    const smsBody = [
-      `Hi ${lead.first_name ?? 'there'}, this is`,
-      brandVoice.tagline ? `${brandVoice.tagline}.` : 'your real estate team.',
-      lead.motivation_type
-        ? `I see you're interested in ${lead.motivation_type.replace(/_/g, ' ')}.`
-        : '',
-      'Would you like to chat about your home search?',
-    ]
-      .filter(Boolean)
-      .join(' ')
+    // Micro-personalized SMS from enrichment_profile — never a hardcoded fixed string
+    const smsFactsLead = buildPersonalizationFacts({
+      first_name:        lead.first_name,
+      city:              lead.city,
+      motivation_type:   lead.motivation_type,
+      property_interest: lead.property_interest,
+      budget_min:        lead.budget_min,
+      budget_max:        lead.budget_max,
+      timeline:          lead.timeline,
+      enrichment_profile: lead.enrichment_profile as any ?? null,
+      occupation:        lead.occupation,
+      household_income:  lead.household_income,
+      home_owner_status: lead.home_owner_status,
+      life_events:       lead.life_events as any ?? null,
+      marital_status:    lead.marital_status,
+    })
+    const smsCopyLead = buildDeterministicCopy(smsFactsLead, 'sms', lead.first_name ?? undefined)
+    const smsBody = smsCopyLead.body
 
     await dispatchSms({
       brokerageId: lead.brokerage_id,
