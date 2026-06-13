@@ -13,20 +13,45 @@
  * importing the lib directly to avoid the Server Action POST round-trip.
  */
 
+// getBuyerCoaching stays in coaching-engine — a DISTINCT buyer-facing feature
+// (per-stage buyer playbooks), unrelated to the agent performance/weekly report.
 import {
-  generateWeeklyCoachingReport as _generateWeeklyCoachingReport,
   getBuyerCoaching as _getBuyerCoaching,
-  getLatestWeeklyReport as _getLatestWeeklyReport,
-  type WeeklyCoachingReport,
   type BuyerCoachingContent,
   type BuyerPersona,
 } from "@/lib/intelligence/coaching-engine"
+// The agent weekly report is now sourced from the OUTCOME-BASED agent-coaching loop
+// (the single source of truth). runAgentCoachingForAgent is the WRITE path behind the
+// "Generate New Report" button; both map the brief into the dashboard's WeeklyCoachingReport shape.
+import {
+  runAgentCoachingForAgent,
+  type WeeklyCoachingReport,
+} from "@/lib/kernel/agent-coaching"
 
 export async function generateWeeklyCoachingReport(
   agentId: string,
   brokerageId: string,
 ): Promise<WeeklyCoachingReport> {
-  return _generateWeeklyCoachingReport(agentId, brokerageId)
+  const report = await runAgentCoachingForAgent(agentId, brokerageId)
+  // runAgentCoachingForAgent returns null only when the agent is unknown — surface a
+  // safe, honest empty report rather than throwing (the dashboard renders its empty state).
+  return (
+    report ?? {
+      overall_score: 70,
+      headline: "Getting started",
+      wins: [],
+      gaps: [],
+      top_recommendation:
+        "Not enough activity on the board yet to coach on — let's get reps in.",
+      recommended_actions: [
+        "Book showings",
+        "Log your conversations",
+        "Build a real activity base to coach on",
+      ],
+      deal_focus:
+        "Not enough activity on the board yet to coach on — let's get reps in.",
+    }
+  )
 }
 
 export async function getBuyerCoaching(
@@ -35,8 +60,4 @@ export async function getBuyerCoaching(
   brokerageId: string,
 ): Promise<BuyerCoachingContent> {
   return _getBuyerCoaching(buyerStage, persona, brokerageId)
-}
-
-export async function getLatestWeeklyReport(agentId: string) {
-  return _getLatestWeeklyReport(agentId)
 }

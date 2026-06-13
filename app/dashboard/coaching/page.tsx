@@ -2,7 +2,11 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { CoachingDashboardClient } from "./coaching-dashboard-client"
-import { getLatestWeeklyReport, getBuyerCoaching } from "@/lib/intelligence/coaching-engine"
+import { getBuyerCoaching } from "@/lib/intelligence/coaching-engine"
+// Weekly Report card is now fed by the OUTCOME-BASED agent-coaching loop (single source
+// of truth). getAgentWeeklyReport returns the exact dashboard shape the retired
+// getLatestWeeklyReport did ({overall_score, headline, wins, gaps, ...id, created_at}).
+import { getAgentWeeklyReport } from "@/lib/kernel/agent-coaching"
 import { getSellerCoaching } from "@/lib/seller-coaching/coaching-generator"
 
 export const dynamic = "force-dynamic"
@@ -35,7 +39,7 @@ export default async function CoachingPage() {
     interventionsResult,
     suggestionsResult,
   ] = await Promise.all([
-    getLatestWeeklyReport(agentId),
+    getAgentWeeklyReport(agentId),
     supabase
       .from("contacts")
       .select("id, first_name, last_name, buyer_stage, contact_persona")
