@@ -34,6 +34,122 @@ export interface NavItem {
   icon?: string
 }
 
+import type { SaleBeforeBuyDependency } from "./dual-intent-linker"
+import { journeyUserKey } from "./dual-intent-linker"
+
+/**
+ * The dual-journey resolution that sits ON TOP of determinePortalView — it does
+ * NOT replace it. determinePortalView still returns the single canonical view
+ * (buyer | seller | lifetime) for everyone, unchanged. resolveDualPortalView
+ * adds the orthogonal question the single resolver never answered: does this ONE
+ * contact carry BOTH journeys (the "must sell to buy" case)? When it does, the
+ * page renders a TABBED Buy | Sell portal instead of collapsing to one side.
+ */
+export interface DualPortalResolution {
+  /** True when the contact is genuinely dual (contact_type='both' OR both journey_states sides exist). */
+  isDual: boolean
+  /** The single-journey view determinePortalView resolves — preserved verbatim for non-dual contacts AND as the dual portal's default tab. */
+  baseView: PortalView
+  /** Why dual was (or was not) concluded — for logging/debugging. */
+  reason: string
+  /** The cross-journey sale→buy dependency stamped on the journey_states rows (when dual). */
+  dependency: SaleBeforeBuyDependency | null
+}
+
+/**
+ * dualBannerPredicate — pure: should the page show the "your purchase is
+ * contingent on selling your current home" dependency BANNER? Only when the
+ * dependency exists, is gating, and is NOT yet satisfied (the sale hasn't closed).
+ * A non-gated dependency (cash buyer / independent funding) or a satisfied one
+ * (sale already closed) → no banner. Honest when there is no dependency at all.
+ */
+export function dualBannerPredicate(dependency: SaleBeforeBuyDependency | null): boolean {
+  if (!dependency) return false
+  return dependency.gated && !dependency.satisfied
+}
+
+/**
+ * KERNEL CONTRACT: resolveDualPortalView — the additive dual-journey resolver.
+ *
+ * Runs determinePortalView FIRST (so the single-journey resolution is byte-for-byte
+ * unchanged for everyone — buyer/seller/lifetime + every reason code), THEN asks the
+ * orthogonal dual question:
+ *   · contact_type = 'both'  → dual, OR
+ *   · BOTH journey_states sides exist for this contact (`${id}:buyer` AND `${id}:seller`,
+ *     the rows the dual-intent linker writes) → dual.
+ * Non-dual contacts get { isDual:false, baseView } and the page behaves exactly as before.
+ *
+ * When dual, it reads the sale→buy dependency the linker stamped into the journey_states
+ * metadata_json so the page can surface the gate banner without recomputing anything.
+ */
+export async function resolveDualPortalView(
+  supabase: SupabaseClient,
+  input: PortalViewInput
+): Promise<DualPortalResolution> {
+  // The single-journey resolution is the source of truth for the base view — never altered.
+  const base = await determinePortalView(supabase, input)
+
+  // An explicit admin override is a deliberate single-view escape hatch — honor it, never dual.
+  if (input.overrideView) {
+    return { isDual: false, baseView: base.view, reason: 'ADMIN_OVERRIDE_SINGLE', dependency: null }
+  }
+
+  try {
+    const { contactId } = input
+
+    // Signal 1 — the canonical dual vocabulary on the contact itself.
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("contact_type")
+      .eq("id", contactId)
+      .maybeSingle()
+    const contactTypeIsBoth = (contact as any)?.contact_type === 'both'
+
+    // Signal 2 — BOTH journey_states sides exist (the linker's two cross-linked rows).
+    const buyerKey = journeyUserKey(contactId, "buyer")
+    const sellerKey = journeyUserKey(contactId, "seller")
+    const { data: journeys } = await supabase
+      .from("journey_states")
+      .select("user_id, metadata_json")
+      .eq("contact_id", contactId)
+      .in("user_id", [buyerKey, sellerKey])
+
+    const jList = (journeys ?? []) as Array<{ user_id: string; metadata_json: string | null }>
+    const hasBuyerSide = jList.some(j => j.user_id === buyerKey)
+    const hasSellerSide = jList.some(j => j.user_id === sellerKey)
+    const hasBothSides = hasBuyerSide && hasSellerSide
+
+    const isDual = contactTypeIsBoth || hasBothSides
+    if (!isDual) {
+      return { isDual: false, baseView: base.view, reason: 'SINGLE_JOURNEY', dependency: null }
+    }
+
+    // Recover the dependency the linker stamped on either side (buyer side preferred —
+    // it carries the gate it's gated ON). Read-only; we never recompute or fabricate.
+    let dependency: SaleBeforeBuyDependency | null = null
+    const preferred = jList.find(j => j.user_id === buyerKey) ?? jList[0]
+    if (preferred?.metadata_json) {
+      try {
+        const meta = JSON.parse(preferred.metadata_json) as { dependency?: SaleBeforeBuyDependency }
+        dependency = meta?.dependency ?? null
+      } catch {
+        dependency = null
+      }
+    }
+
+    return {
+      isDual: true,
+      baseView: base.view,
+      reason: contactTypeIsBoth ? 'CONTACT_TYPE_BOTH' : 'BOTH_JOURNEY_STATES',
+      dependency,
+    }
+  } catch (error) {
+    // Any failure falls back to the single-journey behavior — dual is purely additive.
+    console.warn("[Portal] resolveDualPortalView fell back to single view:", error)
+    return { isDual: false, baseView: base.view, reason: 'DUAL_RESOLVE_ERROR', dependency: null }
+  }
+}
+
 // ─── PORTAL SHELL KERNEL FUNCTIONS ────────────────────────────────────────────
 
 /**
